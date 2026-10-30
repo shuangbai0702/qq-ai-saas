@@ -1,0 +1,52 @@
+import {permitModelFixture} from './helpers/model-fixture.js';
+import {issueTestInvite} from './helpers/invitations.js';
+import test from 'node:test';import assert from 'node:assert/strict';import http from 'node:http';import {mkdtemp,writeFile,mkdir} from 'node:fs/promises';import path from 'node:path';
+import {createApp} from '../apps/control-api/src/app.js';import {defaultConfig} from '../packages/contracts/index.js';import {MockProtocolAdapter} from '../adapters/mock/index.js';
+const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));async function wait(fn:()=>Promise<boolean>,label:string){for(let i=0;i<200;i++){if(await fn())return;await sleep(100)}throw new Error('Social runtime deadline: '+label)}
+test('native shared AstrBot learns real OneBot group samples and routes controlled images without tenant crossover',{timeout:100000},async()=>{
+ const seen:any[]=[];const model=http.createServer(async(req,res)=>{let raw='';for await(const b of req)raw+=b;const body=JSON.parse(raw);seen.push({key:req.headers.authorization,body});const system=body.messages.filter((m:any)=>m.role==='system').map((m:any)=>m.content).join('\n');let output='知道啦。';
+  if(system.includes('从群聊样本中提炼反复出现的表达习惯')){const last=body.messages.at(-1).content;const batch=JSON.parse(typeof last==='string'?last:last[0].text);output=JSON.stringify({patterns:[{expression:'有节目效果',situation:'轻松开玩笑',source_ids:[batch[0].id,batch[1].id]}]})}
+  else if(JSON.stringify(body.messages.at(-1)).includes('图片'))output='哈哈[MEME:laugh]';else if(JSON.stringify(body.messages.at(-1)).includes('静默'))output='[NO_REPLY]';
+  res.setHeader('Content-Type','application/json');res.end(JSON.stringify({id:'social-fixture',model:'social-fixture',choices:[{index:0,message:{role:'assistant',content:output},finish_reason:'stop'}]}));
+ });await new Promise<void>(r=>model.listen(0,'127.0.0.1',r));permitModelFixture(model);
+ const root=await mkdtemp(path.resolve('.local/social-native-'));const current=await createApp({root});
+ try{const auth=await current.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(current.db,2),email:'native@social.test',name:'社交测试',password:'native-social-123'}});const cookies={fish_session:auth.cookies[0].value};const ids:string[]=[];
+  for(let i=0;i<2;i++){const r=await current.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'社交'+i,runtimeMode:'shared',protocol:'mock',expectedUin:'9000999'+i,apiKey:'social-key-'+i,config:{...defaultConfig,baseUrl:`http://127.0.0.1:${(model.address()as any).port}/v1`,model:'social-fixture',behavior:{styleLearning:true,memeEnabled:true}}}});assert.equal(r.statusCode,201,r.body);ids.push(r.json().id);await current.app.inject({method:'POST',url:'/v1/bots/'+r.json().id+'/actions',cookies,payload:{action:'start',idempotencyKey:'start'}})}
+  await wait(async()=>(await current.db.query('SELECT * FROM bots')).every(b=>b.health?.ai?.ready&&b.health?.protocol?.ready),'two cores ready');
+  const ctx=await Promise.all(ids.map(async id=>current.agent.context((await current.db.query('SELECT * FROM bots WHERE id=$1',[id]))[0])));const mock=current.agent.protocols.mock as MockProtocolAdapter;
+  for(const c of ctx){await mock.call(c,'/transition',{state:'online',uin:c.expectedUin});await wait(async()=>!!(await mock.call(c,'/state')as any).connected,'OneBot connected')}
+  const actions=async(index:number)=>(await mock.call(ctx[index],'/messages')as any[]).filter(x=>x.action.startsWith('send_'));
+  for(let n=0;n<12;n++){await mock.call(ctx[0],'/message',{group:'777777',sender:n%2?'12345678':'22345678',mention:false,text:'这波真有节目效果啊'});await sleep(8)}
+  await wait(async()=>seen.length>=1,'batched learner');await wait(async()=>{const[b]=await current.db.query('SELECT * FROM bots WHERE id=$1',[ids[0]]);return b.health?.ai?.metrics?.learnedPatterns===1},'learning commit');
+  assert.equal(seen.length,1,'12 unmentioned events create one learner call, zero reply calls');assert.equal(seen[0].key,'Bearer social-key-0');assert.equal((await actions(0)).length,0);
+  const systems:any[]=[];
+  for(let index=0;index<2;index++){const before=seen.length;await mock.call(ctx[index],'/message',{group:'777777',text:'轻松开玩笑'});await wait(async()=>seen.length>before&&(await actions(index)).length>0,'routed reply');const call=seen.at(-1);assert.equal(call.key,'Bearer social-key-'+index);systems.push(call.body.messages.filter((m:any)=>m.role==='system').map((m:any)=>m.content).join('\n'))}
+  assert.ok(systems[0].includes('有节目效果'));assert.ok(!systems[1].includes('有节目效果'),'same group and sender on another Bot cannot see learned expression');
+  const dataUrl='/v1/bots/'+ids[0]+'/behavior-data';
+  const managed=await current.app.inject({url:dataUrl,cookies});assert.equal(managed.statusCode,200,managed.body);assert.equal(managed.json().accessMode,'runtime-owner');
+  const learned=managed.json().patterns[0];assert.ok(learned);
+  const disabled=await current.app.inject({url:dataUrl,method:'POST',cookies,payload:{action:'set_pattern',scope:learned.scope,expression:learned.expression,expectedUpdated:learned.updated,expectedEpoch:managed.json().epoch,disabled:true}});assert.equal(disabled.statusCode,200,disabled.body);
+  const callCount=seen.length,priorActions=(await actions(0)).length;await mock.call(ctx[0],'/message',{group:'777777',text:'轻松开玩笑'});await wait(async()=>seen.length>callCount&&(await actions(0)).length>priorActions,'managed expression exclusion');
+  const managedSystem=seen.at(-1).body.messages.filter((m:any)=>m.role==='system').map((m:any)=>m.content).join('\n');assert.ok(!managedSystem.includes('有节目效果'),'runtime owner management removes the hint from next real SDK request');
+  const before=(await actions(0)).length;await mock.call(ctx[0],'/message',{text:'请发图片'});await wait(async()=>(await actions(0)).length>before,'image reply');const image=(await actions(0)).at(-1);assert.ok(JSON.stringify(image).includes('"type":"image"'),JSON.stringify(image));assert.ok(!JSON.stringify(image).includes('[MEME:'));
+  await mock.call(ctx[0],'/message',{text:'再发图片'});await wait(async()=>(await actions(0)).length>before+1,'cooldown reply');assert.ok(!JSON.stringify((await actions(0)).at(-1)).includes('"type":"image"'),'cooldown suppresses additional image, preserves text');
+  const count=(await actions(1)).length,requests=seen.length;await mock.call(ctx[1],'/message',{text:'静默'});await wait(async()=>seen.length>requests,'silence completion');await sleep(300);assert.equal((await actions(1)).length,count,'NO_REPLY never becomes a QQ message');
+  await current.app.inject({method:'POST',url:'/v1/bots/'+ids[0]+'/actions',cookies,payload:{action:'stop',idempotencyKey:'managed-stop'}});
+  await wait(async()=>(await current.db.query('SELECT observed_state FROM bots WHERE id=$1',[ids[0]]))[0].observed_state==='stopped','member stopped');
+  const stoppedData=await current.app.inject({url:dataUrl,cookies});assert.equal(stoppedData.statusCode,200,stoppedData.body);assert.equal(stoppedData.json().accessMode,'stopped-maintenance');assert.equal(stoppedData.json().patterns[0].disabled,true);
+  const siblingData=await current.app.inject({url:'/v1/bots/'+ids[1]+'/behavior-data',cookies});assert.equal(siblingData.statusCode,200,siblingData.body);assert.equal(siblingData.json().accessMode,'runtime-owner');
+  await mkdir('test-results/social-integration',{recursive:true});await writeFile('test-results/social-integration/native.json',JSON.stringify({passed:true,scope:'real AstrBot SDK + real OneBot WebSocket events + fixture model and QQ transport',checks:['one batched learning request for 12 unmentioned events','two human evidence','same-group two-Bot expression isolation','separate model Keys','real Image segment','cooldown','internal tag filtering','NO_REPLY silence']},null,2));
+ }finally{await current.app.close();await new Promise<void>(r=>model.close(()=>r()))}
+});
+
+
+test('dedicated AstrBot exposes owned data over its existing authenticated runtime endpoint',{timeout:60000},async()=>{
+ const current=await createApp({root:await mkdtemp(path.resolve('.local/capability-dedicated-'))});
+ try{
+  const auth=await current.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(current.db),email:'dedicated@capability.test',name:'独立管理',password:'dedicated-manage-123'}});const cookies={fish_session:auth.cookies[0].value};
+  const created=await current.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'独立管理',runtimeMode:'dedicated',protocol:'mock'}});assert.equal(created.statusCode,201,created.body);const id=created.json().id;
+  await current.app.inject({method:'POST',url:'/v1/bots/'+id+'/actions',cookies,payload:{action:'start',idempotencyKey:'data-start'}});
+  await wait(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.ai?.ready,'dedicated runtime ready');
+  const data=await current.app.inject({url:'/v1/bots/'+id+'/behavior-data',cookies});assert.equal(data.statusCode,200,data.body);assert.equal(data.json().accessMode,'runtime-owner');assert.equal(data.json().initialized,true);
+ }finally{await current.app.close()}
+});

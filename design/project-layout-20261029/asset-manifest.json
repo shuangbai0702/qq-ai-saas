@@ -1,0 +1,30 @@
+[
+  {
+    "file": "A-dashboard-v2.png",
+    "width": 1586,
+    "height": 992,
+    "bytes": 1720472,
+    "sha256": "e8c8f371e3e0d455a52c7b715130315aae55325421e3015738af047b6cb2d50f"
+  },
+  {
+    "file": "A-config-v2.png",
+    "width": 1586,
+    "height": 992,
+    "bytes": 1711744,
+    "sha256": "34a21e4564d9845353729e7b992a4d8e146cd8a46fff7a0e52ea67082c7b2a12"
+  },
+  {
+    "file": "B-dashboard.png",
+    "width": 1586,
+    "height": 992,
+    "bytes": 1698916,
+    "sha256": "1c41f3b30028287a16ef4fc7c6d968444e0225a25b76751cd3c8233c9957f869"
+  },
+  {
+    "file": "B-config-v2.png",
+    "width": 1586,
+    "height": 992,
+    "bytes": 1744574,
+    "sha256": "7d93db9c00abd68f10c3eee85915e3ab134d97378eb4eaed78711f8435b49168"
+  }
+]

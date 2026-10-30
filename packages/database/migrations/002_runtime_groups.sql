@@ -1,0 +1,5 @@
+CREATE TABLE runtime_groups(id TEXT PRIMARY KEY,node_id TEXT NOT NULL DEFAULT 'local',capacity INTEGER NOT NULL CHECK(capacity BETWEEN 1 AND 8),desired_state TEXT NOT NULL DEFAULT 'stopped',observed_state TEXT NOT NULL DEFAULT 'stopped',generation INTEGER NOT NULL DEFAULT 0,health_port INTEGER NOT NULL UNIQUE,token TEXT NOT NULL,health JSONB NOT NULL DEFAULT '{}',created_at TIMESTAMPTZ NOT NULL DEFAULT now());
+ALTER TABLE bots ADD COLUMN runtime_mode TEXT NOT NULL DEFAULT 'dedicated' CHECK(runtime_mode IN ('dedicated','shared'));
+ALTER TABLE bots ADD COLUMN group_id TEXT REFERENCES runtime_groups(id);
+CREATE TABLE group_members(bot_id TEXT PRIMARY KEY REFERENCES bots(id),group_id TEXT NOT NULL REFERENCES runtime_groups(id),desired_state TEXT NOT NULL DEFAULT 'stopped',observed_state TEXT NOT NULL DEFAULT 'stopped',generation INTEGER NOT NULL DEFAULT 0,applied_revision INTEGER NOT NULL DEFAULT 0,joined_at TIMESTAMPTZ NOT NULL DEFAULT now());
+CREATE INDEX group_members_group ON group_members(group_id);

@@ -1,0 +1,2 @@
+import test from'node:test';import assert from'node:assert/strict';import{execFile}from'node:child_process';import path from'node:path';
+test('shared tool guard rejects other bot destinations and filesystem access',async()=>{const result=await new Promise<string>((resolve,reject)=>execFile(path.resolve(`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`),['experiments/round2-shared/tool_guards_test.py'],{windowsHide:true},(error,stdout,stderr)=>error?reject(new Error(stderr)):resolve(stdout)));assert.match(result,/PASS cross-bot/)});

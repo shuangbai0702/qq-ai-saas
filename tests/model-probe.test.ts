@@ -1,0 +1,5 @@
+import {permitModelFixture} from './helpers/model-fixture.js';
+import test from 'node:test';import assert from 'node:assert/strict';import http from 'node:http';import {probeModel} from '../packages/shared/model-probe.js';
+test('model probe bounds calls and never returns a credential echoed by upstream',async()=>{
+ const key='synthetic-echoed-provider-credential';let calls=0;const server=http.createServer((req,res)=>{calls++;res.setHeader('Content-Type','application/json');res.end(JSON.stringify(req.url?.endsWith('/models')?{data:[]}:{model:key,choices:[{message:{content:'OK',tool_calls:[{function:{name:key,arguments:'{}'}}]}}],usage:{total_tokens:8,malicious:key,prompt_tokens:key}}))});await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));permitModelFixture(server);try{const r=await probeModel(`http://127.0.0.1:${(server.address()as any).port}/v1`,'fixture',key);assert.equal(calls,2);assert.ok(!JSON.stringify(r).includes(key));assert.deepEqual(r.results[1].usageReported,{total_tokens:8});assert.equal(r.results[1].returnedModel,'[REDACTED]')}finally{await new Promise<void>(r=>server.close(()=>r()))}
+});

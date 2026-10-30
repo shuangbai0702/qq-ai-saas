@@ -1,0 +1,21 @@
+[Unit]
+Description=Fishbot single-node control API and embedded supervisor
+After=network-online.target postgresql.service
+
+[Service]
+Type=simple
+User=fishbot
+WorkingDirectory=/opt/fishbot
+EnvironmentFile=/etc/fishbot.env
+ExecStart=/usr/bin/node --max-old-space-size=128 scripts/production-start.mjs
+Restart=on-failure
+RestartSec=5
+Delegate=cpu memory pids
+TasksMax=1024
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+TimeoutStopSec=90
+
+[Install]
+WantedBy=multi-user.target

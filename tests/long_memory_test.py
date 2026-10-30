@@ -1,0 +1,220 @@
+import asyncio,json,os,sqlite3,sys,unittest,contextvars
+from pathlib import Path
+from types import SimpleNamespace as NS
+from unittest.mock import patch
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters'/'astrbot'))
+from memory_reflection import Reflection
+from hosted_memory import ScopedMemory
+from data_admin import run
+
+class LongMemory(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.db=sqlite3.connect(':memory:');self.r=Reflection(self.db);self.calls=[]
+        self.db.execute('CREATE TABLE facts(scope TEXT,subject TEXT,name TEXT,value TEXT,event TEXT,updated REAL,version INTEGER,active INTEGER)')
+        self.facts=ScopedMemory(self.db)
+        self.cfg={'memorySemantic':True,'embeddingModel':'bge-m3','dailyEmbeddingLimit':1000}
+        async def create(**kw):
+            self.calls.append(kw)
+            return NS(data=[NS(index=i,embedding=[1.,0.] if t in ('drink','tea') else [0.,1.]) for i,t in enumerate(kw['input'])])
+        self.client=NS(base_url='https://chat.example/v1',api_key='test-bot-key',embeddings=NS(create=create))
+        self.client.with_options=lambda **kw:self.client
+        self.provider=NS(client=self.client)
+    def tearDown(self):self.r.close();self.db.close()
+    def summary(self,text,scope='group:1'):
+        self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated) VALUES(?,?,?,?)',(scope,text,'["real-event"]',1));self.db.commit()
+    async def recall(self,query='drink',current=lambda:True):
+        return await self.r.semantic_recall('group:1',query,self.cfg,self.provider,current,{})
+    async def test_full_bounded_library_progressive_and_scoped(self):
+        self.summary('tea');self.summary('private secret','group:2')
+        for i in range(998):self.summary('unrelated '+str(i))
+        # The oldest relevant summary is outside the former 100-row window.
+        for i in range(63):result=await self.recall()
+        self.assertEqual(result[0]['summary'],'tea')
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_vectors').fetchone()[0],999)
+        self.assertTrue(all(len(c['input'])<=17 for c in self.calls))
+        self.assertFalse(any('private secret' in c['input'] for c in self.calls))
+        await self.recall();self.assertEqual(len(self.calls[-1]['input']),1)
+        self.summary('overflow');Reflection(self.db).close()
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1000)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_vectors WHERE summary_id NOT IN (SELECT id FROM memory_summaries)').fetchone()[0],0)
+    async def test_unindexed_lexical_and_model_spaces(self):
+        self.summary('rare-topic');
+        for i in range(120):self.summary('tea')
+        result=await self.recall('rare-topic');self.assertEqual(result[0]['summary'],'rare-topic')
+        await self.recall();self.assertEqual(len(self.calls[-1]['input']),17)
+        self.cfg['embeddingModel']='other';await self.recall();self.assertEqual(len(self.calls[-1]['input']),17)
+        self.assertEqual(self.r.recall('group:1','rare-topic')[0]['summary'],'rare-topic')
+    async def test_independent_guarded_real_sdk_and_owned_cleanup(self):
+        import httpx,model_egress
+        self.summary('tea');requests=[];clients=[];configs=[]
+        async def handler(request):
+            requests.append(request);data=json.loads(request.content)
+            return httpx.Response(200,json={'data':[{'index':i,'embedding':[1.,0.],'object':'embedding'} for i,_ in enumerate(data['input'])],'model':data['model'],'object':'list','usage':{'prompt_tokens':1,'total_tokens':1}})
+        def guarded(config):
+            configs.append(config);client=httpx.AsyncClient(transport=httpx.MockTransport(handler),follow_redirects=False);clients.append(client);return client
+        self.cfg['embeddingBaseUrl']='http://localhost:11434/v1'
+        with patch.object(model_egress,'client',side_effect=guarded):
+            self.assertTrue(await self.recall())
+            self.cfg['embeddingBaseUrl']='https://embedding.example/v1';self.assertTrue(await self.recall())
+        self.assertEqual(configs,[{'api_base':'http://localhost:11434/v1'},{'api_base':'https://embedding.example/v1'}])
+        self.assertEqual(str(requests[0].url),'http://localhost:11434/v1/embeddings')
+        self.assertEqual(requests[0].headers['authorization'],'Bearer test-bot-key')
+        self.assertTrue(all(c.is_closed for c in clients));self.assertFalse(self.calls)
+        self.assertEqual(len(json.loads(requests[-1].content)['input']),2)
+        self.assertNotIn('test-bot-key',str(list(self.db.iterdump())))
+    async def test_independent_failure_and_cancel_close_http_owner(self):
+        import httpx,model_egress
+        self.summary('tea');self.cfg['embeddingBaseUrl']='https://embedding.example/v1'
+        entered=asyncio.Event();release=asyncio.Event();clients=[]
+        async def handler(request):entered.set();await release.wait();return httpx.Response(503)
+        def guarded(config):
+            client=httpx.AsyncClient(transport=httpx.MockTransport(handler));clients.append(client);return client
+        with patch.object(model_egress,'client',side_effect=guarded):
+            task=asyncio.create_task(self.recall());await entered.wait();task.cancel()
+            with self.assertRaises(asyncio.CancelledError):await task
+            self.assertTrue(clients[-1].is_closed);self.assertFalse(self.r.embedding_lock.locked())
+            release.set();self.assertTrue(await self.recall())
+        self.assertEqual(len(clients),2);self.assertTrue(all(c.is_closed for c in clients))
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_vectors').fetchone()[0],0)
+    async def test_real_private_origin_policy(self):
+        import model_egress,httpx
+        backend=NS(connect_tcp=None)
+        async def connect(*args,**kwargs):return 'connected'
+        backend.connect_tcp=connect
+        loop=asyncio.get_running_loop()
+        async def resolve(*args,**kwargs):return [(2,1,6,'',('127.0.0.1',11434))]
+        with patch.object(loop,'getaddrinfo',side_effect=resolve):
+            with self.assertRaises(httpx.ConnectError):await model_egress.GuardedBackend(backend).connect_tcp('localhost',11434)
+            self.assertEqual(await model_egress.GuardedBackend(backend,('localhost',11434)).connect_tcp('localhost',11434),'connected')
+        with patch.dict(os.environ,{'FISHBOT_MODEL_ALLOWED_PRIVATE_ORIGINS':'http://localhost:11434'}):
+            client=model_egress.client({'api_base':'http://localhost:11434/v1'})
+            self.assertEqual(client._transport._pool._network_backend.trusted,('localhost',11434));await client.aclose()
+    async def test_late_delete_correct_stop_replace_and_cancel(self):
+        for mode in ('delete','correct','stop','replace','cancel'):
+            self.summary('tea');self.facts.remember('group:1','123','name','old','e',1);self.db.commit()
+            entered=asyncio.Event();release=asyncio.Event();valid=[True]
+            async def delayed(**kw):
+                entered.set();await release.wait()
+                return NS(data=[NS(index=i,embedding=[1.,0.]) for i in range(len(kw['input']))])
+            self.client.embeddings.create=delayed
+            task=asyncio.create_task(self.recall(current=lambda:valid[0]));await entered.wait()
+            if mode=='delete':
+                row=self.db.execute('SELECT id,updated FROM memory_summaries ORDER BY id DESC LIMIT 1').fetchone()
+                self.assertTrue(run(Path('unused'),{'action':'forget_summary','scope':'group:1','id':row[0],'expectedUpdated':row[1]},self.db)['ok'])
+            elif mode=='correct':
+                self.assertTrue(run(Path('unused'),{'action':'edit_fact','scope':'group:1','subject':'123','name':'name','expectedVersion':1,'value':'new'},self.db)['ok'])
+            elif mode=='stop':self.r.close()
+            elif mode=='replace':valid[0]=False
+            else:task.cancel()
+            release.set()
+            if mode=='cancel':
+                with self.assertRaises(asyncio.CancelledError):await task
+            else:self.assertEqual(await task,[])
+            self.assertEqual(self.db.execute('SELECT count(*) FROM memory_vectors').fetchone()[0],0)
+            self.assertFalse(self.r.embedding_lock.locked())
+            self.db.execute('DELETE FROM facts');self.db.execute('DELETE FROM memory_summaries');self.db.commit();self.r=Reflection(self.db)
+    async def test_late_reflection_cannot_restore_deleted_sources(self):
+        entered=asyncio.Event();release=asyncio.Event()
+        async def text_chat(**kw):entered.set();await release.wait();return NS(completion_text='真实话题摘要')
+        for i in range(5):self.r.record('group:1','123',str(i),'question','answer')
+        self.r.maybe_start('group:1',{'memorySummary':True,'summaryRounds':5},NS(text_chat=text_chat),lambda:True,{},contextvars.ContextVar('event',default=None))
+        await entered.wait();self.facts.observe('group:1','123','更正记忆：称呼=新名字','correct',2);self.db.commit()
+        release.set();await self.r.task
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],0)
+    async def test_forget_blocks_automatic_recapture(self):
+        self.facts.observe('group:1','123','我喜欢喝红茶','1',1,True)
+        self.facts.observe('group:1','123','忘记：饮料偏好','2',2,True)
+        status=self.facts.observe('group:1','123','我喜欢喝红茶','3',3,True)
+        self.assertIn('不会自动重新保存',status)
+        self.assertFalse(self.facts.recall('group:1','123','饮料',4))
+
+class FactSemantics(unittest.IsolatedAsyncioTestCase):
+    setUp=LongMemory.setUp
+    tearDown=LongMemory.tearDown
+    summary=LongMemory.summary
+    recall=LongMemory.recall
+    async def fact_recall(self,query='beverage',current=lambda:True):
+        return await self.facts.semantic_recall('group:1','123',query,100,self.cfg,self.provider,current)
+    def seed(self,name='爱好',value='红茶',scope='group:1',subject='123',at=1):
+        self.facts.remember(scope,subject,name,value,name+str(at),at,kind='event');self.db.commit()
+    async def test_fact_semantic_nonlexical_scope_person_and_version(self):
+        self.seed();self.seed(value='其他人秘密',subject='456');self.seed(value='其他群秘密',scope='group:2')
+        async def create(**kw):
+            self.calls.append(kw)
+            return NS(data=[NS(index=i,embedding=[1.,0.]) for i,_ in enumerate(kw['input'])])
+        self.client.embeddings.create=create
+        self.assertEqual(self.facts.recall('group:1','123','beverage',100),[])
+        result=await self.fact_recall();self.assertEqual(result[0]['value'],'红茶');self.assertEqual(result[0]['recall_reason'],'semantic_match')
+        self.assertEqual(result[0]['source_event'],'爱好1');self.assertEqual(result[0]['version'],1)
+        self.assertEqual(self.calls[0]['input'],['beverage','爱好 红茶'])
+        await self.fact_recall();self.assertEqual(len(self.calls[-1]['input']),1)
+        self.seed(value='咖啡',at=2);result=await self.fact_recall()
+        self.assertEqual(result[0]['value'],'咖啡');self.assertEqual(result[0]['version'],2);self.assertEqual(len(self.calls[-1]['input']),2)
+    async def test_fact_incremental_budget_and_endpoint_spaces(self):
+        for i in range(200):self.seed(name='item'+str(i),value='tea',at=i+1)
+        for i in range(13):await self.fact_recall()
+        self.assertEqual(self.db.execute('SELECT count(*) FROM fact_vectors').fetchone()[0],200)
+        self.assertTrue(all(len(c['input'])<=17 for c in self.calls))
+        await self.fact_recall();self.assertEqual(len(self.calls[-1]['input']),1)
+        self.client.base_url='https://other.example/v1';await self.fact_recall();self.assertEqual(len(self.calls[-1]['input']),17)
+        self.cfg['embeddingModel']='new-model';await self.fact_recall();self.assertEqual(len(self.calls[-1]['input']),17)
+        self.assertLessEqual(self.db.execute('SELECT count(*) FROM fact_vectors').fetchone()[0],200)
+        self.db.execute('DELETE FROM memory_embedding_budget');self.db.commit();self.cfg['dailyEmbeddingLimit']=1
+        self.summary('tea');await self.recall();before=len(self.calls)
+        await self.fact_recall();self.assertEqual(len(self.calls),before)
+        self.cfg['dailyEmbeddingLimit']=0;await self.fact_recall();self.assertEqual(len(self.calls),before)
+        self.db.execute('DELETE FROM memory_embedding_budget');self.db.commit();self.cfg['dailyEmbeddingLimit']=1
+        await self.fact_recall();before=len(self.calls);await self.recall();self.assertEqual(len(self.calls),before)
+    async def test_fact_late_correction_delete_forget_close_replace_and_config(self):
+        for mode in ('correct','delete','forget','close','replace','config','failure-delete','aba'):
+            self.db.execute('DELETE FROM facts');self.db.commit();self.facts=ScopedMemory(self.db);self.seed()
+            entered=asyncio.Event();release=asyncio.Event();valid=[True]
+            async def delayed(**kw):
+                entered.set();await release.wait()
+                if mode=='failure-delete':raise ValueError('network failure')
+                return NS(data=[NS(index=i,embedding=[1.,0.]) for i in range(len(kw['input']))])
+            self.client.embeddings.create=delayed
+            task=asyncio.create_task(self.fact_recall(current=lambda:valid[0]));await entered.wait()
+            if mode=='correct':
+                self.assertTrue(run(Path('unused'),{'action':'edit_fact','scope':'group:1','subject':'123','name':'爱好','expectedVersion':1,'value':'咖啡'},self.db)['ok'])
+            elif mode=='forget':
+                self.assertTrue(run(Path('unused'),{'action':'forget_fact','scope':'group:1','subject':'123','name':'爱好','expectedVersion':1},self.db)['ok'])
+            elif mode in ('delete','failure-delete','aba'):
+                self.db.execute('DELETE FROM facts');self.db.commit()
+                if mode=='aba':self.seed()
+            elif mode=='close':self.facts.close()
+            elif mode=='replace':valid[0]=False
+            else:self.cfg['embeddingModel']='changed'
+            release.set();self.assertEqual(await task,[])
+            self.assertEqual(self.db.execute('SELECT count(*) FROM fact_vectors').fetchone()[0],0)
+            self.assertFalse(self.facts.embedding_lock.locked())
+    async def test_fact_cached_delete_and_failure_lexical_fallback(self):
+        self.seed()
+        async def create(**kw):return NS(data=[NS(index=i,embedding=[1.,0.]) for i in range(len(kw['input']))])
+        self.client.embeddings.create=create;self.assertTrue(await self.fact_recall())
+        self.db.execute('UPDATE facts SET active=0');self.db.commit()
+        self.assertEqual(await self.fact_recall(),[])
+        self.assertEqual(self.db.execute('SELECT count(*) FROM fact_vectors').fetchone()[0],0)
+        self.seed(name='饮料',value='红茶',at=2)
+        async def broken(**kw):raise ValueError('unsupported')
+        self.client.embeddings.create=broken
+        result=await self.fact_recall('红茶');self.assertEqual(result[0]['value'],'红茶');self.assertEqual(result[0]['recall_reason'],'topic_match')
+        self.cfg['memory']=False;self.assertEqual(await self.fact_recall('红茶'),[])
+        self.cfg['memory']=True;self.cfg['memorySemantic']=False
+        self.assertEqual((await self.fact_recall('红茶'))[0]['value'],'红茶')
+    async def test_fact_real_sdk_independent_endpoint(self):
+        import httpx,model_egress
+        self.seed();requests=[];clients=[]
+        async def handler(request):
+            requests.append(request);data=json.loads(request.content)
+            return httpx.Response(200,json={'data':[{'index':i,'embedding':[1.,0.],'object':'embedding'} for i,_ in enumerate(data['input'])],'model':data['model'],'object':'list','usage':{'prompt_tokens':1,'total_tokens':1}})
+        def guarded(config):
+            self.assertEqual(config,{'api_base':'http://localhost:11434/v1'})
+            client=httpx.AsyncClient(transport=httpx.MockTransport(handler));clients.append(client);return client
+        self.cfg['embeddingBaseUrl']='http://localhost:11434/v1'
+        with patch.object(model_egress,'client',side_effect=guarded):result=await self.fact_recall()
+        self.assertEqual(result[0]['recall_reason'],'semantic_match')
+        self.assertEqual(json.loads(requests[0].content)['input'],['beverage','爱好 红茶'])
+        self.assertEqual(requests[0].headers['authorization'],'Bearer test-bot-key');self.assertTrue(clients[0].is_closed)
+
+if __name__=='__main__':unittest.main()
