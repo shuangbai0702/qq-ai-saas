@@ -1,0 +1,35 @@
+import {permitModelFixture} from './helpers/model-fixture.js';import {issueTestInvite} from './helpers/invitations.js';
+import test from 'node:test';import assert from 'node:assert/strict';import http from 'node:http';import path from 'node:path';import {mkdtemp,writeFile} from 'node:fs/promises';
+import {createApp} from '../apps/control-api/src/app.js';import {defaultConfig} from '../packages/contracts/index.js';import {MockProtocolAdapter} from '../adapters/mock/index.js';
+const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));async function wait(fn:()=>Promise<boolean>,label:string){for(let n=0;n<120;n++){if(await fn())return;await sleep(500)}throw new Error('timeout '+label)}
+test('real AstrBot agent executes only owner requested QQ tools and stores bounded per-bot reflection',{timeout:140000},async t=>{
+ const requests:any[]=[];const server=http.createServer(async(req,res)=>{let text='';for await(const c of req)text+=c;const body=JSON.parse(text);requests.push(body);assert.equal(req.headers.authorization,'Bearer plugin-fixture-key');if(req.url==='/v1/embeddings'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({object:'list',model:'bge-m3',data:body.input.map((_:string,index:number)=>({object:'embedding',index,embedding:[1,0,0]})),usage:{prompt_tokens:10,total_tokens:10}}));return}const tools=body.tools||[],last=body.messages.at(-1),summary=JSON.stringify(body.messages).includes('你是对话记录整理器');let message:any={role:'assistant',content:summary?'11111111说今天喝了红茶。':'鱼鱼在呢。'};let finish='stop';
+  if(!summary&&last?.role!=='tool'&&tools.some((x:any)=>x.function?.name==='hosted_qq_signature')){message={role:'assistant',content:null,tool_calls:[{id:'call-owned-signature',type:'function',function:{name:'hosted_qq_signature',arguments:JSON.stringify({content:'测试签名'})}}]};finish='tool_calls'}
+  res.setHeader('Content-Type','application/json');res.end(JSON.stringify({id:'plugins-'+requests.length,object:'chat.completion',created:Math.floor(Date.now()/1000),model:'plugins-fixture',choices:[{index:0,message,finish_reason:finish}],usage:{prompt_tokens:100,completion_tokens:15,total_tokens:115}}));
+ });await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));permitModelFixture(server);t.after(()=>server.close());
+ const root=await mkdtemp(path.resolve('.local/plugins-runtime-')),current=await createApp({root});t.after(()=>current.app.close());const {app,db,agent}=current;
+ const registered=await app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(db),email:'plugins@fixture.test',password:'plugin-test-123',name:'插件验收'}});const cookies={fish_session:registered.cookies[0].value};const call=(method:any,url:string,payload?:any)=>app.inject({method,url,payload,cookies});
+ const config={...defaultConfig,baseUrl:`http://127.0.0.1:${(server.address()as any).port}/v1`,model:'plugins-fixture',proactive:false,behavior:{...defaultConfig.behavior,ownerUin:'11111111',qqProfile:true,qzone:true,autoSignature:true,typingSimulation:false,typoEnabled:false,splitMessages:false,burstDebounceMs:0,styleLearning:false,memorySummary:true,memorySemantic:true,embeddingModel:'bge-m3',summaryRounds:5,dailySummaryLimit:1,randomReplyProbability:0,followupSeconds:0}};
+ const made=await call('POST','/v1/bots',{name:'插件运行验收',protocol:'mock',expectedUin:'90004001',config,apiKey:'plugin-fixture-key'});assert.equal(made.statusCode,201);const id=made.json().id;await call('POST',`/v1/bots/${id}/actions`,{action:'start',idempotencyKey:'plugins-start'});
+ await wait(async()=>(await call('GET',`/v1/bots/${id}`)).json().bot.health?.ai?.ready,'runtime');const [record]=await db.query('SELECT * FROM bots WHERE id=$1',[id]),ctx=await agent.context(record),mock=agent.protocols.mock as MockProtocolAdapter;await mock.call(ctx,'/transition',{state:'online',uin:'90004001'});await sleep(1500);
+ await mock.call(ctx,'/message',{sender:'11111111',text:'设置签名：测试签名'});
+ await wait(async()=>(await mock.call(ctx,'/messages') as any[]).some(x=>x.action==='set_self_longnick'),'real SDK tool dispatch');
+ await wait(async()=>(await mock.call(ctx,'/messages') as any[]).filter(x=>x.action==='send_private_msg').length>=1,'tool followup reply');
+ assert.ok(requests.some(r=>r.messages.some((m:any)=>m.role==='tool'&&String(m.content).includes('成功'))),'actual agent must consume successful tool result');
+ const before=requests.length;await mock.call(ctx,'/message',{sender:'22222222',text:'设置签名：越权改动'});await wait(async()=>requests.length>before,'peer reply');assert.equal(requests.at(-1).tools?.some((x:any)=>x.function?.name?.startsWith('hosted_qq_'))||false,false);
+ for(let i=0;i<4;i++){const count=(await mock.call(ctx,'/messages') as any[]).filter(x=>x.action==='send_private_msg').length;await mock.call(ctx,'/message',{sender:'11111111',text:'今天喝了红茶 '+i});await wait(async()=>(await mock.call(ctx,'/messages') as any[]).filter(x=>x.action==='send_private_msg').length>count,'round '+i)}
+ await wait(async()=>(await call('GET',`/v1/bots/${id}/behavior-data`)).json().summaries?.length===1,'reflection persisted through runtime');
+ const data=(await call('GET',`/v1/bots/${id}/behavior-data`)).json();assert.equal(data.summaries[0].scope,'private:11111111');assert.ok(data.summaries[0].text.includes('红茶'));assert.equal(data.summaries.some((s:any)=>s.scope==='private:22222222'),false);
+ const semanticBefore=requests.length;await mock.call(ctx,'/message',{sender:'11111111',text:'还记得我喝的饮品吗'});
+ await wait(async()=>requests.slice(semanticBefore).some(r=>r.input&&r.model==='bge-m3'),'real SDK embedding request');
+ await wait(async()=>requests.slice(semanticBefore).some(r=>r.messages&&JSON.stringify(r.messages).includes('conversation_summary_not_verified_facts')),'semantic context injection');
+ const summary=data.summaries[0];assert.equal((await call('POST',`/v1/bots/${id}/behavior-data`,{action:'forget_summary',scope:summary.scope,id:summary.id,expectedUpdated:summary.updated})).statusCode,200);
+ assert.equal((await call('GET',`/v1/bots/${id}/behavior-data`)).json().summaries.length,0);
+ const autoBefore=(await mock.call(ctx,'/messages') as any[]).filter(x=>x.action==='set_self_longnick').length;
+ const autoRequestStart=requests.length;
+ await mock.call(ctx,'/message',{sender:'11111111',text:'你好可爱'});
+ await wait(async()=>requests.some(r=>r.messages&&JSON.stringify(r.messages).includes('本轮主人表达了心情或生日话题')),'automatic signature trigger enters real model prompt');
+ await wait(async()=>requests.slice(autoRequestStart).some(r=>r.messages?.some((m:any)=>m.role==='tool'&&String(m.content).includes('不重复修改'))),'automatic signature tool dedup receipt');
+ assert.equal((await mock.call(ctx,'/messages') as any[]).filter(x=>x.action==='set_self_longnick').length,autoBefore,'identical confirmed signature is not repeated');
+ await writeFile('test-results/plugin-alignment/runtime.json',JSON.stringify({passed:true,source:'real AstrBot SDK/Agent/OneBot; QQ and model transport fixtures',modelRequests:requests.length,ownerToolDispatched:true,unauthorizedToolAbsent:true,reflectionPersistedAndForgotten:true},null,2));
+});

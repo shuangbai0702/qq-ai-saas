@@ -1,0 +1,17 @@
+import {chromium} from 'playwright';import assert from 'node:assert/strict';import {mkdtemp,writeFile} from 'node:fs/promises';import path from 'node:path';
+import {createApp} from '../apps/control-api/src/app.js';import {issueTestInvite} from './helpers/invitations.js';
+const oldOrigin=process.env.APP_ORIGIN;
+const current=await createApp({root:await mkdtemp(path.resolve('.local/media-visible-browser-')),agent:false}),browser=await chromium.launch({headless:true});
+try{
+ const address=await current.app.listen({host:'127.0.0.1',port:0});process.env.APP_ORIGIN=address;const ctx=await browser.newContext({viewport:{width:1440,height:1000}});
+ assert.equal((await ctx.request.post(address+'/v1/auth/register',{data:{inviteCode:await issueTestInvite(current.db),email:'visible@browser.test',password:'visible-browser-123',name:'图片管理验收'}})).status(),200);
+ const id=(await(await ctx.request.post(address+'/v1/bots',{data:{name:'内置图片可见性',apiKey:'synthetic-browser-key'}})).json()).id,page=await ctx.newPage();
+ await page.goto(address+'/#/bots/'+id+'/config/profile');const signal=page.locator('.bot-signals .signal').filter({hasText:'Key'});await signal.waitFor();assert.match(await signal.getAttribute('class')||'',/good/);assert.equal(await signal.innerText(),'Key\n已保存');
+ await page.goto(address+'/#/bots/'+id+'/config/chat');await page.getByLabel('表达使用范围',{exact:true}).selectOption('selected');await page.getByLabel('共享表达的群号（可选）',{exact:true}).fill('10000, 20000');await page.getByRole('button',{name:'保存并应用',exact:true}).click();await page.getByText('版本 2 已保存，下次启动时应用。',{exact:true}).waitFor();assert.deepEqual((await(await ctx.request.get(address+'/v1/bots/'+id)).json()).config.behavior.expressionShareGroups,['10000','20000']);await page.reload();assert.equal(await page.getByLabel('共享表达的群号（可选）',{exact:true}).inputValue(),'10000, 20000');
+ await page.goto(address+'/#/bots/'+id+'/config/images');await page.getByText('内置基础图 · ',{exact:true}).first().waitFor();assert.equal(await page.locator('.gallery-controls img[src*="/reactions/"]').count(),3);
+ const hug=page.locator('.gallery-controls img[src*="/reactions/"]').first().locator('..');await hug.getByRole('button',{name:'停用图片',exact:true}).click();await hug.getByRole('button',{name:'启用图片',exact:true}).waitFor();
+ await page.reload();await page.getByRole('button',{name:'启用图片',exact:true}).waitFor();
+ assert.equal((await(await ctx.request.get(address+'/v1/bots/'+id+'/reactions')).json()).items.find((x:any)=>x.id==='hug').enabled,false);
+ await page.locator('main').focus();await page.screenshot({path:'test-results/media-visibility/desktop.png',fullPage:true});await page.setViewportSize({width:390,height:844});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.screenshot({path:'test-results/media-visibility/mobile.png',fullPage:true});
+ await writeFile('test-results/media-visibility/browser.json',JSON.stringify({passed:true,checks:['saved Key green class','three built-in images previewed','disable persisted after refresh','mobile no horizontal overflow','expression sharing range selection','selected group IDs saved through real API and persisted on refresh'],realQQ:false},null,2));console.log('PASS Key status, built-in image management and mobile layout');
+}finally{await browser.close();await current.app.close();if(oldOrigin===undefined)delete process.env.APP_ORIGIN;else process.env.APP_ORIGIN=oldOrigin}

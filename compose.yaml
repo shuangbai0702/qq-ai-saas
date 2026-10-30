@@ -1,0 +1,32 @@
+name: fishbot-saas
+services:
+  platform:
+    image: ${FISHBOT_IMAGE:-fishbot/qq-ai-saas:0.1.0}
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-8787}:8787"
+    environment:
+      APP_ORIGIN: ${APP_ORIGIN:?Set the full browser origin in .env.docker}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:?Set administrator email}
+      BOOTSTRAP_ADMIN_PASSWORD_FILE: /run/secrets/bootstrap_admin_password
+      SHARED_GROUP_CAPACITY: "8"
+    secrets:
+      - bootstrap_admin_password
+    volumes:
+      - fishbot-data:/var/lib/fishbot
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 1024
+    stop_grace_period: 60s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+secrets:
+  bootstrap_admin_password:
+    file: ./.local/docker-secrets/admin-password
+volumes:
+  fishbot-data:

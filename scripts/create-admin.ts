@@ -1,0 +1,6 @@
+import 'dotenv/config';import path from'node:path';import{randomUUID}from'node:crypto';import{access}from'node:fs/promises';import{openDatabase}from'../packages/database/index.js';import{hashPassword}from'../packages/shared/security.js';
+const email=process.argv[2]?.toLowerCase(),password=process.env.BOOTSTRAP_ADMIN_PASSWORD;
+if(!email?.includes('@')||!password||password.length<12)throw new Error('先设置BOOTSTRAP_ADMIN_PASSWORD（至少12字符），再运行 npm run admin:create -- 邮箱；不通过注册表单授予管理员');
+const root=path.resolve(process.env.DATA_ROOT||'.local');
+const db=await openDatabase(root,process.env.DATABASE_URL);
+try{await db.transaction(async tx=>{const[user]=await tx.query('SELECT id FROM users WHERE email=$1',[email]);if(user){await tx.query('UPDATE users SET is_admin=true,password_hash=$2 WHERE id=$1',[user.id,await hashPassword(password)])}else{const id=randomUUID(),tenant=randomUUID();await tx.query('INSERT INTO users(id,email,password_hash,name,is_admin) VALUES($1,$2,$3,$4,true)',[id,email,await hashPassword(password),'平台管理员']);await tx.query('INSERT INTO tenants(id,name) VALUES($1,$2)',[tenant,'管理员工作区']);await tx.query("INSERT INTO memberships(user_id,tenant_id,role) VALUES($1,$2,'owner')",[id,tenant])}});console.log('管理员已创建/更新：',email)}finally{await db.close()}

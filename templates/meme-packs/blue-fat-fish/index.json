@@ -1,0 +1,1424 @@
+{
+  "id": "blue-fat-fish",
+  "name": "蓝色大肥鱼表情包",
+  "source": "https://github.com/anka-afk/blue-fat-fish-meme-pack",
+  "ref": "v1.0.0",
+  "license": "原素材许可未指定；版权归各权利人，详见 LICENSE",
+  "archiveSHA256": "6c19411249da18da38f6c358670b370e2cdb9c53e56bf2cfda80e8f06b98f64a",
+  "normalization": "224px, up to 48 frames, 63 colors plus transparency; animation duration retained",
+  "items": [
+    {
+      "id": "bf_5d87cbfa49dabc38",
+      "file": "bf_5d87cbfa49dabc38.gif",
+      "meaning": "爱心 1；用于爱心、送礼、摸头、安慰、亲吻、表达喜欢或亲近互动。",
+      "category": "affection",
+      "source": "memes/affection/0106_爱心 1.gif",
+      "bytes": 600351,
+      "frames": 48
+    },
+    {
+      "id": "bf_fd0936b4f82b22be",
+      "file": "bf_fd0936b4f82b22be.gif",
+      "meaning": "爱心 2；用于爱心、送礼、摸头、安慰、亲吻、表达喜欢或亲近互动。",
+      "category": "affection",
+      "source": "memes/affection/0107_爱心 2.gif",
+      "bytes": 576478,
+      "frames": 48
+    },
+    {
+      "id": "bf_00dfc51307818e05",
+      "file": "bf_00dfc51307818e05.gif",
+      "meaning": "爱心 3；用于爱心、送礼、摸头、安慰、亲吻、表达喜欢或亲近互动。",
+      "category": "affection",
+      "source": "memes/affection/0108_爱心 3.gif",
+      "bytes": 604731,
+      "frames": 48
+    },
+    {
+      "id": "bf_d6d2ed570f3d224c",
+      "file": "bf_d6d2ed570f3d224c.gif",
+      "meaning": "玫瑰；用于爱心、送礼、摸头、安慰、亲吻、表达喜欢或亲近互动。",
+      "category": "affection",
+      "source": "memes/affection/0109_玫瑰.gif",
+      "bytes": 602313,
+      "frames": 48
+    },
+    {
+      "id": "bf_089ef2f00096894a",
+      "file": "bf_089ef2f00096894a.gif",
+      "meaning": "画板；用于爱心、送礼、摸头、安慰、亲吻、表达喜欢或亲近互动。",
+      "category": "affection",
+      "source": "memes/affection/0113_画板.gif",
+      "bytes": 482159,
+      "frames": 39
+    },
+    {
+      "id": "bf_c33d29697f601e22",
+      "file": "bf_c33d29697f601e22.gif",
+      "meaning": "礼物 1；用于爱心、送礼、摸头、安慰、亲吻、表达喜欢或亲近互动。",
+      "category": "affection",
+      "source": "memes/affection/0119_礼物 1.gif",
+      "bytes": 622236,
+      "frames": 48
+    },
+    {
+      "id": "bf_54751db474623e20",
+      "file": "bf_54751db474623e20.gif",
+      "meaning": "礼物 2；用于爱心、送礼、摸头、安慰、亲吻、表达喜欢或亲近互动。",
+      "category": "affection",
+      "source": "memes/affection/0120_礼物 2.gif",
+      "bytes": 584722,
+      "frames": 48
+    },
+    {
+      "id": "bf_b106af0ce2e7900d",
+      "file": "bf_b106af0ce2e7900d.gif",
+      "meaning": "自我安慰；用于爱心、送礼、摸头、安慰、亲吻、表达喜欢或亲近互动。",
+      "category": "affection",
+      "source": "memes/affection/0128_自我安慰.gif",
+      "bytes": 645969,
+      "frames": 48
+    },
+    {
+      "id": "bf_dab9e93167c85a52",
+      "file": "bf_dab9e93167c85a52.gif",
+      "meaning": "舔舔；用于爱心、送礼、摸头、安慰、亲吻、表达喜欢或亲近互动。",
+      "category": "affection",
+      "source": "memes/affection/0129_舔舔.gif",
+      "bytes": 525855,
+      "frames": 48
+    },
+    {
+      "id": "bf_833e0eea3e55c315",
+      "file": "bf_833e0eea3e55c315.gif",
+      "meaning": "被击中(爱心)；用于爱心、送礼、摸头、安慰、亲吻、表达喜欢或亲近互动。",
+      "category": "affection",
+      "source": "memes/affection/0135_被击中(爱心).gif",
+      "bytes": 487102,
+      "frames": 41
+    },
+    {
+      "id": "bf_1c1ed44d1f3f5c21",
+      "file": "bf_1c1ed44d1f3f5c21.gif",
+      "meaning": "通知_提示 爱心_喜欢；用于爱心、送礼、摸头、安慰、亲吻、表达喜欢或亲近互动。",
+      "category": "affection",
+      "source": "memes/affection/0147_通知_提示 爱心_喜欢.gif",
+      "bytes": 590210,
+      "frames": 48
+    },
+    {
+      "id": "bf_0b44e09c6e3ece3a",
+      "file": "bf_0b44e09c6e3ece3a.gif",
+      "meaning": "刀 1；用于生气、责备或拖鞋、撬棍、枪等夸张玩笑式威胁；不用于真实暴力威胁。",
+      "category": "angry",
+      "source": "memes/angry/0017_刀 1.gif",
+      "bytes": 666442,
+      "frames": 48
+    },
+    {
+      "id": "bf_38ca913127088872",
+      "file": "bf_38ca913127088872.gif",
+      "meaning": "刀 2；用于生气、责备或拖鞋、撬棍、枪等夸张玩笑式威胁；不用于真实暴力威胁。",
+      "category": "angry",
+      "source": "memes/angry/0018_刀 2.gif",
+      "bytes": 878222,
+      "frames": 48
+    },
+    {
+      "id": "bf_6e8fe4ee835f5baf",
+      "file": "bf_6e8fe4ee835f5baf.gif",
+      "meaning": "抓拍(手机)；用于生气、责备或拖鞋、撬棍、枪等夸张玩笑式威胁；不用于真实暴力威胁。",
+      "category": "angry",
+      "source": "memes/angry/0078_抓拍(手机).gif",
+      "bytes": 495712,
+      "frames": 48
+    },
+    {
+      "id": "bf_d9c178f3dbe251d3",
+      "file": "bf_d9c178f3dbe251d3.gif",
+      "meaning": "拖鞋 1；用于生气、责备或拖鞋、撬棍、枪等夸张玩笑式威胁；不用于真实暴力威胁。",
+      "category": "angry",
+      "source": "memes/angry/0082_拖鞋 1.gif",
+      "bytes": 277227,
+      "frames": 19
+    },
+    {
+      "id": "bf_23b1f2e5e785b7c4",
+      "file": "bf_23b1f2e5e785b7c4.gif",
+      "meaning": "拖鞋 2；用于生气、责备或拖鞋、撬棍、枪等夸张玩笑式威胁；不用于真实暴力威胁。",
+      "category": "angry",
+      "source": "memes/angry/0083_拖鞋 2.gif",
+      "bytes": 715951,
+      "frames": 48
+    },
+    {
+      "id": "bf_b9f8971e6eec56f3",
+      "file": "bf_b9f8971e6eec56f3.gif",
+      "meaning": "敲头；用于生气、责备或拖鞋、撬棍、枪等夸张玩笑式威胁；不用于真实暴力威胁。",
+      "category": "angry",
+      "source": "memes/angry/0095_敲头.gif",
+      "bytes": 364248,
+      "frames": 29
+    },
+    {
+      "id": "bf_a6876997bb13ef5d",
+      "file": "bf_a6876997bb13ef5d.gif",
+      "meaning": "枪；用于生气、责备或拖鞋、撬棍、枪等夸张玩笑式威胁；不用于真实暴力威胁。",
+      "category": "angry",
+      "source": "memes/angry/0098_枪.gif",
+      "bytes": 407058,
+      "frames": 32
+    },
+    {
+      "id": "bf_39f709b6f47fe7bd",
+      "file": "bf_39f709b6f47fe7bd.gif",
+      "meaning": "烧 1；用于生气、责备或拖鞋、撬棍、枪等夸张玩笑式威胁；不用于真实暴力威胁。",
+      "category": "angry",
+      "source": "memes/angry/0104_烧 1.gif",
+      "bytes": 658476,
+      "frames": 48
+    },
+    {
+      "id": "bf_177472953a15bb53",
+      "file": "bf_177472953a15bb53.gif",
+      "meaning": "烧 2；用于生气、责备或拖鞋、撬棍、枪等夸张玩笑式威胁；不用于真实暴力威胁。",
+      "category": "angry",
+      "source": "memes/angry/0105_烧 2.gif",
+      "bytes": 652755,
+      "frames": 48
+    },
+    {
+      "id": "bf_b7e3019ea7b307ea",
+      "file": "bf_b7e3019ea7b307ea.gif",
+      "meaning": "生气；用于生气、责备或拖鞋、撬棍、枪等夸张玩笑式威胁；不用于真实暴力威胁。",
+      "category": "angry",
+      "source": "memes/angry/0110_生气.gif",
+      "bytes": 700306,
+      "frames": 48
+    },
+    {
+      "id": "bf_1984c3795fc74b76",
+      "file": "bf_1984c3795fc74b76.gif",
+      "meaning": "主意；用于发呆、问号、认真思考、头晕或不知道如何接话。",
+      "category": "confused",
+      "source": "memes/confused/0009_主意.gif",
+      "bytes": 634645,
+      "frames": 48
+    },
+    {
+      "id": "bf_e1b612df133b84f6",
+      "file": "bf_e1b612df133b84f6.gif",
+      "meaning": "呆 1；用于发呆、问号、认真思考、头晕或不知道如何接话。",
+      "category": "confused",
+      "source": "memes/confused/0031_呆 1.gif",
+      "bytes": 588114,
+      "frames": 48
+    },
+    {
+      "id": "bf_76541eb369dbf775",
+      "file": "bf_76541eb369dbf775.gif",
+      "meaning": "呆 2；用于发呆、问号、认真思考、头晕或不知道如何接话。",
+      "category": "confused",
+      "source": "memes/confused/0032_呆 2.gif",
+      "bytes": 432742,
+      "frames": 48
+    },
+    {
+      "id": "bf_5e3c2c0f27c04684",
+      "file": "bf_5e3c2c0f27c04684.gif",
+      "meaning": "呆 3；用于发呆、问号、认真思考、头晕或不知道如何接话。",
+      "category": "confused",
+      "source": "memes/confused/0033_呆 3.gif",
+      "bytes": 513289,
+      "frames": 48
+    },
+    {
+      "id": "bf_58a95e15cea30de0",
+      "file": "bf_58a95e15cea30de0.gif",
+      "meaning": "头晕；用于发呆、问号、认真思考、头晕或不知道如何接话。",
+      "category": "confused",
+      "source": "memes/confused/0049_头晕.gif",
+      "bytes": 639746,
+      "frames": 48
+    },
+    {
+      "id": "bf_d22fd0e901923512",
+      "file": "bf_d22fd0e901923512.gif",
+      "meaning": "思考(自信地)；用于发呆、问号、认真思考、头晕或不知道如何接话。",
+      "category": "confused",
+      "source": "memes/confused/0067_思考(自信地).gif",
+      "bytes": 635454,
+      "frames": 48
+    },
+    {
+      "id": "bf_94f07b7620794e5b",
+      "file": "bf_94f07b7620794e5b.gif",
+      "meaning": "思考(认真地)；用于发呆、问号、认真思考、头晕或不知道如何接话。",
+      "category": "confused",
+      "source": "memes/confused/0068_思考(认真地).gif",
+      "bytes": 672322,
+      "frames": 48
+    },
+    {
+      "id": "bf_f9499cb41e66ad59",
+      "file": "bf_f9499cb41e66ad59.gif",
+      "meaning": "正在思考；用于发呆、问号、认真思考、头晕或不知道如何接话。",
+      "category": "confused",
+      "source": "memes/confused/0099_正在思考.gif",
+      "bytes": 657789,
+      "frames": 48
+    },
+    {
+      "id": "bf_efca0334edb42432",
+      "file": "bf_efca0334edb42432.gif",
+      "meaning": "问号；用于发呆、问号、认真思考、头晕或不知道如何接话。",
+      "category": "confused",
+      "source": "memes/confused/0151_问号.gif",
+      "bytes": 675947,
+      "frames": 48
+    },
+    {
+      "id": "bf_073e28aa0dbbbf68",
+      "file": "bf_073e28aa0dbbbf68.gif",
+      "meaning": "六七(呆)；用于唱歌、吉他、舞蹈、游戏、拍摄、应援、节庆、驾驶或魔法玩梗。",
+      "category": "entertainment",
+      "source": "memes/entertainment/0013_六七(呆).gif",
+      "bytes": 389702,
+      "frames": 32
+    },
+    {
+      "id": "bf_b0a9caca9515046f",
+      "file": "bf_b0a9caca9515046f.gif",
+      "meaning": "六七；用于唱歌、吉他、舞蹈、游戏、拍摄、应援、节庆、驾驶或魔法玩梗。",
+      "category": "entertainment",
+      "source": "memes/entertainment/0014_六七.gif",
+      "bytes": 394500,
+      "frames": 32
+    },
+    {
+      "id": "bf_58e1cd571d820256",
+      "file": "bf_58e1cd571d820256.gif",
+      "meaning": "吉他；用于唱歌、吉他、舞蹈、游戏、拍摄、应援、节庆、驾驶或魔法玩梗。",
+      "category": "entertainment",
+      "source": "memes/entertainment/0030_吉他.gif",
+      "bytes": 618776,
+      "frames": 48
+    },
+    {
+      "id": "bf_cc55f721ed87803b",
+      "file": "bf_cc55f721ed87803b.gif",
+      "meaning": "唱歌；用于唱歌、吉他、舞蹈、游戏、拍摄、应援、节庆、驾驶或魔法玩梗。",
+      "category": "entertainment",
+      "source": "memes/entertainment/0040_唱歌.gif",
+      "bytes": 589135,
+      "frames": 48
+    },
+    {
+      "id": "bf_7b8931f0fcf0f580",
+      "file": "bf_7b8931f0fcf0f580.gif",
+      "meaning": "复活节；用于唱歌、吉他、舞蹈、游戏、拍摄、应援、节庆、驾驶或魔法玩梗。",
+      "category": "entertainment",
+      "source": "memes/entertainment/0048_复活节.gif",
+      "bytes": 484438,
+      "frames": 48
+    },
+    {
+      "id": "bf_abeebf701d0237be",
+      "file": "bf_abeebf701d0237be.gif",
+      "meaning": "奶酪糊脸；用于唱歌、吉他、舞蹈、游戏、拍摄、应援、节庆、驾驶或魔法玩梗。",
+      "category": "entertainment",
+      "source": "memes/entertainment/0050_奶酪糊脸.gif",
+      "bytes": 463588,
+      "frames": 48
+    },
+    {
+      "id": "bf_6766785c4b20daf8",
+      "file": "bf_6766785c4b20daf8.gif",
+      "meaning": "害羞 1；用于唱歌、吉他、舞蹈、游戏、拍摄、应援、节庆、驾驶或魔法玩梗。",
+      "category": "entertainment",
+      "source": "memes/entertainment/0053_害羞 1.gif",
+      "bytes": 584513,
+      "frames": 48
+    },
+    {
+      "id": "bf_12ca5eaec35b62a1",
+      "file": "bf_12ca5eaec35b62a1.gif",
+      "meaning": "折扇；用于唱歌、吉他、舞蹈、游戏、拍摄、应援、节庆、驾驶或魔法玩梗。",
+      "category": "entertainment",
+      "source": "memes/entertainment/0080_折扇.gif",
+      "bytes": 582231,
+      "frames": 48
+    },
+    {
+      "id": "bf_70e6ba841595f10f",
+      "file": "bf_70e6ba841595f10f.gif",
+      "meaning": "拍蝇；用于唱歌、吉他、舞蹈、游戏、拍摄、应援、节庆、驾驶或魔法玩梗。",
+      "category": "entertainment",
+      "source": "memes/entertainment/0081_拍蝇.gif",
+      "bytes": 381782,
+      "frames": 29
+    },
+    {
+      "id": "bf_4bdcbbcf88182842",
+      "file": "bf_4bdcbbcf88182842.gif",
+      "meaning": "摇头；用于唱歌、吉他、舞蹈、游戏、拍摄、应援、节庆、驾驶或魔法玩梗。",
+      "category": "entertainment",
+      "source": "memes/entertainment/0088_摇头.gif",
+      "bytes": 416902,
+      "frames": 32
+    },
+    {
+      "id": "bf_fe9fd82aca1b77d3",
+      "file": "bf_fe9fd82aca1b77d3.gif",
+      "meaning": "舞蹈(散味)；用于唱歌、吉他、舞蹈、游戏、拍摄、应援、节庆、驾驶或魔法玩梗。",
+      "category": "entertainment",
+      "source": "memes/entertainment/0130_舞蹈(散味).gif",
+      "bytes": 634933,
+      "frames": 48
+    },
+    {
+      "id": "bf_5c811af3c31da194",
+      "file": "bf_5c811af3c31da194.gif",
+      "meaning": "荧光棒 2；用于唱歌、吉他、舞蹈、游戏、拍摄、应援、节庆、驾驶或魔法玩梗。",
+      "category": "entertainment",
+      "source": "memes/entertainment/0131_荧光棒 2.gif",
+      "bytes": 633423,
+      "frames": 48
+    },
+    {
+      "id": "bf_aedfa1515580d452",
+      "file": "bf_aedfa1515580d452.gif",
+      "meaning": "跳舞(Caramelldansen)；用于唱歌、吉他、舞蹈、游戏、拍摄、应援、节庆、驾驶或魔法玩梗。",
+      "category": "entertainment",
+      "source": "memes/entertainment/0141_跳舞(Caramelldansen).gif",
+      "bytes": 640559,
+      "frames": 48
+    },
+    {
+      "id": "bf_c1c3523105ec0265",
+      "file": "bf_c1c3523105ec0265.gif",
+      "meaning": "跳舞(Helltaker)；用于唱歌、吉他、舞蹈、游戏、拍摄、应援、节庆、驾驶或魔法玩梗。",
+      "category": "entertainment",
+      "source": "memes/entertainment/0142_跳舞(Helltaker).gif",
+      "bytes": 638916,
+      "frames": 48
+    },
+    {
+      "id": "bf_40860ae17edbcd4d",
+      "file": "bf_40860ae17edbcd4d.gif",
+      "meaning": "跳舞(低皮质醇)；用于唱歌、吉他、舞蹈、游戏、拍摄、应援、节庆、驾驶或魔法玩梗。",
+      "category": "entertainment",
+      "source": "memes/entertainment/0143_跳舞(低皮质醇).gif",
+      "bytes": 585884,
+      "frames": 48
+    },
+    {
+      "id": "bf_8555c2bd4dc2b6fd",
+      "file": "bf_8555c2bd4dc2b6fd.gif",
+      "meaning": "驾驶；用于唱歌、吉他、舞蹈、游戏、拍摄、应援、节庆、驾驶或魔法玩梗。",
+      "category": "entertainment",
+      "source": "memes/entertainment/0156_驾驶.gif",
+      "bytes": 326470,
+      "frames": 26
+    },
+    {
+      "id": "bf_bd66ec8d4a060186",
+      "file": "bf_bd66ec8d4a060186.gif",
+      "meaning": "魔法；用于唱歌、吉他、舞蹈、游戏、拍摄、应援、节庆、驾驶或魔法玩梗。",
+      "category": "entertainment",
+      "source": "memes/entertainment/0157_魔法.gif",
+      "bytes": 397302,
+      "frames": 32
+    },
+    {
+      "id": "bf_870bb218a4874cb3",
+      "file": "bf_870bb218a4874cb3.gif",
+      "meaning": "到达(拿勺子)；用于准备开饭、吃零食、喝饮料、馋嘴、蛋糕或拿食物围观聊天。",
+      "category": "food",
+      "source": "memes/food/0019_到达(拿勺子).gif",
+      "bytes": 538765,
+      "frames": 48
+    },
+    {
+      "id": "bf_250bd1d3da603c72",
+      "file": "bf_250bd1d3da603c72.gif",
+      "meaning": "到达(拿筷子)；用于准备开饭、吃零食、喝饮料、馋嘴、蛋糕或拿食物围观聊天。",
+      "category": "food",
+      "source": "memes/food/0020_到达(拿筷子).gif",
+      "bytes": 538254,
+      "frames": 48
+    },
+    {
+      "id": "bf_79b29f07147be4dc",
+      "file": "bf_79b29f07147be4dc.gif",
+      "meaning": "吃(爆米花)；用于准备开饭、吃零食、喝饮料、馋嘴、蛋糕或拿食物围观聊天。",
+      "category": "food",
+      "source": "memes/food/0027_吃(爆米花).gif",
+      "bytes": 571065,
+      "frames": 48
+    },
+    {
+      "id": "bf_41c2eb940744a1ce",
+      "file": "bf_41c2eb940744a1ce.gif",
+      "meaning": "吃(甜甜圈)；用于准备开饭、吃零食、喝饮料、馋嘴、蛋糕或拿食物围观聊天。",
+      "category": "food",
+      "source": "memes/food/0028_吃(甜甜圈).gif",
+      "bytes": 587821,
+      "frames": 48
+    },
+    {
+      "id": "bf_c3e079e0b419743e",
+      "file": "bf_c3e079e0b419743e.gif",
+      "meaning": "吃(西瓜)；用于准备开饭、吃零食、喝饮料、馋嘴、蛋糕或拿食物围观聊天。",
+      "category": "food",
+      "source": "memes/food/0029_吃(西瓜).gif",
+      "bytes": 227052,
+      "frames": 19
+    },
+    {
+      "id": "bf_bb6315509954abcf",
+      "file": "bf_bb6315509954abcf.gif",
+      "meaning": "喝(饮料杯)；用于准备开饭、吃零食、喝饮料、馋嘴、蛋糕或拿食物围观聊天。",
+      "category": "food",
+      "source": "memes/food/0041_喝(饮料杯).gif",
+      "bytes": 449102,
+      "frames": 32
+    },
+    {
+      "id": "bf_014aeee356a9365a",
+      "file": "bf_014aeee356a9365a.gif",
+      "meaning": "干杯；用于准备开饭、吃零食、喝饮料、馋嘴、蛋糕或拿食物围观聊天。",
+      "category": "food",
+      "source": "memes/food/0063_干杯.gif",
+      "bytes": 609452,
+      "frames": 48
+    },
+    {
+      "id": "bf_a0972717af400e2a",
+      "file": "bf_a0972717af400e2a.gif",
+      "meaning": "摇可乐；用于准备开饭、吃零食、喝饮料、馋嘴、蛋糕或拿食物围观聊天。",
+      "category": "food",
+      "source": "memes/food/0087_摇可乐.gif",
+      "bytes": 158787,
+      "frames": 12
+    },
+    {
+      "id": "bf_7edcb11f3ffb6048",
+      "file": "bf_7edcb11f3ffb6048.gif",
+      "meaning": "蛋糕；用于准备开饭、吃零食、喝饮料、馋嘴、蛋糕或拿食物围观聊天。",
+      "category": "food",
+      "source": "memes/food/0132_蛋糕.gif",
+      "bytes": 726863,
+      "frames": 48
+    },
+    {
+      "id": "bf_e1ac01f2bcca0bb9",
+      "file": "bf_e1ac01f2bcca0bb9.gif",
+      "meaning": "馋(刀叉)；用于准备开饭、吃零食、喝饮料、馋嘴、蛋糕或拿食物围观聊天。",
+      "category": "food",
+      "source": "memes/food/0154_馋(刀叉).gif",
+      "bytes": 451648,
+      "frames": 32
+    },
+    {
+      "id": "bf_8dcffb1fc90cc4ab",
+      "file": "bf_8dcffb1fc90cc4ab.gif",
+      "meaning": "馋(筷子)；用于准备开饭、吃零食、喝饮料、馋嘴、蛋糕或拿食物围观聊天。",
+      "category": "food",
+      "source": "memes/food/0155_馋(筷子).gif",
+      "bytes": 439315,
+      "frames": 32
+    },
+    {
+      "id": "bf_382144a9e4545004",
+      "file": "bf_382144a9e4545004.gif",
+      "meaning": "Raid 1；用于到达、冒泡、打招呼、扩音器喊话、指向某处或发出通知。",
+      "category": "greeting",
+      "source": "memes/greeting/0004_Raid 1.gif",
+      "bytes": 574234,
+      "frames": 48
+    },
+    {
+      "id": "bf_e9147d0f0994b00b",
+      "file": "bf_e9147d0f0994b00b.gif",
+      "meaning": "Raid 2；用于到达、冒泡、打招呼、扩音器喊话、指向某处或发出通知。",
+      "category": "greeting",
+      "source": "memes/greeting/0005_Raid 2.gif",
+      "bytes": 375935,
+      "frames": 48
+    },
+    {
+      "id": "bf_f39855f2c0ef1961",
+      "file": "bf_f39855f2c0ef1961.gif",
+      "meaning": "冒泡 1；用于到达、冒泡、打招呼、扩音器喊话、指向某处或发出通知。",
+      "category": "greeting",
+      "source": "memes/greeting/0015_冒泡 1.gif",
+      "bytes": 402469,
+      "frames": 48
+    },
+    {
+      "id": "bf_987502ae3e487733",
+      "file": "bf_987502ae3e487733.gif",
+      "meaning": "冒泡 2；用于到达、冒泡、打招呼、扩音器喊话、指向某处或发出通知。",
+      "category": "greeting",
+      "source": "memes/greeting/0016_冒泡 2.gif",
+      "bytes": 561563,
+      "frames": 48
+    },
+    {
+      "id": "bf_24a46af76619f4a5",
+      "file": "bf_24a46af76619f4a5.gif",
+      "meaning": "到达；用于到达、冒泡、打招呼、扩音器喊话、指向某处或发出通知。",
+      "category": "greeting",
+      "source": "memes/greeting/0021_到达.gif",
+      "bytes": 423673,
+      "frames": 48
+    },
+    {
+      "id": "bf_dd50b7bc3346b817",
+      "file": "bf_dd50b7bc3346b817.gif",
+      "meaning": "打招呼 1；用于到达、冒泡、打招呼、扩音器喊话、指向某处或发出通知。",
+      "category": "greeting",
+      "source": "memes/greeting/0074_打招呼 1.gif",
+      "bytes": 594162,
+      "frames": 48
+    },
+    {
+      "id": "bf_7806d99f6e48513d",
+      "file": "bf_7806d99f6e48513d.gif",
+      "meaning": "打游戏；用于到达、冒泡、打招呼、扩音器喊话、指向某处或发出通知。",
+      "category": "greeting",
+      "source": "memes/greeting/0076_打游戏.gif",
+      "bytes": 493628,
+      "frames": 39
+    },
+    {
+      "id": "bf_b1820d28a62567b9",
+      "file": "bf_b1820d28a62567b9.gif",
+      "meaning": "扩音器；用于到达、冒泡、打招呼、扩音器喊话、指向某处或发出通知。",
+      "category": "greeting",
+      "source": "memes/greeting/0077_扩音器.gif",
+      "bytes": 346054,
+      "frames": 26
+    },
+    {
+      "id": "bf_5560fec9fdd74174",
+      "file": "bf_5560fec9fdd74174.gif",
+      "meaning": "指；用于到达、冒泡、打招呼、扩音器喊话、指向某处或发出通知。",
+      "category": "greeting",
+      "source": "memes/greeting/0085_指.gif",
+      "bytes": 523257,
+      "frames": 39
+    },
+    {
+      "id": "bf_d16bab309cf9ba35",
+      "file": "bf_d16bab309cf9ba35.gif",
+      "meaning": "摇铃；用于到达、冒泡、打招呼、扩音器喊话、指向某处或发出通知。",
+      "category": "greeting",
+      "source": "memes/greeting/0089_摇铃.gif",
+      "bytes": 346705,
+      "frames": 26
+    },
+    {
+      "id": "bf_e558ae22317d54de",
+      "file": "bf_e558ae22317d54de.gif",
+      "meaning": "跳舞 1；用于到达、冒泡、打招呼、扩音器喊话、指向某处或发出通知。",
+      "category": "greeting",
+      "source": "memes/greeting/0140_跳舞 1.gif",
+      "bytes": 638897,
+      "frames": 48
+    },
+    {
+      "id": "bf_cfe2744ecaa3c622",
+      "file": "bf_cfe2744ecaa3c622.gif",
+      "meaning": "通知_自定义；用于到达、冒泡、打招呼、扩音器喊话、指向某处或发出通知。",
+      "category": "greeting",
+      "source": "memes/greeting/0149_通知_自定义.gif",
+      "bytes": 593224,
+      "frames": 48
+    },
+    {
+      "id": "bf_14907ce3ad2e2cb7",
+      "file": "bf_14907ce3ad2e2cb7.gif",
+      "meaning": "庆祝；用于开心、庆祝、满分评价、期待好消息或眼睛发亮的积极回应。",
+      "category": "happy",
+      "source": "memes/happy/0064_庆祝.gif",
+      "bytes": 650663,
+      "frames": 48
+    },
+    {
+      "id": "bf_6f4251b0f39fafd5",
+      "file": "bf_6f4251b0f39fafd5.gif",
+      "meaning": "得分(10分)；用于开心、庆祝、满分评价、期待好消息或眼睛发亮的积极回应。",
+      "category": "happy",
+      "source": "memes/happy/0066_得分(10分).gif",
+      "bytes": 581123,
+      "frames": 48
+    },
+    {
+      "id": "bf_078005fdc9b81369",
+      "file": "bf_078005fdc9b81369.gif",
+      "meaning": "打招呼 2；用于开心、庆祝、满分评价、期待好消息或眼睛发亮的积极回应。",
+      "category": "happy",
+      "source": "memes/happy/0075_打招呼 2.gif",
+      "bytes": 583174,
+      "frames": 48
+    },
+    {
+      "id": "bf_c94382ec95cd1361",
+      "file": "bf_c94382ec95cd1361.gif",
+      "meaning": "期待 1；用于开心、庆祝、满分评价、期待好消息或眼睛发亮的积极回应。",
+      "category": "happy",
+      "source": "memes/happy/0096_期待 1.gif",
+      "bytes": 606770,
+      "frames": 48
+    },
+    {
+      "id": "bf_d48b168fa0d430bd",
+      "file": "bf_d48b168fa0d430bd.gif",
+      "meaning": "点头；用于开心、庆祝、满分评价、期待好消息或眼睛发亮的积极回应。",
+      "category": "happy",
+      "source": "memes/happy/0102_点头.gif",
+      "bytes": 496993,
+      "frames": 39
+    },
+    {
+      "id": "bf_1652713e5a9fb9f6",
+      "file": "bf_1652713e5a9fb9f6.gif",
+      "meaning": "点赞；用于开心、庆祝、满分评价、期待好消息或眼睛发亮的积极回应。",
+      "category": "happy",
+      "source": "memes/happy/0103_点赞.gif",
+      "bytes": 663761,
+      "frames": 48
+    },
+    {
+      "id": "bf_9f91b04dc265c4a6",
+      "file": "bf_9f91b04dc265c4a6.gif",
+      "meaning": "笑(指)；用于开心、庆祝、满分评价、期待好消息或眼睛发亮的积极回应。",
+      "category": "happy",
+      "source": "memes/happy/0121_笑(指).gif",
+      "bytes": 568858,
+      "frames": 48
+    },
+    {
+      "id": "bf_d5c22b0cea6a0cc8",
+      "file": "bf_d5c22b0cea6a0cc8.gif",
+      "meaning": "笑；用于开心、庆祝、满分评价、期待好消息或眼睛发亮的积极回应。",
+      "category": "happy",
+      "source": "memes/happy/0122_笑.gif",
+      "bytes": 604486,
+      "frames": 48
+    },
+    {
+      "id": "bf_a5703f0965edc2f4",
+      "file": "bf_a5703f0965edc2f4.gif",
+      "meaning": "通知_提示 星星_收藏；用于开心、庆祝、满分评价、期待好消息或眼睛发亮的积极回应。",
+      "category": "happy",
+      "source": "memes/happy/0145_通知_提示 星星_收藏.gif",
+      "bytes": 592597,
+      "frames": 48
+    },
+    {
+      "id": "bf_8f64242e954766fd",
+      "file": "bf_8f64242e954766fd.gif",
+      "meaning": "通知_提示 点赞；用于开心、庆祝、满分评价、期待好消息或眼睛发亮的积极回应。",
+      "category": "happy",
+      "source": "memes/happy/0146_通知_提示 点赞.gif",
+      "bytes": 598171,
+      "frames": 48
+    },
+    {
+      "id": "bf_b34599223a0d4f03",
+      "file": "bf_b34599223a0d4f03.gif",
+      "meaning": "刷卡；用于刷卡、付款、撒钱、红包、要米、收硬币或金钱相关玩笑。",
+      "category": "money",
+      "source": "memes/money/0022_刷卡.gif",
+      "bytes": 702314,
+      "frames": 48
+    },
+    {
+      "id": "bf_8dccbc1d04fc3fb2",
+      "file": "bf_8dccbc1d04fc3fb2.gif",
+      "meaning": "拿走我的钱；用于刷卡、付款、撒钱、红包、要米、收硬币或金钱相关玩笑。",
+      "category": "money",
+      "source": "memes/money/0084_拿走我的钱.gif",
+      "bytes": 587976,
+      "frames": 48
+    },
+    {
+      "id": "bf_849c4258eb231cad",
+      "file": "bf_849c4258eb231cad.gif",
+      "meaning": "红包 1；用于刷卡、付款、撒钱、红包、要米、收硬币或金钱相关玩笑。",
+      "category": "money",
+      "source": "memes/money/0125_红包 1.gif",
+      "bytes": 581460,
+      "frames": 48
+    },
+    {
+      "id": "bf_1b26a9d35f43c68e",
+      "file": "bf_1b26a9d35f43c68e.gif",
+      "meaning": "红包 2；用于刷卡、付款、撒钱、红包、要米、收硬币或金钱相关玩笑。",
+      "category": "money",
+      "source": "memes/money/0126_红包 2.gif",
+      "bytes": 494922,
+      "frames": 48
+    },
+    {
+      "id": "bf_4e854c00ec40ff30",
+      "file": "bf_4e854c00ec40ff30.gif",
+      "meaning": "要米；用于刷卡、付款、撒钱、红包、要米、收硬币或金钱相关玩笑。",
+      "category": "money",
+      "source": "memes/money/0137_要米.gif",
+      "bytes": 604556,
+      "frames": 48
+    },
+    {
+      "id": "bf_ab5a862d3c771464",
+      "file": "bf_ab5a862d3c771464.gif",
+      "meaning": "通知_提示 硬币；用于刷卡、付款、撒钱、红包、要米、收硬币或金钱相关玩笑。",
+      "category": "money",
+      "source": "memes/money/0148_通知_提示 硬币.gif",
+      "bytes": 595565,
+      "frames": 48
+    },
+    {
+      "id": "bf_9bc5b53c60b70295",
+      "file": "bf_9bc5b53c60b70295.gif",
+      "meaning": "钱；用于刷卡、付款、撒钱、红包、要米、收硬币或金钱相关玩笑。",
+      "category": "money",
+      "source": "memes/money/0150_钱.gif",
+      "bytes": 563628,
+      "frames": 48
+    },
+    {
+      "id": "bf_46dfa24198981cc4",
+      "file": "bf_46dfa24198981cc4.gif",
+      "meaning": "Popcat 帧；用于说话、否定、差评、按按钮、摇头或要求静音等直接对话回应。",
+      "category": "reply",
+      "source": "memes/reply/0002_Popcat 帧.gif",
+      "bytes": 25055,
+      "frames": 19
+    },
+    {
+      "id": "bf_4aa30c2f336df14a",
+      "file": "bf_4aa30c2f336df14a.gif",
+      "meaning": "Popcat 平滑；用于说话、否定、差评、按按钮、摇头或要求静音等直接对话回应。",
+      "category": "reply",
+      "source": "memes/reply/0003_Popcat 平滑.gif",
+      "bytes": 239231,
+      "frames": 19
+    },
+    {
+      "id": "bf_c189d7c2a3b55f3a",
+      "file": "bf_c189d7c2a3b55f3a.gif",
+      "meaning": "加油；用于说话、否定、差评、按按钮、摇头或要求静音等直接对话回应。",
+      "category": "reply",
+      "source": "memes/reply/0023_加油.gif",
+      "bytes": 589814,
+      "frames": 48
+    },
+    {
+      "id": "bf_366b93574ded0574",
+      "file": "bf_366b93574ded0574.gif",
+      "meaning": "摸头；用于说话、否定、差评、按按钮、摇头或要求静音等直接对话回应。",
+      "category": "reply",
+      "source": "memes/reply/0091_摸头.gif",
+      "bytes": 429314,
+      "frames": 32
+    },
+    {
+      "id": "bf_fdec095e7d0a1cb2",
+      "file": "bf_fdec095e7d0a1cb2.gif",
+      "meaning": "胶带；用于说话、否定、差评、按按钮、摇头或要求静音等直接对话回应。",
+      "category": "reply",
+      "source": "memes/reply/0127_胶带.gif",
+      "bytes": 626448,
+      "frames": 48
+    },
+    {
+      "id": "bf_3355ea7c482d5c91",
+      "file": "bf_3355ea7c482d5c91.gif",
+      "meaning": "通知_提示 Bits；用于说话、否定、差评、按按钮、摇头或要求静音等直接对话回应。",
+      "category": "reply",
+      "source": "memes/reply/0144_通知_提示 Bits.gif",
+      "bytes": 594425,
+      "frames": 48
+    },
+    {
+      "id": "bf_362a4ddbb9dcf875",
+      "file": "bf_362a4ddbb9dcf875.gif",
+      "meaning": "静音 1；用于说话、否定、差评、按按钮、摇头或要求静音等直接对话回应。",
+      "category": "reply",
+      "source": "memes/reply/0152_静音 1.gif",
+      "bytes": 548476,
+      "frames": 48
+    },
+    {
+      "id": "bf_9816d962b8f5321c",
+      "file": "bf_9816d962b8f5321c.gif",
+      "meaning": "静音 2；用于说话、否定、差评、按按钮、摇头或要求静音等直接对话回应。",
+      "category": "reply",
+      "source": "memes/reply/0153_静音 2.gif",
+      "bytes": 623928,
+      "frames": 48
+    },
+    {
+      "id": "bf_58f1ad867780a683",
+      "file": "bf_58f1ad867780a683.gif",
+      "meaning": "哭 1；用于哭泣、委屈、受挫、坐牢、被击中或夸张地表示自己倒下了。",
+      "category": "sad",
+      "source": "memes/sad/0037_哭 1.gif",
+      "bytes": 660939,
+      "frames": 48
+    },
+    {
+      "id": "bf_f4b7c33018e763f6",
+      "file": "bf_f4b7c33018e763f6.gif",
+      "meaning": "哭 2；用于哭泣、委屈、受挫、坐牢、被击中或夸张地表示自己倒下了。",
+      "category": "sad",
+      "source": "memes/sad/0038_哭 2.gif",
+      "bytes": 639131,
+      "frames": 48
+    },
+    {
+      "id": "bf_9bafc521f03669a0",
+      "file": "bf_9bafc521f03669a0.gif",
+      "meaning": "哭 3；用于哭泣、委屈、受挫、坐牢、被击中或夸张地表示自己倒下了。",
+      "category": "sad",
+      "source": "memes/sad/0039_哭 3.gif",
+      "bytes": 344054,
+      "frames": 26
+    },
+    {
+      "id": "bf_d2263f7aaca03dae",
+      "file": "bf_d2263f7aaca03dae.gif",
+      "meaning": "坐牢 1；用于哭泣、委屈、受挫、坐牢、被击中或夸张地表示自己倒下了。",
+      "category": "sad",
+      "source": "memes/sad/0043_坐牢 1.gif",
+      "bytes": 848460,
+      "frames": 48
+    },
+    {
+      "id": "bf_0b55739f364429fd",
+      "file": "bf_0b55739f364429fd.gif",
+      "meaning": "坐牢 2；用于哭泣、委屈、受挫、坐牢、被击中或夸张地表示自己倒下了。",
+      "category": "sad",
+      "source": "memes/sad/0044_坐牢 2.gif",
+      "bytes": 165012,
+      "frames": 9
+    },
+    {
+      "id": "bf_605240b928f816bd",
+      "file": "bf_605240b928f816bd.gif",
+      "meaning": "死亡；用于哭泣、委屈、受挫、坐牢、被击中或夸张地表示自己倒下了。",
+      "category": "sad",
+      "source": "memes/sad/0100_死亡.gif",
+      "bytes": 591590,
+      "frames": 48
+    },
+    {
+      "id": "bf_8ab226131b12a593",
+      "file": "bf_8ab226131b12a593.gif",
+      "meaning": "被击中(Bits)；用于哭泣、委屈、受挫、坐牢、被击中或夸张地表示自己倒下了。",
+      "category": "sad",
+      "source": "memes/sad/0133_被击中(Bits).gif",
+      "bytes": 513055,
+      "frames": 41
+    },
+    {
+      "id": "bf_080b0151ff3c2418",
+      "file": "bf_080b0151ff3c2418.gif",
+      "meaning": "被击中(拖鞋)；用于哭泣、委屈、受挫、坐牢、被击中或夸张地表示自己倒下了。",
+      "category": "sad",
+      "source": "memes/sad/0134_被击中(拖鞋).gif",
+      "bytes": 541562,
+      "frames": 41
+    },
+    {
+      "id": "bf_4979e62c236a9c37",
+      "file": "bf_4979e62c236a9c37.gif",
+      "meaning": "被击中(硬币)；用于哭泣、委屈、受挫、坐牢、被击中或夸张地表示自己倒下了。",
+      "category": "sad",
+      "source": "memes/sad/0136_被击中(硬币).gif",
+      "bytes": 506270,
+      "frames": 41
+    },
+    {
+      "id": "bf_39590324a4779838",
+      "file": "bf_39590324a4779838.gif",
+      "meaning": "害羞 2；用于害羞、脸红、不好意思或眨眼卖萌的回应。",
+      "category": "shy",
+      "source": "memes/shy/0054_害羞 2.gif",
+      "bytes": 611924,
+      "frames": 48
+    },
+    {
+      "id": "bf_edc358bb09f17c0c",
+      "file": "bf_edc358bb09f17c0c.gif",
+      "meaning": "情书；用于害羞、脸红、不好意思或眨眼卖萌的回应。",
+      "category": "shy",
+      "source": "memes/shy/0069_情书.gif",
+      "bytes": 505744,
+      "frames": 48
+    },
+    {
+      "id": "bf_def24441272d7507",
+      "file": "bf_def24441272d7507.gif",
+      "meaning": "眨眼；用于害羞、脸红、不好意思或眨眼卖萌的回应。",
+      "category": "shy",
+      "source": "memes/shy/0114_眨眼.gif",
+      "bytes": 651516,
+      "frames": 48
+    },
+    {
+      "id": "bf_447816e734969575",
+      "file": "bf_447816e734969575.gif",
+      "meaning": "工作(小睡)；用于困倦、睡觉、准备休息、工作时小睡或吹风放松。",
+      "category": "sleep",
+      "source": "memes/sleep/0057_工作(小睡).gif",
+      "bytes": 560508,
+      "frames": 48
+    },
+    {
+      "id": "bf_ee8b31f5290c7486",
+      "file": "bf_ee8b31f5290c7486.gif",
+      "meaning": "工作(疲倦)；用于困倦、睡觉、准备休息、工作时小睡或吹风放松。",
+      "category": "sleep",
+      "source": "memes/sleep/0060_工作(疲倦).gif",
+      "bytes": 576885,
+      "frames": 48
+    },
+    {
+      "id": "bf_d4be322cd079f744",
+      "file": "bf_d4be322cd079f744.gif",
+      "meaning": "电风扇 1；用于困倦、睡觉、准备休息、工作时小睡或吹风放松。",
+      "category": "sleep",
+      "source": "memes/sleep/0111_电风扇 1.gif",
+      "bytes": 653312,
+      "frames": 48
+    },
+    {
+      "id": "bf_65aa08a8f9cfb7f4",
+      "file": "bf_65aa08a8f9cfb7f4.gif",
+      "meaning": "电风扇 2；用于困倦、睡觉、准备休息、工作时小睡或吹风放松。",
+      "category": "sleep",
+      "source": "memes/sleep/0112_电风扇 2.gif",
+      "bytes": 651525,
+      "frames": 48
+    },
+    {
+      "id": "bf_823eed32e7ed0960",
+      "file": "bf_823eed32e7ed0960.gif",
+      "meaning": "睡觉 (UU)；用于困倦、睡觉、准备休息、工作时小睡或吹风放松。",
+      "category": "sleep",
+      "source": "memes/sleep/0115_睡觉 (UU).gif",
+      "bytes": 697672,
+      "frames": 48
+    },
+    {
+      "id": "bf_421cbb16374479ab",
+      "file": "bf_421cbb16374479ab.gif",
+      "meaning": "睡觉(准备阶段1)；用于困倦、睡觉、准备休息、工作时小睡或吹风放松。",
+      "category": "sleep",
+      "source": "memes/sleep/0116_睡觉(准备阶段1).gif",
+      "bytes": 530959,
+      "frames": 48
+    },
+    {
+      "id": "bf_52ed6ec13240e291",
+      "file": "bf_52ed6ec13240e291.gif",
+      "meaning": "睡觉(准备阶段2)；用于困倦、睡觉、准备休息、工作时小睡或吹风放松。",
+      "category": "sleep",
+      "source": "memes/sleep/0117_睡觉(准备阶段2).gif",
+      "bytes": 473560,
+      "frames": 48
+    },
+    {
+      "id": "bf_33cc745960c4f04d",
+      "file": "bf_33cc745960c4f04d.gif",
+      "meaning": "睡觉(普通)；用于困倦、睡觉、准备休息、工作时小睡或吹风放松。",
+      "category": "sleep",
+      "source": "memes/sleep/0118_睡觉(普通).gif",
+      "bytes": 704133,
+      "frames": 48
+    },
+    {
+      "id": "bf_7405d3613e866cfa",
+      "file": "bf_7405d3613e866cfa.gif",
+      "meaning": "Bug；用于惊吓、害怕、紧张、冒汗、发现虫子或突然发生意外。",
+      "category": "surprised",
+      "source": "memes/surprised/0001_Bug.gif",
+      "bytes": 958600,
+      "frames": 48
+    },
+    {
+      "id": "bf_11198af916362101",
+      "file": "bf_11198af916362101.gif",
+      "meaning": "叹号；用于惊吓、害怕、紧张、冒汗、发现虫子或突然发生意外。",
+      "category": "surprised",
+      "source": "memes/surprised/0026_叹号.gif",
+      "bytes": 656666,
+      "frames": 48
+    },
+    {
+      "id": "bf_19b75a7f221910f0",
+      "file": "bf_19b75a7f221910f0.gif",
+      "meaning": "害怕 1；用于惊吓、害怕、紧张、冒汗、发现虫子或突然发生意外。",
+      "category": "surprised",
+      "source": "memes/surprised/0051_害怕 1.gif",
+      "bytes": 124231,
+      "frames": 9
+    },
+    {
+      "id": "bf_23241d8eee95c37e",
+      "file": "bf_23241d8eee95c37e.gif",
+      "meaning": "害怕 2；用于惊吓、害怕、紧张、冒汗、发现虫子或突然发生意外。",
+      "category": "surprised",
+      "source": "memes/surprised/0052_害怕 2.gif",
+      "bytes": 120221,
+      "frames": 9
+    },
+    {
+      "id": "bf_4b4aee7dbd760e3f",
+      "file": "bf_4b4aee7dbd760e3f.gif",
+      "meaning": "惊吓；用于惊吓、害怕、紧张、冒汗、发现虫子或突然发生意外。",
+      "category": "surprised",
+      "source": "memes/surprised/0070_惊吓.gif",
+      "bytes": 637271,
+      "frames": 48
+    },
+    {
+      "id": "bf_24bb3acc10214345",
+      "file": "bf_24bb3acc10214345.gif",
+      "meaning": "汗；用于惊吓、害怕、紧张、冒汗、发现虫子或突然发生意外。",
+      "category": "surprised",
+      "source": "memes/surprised/0101_汗.gif",
+      "bytes": 653762,
+      "frames": 48
+    },
+    {
+      "id": "bf_e328506a6e60f996",
+      "file": "bf_e328506a6e60f996.gif",
+      "meaning": "紧张 1；用于惊吓、害怕、紧张、冒汗、发现虫子或突然发生意外。",
+      "category": "surprised",
+      "source": "memes/surprised/0123_紧张 1.gif",
+      "bytes": 615776,
+      "frames": 48
+    },
+    {
+      "id": "bf_8cf1794804f0dabe",
+      "file": "bf_8cf1794804f0dabe.gif",
+      "meaning": "紧张 2；用于惊吓、害怕、紧张、冒汗、发现虫子或突然发生意外。",
+      "category": "surprised",
+      "source": "memes/surprised/0124_紧张 2.gif",
+      "bytes": 608890,
+      "frames": 48
+    },
+    {
+      "id": "bf_decd8761fc2e66f9",
+      "file": "bf_decd8761fc2e66f9.gif",
+      "meaning": "一切都好 1；用于小丑、自嘲、装酷、反转、恶作剧、嫌弃或火场中假装一切都好的反讽。",
+      "category": "teasing",
+      "source": "memes/teasing/0006_一切都好 1.gif",
+      "bytes": 696161,
+      "frames": 48
+    },
+    {
+      "id": "bf_487792539ccd1288",
+      "file": "bf_487792539ccd1288.gif",
+      "meaning": "一切都好 2；用于小丑、自嘲、装酷、反转、恶作剧、嫌弃或火场中假装一切都好的反讽。",
+      "category": "teasing",
+      "source": "memes/teasing/0007_一切都好 2.gif",
+      "bytes": 690045,
+      "frames": 48
+    },
+    {
+      "id": "bf_9a23dfd870b4c0eb",
+      "file": "bf_9a23dfd870b4c0eb.gif",
+      "meaning": "一切都好 3；用于小丑、自嘲、装酷、反转、恶作剧、嫌弃或火场中假装一切都好的反讽。",
+      "category": "teasing",
+      "source": "memes/teasing/0008_一切都好 3.gif",
+      "bytes": 696061,
+      "frames": 48
+    },
+    {
+      "id": "bf_5bbaac8021351c22",
+      "file": "bf_5bbaac8021351c22.gif",
+      "meaning": "催眠；用于小丑、自嘲、装酷、反转、恶作剧、嫌弃或火场中假装一切都好的反讽。",
+      "category": "teasing",
+      "source": "memes/teasing/0011_催眠.gif",
+      "bytes": 646170,
+      "frames": 48
+    },
+    {
+      "id": "bf_a35b5971149b781e",
+      "file": "bf_a35b5971149b781e.gif",
+      "meaning": "像素墨镜反光；用于小丑、自嘲、装酷、反转、恶作剧、嫌弃或火场中假装一切都好的反讽。",
+      "category": "teasing",
+      "source": "memes/teasing/0012_像素墨镜反光.gif",
+      "bytes": 584493,
+      "frames": 48
+    },
+    {
+      "id": "bf_e6f93372cb1475a1",
+      "file": "bf_e6f93372cb1475a1.gif",
+      "meaning": "反向点赞；用于小丑、自嘲、装酷、反转、恶作剧、嫌弃或火场中假装一切都好的反讽。",
+      "category": "teasing",
+      "source": "memes/teasing/0024_反向点赞.gif",
+      "bytes": 663490,
+      "frames": 48
+    },
+    {
+      "id": "bf_050543c30e743586",
+      "file": "bf_050543c30e743586.gif",
+      "meaning": "反转；用于小丑、自嘲、装酷、反转、恶作剧、嫌弃或火场中假装一切都好的反讽。",
+      "category": "teasing",
+      "source": "memes/teasing/0025_反转.gif",
+      "bytes": 506884,
+      "frames": 48
+    },
+    {
+      "id": "bf_fa3298b5ea3086e4",
+      "file": "bf_fa3298b5ea3086e4.gif",
+      "meaning": "呆(贴纸) 1；用于小丑、自嘲、装酷、反转、恶作剧、嫌弃或火场中假装一切都好的反讽。",
+      "category": "teasing",
+      "source": "memes/teasing/0034_呆(贴纸) 1.gif",
+      "bytes": 581964,
+      "frames": 48
+    },
+    {
+      "id": "bf_5dfe99b97fd29db1",
+      "file": "bf_5dfe99b97fd29db1.gif",
+      "meaning": "呆(贴纸) 2；用于小丑、自嘲、装酷、反转、恶作剧、嫌弃或火场中假装一切都好的反讽。",
+      "category": "teasing",
+      "source": "memes/teasing/0035_呆(贴纸) 2.gif",
+      "bytes": 432478,
+      "frames": 48
+    },
+    {
+      "id": "bf_b50df06701246f2f",
+      "file": "bf_b50df06701246f2f.gif",
+      "meaning": "呆(贴纸) 3；用于小丑、自嘲、装酷、反转、恶作剧、嫌弃或火场中假装一切都好的反讽。",
+      "category": "teasing",
+      "source": "memes/teasing/0036_呆(贴纸) 3.gif",
+      "bytes": 514198,
+      "frames": 48
+    },
+    {
+      "id": "bf_4f65693eadbe414c",
+      "file": "bf_4f65693eadbe414c.gif",
+      "meaning": "垃圾桶；用于小丑、自嘲、装酷、反转、恶作剧、嫌弃或火场中假装一切都好的反讽。",
+      "category": "teasing",
+      "source": "memes/teasing/0045_垃圾桶.gif",
+      "bytes": 121727,
+      "frames": 9
+    },
+    {
+      "id": "bf_b0777a8410ea62c7",
+      "file": "bf_b0777a8410ea62c7.gif",
+      "meaning": "墨镜反光；用于小丑、自嘲、装酷、反转、恶作剧、嫌弃或火场中假装一切都好的反讽。",
+      "category": "teasing",
+      "source": "memes/teasing/0046_墨镜反光.gif",
+      "bytes": 556301,
+      "frames": 48
+    },
+    {
+      "id": "bf_e672df01b25c3b6f",
+      "file": "bf_e672df01b25c3b6f.gif",
+      "meaning": "墨镜循环；用于小丑、自嘲、装酷、反转、恶作剧、嫌弃或火场中假装一切都好的反讽。",
+      "category": "teasing",
+      "source": "memes/teasing/0047_墨镜循环.gif",
+      "bytes": 637283,
+      "frames": 48
+    },
+    {
+      "id": "bf_7b62f8305d863548",
+      "file": "bf_7b62f8305d863548.gif",
+      "meaning": "小丑 1；用于小丑、自嘲、装酷、反转、恶作剧、嫌弃或火场中假装一切都好的反讽。",
+      "category": "teasing",
+      "source": "memes/teasing/0055_小丑 1.gif",
+      "bytes": 387451,
+      "frames": 48
+    },
+    {
+      "id": "bf_c49658e69df976ae",
+      "file": "bf_c49658e69df976ae.gif",
+      "meaning": "小丑 2；用于小丑、自嘲、装酷、反转、恶作剧、嫌弃或火场中假装一切都好的反讽。",
+      "category": "teasing",
+      "source": "memes/teasing/0056_小丑 2.gif",
+      "bytes": 500964,
+      "frames": 48
+    },
+    {
+      "id": "bf_cd88e7f5dcdad861",
+      "file": "bf_cd88e7f5dcdad861.gif",
+      "meaning": "得分(0分)；用于小丑、自嘲、装酷、反转、恶作剧、嫌弃或火场中假装一切都好的反讽。",
+      "category": "teasing",
+      "source": "memes/teasing/0065_得分(0分).gif",
+      "bytes": 579735,
+      "frames": 48
+    },
+    {
+      "id": "bf_e4344891b3bce7a8",
+      "file": "bf_e4344891b3bce7a8.gif",
+      "meaning": "抓拍(摄像机)；用于小丑、自嘲、装酷、反转、恶作剧、嫌弃或火场中假装一切都好的反讽。",
+      "category": "teasing",
+      "source": "memes/teasing/0079_抓拍(摄像机).gif",
+      "bytes": 486187,
+      "frames": 48
+    },
+    {
+      "id": "bf_ed5e44ae1e600925",
+      "file": "bf_ed5e44ae1e600925.gif",
+      "meaning": "按钮；用于小丑、自嘲、装酷、反转、恶作剧、嫌弃或火场中假装一切都好的反讽。",
+      "category": "teasing",
+      "source": "memes/teasing/0086_按钮.gif",
+      "bytes": 229621,
+      "frames": 16
+    },
+    {
+      "id": "bf_8bc363930e1dff53",
+      "file": "bf_8bc363930e1dff53.gif",
+      "meaning": "摘掉墨镜；用于小丑、自嘲、装酷、反转、恶作剧、嫌弃或火场中假装一切都好的反讽。",
+      "category": "teasing",
+      "source": "memes/teasing/0090_摘掉墨镜.gif",
+      "bytes": 649304,
+      "frames": 48
+    },
+    {
+      "id": "bf_6fc808c1a43ef2af",
+      "file": "bf_6fc808c1a43ef2af.gif",
+      "meaning": "撬棍 1；用于小丑、自嘲、装酷、反转、恶作剧、嫌弃或火场中假装一切都好的反讽。",
+      "category": "teasing",
+      "source": "memes/teasing/0092_撬棍 1.gif",
+      "bytes": 827443,
+      "frames": 48
+    },
+    {
+      "id": "bf_9cdecbc5730ae664",
+      "file": "bf_9cdecbc5730ae664.gif",
+      "meaning": "撬棍 2；用于小丑、自嘲、装酷、反转、恶作剧、嫌弃或火场中假装一切都好的反讽。",
+      "category": "teasing",
+      "source": "memes/teasing/0093_撬棍 2.gif",
+      "bytes": 640729,
+      "frames": 48
+    },
+    {
+      "id": "bf_7fbaa5422a3c1927",
+      "file": "bf_7fbaa5422a3c1927.gif",
+      "meaning": "撬棍 3；用于小丑、自嘲、装酷、反转、恶作剧、嫌弃或火场中假装一切都好的反讽。",
+      "category": "teasing",
+      "source": "memes/teasing/0094_撬棍 3.gif",
+      "bytes": 662022,
+      "frames": 48
+    },
+    {
+      "id": "bf_6c89218c74c86753",
+      "file": "bf_6c89218c74c86753.gif",
+      "meaning": "期待 2；用于小丑、自嘲、装酷、反转、恶作剧、嫌弃或火场中假装一切都好的反讽。",
+      "category": "teasing",
+      "source": "memes/teasing/0097_期待 2.gif",
+      "bytes": 605775,
+      "frames": 48
+    },
+    {
+      "id": "bf_3f8436c59f122cc6",
+      "file": "bf_3f8436c59f122cc6.gif",
+      "meaning": "停止工作；用于工作、打字、记录、电脑故障、疲倦加班、恼怒或带薪摸鱼。",
+      "category": "work",
+      "source": "memes/work/0010_停止工作.gif",
+      "bytes": 592263,
+      "frames": 48
+    },
+    {
+      "id": "bf_137e556ea2726d92",
+      "file": "bf_137e556ea2726d92.gif",
+      "meaning": "喷剂；用于工作、打字、记录、电脑故障、疲倦加班、恼怒或带薪摸鱼。",
+      "category": "work",
+      "source": "memes/work/0042_喷剂.gif",
+      "bytes": 642165,
+      "frames": 48
+    },
+    {
+      "id": "bf_bb2d6a723c9384da",
+      "file": "bf_bb2d6a723c9384da.gif",
+      "meaning": "工作(普通)；用于工作、打字、记录、电脑故障、疲倦加班、恼怒或带薪摸鱼。",
+      "category": "work",
+      "source": "memes/work/0058_工作(普通).gif",
+      "bytes": 380719,
+      "frames": 32
+    },
+    {
+      "id": "bf_22017b3663255b03",
+      "file": "bf_22017b3663255b03.gif",
+      "meaning": "工作(生气)；用于工作、打字、记录、电脑故障、疲倦加班、恼怒或带薪摸鱼。",
+      "category": "work",
+      "source": "memes/work/0059_工作(生气).gif",
+      "bytes": 580149,
+      "frames": 48
+    },
+    {
+      "id": "bf_2b73d0eab264dbbf",
+      "file": "bf_2b73d0eab264dbbf.gif",
+      "meaning": "带薪拉屎(困难模式)；用于工作、打字、记录、电脑故障、疲倦加班、恼怒或带薪摸鱼。",
+      "category": "work",
+      "source": "memes/work/0061_带薪拉屎(困难模式).gif",
+      "bytes": 585199,
+      "frames": 48
+    },
+    {
+      "id": "bf_0dc45b63461328a8",
+      "file": "bf_0dc45b63461328a8.gif",
+      "meaning": "带薪拉屎(简单模式)；用于工作、打字、记录、电脑故障、疲倦加班、恼怒或带薪摸鱼。",
+      "category": "work",
+      "source": "memes/work/0062_带薪拉屎(简单模式).gif",
+      "bytes": 590508,
+      "frames": 48
+    },
+    {
+      "id": "bf_7eb0000e451c2785",
+      "file": "bf_7eb0000e451c2785.gif",
+      "meaning": "打字(恼怒)；用于工作、打字、记录、电脑故障、疲倦加班、恼怒或带薪摸鱼。",
+      "category": "work",
+      "source": "memes/work/0071_打字(恼怒).gif",
+      "bytes": 192391,
+      "frames": 16
+    },
+    {
+      "id": "bf_24d96fb91c9f9754",
+      "file": "bf_24d96fb91c9f9754.gif",
+      "meaning": "打字(普通)；用于工作、打字、记录、电脑故障、疲倦加班、恼怒或带薪摸鱼。",
+      "category": "work",
+      "source": "memes/work/0072_打字(普通).gif",
+      "bytes": 566814,
+      "frames": 48
+    },
+    {
+      "id": "bf_7226a052c559fea5",
+      "file": "bf_7226a052c559fea5.gif",
+      "meaning": "打字(生气)；用于工作、打字、记录、电脑故障、疲倦加班、恼怒或带薪摸鱼。",
+      "category": "work",
+      "source": "memes/work/0073_打字(生气).gif",
+      "bytes": 188277,
+      "frames": 16
+    },
+    {
+      "id": "bf_de0911382876f712",
+      "file": "bf_de0911382876f712.gif",
+      "meaning": "记录 1；用于工作、打字、记录、电脑故障、疲倦加班、恼怒或带薪摸鱼。",
+      "category": "work",
+      "source": "memes/work/0138_记录 1.gif",
+      "bytes": 596613,
+      "frames": 48
+    },
+    {
+      "id": "bf_14b0e464818928c3",
+      "file": "bf_14b0e464818928c3.gif",
+      "meaning": "记录 2；用于工作、打字、记录、电脑故障、疲倦加班、恼怒或带薪摸鱼。",
+      "category": "work",
+      "source": "memes/work/0139_记录 2.gif",
+      "bytes": 662898,
+      "frames": 48
+    }
+  ]
+}

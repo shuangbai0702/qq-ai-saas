@@ -1,0 +1,1 @@
+export async function api(url:string,body?:unknown,method?:string,signal?:AbortSignal){const r=await fetch('/v1'+url,{method:method||(body?'POST':'GET'),credentials:'include',headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal});const d=await r.json();if(!r.ok)throw new Error(d.error||'请求失败');return d}
