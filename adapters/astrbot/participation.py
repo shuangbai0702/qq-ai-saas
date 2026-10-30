@@ -16,7 +16,7 @@ class Participation:
         if directed:return True
         now=time.time() if now is None else now;state=self.observe(scope,text,now)
         state['sent']=[at for at in state['sent'] if now-at<cfg.get('fatigueWindowSeconds',300)]
-        if cfg.get('fatigueEnabled') and len(state['sent'])>=cfg.get('fatigueMaxReplies',4):return False
+        if cfg.get('fatigueEnabled',True) and len(state['sent'])>=cfg.get('fatigueMaxReplies',4):return False
         if cfg.get('attentionEnabled') and state['topic']:
             query=tokens(text)
             # Only ongoing conversation is constrained; initial entry remains eligible.

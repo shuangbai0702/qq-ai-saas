@@ -46,7 +46,7 @@ def requests_meme(text):
     return bool(re.search(r'(?:发|来|给|看).{0,12}(?:表情包|表情图|收藏表情)|斗图',text))
 
 def allow_meme(cfg,request,rng=random.random):
-    return bool(cfg.get('memeEnabled') and (requests_meme(request) or rng()<cfg.get('memeProbability',1)))
+    return bool(cfg.get('memeEnabled') and (requests_meme(request) or rng()<cfg.get('memeProbability',0.7)))
 
 
 class SocialStore:
@@ -268,11 +268,11 @@ class SocialStore:
         # Always strip internal controls, including invalid IDs and unterminated tails.
         clean = re.sub(r'\[MEME:[^\]\n]*(?:\]|$)', '', text)
         if not cfg.get('memeEnabled') or not ids:return clean,None
-        if not explicit and rng()>=cfg.get('memeProbability',1):return clean,None
+        if not explicit and rng()>=cfg.get('memeProbability',0.7):return clean,None
         day = time.strftime('%Y-%m-%d',time.gmtime(now))
         row = self.db.execute('SELECT max(last_sent) FROM social_images WHERE scope=?', (scope,)).fetchone()
         total = self.db.execute('SELECT coalesce(sum(count),0) FROM social_images WHERE day=?', (day,)).fetchone()[0]
-        if (row[0] is not None and now-row[0]<cfg.get('memeCooldownSeconds',60)) or total>=cfg.get('dailyMemeLimit',20):return clean,None
+        if (row[0] is not None and now-row[0]<cfg.get('memeCooldownSeconds',20)) or total>=cfg.get('dailyMemeLimit',50):return clean,None
         image = next((x for x in self.catalog(scope,packs=cfg.get('memePacks'),favorite_account=cfg.get('_qqAccount')) if x['id']==ids[0]),None)
         return clean,image
 
