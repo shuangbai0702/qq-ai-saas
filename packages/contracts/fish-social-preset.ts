@@ -5,9 +5,11 @@ import type {BotConfig} from './index.js';
 export const fishSocialPreset={
  historyTurns:30,proactive:true,
  behavior:{qqProfile:true,qzone:true,typingSimulation:true,typingSpeed:15,typingMaxDelay:3,typoEnabled:true,typoProbability:0.02,pokeReply:true,pokeProbability:0.25,memorySummary:true,summaryRounds:10,enabled:true,memory:true,memoryAutoCapture:true,styleLearning:true,socialAwareness:true,
-  expressionSharing:'bot' as const,memeEnabled:true,memeProbability:0.35,
+  expressionSharing:'bot' as const,memeEnabled:true,memeProbability:0.7,
   stickerCollect:true,stickerAllGroups:true,memePacks:['blue-fat-fish'] as ('blue-fat-fish')[],
-  followupSeconds:120,followupReplyProbability:0.8,randomReplyProbability:0.02,
+  memeCooldownSeconds:20,dailyMemeLimit:50,
+  followupSeconds:120,followupReplyProbability:0.8,randomReplyProbability:0.014,
+  fatigueEnabled:true,fatigueWindowSeconds:300,fatigueMaxReplies:4,
   ambientContextMessages:50,splitMessages:true,burstDebounceMs:800,sendIntervalMs:800,
   quietStart:1,quietEnd:7},
 };

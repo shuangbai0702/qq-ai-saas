@@ -2,7 +2,7 @@ import test from 'node:test';import assert from 'node:assert/strict';import {mkd
 import {createApp} from '../apps/control-api/src/app.js';import {issueTestInvite} from './helpers/invitations.js';
 import {defaultConfig,BotConfigSchema} from '../packages/contracts/index.js';
 test('new bot social defaults are active while explicitly disabled existing configuration is preserved',()=>{
- assert.equal(defaultConfig.behavior?.styleLearning,true);assert.equal(defaultConfig.behavior?.memeEnabled,true);assert.equal(defaultConfig.behavior?.expressionSharing,'bot');assert.equal(defaultConfig.behavior?.splitMessages,true);assert.equal(defaultConfig.behavior?.randomReplyProbability,0.02);assert.deepEqual(defaultConfig.behavior?.proactiveTargets,[]);
+ assert.equal(defaultConfig.behavior?.styleLearning,true);assert.equal(defaultConfig.behavior?.memeEnabled,true);assert.equal(defaultConfig.behavior?.expressionSharing,'bot');assert.equal(defaultConfig.behavior?.splitMessages,true);assert.equal(defaultConfig.behavior?.randomReplyProbability,0.014);assert.deepEqual(defaultConfig.behavior?.proactiveTargets,[]);
  const old=BotConfigSchema.parse({...defaultConfig,proactive:false,behavior:{styleLearning:false,memeEnabled:false,expressionSharing:'local'}});assert.equal(old.behavior?.styleLearning,false);assert.equal(old.behavior?.memeEnabled,false);assert.equal(old.proactive,false);
 });
 test('expression sharing only links explicitly configured groups, keeps facts and bot boundaries',()=>{

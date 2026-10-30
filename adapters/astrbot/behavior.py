@@ -50,7 +50,7 @@ class BehaviorStore:
         if not trigger:
             hour=datetime.fromtimestamp(now,timezone(timedelta(hours=8))).hour;start=b.get('quietStart',23);end=b.get('quietEnd',8)
             quiet=(start<=hour<end) if start<end else (hour>=start or hour<end) if start!=end else False
-            if quiet or rng()>=b.get('randomReplyProbability',0):return False
+            if quiet or rng()>=b.get('randomReplyProbability',0.014):return False
             day=datetime.fromtimestamp(now,timezone(timedelta(hours=8))).date().isoformat()
             row=self.db.execute('SELECT coalesce(sum(count),0) FROM deliveries WHERE day=?',(day,)).fetchone()
             if row and row[0]>=b.get('dailyProactiveLimit',3):return False
