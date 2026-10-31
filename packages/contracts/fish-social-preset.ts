@@ -9,7 +9,7 @@ export const fishSocialPreset={
   stickerCollect:true,stickerAllGroups:true,memePacks:['blue-fat-fish'] as ('blue-fat-fish')[],
   memeCooldownSeconds:20,dailyMemeLimit:50,
   followupSeconds:120,followupReplyProbability:0.8,randomReplyProbability:0.014,
-  fatigueEnabled:true,fatigueWindowSeconds:300,fatigueMaxReplies:4,
+  hourlyInterjectionLimit:20,attentionEnabled:true,fatigueEnabled:true,fatigueWindowSeconds:300,fatigueMaxReplies:4,
   ambientContextMessages:50,splitMessages:true,burstDebounceMs:800,sendIntervalMs:800,
   quietStart:1,quietEnd:7},
 };

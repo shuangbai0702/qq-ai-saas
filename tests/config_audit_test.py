@@ -36,7 +36,9 @@ class ConfigurationTests(unittest.TestCase):
   self.assertFalse(self.store.eligible(cfg,'group:12345','12345',False,'聊天',205,rng=lambda:0))
   self.assertEqual(self.store.db.execute('SELECT count(*) FROM deliveries').fetchone()[0],0)
   self.assertTrue(self.store.eligible(cfg,'group:12345','12345',False,'聊天',260,rng=lambda:0))
-  self.assertEqual(self.store.db.execute('SELECT sum(count) FROM deliveries').fetchone()[0],1)
+  self.assertTrue(self.store.reserve_interjection('group:12345',cfg,260))
+  self.assertEqual(self.store.db.execute('SELECT count(*) FROM group_interjections').fetchone()[0],1)
+  self.assertEqual(self.store.db.execute('SELECT count(*) FROM deliveries').fetchone()[0],0)
  def test_enabling_proactive_does_not_implicitly_enable_interjections(self):
   self.assertFalse(self.store.eligible({'proactive':True,'behavior':{'randomReplyProbability':0}},'group:12345','12345',False,'聊天',200,rng=lambda:.01))
  def test_clear_learning_allows_learning_from_new_samples(self):

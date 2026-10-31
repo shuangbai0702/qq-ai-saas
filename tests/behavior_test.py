@@ -40,6 +40,23 @@ class BehaviorTests(unittest.TestCase):
   self.s.observe('internal','u','','timer',now=500)
   self.assertIsNone(self.s.db.execute("SELECT 1 FROM relations WHERE scope='internal'").fetchone())
  def test_emotion_real_state(self):self.assertEqual(self.s.observe('g','u','谢谢','e',now=100)['emotion'],'开心');self.assertEqual(self.s.observe('g','u','你好','e2',now=500)['emotion'],'平静')
+ def test_rolling_hour_limit_persists_across_groups_and_isolates_bots(self):
+  cfg={'behavior':{'hourlyInterjectionLimit':20}}
+  for i in range(20):self.assertTrue(self.s.reserve_interjection('group:a',cfg,1000+i))
+  self.assertFalse(self.s.reserve_interjection('group:a',cfg,1021))
+  self.assertFalse(self.s.reserve_interjection('group:b',cfg,1021))
+  self.s.close();self.s=BehaviorStore(self.file)
+  self.assertFalse(self.s.reserve_interjection('group:a',cfg,4599))
+  self.assertTrue(self.s.reserve_interjection('group:a',cfg,4600))
+  self.assertFalse(self.s.reserve_interjection('group:a',cfg,4600.1))
+  other=BehaviorStore(Path(self.temp.name)/'other.db')
+  try:self.assertTrue(other.reserve_interjection('group:a',cfg,1021))
+  finally:other.close()
+ def test_random_interjection_not_blocked_by_proactive_daily_budget(self):
+  cfg={'trigger':'mention','behavior':{'quietStart':0,'quietEnd':0,'randomReplyProbability':.2,'dailyProactiveLimit':0}}
+  self.assertTrue(self.s.eligible(cfg,'group:a','123',False,'聊天',now=1000,rng=lambda:0))
+  self.assertFalse(self.s.reserve_interjection('group:a',{'behavior':{'hourlyInterjectionLimit':0}},1000))
+  self.assertTrue(self.s.eligible(cfg,'group:a','123',True,'你好',now=1001))
  def test_unmentioned_silence(self):self.assertFalse(self.s.eligible({'trigger':'mention'},'g','123',False,'路过',now=100))
  def test_private_and_mention(self):self.assertTrue(self.s.eligible({'trigger':'mention'},'p','',False,'你好',now=100));self.assertTrue(self.s.eligible({'trigger':'mention'},'g','123',True,'你好',now=100))
  def test_whitelist(self):self.assertFalse(self.s.eligible({'trigger':'all','groups':['456']},'g','123',True,'你好',now=100))

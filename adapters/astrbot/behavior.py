@@ -24,6 +24,8 @@ class BehaviorStore:
         CREATE TABLE IF NOT EXISTS facts(scope TEXT,subject TEXT,name TEXT,value TEXT,event TEXT,updated REAL,version INTEGER,active INTEGER,PRIMARY KEY(scope,subject,name,version));
         CREATE TABLE IF NOT EXISTS relations(scope TEXT,subject TEXT,affinity INTEGER,emotion TEXT,expires REAL,last_seen REAL,PRIMARY KEY(scope,subject));
         CREATE TABLE IF NOT EXISTS deliveries(scope TEXT,day TEXT,count INTEGER,last_sent REAL,PRIMARY KEY(scope,day));
+        CREATE TABLE IF NOT EXISTS group_interjections(scope TEXT,at REAL);
+        CREATE INDEX IF NOT EXISTS group_interjections_scope_at ON group_interjections(scope,at);
         CREATE TABLE IF NOT EXISTS relation_events(scope TEXT,subject TEXT,event TEXT,at REAL,PRIMARY KEY(scope,subject,event));
         CREATE TABLE IF NOT EXISTS relation_progress(scope TEXT,subject TEXT,last_gain REAL,day INTEGER,gains INTEGER,PRIMARY KEY(scope,subject));''')
         initiative.initialize(self.db)
@@ -68,13 +70,18 @@ class BehaviorStore:
             hour=datetime.fromtimestamp(now,timezone(timedelta(hours=8))).hour;start=b.get('quietStart',23);end=b.get('quietEnd',8)
             quiet=(start<=hour<end) if start<end else (hour>=start or hour<end) if start!=end else False
             if quiet or rng()>=b.get('randomReplyProbability',0.014):return False
-            day=datetime.fromtimestamp(now,timezone(timedelta(hours=8))).date().isoformat()
-            row=self.db.execute('SELECT coalesce(sum(count),0) FROM deliveries WHERE day=?',(day,)).fetchone()
-            if row and row[0]>=b.get('dailyProactiveLimit',3):return False
-            if b.get('dailyProactiveLimit',3)<=0:return False
-            self.db.execute('INSERT INTO deliveries VALUES(?,?,1,?) ON CONFLICT(scope,day) DO UPDATE SET count=count+1,last_sent=excluded.last_sent',(scope,day,now))
-            self.db.execute('DELETE FROM deliveries WHERE last_sent<?',(now-7*86400,));self.db.commit()
         self.last[scope]=now;return True
+    def reserve_interjection(self,scope,cfg,now=None):
+        # Bound model attempts, including silent answers, across configuration
+        # apply/restart. Per-bot SQLite bounds the total across all its groups.
+        now=time.time() if now is None else now
+        limit=(cfg.get('behavior') or {}).get('hourlyInterjectionLimit',20)
+        with self.db:
+            self.db.execute('DELETE FROM group_interjections WHERE at<=?',(now-3600,))
+            count=self.db.execute('SELECT count(*) FROM group_interjections WHERE at>?',(now-3600,)).fetchone()[0]
+            if count>=limit:return False
+            self.db.execute('INSERT INTO group_interjections VALUES(?,?)',(scope,now))
+        return True
     def close(self):self.planner.close();self.memory.close();self.reflection.close();self.social.close();self.db.close()
 
 def clean_text(text,max_chars=500):
@@ -209,13 +216,16 @@ def install_runtime(core,settings):
         if group and not internal and not st.participation.allow(scope,event.get_message_str(),cfg.get('behavior') or {},directed=mentioned or event.get_message_str().startswith('/') or cfg.get('trigger')=='all'):return
         recent=st.db.execute('SELECT last_bot FROM contacts WHERE scope=?',(scope,)).fetchone()
         followup=bool(recent and recent[0]>0 and now-recent[0]<(cfg.get('behavior') or {}).get('followupSeconds',0))
-        if followup and group and not mentioned:
+        if followup and group and not internal and not mentioned and not event.get_message_str().startswith('/'):
             # One decision per event: a rejected 80% follow-up must not get a
             # second 2% random-entry chance. Quiet hours suppress auto follow-up,
             # while an explicit @ still reaches the normal reply path.
             if initiative.quiet(cfg,now) or random.random()>=(cfg.get('behavior') or {}).get('followupReplyProbability',1):return
         if not internal and not st.eligible(cfg,scope,group,mentioned or followup,event.get_message_str()):return
         if st.active>=2:return
+        automatic=bool(group and not mentioned and not event.get_message_str().startswith('/'))
+        if automatic and not st.reserve_interjection(scope,cfg):
+            m=metrics.setdefault(id,{});m['interjectionsLimited']=m.get('interjectionsLimited',0)+1;return
         st.active+=1;care.stamp(s['root']);generation=s.get('generation');stamps=metrics.setdefault(id,{})
         for k in ('received','requests','replies','failures'):stamps.setdefault(k,0)
         stamps['received']+=1
@@ -223,6 +233,7 @@ def install_runtime(core,settings):
         identity={'bot_id':s['botId'],'group_id':group or None,'sender_id':subject,'nickname':event.get_sender_name(),'directed_to_bot':not group or mentioned or followup,'owner':bool(owner and subject==owner)}
         from social import allow_meme
         social_cfg=dict(cfg.get('behavior') or {});social_cfg['_qqAccount']=str(event.get_self_id());meme_allowed=allow_meme(social_cfg,event.get_message_str())
+        stamps['memeCandidatesOffered']=stamps.get('memeCandidatesOffered',0)+int(meme_allowed)
         event.set_extra('_hosted_meme_allowed',meme_allowed);social_cfg['memeEnabled']=meme_allowed
         event.set_extra('_hosted_context',json.dumps({'identity':identity,'state':state,'social':st.social.context(scope,event.get_message_str(),social_cfg),'ambient_group_messages':st.ambient.context(scope,now) if (cfg.get('behavior') or {}).get('socialAwareness',True) else [],'origin':'internal_timer' if internal else 'real_QQ','recent_burst':[{'sender_id':x['sender_id'],'text':x['text']} for x in batch],'previous_proactive_output':event.get_extra('_hosted_previous_output','')},ensure_ascii=False));event.set_extra('_hosted_generation',generation)
         try:
@@ -280,12 +291,16 @@ def install_runtime(core,settings):
                     if kind=='text':remaining-=len(value)
                     chain.append(Plain(value) if kind=='text' else Face(id=value))
             elif not isinstance(component,Face) or (s['config'].get('behavior') or {}).get('qqFaces',True):chain.append(component)
+        if self.get_extra('_hosted_meme_allowed') is True and not image:
+            key='memeDeliverySuppressed' if '[MEME:' in raw else 'memeNoSelection'
+            m=metrics.setdefault(id,{});m[key]=m.get(key,0)+1
         if image or gallery:
             # Materialize bounded approved bytes before the network await. A
             # concurrent catalog deletion must not break a textual reply.
             chosen=image or gallery
             try:component=Image.fromBytes(social.stickers.image(chosen['id'],scope) if chosen.get('sticker') else Path(chosen['path']).read_bytes())
-            except OSError:image=None;gallery=None
+            except OSError:
+                image=None;gallery=None;m=metrics.setdefault(id,{});m['imageReadFailures']=m.get('imageReadFailures',0)+1
             else:
                 chain=[x for x in chain if not isinstance(x,Face)]+[component]
                 if image:social.reserve_image(scope)
