@@ -13,10 +13,10 @@ import time
 import signal
 BASE = Path('/var/lib/fishbot-memory-control')
 CONTAINER = os.environ.get('FISHBOT_CONTAINER', 'fishbot-current-platform')
-IDLE_SECONDS = float(os.environ.get('FISHBOT_MEMORY_IDLE_SECONDS', '60'))
+IDLE_SECONDS = float(os.environ.get('FISHBOT_MEMORY_IDLE_SECONDS', '18'))
 IDLE_MIB = int(os.environ.get('FISHBOT_MEMORY_IDLE_MIB', '96'))
 DATA = Path(os.environ.get('FISHBOT_HOST_DATA', '/var/lib/docker/volumes/fishbot-saas-security-r3_fishbot-data/_data'))
-RECLAIM_SECONDS = float(os.environ.get('FISHBOT_MEMORY_RECLAIM_SECONDS', '120'))
+RECLAIM_SECONDS = float(os.environ.get('FISHBOT_MEMORY_RECLAIM_SECONDS', '40'))
 EXTRA_CONTAINERS = json.loads(os.environ.get('FISHBOT_MEMORY_EXTRA_CONTAINERS', '{}'))
 
 
@@ -99,14 +99,24 @@ def activity(rows):
 
 
 def activity_wakes(rows, owners, now):
-    """Wake the AI owner of traffic, plus the common protocol/control plane."""
+    """Only actual AI owners consume AI telemetry; other components use CPU."""
     signals = {name: activity([row for row in rows if owners[row['pid']] == name])
                for name in ('shared-ai', 'dedicated-ai')}
     wakes = {name: busy or now-stamp < IDLE_SECONDS for name, (stamp, busy) in signals.items()}
-    common = any(wakes.values())
-    for name in ('napcat', 'api', *EXTRA_CONTAINERS):
-        wakes[name] = common
     return wakes
+
+
+def resident_anon(pid):
+    try:
+        return int(next(line.split()[1] for line in Path(f'/proc/{pid}/status').read_text().splitlines() if line.startswith('RssAnon:')))*1024
+    except (OSError, StopIteration, ValueError):
+        return None
+
+
+def reclaim_delay(before, after, failures):
+    """No useful resident reduction: back off instead of advising cold pages."""
+    failures = failures+1 if before is None or after is None or before-after < 1024*1024 else 0
+    return min(600, RECLAIM_SECONDS * 2**min(failures, 4)), failures
 
 
 def main():
@@ -142,6 +152,7 @@ def main():
         except (ProcessLookupError, FileNotFoundError):
             pass
     reclaimed = {}
+    futile = {}
     task = None
     task_owner = None
     (parent/'cgroup.subtree_control').write_text('+memory')
@@ -215,8 +226,11 @@ def main():
                     marker.unlink(missing_ok=True)
             if task is not None:
                 if task.poll() is not None:
+                    delay, failures = reclaim_delay(task_before, resident_anon(task_owner[0]), futile.get(task_owner, 0))
+                    futile[task_owner] = failures
+                    reclaimed[task_owner] = now+delay
                     with (BASE/'pageout-results.jsonl').open('a') as file:
-                        file.write(json.dumps({'at': now, 'owner': task_owner, 'exit': task.returncode})+'\n')
+                        file.write(json.dumps({'at': now, 'owner': task_owner, 'exit': task.returncode, 'nextDelay': delay, 'futileAttempts': failures})+'\n')
                     task = None
                 elif wakes.get(owners.get(task_owner[0]), False):
                     task.terminate()
@@ -226,7 +240,11 @@ def main():
                 for row in rows:
                     name = owners[row['pid']]
                     key = (row['pid'], row['created'])
-                    if name not in external_groups and not wakes.get(name, False) and now-last_busy[name] >= IDLE_SECONDS and now-reclaimed.get(key, 0) >= RECLAIM_SECONDS:
+                    if name not in external_groups and not wakes.get(name, False) and now-last_busy[name] >= IDLE_SECONDS and now >= reclaimed.get(key, 0):
+                        task_before = resident_anon(row['pid'])
+                        if task_before is None or task_before < 4*1048576:
+                            reclaimed[key] = now+RECLAIM_SECONDS
+                            continue
                         group = str(groups[name]).removeprefix('/sys/fs/cgroup')
                         log = (BASE/'pageout-output.jsonl').open('a')
                         try:
@@ -235,15 +253,13 @@ def main():
                             log.close()
                         task_owner = key
                         task_started = now
-                        reclaimed[key] = now
+                        reclaimed[key] = now+RECLAIM_SECONDS
                         break
-            for name, should_wake in wakes.items():
-                if should_wake:
-                    last_busy[name] = now
             limits = {}
             for name, group in groups.items():
-                idle_mib = int(os.environ.get('FISHBOT_MEMORY_'+name.upper().replace('-', '_')+'_MIB', str(IDLE_MIB)))
-                value = 'max' if now-last_busy[name] < IDLE_SECONDS else str(idle_mib*1048576)
+                default_mib = {'napcat': 48, 'shared-ai': 48, 'dedicated-ai': 16}.get(name, IDLE_MIB)
+                idle_mib = int(os.environ.get('FISHBOT_MEMORY_'+name.upper().replace('-', '_')+'_MIB', str(default_mib)))
+                value = 'max' if wakes.get(name, False) or now-last_busy[name] < IDLE_SECONDS else str(idle_mib*1048576)
                 file = group/'memory.high'
                 if file.read_text().strip() != value:
                     file.write_text(value)
@@ -254,6 +270,9 @@ def main():
                 with (BASE/'controller.jsonl').open('a') as file:
                     file.write(json.dumps({'at': now, 'groups': limits})+'\n')
             previous = {row['pid']: row for row in rows}
+            live = {(row['pid'], row['created']) for row in rows}
+            reclaimed = {key: value for key, value in reclaimed.items() if key in live}
+            futile = {key: value for key, value in futile.items() if key in live}
             iteration += 1
             time.sleep(1)
     finally:

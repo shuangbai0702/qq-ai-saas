@@ -26,13 +26,16 @@ async def run():
  AiocqhttpMessageEvent.send=transport;PipelineScheduler.execute=no_model
  async def fetch(url):return (root/'templates/reactions/laugh.png').read_bytes()
  sticker_collection._download=fetch
- settings={name:{'botId':name,'generation':1,'root':str(Path(tmp.name)/name),'config':{'trigger':'mention','behavior':{'stickerCollect':True,'stickerGroups':['12345'],'memeEnabled':True,'galleryEnabled':True,'dailyMemeLimit':20,'memeCooldownSeconds':20}}} for name in ['a','b']}
+ settings={name:{'botId':name,'generation':1,'root':str(Path(tmp.name)/name),'config':{'trigger':'mention','behavior':{'qqFaces':False,'stickerCollect':True,'stickerGroups':['12345'],'memeEnabled':True,'memeProbability':1,'galleryEnabled':True,'dailyMemeLimit':20,'memeCooldownSeconds':20}}} for name in ['a','b']}
  runtime=install_runtime(SimpleNamespace(event_bus=SimpleNamespace(stopped_platforms=set())),settings)
  def event(id,group='12345',text='群友发表情'):
   raw=Event.from_payload({'post_type':'message','message_type':'group','sub_type':'normal','self_id':90000,'user_id':123456,'group_id':int(group),'message_id':123,'message':[{'type':'image','data':{'sub_type':1,'url':'https://gchat.qpic.cn/fixture'}}]})
   msg=AstrBotMessage();msg.type=MessageType.GROUP_MESSAGE;msg.self_id='90000';msg.session_id=group;msg.message_id='123';msg.group=Group(group_id=group);msg.sender=MessageMember('123456','群友');msg.message=[Plain(text)];msg.message_str=text;msg.raw_message=raw
   e=AiocqhttpMessageEvent(text,msg,PlatformMetadata('aiocqhttp','fixture',id),group,bot=None);e.set_extra('_hosted_lease',settings[id]);e.set_extra('_hosted_generation',1);return e
  try:
+  await AiocqhttpMessageEvent.send(event('a',text='你好'),MessageChain(chain=[Plain('正常文字[QQ_FACE:14]'),Face(id=4)]))
+  assert ''.join(x.text for x in sent[-1][1].chain if isinstance(x,Plain))=='正常文字'
+  assert not any(isinstance(x,Face) for x in sent[-1][1].chain),'disabled QQ faces leaked into an ordinary reply'
   e=event('a');await PipelineScheduler.execute(None,e);await runtime['stores']['a'].social.stickers.task
   items=runtime['manage']('a',{'action':'list_stickers'})['items'];assert len(items)==1 and items[0]['status']=='pending'
   assert runtime['manage']('b',{'action':'list_stickers'})['items']==[]

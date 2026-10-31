@@ -35,3 +35,19 @@ test('native profile facade handles non-configurable getter without touching des
  try{process.dlopen=((module:any)=>{module.exports={NodeQQNTWrapperUtil:util}})as any;const runtime={env:{NAPCAT_WRAPPER_PATH:path.resolve('fixture-wrapper.node')},qqProfile:'/private/bot/qq/profile'};runner.isolateNativeProfile(runtime);const module:any={exports:{}};process.dlopen(module,path.resolve('fixture-wrapper.node'));assert.equal(module.exports.NodeQQNTWrapperUtil.getNTUserDataInfoConfig(),runtime.qqProfile);assert.equal(module.exports.NodeQQNTWrapperUtil.getOwner(),util);assert.equal((util as any).getNTUserDataInfoConfig(),'/desktop/profile')}
  finally{process.dlopen=original}
 });
+
+test('saved QQ resume is tried once per process; failure and explicit QR remain scannable',async()=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'fish-napcat-resume-'));await mkdir(path.join(root,'qq'));await writeFile(path.join(root,'qq/identity.json'),JSON.stringify({uin:'90123456'}));
+ const adapter=new NapCatAdapter({inspect:async()=>({pid:123})}as any,root);const ctx:RuntimeContext={botId:'saved',tenantId:'a',root,generation:1,revision:1,aiPort:24000,protocolPort:24002,token:'a',config:defaultConfig,apiKey:'',expectedUin:'90123456'};
+ let restores=0,fail=false;
+ (adapter as any).request=async(_ctx:any,action:string)=>{
+  if(action==='/QQLogin/GetQuickLoginList')return[{uin:'90123456'}];
+  if(action==='/QQLogin/SetQuickLogin'){restores++;if(fail)throw new Error('saved session expired');return{}}
+  return{isOffline:true,loginPhase:'waiting_qrcode',qrcodeurl:'native-qr'};
+ };
+ await writeFile(path.join(root,'napcat-platform.json'),JSON.stringify({resume:true}));assert.equal((await adapter.getLoginState(ctx)).state,'authenticating');assert.equal(restores,1);
+ assert.equal((await adapter.getLoginState(ctx)).qr,'native-qr');assert.equal(restores,1,'failed native resume must not loop on every health poll');
+ adapter.resumeAttempts.clear();fail=true;assert.equal((await adapter.getLoginState(ctx)).state,'waiting_scan');assert.equal(restores,2);
+ adapter.resumeAttempts.clear();await writeFile(path.join(root,'napcat-platform.json'),JSON.stringify({resume:false}));assert.equal((await adapter.getLoginState(ctx)).qr,'native-qr');assert.equal(restores,2,'explicit QR does not retry a saved session');
+ await writeFile(path.join(root,'napcat-platform.json'),JSON.stringify({resume:true}));await adapter.getLoginState({...ctx,expectedUin:'90876543'});assert.equal(restores,2,'saved identity must match the requested account');
+});

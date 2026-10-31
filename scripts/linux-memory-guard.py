@@ -14,6 +14,16 @@ def rollback(reason):
     if marker.exists():
         return
     marker.write_text(reason)
+    now = time.time()
+    try:
+        old = json.loads((BASE/'recovery.json').read_text())
+        count = max(1, min(6, int(old.get('count', 0))+1)) if 0 <= now-float(old.get('at', 0)) < 600 else 1
+    except (OSError, ValueError, TypeError, AttributeError, OverflowError):
+        count = 1
+    try:
+        (BASE/'recovery.json').write_text(json.dumps({'at': now, 'count': count, 'cooldown': min(600, 30*2**(count-1))}))
+    except OSError:
+        pass  # Recovery bookkeeping must never prevent limit relaxation.
     try:
         registry = json.loads((BASE / 'limits.json').read_text())
     except (OSError, ValueError):
@@ -93,7 +103,11 @@ def main():
                 rollback(reason)
             elif (BASE / 'disabled').exists():
                 recovered_since = recovered_since or now
-                if now - recovered_since >= 30:
+                try:
+                    cooldown = max(30, min(600, float(json.loads((BASE/'recovery.json').read_text())['cooldown'])))
+                except (OSError, ValueError, KeyError, TypeError):
+                    cooldown = 30
+                if now - recovered_since >= cooldown:
                     (BASE / 'disabled').unlink(missing_ok=True)
                     recovered_since = None
             (BASE / 'guard-heartbeat').write_text(str(time.time()))

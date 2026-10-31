@@ -31,6 +31,18 @@ class Ambient:
 
 
 class RuntimeCare:
+    @staticmethod
+    def busy(store):
+        return bool(store.active or any(task and not task.done() for task in (store.social.task, store.social.stickers.task, store.reflection.task)))
+
+    def track(self, store, task):
+        if not task or task.done() or getattr(task, '_hosted_care', False): return
+        task._hosted_care = True
+        self.stamp(store.root)
+        def completed(_):
+            if store in self.stores.values(): self.stamp(store.root)
+        task.add_done_callback(completed)
+
     def __init__(self, stores):
         self.stores, self.last_activity, self.closed = stores, time.time(), False
         self.created = psutil.Process().create_time()
@@ -44,10 +56,10 @@ class RuntimeCare:
         roots = {Path(root)}
         if os.getenv('ASTRBOT_ROOT'): roots.add(Path(os.environ['ASTRBOT_ROOT']))
         value = {'at': self.last_activity, 'pid': os.getpid(), 'created': self.created,
-                 'active': any(s.active for s in self.stores.values())}
+                 'active': any(self.busy(s) for s in self.stores.values())}
         for directory in roots:
             try:
-                value['active']=any(s.active for s in self.stores.values() if directory!=Path(root) or s.root==directory)
+                value['active']=any(self.busy(s) for s in self.stores.values() if directory!=Path(root) or s.root==directory)
                 file = directory/'memory-activity.json'
                 temp = file.with_suffix('.tmp')
                 temp.write_text(json.dumps(value))
@@ -78,7 +90,10 @@ class RuntimeCare:
     async def run(self):
         while not self.closed:
             await asyncio.sleep(60)
-            try:self.sweep()
+            try:
+                for st in list(self.stores.values()):
+                    if self.busy(st):self.stamp(st.root)
+                self.sweep()
             except (OSError,sqlite3.Error):self.failures+=1
     def close(self): self.closed = True
 

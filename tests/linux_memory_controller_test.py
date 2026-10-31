@@ -88,9 +88,9 @@ class ActivityTest(unittest.TestCase):
         with patch.object(controller, 'EXTRA_CONTAINERS', {'postgres': 'pg', 'control-api': 'api'}):
             wakes = controller.activity_wakes(self.rows, {900: 'shared-ai'}, self.now)
         self.assertTrue(wakes['shared-ai'])
-        self.assertTrue(wakes['napcat'])
-        self.assertTrue(wakes['postgres'])
-        self.assertTrue(wakes['control-api'])
+        self.assertFalse(wakes.get('napcat',False))
+        self.assertFalse(wakes.get('postgres',False))
+        self.assertFalse(wakes.get('control-api',False))
         self.assertFalse(wakes['dedicated-ai'])
 
     def test_dedicated_traffic_does_not_wake_shared_ai(self):
@@ -101,6 +101,10 @@ class ActivityTest(unittest.TestCase):
 
 
 class ScopeTest(unittest.TestCase):
+    def test_futile_pageout_backs_off_and_effective_pageout_resets(self):
+        self.assertEqual(controller.reclaim_delay(10_000_000, 10_000_000, 0), (80, 1))
+        self.assertEqual(controller.reclaim_delay(None, None, 5), (600, 6))
+        self.assertEqual(controller.reclaim_delay(10_000_000, 5_000_000, 5), (40, 0))
     def test_scope_restores_docker_parent_on_controller_reentry(self):
         state = {'State': {'Running': True, 'Pid': 900}}
         with patch.object(Path, 'read_text', return_value='0::/system.slice/docker-abc.scope/fishbot-api\n'):
