@@ -26,5 +26,13 @@ test('native group followup respects topic and hourly quota, explicit mentions b
   await message('你好，又来了');await until(async()=>requests.length===5&&(await actions()).length===5,'natural followup without shared words reaches contextual model when lexical filter is off');
   await message('换个说法接着聊');await sleep(800);assert.equal(requests.length,5,'soft topic handling still enforces persisted hourly quota');
 
+  const allCurrent=(await current.app.inject({url:`/v1/bots/${id}`,cookies})).json();
+  const allConfig={...softened,trigger:'all' as const,behavior:{...softened.behavior,fatigueMaxReplies:1,hourlyInterjectionLimit:20}};
+  const allSaved=await current.app.inject({method:'PUT',url:`/v1/bots/${id}/config`,cookies,payload:{expectedRevision:allCurrent.bot.revision,name:allCurrent.bot.name,expectedUin:allCurrent.bot.expected_uin,config:allConfig}});assert.equal(allSaved.statusCode,200,allSaved.body);
+  await until(async()=>(await current.db.query('SELECT applied_revision FROM bots WHERE id=$1',[id]))[0].applied_revision===allSaved.json().revision,'all mode applied');await until(async()=>!!(await mock.call(ctx,'/state')as any).connected,'all mode connected');
+  await message('全群模式第一次自然接话');await until(async()=>requests.length===6&&(await actions()).length===6,'all mode first reply');
+  await message('全群模式第二次自然接话');await sleep(800);assert.equal(requests.length,6,'all mode must still honor configured fatigue');
+  await message('直接叫你回答',true);await until(async()=>requests.length===7&&(await actions()).length===7,'explicit mention still bypasses fatigue');
+
  }finally{await current.app.close();await new Promise<void>(r=>server.close(()=>r()))}
 });

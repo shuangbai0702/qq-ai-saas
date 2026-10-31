@@ -57,7 +57,8 @@ def run(file, data, connection=None):
                     row['disabled'] = bool(db.execute('SELECT 1 FROM social_pattern_blocks WHERE scope=? AND expression=?', (r['scope'], r['expression'])).fetchone()) if 'social_pattern_blocks' in tables else False
                     row['expired'] = r['updated'] < time.time()-30*86400
                     patterns.append(row)
-            contacts = [dict(r) for r in db.execute('SELECT scope,last_user,last_bot,last_attempt,unanswered,opted_out FROM contacts' + pattern_where + ' ORDER BY last_user DESC LIMIT 100', pattern_args)] if 'contacts' in tables else []
+            pause_column='(SELECT until FROM initiative_pauses p WHERE p.scope=contacts.scope)' if 'initiative_pauses' in tables else 'NULL'
+            contacts = [dict(r) for r in db.execute('SELECT scope,last_user,last_bot,last_attempt,unanswered,opted_out,'+pause_column+' AS paused_until FROM contacts' + pattern_where + ' ORDER BY last_user DESC LIMIT 100', pattern_args)] if 'contacts' in tables else []
             relations = [dict(r) for r in db.execute('SELECT scope,subject,affinity,emotion,expires,last_seen FROM relations' + (' WHERE '+' AND '.join(clauses) if clauses else '') + ' ORDER BY last_seen DESC LIMIT 100',([scope] if scope else [])+([subject] if subject else []))] if 'relations' in tables else []
             stats = {name: db.execute('SELECT count(*) FROM ' + name).fetchone()[0] for name in ['social_samples', 'social_patterns', 'social_learning'] if name in tables}
             epoch=db.execute('SELECT epoch FROM social_control WHERE id=1').fetchone()[0] if 'social_control' in tables else 0
@@ -67,7 +68,7 @@ def run(file, data, connection=None):
                 if scope:conditions.append('scope=?');summary_args.append(scope)
                 if query:conditions.append('instr(text,?)>0');summary_args.append(query)
                 summaries=[dict(r) for r in db.execute('SELECT id,scope,text,updated FROM memory_summaries'+(' WHERE '+' AND '.join(conditions) if conditions else '')+' ORDER BY id DESC LIMIT 100',summary_args)]
-            return {'initialized': True, 'epoch': epoch, 'facts': facts, 'summaries':summaries,'patterns': patterns, 'contacts': contacts, 'relations': relations, 'stats': stats, 'limit': 100}
+            return {'initialized': True, 'epoch': epoch, 'facts': facts, 'summaries':summaries,'patterns': patterns, 'contacts': contacts, 'relations': relations, 'stats': stats, 'limit': 100, 'companion': {t:[dict(r) for r in db.execute('SELECT * FROM '+t+(' WHERE scope=?' if scope else '')+' ORDER BY rowid DESC LIMIT 30',([scope] if scope else []))] for t in ['companion_interests','companion_motives','companion_emotion'] if t in tables}}
         initialize_controls(db)
         db.execute('BEGIN IMMEDIATE')
         action, scope = data['action'], data.get('scope', '')

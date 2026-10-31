@@ -9,7 +9,7 @@ import {createApp} from '../apps/control-api/src/app.js';
 const exec=promisify(execFile),python=path.resolve(`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`);
 
 test('behavior management: runtime reads, tombstones, epochs and delayed learning',async()=>{
- const result=await exec(python,['tests/capability_data_test.py'],{windowsHide:true});assert.match(result.stderr,/Ran 9 tests/);assert.match(result.stderr,/OK/);
+ const result=await exec(python,['tests/capability_data_test.py'],{windowsHide:true});assert.match(result.stderr,/Ran 10 tests/);assert.match(result.stderr,/OK/);
 });
 
 test('capability data and gallery management authenticate, isolate, persist and reject stale changes',async()=>{

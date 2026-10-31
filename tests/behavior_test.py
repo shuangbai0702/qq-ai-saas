@@ -39,6 +39,11 @@ class BehaviorTests(unittest.TestCase):
   self.assertEqual(self.s.observe('g','u','普通话题','e3',now=401)['emotion'],'平静')
   self.s.observe('internal','u','','timer',now=500)
   self.assertIsNone(self.s.db.execute("SELECT 1 FROM relations WHERE scope='internal'").fetchone())
+ def test_negated_emotional_phrases_do_not_invert_emotion(self):
+  rejected=self.s.observe('p1','u','我不喜欢你','e1',now=100)
+  self.assertEqual(rejected['emotion'],'有点委屈');self.assertEqual(rejected['affinity'],-1)
+  self.assertEqual(self.s.observe('p2','u','我没有讨厌你','e2',now=100)['emotion'],'平静')
+  self.assertEqual(self.s.observe('p3','u','不是喜欢你','e3',now=100)['emotion'],'平静')
  def test_emotion_real_state(self):self.assertEqual(self.s.observe('g','u','谢谢','e',now=100)['emotion'],'开心');self.assertEqual(self.s.observe('g','u','你好','e2',now=500)['emotion'],'平静')
  def test_rolling_hour_limit_persists_across_groups_and_isolates_bots(self):
   cfg={'behavior':{'hourlyInterjectionLimit':20}}

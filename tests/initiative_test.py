@@ -23,5 +23,21 @@ class InitiativeTests(unittest.TestCase):
  def test_global_bot_quota(self):
   self.cfg['behavior']['proactiveTargets']+=['private:87654321'];incoming(self.s.db,'private:87654321','87654321','90000001','你好',90);item=candidates(self.s.db,self.cfg,200)[0];reserve(self.s.db,self.cfg,item,200);self.assertEqual(candidates(self.s.db,self.cfg,300),[])
  def test_dice_zero_token_gate(self):self.assertEqual(candidates(self.s.db,{**self.cfg,'behavior':{**self.cfg['behavior'],'proactiveChance':0}},200),[])
+ def test_goodnight_is_temporary_and_restart_preserves_pause(self):
+  incoming(self.s.db,'private:12345678','12345678','90000001','晚安',150)
+  self.assertEqual(self.s.db.execute('SELECT opted_out FROM contacts').fetchone()[0],0)
+  self.assertEqual(candidates(self.s.db,self.cfg,300),[])
+  self.s.close();self.s=BehaviorStore(Path(self.tmp.name)/'a.db')
+  self.assertEqual(candidates(self.s.db,self.cfg,301),[])
+  incoming(self.s.db,'private:12345678','12345678','90000001','我回来了',400)
+  self.assertTrue(candidates(self.s.db,self.cfg,500))
+ def test_ambient_group_goodnight_cannot_disable_proactive(self):
+  incoming(self.s.db,'group:777777','12345678','90000001','晚安',100,directed=False)
+  self.cfg['behavior']['proactiveTargets']=['group:777777']
+  self.assertTrue(candidates(self.s.db,self.cfg,200))
+ def test_new_pause_invalidates_reserved_candidate(self):
+  item=candidates(self.s.db,self.cfg,200)[0]
+  incoming(self.s.db,'private:12345678','12345678','90000001','晚安',201)
+  self.assertFalse(reserve(self.s.db,self.cfg,item,202))
  def test_split_preserves_code(self):self.assertEqual(split_text('```js\na();\n```'),['```js\na();\n```']);self.assertEqual(split_text('你好呀。今天吃什么？'),['你好呀。','今天吃什么？']);self.assertLessEqual(len(split_text('好。'*8)),3)
 if __name__=='__main__':unittest.main(verbosity=2)

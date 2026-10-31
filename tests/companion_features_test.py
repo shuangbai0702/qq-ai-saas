@@ -21,6 +21,18 @@ class Companion(unittest.IsolatedAsyncioTestCase):
   item=initiative.candidates(self.db,self.cfg,plan['due']+1)[0];self.assertEqual(item['topic'],'最近喝的茶')
   initiative.incoming(self.db,'private:12345','12345','99999','新的消息',self.now)
   self.assertEqual(initiative.candidates(self.db,self.cfg,plan['due']+1),[])
+ async def test_plan_receives_configured_persona(self):
+  captured=[]
+  async def chat(**kw):captured.append(kw);return NS(completion_text='{"contact":false,"delay_minutes":30,"topic":""}')
+  self.cfg['systemPrompt']='角色有稳定的个人兴趣。'
+  self.p.maybe_start(self.cfg,NS(text_chat=chat),lambda:True,self.var,{},self.now);await self.p.task
+  self.assertEqual(json.loads(captured[0]['prompt'])['persona'],self.cfg['systemPrompt'])
+ async def test_authorized_plan_target_is_not_hidden_by_other_contacts(self):
+  for i in range(80):initiative.incoming(self.db,'private:'+str(50000000+i),str(50000000+i),'99999','普通聊天',self.now-350)
+  async def chat(**kw):return NS(completion_text='{"contact":true,"delay_minutes":30,"topic":"继续聊茶"}')
+  self.p.maybe_start(self.cfg,NS(text_chat=chat),lambda:True,self.var,{},self.now)
+  self.assertIsNotNone(self.p.task);await self.p.task
+  self.assertIsNotNone(self.p.plan('private:12345',self.now-400))
  async def test_stale_plan_not_saved(self):
   entered=asyncio.Event();release=asyncio.Event()
   async def chat(**kw):entered.set();await release.wait();return NS(completion_text='{"contact":true,"delay_minutes":30,"topic":"茶"}')
