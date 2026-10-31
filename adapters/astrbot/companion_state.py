@@ -16,6 +16,18 @@ def initialize(db):
     CREATE TABLE IF NOT EXISTS companion_seen(scope TEXT,event TEXT,at REAL,PRIMARY KEY(scope,event));''')
 
 
+def bootstrap_members(db):
+    db.execute('CREATE TABLE IF NOT EXISTS companion_migrations(name TEXT PRIMARY KEY)')
+    if db.execute("SELECT 1 FROM companion_migrations WHERE name='replied_members_v1'").fetchone():return
+    # Reflection rows are written only after a successful real-message reply.
+    # A user's mere ambient presence or nickname is not interaction evidence.
+    rows=db.execute("SELECT r.scope,r.subject,max(r.at) FROM memory_rounds r LEFT JOIN contacts c ON c.scope=r.scope WHERE r.scope LIKE 'group:%' AND r.subject!=coalesce(c.self_id,'') GROUP BY r.scope,r.subject ORDER BY max(r.at) DESC LIMIT 1000").fetchall()
+    for scope,subject,at in rows:
+        if re.fullmatch(r'group:\d{4,20}',scope) and re.fullmatch(r'\d{5,20}',subject):
+            db.execute('INSERT OR IGNORE INTO companion_members(scope,subject,seen,directed) VALUES(?,?,?,?)',(scope,subject,at,at))
+    db.execute("INSERT INTO companion_migrations VALUES('replied_members_v1')");db.commit()
+
+
 def enabled(cfg):return (cfg.get('behavior') or {}).get('selfDevelopment',True)
 
 
@@ -37,7 +49,9 @@ def seed(db,cfg,now):
     if old and old[0]==digest:return
     db.execute("DELETE FROM companion_interests WHERE scope='*'")
     for match in list(re.finditer(r'(?:喜欢|喜爱|爱好|热衷)(?:的是|是)?([^，,。；;\n！？!?]{2,30})',persona))[:12]:
+        if re.search(r'不(?:太|怎么)?$|没(?:有)?$',persona[max(0,match.start()-4):match.start()]):continue
         note_interest(db,'*',match[1],now,digest,'persona')
+    db.commit()
 
 
 def observe(db,cfg,scope,subject,text,event,now,directed=False):
@@ -103,7 +117,7 @@ def targets(db,cfg,now):
     return result[:82]
 
 
-def select_member(db,cfg,scope,now):
+def select_member(db,cfg,scope,now,allow_without_topic=False):
     if not scope.startswith('group:') or not (cfg.get('behavior') or {}).get('autonomousGroupContact',True):return None
     b=cfg.get('behavior') or {}
     rows=db.execute('SELECT subject,seen,directed FROM companion_members WHERE scope=? AND seen>? AND directed>? AND refused=0 AND pause<=? AND unanswered<? AND attempt<? ORDER BY directed DESC LIMIT 32',(scope,now-86400,now-7*86400,now,b.get('maxUnanswered',1),now-b.get('proactiveIntervalSeconds',3600))).fetchall()
@@ -114,9 +128,9 @@ def select_member(db,cfg,scope,now):
         relation=db.execute('SELECT affinity FROM relations WHERE scope=? AND subject=?',(scope,subject)).fetchone()
         motive=db.execute("SELECT topic FROM companion_motives WHERE scope=? AND subject=? AND status='open' AND due<=? AND expires>? LIMIT 1",(scope,subject,now,now)).fetchone()
         interest=db.execute("SELECT topic FROM companion_interests WHERE scope IN (?, '*') AND (source='persona' OR hits>=2) ORDER BY weight DESC LIMIT 1",(scope,)).fetchone()
-        if not motive and not interest:continue
+        if not motive and not interest and not allow_without_topic:continue
         score=(10 if motive else 0)+(relation[0]/20 if relation else 0)+max(0,1-(now-seen)/86400)
-        scored.append((score,subject,seen,motive[0] if motive else interest[0]))
+        scored.append((score,subject,seen,motive[0] if motive else interest[0] if interest else ''))
     if not scored:return None
     _,subject,seen,topic=max(scored)
     return {'subject':subject,'seen':seen,'topic':topic}

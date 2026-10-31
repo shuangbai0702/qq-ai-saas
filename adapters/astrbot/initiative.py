@@ -147,7 +147,9 @@ def start(core,settings,store,metrics):
                     msg=AstrBotMessage();msg.type=MessageType.GROUP_MESSAGE if group else MessageType.FRIEND_MESSAGE;msg.self_id=item['self_id'];msg.session_id=target;msg.message_id=str(raw['message_id']);msg.sender=MessageMember(user_id=item['subject'],nickname='已授权会话');msg.message=[Plain(prompt)];msg.message_str=prompt;msg.timestamp=int(now);msg.raw_message=raw
                     if group:msg.group=Group(group_id=target)
                     event=platform.create_event(msg);event.set_extra('_hosted_contact_subject',item.get('contact_subject'));event.set_extra('_hosted_contact_seen',item.get('contact_seen'));event.set_extra('_hosted_initiative',True);event.set_extra('_hosted_scheduled_generation',s['generation']);event.set_extra('_hosted_last_user',item['last_user']);event.set_extra('_hosted_previous_output',item['last_output'])
-                    platform.commit_event(event);m=metrics.setdefault(id,{});m['proactiveAttempts']=m.get('proactiveAttempts',0)+1
+                    platform.commit_event(event);m=metrics.setdefault(id,{})
+                    if item.get('contact_subject'):m['autonomousGroupAttempts']=m.get('autonomousGroupAttempts',0)+1
+                    m['proactiveAttempts']=m.get('proactiveAttempts',0)+1
                 except asyncio.CancelledError:raise
                 except Exception:
                     # No content/errors from other tenants enter shared logs.

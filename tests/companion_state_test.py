@@ -5,7 +5,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters'/'astrbot'))
 from behavior import BehaviorStore
 from participation import Participation
 import companion_state as cs,initiative
-from semantic_rank import recall
+from semantic_context import recall
 
 class CompanionState(unittest.IsolatedAsyncioTestCase):
  def setUp(self):
@@ -59,27 +59,47 @@ class CompanionState(unittest.IsolatedAsyncioTestCase):
   es.observe(self.db,'g','闭嘴',self.now+3,True)
   for i in range(4):es.observe(self.db,'g','我们接着聊',self.now+4+i,True)
   self.assertEqual(es.context(self.db,'g',self.now+8)['kind'],'calm')
+ def test_bootstrap_uses_only_successful_replied_history_and_never_overwrites_refusal(self):
+  self.db.execute("DELETE FROM companion_migrations WHERE name='replied_members_v1'")
+  self.s.reflection.record('group:77777','12345','real1','一起喝茶','喝茶好呀',self.now-100)
+  self.db.execute("INSERT INTO companion_members(scope,subject,seen,directed,refused) VALUES('group:77777','12345',?,?,1)",(self.now-80,self.now-80));self.db.commit()
+  self.s.reflection.record('group:77777','23456','real2','聊茶叶','好呀',self.now-50)
+  cs.bootstrap_members(self.db)
+  self.assertEqual(self.db.execute("SELECT refused FROM companion_members WHERE subject='12345'").fetchone()[0],1)
+  self.assertEqual(self.db.execute("SELECT directed FROM companion_members WHERE subject='23456'").fetchone()[0],self.now-50)
+  self.assertEqual(self.db.execute('SELECT count(*) FROM companion_members').fetchone()[0],2)
+  cs.bootstrap_members(self.db);self.assertEqual(self.db.execute('SELECT count(*) FROM companion_members').fetchone()[0],2)
  def test_attention_interest_acknowledgement_and_fatigue(self):
   p=Participation();p.outgoing('g','白饭很好吃',self.now)
   b={'attentionEnabled':True,'fatigueEnabled':True,'fatigueMaxReplies':2,'_interests':[{'topic':'茶叶','source':'persona'}]}
   self.assertTrue(p.allow('g','然后呢',b,now=self.now+1));self.assertTrue(p.allow('g','茶叶怎么挑',b,now=self.now+1));self.assertFalse(p.allow('g','明天爬山',b,now=self.now+1))
   p.outgoing('g','继续',self.now+2);self.assertFalse(p.allow('g','茶叶怎么挑',b,now=self.now+3));self.assertTrue(p.allow('g','茶叶怎么挑',b,directed=True,now=self.now+3))
- async def test_remote_semantic_selects_real_ids(self):
+ def test_followup_keeps_both_sides_topic_and_recent_speaker(self):
+  p=Participation();b={'attentionEnabled':True,'fatigueEnabled':True,'fatigueMaxReplies':3}
+  p.outgoing('g','可以的',self.now,subject='12345',request='乌龙茶适合冷泡吗')
+  self.assertIsNone(p.blocked_reason('g','乌龙茶放多久',b,now=self.now+1,subject='12345'))
+  self.assertTrue(p.continuing('g','那要多久呢',subject='12345',now=self.now+2))
+  self.assertIsNone(p.blocked_reason('g','那要多久呢',b,now=self.now+2,subject='12345'))
+  self.assertEqual(p.blocked_reason('g','那要多久呢',b,now=self.now+2,subject='54321'),'attention')
+  self.assertFalse(p.continuing('other','那要多久呢',subject='12345',now=self.now+2))
+  self.assertFalse(p.continuing('g','那要多久呢',subject='12345',now=self.now+120))
+  self.assertIsNone(p.blocked_reason('g','明天爬山去吗',b,now=self.now+2,subject='12345'))
+  self.assertFalse(p.continuing('g','继续聊',subject='12345',now=self.now+2,seconds=0))
+  p.outgoing('g','还可以',self.now+3,subject='12345');p.outgoing('g','嗯',self.now+4,subject='12345')
+  self.assertEqual(p.blocked_reason('g','那要多久呢',b,now=self.now+5,subject='12345'),'fatigue')
+ def test_semantic_candidates_include_different_wording_without_an_extra_request(self):
+  self.s.observe('private:12345','12345','记住：偏好饮料=乌龙茶','a',self.now)
+  metrics={};facts,notes=recall(self.s,'private:12345','12345','口渴时想喝点什么',self.cfg['behavior'],lambda:True,metrics)
+  self.assertEqual(facts[0]['value'],'乌龙茶');self.assertEqual(facts[0]['semantic_mode'],'model_semantic_candidate');self.assertEqual(metrics['semanticContextTurns'],1)
+  self.assertEqual(self.db.execute('SELECT count(*) FROM memory_embedding_budget').fetchone()[0],0)
+ def test_semantic_forgetting_and_stopped_work_return_no_old_facts(self):
   self.s.observe('private:12345','12345','记住：饮料=乌龙茶','a',self.now)
-  async def chat(**kw):return NS(completion_text='{"facts":[0],"summaries":[]}')
-  metrics={};facts,notes=await recall(self.s,'private:12345','12345','平时喝什么',self.cfg['behavior'],NS(text_chat=chat),lambda:True,contextvars.ContextVar('event',default=None),metrics)
-  self.assertEqual(facts[0]['value'],'乌龙茶');self.assertEqual(facts[0]['recall_reason'],'remote_semantic_rank');self.assertEqual(metrics['semanticRerankSuccesses'],1)
- async def test_semantic_forgetting_during_request_cannot_return_old_facts(self):
+  self.s.observe('private:12345','12345','忘记：饮料','b',self.now+1)
+  self.assertEqual(recall(self.s,'private:12345','12345','饮料',self.cfg['behavior'],lambda:True,{}),([],[]))
+  self.assertEqual(recall(self.s,'private:12345','12345','饮料',self.cfg['behavior'],lambda:False,{}),([],[]))
+ def test_semantic_context_is_scoped_and_does_not_fill_other_people(self):
   self.s.observe('private:12345','12345','记住：饮料=乌龙茶','a',self.now)
-  entered=asyncio.Event();release=asyncio.Event()
-  async def chat(**kw):entered.set();await release.wait();return NS(completion_text='{"facts":[0],"summaries":[]}')
-  task=asyncio.create_task(recall(self.s,'private:12345','12345','饮料',self.cfg['behavior'],NS(text_chat=chat),lambda:True,contextvars.ContextVar('event',default=None),{}))
-  await entered.wait();self.s.observe('private:12345','12345','忘记：饮料','b',self.now+1);release.set();self.assertEqual(await task,([],[]))
- async def test_semantic_invalid_response_cools_down_and_scope_does_not_leak(self):
-  self.s.observe('private:12345','12345','记住：饮料=乌龙茶','a',self.now);calls=[]
-  async def chat(**kw):calls.append(kw);return NS(completion_text='{"facts":[999],"summaries":[]}')
-  args=(self.s,'private:12345','12345','饮料',self.cfg['behavior'],NS(text_chat=chat),lambda:True,contextvars.ContextVar('event',default=None),{})
-  await recall(*args);await recall(*args);self.assertEqual(len(calls),1)
-  self.assertEqual(await recall(self.s,'group:77777','12345','饮料',self.cfg['behavior'],NS(text_chat=chat),lambda:True,args[-2],{}),([],[]))
+  self.assertEqual(recall(self.s,'group:77777','12345','饮料',self.cfg['behavior'],lambda:True,{}),([],[]))
+  self.assertEqual(recall(self.s,'private:12345','54321','饮料',self.cfg['behavior'],lambda:True,{}),([],[]))
 
 if __name__=='__main__':unittest.main()

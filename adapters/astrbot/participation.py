@@ -12,12 +12,17 @@ class Participation:
             oldest=min(self.scopes,key=lambda k:self.scopes[k]['last'])
             if oldest!=scope:self.scopes.pop(oldest,None)
         return state
-    def blocked_reason(self,scope,text,cfg,directed=False,now=None):
+    def continuing(self,scope,text,subject='',now=None,seconds=120):
+        """Follow the actual conversation partner, without lexical gatekeeping."""
+        now=time.time() if now is None else now;state=self.scopes.get(scope,{})
+        return bool(text.strip() and subject and subject==state.get('subject') and state.get('sent') and seconds>0 and 0<=now-state['sent'][-1]<seconds)
+    def blocked_reason(self,scope,text,cfg,directed=False,now=None,subject=''):
         if directed:return None
         now=time.time() if now is None else now;state=self.observe(scope,text,now)
         state['sent']=[at for at in state['sent'] if now-at<cfg.get('fatigueWindowSeconds',300)]
         if cfg.get('fatigueEnabled',True) and len(state['sent'])>=cfg.get('fatigueMaxReplies',4):return 'fatigue'
         if cfg.get('attentionEnabled') and state['topic']:
+            if self.continuing(scope,text,subject,now,cfg.get('followupSeconds',120)):return None
             query=tokens(text)
             interest=set().union(*(tokens(x.get('topic','')) for x in cfg.get('_interests',[]) if x.get('source') in ('persona','bot_expression')))
             # Related interests and short conversational acknowledgements may
@@ -28,6 +33,6 @@ class Participation:
         return None
     def allow(self,scope,text,cfg,directed=False,now=None):
         return self.blocked_reason(scope,text,cfg,directed,now) is None
-    def outgoing(self,scope,text,now=None):
+    def outgoing(self,scope,text,now=None,subject='',request=''):
         now=time.time() if now is None else now;state=self.observe(scope,text,now)
-        state['topic']=tokens(text);state['sent']=(state['sent']+[now])[-50:]
+        state['topic']=tokens(text)|tokens(request);state['subject']=subject;state['sent']=(state['sent']+[now])[-50:]
