@@ -78,15 +78,28 @@ class SocialTests(unittest.TestCase):
   self.s.reserve_image('group:1',1000)
   self.assertIsNone(self.s.select_image('想你。','group:1',cfg,1001,explicit=True,automatic_candidates=context['meme_candidates'],request_text=request)[1])
   self.assertIsNone(self.s.select_image('想你。','group:2',{**cfg,'dailyMemeLimit':1},1001,explicit=True,automatic_candidates=context['meme_candidates'],request_text=request)[1])
- def test_automatic_selection_needs_relevance_and_real_offered_pack(self):
+ def test_triggered_candidate_always_selects_current_platform_pack(self):
   cfg={'memeEnabled':True,'memeProbability':1,'memePacks':['blue-fat-fish']};context=self.s.context('group:1','想你了',cfg)
   choose=lambda response,request,offered:self.s.select_image(response,'group:1',cfg,1000,explicit=True,automatic_candidates=offered,request_text=request)[1]
-  self.assertIsNone(choose('配置已经保存。','代码部署进度',context['meme_candidates']))
-  self.assertIsNone(choose('不喜欢你，也不想你。','配置检查',context['meme_candidates']))
+  self.assertTrue(choose('配置已经保存。','代码部署进度',context['meme_candidates'])['id'].startswith('bf_'))
+  self.assertNotEqual(choose('不喜欢你，也不想你。','配置检查',context['meme_candidates'])['category'],'affection')
   self.assertIsNone(choose('抱抱。','家人重病了',context['meme_candidates']))
   platform=choose('想你。','想你了',[{'id':'qqf_fake','category':'affection'}]);self.assertTrue(platform['id'].startswith('bf_'))
-  self.assertIsNone(self.s.select_image('想你。','group:1',{**cfg,'memePacks':[]},1000,explicit=True,automatic_candidates=context['meme_candidates'],request_text='想你了')[1])
-  self.assertIsNone(choose('想你。[MEME:invalid]','想你了',context['meme_candidates']))
+  builtin_context=self.s.context('group:1','普通聊天',{**cfg,'memePacks':[]})
+  builtin=self.s.select_image('配置已经保存。','group:1',{**cfg,'memePacks':[]},1000,explicit=True,automatic_candidates=builtin_context['meme_candidates'],request_text='配置检查')[1]
+  self.assertIsNotNone(builtin);self.assertFalse(builtin['id'].startswith('bf_'))
+  self.assertTrue(choose('想你。[MEME:invalid]','想你了',context['meme_candidates'])['id'].startswith('bf_'))
+ def test_candidate_eligibility_applies_guards_before_offering(self):
+  cfg={'memeEnabled':True,'memePacks':['blue-fat-fish']}
+  self.assertTrue(self.s.image_available('group:1',cfg,1000,'普通聊天'))
+  self.assertFalse(self.s.image_available('group:1',cfg,1000,'家人重病了'))
+  self.s.reserve_image('group:1',1000)
+  self.assertFalse(self.s.image_available('group:1',cfg,1001))
+  self.assertTrue(self.s.image_available('group:2',cfg,1001))
+  self.assertFalse(self.s.image_available('group:2',{**cfg,'dailyMemeLimit':1},1001))
+ def test_no_candidates_does_not_force_an_image(self):
+  cfg={'memeEnabled':True,'memeProbability':1,'memePacks':['blue-fat-fish']}
+  self.assertIsNone(self.s.select_image('配置保存了。','group:1',cfg,1000,explicit=True,automatic_candidates=[])[1])
  def test_natural_question_reply_can_match_outside_incoming_menu(self):
   cfg={'memeEnabled':True,'memeProbability':1,'memePacks':['blue-fat-fish']}
   _,image=self.s.select_image('你要给我讲讲吗？','group:1',cfg,1000,explicit=True,automatic_candidates=[{'id':'unrelated_menu_item','category':'money'}],request_text='有没有看过这个动画')

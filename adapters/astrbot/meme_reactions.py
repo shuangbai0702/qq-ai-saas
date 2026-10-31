@@ -55,8 +55,10 @@ def relevance(item, text, reactions=None):
 def automatic_image(items, offered, response, request):
     if SERIOUS.search(request + '\n' + response): return None
     reactions = categories(response) or categories(request, questions=False)
-    if not reactions: return None
     approved = {item['id']: item for item in items if item['id'].startswith('bf_') and not item.get('sticker')}
+    offered_ids={item.get('id') for item in offered}
+    if not approved:
+        approved={item['id']:item for item in items if item['id'] in offered_ids and not item.get('sticker') and not item['id'].startswith('qqf_')}
     choices = []
     for item in approved.values():
         if item.get('category') not in reactions: continue
@@ -65,5 +67,5 @@ def automatic_image(items, offered, response, request):
     # The final reply can introduce an expression absent from the incoming
     # message's eight-item menu. Search this bot's currently enabled pack only,
     # rather than requiring the model to have anticipated its final wording.
-    offered_ids={item.get('id') for item in offered}
-    return max(choices, key=lambda item: relevance(item, response+'\n'+request, reactions)+int(item['id'] in offered_ids), default=None)
+    if not choices: choices=list(approved.values())
+    return max(choices, key=lambda item: (relevance(item, response+'\n'+request, reactions) if reactions else 0, bool(re.search(r'思考|沉思|冒泡|探头|喝茶|点头',item['meaning'].split('；')[0])), relevance(item, response+'\n'+request, reactions), item['id'] in offered_ids), default=None)
