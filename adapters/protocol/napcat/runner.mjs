@@ -6,6 +6,9 @@ import {pathToFileURL,fileURLToPath} from 'node:url';
 
 export function prepareRuntime(manifestPath) {
   const manifest=JSON.parse(fs.readFileSync(manifestPath,'utf8'));
+  // Agent-generated destination only: do not send the OneBot token elsewhere.
+  const reverseUrl=typeof manifest?.reverseWs?.url==='string'?/^ws:\/\/127\.0\.0\.1:([1-9]\d{0,4})\/ws$/.exec(manifest.reverseWs.url):null;
+  if(!reverseUrl||Number(reverseUrl[1])>65535||typeof manifest.reverseWs.token!=='string'||!/^[a-fA-F0-9]{64}$/.test(manifest.reverseWs.token))throw new Error('A private loopback reverseWs endpoint and hex64 token are required');
   const dataDir=path.resolve(manifest.dataDir),root=path.dirname(path.resolve(manifestPath));
   if(dataDir!==path.join(root,'qq'))throw new Error('NapCat dataDir must belong to the bot manifest directory');
   const runtimeDir=path.resolve(manifest.runtimeDir||'');

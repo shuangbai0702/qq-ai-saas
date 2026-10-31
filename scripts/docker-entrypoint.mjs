@@ -1,4 +1,11 @@
 import {bootstrapAdmin} from './bootstrap-admin.mjs';
-if(process.env.BOOTSTRAP_ADMIN_EMAIL)await bootstrapAdmin();
-delete process.env.BOOTSTRAP_ADMIN_PASSWORD;delete process.env.BOOTSTRAP_ADMIN_PASSWORD_FILE;
-await import('./production-start.mjs');
+const role=process.env.SERVICE_ROLE;
+if(!['api','agent'].includes(role))throw new Error('SERVICE_ROLE must be explicitly set to api or agent');
+process.env.DB_AUTO_MIGRATE='false';
+process.env.HOST='0.0.0.0';
+process.env.EXTERNAL_AGENT=role==='api'?'true':'false';
+if(role==='api'&&process.env.BOOTSTRAP_ADMIN_EMAIL)await bootstrapAdmin();
+delete process.env.BOOTSTRAP_ADMIN_PASSWORD;
+delete process.env.BOOTSTRAP_ADMIN_PASSWORD_FILE;
+if(role==='agent')await import('../dist-server/apps/node-agent/src/main.js');
+else await import('./production-start.mjs');

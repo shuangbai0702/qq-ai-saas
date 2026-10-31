@@ -26,6 +26,7 @@ def extract(archive,destination):
         if not (destination/'napcat.mjs').is_file():raise ValueError('Missing NapCat shell')
 
 def main():
+    from napcat_login_patch import patch_login
     config=json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'));destination=Path(sys.argv[2])
     if destination.exists():raise ValueError('Refusing to replace an existing runtime')
     with tempfile.TemporaryDirectory(prefix='napcat-release-') as temporary:
@@ -40,6 +41,7 @@ def main():
                 digest.update(chunk);output.write(chunk)
         if digest.hexdigest()!=config['bundleSha256']:raise ValueError('Official NapCat release checksum mismatch')
         extract(archive,destination)
+        patch_login(destination/'napcat.mjs')
     print('Verified official NapCat shell '+config['napcatVersion'])
 
 if __name__=='__main__':main()

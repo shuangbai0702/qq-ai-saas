@@ -1,6 +1,7 @@
 """Download the official portable Windows/Node runtime; never touches an installed QQ."""
 from pathlib import Path
 import hashlib,json,subprocess,zipfile,sys
+from napcat_login_patch import patch_login
 ROOT=Path(__file__).resolve().parents[1]
 VERSION='v4.18.41'
 URL=f'https://github.com/NapNeko/NapCatQQ/releases/download/{VERSION}/NapCat.Shell.Windows.Node.zip'
@@ -26,6 +27,7 @@ def install():
             zipfile_.extractall(target)
     for name in ['node.exe','wrapper.node','napcat/napcat.mjs','config.json','package.json']:
         if not (target/name).is_file():raise SystemExit('Runtime incomplete: '+name)
+    patch_login(target/'napcat/napcat.mjs')
     (target/'fishbot-upstream.json').write_text(json.dumps({'repository':'https://github.com/NapNeko/NapCatQQ','release':VERSION,'url':URL,'sha256':SHA256,'scope':'official portable runtime; separate from the desktop QQ install'},indent=2),encoding='utf8')
     print(target)
 if __name__=='__main__':install()

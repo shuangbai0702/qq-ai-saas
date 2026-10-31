@@ -1,0 +1,102 @@
+{
+  "passed": true,
+  "sampledAt": "2026-10-31T09:29:28.668Z",
+  "coverage": {
+    "hostFresh": true,
+    "hostSampledAt": "2026-10-31T09:29:27.831Z",
+    "hostComplete": true,
+    "localComplete": true,
+    "complete": true,
+    "errors": [],
+    "truncated": false
+  },
+  "overview": {
+    "totalBytes": 1861513216,
+    "usedBytes": 773378048,
+    "availableBytes": 1088135168,
+    "swapUsedBytes": 599044096,
+    "zswapPhysicalBytes": 98451456,
+    "zswappedLogicalBytes": 187564032,
+    "onlineQQ": 1,
+    "onlineMock": 0,
+    "runtimeProcesses": 2,
+    "memoryPressureSome": 0,
+    "memoryPressureFull": 0,
+    "cpuPressureSome": 1.39,
+    "cpuPercent": 8.432523051131602
+  },
+  "categories": [
+    {
+      "id": "api",
+      "processCount": 1,
+      "pssBytes": 67558400,
+      "ussBytes": 51314688,
+      "swapBytes": 0
+    },
+    {
+      "id": "postgres",
+      "processCount": 8,
+      "pssBytes": 22255616,
+      "ussBytes": 6529024,
+      "swapBytes": 3866624
+    },
+    {
+      "id": "agent",
+      "processCount": 1,
+      "pssBytes": 53000192,
+      "ussBytes": 36786176,
+      "swapBytes": 20783104
+    },
+    {
+      "id": "protocol",
+      "processCount": 1,
+      "pssBytes": 164233216,
+      "ussBytes": 147861504,
+      "swapBytes": 112427008
+    },
+    {
+      "id": "shared",
+      "processCount": 1,
+      "pssBytes": 44096512,
+      "ussBytes": 43061248,
+      "swapBytes": 169148416
+    },
+    {
+      "id": "dedicated",
+      "processCount": 0,
+      "pssBytes": 0,
+      "ussBytes": 0,
+      "swapBytes": 0
+    },
+    {
+      "id": "other",
+      "processCount": 1,
+      "pssBytes": 25077760,
+      "ussBytes": 20983808,
+      "swapBytes": 10104832
+    }
+  ],
+  "configuredSharedMembers": 3,
+  "onlineSharedMembers": 1,
+  "sharedProcesses": 1,
+  "inactiveAccounts": 3,
+  "inactiveResiduals": 0,
+  "browser": {
+    "passed": true,
+    "readyMs": 177.60840000000007,
+    "source": "deployed production Linux API payload + identical built Web assets; failure/stale scenarios injected",
+    "checks": [
+      "one real QQ",
+      "three configured members versus one online and one actual AI process",
+      "three inactive accounts without residuals",
+      "two trend charts and category selection",
+      "shared link retains route",
+      "390px viewport no document overflow",
+      "stale snapshot warning",
+      "unknown metrics never displayed as zero",
+      "no browser runtime errors"
+    ]
+  },
+  "agentQQAIUnchanged": true,
+  "rawEvidence": "Local ignored test-results/memory-monitor-linux; names, QQ IDs and detailed production metadata are excluded from Git."
+}

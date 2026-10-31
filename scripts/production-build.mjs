@@ -8,6 +8,7 @@ process.chdir(root);
 const entries=[];
 async function collect(dir){for(const item of await readdir(dir,{withFileTypes:true})){const file=path.join(dir,item.name);if(item.isDirectory())await collect(file);else if(item.name.endsWith('.ts')&&!item.name.endsWith('.d.ts'))entries.push(file)}}
 for(const dir of ['apps/control-api','apps/node-agent','packages','adapters'])await collect(dir);
+entries.push(path.resolve('scripts/migrate-pglite-postgres.ts'));
 await build({entryPoints:entries,outbase:'.',outdir:'dist-server',platform:'node',target:'node22',format:'esm',bundle:false,sourcemap:true,logLevel:'info'});
 await mkdir('dist-server/packages/database/migrations',{recursive:true});
 for(const file of await readdir('packages/database/migrations'))if(file.endsWith('.sql'))await copyFile(`packages/database/migrations/${file}`,`dist-server/packages/database/migrations/${file}`);

@@ -18,6 +18,7 @@
     "protocol:lab": "tsx scripts/protocol-lab.ts",
     "admin:create": "tsx scripts/create-admin.ts",
     "build:production": "tsc --noEmit && node scripts/production-build.mjs",
+    "db:migrate:postgres": "tsx scripts/migrate-pglite-postgres.ts",
     "start:production": "node --max-old-space-size=128 scripts/production-start.mjs",
     "check:production": "node scripts/production-check.mjs",
     "setup:napcat": "python scripts/napcat-setup.py",

@@ -3,6 +3,54 @@ Uses pinned AstrBot's native profiles, UMO routing, event draining and providers
 """
 import os,sys,json,copy,asyncio,signal,logging,time
 from pathlib import Path
+def validate_member(id,body):
+    """Validate authenticated IPC before changing a live member; not a sandbox."""
+    import math,re
+    def require(ok):
+        if not ok:raise ValueError('Invalid member configuration')
+    def text(value,limit,empty=True):
+        return isinstance(value,str) and (empty or bool(value)) and len(value)<=limit
+    def tree(value,depth=0):
+        require(depth<=16)
+        if isinstance(value,dict):
+            require(len(value)<=256)
+            for key,item in value.items():require(text(key,256));tree(item,depth+1)
+        elif isinstance(value,list):
+            require(len(value)<=256)
+            for item in value:tree(item,depth+1)
+        elif isinstance(value,str):require(len(value)<=20000)
+        else:require(value is None or type(value) is bool or type(value) is int and abs(value)<=9007199254740991 or type(value) is float and math.isfinite(value))
+    require(isinstance(id,str) and re.fullmatch(r'[a-zA-Z0-9-]{1,80}',id) is not None)
+    require(isinstance(body,dict));tree(body)
+    for key in ('generation','revision'):
+        require(type(body.get(key)) is int and 0<=body[key]<=9007199254740991)
+    require(text(body.get('prompt'),20000,False) and text(body.get('key',''),8192))
+    require(text(body.get('runtimeRoot'),4096,False) and '\x00' not in body['runtimeRoot'])
+    require(text(body.get('uin',''),20) and (not body.get('uin') or re.fullmatch(r'\d{5,20}',body['uin']) is not None))
+    require('botId' not in body or body['botId']==id)
+    groups=body.get('groups')
+    require(isinstance(groups,list) and len(groups)<=100 and all(isinstance(g,str) and re.fullmatch(r'\d{4,20}',g) for g in groups))
+    cfg=body.get('config');platform=body.get('platform');behavior=body.get('behaviorConfig')
+    require(isinstance(cfg,dict) and isinstance(platform,dict) and isinstance(behavior,dict))
+    for key in ('dashboard','platform_settings','provider_settings','provider_ltm_settings','agent_runner'):
+        require(key not in cfg or isinstance(cfg[key],dict))
+    agent=cfg.get('agent_runner',{})
+    require(isinstance(agent.get('config',{}),dict))
+    for key in ('model','persona','compression','misc'):
+        require(key not in agent.get('config',{}) or isinstance(agent['config'][key],dict))
+    for key in ('platform','provider','provider_sources'):
+        require(isinstance(cfg.get(key),list) and all(isinstance(item,dict) for item in cfg[key]))
+    require(not body.get('key') or len(cfg['provider'])==1)
+    for provider in cfg['provider']:
+        for key in ('id','type','provider_type','api_base','model'):
+            require(text(provider.get(key),2000,False))
+        require(isinstance(provider.get('key'),list) and all(text(k,8192) for k in provider['key']))
+    require(platform.get('type')=='aiocqhttp' and platform.get('enable') is True)
+    require(platform.get('ws_reverse_host')=='127.0.0.1')
+    require(type(platform.get('ws_reverse_port')) is int and 1<=platform['ws_reverse_port']<=65535)
+    require(text(platform.get('ws_reverse_token'),256,False))
+    require('behavior' not in behavior or isinstance(behavior['behavior'],dict))
+
 source,root=sys.argv[1],Path(sys.argv[2]).resolve()
 sys.path.insert(0,source);os.environ['ASTRBOT_ROOT']=str(root)
 manifest=json.loads((root/'group.json').read_text(encoding='utf8'))
@@ -102,9 +150,12 @@ async def main():
     async def health(request):
         return web.json_response({'ready':True,'pid':os.getpid(),'generation':manifest['generation'],'capacity':manifest['capacity'],'members':{id:{'generation':m['generation'],'revision':m['revision'],'events':m['events'],'modelConfigured':m['modelConfigured']} for id,m in members.items()},'metrics':behavior['metrics'],'memberErrors':errors,'startedAt':started})
     async def put(request):
-        id=request.match_info['id'];body=await request.json()
-        if not id or len(id)>80 or set(id)-set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-'):raise web.HTTPBadRequest()
-        if not isinstance(body.get('generation'),int) or not isinstance(body.get('revision'),int):raise web.HTTPBadRequest()
+        id=request.match_info['id']
+        try:
+            body=await request.json()
+            validate_member(id,body)
+        except (ValueError,TypeError,RecursionError):
+            raise web.HTTPBadRequest(reason='Invalid member configuration') from None
         async with lock:
             current=members.get(id)
             stamp=(body['generation'],body['revision'])

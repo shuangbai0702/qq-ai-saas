@@ -38,7 +38,7 @@ class ConfigurationTests(unittest.TestCase):
   self.assertTrue(self.store.eligible(cfg,'group:12345','12345',False,'聊天',260,rng=lambda:0))
   self.assertEqual(self.store.db.execute('SELECT sum(count) FROM deliveries').fetchone()[0],1)
  def test_enabling_proactive_does_not_implicitly_enable_interjections(self):
-  self.assertFalse(self.store.eligible({'proactive':True},'group:12345','12345',False,'聊天',200,rng=lambda:.01))
+  self.assertFalse(self.store.eligible({'proactive':True,'behavior':{'randomReplyProbability':0}},'group:12345','12345',False,'聊天',200,rng=lambda:.01))
  def test_clear_learning_allows_learning_from_new_samples(self):
   scope='group:12345';self.store.db.execute('INSERT INTO social_patterns VALUES(?,?,?,?,?,?)',(scope,'有节目效果','轻松玩笑','[1,2]',1,time.time()));self.store.db.execute('INSERT INTO social_pattern_blocks VALUES(?,?)',(scope,'有节目效果'));self.store.db.commit()
   run(self.file,{'action':'clear_learning','scope':scope})

@@ -8,7 +8,7 @@ export class EulerAdapter implements ProtocolAdapter{
  async cancelLogin(ctx:RuntimeContext){await this.stop(ctx.botId)}
  async queryIdentity(ctx:RuntimeContext){const s=await this.getLoginState(ctx);return s.state==='online'?s.uin||null:null}
  getCapabilities(){return ['qr','cancel','requires-uin','requires-signer','onebot-reverse-ws','text','image','record']}
- async getHealth(ctx:RuntimeContext){const p=await this.host.inspect(ctx.botId,'protocol');const s=await this.getLoginState(ctx);return{alive:!!p,ready:!!p,online:!!p&&s.state==='online',pid:p?.pid,rssBytes:p?.rssBytes,mode:'real'}}
+ async getHealth(ctx:RuntimeContext){const p=await this.host.inspect(ctx.botId,'protocol');const s=await this.getLoginState(ctx);return{alive:!!p,ready:!!p,online:!!p&&s.state==='online',loginState:s.state,pid:p?.pid,rssBytes:p?.rssBytes,mode:'real'}}
  async stop(id:string){await this.host.stop(id,'protocol')}
  async exportSessionRef(ctx:RuntimeContext){return path.join(ctx.root,'qq')}
 }

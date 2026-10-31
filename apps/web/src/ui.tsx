@@ -15,7 +15,7 @@ export const memoryPolicyLabel=(policy?:any)=>{
  if(policy.decision==='skipped')return '系统管理（等待有效实例）';
  return '自动优化，等待空闲';
 };
-export const labels:Record<string,string>={stopped:'已停止',stopping:'停止中',starting:'启动中',online:'运行中',degraded:'等待QQ连接',failed:'异常',running:'运行',created:'已创建',qr_ready:'二维码已生成',waiting_scan:'等待扫码',waiting_confirm:'等待手机确认',verification_required:'需要额外验证',authenticating:'正在登录',expired:'二维码已过期',canceled:'已取消',provisioning:'准备中'};
+export const labels:Record<string,string>={offline:'离线（资源已释放）',stopped:'已停止',stopping:'停止中',starting:'启动中',online:'运行中',degraded:'等待QQ连接',failed:'异常',running:'运行',created:'已创建',qr_ready:'二维码已生成',waiting_scan:'等待扫码',waiting_confirm:'等待手机确认',verification_required:'需要额外验证',authenticating:'正在登录',expired:'二维码已过期',canceled:'已取消',provisioning:'准备中'};
 export function Status({value,mock=false}:{value:string;mock?:boolean}){return <span className={'badge '+(value==='online'?'green':value==='failed'?'red':'')}><i/>{mock&&value==='online'?'模拟在线':labels[value]||value}</span>}
 export function Field({label,hint,children}:{label:string;hint?:string;children:ReactNode}){return <label className="field"><span>{label}</span>{children}{hint&&<small>{hint}</small>}</label>}
 export function Stat({title,value,icon,note}:{title:string;value:number;icon:ReactNode;note:string}){return <div className="stat"><div><span>{title}</span><strong>{value.toString().padStart(2,'0')}</strong><small>{note}</small></div><span className="stat-icon">{icon}</span></div>}

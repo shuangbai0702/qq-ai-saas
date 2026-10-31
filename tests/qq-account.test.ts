@@ -7,10 +7,11 @@ test('QQ account edits stop old ownership, clear binding, invalidate QR and pres
   const id=(await current.app.inject({method:'POST',url:'/v1/bots',cookies:cookies[0],payload:{name:'可换QQ',expectedUin:'90000123',apiKey:'synthetic-edit-key'}})).json().id,url='/v1/bots/'+id;
   const old=(await current.app.inject({url,cookies:cookies[0]})).json();await current.db.query("INSERT INTO qq_bindings(bot_id,qq_uin,binding_kind) VALUES($1,'90000123','mock')",[id]);
   const login=(await current.app.inject({method:'POST',url:url+'/login-sessions',cookies:cookies[0],payload:{}})).json();
+  const beforeEdit=(await current.app.inject({url,cookies:cookies[0]})).json();assert.equal(beforeEdit.bot.generation,old.bot.generation+1,'a new login fences the prior runtime lifecycle');
   const body={expectedRevision:1,expectedUin:'90000456'};
   assert.equal((await current.app.inject({method:'PUT',url:url+'/qq-account',cookies:cookies[1],payload:body})).statusCode,404);
   const changed=await current.app.inject({method:'PUT',url:url+'/qq-account',cookies:cookies[0],payload:body});assert.equal(changed.statusCode,200,changed.body);
-  const d=(await current.app.inject({url,cookies:cookies[0]})).json();assert.equal(d.bot.expected_uin,'90000456');assert.equal(d.bot.desired_state,'stopped');assert.equal(d.bot.generation,old.bot.generation+1);assert.equal(d.hasKey,true);assert.deepEqual(d.config,old.config);assert.equal((await current.agent.context(d.bot)).expectedUin,'90000456');
+  const d=(await current.app.inject({url,cookies:cookies[0]})).json();assert.equal(d.bot.expected_uin,'90000456');assert.equal(d.bot.desired_state,'stopped');assert.equal(d.bot.generation,beforeEdit.bot.generation+1);assert.equal(d.hasKey,true);assert.deepEqual(d.config,old.config);assert.equal((await current.agent.context(d.bot)).expectedUin,'90000456');
   assert.equal((await current.db.query('SELECT * FROM qq_bindings WHERE bot_id=$1',[id])).length,0);assert.equal((await current.app.inject({url:'/v1/login-sessions/'+login.id,cookies:cookies[0]})).json().state,'canceled');
   assert.equal((await current.app.inject({method:'PUT',url:url+'/qq-account',cookies:cookies[0],payload:body})).statusCode,409);
   assert.equal((await current.app.inject({method:'PUT',url:url+'/qq-account',cookies:cookies[0],payload:{expectedRevision:2,expectedUin:''}})).statusCode,200);
