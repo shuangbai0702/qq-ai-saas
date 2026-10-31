@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -109,31 +110,40 @@ class MemoryPolicy(unittest.TestCase):
             launcher = Path(tmp)/'launcher.py'
             worker.write_text('import time; time.sleep(30)')
             launcher.write_text('import subprocess,sys,time; subprocess.Popen([sys.executable, '+repr(str(worker))+']); time.sleep(30)')
-            parent = subprocess.Popen([sys.executable,str(launcher)])
+            parent = subprocess.Popen([sys.executable,str(launcher)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
             foreign_script = Path(tmp)/'foreign.py'
             foreign_script.write_text('import time; time.sleep(30)')
-            foreign = subprocess.Popen([sys.executable,str(foreign_script)])
+            foreign = subprocess.Popen([sys.executable,str(foreign_script)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
             try:
                 row=dict(pid=parent.pid,created=psutil.Process(parent.pid).create_time(),root=tmp)
-                tree=memory.owned_tree(row)
+                # The Windows venv launcher can add an interpreter between the
+                # first scan and reclaim. Wait for the fixture worker, then use
+                # one owned snapshot for the native API assertions.
+                deadline=time.monotonic()+5
+                while True:
+                    tree=memory.owned_tree(row)
+                    if any(str(worker) in process.cmdline() for process,_ in tree):break
+                    if time.monotonic()>=deadline:self.fail('fixture worker did not start')
+                    time.sleep(.02)
                 pids={process.pid for process,_ in tree}
                 self.assertIn(parent.pid,pids)
                 self.assertNotIn(foreign.pid,pids)
                 self.assertGreaterEqual(len(tree),2)
                 if sys.platform=='win32':
                     from unittest.mock import call
-                    with patch('ctypes.WinDLL') as dll:
+                    with patch.object(memory,'owned_tree',return_value=tree),patch('ctypes.WinDLL') as dll:
                         kernel=dll.return_value
                         api=dll.return_value
-                        kernel.OpenProcess.side_effect=[101,102]
+                        handles=list(range(101,101+len(tree)))
+                        kernel.OpenProcess.side_effect=handles
                         api.EmptyWorkingSet.return_value=1
                         result=memory.reclaim(row)
                     self.assertEqual(result['strategy'],'windows-idle-working-set-tree')
-                    self.assertEqual(result['processesReclaimed'],2)
+                    self.assertEqual(result['processesReclaimed'],len(tree))
                     opened={entry.args[2] for entry in kernel.OpenProcess.call_args_list}
                     self.assertEqual(opened,pids)
-                    self.assertEqual(api.EmptyWorkingSet.call_count,2)
-                    self.assertEqual(kernel.CloseHandle.call_args_list,[call(101),call(102)])
+                    self.assertEqual(api.EmptyWorkingSet.call_count,len(tree))
+                    self.assertEqual(kernel.CloseHandle.call_args_list,[call(handle) for handle in handles])
                 else:
                     child=next(process for process,_ in tree if process.pid!=parent.pid)
                     with patch.object(memory,'owned_tree',return_value=tree), \
@@ -154,12 +164,17 @@ class MemoryPolicy(unittest.TestCase):
                     self.assertNotEqual(child.pid,foreign.pid)
             finally:
                 for proc in (parent,foreign):
+                    descendants=psutil.Process(proc.pid).children(recursive=True)
+                    for child in reversed(descendants):
+                        try:child.terminate()
+                        except psutil.NoSuchProcess:pass
                     proc.terminate();proc.wait(5)
+                    psutil.wait_procs(descendants,timeout=5)
 
     def test_actual_owned_child_native_windows_or_linux_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
             script=Path(tmp)/'fixture.py';script.write_text('import time;time.sleep(30)')
-            p=subprocess.Popen([sys.executable,str(script)])
+            p=subprocess.Popen([sys.executable,str(script)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
             try:
                 import psutil
                 row=dict(pid=p.pid,created=psutil.Process(p.pid).create_time(),root=tmp)
@@ -172,7 +187,12 @@ class MemoryPolicy(unittest.TestCase):
                     with patch.object(memory.psutil,'swap_memory') as swap:
                         swap.return_value.total=0
                         self.assertEqual(memory.reclaim(row)['strategy'],'system-managed')
-            finally:p.terminate();p.wait(5)
+            finally:
+                descendants=psutil.Process(p.pid).children(recursive=True)
+                for child in reversed(descendants):
+                    try:child.terminate()
+                    except psutil.NoSuchProcess:pass
+                p.terminate();p.wait(5);psutil.wait_procs(descendants,timeout=5)
 
 
 class BehaviorIntegration(unittest.TestCase):
@@ -200,6 +220,9 @@ class BehaviorIntegration(unittest.TestCase):
                 care.last_activity=0;care.last_gc=0;s.active=1
                 self.assertFalse(care.sweep(1000));s.active=0
                 self.assertTrue(care.sweep(1000))
+                self.assertFalse(care.sweep(1600),'unchanged idle heap must not be paged in by periodic GC')
+                care.last_activity=1700
+                self.assertTrue(care.sweep(2100),'new activity permits the next idle collection')
                 self.assertEqual(s.observe('group:1','u','饮料','e2')['facts'][0]['value'],'茶')
                 care.close();care.close();self.assertFalse(care.sweep(2000))
             finally:s.close()

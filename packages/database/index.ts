@@ -6,14 +6,36 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { seedPGliteIfMissing } from './template.js';
 export interface Sql {query<T=any>(sql:string,params?:any[]):Promise<T[]>;transaction<T>(fn:(tx:Sql)=>Promise<T>):Promise<T>;close():Promise<void>}
+export async function configuredDatabaseUrl(){
+ if(process.env.DATABASE_URL)return process.env.DATABASE_URL;
+ if(!process.env.PGHOST)return undefined;
+ const password=process.env.PGPASSWORD_FILE?(await readFile(process.env.PGPASSWORD_FILE,'utf8')).replace(/\r?\n$/,''):process.env.PGPASSWORD||'';
+ const url=new URL(`postgresql://${encodeURIComponent(process.env.PGUSER||'postgres')}@${process.env.PGHOST}:${process.env.PGPORT||'5432'}/${encodeURIComponent(process.env.PGDATABASE||'postgres')}`);
+ url.password=password;if(process.env.PGSSLMODE==='require')url.searchParams.set('sslmode','require');return url.toString();
+}
+
 export async function openDatabase(dataRoot:string,url?:string):Promise<Sql>{
   let db:Sql|undefined;let release:(()=>Promise<void>)|undefined;
   if(!url){await mkdir(dataRoot,{recursive:true});release=await acquireLease(path.resolve(dataRoot),'database')}
   try{
   if(url){
-    const pool=new pg.Pool({connectionString:url,max:8});
-    const wrap=(client:pg.Pool|pg.PoolClient):Sql=>({query:async(sql,params)=>(await client.query(sql,params)).rows,transaction:async(fn)=>{const c=await pool.connect();try{await c.query('BEGIN');const out=await fn(wrap(c));await c.query('COMMIT');return out}catch(e){await c.query('ROLLBACK');throw e}finally{c.release()}},close:()=>pool.end()});
-    db=wrap(pool);
+    const max=Math.min(32,Math.max(1,Number(process.env.PG_POOL_MAX)||4));const pool=new pg.Pool({connectionString:url,max,idleTimeoutMillis:30000,connectionTimeoutMillis:5000,allowExitOnIdle:false});
+    let savepoint=0;
+    const wrap=(client:pg.PoolClient):Sql=>({
+      query:async(sql,params)=>(await client.query(sql,params)).rows,
+      transaction:async fn=>{
+        const name=`nested_${++savepoint}`;
+        await client.query(`SAVEPOINT ${name}`);
+        try{const result=await fn(wrap(client));await client.query(`RELEASE SAVEPOINT ${name}`);return result}
+        catch(error){await client.query(`ROLLBACK TO SAVEPOINT ${name}`);await client.query(`RELEASE SAVEPOINT ${name}`);throw error}
+      },
+      close:async()=>{throw new Error('Transaction does not own the database connection')}
+    });
+    db={query:async(sql,params)=>(await pool.query(sql,params)).rows,transaction:async fn=>{
+      const client=await pool.connect();
+      try{await client.query('BEGIN');const result=await fn(wrap(client));await client.query('COMMIT');return result}
+      catch(error){await client.query('ROLLBACK');throw error}finally{client.release()}
+    },close:()=>pool.end()};
   }else{
     await mkdir(dataRoot,{recursive:true});
     await seedPGliteIfMissing(dataRoot);
@@ -29,11 +51,20 @@ export async function openDatabase(dataRoot:string,url?:string):Promise<Sql>{
     const inner:Sql={query:async(sql,params)=>(await pglite.query<any>(sql,params)).rows,transaction:async(fn)=>pglite.transaction(async tx=>fn({...inner,query:async(sql,params)=>(await tx.query<any>(sql,params)).rows})),close:()=>pglite.close()};
     db={query:(sql,params)=>serial(()=>inner.query(sql,params)),transaction:fn=>serial(()=>inner.transaction(fn)),close:()=>serial(()=>inner.close())};
   }
-  await db.query('CREATE TABLE IF NOT EXISTS schema_migrations(version TEXT PRIMARY KEY,applied_at TIMESTAMPTZ DEFAULT now())');
-  for(const [version,file] of [['001','001_initial.sql'],['002','002_runtime_groups.sql'],['003','003_invitations.sql'],['004','004_bot_quotas.sql'],['005','005_qq_binding_kinds.sql']])if(!(await db.query('SELECT version FROM schema_migrations WHERE version=$1',[version])).length){
-    const sql=await readFile(fileURLToPath(new URL('./migrations/'+file,import.meta.url)),'utf8');
-    await db.transaction(async tx=>{for(const statement of sql.split(';').filter(x=>x.trim()))await tx.query(statement);await tx.query('INSERT INTO schema_migrations(version) VALUES($1)',[version])});
-  }
+  const versionsExpected=['001','002','003','004','005'];
+  if(process.env.DB_AUTO_MIGRATE==='false'){
+    let versions:string[];
+    try{versions=(await db.query<{version:string}>('SELECT version FROM schema_migrations ORDER BY version')).map(x=>x.version)}catch{throw new Error('Database schema is missing; run the explicit migration command')}
+    if(JSON.stringify(versions)!==JSON.stringify(versionsExpected))throw new Error('Database schema is not current; run the explicit migration command');
+  }else await db.transaction(async tx=>{
+    if(url)await tx.query('SELECT pg_advisory_xact_lock(18435, 1)');
+    await tx.query('CREATE TABLE IF NOT EXISTS schema_migrations(version TEXT PRIMARY KEY,applied_at TIMESTAMPTZ DEFAULT now())');
+    for(const [version,file] of [['001','001_initial.sql'],['002','002_runtime_groups.sql'],['003','003_invitations.sql'],['004','004_bot_quotas.sql'],['005','005_qq_binding_kinds.sql']])if(!(await tx.query('SELECT version FROM schema_migrations WHERE version=$1',[version])).length){
+      const sql=await readFile(fileURLToPath(new URL('./migrations/'+file,import.meta.url)),'utf8');
+      for(const statement of sql.split(';').filter(x=>x.trim()))await tx.query(statement);
+      await tx.query('INSERT INTO schema_migrations(version) VALUES($1)',[version]);
+    }
+  });
   const connection=db;let closed:Promise<void>|undefined;db={...connection,close:()=>closed??=(async()=>{try{await connection.close()}finally{await release?.()}})()};
   return db;
   }catch(error){await db?.close().catch(()=>{});await release?.();throw error}

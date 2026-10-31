@@ -11,7 +11,7 @@ async function copy(source,target){const info=await lstat(path.join(root,source)
 for(const name of ['Dockerfile','.dockerignore','package.json','package-lock.json','tsconfig.json','apps/control-api/src','apps/node-agent/src','apps/web/src','apps/web/index.html','apps/web/vite.config.ts','apps/web/public/illustrations','packages','adapters','templates','docker'])await copy(name,name);
 // Runtime/build entry points only: historical QQ experiments and local operator
 // scripts do not belong in a distributable image.
-for(const name of ['production-build.mjs','production-start.mjs','process_control.py','runtime_memory.py','docker-health.mjs','docker-entrypoint.mjs','docker-init.mjs','bootstrap-admin.mjs','setup-linux-napcat.py'])await copy('scripts/'+name,'scripts/'+name);
+for(const name of ['production-build.mjs','production-start.mjs','process_control.py','runtime_memory.py','docker-health.mjs','docker-agent-health.mjs','docker-entrypoint.mjs','docker-init.mjs','bootstrap-admin.mjs','setup-linux-napcat.py','napcat_login_patch.py','migrate-pglite-postgres.ts'])await copy('scripts/'+name,'scripts/'+name);
 for(const name of ['astrbot','runtime_bootstrap.py','pyproject.toml','uv.lock','README.md','LICENSE'])await copy('references/astrbot/'+name,'upstream/astrbot/'+name);
 await copy(loaderPath,'upstream/napcat-loader/node_addon.node');
 const template=JSON.parse(await readFile(path.join(root,'resources/pglite-template/manifest.json'),'utf8'));if(template.empty!==true)throw new Error('Only a verified EMPTY PGlite template may enter an image');await copy('resources/pglite-template','resources/pglite-template');

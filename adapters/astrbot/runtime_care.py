@@ -35,6 +35,7 @@ class RuntimeCare:
         self.stores, self.last_activity, self.closed = stores, time.time(), False
         self.created = psutil.Process().create_time()
         self.last_gc = self.last_activity
+        self.trimmed_activity = None
         self.failures = 0
     def stamp(self, root):
         if self.closed: return
@@ -59,6 +60,9 @@ class RuntimeCare:
             st.ambient.prune(now)
             st.last = {key: at for key, at in st.last.items() if now-at < 86400}
         if now-self.last_activity < 300 or now-self.last_gc < 300: return False
+        # Full Python GC touches cold object pages. Do it once per activity
+        # epoch, rather than repeatedly faulting an unchanged idle heap back in.
+        if self.trimmed_activity == self.last_activity: return False
         if any(s.active or s.batches or (s.social.task and not s.social.task.done()) or (s.social.stickers.task and not s.social.stickers.task.done()) for s in self.stores.values()): return False
         if any(getattr(s,'reflection',None) and s.reflection.task and not s.reflection.task.done() for s in self.stores.values()): return False
         for st in self.stores.values(): st.db.execute('PRAGMA shrink_memory')
@@ -69,6 +73,7 @@ class RuntimeCare:
             libc = ctypes.CDLL(None)
             if hasattr(libc, 'malloc_trim'): libc.malloc_trim(0)
         self.last_gc = now
+        self.trimmed_activity = self.last_activity
         return True
     async def run(self):
         while not self.closed:

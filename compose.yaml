@@ -1,32 +1,116 @@
 name: fishbot-saas
 services:
-  platform:
+  db:
+    image: ${POSTGRES_IMAGE:-postgres:17.6-bookworm}
+    restart: unless-stopped
+    command: ["postgres", "-c", "shared_buffers=96MB", "-c", "work_mem=2MB", "-c", "maintenance_work_mem=32MB", "-c", "max_connections=20", "-c", "max_worker_processes=2", "-c", "max_parallel_workers=0", "-c", "autovacuum_max_workers=2", "-c", "jit=off"]
+    environment:
+      POSTGRES_DB: fishbot
+      POSTGRES_USER: fishbot
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    shm_size: 64mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fishbot -d fishbot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  agent:
     image: ${FISHBOT_IMAGE:-fishbot/qq-ai-saas:0.1.0}
     restart: unless-stopped
-    ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-8787}:8787"
+    depends_on:
+      db: {condition: service_healthy}
+    entrypoint: ["/usr/bin/tini", "--", "node", "--max-old-space-size=128", "scripts/docker-entrypoint.mjs"]
     environment:
-      APP_ORIGIN: ${APP_ORIGIN:?Set the full browser origin in .env.docker}
-      COOKIE_SECURE: ${COOKIE_SECURE:-false}
-      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:?Set administrator email}
-      BOOTSTRAP_ADMIN_PASSWORD_FILE: /run/secrets/bootstrap_admin_password
+      SERVICE_ROLE: agent
+      DATA_ROOT: /var/lib/fishbot
+      PGHOST: db
+      PGPORT: "5432"
+      PGDATABASE: fishbot
+      PGUSER: fishbot
+      PGPASSWORD_FILE: /run/secrets/postgres_password
+      PG_POOL_MAX: "3"
+      DB_LOCK_WAIT_MS: "30000"
+      ASTRBOT_SOURCE: /opt/astrbot
+      ASTRBOT_PYTHON: /opt/astrbot/.venv/bin/python
+      NAPCAT_RUNTIME_DIR: /opt/napcat
+      FISHBOT_ASTRBOT_SLIM: "1"
       SHARED_GROUP_CAPACITY: "8"
-    secrets:
-      - bootstrap_admin_password
+    secrets: [postgres_password]
     volumes:
       - fishbot-data:/var/lib/fishbot
-    read_only: true
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-8787}:8787"
     tmpfs:
       - /tmp:size=256m,mode=1777
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     pids_limit: 1024
     stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD", "node", "scripts/docker-agent-health.mjs"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
+
+  api:
+    image: ${FISHBOT_IMAGE:-fishbot/qq-ai-saas:0.1.0}
+    restart: unless-stopped
+    depends_on:
+      db: {condition: service_healthy}
+    entrypoint: ["/usr/bin/tini", "--", "node", "--max-old-space-size=128", "scripts/docker-entrypoint.mjs"]
+    network_mode: "service:agent"
+    pid: "service:agent"
+    environment:
+      SERVICE_ROLE: api
+      APP_ORIGIN: ${APP_ORIGIN:?Set the full browser origin in .env.docker}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:?Set administrator email}
+      BOOTSTRAP_ADMIN_PASSWORD_FILE: /run/secrets/bootstrap_admin_password
+      DATA_ROOT: /var/lib/fishbot
+      PGHOST: db
+      PGPORT: "5432"
+      PGDATABASE: fishbot
+      PGUSER: fishbot
+      PGPASSWORD_FILE: /run/secrets/postgres_password
+      PG_POOL_MAX: "4"
+      SHARED_GROUP_CAPACITY: "8"
+      DB_LOCK_WAIT_MS: "30000"
+    secrets: [bootstrap_admin_password, postgres_password]
+    volumes:
+      - fishbot-data:/var/lib/fishbot
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "node", "scripts/docker-health.mjs"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
 secrets:
   bootstrap_admin_password:
     file: ./.local/docker-secrets/admin-password
+  postgres_password:
+    file: ./.local/docker-secrets/postgres-password
 volumes:
   fishbot-data:
+  postgres-data:

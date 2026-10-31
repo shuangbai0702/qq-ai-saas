@@ -34,7 +34,7 @@ RUN sed -i "s|http://deb.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g;
 # Copy pristine program files from the image, never a container's mounted QQ data.
 COPY --from=qq-runtime /opt/QQ/resources/app/wrapper.node /opt/QQ/resources/app/libssh2.so.1 /opt/QQ/resources/app/libcrbase.so /opt/QQ/resources/app/libbugly.so /opt/QQ/resources/app/libunwind.so.8 /opt/QQ/resources/app/libunwind-x86_64.so.8 /opt/QQ/resources/app/package.json /opt/napcat/
 COPY --from=qq-runtime /opt/QQ/resources/app/sharp-lib/ /opt/napcat/sharp-lib/
-COPY scripts/setup-linux-napcat.py docker/napcat-upstream.json /tmp/napcat-build/
+COPY scripts/setup-linux-napcat.py scripts/napcat_login_patch.py docker/napcat-upstream.json /tmp/napcat-build/
 ARG NAPCAT_BUNDLE_URL=
 RUN NAPCAT_BUNDLE_URL="${NAPCAT_BUNDLE_URL}" python /tmp/napcat-build/setup-linux-napcat.py /tmp/napcat-build/napcat-upstream.json /opt/napcat/napcat && rm -rf /tmp/napcat-build
 COPY upstream/napcat-loader/node_addon.node /opt/napcat/node_addon.node

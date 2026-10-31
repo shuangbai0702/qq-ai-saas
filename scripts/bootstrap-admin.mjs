@@ -1,11 +1,11 @@
 import {readFile,access} from 'node:fs/promises';import path from 'node:path';import {randomUUID} from 'node:crypto';import {pathToFileURL} from 'node:url';
-import {openDatabase} from '../dist-server/packages/database/index.js';import {hashPassword} from '../dist-server/packages/shared/security.js';
+import {openDatabase,configuredDatabaseUrl} from '../dist-server/packages/database/index.js';import {hashPassword} from '../dist-server/packages/shared/security.js';
 export async function bootstrapAdmin(){
  const root=path.resolve(process.env.DATA_ROOT||'.local'),email=process.env.BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase();
  if(!email||!/^\S+@\S+\.\S+$/.test(email))throw new Error('Valid BOOTSTRAP_ADMIN_EMAIL is required');
  const password=process.env.BOOTSTRAP_ADMIN_PASSWORD_FILE?(await readFile(process.env.BOOTSTRAP_ADMIN_PASSWORD_FILE,'utf8')).trimEnd():process.env.BOOTSTRAP_ADMIN_PASSWORD;
  if(!password||password.length<12||password.length>128)throw new Error('Bootstrap administrator password must have 12–128 characters');
- const db=await openDatabase(root,process.env.DATABASE_URL);
+ const db=await openDatabase(root,await configuredDatabaseUrl());
  try{return await db.transaction(async tx=>{
   const [user]=await tx.query('SELECT id,is_admin FROM users WHERE email=$1',[email]);
   if(user){if(!user.is_admin)throw new Error('Email belongs to an ordinary user; refusing automatic privilege escalation');console.log('Existing administrator preserved');return}

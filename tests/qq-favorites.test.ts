@@ -25,7 +25,7 @@ test('QQ favorite sync preserves animation, settings, ownership and rejects stal
 test('real SaaS favorites routes authorize cached media, edits and sync against bot ownership',async()=>{
  const current=await createApp({root:await mkdtemp(path.resolve('.local/favorites-auth-')),agent:false});try{
   const cookies:Array<{fish_session:string}>=[];for(const name of ['a','b']){const r=await current.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(current.db),email:name+'@favorites.test',name,password:'favorites-test-123'}});cookies.push({fish_session:r.cookies[0].value})}
-  const id=(await current.app.inject({url:'/v1/bots',method:'POST',cookies:cookies[0],payload:{name:'收藏权限'}})).json().id,url='/v1/bots/'+id+'/qq-favorites';
+  const id=(await current.app.inject({url:'/v1/bots',method:'POST',cookies:cookies[0],payload:{name:'收藏权限',protocol:'mock'}})).json().id,url='/v1/bots/'+id+'/qq-favorites';
   assert.equal((await current.app.inject({url})).statusCode,401);for(const route of [url,url+'/qqf_0123456789abcdef'])assert.equal((await current.app.inject({url:route,cookies:cookies[1]})).statusCode,404);
   assert.equal((await current.app.inject({url:url+'/sync',method:'POST',cookies:cookies[1]})).statusCode,404);assert.equal((await current.app.inject({url:url+'/settings',method:'PATCH',cookies:cookies[1],payload:{expectedVersion:'a'.repeat(64),enabled:false}})).statusCode,404);
   assert.equal((await current.app.inject({url:url+'/sync',method:'POST',cookies:cookies[0]})).statusCode,409);assert.equal((await current.app.inject({url,cookies:cookies[0]})).json().supported,false);
