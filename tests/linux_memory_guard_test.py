@@ -39,6 +39,14 @@ class PressureTest(unittest.TestCase):
 
 
 class RollbackTest(unittest.TestCase):
+    def test_repeated_rollback_cooldown_survives_recreation_and_resets_after_stability(self):
+        with tempfile.TemporaryDirectory() as root:
+            base=Path(root);(base/'limits.json').write_text('[]')
+            with patch.object(guard,'BASE',base):
+                for now,expected in [(1000,30),(1035,60),(1100,120),(1300,240),(1600,480),(2100,600),(2801,30)]:
+                    (base/'disabled').unlink(missing_ok=True)
+                    with patch.object(guard.time,'time',return_value=now):guard.rollback('pressure')
+                    self.assertEqual(json.loads((base/'recovery.json').read_text())['cooldown'],expected)
     def test_relaxes_every_registered_limit_and_disables_controller(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('PI_SCRATCH_DIR')) as root:
             base = Path(root)

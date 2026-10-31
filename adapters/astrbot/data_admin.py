@@ -119,6 +119,8 @@ def run(file, data, connection=None):
             old=db.execute('SELECT last_seen FROM relations WHERE scope=? AND subject=?',(scope,data['subject'])).fetchone()
             if not old or old[0]!=data['expectedLastSeen']:return {'error':'关系状态已变化，请刷新后重试','status':409}
             db.execute('DELETE FROM relations WHERE scope=? AND subject=?',(scope,data['subject']))
+            if 'relation_progress' in tables:
+                db.execute('DELETE FROM relation_progress WHERE scope=? AND subject=?',(scope,data['subject']))
         elif action == 'pause_contact':
             # Resuming an explicit recipient opt-out requires their own incoming
             # consent; platform users can pause but cannot override that consent.

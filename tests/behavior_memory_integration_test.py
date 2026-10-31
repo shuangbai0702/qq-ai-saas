@@ -6,7 +6,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, call
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT/'scripts'), str(ROOT/'adapters/astrbot')]
@@ -130,7 +130,6 @@ class MemoryPolicy(unittest.TestCase):
                 self.assertNotIn(foreign.pid,pids)
                 self.assertGreaterEqual(len(tree),2)
                 if sys.platform=='win32':
-                    from unittest.mock import call
                     with patch.object(memory,'owned_tree',return_value=tree),patch('ctypes.WinDLL') as dll:
                         kernel=dll.return_value
                         api=dll.return_value
@@ -152,15 +151,15 @@ class MemoryPolicy(unittest.TestCase):
                          patch.object(memory.os,'close') as close, \
                          patch.object(memory,'ranges',return_value=[(4096,8192)]), \
                          patch.object(memory.Path,'read_text',return_value=''), \
-                         patch.object(memory,'ctypes') as ctypes_mock:
+                         patch.object(memory.ctypes,'CDLL') as libc_mock:
                         swap.return_value.total=memory.MIB
-                        ctypes_mock.CDLL.return_value.process_madvise.return_value=4096
+                        libc_mock.return_value.process_madvise.return_value=4096
                         result=memory.reclaim(row)
                     self.assertEqual(result['processesScanned'],2)
                     self.assertEqual(result['advisedVirtualBytes'],8192)
                     self.assertEqual(pidfd.call_count,2)
                     self.assertEqual(close.call_args_list,[call(10),call(11)])
-                    self.assertEqual(ctypes_mock.CDLL.return_value.process_madvise.call_count,2)
+                    self.assertEqual(libc_mock.return_value.process_madvise.call_count,2)
                     self.assertNotEqual(child.pid,foreign.pid)
             finally:
                 for proc in (parent,foreign):
