@@ -69,7 +69,7 @@ class BehaviorStore:
         if not trigger:
             hour=datetime.fromtimestamp(now,timezone(timedelta(hours=8))).hour;start=b.get('quietStart',23);end=b.get('quietEnd',8)
             quiet=(start<=hour<end) if start<end else (hour>=start or hour<end) if start!=end else False
-            if quiet or rng()>=b.get('randomReplyProbability',0.014):return False
+            if quiet or rng()>=b.get('randomReplyProbability',0.03):return False
         self.last[scope]=now;return True
     def reserve_interjection(self,scope,cfg,now=None):
         # Bound model attempts, including silent answers, across configuration
@@ -218,7 +218,7 @@ def install_runtime(core,settings):
         followup=bool(recent and recent[0]>0 and now-recent[0]<(cfg.get('behavior') or {}).get('followupSeconds',0))
         if followup and group and not internal and not mentioned and not event.get_message_str().startswith('/'):
             # One decision per event: a rejected 80% follow-up must not get a
-            # second 2% random-entry chance. Quiet hours suppress auto follow-up,
+            # second random-entry chance. Quiet hours suppress auto follow-up,
             # while an explicit @ still reaches the normal reply path.
             if initiative.quiet(cfg,now) or random.random()>=(cfg.get('behavior') or {}).get('followupReplyProbability',1):return
         if not internal and not st.eligible(cfg,scope,group,mentioned or followup,event.get_message_str()):return
@@ -274,7 +274,11 @@ def install_runtime(core,settings):
         id=self.get_platform_id();group=str(self.get_group_id() or '');scope='group:'+group if group else 'private:'+str(self.get_sender_id())
         social=store(id,s).social
         raw=clean_internal(''.join(x.text for x in message.chain if isinstance(x,Plain)))
-        _,image=social.select_image(raw,scope,{**(s['config'].get('behavior') or {}),'_qqAccount':str(self.get_self_id())},explicit=self.get_extra('_hosted_meme_allowed') is True or requests_meme(self.get_message_str()))
+        offered=[]
+        if self.get_extra('_hosted_meme_allowed') is True and '收藏' not in self.get_message_str() and '[IMAGE:' not in raw:
+            offered=json.loads(self.get_extra('_hosted_context','{}')).get('social',{}).get('meme_candidates',[])
+        _,image=social.select_image(raw,scope,{**(s['config'].get('behavior') or {}),'_qqAccount':str(self.get_self_id())},explicit=self.get_extra('_hosted_meme_allowed') is True or requests_meme(self.get_message_str()),automatic_candidates=offered,request_text=self.get_message_str())
+        automatic_image_selected=bool(image and '[MEME:' not in raw)
         if self.get_extra('_hosted_meme_allowed') is False:image=None
         gallery=social.select_gallery(raw,s['config'].get('behavior') or {},self.get_message_str())
         if '收藏' in self.get_message_str():
@@ -328,7 +332,8 @@ def install_runtime(core,settings):
             # must not recreate a released store or update the next generation.
             if setting(self) is not s or self.get_platform_id() in core.event_bus.stopped_platforms:return result
         if image:
-            metrics.setdefault(id,{})['imagesSent']=metrics.setdefault(id,{}).get('imagesSent',0)+1
+            m=metrics.setdefault(id,{});m['imagesSent']=m.get('imagesSent',0)+1
+            if automatic_image_selected:m['imagesAutoSent']=m.get('imagesAutoSent',0)+1
         active_store=store(id,s)
         if group:active_store.participation.outgoing(scope,text)
         initiative.outgoing(active_store.db,scope,text,time.time());metrics.setdefault(id,{}).setdefault('replies',0);metrics[id]['replies']+=1
