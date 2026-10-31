@@ -29,10 +29,9 @@ class MemeSemantic(unittest.IsolatedAsyncioTestCase):
         # Remove bundled reactions only from this controlled fixture's catalog.
         original=self.store.catalog
         self.store.catalog=lambda *a,**kw:[i for i in original(*a,**kw) if i['id'] not in ('hug','laugh','thinking')]
-        self.shuffle=patch.object(social.random,'shuffle',lambda items:None);self.shuffle.start()
 
     def tearDown(self):
-        self.shuffle.stop();self.pack.stop();self.store.close();self.db.close();self.tmp.cleanup()
+        self.pack.stop();self.store.close();self.db.close();self.tmp.cleanup()
 
     async def context(self,text='饮品',scope='group:1',current=lambda:True):
         return await self.store.context_semantic(scope,text,self.cfg,self.provider,current)

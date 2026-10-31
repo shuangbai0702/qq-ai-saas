@@ -1,41 +1,29 @@
-import test from 'node:test';import assert from 'node:assert/strict';import http from 'node:http';import path from 'node:path';import {mkdtemp} from 'node:fs/promises';
-import {createApp} from '../apps/control-api/src/app.js';import {defaultConfig} from '../packages/contracts/index.js';import {MockProtocolAdapter} from '../adapters/mock/index.js';import {permitModelFixture} from './helpers/model-fixture.js';import {issueTestInvite} from './helpers/invitations.js';
-const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));async function until(fn:()=>Promise<boolean>,label:string){for(let i=0;i<150;i++){if(await fn())return;await sleep(200)}throw new Error(label)}
-test('native group followup respects topic and hourly quota, explicit mentions bypass it and apply preserves the quota',{timeout:100000},async()=>{
- const requests:any[]=[];const server=http.createServer(async(req,res)=>{let raw='';for await(const b of req)raw+=b;const body=JSON.parse(raw);requests.push(body);res.setHeader('Content-Type','application/json');res.end(JSON.stringify({id:'group-participation',model:body.model,choices:[{index:0,message:{role:'assistant',content:'白饭确实香呀。'},finish_reason:'stop'}]}))});await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));permitModelFixture(server);
+import {permitModelFixture} from './helpers/model-fixture.js';
+import {issueTestInvite} from './helpers/invitations.js';
+import test from 'node:test';import assert from 'node:assert/strict';import http from 'node:http';import {mkdtemp} from 'node:fs/promises';import path from 'node:path';
+import {createApp} from '../apps/control-api/src/app.js';import {defaultConfig} from '../packages/contracts/index.js';import {MockProtocolAdapter} from '../adapters/mock/index.js';
+const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));async function until(fn:()=>Promise<boolean>,why:string){for(let i=0;i<200;i++){if(await fn())return;await sleep(100)}throw new Error(why)}
+test('native followup bypasses lexical and entry limits; all-message mode cannot bypass autonomy whitelist',{timeout:100000},async()=>{
+ const requests:any[]=[];const server=http.createServer(async(req,res)=>{let raw='';for await(const b of req)raw+=b;const body=JSON.parse(raw);requests.push(body);res.setHeader('Content-Type','application/json');res.end(JSON.stringify({id:'group-participation',model:body.model,choices:[{index:0,message:{role:'assistant',content:'接着聊呀。'},finish_reason:'stop'}]}))});await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));permitModelFixture(server);
  const current=await createApp({root:await mkdtemp(path.resolve('.local/group-participation-'))});
  try{
   const auth=await current.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(current.db),email:'group-participation@test.invalid',name:'群搭话',password:'group-participation-123'}});const cookies={fish_session:auth.cookies[0].value};
-  const config={...defaultConfig,baseUrl:`http://127.0.0.1:${(server.address()as any).port}/v1`,model:'group-participation',proactive:false,behavior:{...defaultConfig.behavior!,hourlyInterjectionLimit:1,followupSeconds:120,followupReplyProbability:1,randomReplyProbability:0,quietStart:0,quietEnd:0,typingSimulation:false,typoEnabled:false,splitMessages:false,burstDebounceMs:0,styleLearning:false,memorySummary:false,memeEnabled:false,attentionEnabled:true,fatigueEnabled:true}};
+  let config={...defaultConfig,baseUrl:`http://127.0.0.1:${(server.address()as any).port}/v1`,model:'group-participation',proactive:false,behavior:{...defaultConfig.behavior!,naturalConversation:true,groupParticipationEnabled:true,groupParticipationGroups:[],hourlyInterjectionLimit:0,followupSeconds:120,followupReplyProbability:1,randomReplyProbability:0.2,quietStart:0,quietEnd:0,typingSimulation:false,typoEnabled:false,splitMessages:false,burstDebounceMs:0,styleLearning:false,memorySummary:false,memeEnabled:false,attentionEnabled:true,fatigueEnabled:true,fatigueMaxReplies:1}};
   const created=await current.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'群搭话',protocol:'mock',runtimeMode:'shared',expectedUin:'90007771',apiKey:'group-participation-key',config}});assert.equal(created.statusCode,201,created.body);const id=created.json().id;
-  await current.app.inject({method:'POST',url:`/v1/bots/${id}/actions`,cookies,payload:{action:'start',idempotencyKey:'start'}});await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.ai?.ready,'ready');const ctx=await current.agent.context((await current.db.query('SELECT * FROM bots WHERE id=$1',[id]))[0]),mock=current.agent.protocols.mock as MockProtocolAdapter;
-  await mock.call(ctx,'/transition',{state:'online',uin:'90007771'});await until(async()=>!!(await mock.call(ctx,'/state')as any).connected,'connected');
-  const actions=async()=>(await mock.call(ctx,'/messages')as any[]).filter(x=>x.action==='send_group_msg');
-  const message=(text:string,mention=false,sender='12345678')=>mock.call(ctx,'/message',{group:'777777',sender,text,mention});
-  await message('白饭好吃吗',true);await until(async()=>requests.length===1&&(await actions()).length===1,'explicit initial reply');
-  await message('明天爬山去吗',false,'87654321');await sleep(800);assert.equal(requests.length,1,'unrelated followup does not infer');
-  await message('白饭配什么好呢',false,'87654321');await until(async()=>requests.length===2&&(await actions()).length===2,'another member related followup reaches native SDK');
-  await message('白饭再来一点',false,'77778888');await sleep(800);assert.equal(requests.length,2,'hourly quota suppresses extra unmentioned inference');
-  await message('白饭再聊聊',true);await until(async()=>requests.length===3&&(await actions()).length===3,'explicit mention bypasses quota');
-  const d=(await current.app.inject({url:`/v1/bots/${id}`,cookies})).json();const saved=await current.app.inject({method:'PUT',url:`/v1/bots/${id}/config`,cookies,payload:{expectedRevision:d.bot.revision,name:d.bot.name,expectedUin:d.bot.expected_uin,config:{...config,historyTurns:29}}});assert.equal(saved.statusCode,200,saved.body);await until(async()=>(await current.db.query('SELECT revision,applied_revision,health FROM bots WHERE id=$1',[id])).some(b=>b.revision===saved.json().revision&&b.applied_revision===b.revision&&b.health?.ai?.ready),'live apply');await until(async()=>!!(await mock.call(ctx,'/state')as any).connected,'reconnected after member apply');
-  await message('白饭还想再聊',false,'77778888');await sleep(800);assert.equal(requests.length,3,'config apply cannot reset the persisted hourly quota');
-  await message('白饭说完了',true);await until(async()=>requests.length===4&&(await actions()).length===4,'mention remains responsive after apply');
-  const latest=(await current.app.inject({url:`/v1/bots/${id}`,cookies})).json();const softened={...config,behavior:{...config.behavior,attentionEnabled:false,hourlyInterjectionLimit:2}};
-  const changed=await current.app.inject({method:'PUT',url:`/v1/bots/${id}/config`,cookies,payload:{expectedRevision:latest.bot.revision,name:latest.bot.name,expectedUin:latest.bot.expected_uin,config:softened}});assert.equal(changed.statusCode,200,changed.body);
-  await until(async()=>(await current.db.query('SELECT applied_revision FROM bots WHERE id=$1',[id]))[0].applied_revision===changed.json().revision,'soft topic config applied');await until(async()=>!!(await mock.call(ctx,'/state')as any).connected,'soft topic connected');
-  await message('你好，又来了',false,'77778888');await until(async()=>requests.length===5&&(await actions()).length===5,'natural followup without shared words reaches contextual model when lexical filter is off');
-  await message('换个说法接着聊',false,'87654321');await sleep(800);assert.equal(requests.length,5,'soft topic handling still enforces persisted hourly quota');
-
-  const allCurrent=(await current.app.inject({url:`/v1/bots/${id}`,cookies})).json();
-  const allConfig={...softened,trigger:'all' as const,behavior:{...softened.behavior,fatigueMaxReplies:1,hourlyInterjectionLimit:20}};
-  const allSaved=await current.app.inject({method:'PUT',url:`/v1/bots/${id}/config`,cookies,payload:{expectedRevision:allCurrent.bot.revision,name:allCurrent.bot.name,expectedUin:allCurrent.bot.expected_uin,config:allConfig}});assert.equal(allSaved.statusCode,200,allSaved.body);
-  await until(async()=>(await current.db.query('SELECT applied_revision FROM bots WHERE id=$1',[id]))[0].applied_revision===allSaved.json().revision,'all mode applied');await until(async()=>!!(await mock.call(ctx,'/state')as any).connected,'all mode connected');
-  await message('全群模式第一次自然接话');await until(async()=>requests.length===6&&(await actions()).length===6,'all mode first reply');
-  await message('全群模式第二次自然接话',false,'87654321');await sleep(800);assert.equal(requests.length,6,'all mode must still honor configured fatigue');
-  await message('直接叫你回答',true);await until(async()=>requests.length===7&&(await actions()).length===7,'explicit mention still bypasses fatigue');
-  await message('那要怎么配呢');await until(async()=>requests.length===8&&(await actions()).length===8,'ongoing partner without shared words bypasses fatigue');
-  await message('接着说说');await until(async()=>requests.length===9&&(await actions()).length===9,'ongoing reply does not consume spontaneous interjection quota');
-  await message('别人的新话题',false,'87654321');await sleep(800);assert.equal(requests.length,9,'ongoing replies do not remove fatigue protection for unrelated participants');
-
+  await current.app.inject({method:'POST',url:`/v1/bots/${id}/actions`,cookies,payload:{action:'start',idempotencyKey:'start'}});await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.ai?.ready,'AI ready');
+  const ctx=await current.agent.context((await current.db.query('SELECT * FROM bots WHERE id=$1',[id]))[0]),mock=current.agent.protocols.mock as MockProtocolAdapter;
+  await mock.call(ctx,'/transition',{state:'online',uin:'90007771'});await until(async()=>!!(await mock.call(ctx,'/state')as any).connected,'QQ connected');
+  const actions=async()=>(await mock.call(ctx,'/messages')as any[]).filter(x=>x.action==='send_group_msg'),message=(text:string,mention=false,sender='77778888')=>mock.call(ctx,'/message',{group:'778899',sender,text,mention});
+  await message('无人邀请的新话题');await sleep(400);assert.equal(requests.length,0,'legacy random value is ignored');
+  await message('来聊聊',true);await until(async()=>(await actions()).length===1,'mention');
+  await message('今天刚下班');await until(async()=>(await actions()).length===2,'same partner needs no repeated words');
+  await message('我也坐一会儿',false,'87654321');await until(async()=>(await actions()).length===3,'another participant is an ongoing conversation candidate');assert.equal(requests.length,3,'no separate judge for followup');
+  const apply=async(next:typeof config)=>{config=next;const d=(await current.app.inject({url:`/v1/bots/${id}`,cookies})).json();const saved=await current.app.inject({method:'PUT',url:`/v1/bots/${id}/config`,cookies,payload:{expectedRevision:d.bot.revision,name:d.bot.name,expectedUin:d.bot.expected_uin,config}});assert.equal(saved.statusCode,200,saved.body);await until(async()=>(await current.db.query('SELECT applied_revision FROM bots WHERE id=$1',[id]))[0].applied_revision===saved.json().revision,'applied');await until(async()=>!!(await mock.call(ctx,'/state')as any).connected,'connected after apply')};
+  await apply({...config,historyTurns:29,behavior:{...config.behavior,naturalConversation:false}});
+  await message('继续换个说法',false,'87654321');await until(async()=>(await actions()).length===4,'same partner follows after apply with zero entry quota');
+  await message('其他人的独立话题',false,'12345678');await sleep(400);assert.equal(requests.length,4,'disabled multi-person followup does not become a cold random entry');
+  await apply({...config,trigger:'all',behavior:{...config.behavior,followupSeconds:0}});
+  await message('全消息也不能绕过白名单');await sleep(400);assert.equal(requests.length,4);
+  await message('直接叫你回答',true);await until(async()=>(await actions()).length===5,'explicit mention remains available');
  }finally{await current.app.close();await new Promise<void>(r=>server.close(()=>r()))}
 });

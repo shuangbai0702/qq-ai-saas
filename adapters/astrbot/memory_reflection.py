@@ -43,7 +43,7 @@ def invalidate(db,scope):
 
 class Reflection:
     def __init__(self,db):
-        self.db=db;self.closed=False;self.task=None
+        self.db=db;self.closed=False;self.task=None;self.memory=None
         db.executescript('''CREATE TABLE IF NOT EXISTS memory_rounds(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT,subject TEXT,event TEXT,question TEXT,answer TEXT,at REAL,UNIQUE(scope,event));
         CREATE TABLE IF NOT EXISTS memory_summaries(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT,text TEXT,sources TEXT,updated REAL);
         CREATE TABLE IF NOT EXISTS memory_reflection_budget(day INTEGER PRIMARY KEY,count INTEGER);
@@ -126,17 +126,34 @@ class Reflection:
         if (used[0] if used else 0)>=cfg.get('dailySummaryLimit',12):return
         self.db.execute('INSERT INTO memory_reflection_budget VALUES(?,1) ON CONFLICT(day) DO UPDATE SET count=count+1',(day,));self.db.execute('DELETE FROM memory_reflection_budget WHERE day<?',(day-7,));self.db.commit()
         epoch=self.epoch()
+        insight_mode=self.memory is not None and cfg.get('naturalConversation',True)
+        payload=[{'sender_id':r[1],'event':r[2],'user':r[3],'bot':r[4]} for r in rows]
+        if insight_mode:
+            from companion_insights import snapshot
+            before=snapshot(self.db,scope,{r[1] for r in rows})
         async def run():
             token=event_var.set(None)
             try:
                 metrics['summaryRequests']=metrics.get('summaryRequests',0)+1
-                payload=[{'sender_id':r[1],'event':r[2],'user':r[3],'bot':r[4]} for r in rows]
-                response=await asyncio.wait_for(provider.text_chat(prompt=json.dumps(payload,ensure_ascii=False),system_prompt=SYSTEM,contexts=[],func_tool=None),20)
+                system=SYSTEM
+                if insight_mode:
+                    from companion_insights import SYSTEM as insight_system
+                    system=insight_system
+                prompt=payload
+                if insight_mode:
+                    motives=[{'subject':r[0],'topic':r[1],'status':r[2]} for r in self.db.execute("SELECT subject,topic,status FROM companion_motives WHERE scope=? AND expires>? ORDER BY due LIMIT 6",(scope,time.time()))]
+                    prompt={'persona':str(cfg.get('_persona',''))[:5000],'turns':payload,'unfinished_topics':motives}
+                response=await asyncio.wait_for(provider.text_chat(prompt=json.dumps(prompt,ensure_ascii=False),system_prompt=system,contexts=[],func_tool=None),20)
                 if self.closed or not is_current() or self.epoch()!=epoch:return
                 from output_clean import clean
-                text=clean(response.completion_text or '').strip()[:800]
+                from companion_insights import decode
+                data=decode(response.completion_text)
+                text=clean(data['summary']).strip()[:800]
                 if not text:return
                 with self.db:
+                    if insight_mode:
+                        from companion_insights import apply
+                        metrics['insightsSaved']=metrics.get('insightsSaved',0)+apply(self.db,self.memory,scope,cfg,payload,data,before)
                     self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated) VALUES(?,?,?,?)',(scope,text,json.dumps([r[2] for r in rows]),time.time()))
                     self.db.execute('DELETE FROM memory_rounds WHERE scope=? AND id<=?',(scope,rows[-1][0]))
                     self.db.execute('DELETE FROM memory_summaries WHERE id NOT IN (SELECT id FROM memory_summaries ORDER BY id DESC LIMIT 1000)')

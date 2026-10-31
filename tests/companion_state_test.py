@@ -10,7 +10,7 @@ from semantic_context import recall
 class CompanionState(unittest.IsolatedAsyncioTestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.path=Path(self.tmp.name)/'behavior.sqlite';self.s=BehaviorStore(self.path);self.db=self.s.db;self.now=time.time()
-  self.cfg={'proactive':True,'systemPrompt':'喜欢喝茶。','groups':[],'behavior':{'selfDevelopment':True,'autonomousGroupContact':True,'proactiveModelSchedule':False,'memorySemantic':True,'memorySummary':True,'silenceSeconds':60,'proactiveIntervalSeconds':60,'proactiveChance':1,'quietStart':0,'quietEnd':0}}
+  self.cfg={'proactive':True,'systemPrompt':'喜欢喝茶。','groups':[],'behavior':{'selfDevelopment':True,'autonomousGroupContact':True,'groupParticipationEnabled':True,'groupParticipationGroups':['77777'],'proactiveModelSchedule':False,'memorySemantic':True,'memorySummary':True,'silenceSeconds':60,'proactiveIntervalSeconds':60,'proactiveChance':1,'quietStart':0,'quietEnd':0}}
  def tearDown(self):self.s.close();self.tmp.cleanup()
  def seen(self,scope='group:77777',subject='12345',text='你好，谢谢你',directed=True,now=None,event='one'):
   now=self.now-400 if now is None else now
@@ -72,7 +72,7 @@ class CompanionState(unittest.IsolatedAsyncioTestCase):
  def test_attention_interest_acknowledgement_and_fatigue(self):
   p=Participation();p.outgoing('g','白饭很好吃',self.now)
   b={'attentionEnabled':True,'fatigueEnabled':True,'fatigueMaxReplies':2,'_interests':[{'topic':'茶叶','source':'persona'}]}
-  self.assertTrue(p.allow('g','然后呢',b,now=self.now+1));self.assertTrue(p.allow('g','茶叶怎么挑',b,now=self.now+1));self.assertFalse(p.allow('g','明天爬山',b,now=self.now+1))
+  self.assertTrue(p.allow('g','然后呢',b,now=self.now+1));self.assertTrue(p.allow('g','茶叶怎么挑',b,now=self.now+1));self.assertTrue(p.allow('g','明天爬山',b,now=self.now+1))
   p.outgoing('g','继续',self.now+2);self.assertFalse(p.allow('g','茶叶怎么挑',b,now=self.now+3));self.assertTrue(p.allow('g','茶叶怎么挑',b,directed=True,now=self.now+3))
  def test_followup_keeps_both_sides_topic_and_recent_speaker(self):
   p=Participation();b={'attentionEnabled':True,'fatigueEnabled':True,'fatigueMaxReplies':3}
@@ -80,7 +80,7 @@ class CompanionState(unittest.IsolatedAsyncioTestCase):
   self.assertIsNone(p.blocked_reason('g','乌龙茶放多久',b,now=self.now+1,subject='12345'))
   self.assertTrue(p.continuing('g','那要多久呢',subject='12345',now=self.now+2))
   self.assertIsNone(p.blocked_reason('g','那要多久呢',b,now=self.now+2,subject='12345'))
-  self.assertEqual(p.blocked_reason('g','那要多久呢',b,now=self.now+2,subject='54321'),'attention')
+  self.assertIsNone(p.blocked_reason('g','那要多久呢',b,now=self.now+2,subject='54321'))
   self.assertFalse(p.continuing('other','那要多久呢',subject='12345',now=self.now+2))
   self.assertFalse(p.continuing('g','那要多久呢',subject='12345',now=self.now+120))
   self.assertIsNone(p.blocked_reason('g','明天爬山去吗',b,now=self.now+2,subject='12345'))

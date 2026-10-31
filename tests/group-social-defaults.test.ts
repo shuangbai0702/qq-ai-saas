@@ -10,10 +10,10 @@ test('group social limits and platform images agree in schema, new bot and prese
   assert.equal(cfg.behavior?.randomReplyProbability,.03);
   assert.equal(cfg.behavior?.attentionEnabled,true);
   assert.equal(cfg.behavior?.memeEnabled,true);
-  assert.equal(cfg.behavior?.memeProbability,.7);
+  assert.equal(Object.hasOwn(cfg.behavior!,'memeProbability'),false);
   assert.deepEqual(cfg.behavior?.memePacks,['blue-fat-fish']);
   assert.equal(cfg.behavior?.memeCooldownSeconds,20);
-  assert.equal(cfg.behavior?.dailyMemeLimit,50);
+  assert.equal(Object.hasOwn(cfg.behavior!,'dailyMemeLimit'),false);
  }
  assert.equal(BotConfigSchema.safeParse({...defaultConfig,behavior:{hourlyInterjectionLimit:21}}).success,false);
  assert.equal(BotConfigSchema.parse({...defaultConfig,behavior:{hourlyInterjectionLimit:0,memeEnabled:false}}).behavior?.hourlyInterjectionLimit,0);
@@ -21,3 +21,10 @@ test('group social limits and platform images agree in schema, new bot and prese
 
 
 test('default persona favors a relevant image when the platform offers candidates',()=>{assert.ok(defaultConfig.systemPrompt.includes(platformMemePolicy));assert.ok(!defaultConfig.systemPrompt.includes('日常纯文本为主'));});
+
+
+test('legacy daily limits and probability are removed when loading or saving configuration',()=>{
+ const parsed=BotConfigSchema.parse({...defaultConfig,behavior:{...defaultConfig.behavior,memeProbability:0,dailyMemeLimit:0}});
+ assert.equal(parsed.behavior?.memeEnabled,true);assert.equal(parsed.behavior?.memeCooldownSeconds,20);
+ for(const key of ['memeProbability','dailyMemeLimit'])assert.equal(Object.hasOwn(parsed.behavior!,key),false);
+});

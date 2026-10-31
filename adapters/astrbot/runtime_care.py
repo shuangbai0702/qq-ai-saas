@@ -33,7 +33,7 @@ class Ambient:
 class RuntimeCare:
     @staticmethod
     def busy(store):
-        return bool(store.active or any(task and not task.done() for task in (store.social.task, store.social.stickers.task, store.reflection.task)))
+        return bool(store.active or any(task and not task.done() for task in (store.social.task, store.social.stickers.task, store.reflection.task, getattr(getattr(store,'planner',None),'task',None))))
 
     def track(self, store, task):
         if not task or task.done() or getattr(task, '_hosted_care', False): return
@@ -75,6 +75,7 @@ class RuntimeCare:
         # Full Python GC touches cold object pages. Do it once per activity
         # epoch, rather than repeatedly faulting an unchanged idle heap back in.
         if self.trimmed_activity == self.last_activity: return False
+        if any(getattr(getattr(s,'planner',None),'task',None) and not s.planner.task.done() for s in self.stores.values()):return False
         if any(s.active or s.batches or (s.social.task and not s.social.task.done()) or (s.social.stickers.task and not s.social.stickers.task.done()) for s in self.stores.values()): return False
         if any(getattr(s,'reflection',None) and s.reflection.task and not s.reflection.task.done() for s in self.stores.values()): return False
         for st in self.stores.values(): st.db.execute('PRAGMA shrink_memory')

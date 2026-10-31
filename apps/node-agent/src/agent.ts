@@ -86,10 +86,14 @@ export class NodeAgent {
      const current=async()=>{const [fresh]=await this.db.query('SELECT generation,revision,desired_state,deleted_at FROM bots WHERE id=$1',[bot.id]);return fresh&&!fresh.deleted_at&&fresh.desired_state==='running'&&fresh.generation===ctx!.generation&&fresh.revision===ctx!.revision};
      const superseded=()=>Object.assign(new Error('命令已被新的生命周期或配置替代'),{superseded:true});
      if(!await current())throw superseded();
-     if(bot.runtime_mode!=='shared'||command.kind==='restart')await ai.stop(bot.id);
-     if(command.kind==='restart')await protocol.stop(bot.id);
+     const recovering=command.kind==='restart'&&command.idempotency_key.startsWith('recover-');
+     // Automatic recovery repairs the missing component. A failed shared AI
+     // must not stop an online QQ, and a failed protocol must not detach a
+     // healthy member or restart an independent AI. Manual restart is unchanged.
+     if(!recovering&&(bot.runtime_mode!=='shared'||command.kind==='restart'))await ai.stop(bot.id);
+     if(command.kind==='restart'&&!recovering)await protocol.stop(bot.id);
      if(!await current())throw superseded();
-     await ai.start(ctx);
+     if(!recovering||!(await ai.probe(ctx)).ready)await ai.start(ctx);
      if(!await current()){await ai.stop(bot.id);throw superseded()}
      if(command.kind!=='apply'&&!(await protocol.getHealth(ctx)).alive){if(!await current()){await ai.stop(bot.id);throw superseded()}await protocol.beginLogin(ctx);if(!await current()){await ai.stop(bot.id);await protocol.stop(bot.id);throw superseded()}}
      await this.db.query("UPDATE bots SET observed_state='starting',last_error=NULL WHERE id=$1 AND generation=$2",[bot.id,command.generation])}

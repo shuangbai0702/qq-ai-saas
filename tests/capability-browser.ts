@@ -21,6 +21,16 @@ try{
  const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));await page.goto(address+`/#/bots/${id}/config/capabilities`);
  await page.getByRole('heading',{name:'能力管理',exact:true}).waitFor();await page.getByText('饮料：红茶',{exact:true}).waitFor();
  await page.getByRole('checkbox',{name:'按语境接话与沉默',exact:true}).check();await page.getByRole('button',{name:'保存并应用',exact:true}).click();await page.getByText(/版本 2 已保存/).waitFor();await page.reload();await page.getByRole('checkbox',{name:'按语境接话与沉默',exact:true}).waitFor();assert.equal(await page.getByRole('checkbox',{name:'按语境接话与沉默',exact:true}).isChecked(),true);
+ for(const name of ['话题注意力','长期记忆语义召回','自主选择群成员','持续兴趣、心境和长期话题'])await page.getByRole('checkbox',{name,exact:true}).uncheck();
+ await page.getByRole('checkbox',{name:'持续接话',exact:true}).check();
+ await page.getByRole('button',{name:'保存并应用',exact:true}).click();await page.getByText(/版本 3 已保存/).waitFor();await page.reload();
+ for(const name of ['话题注意力','长期记忆语义召回','自主选择群成员','持续兴趣、心境和长期话题'])assert.equal(await page.getByRole('checkbox',{name,exact:true}).isChecked(),false,name+' persists');
+ assert.equal(await page.getByRole('checkbox',{name:'持续接话',exact:true}).isChecked(),true);
+ const persisted=(await current.db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=3',[id]))[0].config;
+ assert.equal(persisted.behavior.followupSeconds,120);assert.equal(persisted.behavior.memorySemantic,false);assert.equal(persisted.behavior.autoSignature,true);
+ await page.getByRole('checkbox',{name:'长期事实记忆',exact:true}).uncheck();assert.equal(await page.getByRole('checkbox',{name:'长期记忆语义召回',exact:true}).isDisabled(),true);await page.getByRole('checkbox',{name:'长期事实记忆',exact:true}).check();
+ assert.equal(await page.getByRole('checkbox',{name:'随心情更新签名',exact:true}).isDisabled(),true,'missing owner/profile is explained instead of allowing unsafe execution');
+ await page.getByText('自身兴趣、当前心境与长期话题',{exact:true}).click();await page.getByText('尚无情绪记录，不推断情绪变化。',{exact:true}).waitFor();
  const article=page.locator('article').filter({hasText:'饮料：红茶'});
  // A rejected write must remain visible in the editor, without changing data.
  await page.route('**/v1/bots/'+id+'/behavior-data',async route=>{if(route.request().method()==='POST')await route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({error:'记忆版本已变化，请重新查询'})});else await route.continue()});

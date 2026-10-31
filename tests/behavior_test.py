@@ -47,7 +47,9 @@ class BehaviorTests(unittest.TestCase):
  def test_emotion_real_state(self):self.assertEqual(self.s.observe('g','u','谢谢','e',now=100)['emotion'],'开心');self.assertEqual(self.s.observe('g','u','你好','e2',now=500)['emotion'],'平静')
  def test_rolling_hour_limit_persists_across_groups_and_isolates_bots(self):
   cfg={'behavior':{'hourlyInterjectionLimit':20}}
-  for i in range(20):self.assertTrue(self.s.reserve_interjection('group:a',cfg,1000+i))
+  for i in range(20):
+   self.assertTrue(self.s.reserve_interjection('group:a',cfg,1000+i))
+   self.s.db.execute("UPDATE autonomy_sends SET state='sent' WHERE at=?",(1000+i,));self.s.db.commit()
   self.assertFalse(self.s.reserve_interjection('group:a',cfg,1021))
   self.assertFalse(self.s.reserve_interjection('group:b',cfg,1021))
   self.s.close();self.s=BehaviorStore(self.file)
@@ -57,9 +59,9 @@ class BehaviorTests(unittest.TestCase):
   other=BehaviorStore(Path(self.temp.name)/'other.db')
   try:self.assertTrue(other.reserve_interjection('group:a',cfg,1021))
   finally:other.close()
- def test_random_interjection_not_blocked_by_proactive_daily_budget(self):
+ def test_approved_group_entry_not_blocked_by_timer_daily_budget(self):
   cfg={'trigger':'mention','behavior':{'quietStart':0,'quietEnd':0,'randomReplyProbability':.2,'dailyProactiveLimit':0}}
-  self.assertTrue(self.s.eligible(cfg,'group:a','123',False,'聊天',now=1000,rng=lambda:0))
+  self.assertTrue(self.s.eligible(cfg,'group:a','123',True,'聊天',now=1000,rng=lambda:0))
   self.assertFalse(self.s.reserve_interjection('group:a',{'behavior':{'hourlyInterjectionLimit':0}},1000))
   self.assertTrue(self.s.eligible(cfg,'group:a','123',True,'你好',now=1001))
  def test_unmentioned_silence(self):self.assertFalse(self.s.eligible({'trigger':'mention'},'g','123',False,'路过',now=100,rng=lambda:1))
@@ -67,9 +69,9 @@ class BehaviorTests(unittest.TestCase):
  def test_whitelist(self):self.assertFalse(self.s.eligible({'trigger':'all','groups':['456']},'g','123',True,'你好',now=100))
  def test_cooldown(self):
   c={'trigger':'all','behavior':{'cooldownSeconds':10}};self.assertTrue(self.s.eligible(c,'g','123',True,'a',now=100));self.assertFalse(self.s.eligible(c,'g','123',True,'b',now=101));self.assertTrue(self.s.eligible(c,'g','123',True,'c',now=111))
- def test_quiet_random(self):
-  # Epoch is UTC; 16:00 UTC is midnight in the configured Asia/Shanghai zone.
-  c={'trigger':'mention','behavior':{'randomReplyProbability':0.2}};self.assertFalse(self.s.eligible(c,'g','123',False,'a',now=16*3600,rng=lambda:0));self.assertTrue(self.s.eligible(c,'g','123',False,'a',now=24*3600,rng=lambda:0))
+ def test_legacy_random_never_bypasses_semantic_entry(self):
+  # Legacy probability cannot wake a cold group at either hour.
+  c={'trigger':'mention','behavior':{'randomReplyProbability':0.2}};self.assertFalse(self.s.eligible(c,'g','123',False,'a',now=16*3600,rng=lambda:0));self.assertFalse(self.s.eligible(c,'g','123',False,'a',now=24*3600,rng=lambda:0))
  def test_silence_marker(self):self.assertEqual(clean_text('不要发[NO_REPLY]隐藏'),[])
  def test_faces_and_length(self):self.assertEqual(clean_text('[QQ_FACE:14]你好[QQ_FACE:4]'),[('face',14),('text','你好')]);self.assertEqual(sum(len(v) for k,v in clean_text('a'*1000,80) if k=='text'),80)
  def test_internal_not_sent(self):self.assertEqual(clean_text('<think>secret</think>鱼鱼[INTERNAL:debug]'),[('text','鱼鱼')])

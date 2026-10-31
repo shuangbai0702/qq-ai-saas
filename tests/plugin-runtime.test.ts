@@ -1,10 +1,11 @@
 import {permitModelFixture} from './helpers/model-fixture.js';import {issueTestInvite} from './helpers/invitations.js';
-import test from 'node:test';import assert from 'node:assert/strict';import http from 'node:http';import path from 'node:path';import {mkdtemp,writeFile} from 'node:fs/promises';
+import test from 'node:test';import assert from 'node:assert/strict';import http from 'node:http';import path from 'node:path';import {mkdtemp,writeFile,mkdir} from 'node:fs/promises';
 import {createApp} from '../apps/control-api/src/app.js';import {defaultConfig} from '../packages/contracts/index.js';import {MockProtocolAdapter} from '../adapters/mock/index.js';
 const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));async function wait(fn:()=>Promise<boolean>,label:string){for(let n=0;n<120;n++){if(await fn())return;await sleep(500)}throw new Error('timeout '+label)}
 test('real AstrBot agent executes only owner requested QQ tools and stores bounded per-bot reflection',{timeout:140000},async t=>{
  const requests:any[]=[];const server=http.createServer(async(req,res)=>{let text='';for await(const c of req)text+=c;const body=JSON.parse(text);requests.push(body);assert.equal(req.headers.authorization,'Bearer plugin-fixture-key');if(req.url==='/v1/embeddings'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({object:'list',model:'bge-m3',data:body.input.map((_:string,index:number)=>({object:'embedding',index,embedding:[1,0,0]})),usage:{prompt_tokens:10,total_tokens:10}}));return}const tools=body.tools||[],last=body.messages.at(-1),summary=JSON.stringify(body.messages).includes('你是对话记录整理器');let message:any={role:'assistant',content:summary?'11111111说今天喝了红茶。':'鱼鱼在呢。'};let finish='stop';
-  if(!summary&&last?.role!=='tool'&&tools.some((x:any)=>x.function?.name==='hosted_qq_signature')){message={role:'assistant',content:null,tool_calls:[{id:'call-owned-signature',type:'function',function:{name:'hosted_qq_signature',arguments:JSON.stringify({content:'测试签名'})}}]};finish='tool_calls'}
+  if(!summary&&last?.role!=='tool'&&/设置签名|你好可爱/.test(JSON.stringify(body.messages.findLast((m:any)=>m.role==='user')?.content||''))&&tools.some((x:any)=>x.function?.name==='hosted_qq_signature')){message={role:'assistant',content:null,tool_calls:[{id:'call-owned-signature',type:'function',function:{name:'hosted_qq_signature',arguments:JSON.stringify({content:'测试签名'})}}]};finish='tool_calls'}
+  if(!summary&&last?.role!=='tool'&&JSON.stringify(body.messages.findLast((m:any)=>m.role==='user')?.content||'').includes('QQ空间')&&tools.some((x:any)=>x.function?.name==='hosted_qq_publish')){message={role:'assistant',content:null,tool_calls:[{id:'call-owned-qzone',type:'function',function:{name:'hosted_qq_publish',arguments:JSON.stringify({content:'普通文字空间测试'})}}]};finish='tool_calls'}
   res.setHeader('Content-Type','application/json');res.end(JSON.stringify({id:'plugins-'+requests.length,object:'chat.completion',created:Math.floor(Date.now()/1000),model:'plugins-fixture',choices:[{index:0,message,finish_reason:finish}],usage:{prompt_tokens:100,completion_tokens:15,total_tokens:115}}));
  });await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));permitModelFixture(server);t.after(()=>server.close());
  const root=await mkdtemp(path.resolve('.local/plugins-runtime-')),current=await createApp({root});t.after(()=>current.app.close());const {app,db,agent}=current;
@@ -28,8 +29,12 @@ test('real AstrBot agent executes only owner requested QQ tools and stores bound
  const autoBefore=(await mock.call(ctx,'/messages') as any[]).filter(x=>x.action==='set_self_longnick').length;
  const autoRequestStart=requests.length;
  await mock.call(ctx,'/message',{sender:'11111111',text:'你好可爱'});
- await wait(async()=>requests.some(r=>r.messages&&JSON.stringify(r.messages).includes('本轮主人表达了心情或生日话题')),'automatic signature trigger enters real model prompt');
+ await wait(async()=>requests.some(r=>r.messages&&JSON.stringify(r.messages).includes('已开启低频随心情更新QQ签名')),'automatic signature trigger enters real model prompt');
  await wait(async()=>requests.slice(autoRequestStart).some(r=>r.messages?.some((m:any)=>m.role==='tool'&&String(m.content).includes('不重复修改'))),'automatic signature tool dedup receipt');
  assert.equal((await mock.call(ctx,'/messages') as any[]).filter(x=>x.action==='set_self_longnick').length,autoBefore,'identical confirmed signature is not repeated');
- await writeFile('test-results/plugin-alignment/runtime.json',JSON.stringify({passed:true,source:'real AstrBot SDK/Agent/OneBot; QQ and model transport fixtures',modelRequests:requests.length,ownerToolDispatched:true,unauthorizedToolAbsent:true,reflectionPersistedAndForgotten:true},null,2));
+ await mock.call(ctx,'/message',{sender:'11111111',text:'发一下QQ空间吧，你想说的'});
+ await wait(async()=>(await mock.call(ctx,'/messages') as any[]).some(x=>x.action==='send_qzone_msg'),'owner Qzone request dispatches through native tool loop');
+ const post=(await mock.call(ctx,'/messages') as any[]).find(x=>x.action==='send_qzone_msg');assert.equal(post.params.content,'普通文字空间测试');assert.equal(post.params.ugc_right,4);
+ await mkdir('test-results/plugin-alignment',{recursive:true});
+ await writeFile('test-results/plugin-alignment/runtime.json',JSON.stringify({passed:true,source:'real AstrBot SDK/Agent/OneBot; QQ and model transport fixtures',modelRequests:requests.length,ownerToolDispatched:true,qzoneToolDispatched:true,unauthorizedToolAbsent:true,reflectionPersistedAndForgotten:true},null,2));
 });

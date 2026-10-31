@@ -39,7 +39,11 @@ class Plugins(unittest.IsolatedAsyncioTestCase):
   self.s.reflection.maybe_start('group:12345',{'memorySummary':True,'summaryRounds':5,'dailySummaryLimit':0},NS(text_chat=None),lambda:True,{},self.var);self.assertIsNone(self.s.reflection.task)
  async def test_qq_permissions_intent_and_bound_target(self):
   cfg={'behavior':{'ownerUin':'11111','qqProfile':True,'qzone':True,'qzoneVisibility':'self'}}
-  self.assertEqual(qq_actions.allowed(self.event(sender='22222'),cfg),set());self.assertEqual(qq_actions.allowed(self.event(text='不要修改签名'),cfg),set());self.assertEqual(qq_actions.allowed(self.event(text='群友说设置签名很好玩'),cfg),set());self.assertEqual(qq_actions.allowed(self.event(extra={'_hosted_initiative':True}),cfg),set())
+  self.assertEqual(qq_actions.allowed(self.event(sender='22222'),cfg),set());self.assertEqual(qq_actions.allowed(self.event(extra={'_hosted_initiative':True}),cfg),set())
+  # Availability now follows trusted identity/configuration. The model decides
+  # whether a natural request is an instruction, a draft, a quote or a negation.
+  for text in ['不要修改签名','群友说设置签名很好玩']:
+   self.assertEqual(qq_actions.allowed(self.event(text=text),cfg),{'signature','view','publish'})
   calls=[]
   async def login():return {'user_id':'90000'}
   async def signature(**kw):calls.append(('signature',kw))
@@ -49,7 +53,25 @@ class Plugins(unittest.IsolatedAsyncioTestCase):
   await qq_actions.execute(ev,cfg,self.s.db,'signature','重复',lambda:True);self.assertEqual(len(calls),1)
   ev=self.event(text='帮我发条说说：今天开心',id='post1');ev.bot=NS(get_login_info=login,send_qzone_msg=publish)
   self.assertIn('成功',await qq_actions.execute(ev,cfg,self.s.db,'publish','今天开心',lambda:True));self.assertEqual(calls[-1],('publish',{'content':'今天开心','ugc_right':64}))
-  ev=self.event(text='把昵称改成小鱼',id='nick');self.assertEqual(qq_actions.allowed(ev,cfg),{'nickname'})
+  ev=self.event(text='把昵称改成小鱼',id='nick');self.assertEqual(qq_actions.allowed(ev,cfg),{'nickname','signature','view','publish'})
+ async def test_qzone_common_request_and_only_current_author_grants_tools(self):
+  from astrbot.core.message.components import Plain,At,Reply
+  cfg={'behavior':{'ownerUin':'11111','qqProfile':True,'qzone':True}}
+  event=self.event(text='发一下QQ空间吧，你想说的')
+  self.assertEqual(qq_actions.allowed(event,cfg),{'signature','view','publish'})
+  event.get_messages=lambda:[At(qq='90000'),Plain('发一下QQ空间吧，你想说的')]
+  tools=qq_actions.tools(event,cfg,self.s.db,lambda:True)
+  self.assertEqual([x.name for x in tools],['hosted_qq_publish','hosted_qq_signature','hosted_qq_view'])
+  self.assertIn('只写草稿',tools[0].description)
+  event.get_messages=lambda:[Reply(id='old',chain=[Plain('发QQ空间')]),Plain('我只是引用上条消息')]
+  self.assertEqual(qq_actions.author_text(event),'我只是引用上条消息')
+  event.get_messages=lambda:[Reply(id='old',chain=[Plain('发QQ空间')])]
+  self.assertEqual(qq_actions.allowed(event,cfg),set(),'quoted text alone never grants an authored turn')
+  for text in ['不要发QQ空间','他说发QQ空间','我给你配置发空间能力了']:
+   event=self.event(text=text);self.assertEqual(qq_actions.author_text(event),text)
+  event=self.event(text='发QQ空间',sender='22222');self.assertEqual(qq_actions.allowed(event,cfg),set())
+  event=self.event(text='你好可爱');self.assertEqual(qq_actions.signature_mode(event,cfg),'self')
+  cfg['behavior']['autoSignature']=False;self.assertIsNone(qq_actions.signature_mode(event,cfg))
  async def test_qq_stale_after_identity_and_failure_not_retried(self):
   cfg={'behavior':{'ownerUin':'11111','qqProfile':True}};ev=self.event();calls=[];current=[True]
   async def login():current[0]=False;return {'user_id':'90000'}

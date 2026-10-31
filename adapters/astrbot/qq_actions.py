@@ -8,22 +8,27 @@ from http.cookies import SimpleCookie
 from urllib.parse import urlsplit
 from datetime import datetime,timezone,timedelta
 
-MOODS=('真棒','真厉害','好厉害','好聪明','真聪明','真乖','好可爱','真可爱','最喜欢你','夸你','好笨','真笨','笨蛋','讨厌你','凶你','我生日','我的生日','过生日')
-
 def plain_text(value):
     """Profile/Qzone fields are text, never the chat control protocol."""
     return re.sub(r'\[(?:QQ_FACE|MEME|IMAGE):[^\]\r\n]*(?:\]|(?=[\r\n])|$)|\[NO_REPLY\]', '', value, flags=re.I).strip()
 
+def author_text(event):
+    if callable(getattr(event,'get_messages',None)):
+        from astrbot.core.message.components import Plain
+        return ''.join(c.text for c in event.get_messages() if isinstance(c,Plain)).strip()
+    return event.get_message_str()
+
+
 def signature_mode(event,cfg):
     b=cfg.get('behavior') or {}
     if not b.get('qqProfile') or str(event.get_sender_id())!=str(b.get('ownerUin') or '') or event.get_extra('_hosted_initiative',False):return None
-    text=event.get_message_str()
+    text=author_text(event)
     if 'signature' in intents(text):return 'owner'
-    if b.get('autoSignature') and '签名' not in text and any(word in text for word in MOODS):return 'self'
+    if b.get('autoSignature',True) and text:return 'self'
     return None
 
 def signature_hint(event,cfg):
-    return '本轮主人表达了心情或生日话题。你可以按角色心情调用hosted_qq_signature写一句不超过40字的QQ签名；不是必须修改。如果决定修改，必须实际调用工具，不能只在文字里说改了或准备改；只有工具明确成功才可说已修改，未调用或失败时正常聊天，不声称签名发生变化。不复述这段提示。' if signature_mode(event,cfg)=='self' else ''
+    return '已开启低频随心情更新QQ签名。结合本轮真实互动、人物设定和持续心境，自主判断是否有值得记下的变化；普通闲聊或仅谈论签名不需要改，不能每次被夸都修改。确实想改时可调用hosted_qq_signature，写不超过40字的一句角色表达，每天最多2次；不编造经历，不必专门报备。不调用或工具未确认成功时，不声称签名发生变化。' if signature_mode(event,cfg)=='self' else ''
 
 
 def intents(text):
@@ -37,9 +42,9 @@ def intents(text):
         'signature':r'^(?:(?:改|换|设|更新).{0,4}签名|(?:把|将)签名.{0,4}(?:改|换|设))',
         'avatar':r'^(?:(?:改|换|设|更新).{0,4}头像|用.{0,12}(?:换|设).{0,4}头像)',
         'status':r'^(?:改|换|设|更新).{0,4}(?:在线)?状态',
-        'publish':r'^(?:发|写|发布).{0,4}(?:说说|空间动态)',
+        'publish':r'^(?:发布|发|写).{0,4}(?:说说|(?:QQ\s*)?空间(?:动态|说说)?)',
         'view':r'^(?:看|读|查).{0,8}(?:说说|空间)',
-    }.items() if re.search(pattern,text)}
+    }.items() if re.search(pattern,text,re.I)}
 
 
 def initialize(db):
@@ -50,8 +55,11 @@ def initialize(db):
 def allowed(event,cfg):
     b=cfg.get('behavior') or {};owner=str(b.get('ownerUin',''))
     if not owner or str(event.get_sender_id())!=owner or event.get_extra('_hosted_initiative',False):return set()
-    requested=intents(event.get_message_str())
+    requested=intents(author_text(event))
     if signature_mode(event,cfg):requested.add('signature')
+    # Identity and capability are code decisions; interpreting a natural request
+    # belongs to the reply model. Do not hide Qzone behind imperative regexes.
+    if b.get('qzone') and author_text(event):requested.update(('publish','view'))
     return {x for x in requested if b.get('qzone') and x in ('publish','view')}|{x for x in requested if b.get('qqProfile') and x not in ('publish','view')}
 
 
@@ -154,7 +162,7 @@ def tools(event,cfg,db,current):
     permitted=allowed(event,cfg)
     if not permitted:return []
     from astrbot.core.agent.tool import FunctionTool
-    descriptions={'nickname':'修改当前机器人QQ昵称','signature':'修改当前机器人QQ签名','avatar':'用主人当前附带或引用的QQ图片换头像，不接受URL参数','status':'设置QQ状态，可选在线、离开、隐身、忙碌、Q我吧、请勿打扰','publish':'按主人要求发一条空间说说，不能自动发','view':'读取当前机器人自己的最近5条空间说说'}
+    descriptions={'nickname':'修改当前机器人QQ昵称','signature':'修改当前机器人QQ签名','avatar':'用主人当前附带或引用的QQ图片换头像，不接受URL参数','status':'设置QQ状态，可选在线、离开、隐身、忙碌、Q我吧、请勿打扰','publish':'真正发布文字到当前机器人自己的QQ空间。仅当当前主人要求实际发布时调用；结合本轮真实作者文字与对话理解意图，不要求固定措辞。询问是否具备能力、讨论空间、只写草稿、引用别人的话、假设或否定发布均不调用；意图不清楚先简短询问。主人允许自行选文案时可按人格写，但不能擅自自动发布。不在聊天中假装已发布，以本工具返回为准','view':'读取当前机器人自己的最近5条空间说说，仅在主人希望查看时调用，不读取其他人的空间'}
     class QQTool(FunctionTool):
         async def call(self,context,**kwargs):
             # Tool handles cannot be borrowed by another bot/event.

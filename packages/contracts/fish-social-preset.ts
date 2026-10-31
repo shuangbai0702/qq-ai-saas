@@ -4,12 +4,12 @@ import type {BotConfig} from './index.js';
 // retain bounded collection, scoped memory and explicit proactive recipients.
 export const fishSocialPreset={
  historyTurns:30,proactive:true,
- behavior:{qqProfile:true,qzone:true,typingSimulation:true,typingSpeed:15,typingMaxDelay:3,typoEnabled:true,typoProbability:0.02,pokeReply:true,pokeProbability:0.25,memorySummary:true,summaryRounds:10,enabled:true,memory:true,memoryAutoCapture:true,styleLearning:true,socialAwareness:true,
-  expressionSharing:'bot' as const,memeEnabled:true,memeProbability:0.7,
+ behavior:{groupParticipationEnabled:true,groupParticipationIntervalMinutes:15,groupDecisionTimeoutSeconds:10,ownerContactEnabled:true,ownerContactIntervalMinutes:60,ownerContactIdleMinutes:30,ownerContactDailyChecks:12,qqProfile:true,qzone:true,autoSignature:true,typingSimulation:true,typingSpeed:15,typingMaxDelay:3,typoEnabled:true,typoProbability:0.02,pokeReply:true,pokeProbability:0.25,memorySummary:true,summaryRounds:10,enabled:true,memory:true,memoryAutoCapture:true,styleLearning:true,socialAwareness:true,
+  expressionSharing:'bot' as const,memeEnabled:true,
   stickerCollect:true,stickerAllGroups:true,memePacks:['blue-fat-fish'] as ('blue-fat-fish')[],
-  memeCooldownSeconds:20,dailyMemeLimit:50,
+  memeCooldownSeconds:20,
   followupSeconds:120,followupReplyProbability:0.8,randomReplyProbability:0.03,
-  hourlyInterjectionLimit:20,attentionEnabled:true,proactiveModelSchedule:true,autonomousGroupContact:true,selfDevelopment:true,memorySemantic:true,fatigueEnabled:true,fatigueWindowSeconds:300,fatigueMaxReplies:4,
+  hourlyInterjectionLimit:20,naturalConversation:true,attentionEnabled:true,proactiveModelSchedule:true,autonomousGroupContact:true,selfDevelopment:true,memorySemantic:true,fatigueEnabled:true,fatigueWindowSeconds:300,fatigueMaxReplies:4,
   ambientContextMessages:50,splitMessages:true,burstDebounceMs:800,sendIntervalMs:800,
   quietStart:1,quietEnd:7},
 };
