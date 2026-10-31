@@ -15,6 +15,7 @@ from memory_reflection import embedding_request, reserve_embedding
 from data_admin import initialize_controls
 from pathlib import Path
 from hosted_memory import tokens
+from meme_reactions import categories as reaction_categories, relevance as meme_relevance, automatic_image
 from sticker_collection import StickerCollector
 from meme_packs import catalog as pack_catalog
 from qq_favorites import catalog as favorite_catalog
@@ -186,8 +187,8 @@ class SocialStore:
             if re.search('收藏',text):candidates=[i for i in candidates if i['id'].startswith('qqf_')]
             random.shuffle(candidates)
             sad=bool(re.search(r'不开心|难过|伤心|委屈|想哭',text))
-            query=tokens(text)
-            candidates.sort(key=lambda x:(100 if sad and x.get('category')=='sad' else -100 if sad and x.get('category')=='happy' else 0)+(_meme_scores.get(_meme_key(x),-1) if _meme_scores is not None else 4*len(query&tokens(re.split(r'[；;]',x['meaning'],maxsplit=1)[0]))+len(query&tokens(x['meaning']))),reverse=True)
+            reactions=reaction_categories(text)
+            candidates.sort(key=lambda x:(100 if sad and x.get('category')=='sad' else -100 if sad and x.get('category')=='happy' else 0)+(_meme_scores.get(_meme_key(x),-1) if _meme_scores is not None else meme_relevance(x,text,reactions)),reverse=True)
             # Avoid filling the whole menu with near-duplicate happy images;
             # retain multiple emotional choices for the conversational model.
             chosen=[];categories={}
@@ -264,18 +265,21 @@ class SocialStore:
             except Exception:
                 return {} if self.closed or not is_current() else self.context(scope,text,cfg)
 
-    def select_image(self, text, scope, cfg, now=None, explicit=False, rng=random.random):
+    def select_image(self, text, scope, cfg, now=None, explicit=False, rng=random.random, automatic_candidates=None, request_text=''):
         now = time.time() if now is None else now
         ids = re.findall(r'\[MEME:([a-z0-9_-]{1,32})\]', text)
         # Always strip internal controls, including invalid IDs and unterminated tails.
         clean = re.sub(r'\[MEME:[^\]\n]*(?:\]|$)', '', text)
-        if not cfg.get('memeEnabled') or not ids:return clean,None
+        if not cfg.get('memeEnabled') or not ids and not automatic_candidates:return clean,None
         if not explicit and rng()>=cfg.get('memeProbability',0.7):return clean,None
         day = time.strftime('%Y-%m-%d',time.gmtime(now))
         row = self.db.execute('SELECT max(last_sent) FROM social_images WHERE scope=?', (scope,)).fetchone()
         total = self.db.execute('SELECT coalesce(sum(count),0) FROM social_images WHERE day=?', (day,)).fetchone()[0]
         if (row[0] is not None and now-row[0]<cfg.get('memeCooldownSeconds',20)) or total>=cfg.get('dailyMemeLimit',50):return clean,None
-        image = next((x for x in self.catalog(scope,packs=cfg.get('memePacks'),favorite_account=cfg.get('_qqAccount')) if x['id']==ids[0]),None)
+        items=self.catalog(scope,packs=cfg.get('memePacks'),favorite_account=cfg.get('_qqAccount'))
+        if ids:image=next((x for x in items if x['id']==ids[0]),None)
+        elif '[MEME:' not in text:image=automatic_image(items,automatic_candidates,clean,request_text)
+        else:image=None
         return clean,image
 
     def select_gallery(self,text,cfg,request):

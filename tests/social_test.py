@@ -70,6 +70,34 @@ class SocialTests(unittest.TestCase):
  def test_image_ranking_prefers_phrase_over_incidental_character(self):
   ctx=self.s.context('group:1','喝茶',{'memeEnabled':True},_meme_catalog=[{'id':'irrelevant','meaning':'喝彩','category':'other'},{'id':'relevant','meaning':'喝茶；用于休息喝茶','category':'other'}])
   self.assertEqual(ctx['meme_candidates'][0]['id'],'relevant')
+ def test_automatic_platform_image_without_model_marker(self):
+  cfg={'memeEnabled':True,'memeProbability':.7,'memePacks':['blue-fat-fish']}
+  request='主人想你了';context=self.s.context('group:1',request,cfg)
+  _,image=self.s.select_image('哼，现在才想我呀。','group:1',cfg,1000,explicit=True,automatic_candidates=context['meme_candidates'],request_text=request)
+  self.assertIsNotNone(image);self.assertTrue(image['id'].startswith('bf_'));self.assertEqual(image['category'],'affection')
+  self.s.reserve_image('group:1',1000)
+  self.assertIsNone(self.s.select_image('想你。','group:1',cfg,1001,explicit=True,automatic_candidates=context['meme_candidates'],request_text=request)[1])
+  self.assertIsNone(self.s.select_image('想你。','group:2',{**cfg,'dailyMemeLimit':1},1001,explicit=True,automatic_candidates=context['meme_candidates'],request_text=request)[1])
+ def test_automatic_selection_needs_relevance_and_real_offered_pack(self):
+  cfg={'memeEnabled':True,'memeProbability':1,'memePacks':['blue-fat-fish']};context=self.s.context('group:1','想你了',cfg)
+  choose=lambda response,request,offered:self.s.select_image(response,'group:1',cfg,1000,explicit=True,automatic_candidates=offered,request_text=request)[1]
+  self.assertIsNone(choose('配置已经保存。','代码部署进度',context['meme_candidates']))
+  self.assertIsNone(choose('不喜欢你，也不想你。','配置检查',context['meme_candidates']))
+  self.assertIsNone(choose('抱抱。','家人重病了',context['meme_candidates']))
+  platform=choose('想你。','想你了',[{'id':'qqf_fake','category':'affection'}]);self.assertTrue(platform['id'].startswith('bf_'))
+  self.assertIsNone(self.s.select_image('想你。','group:1',{**cfg,'memePacks':[]},1000,explicit=True,automatic_candidates=context['meme_candidates'],request_text='想你了')[1])
+  self.assertIsNone(choose('想你。[MEME:invalid]','想你了',context['meme_candidates']))
+ def test_natural_question_reply_can_match_outside_incoming_menu(self):
+  cfg={'memeEnabled':True,'memeProbability':1,'memePacks':['blue-fat-fish']}
+  _,image=self.s.select_image('你要给我讲讲吗？','group:1',cfg,1000,explicit=True,automatic_candidates=[{'id':'unrelated_menu_item','category':'money'}],request_text='有没有看过这个动画')
+  self.assertIsNotNone(image);self.assertEqual(image['category'],'confused');self.assertTrue(image['id'].startswith('bf_'))
+ def test_final_reply_has_priority_over_incoming_menu_topic(self):
+  cfg={'memeEnabled':True,'memeProbability':1,'memePacks':['blue-fat-fish']}
+  _,image=self.s.select_image('白饭，吃完就有精神了。','group:1',cfg,1000,explicit=True,automatic_candidates=[{'id':'unrelated_menu_item','category':'money'}],request_text='刚刚在做什么')
+  self.assertIsNotNone(image);self.assertEqual(image['category'],'food')
+ def test_confused_context_offers_relevant_reaction(self):
+  ctx=self.s.context('group:1','我有点困惑，没想明白',{'memeEnabled':True,'memePacks':['blue-fat-fish']})
+  self.assertTrue(any(x.get('category')=='confused' for x in ctx['meme_candidates'][:2]))
  def test_valid_image_and_internal_tag_removed(self):text,img=self.s.select_image('哈哈[MEME:laugh]','private:1',{'memeEnabled':True,'memeProbability':1},1000);self.assertEqual(text,'哈哈');self.assertTrue(Path(img['path']).is_file())
  def test_invalid_id_cannot_read_path(self):text,img=self.s.select_image('你好[MEME:../../master.key]','p',{'memeEnabled':True,'memeProbability':1},1000);self.assertEqual(text,'你好');self.assertIsNone(img)
  def test_disabled_always_strips_marker(self):self.assertEqual(self.s.select_image('[MEME:laugh]','p',{},1000),('',None))

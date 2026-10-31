@@ -57,7 +57,7 @@ class BehaviorTests(unittest.TestCase):
   self.assertTrue(self.s.eligible(cfg,'group:a','123',False,'聊天',now=1000,rng=lambda:0))
   self.assertFalse(self.s.reserve_interjection('group:a',{'behavior':{'hourlyInterjectionLimit':0}},1000))
   self.assertTrue(self.s.eligible(cfg,'group:a','123',True,'你好',now=1001))
- def test_unmentioned_silence(self):self.assertFalse(self.s.eligible({'trigger':'mention'},'g','123',False,'路过',now=100))
+ def test_unmentioned_silence(self):self.assertFalse(self.s.eligible({'trigger':'mention'},'g','123',False,'路过',now=100,rng=lambda:1))
  def test_private_and_mention(self):self.assertTrue(self.s.eligible({'trigger':'mention'},'p','',False,'你好',now=100));self.assertTrue(self.s.eligible({'trigger':'mention'},'g','123',True,'你好',now=100))
  def test_whitelist(self):self.assertFalse(self.s.eligible({'trigger':'all','groups':['456']},'g','123',True,'你好',now=100))
  def test_cooldown(self):

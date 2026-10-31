@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import {execFile} from 'node:child_process';
 import path from 'node:path';
 import {BotConfigSchema,defaultConfig} from '../packages/contracts/index.js';
-test('costly companion controls remain opt-in; topic attention defaults on and bounds stay enforced',()=>{
- const b=BotConfigSchema.parse(defaultConfig).behavior!;assert.equal(b.attentionEnabled,true);assert.equal(BotConfigSchema.parse({...defaultConfig,behavior:{attentionEnabled:false}}).behavior!.attentionEnabled,false);
+test('costly companion controls remain opt-in; lexical attention stays opt-in and bounds stay enforced',()=>{
+ const b=BotConfigSchema.parse(defaultConfig).behavior!;assert.equal(b.attentionEnabled,false);assert.equal(BotConfigSchema.parse({...defaultConfig,behavior:{attentionEnabled:false}}).behavior!.attentionEnabled,false);
  for(const key of ['autoSignature','proactiveModelSchedule','memeSemantic'] as const)assert.equal(b[key],false);
  for(const behavior of [{dailyAutoSignatureLimit:3},{dailyPlanLimit:101},{fatigueMaxReplies:21},{embeddingBaseUrl:'https://user:secret@example.com/v1'}])assert.equal(BotConfigSchema.safeParse({...defaultConfig,behavior:{...b,...behavior}}).success,false);
 });
 test('Windows tuning is the standard for new bots, missing fields and presets; explicit values survive parsing',()=>{
  const keys=['memeProbability','memeCooldownSeconds','dailyMemeLimit','randomReplyProbability','fatigueEnabled','fatigueWindowSeconds','fatigueMaxReplies'] as const;
- const expected=[.7,20,50,.014,true,300,4];
+ const expected=[.7,20,50,.03,true,300,4];
  for(const config of [defaultConfig,BotConfigSchema.parse({...defaultConfig,behavior:{}})])assert.deepEqual(keys.map(k=>config.behavior![k]),expected);
  const custom={memeProbability:.2,memeCooldownSeconds:120,dailyMemeLimit:3,randomReplyProbability:0,fatigueEnabled:false,fatigueWindowSeconds:600,fatigueMaxReplies:2};
  const parsed=BotConfigSchema.parse({...defaultConfig,behavior:custom});
