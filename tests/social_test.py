@@ -54,6 +54,22 @@ class SocialTests(unittest.TestCase):
  def test_learning_survives_restart(self):self.learned();second=SocialStore(self.db,self.root);self.assertEqual(len(second.expressions('group:1','开玩笑')),1);second.close()
  def test_no_config_no_context(self):self.learned();self.assertEqual(self.s.context('group:1','你好',{}),{})
  def test_no_filesystem_paths_in_prompt(self):self.assertNotIn('path',json.dumps(self.s.context('group:1','你好',{'memeEnabled':True})))
+ def test_group_platform_image_available_without_native_qq_faces(self):
+  cfg={'memeEnabled':True,'memeProbability':.7,'qqFaces':False,'memePacks':['blue-fat-fish']}
+  ctx=self.s.context('group:12345','发个表情包',cfg)
+  self.assertTrue(ctx['meme_candidates'])
+  image_id=ctx['meme_candidates'][0]['id']
+  _,image=self.s.select_image('[MEME:'+image_id+']','group:12345',cfg,1000,explicit=True,rng=lambda:1)
+  self.assertIsNotNone(image);self.assertTrue(Path(image['path']).is_file())
+ def test_gallery_stays_independent_when_memes_disabled(self):
+  from unittest.mock import patch
+  with patch.object(self.s,'catalog',return_value=[{'id':'photo','meaning':'自然风景','path':'private-path'}]):
+   context=self.s.context('group:1','给我看看图片',{'galleryEnabled':True,'memeEnabled':False})
+  self.assertEqual(context['gallery_candidates'][0]['id'],'photo')
+  self.assertNotIn('meme_candidates',context)
+ def test_image_ranking_prefers_phrase_over_incidental_character(self):
+  ctx=self.s.context('group:1','喝茶',{'memeEnabled':True},_meme_catalog=[{'id':'irrelevant','meaning':'喝彩','category':'other'},{'id':'relevant','meaning':'喝茶；用于休息喝茶','category':'other'}])
+  self.assertEqual(ctx['meme_candidates'][0]['id'],'relevant')
  def test_valid_image_and_internal_tag_removed(self):text,img=self.s.select_image('哈哈[MEME:laugh]','private:1',{'memeEnabled':True,'memeProbability':1},1000);self.assertEqual(text,'哈哈');self.assertTrue(Path(img['path']).is_file())
  def test_invalid_id_cannot_read_path(self):text,img=self.s.select_image('你好[MEME:../../master.key]','p',{'memeEnabled':True,'memeProbability':1},1000);self.assertEqual(text,'你好');self.assertIsNone(img)
  def test_disabled_always_strips_marker(self):self.assertEqual(self.s.select_image('[MEME:laugh]','p',{},1000),('',None))
