@@ -63,7 +63,7 @@ async def run():
    for stale in (False,True,'optout'):
     entered.clear();release.clear();old={'root':temp.name,'botId':'bot-A','generation':1,'config':{}};settings['qq']=old
     extra={'_hosted_lease':old}
-    event=SimpleNamespace(message_obj=SimpleNamespace(message_id='send-fixture'),get_platform_id=lambda:'qq',get_self_id=lambda:'90000',get_group_id=lambda:'',get_sender_id=lambda:'12345678',get_extra=lambda key,default=None:extra.get(key,default))
+    event=SimpleNamespace(message_obj=SimpleNamespace(message_id='send-fixture'),get_platform_id=lambda:'qq',get_self_id=lambda:'90000',get_group_id=lambda:'',get_sender_id=lambda:'12345678',get_extra=lambda key,default=None:extra.get(key,default),set_extra=lambda key,value:extra.update({key:value}))
     if stale=='optout':
      runtime['manage']('qq',{'action':'list'})
      st=runtime['stores']['qq'];st.db.execute("INSERT OR REPLACE INTO contacts(scope,subject,self_id,last_user) VALUES('private:12345678','12345678','90000',1000)");st.db.commit()
@@ -76,6 +76,7 @@ async def run():
     if stale=='optout':runtime['manage']('qq',{'action':'pause_contact','scope':'private:12345678'})
     before=len(calls);release.set();await pending
     assert len(calls)==before+(0 if stale else 1),'late media conversion crossed configuration lease'
+    assert extra.get('_hosted_protocol_blocked',False)==bool(stale),'blocked dispatch is visible to the outer send recorder'
   finally:AiocqhttpMessageEvent._parse_onebot_json=old_parse
   print('PASS protocol send late completion after stop and replacement; no store resurrection')
  finally:runtime['close']()

@@ -68,7 +68,7 @@ def run(file, data, connection=None):
                 if scope:conditions.append('scope=?');summary_args.append(scope)
                 if query:conditions.append('instr(text,?)>0');summary_args.append(query)
                 summaries=[dict(r) for r in db.execute('SELECT id,scope,text,updated FROM memory_summaries'+(' WHERE '+' AND '.join(conditions) if conditions else '')+' ORDER BY id DESC LIMIT 100',summary_args)]
-            return {'initialized': True, 'epoch': epoch, 'facts': facts, 'summaries':summaries,'patterns': patterns, 'contacts': contacts, 'relations': relations, 'stats': stats, 'limit': 100, 'companion': {t:[dict(r) for r in db.execute('SELECT * FROM '+t+(' WHERE scope=?' if scope else '')+' ORDER BY rowid DESC LIMIT 30',([scope] if scope else []))] for t in ['companion_interests','companion_motives','companion_emotion'] if t in tables}}
+            return {'initialized': True, 'epoch': epoch, 'facts': facts, 'summaries':summaries,'patterns': patterns, 'contacts': contacts, 'relations': relations, 'stats': stats, 'limit': 100, 'companion': {t:[dict(r) for r in db.execute('SELECT * FROM '+t+(' WHERE scope=?' if scope else '')+' ORDER BY rowid DESC LIMIT 30',([scope] if scope else []))] for t in ['companion_interests','companion_motives','companion_emotion','companion_signals','dialogue_feedback'] if t in tables}}
         initialize_controls(db)
         db.execute('BEGIN IMMEDIATE')
         action, scope = data['action'], data.get('scope', '')
@@ -122,6 +122,11 @@ def run(file, data, connection=None):
             db.execute('DELETE FROM relations WHERE scope=? AND subject=?',(scope,data['subject']))
             if 'relation_progress' in tables:
                 db.execute('DELETE FROM relation_progress WHERE scope=? AND subject=?',(scope,data['subject']))
+            if 'relation_evidence' in tables:
+                db.execute('DELETE FROM relation_evidence WHERE scope=? AND subject=?',(scope,data['subject']))
+            # Invalidate any in-flight reflection holding the pre-reset score.
+            if 'memory_reflection_control' in tables:
+                db.execute('UPDATE memory_reflection_control SET epoch=epoch+1 WHERE id=1')
         elif action == 'pause_contact':
             # Resuming an explicit recipient opt-out requires their own incoming
             # consent; platform users can pause but cannot override that consent.

@@ -24,20 +24,25 @@ class ConfigurationTests(unittest.TestCase):
   candidates(self.store.db,self.cfg,200,lambda:.8)
   self.cfg['behavior']['proactiveChance']=1
   self.assertEqual(len(candidates(self.store.db,self.cfg,205,lambda:0)),1)
+ def test_model_plan_is_not_filtered_by_old_random_delay_or_probability(self):
+  self.cfg['behavior'].update(proactiveModelSchedule=True,proactiveChance=0,proactiveRandomInterval=True,proactiveMinMinutes=600,proactiveMaxMinutes=600)
+  self.store.db.execute('INSERT INTO companion_plans VALUES(?,?,?,?,?)',('private:12345678',100,150,'共同兴趣',1));self.store.db.commit()
+  self.assertEqual(len(candidates(self.store.db,self.cfg,200,lambda:.99)),1)
+  self.assertEqual(self.store.db.execute('SELECT count(*) FROM initiative_schedule').fetchone()[0],0)
  def test_accepted_window_stays_available_during_reconnection(self):
   self.assertEqual(len(candidates(self.store.db,self.cfg,200,lambda:0)),1)
   self.assertEqual(len(candidates(self.store.db,self.cfg,205,lambda:.99)),1)
  def test_authorized_target_not_hidden_behind_hundred_other_contacts(self):
   for i in range(120):incoming(self.store.db,'private:'+str(50000000+i),str(50000000+i),'900001','你好',200+i)
   self.assertEqual(len(candidates(self.store.db,self.cfg,500,lambda:0)),1)
- def test_cooldown_does_not_consume_random_interjection_quota(self):
+ def test_cooldown_does_not_consume_approved_interjection_quota(self):
   cfg={'trigger':'mention','behavior':{'cooldownSeconds':60,'quietStart':0,'quietEnd':0,'randomReplyProbability':.2,'dailyProactiveLimit':3}}
   self.store.last['group:12345']=200
   self.assertFalse(self.store.eligible(cfg,'group:12345','12345',False,'聊天',205,rng=lambda:0))
   self.assertEqual(self.store.db.execute('SELECT count(*) FROM deliveries').fetchone()[0],0)
-  self.assertTrue(self.store.eligible(cfg,'group:12345','12345',False,'聊天',260,rng=lambda:0))
+  self.assertTrue(self.store.eligible(cfg,'group:12345','12345',True,'聊天',260,rng=lambda:0))
   self.assertTrue(self.store.reserve_interjection('group:12345',cfg,260))
-  self.assertEqual(self.store.db.execute('SELECT count(*) FROM group_interjections').fetchone()[0],1)
+  self.assertEqual(self.store.db.execute('SELECT count(*) FROM autonomy_sends WHERE state!="released"').fetchone()[0],1)
   self.assertEqual(self.store.db.execute('SELECT count(*) FROM deliveries').fetchone()[0],0)
  def test_enabling_proactive_does_not_implicitly_enable_interjections(self):
   self.assertFalse(self.store.eligible({'proactive':True,'behavior':{'randomReplyProbability':0}},'group:12345','12345',False,'聊天',200,rng=lambda:.01))

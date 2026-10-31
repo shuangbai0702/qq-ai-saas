@@ -2,7 +2,7 @@ import json,sqlite3,sys,tempfile,unittest,time,asyncio
 from pathlib import Path
 root=Path(__file__).resolve().parents[1];sys.path.insert(0,str(root/'adapters/astrbot'))
 from PIL import Image
-from social import SocialStore,allow_meme
+from social import SocialStore
 from runtime_care import Ambient
 from sticker_collection import StickerCollector
 
@@ -17,15 +17,18 @@ class Alignment(unittest.TestCase):
     self.assertGreater(gif.n_frames,1)
     self.assertEqual(gif.convert('RGBA').getchannel('A').getextrema(),(0,255),'transparent background must survive normalization')
    text='[MEME:'+pack[0]['id']+']'
-   self.assertIsNone(s.select_image(text,'group:12345',cfg,rng=lambda:.9)[1]);self.assertEqual(s.select_image(text,'group:12345',cfg,explicit=True,rng=lambda:.9)[1]['id'],pack[0]['id'])
+   self.assertEqual(s.select_image(text,'group:12345',{**cfg,'memeProbability':0,'dailyMemeLimit':0})[1]['id'],pack[0]['id'])
    choices=s.context('group:12345','今天不开心，真的难过',cfg)['meme_candidates']
    self.assertEqual(choices[0]['category'],'sad');self.assertLessEqual(sum(i.get('category')=='sad' for i in choices),2)
    (Path(folder)/'meme-pack-settings.json').write_text(json.dumps({'disabled':[pack[0]['id']]}))
-   self.assertIsNone(s.select_image(text,'group:12345',cfg,explicit=True)[1]);self.assertEqual(len(s.catalog('group:12345')),3)
+   self.assertIsNone(s.select_image(text,'group:12345',cfg)[1]);self.assertEqual(len(s.catalog('group:12345')),3)
    s.close()
- def test_probability_before_model_and_explicit_bypass(self):
-  cfg={'memeEnabled':True,'memeProbability':.35}
-  self.assertFalse(allow_meme(cfg,'你好',rng=lambda:.35));self.assertTrue(allow_meme(cfg,'你好',rng=lambda:.349));self.assertTrue(allow_meme(cfg,'发个表情包',rng=lambda:1));self.assertFalse(allow_meme({**cfg,'memeEnabled':False},'发个表情包',rng=lambda:0))
+ def test_candidates_available_for_model_choice_without_probability(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   db=sqlite3.connect(':memory:');s=SocialStore(db,tmp);cfg={'memeEnabled':True,'memeProbability':0,'dailyMemeLimit':0}
+   self.assertTrue(s.image_available('group:12345',cfg));self.assertTrue(s.context('group:12345','你好',cfg)['meme_candidates'])
+   self.assertIsNone(s.select_image('你好','group:12345',cfg)[1]);self.assertFalse(s.image_available('group:12345',{**cfg,'memeEnabled':False}));s.close();db.close()
+
  def test_ambient_config_bound(self):
   a=Ambient()
   for i in range(70):a.observe('group:1','sender',str(i),100+i,50)

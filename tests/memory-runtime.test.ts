@@ -28,7 +28,7 @@ test('native shared SDK uses topic recall and scoped automatic profiles without 
   assert.equal((await send(0,'我的生日是5月1日')).facts[0].value,'5月1日');
   assert.equal((await send(1,'我的生日是6月2日')).facts[0].value,'6月2日');
   for(let i=0;i<10;i++)await send(0,'记住：最近项目'+i+'=准备工作'+i);
-  const recalled=await send(0,'你记得我的生日吗');assert.equal(recalled.facts[0].value,'5月1日');assert.equal(recalled.facts[0].recall_reason,'topic_match');
+  const recalled=await send(0,'你记得我的生日吗');assert.equal(recalled.facts[0].value,'5月1日');assert.equal(recalled.facts[0].recall_reason,'scoped_bm25');
   assert.equal((await send(0,'你记得我的生日吗',{group:'777777'})).facts.length,0,'private profile cannot leak into group');
   assert.equal((await send(0,'你记得我的生日吗',{sender:'22345678'})).facts.length,0,'different sender has no profile');
   assert.equal((await send(1,'你记得我的生日吗')).facts[0].value,'6月2日');

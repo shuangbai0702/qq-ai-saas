@@ -80,7 +80,7 @@ class Companion(unittest.IsolatedAsyncioTestCase):
  def test_attention_and_fatigue_bypass(self):
   p=Participation();cfg={'attentionEnabled':True,'fatigueEnabled':True,'fatigueMaxReplies':2}
   self.assertTrue(p.allow('g','喝茶',cfg,now=1000));p.outgoing('g','今天喝茶',1000)
-  self.assertTrue(p.allow('g','喝茶好呀',cfg,now=1001));self.assertFalse(p.allow('g','明天爬山',cfg,now=1001))
+  self.assertTrue(p.allow('g','喝茶好呀',cfg,now=1001));self.assertTrue(p.allow('g','明天爬山',cfg,now=1001)) # attention supplies context; fatigue below remains enforced
   p.outgoing('g','喝茶',1002);self.assertFalse(p.allow('g','喝茶',cfg,now=1003));self.assertTrue(p.allow('g','爬山',cfg,directed=True,now=1003))
   self.assertTrue(p.allow('other','爬山',cfg,now=1003));self.assertTrue(p.allow('g','爬山',cfg,now=1400))
  async def test_disabled_or_stale_planner_does_not_request(self):

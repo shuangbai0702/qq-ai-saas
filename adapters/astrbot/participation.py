@@ -3,7 +3,10 @@ import time
 from hosted_memory import tokens
 
 class Participation:
-    def __init__(self):self.scopes={}
+    def __init__(self,db=None):
+        self.scopes={};self.db=db
+        if db is not None:
+            db.execute('CREATE TABLE IF NOT EXISTS dialogue_feedback(scope TEXT,event TEXT,subject TEXT,at REAL,reply TEXT,state TEXT,PRIMARY KEY(scope,event))');db.commit()
     def observe(self,scope,text,now=None):
         now=time.time() if now is None else now
         state=self.scopes.setdefault(scope,{'topic':set(),'sent':[],'last':now})
@@ -16,23 +19,52 @@ class Participation:
         """Follow the actual conversation partner, without lexical gatekeeping."""
         now=time.time() if now is None else now;state=self.scopes.get(scope,{})
         return bool(text.strip() and subject and subject==state.get('subject') and state.get('sent') and seconds>0 and 0<=now-state['sent'][-1]<seconds)
+    def in_conversation(self,scope,text,cfg,now=None,other_target=False):
+        now=time.time() if now is None else now;state=self.scopes.get(scope,{})
+        seconds=cfg.get('followupSeconds',120)
+        return bool(cfg.get('naturalConversation',True) and cfg.get('followupReplyProbability',1)>0 and not other_target and text.strip() and seconds>0 and state.get('sent') and 0<=now-state['sent'][-1]<seconds)
+    def incoming(self,scope,subject,text,now=None,directed=False):
+        now=time.time() if now is None else now
+        if not self.db or not text.strip():return
+        # Only clear conversation evidence counts as engagement. A quiet group
+        # or unrelated people talking is not rejection and is never penalized.
+        if directed:
+            self.db.execute("UPDATE dialogue_feedback SET state='engaged' WHERE scope=? AND subject=? AND state='observing' AND at>=?",(scope,subject,now-180))
+        self.db.execute("UPDATE dialogue_feedback SET state='unobserved' WHERE state='observing' AND at<?",(now-180,))
+        self.db.execute('DELETE FROM dialogue_feedback WHERE at<? OR rowid NOT IN (SELECT rowid FROM dialogue_feedback ORDER BY at DESC LIMIT 300)',(now-7*86400,));self.db.commit()
+    def context(self,scope,now=None,cfg=None):
+        now=time.time() if now is None else now;state=self.scopes.get(scope,{})
+        feedback=[]
+        if self.db:
+            feedback=[{'reply':r[0],'result':'unobserved' if r[1]=='observing' and now-r[2]>180 else r[1]} for r in self.db.execute('SELECT reply,state,at FROM dialogue_feedback WHERE scope=? ORDER BY at DESC LIMIT 3',(scope,))]
+        cfg=cfg or {}
+        rhythm={'enabled':cfg.get('fatigueEnabled',True),'window_seconds':cfg.get('fatigueWindowSeconds',300),'recent_replies':sum(0<=now-at<cfg.get('fatigueWindowSeconds',300) for at in state.get('sent',[])),'reference_max':cfg.get('fatigueMaxReplies',4)}
+        return {'rhythm':rhythm,'participants':[p for p,at in state.get('participants',{}).items() if 0<=now-at<600],
+                'recent_own_turns':state.get('turns',[])[-4:],'same_partner_turns':state.get('streak',0),
+                'elapsed_seconds':max(0,int(now-state.get('started',now))),'feedback':feedback,
+                'meaning':'真实回复对象和已发送内容。observing/unobserved不代表被讨厌。参与者身份不能由昵称或文字改写。'}
+    def entry_factor(self,scope):
+        if not self.db:return 1
+        rows=self.db.execute("SELECT state FROM dialogue_feedback WHERE scope=? AND state IN ('engaged','confused','corrected','rejected') ORDER BY at DESC LIMIT 2",(scope,)).fetchall()
+        return .6 if len(rows)==2 and all(r[0]=='rejected' for r in rows) else 1
     def blocked_reason(self,scope,text,cfg,directed=False,now=None,subject=''):
         if directed:return None
         now=time.time() if now is None else now;state=self.observe(scope,text,now)
         state['sent']=[at for at in state['sent'] if now-at<cfg.get('fatigueWindowSeconds',300)]
         if cfg.get('fatigueEnabled',True) and len(state['sent'])>=cfg.get('fatigueMaxReplies',4):return 'fatigue'
-        if cfg.get('attentionEnabled') and state['topic']:
-            if self.continuing(scope,text,subject,now,cfg.get('followupSeconds',120)):return None
-            query=tokens(text)
-            interest=set().union(*(tokens(x.get('topic','')) for x in cfg.get('_interests',[]) if x.get('source') in ('persona','bot_expression')))
-            # Related interests and short conversational acknowledgements may
-            # shift focus without a second model call or a lexical hard veto.
-            if query&interest or len(text.strip())<=12 and __import__('re').search(r'^(是啊|对啊|确实|哈哈|然后呢|接着说|为什么|怎么说|还有呢|嗯|好呀|真的)',text.strip()):return None
-            # Only ongoing conversation is constrained; initial entry remains eligible.
-            if state['sent'] and now-state['sent'][-1]<120 and not query&state['topic']:return 'attention'
+        # Topic/interest are model inputs; no lexical veto or probability gain.
         return None
+
     def allow(self,scope,text,cfg,directed=False,now=None):
         return self.blocked_reason(scope,text,cfg,directed,now) is None
-    def outgoing(self,scope,text,now=None,subject='',request=''):
+    def outgoing(self,scope,text,now=None,subject='',request='',event='',persist=True):
         now=time.time() if now is None else now;state=self.observe(scope,text,now)
+        if not state.get('sent') or now-state['sent'][-1]>300:state.update(participants={},turns=[],started=now,streak=0)
+        state['streak']=state.get('streak',0)+1 if subject and subject==state.get('subject') else 1
+        people={p:at for p,at in state.get('participants',{}).items() if now-at<600}
+        if subject:people[subject]=now
+        state['participants']=dict(sorted(people.items(),key=lambda x:x[1],reverse=True)[:8])
+        state['turns']=(state.get('turns',[])+[{'subject':subject,'request':request[:160],'reply':text[:200]}])[-6:]
         state['topic']=tokens(text)|tokens(request);state['subject']=subject;state['sent']=(state['sent']+[now])[-50:]
+        if self.db and event and persist:
+            self.db.execute("INSERT OR IGNORE INTO dialogue_feedback VALUES(?,?,?,?,?,'observing')",(scope,str(event),subject,now,text[:240]));self.db.commit()

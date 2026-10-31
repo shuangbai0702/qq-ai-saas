@@ -33,7 +33,7 @@ class InitiativeTests(unittest.TestCase):
   self.assertTrue(candidates(self.s.db,self.cfg,500))
  def test_ambient_group_goodnight_cannot_disable_proactive(self):
   incoming(self.s.db,'group:777777','12345678','90000001','晚安',100,directed=False)
-  self.cfg['behavior']['proactiveTargets']=['group:777777']
+  self.cfg['behavior']['proactiveTargets']=['group:777777'];self.cfg['behavior'].update(groupParticipationEnabled=True,groupParticipationGroups=['777777'])
   self.assertTrue(candidates(self.s.db,self.cfg,200))
  def test_new_pause_invalidates_reserved_candidate(self):
   item=candidates(self.s.db,self.cfg,200)[0]

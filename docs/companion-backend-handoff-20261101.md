@@ -29,3 +29,7 @@
 ## 发布边界
 
 API 与 Agent 独立。后端本轮需要 API 独立更新、共享AI空闲重载；Agent/NapCat与QQ Session保持。前端发布不得顺带重启这些运行实例。最终后端验收结果将追加至 companion-autonomy-20261101.md。
+
+## 后续授权更新
+
+用户随后授权保留 Windows 网页设计并补齐社交能力控制。本轮已完成，详见 [社交控制与空间修复](social-controls-qzone-20261101.md)。此前“不修改前端”仅对应前一交接阶段；本轮未覆盖 Windows 样式，运行相关前后端源码均已同步。
