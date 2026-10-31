@@ -232,7 +232,7 @@ def install_runtime(core,settings):
         owner=str((cfg.get('behavior') or {}).get('ownerUin') or '')
         identity={'bot_id':s['botId'],'group_id':group or None,'sender_id':subject,'nickname':event.get_sender_name(),'directed_to_bot':not group or mentioned or followup,'owner':bool(owner and subject==owner)}
         from social import allow_meme
-        social_cfg=dict(cfg.get('behavior') or {});social_cfg['_qqAccount']=str(event.get_self_id());meme_allowed=allow_meme(social_cfg,event.get_message_str())
+        social_cfg=dict(cfg.get('behavior') or {});social_cfg['_qqAccount']=str(event.get_self_id());meme_allowed=allow_meme(social_cfg,event.get_message_str()) and st.social.image_available(scope,social_cfg,request=event.get_message_str())
         stamps['memeCandidatesOffered']=stamps.get('memeCandidatesOffered',0)+int(meme_allowed)
         event.set_extra('_hosted_meme_allowed',meme_allowed);social_cfg['memeEnabled']=meme_allowed
         event.set_extra('_hosted_context',json.dumps({'identity':identity,'state':state,'social':st.social.context(scope,event.get_message_str(),social_cfg),'ambient_group_messages':st.ambient.context(scope,now) if (cfg.get('behavior') or {}).get('socialAwareness',True) else [],'origin':'internal_timer' if internal else 'real_QQ','recent_burst':[{'sender_id':x['sender_id'],'text':x['text']} for x in batch],'previous_proactive_output':event.get_extra('_hosted_previous_output','')},ensure_ascii=False));event.set_extra('_hosted_generation',generation)
