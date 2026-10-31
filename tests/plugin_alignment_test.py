@@ -108,7 +108,7 @@ class Plugins(unittest.IsolatedAsyncioTestCase):
    finally:current_message_event.reset(token)
   PipelineScheduler.execute=pipeline
   settings={'qq':{'botId':'bot-a','root':str(Path(self.tmp.name)/'a'),'generation':1,'config':{'trigger':'mention','behavior':{'typingSimulation':True,'typingMaxDelay':.5,'qqProfile':True,'ownerUin':'11111'}}}}
-  runtime=install_runtime(NS(event_bus=NS(stopped_platforms=set())),settings)
+  runtime=install_runtime(NS(event_bus=NS(stopped_platforms=set()),provider_manager=NS(inst_map={})),settings)
   msg=AstrBotMessage();msg.type=MessageType.FRIEND_MESSAGE;msg.self_id='90000';msg.session_id='11111';msg.message_id='sdk1';msg.sender=MessageMember('11111','主人');msg.message=[Plain('设置签名：今天摸鱼')];msg.message_str='设置签名：今天摸鱼';msg.raw_message={'post_type':'message'}
   ev=AiocqhttpMessageEvent(msg.message_str,msg,PlatformMetadata('aiocqhttp','fixture','qq'),'11111',bot=None);ev.set_extra('_hosted_lease',settings['qq']);ev.set_extra('_hosted_generation',1)
   try:

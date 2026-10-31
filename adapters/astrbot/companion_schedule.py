@@ -26,12 +26,13 @@ class Planner:
         day=int(now//86400);used=self.db.execute('SELECT count FROM companion_plan_budget WHERE day=?',(day,)).fetchone()
         if (used[0] if used else 0)>=b.get('dailyPlanLimit',6):return
         self.db.execute('INSERT INTO companion_plan_budget VALUES(?,1) ON CONFLICT(day) DO UPDATE SET count=count+1',(day,));self.db.execute('DELETE FROM companion_plan_budget WHERE day<?',(day-7,));self.db.commit()
-        scope=candidate[0];anchor=max(candidate[1:4])
+        scope=candidate[0];anchor=max(candidate[1:4]);member=companion_state.select_member(self.db,cfg,scope,now,allow_without_topic=True)
+        subject=member['subject'] if member else candidate[8]
         async def run():
             token=event_var.set(None)
             try:
                 metrics['planRequests']=metrics.get('planRequests',0)+1
-                result=await asyncio.wait_for(provider.text_chat(prompt=json.dumps({'persona':str(cfg.get('systemPrompt') or '')[:6000],'companion':companion_state.context(self.db,cfg,scope,now),'current_time':datetime.fromtimestamp(now,timezone(timedelta(hours=8))).isoformat(),'last_user_text':candidate[4],'last_bot_text':candidate[5],'unanswered':candidate[6]},ensure_ascii=False),system_prompt=SYSTEM,contexts=[],func_tool=None),15)
+                result=await asyncio.wait_for(provider.text_chat(prompt=json.dumps({'persona':str(cfg.get('systemPrompt') or '')[:6000],'companion':companion_state.context(self.db,cfg,scope,now),'current_time':datetime.fromtimestamp(now,timezone(timedelta(hours=8))).isoformat(),'last_user_text':candidate[4],'last_bot_text':candidate[5],'unanswered':candidate[6],'contact_subject':subject},ensure_ascii=False),system_prompt=SYSTEM,contexts=[],func_tool=None),15)
                 if self.closed or not current():return
                 row=self.db.execute('SELECT last_user,last_bot,last_attempt,opted_out FROM contacts WHERE scope=?',(scope,)).fetchone()
                 if not row or row[3] or max(row[:3])!=anchor:return
@@ -43,7 +44,7 @@ class Planner:
                 with self.db:
                     self.db.execute('INSERT OR REPLACE INTO companion_plans VALUES(?,?,?,?,?)',(scope,anchor,time.time()+data['delay_minutes']*60,topic,int(allowed)))
                     if allowed and companion_state.enabled(cfg):
-                        self.db.execute("INSERT OR REPLACE INTO companion_motives VALUES(?,?,?,?,?,?,?)",(scope,candidate[8],topic,time.time()+data['delay_minutes']*60,time.time()+7*86400,'open','model_plan:'+str(anchor)))
+                        self.db.execute("INSERT OR REPLACE INTO companion_motives VALUES(?,?,?,?,?,?,?)",(scope,subject,topic,time.time()+data['delay_minutes']*60,time.time()+7*86400,'open','model_plan:'+str(anchor)))
                     self.db.execute('DELETE FROM companion_plans WHERE anchor<?',(time.time()-8*86400,))
                 metrics['plansSaved']=metrics.get('plansSaved',0)+1
             except asyncio.CancelledError:raise

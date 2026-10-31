@@ -27,7 +27,7 @@ async def run():
    entered.clear();release.clear()
    settings['qq']={'root':temp.name,'botId':'bot-A','generation':1,'config':{}}
    extras={'_hosted_generation':1,'_hosted_lease':settings['qq']}
-   event=SimpleNamespace(get_platform_id=lambda:'qq',get_self_id=lambda:'90000',get_group_id=lambda:'',get_sender_id=lambda:'12345678',get_message_str=lambda:'你好',get_extra=lambda key,default=None:extras.get(key,default),set_extra=lambda key,value:extras.update({key:value}))
+   event=SimpleNamespace(message_obj=SimpleNamespace(message_id='send-fixture'),get_platform_id=lambda:'qq',get_self_id=lambda:'90000',get_group_id=lambda:'',get_sender_id=lambda:'12345678',get_message_str=lambda:'你好',get_extra=lambda key,default=None:extras.get(key,default),set_extra=lambda key,value:extras.update({key:value}))
    pending=asyncio.create_task(AiocqhttpMessageEvent.send(event,MessageChain(chain=[Plain('正常回复')])))
    await asyncio.wait_for(entered.wait(),5);settings.pop('qq');runtime['release']('qq')
    if replace:settings['qq']={'root':temp.name,'botId':'bot-A','generation':2,'config':{}}
@@ -49,7 +49,7 @@ async def run():
   # applies to their combined text, rather than resetting for each component.
   release.set();old={'root':temp.name,'botId':'bot-A','generation':3,'config':{'behavior':{'maxReplyChars':80}}};settings['qq']=old
   extra={'_hosted_generation':3,'_hosted_lease':old}
-  event=SimpleNamespace(get_platform_id=lambda:'qq',get_self_id=lambda:'90000',get_group_id=lambda:'',get_sender_id=lambda:'12345678',get_message_str=lambda:'你好',get_extra=lambda key,default=None:extra.get(key,default),set_extra=lambda key,value:extra.update({key:value}))
+  event=SimpleNamespace(message_obj=SimpleNamespace(message_id='send-fixture'),get_platform_id=lambda:'qq',get_self_id=lambda:'90000',get_group_id=lambda:'',get_sender_id=lambda:'12345678',get_message_str=lambda:'你好',get_extra=lambda key,default=None:extra.get(key,default),set_extra=lambda key,value:extra.update({key:value}))
   await AiocqhttpMessageEvent.send(event,MessageChain(chain=[Plain('甲'*50),Plain('乙'*50),Plain('丙'*50)]))
   assert ''.join(x.text for x in captured[-1].chain if isinstance(x,Plain))=='甲'*50+'乙'*30,'reply limit reset per component'
   # Native send_message awaits media conversion before OneBot dispatch. Hold
@@ -63,7 +63,7 @@ async def run():
    for stale in (False,True,'optout'):
     entered.clear();release.clear();old={'root':temp.name,'botId':'bot-A','generation':1,'config':{}};settings['qq']=old
     extra={'_hosted_lease':old}
-    event=SimpleNamespace(get_platform_id=lambda:'qq',get_self_id=lambda:'90000',get_group_id=lambda:'',get_sender_id=lambda:'12345678',get_extra=lambda key,default=None:extra.get(key,default))
+    event=SimpleNamespace(message_obj=SimpleNamespace(message_id='send-fixture'),get_platform_id=lambda:'qq',get_self_id=lambda:'90000',get_group_id=lambda:'',get_sender_id=lambda:'12345678',get_extra=lambda key,default=None:extra.get(key,default))
     if stale=='optout':
      runtime['manage']('qq',{'action':'list'})
      st=runtime['stores']['qq'];st.db.execute("INSERT OR REPLACE INTO contacts(scope,subject,self_id,last_user) VALUES('private:12345678','12345678','90000',1000)");st.db.commit()

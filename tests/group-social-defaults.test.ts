@@ -8,7 +8,7 @@ test('group social limits and platform images agree in schema, new bot and prese
  for(const cfg of [schema,defaultConfig,applyFishSocialPreset({...defaultConfig,behavior:{...defaultConfig.behavior!,hourlyInterjectionLimit:1,memeEnabled:false,attentionEnabled:false}})]){
   assert.equal(cfg.behavior?.hourlyInterjectionLimit,20);
   assert.equal(cfg.behavior?.randomReplyProbability,.03);
-  assert.equal(cfg.behavior?.attentionEnabled,false);
+  assert.equal(cfg.behavior?.attentionEnabled,true);
   assert.equal(cfg.behavior?.memeEnabled,true);
   assert.equal(cfg.behavior?.memeProbability,.7);
   assert.deepEqual(cfg.behavior?.memePacks,['blue-fat-fish']);
