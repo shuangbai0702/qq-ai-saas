@@ -13,6 +13,7 @@ class Planner:
         db.executescript('''CREATE TABLE IF NOT EXISTS companion_plans(scope TEXT PRIMARY KEY,anchor REAL,due REAL,topic TEXT,allowed INTEGER);
         CREATE TABLE IF NOT EXISTS companion_plan_members(scope TEXT PRIMARY KEY,anchor REAL,subject TEXT,seen REAL);
         CREATE TABLE IF NOT EXISTS companion_plan_budget(day INTEGER PRIMARY KEY,count INTEGER);''')
+        db.execute("UPDATE autonomy_owner_checks SET status='interrupted' WHERE status='pending'");db.commit()
     def plan(self,scope,anchor):
         if self.closed:return None
         row=self.db.execute('SELECT due,topic,allowed FROM companion_plans WHERE scope=? AND anchor=?',(scope,anchor)).fetchone()
@@ -75,15 +76,27 @@ class Planner:
         self.task=asyncio.create_task(run())
     def start_owner(self,cfg,provider,current,event_var,metrics,candidate,now):
         (owner,scope,contact,state),day=candidate
+        b=cfg.get('behavior') or {}
         with self.db:
             self.db.execute('UPDATE autonomy_owner SET checked=?,allowed=0,checked_version=? WHERE owner=?',(now,state[2],owner))
+            self.db.execute("INSERT INTO autonomy_owner_checks VALUES(?,?,?,'pending',0)",(owner,now,state[2]))
+            self.db.execute('DELETE FROM autonomy_owner_checks WHERE rowid NOT IN (SELECT rowid FROM autonomy_owner_checks ORDER BY rowid DESC LIMIT 128)')
             self.db.execute('INSERT INTO autonomy_owner_budget VALUES(?,1) ON CONFLICT(day) DO UPDATE SET count=count+1',(day,))
             self.db.execute('DELETE FROM autonomy_owner_budget WHERE day<?',((datetime.fromtimestamp(now,timezone(timedelta(hours=8)))-timedelta(days=7)).date().isoformat(),))
         async def run():
             token=event_var.set(None);limit_token=autonomy.decision_token_limit.set(192)
+            started=time.monotonic()
+            def result_record(status):
+                if self.closed or not current():return
+                self.db.execute('UPDATE autonomy_owner_checks SET status=?,elapsed_ms=? WHERE owner=? AND checked=?',(status,round((time.monotonic()-started)*1000),owner,now));self.db.commit()
             try:
                 metrics['ownerDecisionRequests']=metrics.get('ownerDecisionRequests',0)+1
-                result=await asyncio.wait_for(provider.text_chat(prompt=json.dumps({'owner_id':owner,'persona':str(cfg.get('systemPrompt') or '')[:4000],'companion':companion_state.context(self.db,cfg,scope,now),'last_user_text':contact[7][:500],'last_bot_text':contact[8][:500],'current_time':datetime.fromtimestamp(now,timezone(timedelta(hours=8))).isoformat()},ensure_ascii=False),system_prompt=autonomy.OWNER_SYSTEM,contexts=[],func_tool=None,max_tokens=192,request_max_retries=1),10)
+                from memory_scope import fact_rows,fact_item,summary_rows,summary_item,pending_messages
+                memory={}
+                if b.get('memory',True):
+                    memory={'facts':[fact_item(r,owner,'owner_contact_context') for r in fact_rows(self.db,scope,owner,limit=3)],'recent_uncompressed':pending_messages(self.db,scope,owner,now,limit=4,budget=1200)}
+                    if b.get('memorySummary'):memory['summaries']=[{**summary_item(r),'summary':r[1][:250]} for r in summary_rows(self.db,scope,owner,limit=3)]
+                result=await asyncio.wait_for(provider.text_chat(prompt=json.dumps({'owner_id':owner,'persona':str(cfg.get('systemPrompt') or '')[:4000],'companion':companion_state.context(self.db,cfg,scope,now),'owner_memory':memory,'last_user_text':contact[7][:500],'last_bot_text':contact[8][:500],'current_time':datetime.fromtimestamp(now,timezone(timedelta(hours=8))).isoformat()},ensure_ascii=False),system_prompt=autonomy.OWNER_SYSTEM,contexts=[],func_tool=None,max_tokens=192,request_max_retries=1),10)
                 if self.closed or not current():return
                 data=autonomy.parse_object(result.completion_text)
                 if type(data.get('contact')) is not bool or not isinstance(data.get('topic'),str):raise ValueError('Invalid owner decision')
@@ -91,11 +104,13 @@ class Planner:
                 changed=self.db.execute('UPDATE autonomy_owner SET allowed=?,topic=? WHERE owner=? AND checked=? AND version=?',(int(allowed),topic,owner,now,state[2])).rowcount
                 self.db.commit()
                 metrics['lastOwnerDecision']={'at':now,'contact':allowed if changed else False,'reason':('model_contact' if allowed else 'model_silent') if changed else 'conversation_changed'}
+                result_record(metrics['lastOwnerDecision']['reason'])
             except asyncio.CancelledError:raise
             except Exception as error:
                 if not self.closed and current():
                     metrics['ownerDecisionFailures']=metrics.get('ownerDecisionFailures',0)+1
                     metrics['lastOwnerDecision']={'at':now,'contact':False,'reason':type(error).__name__}
+                    result_record('timeout' if isinstance(error,TimeoutError) else 'error:'+type(error).__name__)
             finally:autonomy.decision_token_limit.reset(limit_token);event_var.reset(token)
         self.task=asyncio.create_task(run())
     def close(self):

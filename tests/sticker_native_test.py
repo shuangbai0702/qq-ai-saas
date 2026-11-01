@@ -118,6 +118,18 @@ async def run():
   assert [sum(isinstance(x,Image) for x in m.chain) for _,m in sent[before:]]==[0,0,0,1]
   for cls in (At,Reply):assert [sum(isinstance(x,cls) for x in m.chain) for _,m in sent[before:]]==[1,0,0,0]
   settings['b']['config']['behavior']['sendIntervalMs']=0
+  before=len(sent)
+  await AiocqhttpMessageEvent.send(event('b','44453',text='艾特我'),MessageChain(chain=[Plain('来啦[AT:123456]\n继续聊')]))
+  assert len(sent)==before+2 and payloads[before][0]=={'type':'at','data':{'qq':'123456'}}
+  assert not any(c['type']=='at' for c in payloads[before+1])
+  assert all('[AT:' not in c.get('data',{}).get('text','') for packet in payloads[before:] for c in packet)
+  unknown=event('b','44454',text='叫群友')
+  async def wrong_member(**kw):return {'user_id':111111}
+  unknown.bot=SimpleNamespace(get_group_member_info=wrong_member)
+  before=len(sent);await AiocqhttpMessageEvent.send(unknown,MessageChain(chain=[Plain('接着聊[AT:654321][AT:all]')]))
+  assert len(sent)==before+1 and all(c['type']!='at' for c in payloads[-1])
+  assert '[AT:' not in ''.join(c.get('data',{}).get('text','') for c in payloads[-1])
+  print('PASS model-selected real At components: current sender, one first bubble, no literal markers or unknown/all recipients')
   # A configuration replacement after the first successful bubble must still
   # fence the remaining text and the unsent image, without resurrecting stores.
   before=len(sent)

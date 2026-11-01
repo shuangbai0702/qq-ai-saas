@@ -98,6 +98,7 @@ def run(file, data, connection=None):
             db.execute('DELETE FROM memory_summaries WHERE id=? AND scope=?',(data['id'],scope))
             if 'memory_vectors' in tables:db.execute('DELETE FROM memory_vectors WHERE summary_id=?',(data['id'],))
             db.execute('DELETE FROM memory_rounds WHERE scope=?',(scope,))
+            if 'memory_pending' in tables:db.execute('DELETE FROM memory_pending WHERE scope=?',(scope,))
             db.execute('UPDATE memory_reflection_control SET epoch=epoch+1 WHERE id=1')
         elif action == 'set_pattern':
             if db.execute('SELECT epoch FROM social_control WHERE id=1').fetchone()[0] != data['expectedEpoch']:

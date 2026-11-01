@@ -52,6 +52,15 @@ async def run():
   event=SimpleNamespace(message_obj=SimpleNamespace(message_id='send-fixture'),get_platform_id=lambda:'qq',get_self_id=lambda:'90000',get_group_id=lambda:'',get_sender_id=lambda:'12345678',get_message_str=lambda:'你好',get_extra=lambda key,default=None:extra.get(key,default),set_extra=lambda key,value:extra.update({key:value}))
   await AiocqhttpMessageEvent.send(event,MessageChain(chain=[Plain('甲'*50),Plain('乙'*50),Plain('丙'*50)]))
   assert ''.join(x.text for x in captured[-1].chain if isinstance(x,Plain))=='甲'*50+'乙'*30,'reply limit reset per component'
+  # A memory deletion while a real protocol call is in flight must not put
+  # its old question/answer back into the new cross-session pending cache.
+  entered.clear();release.clear();st=runtime['stores']['qq']
+  extra['_hosted_memory_epoch']=st.reflection.epoch()
+  pending=asyncio.create_task(AiocqhttpMessageEvent.send(event,MessageChain(chain=[Plain('这份旧材料不能重新入库')])));
+  await asyncio.wait_for(entered.wait(),5)
+  from memory_reflection import invalidate
+  invalidate(st.db,'private:12345678','12345678');st.db.commit();release.set();await pending
+  assert st.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0]==0,'late protocol completion restored forgotten raw memory'
   # Native send_message awaits media conversion before OneBot dispatch. Hold
   # that exact boundary and prove config replacement suppresses the request.
   calls=[]

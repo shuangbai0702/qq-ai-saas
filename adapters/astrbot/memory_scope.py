@@ -54,3 +54,16 @@ def summary_item(row,reason=None):
             'source_scope':row[4],'kind':'conversation_summary_not_verified_facts'}
     if reason:result['recall_reason']=reason
     return result
+
+
+def pending_messages(db,scope,subject,now,limit=16,budget=3000):
+    if not shared_person(scope,subject):return []
+    where,args=person_filter(scope,subject)
+    rows=db.execute('SELECT scope,subject,event,question,answer,at FROM memory_pending WHERE '+where+' AND scope!=? AND at>? AND at<=? ORDER BY at DESC,rowid DESC LIMIT ?',args+(scope,now-7*86400,now,min(16,max(1,limit)))).fetchall()
+    result=[];used=0
+    for source,person,event,question,answer,at in rows:
+        question=question[:400];answer=answer[:400]
+        if used+len(question)+len(answer)>budget:continue
+        result.append({'kind':'recent_uncompressed_message','source_scope':source,'sender_id':person,'source_event':event,'at':at,'age_seconds':max(0,int(now-at)),'user':question,'bot':answer})
+        used+=len(question)+len(answer)
+    return list(reversed(result))
