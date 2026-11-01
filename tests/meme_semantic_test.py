@@ -26,9 +26,6 @@ class MemeSemantic(unittest.IsolatedAsyncioTestCase):
         self.client=NS(base_url='https://fixture.example/v1',embeddings=NS(create=create))
         self.client.with_options=lambda **kw:self.client
         self.provider=NS(client=self.client)
-        # Remove bundled reactions only from this controlled fixture's catalog.
-        original=self.store.catalog
-        self.store.catalog=lambda *a,**kw:[i for i in original(*a,**kw) if i['id'] not in ('hug','laugh','thinking')]
 
     def tearDown(self):
         self.pack.stop();self.store.close();self.db.close();self.tmp.cleanup()

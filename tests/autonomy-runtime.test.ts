@@ -18,7 +18,7 @@ test('native SDK: whitelist entry, refreshed clocks, owner timer, stale decision
  const calls:{kind:string;body:any}[]=[];let releaseOwner:(()=>void)|undefined;
  const model=http.createServer(async(req,res)=>{
   let raw='';for await(const b of req)raw+=b;const body=JSON.parse(raw),system=body.messages.filter((m:any)=>m.role==='system').map((m:any)=>m.content).join('\n');
-  const kind=system.includes('判断是否以当前人格自然加入群聊')?'group':system.includes('你是当前机器人的主动联系判断器')?'owner':'reply';calls.push({kind,body});let answer=JSON.stringify(body.messages.at(-1)).includes('平台内部主动聊天时刻')?'刚想到我们之前聊的那个话题，想听听你的近况。':'接着聊。[MEME:laugh]';
+  const selected=body.messages.map((m:any)=>typeof m.content==='string'?m.content:JSON.stringify(m.content)).join('\n').match(/"id"\s*:\s*"(bf_[a-f0-9]{16})"/)?.[1];const meme=selected?'[MEME:'+selected+']':'';const kind=system.includes('判断是否以当前人格自然加入群聊')?'group':system.includes('你是当前机器人的主动联系判断器')?'owner':'reply';calls.push({kind,body});let answer=JSON.stringify(body.messages.at(-1)).includes('平台内部主动聊天时刻')?'刚想到我们之前聊的那个话题，想听听你的近况。':'接着聊。'+meme;
   if(kind==='group')answer=JSON.stringify({reply:!JSON.parse(body.messages.at(-1).content).messages.at(-1).text.includes('SILENT_TOPIC'),target:'open',participation:'open',information:'substantive',interest:'strong',reason_code:'shared_interest',confidence:'high'});
   if(kind==='owner'){
    if(calls.filter(x=>x.kind==='owner').length===1)await new Promise<void>(r=>{releaseOwner=r});

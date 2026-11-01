@@ -20,6 +20,7 @@ from meme_packs import catalog as pack_catalog
 from qq_favorites import catalog as favorite_catalog
 
 MEME_INDEX_LIMIT = 256
+RETIRED_REACTIONS = frozenset(('hug', 'laugh', 'thinking'))
 
 
 def _meme_key(item):
@@ -163,16 +164,15 @@ class SocialStore:
 
     def catalog(self, scope='', gallery=False, packs=None, favorite_account=None):
         result = {}
-        roots = [self.root/'gallery'] if gallery else [Path(__file__).resolve().parents[2]/'templates/reactions', self.root/'reactions']
+        roots = [self.root/'gallery'] if gallery else [self.root/'reactions']
         for root in roots:
             if not root.is_dir():continue
             for metadata in sorted(root.glob('*.json'))[:64]:
                 try:
                     item = json.loads(metadata.read_text(encoding='utf8'))
                     identifier = item['id']
+                    if not gallery and identifier in RETIRED_REACTIONS:continue
                     file = root/(identifier+'.png')
-                    if root==self.root/'reactions' and identifier in ('hug','laugh','thinking'):
-                        file=Path(__file__).resolve().parents[2]/'templates/reactions'/(identifier+'.png')
                     if not re.fullmatch(r'[a-z0-9_-]{1,32}',identifier) or not file.is_file() or file.is_symlink() or file.stat().st_size>262144:continue
                     if item.get('enabled',True) is False:
                         result.pop(identifier,None)

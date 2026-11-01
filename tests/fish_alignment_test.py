@@ -21,7 +21,7 @@ class Alignment(unittest.TestCase):
    choices=s.context('group:12345','今天不开心，真的难过',cfg)['meme_candidates']
    self.assertEqual(choices[0]['category'],'sad');self.assertLessEqual(sum(i.get('category')=='sad' for i in choices),2)
    (Path(folder)/'meme-pack-settings.json').write_text(json.dumps({'disabled':[pack[0]['id']]}))
-   self.assertIsNone(s.select_image(text,'group:12345',cfg)[1]);self.assertEqual(len(s.catalog('group:12345')),3)
+   self.assertIsNone(s.select_image(text,'group:12345',cfg)[1]);remaining=s.catalog('group:12345');self.assertEqual(len(remaining),156);self.assertTrue(all(i['id'].startswith('bf_') for i in remaining))
    s.close()
  def test_candidates_available_for_model_choice_without_probability(self):
   with tempfile.TemporaryDirectory() as tmp:

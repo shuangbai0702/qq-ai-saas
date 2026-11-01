@@ -5,6 +5,9 @@ from pathlib import Path
 PACK_ROOT=Path(__file__).resolve().parents[2]/'templates/meme-packs/blue-fat-fish'
 
 def catalog(root, selected):
+    # Missing legacy settings follow the same fish-pack default as new configs;
+    # an explicitly empty selection still means the pack was disabled.
+    if selected is None:selected=['blue-fat-fish']
     if 'blue-fat-fish' not in (selected or []):return []
     try:
         entries=json.loads((PACK_ROOT/'index.json').read_text(encoding='utf8'))['items']

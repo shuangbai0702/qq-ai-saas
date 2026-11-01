@@ -1,5 +1,5 @@
 """Actual AstrBot SDK events and send wrapper; fixture download/transport only."""
-import asyncio,json,os,sys,tempfile
+import asyncio,base64,io,json,os,sys,tempfile
 from pathlib import Path
 from types import SimpleNamespace
 root=Path(__file__).resolve().parents[1];sys.path[:0]=[str(root/'references/astrbot'),str(root/'adapters/astrbot')]
@@ -84,6 +84,9 @@ async def run():
   assert [sum(isinstance(x,Image) for x in m.chain) for _,m in bubbles]==[0,0,1],'selected image must occur once in the last bubble'
   for cls in (At,Reply):assert [sum(isinstance(x,cls) for x in m.chain) for _,m in bubbles]==[1,0,0],'routing component was lost or repeated'
   assert [sum(x['type']=='image' for x in m) for m in wire]==[0,0,1] and wire[-1][-1]['data']['file'].startswith('base64://')
+  decoded=base64.b64decode(wire[-1][-1]['data']['file'][9:]);assert decoded==(root/'templates/meme-packs/blue-fat-fish'/pack['items'][0]['file']).read_bytes(),'wire conversion flattened or replaced the fish animation'
+  from PIL import Image as PillowImage
+  with PillowImage.open(io.BytesIO(decoded)) as gif:assert gif.n_frames>1,'the real outgoing image must remain animated'
   assert runtime['metrics']['b']['lastMemeDecision']['reason']=='sent'
   # Image-only replies remain one nonempty message; disabling splitting keeps
   # a mixed reply intact. Ordinary quoted text also retains the first target.

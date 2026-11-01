@@ -4,5 +4,7 @@
   "avoid": "不用于讽刺或严肃事务确认",
   "meaning": "友善拥抱，表达支持与亲近",
   "creator": "Twitter, Inc and other contributors",
-  "id": "hug"
+  "id": "hug",
+  "enabled": false,
+  "retired": true
 }
