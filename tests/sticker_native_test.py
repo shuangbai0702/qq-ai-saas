@@ -1,5 +1,6 @@
 """Actual AstrBot SDK events and send wrapper; fixture download/transport only."""
 import asyncio,base64,io,json,os,sys,tempfile
+from unittest.mock import AsyncMock,patch
 from pathlib import Path
 from types import SimpleNamespace
 root=Path(__file__).resolve().parents[1];sys.path[:0]=[str(root/'references/astrbot'),str(root/'adapters/astrbot')]
@@ -77,7 +78,7 @@ async def run():
   # Exercise the real wrapper and SDK OneBot conversion together. A selected
   # image must not collapse separate conversational bubbles or repeat routing.
   settings['b']['config']['behavior'].update({'splitMessages':True,'sendIntervalMs':0,'typingSimulation':False,'typoEnabled':False})
-  text='第一句。第二句？第三句！';marker='[MEME:'+pack['items'][0]['id']+']';before=len(sent)
+  text='第一句。\n第二句？\n第三句！';marker='[MEME:'+pack['items'][0]['id']+']';before=len(sent)
   await AiocqhttpMessageEvent.send(event('b','44444',text='正常聊天'),MessageChain(chain=[Reply(id='122'),At(qq='123456'),Plain(text+marker)]))
   bubbles=sent[before:];wire=payloads[before:]
   assert len(bubbles)==3 and [''.join(x.text for x in m.chain if isinstance(x,Plain)) for _,m in bubbles]==['第一句。','第二句？','第三句！']
@@ -104,6 +105,19 @@ async def run():
   settings['a']['config']['behavior'].update({'splitMessages':True,'sendIntervalMs':0,'typingSimulation':False,'typoEnabled':False});before=len(sent)
   await AiocqhttpMessageEvent.send(event('a','44450',text='发张图片'),MessageChain(chain=[Plain(text+'[IMAGE:gal_test]')]))
   assert len(sent)==before+3 and [sum(isinstance(x,Image) for x in m.chain) for _,m in sent[before:]]==[0,0,1]
+  # Model-selected paragraphs, not punctuation, choose one through four
+  # messages. Each later bubble adds both configured waits, without extra calls.
+  before=len(sent)
+  await AiocqhttpMessageEvent.send(event('b','44451',text='正常聊天'),MessageChain(chain=[Plain('一句。又一句？还有一句！')]))
+  assert len(sent)==before+1,'punctuation alone must not force three messages'
+  settings['b']['config']['behavior']['sendIntervalMs']=800;before=len(sent)
+  with patch('behavior.typing_delay',return_value=.4),patch('behavior.asyncio.sleep',new_callable=AsyncMock) as sleeper:
+   await AiocqhttpMessageEvent.send(event('b','44452',text='正常聊天'),MessageChain(chain=[Reply(id='124'),At(qq='123456'),Plain('一\n二\n三\n四\n五'+marker)]))
+   assert [round(c.args[0],3) for c in sleeper.await_args_list]==[.4,1.2,1.2,1.2],'typing wait and inter-message interval must add'
+  assert len(sent)==before+4 and [''.join(x.text for x in m.chain if isinstance(x,Plain)) for _,m in sent[before:]]==['一','二','三','四\n五']
+  assert [sum(isinstance(x,Image) for x in m.chain) for _,m in sent[before:]]==[0,0,0,1]
+  for cls in (At,Reply):assert [sum(isinstance(x,cls) for x in m.chain) for _,m in sent[before:]]==[1,0,0,0]
+  settings['b']['config']['behavior']['sendIntervalMs']=0
   # A configuration replacement after the first successful bubble must still
   # fence the remaining text and the unsent image, without resurrecting stores.
   before=len(sent)

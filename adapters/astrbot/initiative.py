@@ -134,13 +134,13 @@ def release_unstarted(db,item,key):
             db.execute('UPDATE deliveries SET count=max(0,count-1) WHERE scope=? AND day=? AND last_sent=?',(scope,day,at))
             if item.get('contact_subject'):db.execute('UPDATE companion_members SET unanswered=max(0,unanswered-1) WHERE scope=? AND subject=? AND attempt=?',(scope,item['contact_subject'],at))
 
-def split_text(text,limit=3):
-    # Keep code, lists and technical answers intact. Short ordinary sentences may
-    # be two QQ bubbles without spending two model calls.
+def split_text(text,limit=4):
+    # The reply model chooses message boundaries with newlines. Punctuation
+    # alone must not turn every short answer into the same three-bubble rhythm.
     if '```' in text or re.search(r'(?m)^\s*(?:[-*]|\d+[.、]) ',text):return [text]
-    chunks=[x.strip() for x in re.findall(r'.+?(?:[。！？!?]\s*|\n+|$)',text,re.S) if x.strip()]
+    chunks=[x.strip() for x in re.split(r'\n+',text) if x.strip()]
     if len(chunks)<=1:return [text]
-    if len(chunks)>limit:chunks=chunks[:limit-1]+[''.join(chunks[limit-1:])]
+    if len(chunks)>limit:chunks=chunks[:limit-1]+['\n'.join(chunks[limit-1:])]
     return chunks
 
 def start(core,settings,store,metrics):

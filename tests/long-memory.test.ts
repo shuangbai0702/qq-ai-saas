@@ -14,6 +14,8 @@ test('independent embedding address is visible and changes preserve Bot behavior
  assert.match(markup,/http:\/\/localhost:11434\/v1/);
  assert.match(markup,/allowlist/);
  assert.match(markup,/1000/);
+ assert.match(markup,/同一机器人按真实QQ ID在群聊和私聊互通/);
+ assert.match(markup,/不同机器人、租户及人物身份保持隔离/);
  let changed=false;
  function visit(node:unknown){
   if(!React.isValidElement(node))return;

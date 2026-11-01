@@ -39,5 +39,5 @@ class InitiativeTests(unittest.TestCase):
   item=candidates(self.s.db,self.cfg,200)[0]
   incoming(self.s.db,'private:12345678','12345678','90000001','晚安',201)
   self.assertFalse(reserve(self.s.db,self.cfg,item,202))
- def test_split_preserves_code(self):self.assertEqual(split_text('```js\na();\n```'),['```js\na();\n```']);self.assertEqual(split_text('你好呀。今天吃什么？'),['你好呀。','今天吃什么？']);self.assertLessEqual(len(split_text('好。'*8)),3)
+ def test_split_preserves_code(self):self.assertEqual(split_text('```js\na();\n```'),['```js\na();\n```']);self.assertEqual(split_text('你好呀。今天吃什么？'),['你好呀。今天吃什么？']);self.assertEqual(split_text('你好呀。\n今天吃什么？'),['你好呀。','今天吃什么？']);self.assertEqual(split_text('一\n二\n三\n四\n五'),['一','二','三','四\n五'])
 if __name__=='__main__':unittest.main(verbosity=2)
