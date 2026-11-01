@@ -4,7 +4,7 @@ import type {BotConfig} from './index.js';
 // retain bounded collection, scoped memory and explicit proactive recipients.
 export const fishSocialPreset={
  historyTurns:30,proactive:true,
- behavior:{groupParticipationEnabled:true,groupParticipationIntervalMinutes:15,groupDecisionTimeoutSeconds:10,ownerContactEnabled:true,ownerContactIntervalMinutes:60,ownerContactIdleMinutes:30,ownerContactDailyChecks:12,qqProfile:true,qzone:true,autoSignature:true,typingSimulation:true,typingSpeed:15,typingMaxDelay:3,typoEnabled:true,typoProbability:0.02,pokeReply:true,pokeProbability:0.25,memorySummary:true,summaryRounds:10,enabled:true,memory:true,memoryAutoCapture:true,styleLearning:true,socialAwareness:true,
+ behavior:{groupParticipationEnabled:true,groupParticipationIntervalMinutes:10,groupParticipationStyle:'active' as const,groupDecisionTimeoutSeconds:10,ownerContactEnabled:true,ownerContactIntervalMinutes:30,ownerContactIdleMinutes:10,ownerContactDailyChecks:48,dailyPlanLimit:-1,dailyProactiveLimit:10,qqProfile:true,qzone:true,autoSignature:true,typingSimulation:true,typingSpeed:15,typingMaxDelay:3,typoEnabled:true,typoProbability:0.02,pokeReply:true,pokeProbability:0.25,memorySummary:true,summaryRounds:10,enabled:true,memory:true,memoryAutoCapture:true,styleLearning:true,socialAwareness:true,
   expressionSharing:'bot' as const,memeEnabled:true,
   stickerCollect:true,stickerAllGroups:true,memePacks:['blue-fat-fish'] as ('blue-fat-fish')[],
   memeCooldownSeconds:20,

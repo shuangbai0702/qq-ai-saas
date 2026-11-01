@@ -22,13 +22,12 @@ def initialize(db):
     db.executescript('''CREATE TABLE IF NOT EXISTS contacts(scope TEXT PRIMARY KEY,subject TEXT,self_id TEXT,last_user REAL,last_bot REAL DEFAULT 0,last_attempt REAL DEFAULT 0,unanswered INTEGER DEFAULT 0,opted_out INTEGER DEFAULT 0,last_text TEXT DEFAULT '',last_output TEXT DEFAULT '');''')
 
 def incoming(db,scope,subject,self_id,text,now,directed=True):
-    explicit_allow=directed and '可以主动找我' in text
-    declined=directed and bool(re.search(r'别来烦|不要主动|不用主动|别主动',text))
-    db.execute('INSERT INTO contacts(scope,subject,self_id,last_user,last_text,opted_out) VALUES(?,?,?,?,?,?) ON CONFLICT(scope) DO UPDATE SET subject=excluded.subject,self_id=excluded.self_id,last_user=excluded.last_user,last_text=excluded.last_text,unanswered=CASE WHEN ? THEN 0 ELSE contacts.unanswered END,opted_out=CASE WHEN ? THEN 0 WHEN ? THEN 1 ELSE contacts.opted_out END',(scope,subject,self_id,now,text[:500],int(declined),int(directed),int(explicit_allow),int(declined)))
+    # Chat is evidence for the existing model calls. A quoted refusal, goodbye
+    # or a bystander's wording cannot permanently disable an entire session.
+    # opted_out is retained for explicit operator controls and legacy review.
+    db.execute('INSERT INTO contacts(scope,subject,self_id,last_user,last_text,opted_out) VALUES(?,?,?,?,?,0) ON CONFLICT(scope) DO UPDATE SET subject=excluded.subject,self_id=excluded.self_id,last_user=excluded.last_user,last_text=excluded.last_text,unanswered=CASE WHEN ? THEN 0 ELSE contacts.unanswered END',(scope,subject,self_id,now,text[:500],int(directed)))
     if directed:
-        if not explicit_allow and re.search(r'晚安|再见|不聊了|先睡了|睡觉去了',text):
-            db.execute('INSERT OR REPLACE INTO initiative_pauses VALUES(?,?)',(scope,now+8*3600))
-        else:db.execute('DELETE FROM initiative_pauses WHERE scope=?',(scope,))
+        db.execute('DELETE FROM initiative_pauses WHERE scope=?',(scope,))
     db.execute('DELETE FROM initiative_pauses WHERE until<=?',(now,))
     db.commit()
 
@@ -44,7 +43,7 @@ def candidates(db,cfg,now,rng=random.random):
     if b.get('enabled',True) is False or not cfg.get('proactive') or quiet(cfg,now):return []
     day=datetime.fromtimestamp(now,ZONE).date().isoformat()
     total=db.execute('SELECT coalesce(sum(count),0) FROM deliveries WHERE day=?',(day,)).fetchone()[0]
-    if total>=b.get('dailyProactiveLimit',3):return []
+    if total>=b.get('dailyProactiveLimit',10):return []
     owner_item=autonomy.owner_delivery_candidate(db,cfg,now)
     if owner_item:return [owner_item]
     if not targets:return []
@@ -54,7 +53,7 @@ def candidates(db,cfg,now,rng=random.random):
         scope,subject,self_id,last_user,last_bot,last_attempt,unanswered,opted_out,last_text,last_output=r
         if b.get('ownerContactEnabled',False) and scope=='private:'+str(b.get('ownerUin') or ''):continue
         if scope.startswith('group:') and not autonomy.group_allowed(cfg,scope):continue
-        selected=companion_state.select_member(db,cfg,scope,now)
+        selected=companion_state.select_member(db,cfg,scope,now,allow_without_topic=b.get('proactiveModelSchedule',False))
         automatic=scope not in b.get('proactiveTargets',[])
         if automatic and not selected:continue
         if scope not in targets or opted_out or paused(db,scope,now) or unanswered>=b.get('maxUnanswered',1):continue
@@ -103,7 +102,7 @@ def reserve(db,cfg,item,now):
     # Reserve before enqueue. Failure consumes an attempt instead of retry-spending.
     with db:
         total=db.execute('SELECT coalesce(sum(count),0) FROM deliveries WHERE day=?',(day,)).fetchone()[0]
-        if total>=b.get('dailyProactiveLimit',3):return False
+        if total>=b.get('dailyProactiveLimit',10):return False
         r=db.execute('SELECT last_user,opted_out,unanswered FROM contacts WHERE scope=?',(item['scope'],)).fetchone()
         if not r or r[0]!=item['last_user'] or r[1] or paused(db,item['scope'],now) or r[2]>=b.get('maxUnanswered',1):return False
         if item.get('owner_contact'):
@@ -154,11 +153,25 @@ def start(core,settings,store,metrics):
             for id,s in list(settings.items()):
                 try:
                     cfg=s['config']
-                    if not cfg.get('proactive'):continue
+                    if not cfg.get('proactive') and not (cfg.get('behavior') or {}).get('groupParticipationEnabled',False):continue
                     st=store(id,s)
                     if st.active:continue
                     provider=core.provider_manager.inst_map.get('provider-'+id) or (core.provider_manager.inst_map.get('platform-model') if len(settings)==1 else None)
                     from astrbot.core.platform.astr_message_event import current_message_event
+                    live=lambda sid=id,lease=s:settings.get(sid) is lease and sid not in core.event_bus.stopped_platforms
+                    pending=st.presence.pending(cfg,provider,live,time.time()) if live() else None
+                    if pending:
+                        platform=next((p for p in core.platform_manager.get_insts() if p.meta().id==id),None)
+                        if not platform:continue
+                        raw=Event.from_payload(json.loads(pending['payload']))
+                        online=await asyncio.wait_for(platform.bot.get_status(self_id=str(raw.self_id)),3)
+                        if not online.get('online') or not live() or st.active:continue
+                        msg=await asyncio.wait_for(platform.convert_message(raw),5)
+                        if not msg or not live() or st.active or not st.presence.claim(pending,cfg,provider,live,time.time()):continue
+                        event=platform.create_event(msg);event.set_extra('_hosted_deferred_group',pending);event.set_extra('_hosted_scheduled_generation',s['generation'])
+                        platform.commit_event(event)
+                        m=metrics.setdefault(id,{});m['groupDeferredChecksQueued']=m.get('groupDeferredChecksQueued',0)+1
+                        continue
                     if id not in core.event_bus.stopped_platforms:
                         st.planner.maybe_start(cfg,provider,lambda sid=id,lease=s:settings.get(sid) is lease and sid not in core.event_bus.stopped_platforms,current_message_event,metrics.setdefault(id,{}))
                         task=st.planner.task

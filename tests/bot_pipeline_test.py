@@ -1,0 +1,67 @@
+import math,sqlite3,sys,unittest
+from pathlib import Path
+from types import SimpleNamespace as NS
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters'/'astrbot'))
+from bot_pipeline import BotPipeline,ContextBuilder,OutputPlan
+
+
+def event(group='',sender='12345',message='101',source=None):
+ extra=dict(source or {})
+ return NS(get_group_id=lambda:group,get_sender_id=lambda:sender,get_self_id=lambda:'99999',get_platform_id=lambda:'qq',get_extra=lambda k,d=None:extra.get(k,d),set_extra=lambda k,v:extra.update({k:v}),message_obj=NS(message_id=message,timestamp=1700000000))
+
+
+class Pipeline(unittest.TestCase):
+ def setUp(self):self.db=sqlite3.connect(':memory:');self.p=BotPipeline(self.db);self.lease={'botId':'logical-bot','generation':7}
+ def tearDown(self):self.db.close()
+ def bind(self,**kw):return self.p.bind(event(**kw),self.lease)
+ def test_identity_duplicate_scope_and_subject(self):
+  work=self.bind();self.assertEqual(work.bot_id,'logical-bot');self.assertTrue(work.observes_input);self.assertIs(work.lease,self.lease)
+  self.assertEqual(self.bind().status,'duplicate')
+  self.assertEqual(self.bind(group='22222').status,'received');self.assertEqual(self.bind(group='33333').status,'received')
+  self.assertEqual(self.bind(sender='54321').status,'received');self.assertEqual(self.bind(sender='99999').reason,'self_message')
+ def test_no_output_and_confirmed_reply_have_distinct_outcomes(self):
+  silent=self.bind();self.p.finish(silent,{})
+  self.assertEqual((silent.status,silent.reason),('silent','no_output'))
+  sent=self.bind(message='102');sent.planned_messages=2
+  for _ in range(2):self.p.sending(sent);self.p.confirmed(sent);sent.confirmed_messages+=1
+  self.p.finish(sent,{});self.assertEqual(sent.status,'sent')
+ def test_timeout_and_partial_delivery_never_become_retry_permission(self):
+  unknown=self.bind();self.p.sending(unknown);unknown.stop('TimeoutError','error');metrics={};self.p.finish(unknown,metrics)
+  self.assertEqual((unknown.status,unknown.confirmed),('unknown',0));self.assertEqual(self.bind().status,'duplicate')
+  partial=self.bind(message='102');partial.planned_messages=3
+  self.p.sending(partial);self.p.confirmed(partial);partial.confirmed_messages=1
+  self.p.sending(partial);partial.stop('TimeoutError','error');self.p.finish(partial,{})
+  self.assertEqual(partial.status,'partial');self.assertEqual(partial.attempted,2);self.assertEqual(partial.confirmed,1)
+  self.assertNotIn('TimeoutError',str(metrics['lastPipeline']['stages']))
+ def test_restart_and_deferred_input_cannot_resend_uncertain_output(self):
+  unknown=self.bind(group='22222');self.p.sending(unknown)
+  waiting=self.bind(group='33333');waiting.stop('group_waiting','waiting');self.p.finish(waiting,{})
+  interrupted=self.bind(message='103')
+  self.p=BotPipeline(self.db)
+  self.assertEqual(self.db.execute('SELECT status FROM pipeline_events WHERE scope=?',('group:22222',)).fetchone()[0],'unknown')
+  deferred=self.bind(group='22222',source={'_hosted_deferred_group':{'event':'101'}});self.assertEqual(deferred.status,'duplicate');self.p.finish(deferred,{})
+  self.assertEqual(self.db.execute('SELECT status FROM pipeline_events WHERE scope=?',('group:22222',)).fetchone()[0],'unknown')
+  allowed=self.bind(group='33333',source={'_hosted_deferred_group':{'event':'101'}});self.assertEqual(allowed.status,'received');self.assertFalse(allowed.observes_input)
+  self.assertEqual(self.db.execute('SELECT status FROM pipeline_events WHERE event=?',('103',)).fetchone()[0],'interrupted')
+ def test_context_capabilities_preserve_platform_and_peer_ownership(self):
+  ctx=ContextBuilder({'sender_id':'12345','owner':False},'real_QQ')
+  ctx.contribute('memory',{'state':{'facts':['tea']}})
+  for payload in ({'identity':{'owner':True}},{'origin':'internal_timer'},{'state':{}}):
+   with self.assertRaises(ValueError):ctx.contribute('social',payload)
+  with self.assertRaises(ValueError):ctx.contribute('platform',{'identity':{'owner':True}})
+  ctx.contribute('memory',{'state':{'facts':['updated']}})
+  self.assertFalse(ctx.build()['identity']['owner']);self.assertEqual(ctx.build()['state']['facts'],['updated'])
+ def test_output_plan_is_complete_before_dispatch_and_delays_are_finite(self):
+  self.assertEqual(OutputPlan(('one','image'),(0,.8)).messages,('one','image'))
+  for messages,delays in [((),()),(('one',),()),(tuple(range(5)),(0,)*5),(('one',),(-1,)),(('one',),(math.nan,)),(('one',),(math.inf,)),(('one',),(True,))]:
+   with self.assertRaises(ValueError):OutputPlan(messages,delays)
+ def test_stage_evidence_is_bounded_and_contains_no_chat_content(self):
+  work=self.bind()
+  for _ in range(30):work.stage('context');work.stage('model_tools')
+  with self.assertRaises(ValueError):work.stage('invented')
+  metrics={};self.p.finish(work,metrics);self.assertEqual(len(metrics['lastPipeline']['stages']),16)
+  self.assertNotIn('12345',str(metrics));self.assertNotIn('logical-bot',str(metrics))
+  self.assertLessEqual(self.db.execute('SELECT count(*) FROM pipeline_events').fetchone()[0],2048)
+
+
+if __name__=='__main__':unittest.main()

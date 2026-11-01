@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters'/'astrbot'))
 from behavior import BehaviorStore
 from participation import Participation
-import companion_state as cs,initiative
+import companion_state as cs,initiative,autonomy
 from semantic_context import recall
 
 class CompanionState(unittest.IsolatedAsyncioTestCase):
@@ -27,12 +27,15 @@ class CompanionState(unittest.IsolatedAsyncioTestCase):
   cs.outgoing(self.db,self.cfg,'private:12345','12345','我喜欢乌龙茶','bot1',self.now)
   self.assertNotIn('乌龙茶',json.dumps(cs.context(self.db,self.cfg,'group:other',self.now),ensure_ascii=False))
   self.assertNotIn('private:12345',cs.targets(self.db,self.cfg,self.now))
- def test_optout_pause_scope_and_revocation(self):
+ def test_chat_is_model_evidence_and_cooldown_is_scope_local(self):
   self.seen();item=initiative.candidates(self.db,self.cfg,self.now)[0]
   self.seen(text='不要艾特我',now=self.now,event='two')
-  self.assertFalse(initiative.reserve(self.db,self.cfg,item,self.now));self.assertEqual(initiative.candidates(self.db,self.cfg,self.now+90),[])
+  self.assertFalse(initiative.reserve(self.db,self.cfg,item,self.now));self.assertTrue(initiative.candidates(self.db,self.cfg,self.now+90))
+  self.assertEqual(self.db.execute('SELECT refused,pause FROM companion_members').fetchone(),(0,0))
+  with self.db:autonomy.record_decision(self.db,self.cfg,'group:77777','cooldown',{'cooldown_intervals':1,'cooldown_reason':'social_distance'},False,self.now,'group')
+  self.assertEqual(initiative.candidates(self.db,self.cfg,self.now+90),[])
   self.seen(text='可以主动找我',now=self.now+100,event='three');self.assertTrue(initiative.candidates(self.db,self.cfg,self.now+200))
-  self.seen(text='晚安',now=self.now+210,event='four');self.assertFalse(cs.select_member(self.db,self.cfg,'group:77777',self.now+300))
+  self.seen(text='晚安',now=self.now+210,event='four');self.assertTrue(cs.select_member(self.db,self.cfg,'group:77777',self.now+300))
  def test_whitelist_disabled_and_daily_budget(self):
   self.seen();self.cfg['groups']=['88888'];self.assertEqual(initiative.candidates(self.db,self.cfg,self.now),[])
   self.cfg['groups']=[];self.cfg['behavior']['autonomousGroupContact']=False;self.assertEqual(initiative.candidates(self.db,self.cfg,self.now),[])
@@ -97,9 +100,11 @@ class CompanionState(unittest.IsolatedAsyncioTestCase):
   self.s.observe('private:12345','12345','忘记：饮料','b',self.now+1)
   self.assertEqual(recall(self.s,'private:12345','12345','饮料',self.cfg['behavior'],lambda:True,{}),([],[]))
   self.assertEqual(recall(self.s,'private:12345','12345','饮料',self.cfg['behavior'],lambda:False,{}),([],[]))
- def test_semantic_context_is_scoped_and_does_not_fill_other_people(self):
+ def test_semantic_context_follows_same_person_but_does_not_fill_other_people(self):
   self.s.observe('private:12345','12345','记住：饮料=乌龙茶','a',self.now)
-  self.assertEqual(recall(self.s,'group:77777','12345','饮料',self.cfg['behavior'],lambda:True,{}),([],[]))
+  same=recall(self.s,'group:77777','12345','饮料',self.cfg['behavior'],lambda:True,{})[0]
+  self.assertEqual(same[0]['value'],'乌龙茶');self.assertEqual(same[0]['subject'],'12345');self.assertEqual(same[0]['source_scope'],'private:12345')
+  self.assertEqual(recall(self.s,'group:77777','54321','饮料',self.cfg['behavior'],lambda:True,{}),([],[]))
   self.assertEqual(recall(self.s,'private:12345','54321','饮料',self.cfg['behavior'],lambda:True,{}),([],[]))
 
 if __name__=='__main__':unittest.main()

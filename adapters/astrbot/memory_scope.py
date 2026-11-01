@@ -56,10 +56,11 @@ def summary_item(row,reason=None):
     return result
 
 
-def pending_messages(db,scope,subject,now,limit=16,budget=3000):
+def pending_messages(db,scope,subject,now,limit=16,budget=3000,cross_scope=True):
     if not shared_person(scope,subject):return []
     where,args=person_filter(scope,subject)
-    rows=db.execute('SELECT scope,subject,event,question,answer,at FROM memory_pending WHERE '+where+' AND scope!=? AND at>? AND at<=? ORDER BY at DESC,rowid DESC LIMIT ?',args+(scope,now-7*86400,now,min(16,max(1,limit)))).fetchall()
+    source='scope!=?' if cross_scope else 'scope=?'
+    rows=db.execute('SELECT scope,subject,event,question,answer,at FROM memory_pending WHERE '+where+' AND '+source+' AND at>? AND at<=? ORDER BY at DESC,rowid DESC LIMIT ?',args+(scope,now-7*86400,now,min(16,max(1,limit)))).fetchall()
     result=[];used=0
     for source,person,event,question,answer,at in rows:
         question=question[:400];answer=answer[:400]

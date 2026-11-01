@@ -63,9 +63,7 @@ def observe(db,cfg,scope,subject,text,event,now,directed=False):
     db.execute('DELETE FROM companion_seen WHERE at<?',(now-7*86400,))
     db.execute('DELETE FROM companion_seen WHERE rowid NOT IN (SELECT rowid FROM companion_seen ORDER BY at DESC LIMIT 2000)')
     if scope.startswith('group:'):
-        refuse=bool(re.search(r'别(?:再)?@我|不要艾特我|不要主动|别主动|别来烦',text));allow='可以主动找我' in text
-        goodbye=bool(re.search('晚安|再见|先睡了|不聊了',text))
-        db.execute('INSERT INTO companion_members(scope,subject,seen,directed,refused,pause) VALUES(?,?,?,?,?,?) ON CONFLICT(scope,subject) DO UPDATE SET seen=excluded.seen,directed=CASE WHEN ?>0 THEN excluded.directed ELSE directed END,unanswered=CASE WHEN excluded.directed>0 THEN 0 ELSE companion_members.unanswered END,refused=CASE WHEN ? THEN 0 WHEN ? THEN 1 ELSE refused END,pause=CASE WHEN ? THEN excluded.pause ELSE pause END',(scope,subject,now,now if directed else 0,int(refuse),now+8*3600 if goodbye else 0,now if directed else 0,int(allow),int(refuse),int(directed or goodbye or allow)))
+        db.execute('INSERT INTO companion_members(scope,subject,seen,directed) VALUES(?,?,?,?) ON CONFLICT(scope,subject) DO UPDATE SET seen=excluded.seen,directed=CASE WHEN excluded.directed>0 THEN excluded.directed ELSE directed END,unanswered=CASE WHEN excluded.directed>0 THEN 0 ELSE companion_members.unanswered END',(scope,subject,now,now if directed else 0))
         db.execute('DELETE FROM companion_members WHERE seen<?',(now-30*86400,))
         db.execute('DELETE FROM companion_members WHERE rowid NOT IN (SELECT rowid FROM companion_members ORDER BY seen DESC LIMIT 1000)')
     # Heat is evidence of a shared topic, never proof of the bot's preference.

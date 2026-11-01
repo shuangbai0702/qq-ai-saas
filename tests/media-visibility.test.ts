@@ -5,27 +5,30 @@ test('new bot social defaults are active while explicitly disabled existing conf
  assert.equal(defaultConfig.behavior?.styleLearning,true);assert.equal(defaultConfig.behavior?.memeEnabled,true);assert.equal(defaultConfig.behavior?.expressionSharing,'bot');assert.equal(defaultConfig.behavior?.splitMessages,true);assert.equal(defaultConfig.behavior?.groupParticipationEnabled,true);assert.deepEqual(defaultConfig.behavior?.groupParticipationGroups,[]);assert.deepEqual(defaultConfig.behavior?.proactiveTargets,[]);
  const old=BotConfigSchema.parse({...defaultConfig,proactive:false,behavior:{styleLearning:false,memeEnabled:false,expressionSharing:'local'}});assert.equal(old.behavior?.styleLearning,false);assert.equal(old.behavior?.memeEnabled,false);assert.equal(old.proactive,false);
 });
-test('expression sharing only links explicitly configured groups, keeps facts and bot boundaries',()=>{
+test('expression sharing is scoped while same-person memories retain identity and bot boundaries',()=>{
  const python=path.resolve(`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`);
  execFileSync(python,['tests/expression_sharing_test.py'],{windowsHide:true,stdio:'pipe'});
 });
-test('all built-in reaction images are visible and per-bot overrides govern actual runtime catalog',async()=>{
+test('fish GIFs are visible and per-bot overrides govern runtime candidates; retired avatars stay disabled',async()=>{
  const current=await createApp({root:await mkdtemp(path.resolve('.local/media-visibility-')),agent:false});
  try{
   const cookies=[];for(const name of ['a','b']){const r=await current.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(current.db),email:name+'@visibility.test',name,password:'visibility-test-123'}});cookies.push({fish_session:r.cookies[0].value})}
   const id=(await current.app.inject({method:'POST',url:'/v1/bots',cookies:cookies[0],payload:{name:'可见内置图'}})).json().id,url='/v1/bots/'+id+'/reactions';
-  const list=(await current.app.inject({url,cookies:cookies[0]})).json();assert.deepEqual(list.items.map((x:any)=>x.id),['hug','laugh','thinking']);assert.ok(list.items.every((x:any)=>x.builtin));assert.equal(list.limit,5);
-  assert.equal((await current.app.inject({url:url+'/hug',cookies:cookies[0]})).headers['content-type'],'image/png');assert.equal((await current.app.inject({url:url+'/hug',cookies:cookies[1]})).statusCode,404);
-  const item=list.items[0],payload={meaning:'支持与亲近',avoid:'严肃事务不用',enabled:false,expectedVersion:item.version};
-  assert.equal((await current.app.inject({url:url+'/hug',method:'PATCH',cookies:cookies[1],payload})).statusCode,404);
-  assert.equal((await current.app.inject({url:url+'/hug',method:'PATCH',cookies:cookies[0],payload})).statusCode,200);
-  assert.equal((await current.app.inject({url:url+'/hug',method:'PATCH',cookies:cookies[0],payload})).statusCode,409);
-  const next=(await current.app.inject({url,cookies:cookies[0]})).json().items[0];assert.equal(next.enabled,false);
+  const list=(await current.app.inject({url,cookies:cookies[0]})).json();assert.deepEqual(list.items,[]);assert.equal(list.limit,5);
+  for(const retired of ['hug','laugh','thinking'])for(const method of ['GET','PATCH'] as const)assert.equal((await current.app.inject({url:url+'/'+retired,method,cookies:cookies[0],...(method==='PATCH'?{payload:{enabled:true,meaning:'旧图',expectedVersion:'0'.repeat(64)}}:{})})).statusCode,404);
+  const packUrl='/v1/bots/'+id+'/meme-packs',pack=(await current.app.inject({url:packUrl,cookies:cookies[0]})).json().packs[0];
+  assert.equal(pack.id,'blue-fat-fish');assert.ok(pack.installed);assert.ok(pack.items.length>3);assert.ok(pack.items.every((x:any)=>/^bf_[a-f0-9]{16}$/.test(x.id)));
+  const item=pack.items[0],imageUrl=packUrl+'/blue-fat-fish/'+item.id,payload={enabled:false,expectedVersion:pack.version};
+  assert.equal((await current.app.inject({url:imageUrl,cookies:cookies[0]})).headers['content-type'],'image/gif');assert.equal((await current.app.inject({url:imageUrl,cookies:cookies[1]})).statusCode,404);
+  assert.equal((await current.app.inject({url:imageUrl,method:'PATCH',cookies:cookies[1],payload})).statusCode,404);
+  assert.equal((await current.app.inject({url:imageUrl,method:'PATCH',cookies:cookies[0],payload})).statusCode,200);
+  assert.equal((await current.app.inject({url:imageUrl,method:'PATCH',cookies:cookies[0],payload})).statusCode,409);
+  const next=(await current.app.inject({url:packUrl,cookies:cookies[0]})).json().packs[0];assert.equal(next.items.find((x:any)=>x.id===item.id).enabled,false);
   const python=path.resolve(`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`);
   const catalog=()=>JSON.parse(execFileSync(python,['-c',"import sys,sqlite3,json;from pathlib import Path;sys.path.insert(0,'adapters/astrbot');from social import SocialStore;s=SocialStore(sqlite3.connect(':memory:'),Path(sys.argv[1]));print(json.dumps(s.catalog('private:1')));s.close()",path.join(current.root,'bots',id)],{windowsHide:true,encoding:'utf8'}));
-  assert.ok(!catalog().some((x:any)=>x.id==='hug'),'disabled built-in absent from actual reply candidates');
-  assert.equal((await current.app.inject({url:url+'/hug',method:'PATCH',cookies:cookies[0],payload:{...payload,enabled:true,expectedVersion:next.version}})).statusCode,200);
-  assert.equal(catalog().find((x:any)=>x.id==='hug').meaning,'支持与亲近');
+  assert.ok(!catalog().some((x:any)=>x.id===item.id),'disabled GIF absent from actual reply candidates');
+  assert.equal((await current.app.inject({url:imageUrl,method:'PATCH',cookies:cookies[0],payload:{enabled:true,expectedVersion:next.version}})).statusCode,200);
+  assert.equal(catalog().find((x:any)=>x.id===item.id).meaning,item.meaning);assert.ok(!catalog().some((x:any)=>['hug','laugh','thinking'].includes(x.id)));
   assert.equal((await current.app.inject({url:'/v1/bots/'+id+'/gallery/hug',cookies:cookies[0]})).statusCode,404);
  }finally{await current.app.close()}
 });
