@@ -428,14 +428,17 @@ def install_runtime(core,settings):
         text=''.join(x.text for x in chain if isinstance(x,Plain))
         previous=self.get_extra('_hosted_previous_output','')
         if self.get_extra('_hosted_initiative',False) and previous and difflib.SequenceMatcher(None,text,previous).ratio()>0.88:return
-        parts=initiative.split_text(text) if (s['config'].get('behavior') or {}).get('splitMessages',False) and all(isinstance(x,(Plain,Face)) for x in chain) else [None]
+        # A selected sticker is an Image, so excluding media here silently
+        # disabled conversational bubbles on exactly those turns. Keep routing
+        # components on the first bubble and emit approved media once, last.
+        parts=initiative.split_text(text) if rhythm.get('splitMessages',False) and text.strip() and all(isinstance(x,(Plain,Face,Image,At,Reply)) for x in chain) else [None]
         result=None
         for index,part in enumerate(parts):
             delay=max(typing_delay(text if part is None else part,rhythm),rhythm.get('sendIntervalMs',800)/1000 if index else 0)
             if delay:await asyncio.sleep(delay)
             if not delivery_current(self) or self.get_extra('_hosted_generation')!=s.get('generation'):return
-            outgoing=copy.copy(message);outgoing.chain=chain if part is None else [Plain(part)]+([x for x in chain if isinstance(x,Face)] if index==len(parts)-1 else [])
-            if contact and group and part is not None and index==0:outgoing.chain=[At(qq=contact)]+outgoing.chain
+            outgoing=copy.copy(message)
+            outgoing.chain=chain if part is None else ([x for x in chain if isinstance(x,(At,Reply))] if index==0 else [])+[Plain(part)]+([x for x in chain if isinstance(x,(Face,Image))] if index==len(parts)-1 else [])
             self.set_extra('_hosted_protocol_blocked',False)
             try:result=await original_send(self,outgoing)
             except Exception:

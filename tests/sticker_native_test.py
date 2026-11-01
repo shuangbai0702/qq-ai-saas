@@ -14,14 +14,16 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import Aioc
 from astrbot.core.platform.astrbot_message import AstrBotMessage,MessageMember,Group
 from astrbot.core.platform.platform_metadata import PlatformMetadata
 from astrbot.core.platform.message_type import MessageType
-from astrbot.core.message.components import Plain,Image,Face
+from astrbot.core.message.components import Plain,Image,Face,At,Reply
 from astrbot.api.event import MessageChain
 import sticker_collection
 from behavior import install_runtime
 
 async def run():
- sent=[]
- async def transport(self,message):sent.append((self.get_platform_id(),message))
+ sent=[];payloads=[];after_send=None
+ async def transport(self,message):
+  sent.append((self.get_platform_id(),message));payloads.append(await AiocqhttpMessageEvent._parse_onebot_json(message))
+  if after_send:after_send()
  async def no_model(self,event):raise AssertionError('unmentioned collection must not call model')
  AiocqhttpMessageEvent.send=transport;PipelineScheduler.execute=no_model
  async def fetch(url):return (root/'templates/reactions/laugh.png').read_bytes()
@@ -72,6 +74,44 @@ async def run():
   assert not any(isinstance(x,Image) for x in sent[-1][1].chain),'new QQ cannot send old account favorites'
   await AiocqhttpMessageEvent.send(event('b','55555',text='发个收藏表情'),MessageChain(chain=[Plain('检查[MEME:laugh]'),Face(id=14)]))
   assert not any(isinstance(x,(Image,Face)) for x in sent[-1][1].chain),'generic reactions and QQ faces cannot impersonate favorites'
+  # Exercise the real wrapper and SDK OneBot conversion together. A selected
+  # image must not collapse separate conversational bubbles or repeat routing.
+  settings['b']['config']['behavior'].update({'splitMessages':True,'sendIntervalMs':0,'typingSimulation':False,'typoEnabled':False})
+  text='第一句。第二句？第三句！';marker='[MEME:'+pack['items'][0]['id']+']';before=len(sent)
+  await AiocqhttpMessageEvent.send(event('b','44444',text='正常聊天'),MessageChain(chain=[Reply(id='122'),At(qq='123456'),Plain(text+marker)]))
+  bubbles=sent[before:];wire=payloads[before:]
+  assert len(bubbles)==3 and [''.join(x.text for x in m.chain if isinstance(x,Plain)) for _,m in bubbles]==['第一句。','第二句？','第三句！']
+  assert [sum(isinstance(x,Image) for x in m.chain) for _,m in bubbles]==[0,0,1],'selected image must occur once in the last bubble'
+  for cls in (At,Reply):assert [sum(isinstance(x,cls) for x in m.chain) for _,m in bubbles]==[1,0,0],'routing component was lost or repeated'
+  assert [sum(x['type']=='image' for x in m) for m in wire]==[0,0,1] and wire[-1][-1]['data']['file'].startswith('base64://')
+  assert runtime['metrics']['b']['lastMemeDecision']['reason']=='sent'
+  # Image-only replies remain one nonempty message; disabling splitting keeps
+  # a mixed reply intact. Ordinary quoted text also retains the first target.
+  before=len(sent);await AiocqhttpMessageEvent.send(event('b','44445',text='正常聊天'),MessageChain(chain=[Plain(marker)]))
+  assert len(sent)==before+1 and [x['type'] for x in payloads[-1]]==['image']
+  settings['b']['config']['behavior']['splitMessages']=False;before=len(sent)
+  await AiocqhttpMessageEvent.send(event('b','44446',text='正常聊天'),MessageChain(chain=[Plain(text+marker)]))
+  assert len(sent)==before+1 and any(isinstance(x,Image) for x in sent[-1][1].chain)
+  settings['b']['config']['behavior']['splitMessages']=True;before=len(sent)
+  await AiocqhttpMessageEvent.send(event('b','44447',text='正常聊天'),MessageChain(chain=[Reply(id='123'),At(qq='123456'),Plain(text)]))
+  assert len(sent)==before+3 and all(not any(isinstance(x,Image) for x in m.chain) for _,m in sent[before:])
+  before=len(sent)
+  await AiocqhttpMessageEvent.send(event('b','44449',text='发个收藏表情'),MessageChain(chain=[Plain(text+'[MEME:'+fid+']')]))
+  assert len(sent)==before+3 and [sum(isinstance(x,Image) for x in m.chain) for _,m in sent[before:]]==[0,0,1]
+  settings['a']['config']['behavior'].update({'splitMessages':True,'sendIntervalMs':0,'typingSimulation':False,'typoEnabled':False});before=len(sent)
+  await AiocqhttpMessageEvent.send(event('a','44450',text='发张图片'),MessageChain(chain=[Plain(text+'[IMAGE:gal_test]')]))
+  assert len(sent)==before+3 and [sum(isinstance(x,Image) for x in m.chain) for _,m in sent[before:]]==[0,0,1]
+  # A configuration replacement after the first successful bubble must still
+  # fence the remaining text and the unsent image, without resurrecting stores.
+  before=len(sent)
+  def replace():
+   settings['b']={**settings['b'],'generation':2};runtime['release']('b')
+  after_send=replace
+  await AiocqhttpMessageEvent.send(event('b','44448',text='正常聊天'),MessageChain(chain=[Plain(text+marker)]))
+  after_send=None
+  assert len(sent)==before+1 and not any(isinstance(x,Image) for x in sent[-1][1].chain),'stale trailing media crossed configuration replacement'
+  assert 'b' not in runtime['stores'],'partial send recreated a released store'
+  print('PASS mixed image bubbles: three sends, image once last, quote/mention once first, image-only, split toggle and stale trailing-send fence')
   print('PASS native unmentioned sticker capture, scoped approval, peer isolation and separate gallery image send')
  finally:runtime['close']()
 asyncio.run(run());tmp.cleanup()
