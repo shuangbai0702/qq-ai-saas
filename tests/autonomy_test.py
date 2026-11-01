@@ -118,6 +118,24 @@ class AutonomyTest(unittest.IsolatedAsyncioTestCase):
         for at in [self.now+3600,self.now+7200]:
             self.store.planner.maybe_start(self.cfg,self.provider,lambda:True,self.event,self.metrics,now=at);await self.store.planner.task
         self.assertEqual(self.metrics['ownerDecisionRequests'],2)
+    async def test_owner_judgment_gets_real_same_person_memory_and_persists_result(self):
+        self.contact();self.provider.answer={'contact':False,'topic':''};self.cfg['behavior']['memorySummary']=True
+        self.store.memory.remember('group:12345','11111111','爱好','看鱼','memory-event',self.now)
+        self.store.reflection.incoming('group:12345','11111111','group-event','刚刚聊到鱼',self.now)
+        self.store.reflection.incoming('private:22222222','22222222','secret-event','另一个人的私聊秘密',self.now)
+        self.store.planner.maybe_start(self.cfg,self.provider,lambda:True,self.event,self.metrics,now=self.now+3600);await self.store.planner.task
+        payload=json.loads(self.provider.calls[0]['prompt']);self.assertEqual(payload['owner_memory']['facts'][0]['value'],'看鱼')
+        self.assertEqual(payload['owner_memory']['recent_uncompressed'][0]['source_event'],'group-event')
+        self.assertNotIn('另一个人的私聊秘密',self.provider.calls[0]['prompt'])
+        self.assertEqual(self.db.execute('SELECT status FROM autonomy_owner_checks').fetchone()[0],'model_silent')
+        self.store.close();self.store=BehaviorStore(self.path);self.db=self.store.db
+        self.assertEqual(self.db.execute('SELECT status FROM autonomy_owner_checks').fetchone()[0],'model_silent')
+    async def test_owner_timeout_is_recorded_separately_and_not_retried_each_sweep(self):
+        self.contact();self.provider.fail=True
+        self.store.planner.maybe_start(self.cfg,self.provider,lambda:True,self.event,self.metrics,now=self.now+3600);await self.store.planner.task
+        self.assertEqual(self.db.execute('SELECT status FROM autonomy_owner_checks').fetchone()[0],'timeout')
+        self.store.planner.maybe_start(self.cfg,self.provider,lambda:True,self.event,self.metrics,now=self.now+3605)
+        self.assertEqual(len(self.provider.calls),1)
     async def test_owner_result_and_dispatch_invalidated_by_new_group_interaction(self):
         self.contact();self.provider.answer={'contact':True,'topic':'想接着聊共同兴趣'};at=self.now+3600
         self.store.planner.maybe_start(self.cfg,self.provider,lambda:True,self.event,self.metrics,now=at);await self.store.planner.task
