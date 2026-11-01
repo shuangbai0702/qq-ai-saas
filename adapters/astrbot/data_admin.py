@@ -78,17 +78,19 @@ def run(file, data, connection=None):
             if not old or old['version'] != data['expectedVersion']:
                 return {'error': '记忆已发生变化，请刷新后重试', 'status': 409}
             from memory_reflection import invalidate
-            invalidate(db,scope)
-            db.execute('UPDATE facts SET active=0 WHERE scope=? AND subject=? AND name=?', key)
+            from memory_scope import person_filter
+            invalidate(db,scope,data['subject'])
+            where,args=person_filter(scope,data['subject'])
+            version=db.execute('SELECT max(version)+1 FROM facts WHERE '+where+' AND name=?',args+(data['name'],)).fetchone()[0]
+            db.execute('UPDATE facts SET active=0 WHERE '+where+' AND name=?',args+(data['name'],))
             if action == 'forget_fact':
                 db.execute('INSERT OR IGNORE INTO memory_blocks VALUES(?,?,?)', key)
             else:
-                version = db.execute('SELECT max(version)+1 FROM facts WHERE scope=? AND subject=? AND name=?', key).fetchone()[0]
                 db.execute('INSERT INTO facts VALUES(?,?,?,?,?,?,?,1)', (*key, data['value'], 'platform-edit', time.time(), version))
-                db.execute('DELETE FROM facts WHERE scope=? AND subject=? AND name=? AND version<?', (*key, max(1,version-9)))
-                db.execute('DELETE FROM memory_blocks WHERE scope=? AND subject=? AND name=?', key)
+                db.execute('DELETE FROM facts WHERE '+where+' AND name=? AND version<?',args+(data['name'],max(1,version-9)))
+                db.execute('DELETE FROM memory_blocks WHERE '+where+' AND name=?',args+(data['name'],))
                 if 'fact_metadata' in tables:
-                    db.execute("UPDATE fact_metadata SET origin='explicit' WHERE scope=? AND subject=? AND name=?", key)
+                    db.execute("INSERT INTO fact_metadata(scope,subject,name,kind,origin,importance) VALUES(?,?,?,'stable','explicit',.8) ON CONFLICT(scope,subject,name) DO UPDATE SET origin='explicit'",key)
         elif action == 'forget_summary':
             if 'memory_summaries' not in tables:return {'error':'摘要不存在','status':404}
             old=db.execute('SELECT updated FROM memory_summaries WHERE id=? AND scope=?',(data['id'],scope)).fetchone()
