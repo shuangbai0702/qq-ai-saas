@@ -57,7 +57,8 @@ class Upgrades(unittest.IsolatedAsyncioTestCase):
   async def chat(**kw):entered.set();await release.wait();return NS(completion_text='{"contact":true,"contact_subject":"22222","delay_minutes":30,"topic":"继续聊茶"}')
   p=self.store.planner;p.maybe_start(cfg,NS(text_chat=chat),lambda:True,self.var,{},self.now);await entered.wait()
   self.db.execute("UPDATE companion_members SET refused=1 WHERE subject='22222'");self.db.commit();release.set();await p.task
-  self.assertFalse(p.plan('group:1',self.now-400)['allowed'])
+  self.assertIsNone(p.plan('group:1',self.now-400))
+  self.assertFalse(self.db.execute("SELECT 1 FROM autonomy_decisions WHERE kind='plan'").fetchone())
  async def caption(self,chat):
   from media_separation_test import PNG,RAW,CFG
   async def fetch(url):return PNG

@@ -1,4 +1,5 @@
 import asyncio,contextvars,json,sqlite3,sys,time,unittest
+from datetime import datetime,timezone,timedelta
 from pathlib import Path
 from types import SimpleNamespace as NS
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters'/'astrbot'))
@@ -10,7 +11,7 @@ class Companion(unittest.IsolatedAsyncioTestCase):
  def setUp(self):
   self.db=sqlite3.connect(':memory:');initiative.initialize(self.db);self.p=Planner(self.db);self.var=contextvars.ContextVar('event',default=None)
   self.now=time.time();initiative.incoming(self.db,'private:12345','12345','99999','喜欢喝茶',self.now-400)
-  self.cfg={'proactive':True,'behavior':{'proactiveTargets':['private:12345'],'proactiveModelSchedule':True,'quietStart':0,'quietEnd':0,'proactiveIntervalSeconds':60,'silenceSeconds':60,'proactiveChance':1}}
+  self.cfg={'proactive':True,'behavior':{'memory':False,'proactiveTargets':['private:12345'],'proactiveModelSchedule':True,'quietStart':0,'quietEnd':0,'proactiveIntervalSeconds':60,'silenceSeconds':60,'proactiveChance':1}}
   self.db.execute('CREATE TABLE deliveries(scope TEXT,day TEXT,count INTEGER,last_sent REAL,PRIMARY KEY(scope,day))')
  def tearDown(self):self.p.close();self.db.close()
  async def test_model_plan_and_due(self):
@@ -27,6 +28,28 @@ class Companion(unittest.IsolatedAsyncioTestCase):
   self.cfg['systemPrompt']='角色有稳定的个人兴趣。'
   self.p.maybe_start(self.cfg,NS(text_chat=chat),lambda:True,self.var,{},self.now);await self.p.task
   self.assertEqual(json.loads(captured[0]['prompt'])['persona'],self.cfg['systemPrompt'])
+ async def test_unlimited_planning_does_not_inherit_old_six_checks_cap(self):
+  day=int((self.now+8*3600)//86400);self.db.execute('INSERT INTO companion_plan_budget VALUES(?,100)',(day,));calls=[]
+  async def chat(**kw):calls.append(kw);return NS(completion_text='{"contact":false,"delay_minutes":30,"topic":""}')
+  self.cfg['behavior']['dailyPlanLimit']=-1
+  self.p.maybe_start(self.cfg,NS(text_chat=chat),lambda:True,self.var,{},self.now);await self.p.task
+  self.assertEqual(len(calls),1);self.assertEqual(self.db.execute('SELECT count FROM companion_plan_budget WHERE day=?',(day,)).fetchone()[0],101)
+ async def test_actual_daily_send_cap_prevents_wasted_planning(self):
+  day=datetime.fromtimestamp(self.now,timezone(timedelta(hours=8))).date().isoformat()
+  self.db.execute('INSERT INTO deliveries VALUES(?,?,10,?)',('private:12345',day,self.now-300))
+  async def chat(**kw):raise AssertionError('No remaining send budget')
+  self.p.maybe_start(self.cfg,NS(text_chat=chat),lambda:True,self.var,{},self.now)
+  self.assertIsNone(self.p.task);self.assertEqual(self.db.execute('SELECT count(*) FROM companion_plan_budget').fetchone()[0],0)
+ async def test_planning_budget_rolls_over_at_beijing_midnight(self):
+  before=datetime(2026,11,1,15,59,30,tzinfo=timezone.utc).timestamp();after=before+60
+  old_day=int((before+8*3600)//86400);new_day=int((after+8*3600)//86400)
+  self.assertNotEqual(old_day,new_day)
+  self.cfg['behavior']['dailyPlanLimit']=1;self.db.execute('INSERT INTO companion_plan_budget VALUES(?,1)',(old_day,))
+  initiative.incoming(self.db,'private:12345','12345','99999','边界前的真实互动',before-400)
+  async def chat(**kw):return NS(completion_text='{"contact":false,"delay_minutes":30,"topic":""}')
+  provider=NS(text_chat=chat);self.p.maybe_start(self.cfg,provider,lambda:True,self.var,{},before);self.assertIsNone(self.p.task)
+  self.p.maybe_start(self.cfg,provider,lambda:True,self.var,{},after);await self.p.task
+  self.assertEqual(self.db.execute('SELECT count FROM companion_plan_budget WHERE day=?',(new_day,)).fetchone()[0],1)
  async def test_authorized_plan_target_is_not_hidden_by_other_contacts(self):
   for i in range(80):initiative.incoming(self.db,'private:'+str(50000000+i),str(50000000+i),'99999','普通聊天',self.now-350)
   async def chat(**kw):return NS(completion_text='{"contact":true,"delay_minutes":30,"topic":"继续聊茶"}')

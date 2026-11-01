@@ -17,6 +17,7 @@ from companion_schedule import Planner
 from participation import Participation
 import qq_actions
 import group_actions
+import bot_pipeline
 
 def emotional_phrase(text,pattern):
     for match in re.finditer(pattern,text):
@@ -62,6 +63,7 @@ class BehaviorStore:
         for scope,subject,at in self.db.execute('SELECT scope,partner,last_reply FROM autonomy_groups WHERE last_reply>? AND last_reply<=? ORDER BY last_reply DESC LIMIT 128',(time.time()-300,time.time())):
             self.participation.scopes[scope]={'topic':set(),'sent':[at],'last':at,'subject':subject,'participants':{subject:at} if subject else {},'turns':[]}
         self.presence=autonomy.GroupPresence(self.db)
+        self.pipeline=bot_pipeline.BotPipeline(self.db)
         group_actions.initialize(self.db)
         self.social=SocialStore(self.db,Path(path).parent)
         self.last={};self.active=0;self.batches={};self.ambient=Ambient()
@@ -129,6 +131,7 @@ def clean_text(text,max_chars=500):
 
 def install_runtime(core,settings):
     from astrbot.core.pipeline.scheduler import PipelineScheduler
+    from astrbot.core.pipeline.waking_check.stage import WakingCheckStage
     from astrbot.core.platform.astr_message_event import current_message_event
     from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
     from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_platform_adapter import AiocqhttpAdapter
@@ -157,6 +160,22 @@ def install_runtime(core,settings):
         scope='group:'+group if group else 'private:'+str(event.get_sender_id())
         row=st.db.execute('SELECT opted_out,last_user FROM contacts WHERE scope=?',(scope,)).fetchone()
         return bool(row and not row[0] and row[1]==event.get_extra('_hosted_last_user') and (not event.get_extra('_hosted_contact_subject') or companion_state.member_current(st.db,scope,event.get_extra('_hosted_contact_subject'),event.get_extra('_hosted_contact_seen'),time.time())))
+    waking_original=WakingCheckStage.process
+    async def wake(self,event):
+        native=self.ctx.astrbot_config
+        # Hosted shared members have no native commands/plugins/admin grants.
+        # Translate a current, admitted semantic decision into native wake state;
+        # the scheduler still runs whitelist, session, rate and safety stages.
+        # Other deployments retain the complete native wake/permission handler.
+        if (event.get_extra('_hosted_group_decision') and current(event) and delivery_current(event)
+                and str(event.get_sender_id())!=str(event.get_self_id()) and not event.is_stopped()
+                and native.get('plugin_set')==[] and native.get('disable_builtin_commands') is True and not native.get('admins_id')):
+            event.is_wake=True;event.is_at_or_wake_command=True;event.plugins_name=[]
+            event.set_extra('activated_handlers',[]);event.set_extra('handlers_parsed_params',{})
+            self._umo_auto_name_recorder.schedule(event)
+            return
+        return await waking_original(self,event)
+    WakingCheckStage.process=wake
     # Stamp when enqueued, before a configuration replacement can change the
     # platform ID's owner. A generation alone cannot fence same-generation apply.
     commit_original=AiocqhttpAdapter.commit_event
@@ -181,7 +200,12 @@ def install_runtime(core,settings):
             if st is None:return
             autonomy.settle_send(st.db,event.get_extra('_hosted_autonomy_reservation'),'unknown')
             event.set_extra('_hosted_protocol_dispatched',True)
-        return await dispatch_original(cls,*args,**kwargs)
+        work=event.get_extra('_hosted_pipeline') if event else None
+        owned=stores.get(event.get_platform_id()) if event else None
+        if work and owned:owned.pipeline.sending(work)
+        result=await dispatch_original(cls,*args,**kwargs)
+        if work and owned:owned.pipeline.confirmed(work)
+        return result
     # Media conversion may await downloads. Fence again at the final OneBot
     # dispatch, after conversion, for ordinary replies and controlled tools.
     AiocqhttpMessageEvent._dispatch_send=classmethod(dispatch)
@@ -217,6 +241,7 @@ def install_runtime(core,settings):
     # provider-only injection advertises tools the Agent cannot execute.
     ToolLoopAgentRunner.reset=reset_runner
     async def execute(self,event):
+        source_event=event
         s=setting(event)
         if not s:
             if event.get_extra('_hosted_lease') is not None:return
@@ -228,18 +253,24 @@ def install_runtime(core,settings):
         id=event.get_platform_id();st=store(id,s);group=str(event.get_group_id() or '');subject=str(event.get_sender_id());scope='group:'+group if group else 'private:'+subject
         if group and cfg.get('groups') and group not in cfg['groups']:return
         if await poke(event,cfg,st.db,lambda:current(event)):return
-        internal=event.get_extra('_hosted_initiative',False);now=time.time()
+        internal=event.get_extra('_hosted_initiative',False);deferred=event.get_extra('_hosted_deferred_group');now=time.time()
+        if deferred and (event.get_extra('_hosted_scheduled_generation')!=s.get('generation') or not st.presence.pending_current(deferred,cfg,lambda:current(event))):return
+        work=st.pipeline.bind(event,s)
+        if work.status!='received':
+            if deferred and work.reason=='deferred_output_already_attempted':st.presence.discard(deferred)
+            return
+        work.stage('observe')
         mentioned=any(isinstance(c,At) and str(c.qq)==str(event.get_self_id()) for c in event.get_messages())
         quoted_bot=any(isinstance(c,Reply) and str(c.sender_id)==str(event.get_self_id()) for c in event.get_messages())
         mentioned=mentioned or quoted_bot
         other_target=any(isinstance(c,At) and str(c.qq)!=str(event.get_self_id()) for c in event.get_messages()) and not mentioned
         incoming=''.join(c.text for c in event.get_messages() if isinstance(c,Plain))
-        early_directed=subject!=str(event.get_self_id()) and (not group or mentioned or st.participation.continuing(scope,incoming,subject,now,seconds=(cfg.get('behavior') or {}).get('followupSeconds',0)))
+        early_directed=subject!=str(event.get_self_id()) and (not group or mentioned or not other_target and st.participation.continuing(scope,incoming,subject,now,seconds=(cfg.get('behavior') or {}).get('followupSeconds',0)))
         if internal:
             if event.get_extra('_hosted_scheduled_generation')!=s.get('generation'):return
             row=st.db.execute('SELECT last_user,opted_out FROM contacts WHERE scope=?',(scope,)).fetchone()
             if not row or row[0]!=event.get_extra('_hosted_last_user') or row[1] or not cfg.get('proactive') or initiative.quiet(cfg,now):return
-        else:
+        elif not deferred:
             if subject!=str(event.get_self_id()) and (cfg.get('behavior') or {}).get('memory',True):
                 st.reflection.incoming(scope,subject,getattr(event.message_obj,'message_id',''),incoming,now)
             initiative.incoming(st.db,scope,subject,str(event.get_self_id()),incoming,now,directed=early_directed)
@@ -247,56 +278,70 @@ def install_runtime(core,settings):
             event.set_extra('_hosted_interaction_observed',early_directed)
             if subject!=str(event.get_self_id()):companion_state.observe(st.db,cfg,scope,subject,incoming,getattr(event.message_obj,'message_id',''),now,directed=early_directed)
             if (cfg.get('behavior') or {}).get('socialAwareness',True):st.ambient.observe(scope,subject,incoming,now,(cfg.get('behavior') or {}).get('ambientContextMessages',12))
-        if not internal:
+        if not internal and not deferred:
             raw=getattr(event.message_obj,'raw_message',{})
             provider=provider_for(id)
             st.social.stickers.observe(raw,scope,subject,str(event.get_self_id()),cfg.get('behavior') or {},lambda:settings.get(id) is s,metrics.setdefault(id,{}),provider=provider,event_var=current_message_event)
             care.track(st,st.social.stickers.task)
-        if not internal and subject!=str(event.get_self_id()) and (cfg.get('behavior') or {}).get('styleLearning'):
+        if not internal and not deferred and subject!=str(event.get_self_id()) and (cfg.get('behavior') or {}).get('styleLearning'):
             st.social.observe(scope,subject,incoming,getattr(event.message_obj,'message_id',''))
             provider=provider_for(id)
             maybe_learn(st.social,scope,cfg.get('behavior') or {},provider,lambda:settings.get(id) is s,metrics.setdefault(id,{}),current_message_event)
             care.track(st,st.social.task)
-        state=st.observe(scope,subject,incoming if not internal else '',getattr(event.message_obj,'message_id',''),auto_capture=not internal and (cfg.get('behavior') or {}).get('memoryAutoCapture',False),memory_enabled=(cfg.get('behavior') or {}).get('memory',True),directed=not internal and (early_directed or incoming.startswith('/')))
+        state=st.observe(scope,subject,incoming if not internal and not deferred else '',getattr(event.message_obj,'message_id',''),auto_capture=not internal and not deferred and (cfg.get('behavior') or {}).get('memoryAutoCapture',False),memory_enabled=(cfg.get('behavior') or {}).get('memory',True),directed=not internal and not deferred and (early_directed or incoming.startswith('/')))
         if companion_state.enabled(cfg):
             emotion=companion_state.context(st.db,cfg,scope,now)['emotion'];state['emotion']=emotion['label']
         # Own mood and this person's relationship reaction have separate owners.
         # Ambient messages to other people remain observable, without eliciting a reply.
-        if other_target and not internal and not (cfg.get('behavior') or {}).get('groupParticipationOtherConversations',False):return
+        # An @ to somebody else is addressing evidence for the model, not proof
+        # that the topic cannot concern this bot. Side-comment policy is applied
+        # after that judgment; unrelated directed chats never become follow-up.
         if (cfg.get('behavior') or {}).get('memory',True) and (cfg.get('behavior') or {}).get('memorySummary'):
             state['conversation_summaries']=st.reflection.recall(scope,incoming,subject=subject)
         batch=[];debounce=(cfg.get('behavior') or {}).get('burstDebounceMs',0)/1000
-        if debounce and not internal:
+        if debounce and not internal and not deferred:
             entry={'event':event,'text':incoming[:500],'sender_id':subject,'mentioned':mentioned,'state':state}
             if scope in st.batches:
-                st.batches[scope].append(entry);st.batches[scope][:]=st.batches[scope][-20:];return
+                st.batches[scope].append(entry);st.batches[scope][:]=st.batches[scope][-20:];bot_pipeline.stop(event,'batch_waiting','waiting');return
             st.batches[scope]=[entry]
             try:await asyncio.sleep(debounce)
             finally:batch=st.batches.pop(scope,[])
             if not batch or setting(event) is not s:return
-            last=next((x for x in reversed(batch) if x['mentioned']),batch[-1]);event=last['event'];subject=last['sender_id'];state=last['state'];mentioned=last['mentioned']
+            content=next((x for x in reversed(batch) if x['text'].strip() or any(isinstance(c,Image) for c in x['event'].get_messages())),batch[-1])
+            last=next((x for x in reversed(batch) if x['mentioned']),content);event=last['event'];subject=last['sender_id'];state=last['state'];mentioned=last['mentioned']
+            selected=event.get_extra('_hosted_pipeline')
+            if selected and selected is not work:
+                work.stop('batch_combined','combined');selected.status='received';selected.reason='';source_event.set_extra('_hosted_pipeline_selected',selected)
+                source_event.set_extra('_hosted_pipeline_selected_event',event)
+            other_target=any(isinstance(c,At) and str(c.qq)!=str(event.get_self_id()) for c in event.get_messages()) and not mentioned
             incoming=''.join(c.text for c in event.get_messages() if isinstance(c,Plain));now=time.time()
-        continuing=bool(group and not internal and st.participation.continuing(scope,event.get_message_str(),subject,seconds=(cfg.get('behavior') or {}).get('followupSeconds',0)))
+        continuing=bool(group and not internal and not other_target and st.participation.continuing(scope,event.get_message_str(),subject,seconds=(cfg.get('behavior') or {}).get('followupSeconds',0)))
         contextual=bool(group and not internal and st.participation.in_conversation(scope,event.get_message_str(),cfg.get('behavior') or {},other_target=other_target))
         command=event.get_message_str().startswith('/')
         directed=not group or mentioned or continuing
-        st.participation.incoming(scope,subject,incoming,now,directed=directed)
-        if not internal and directed and not event.get_extra('_hosted_interaction_observed',False):
+        if not deferred:st.participation.incoming(scope,subject,incoming,now,directed=directed)
+        if not internal and not deferred and directed and not event.get_extra('_hosted_interaction_observed',False):
             autonomy.note_interaction(st.db,cfg,scope,subject,now)
             initiative.incoming(st.db,scope,subject,str(event.get_self_id()),incoming,now,directed=True)
         semantic=None
-        if group and not internal and not (mentioned or continuing or contextual or command):
+        bot_pipeline.stage(event,'admission')
+        if group and not internal and (other_target or not (mentioned or continuing or contextual or command)):
             if not autonomy.group_allowed(cfg,scope):return
-            if st.active>=1:return
             provider=provider_for(id);decision_at=time.time();event_id=str(getattr(event.message_obj,'message_id',''))
-            if not st.presence.ready(scope,cfg,event_id,provider,lambda:current(event),decision_at):return
+            if not deferred:st.presence.defer(scope,cfg,event_id,getattr(event.message_obj,'raw_message',{}),subject,str(event.get_self_id()),incoming,decision_at)
+            if st.active>=1:return
+            if not st.presence.ready(scope,cfg,event_id,provider,lambda:current(event),decision_at):
+                bot_pipeline.stop(event,'group_waiting','waiting');return
             messages=st.ambient.context(scope,now)
+            if deferred and not messages and (cfg.get('behavior') or {}).get('memory',True):
+                messages=[{'sender_id':r[0],'text':r[1]} for r in reversed(st.db.execute('SELECT subject,question FROM memory_pending WHERE scope=? AND at<=? ORDER BY at DESC LIMIT 12',(scope,now)).fetchall())]
             if not messages or messages[-1].get('sender_id')!=subject or messages[-1].get('text')!=incoming[:180]:messages.append({'sender_id':subject,'text':incoming})
             st.active+=1;care.stamp(s['root'])
             try:
                 semantic=await st.presence.evaluate(scope,cfg,event_id,provider,messages,companion_state.context(st.db,cfg,scope,now),st.participation.context(scope,cfg=cfg.get('behavior') or {}),lambda:current(event),metrics.setdefault(id,{}),current_message_event,now=decision_at,addressing={'self_id':str(event.get_self_id()),'mentions_other':any(isinstance(c,At) and str(c.qq)!=str(event.get_self_id()) for c in event.get_messages()),'replies_to_other':any(isinstance(c,Reply) and str(c.sender_id) not in ('','0',str(event.get_self_id())) for c in event.get_messages())})
             finally:st.active-=1;care.stamp(s['root'])
-            if not semantic or not semantic[0].reply or not st.presence.current(scope,cfg,semantic[1],semantic[2],lambda:current(event)):return
+            if not semantic or not semantic[0].reply or not st.presence.current(scope,cfg,semantic[1],semantic[2],lambda:current(event)):
+                bot_pipeline.stop(event,'group_model_silent_or_stale','silent');return
             event.set_extra('_hosted_group_decision',{'scope':scope,'checked':semantic[1],'version':semantic[2]})
             event.set_extra('_hosted_participation_hint',semantic[0].handoff_hint)
         if group:
@@ -311,55 +356,55 @@ def install_runtime(core,settings):
             if not autonomy.reserve_send(st.db,scope,reservation,cfg):
                 m=metrics.setdefault(id,{});m['interjectionsLimited']=m.get('interjectionsLimited',0)+1;return
             event.set_extra('_hosted_autonomy_reservation',reservation)
-        st.active+=1;care.stamp(s['root']);generation=s.get('generation');stamps=metrics.setdefault(id,{})
-        for k in ('received','requests','replies','failures'):stamps.setdefault(k,0)
-        stamps['received']+=1
-        owner=str((cfg.get('behavior') or {}).get('ownerUin') or '')
-        identity={'bot_id':s['botId'],'group_id':group or None,'sender_id':subject,'nickname':event.get_sender_name(),'directed_to_bot':not group or mentioned or continuing,'owner':bool(owner and subject==owner)}
-        social_cfg=dict(cfg.get('behavior') or {});social_cfg['_qqAccount']=str(event.get_self_id())
-        gate=st.social.image_status(scope,social_cfg,request=event.get_message_str())
-        social_cfg['memeEnabled']=gate['reason']=='available'
-        social_context=st.social.context(scope,event.get_message_str(),social_cfg)
-        meme_allowed=bool(social_context.get('meme_candidates'))
-        if social_cfg['memeEnabled']:gate={'reason':'offered' if meme_allowed else 'no_candidates','candidates':len(social_context.get('meme_candidates',[]))}
-        stamps['memeCandidatesOffered']=stamps.get('memeCandidatesOffered',0)+int(meme_allowed)
-        stamps['lastMemeDecision']={**gate,'at':time.time()}
-        event.set_extra('_hosted_meme_gate',gate);event.set_extra('_hosted_meme_allowed',meme_allowed)
-        event.set_extra('_hosted_context',json.dumps({'identity':identity,'state':state,'companion':companion_state.context(st.db,cfg,scope,now),'contact_target':event.get_extra('_hosted_contact_subject'),'social':social_context,'ambient_group_messages':st.ambient.context(scope,now) if (cfg.get('behavior') or {}).get('socialAwareness',True) else [],'origin':'internal_timer' if internal else 'real_QQ','recent_burst':[{'sender_id':x['sender_id'],'text':x['text']} for x in batch],'previous_proactive_output':event.get_extra('_hosted_previous_output','')},ensure_ascii=False));event.set_extra('_hosted_generation',generation)
-        event.set_extra('_hosted_memory_epoch',st.reflection.epoch())
+        st.active+=1
         try:
+            care.stamp(s['root']);generation=s.get('generation');stamps=metrics.setdefault(id,{})
+            bot_pipeline.stage(event,'context')
+            for k in ('received','requests','replies','failures'):stamps.setdefault(k,0)
+            stamps['received']+=1
+            owner=str((cfg.get('behavior') or {}).get('ownerUin') or '')
+            identity={'bot_id':s['botId'],'group_id':group or None,'sender_id':subject,'nickname':event.get_sender_name(),'directed_to_bot':not group or mentioned or continuing,'owner':bool(owner and subject==owner)}
+            social_cfg=dict(cfg.get('behavior') or {});social_cfg['_qqAccount']=str(event.get_self_id())
+            gate=st.social.image_status(scope,social_cfg,request=event.get_message_str())
+            social_cfg['memeEnabled']=gate['reason']=='available'
+            social_context=st.social.context(scope,event.get_message_str(),social_cfg)
+            meme_allowed=bool(social_context.get('meme_candidates'))
+            if social_cfg['memeEnabled']:gate={'reason':'offered' if meme_allowed else 'no_candidates','candidates':len(social_context.get('meme_candidates',[]))}
+            stamps['memeCandidatesOffered']=stamps.get('memeCandidatesOffered',0)+int(meme_allowed)
+            stamps['lastMemeDecision']={**gate,'at':time.time()}
+            event.set_extra('_hosted_meme_gate',gate);event.set_extra('_hosted_meme_allowed',meme_allowed)
+            assembly=bot_pipeline.ContextBuilder(identity,'internal_timer' if internal else 'deferred_real_QQ' if deferred else 'real_QQ')
+            assembly.contribute('memory',{'state':state})
+            assembly.contribute('companion',{'companion':companion_state.context(st.db,cfg,scope,now)})
+            assembly.contribute('social',{'social':social_context})
+            assembly.contribute('conversation',{'ambient_group_messages':st.ambient.context(scope,now) if (cfg.get('behavior') or {}).get('socialAwareness',True) else [],'recent_burst':[{'sender_id':x['sender_id'],'text':x['text']} for x in batch]})
+            assembly.contribute('delivery',{'contact_target':event.get_extra('_hosted_contact_subject'),'previous_proactive_output':event.get_extra('_hosted_previous_output','')})
+            event.set_extra('_hosted_generation',generation)
+            event.set_extra('_hosted_memory_epoch',st.reflection.epoch())
             b=cfg.get('behavior') or {}
-            context=json.loads(event.get_extra('_hosted_context','{}'))
-            context['dialogue']=st.participation.context(scope,cfg=b)
-            if not b.get('memory',True):context['dialogue']['feedback']=[]
-            context['conversation_candidate']=contextual and not mentioned and not continuing
-            if b.get('memory',True):context['recent_cross_session_messages']=st.reflection.recent(scope,subject,str(getattr(event.message_obj,'message_id','')),now)
-            context['reply_to']=[{'sender_id':str(c.sender_id),'text':str(getattr(c,'message_str','') or '')[:200]} for c in event.get_messages() if isinstance(c,Reply)][:1]
-            event.set_extra('_hosted_context',json.dumps(context,ensure_ascii=False))
+            dialogue=st.participation.context(scope,cfg=b)
+            if not b.get('memory',True):dialogue['feedback']=[]
+            assembly.contribute('conversation',{'dialogue':dialogue,'conversation_candidate':contextual and not mentioned and not continuing,'reply_to':[{'sender_id':str(c.sender_id),'text':str(getattr(c,'message_str','') or '')[:200]} for c in event.get_messages() if isinstance(c,Reply)][:1]})
+            if b.get('memory',True):assembly.contribute('memory',{'recent_cross_session_messages':st.reflection.recent(scope,subject,str(getattr(event.message_obj,'message_id','')),now)})
             if b.get('memory',True) and b.get('memorySemantic',True) and not b.get('embeddingModel','').strip():
                 from semantic_context import recall as semantic_context
                 state['facts'],state['conversation_summaries']=semantic_context(st,scope,subject,event.get_message_str(),b,lambda:current(event),stamps)
                 if not current(event):return
-                context=json.loads(event.get_extra('_hosted_context','{}'));context['state']=state
-                event.set_extra('_hosted_context',json.dumps(context,ensure_ascii=False))
             if b.get('memory',True) and b.get('memorySemantic',True) and b.get('embeddingModel','').strip():
                 provider=provider_for(id)
                 state['facts']=await st.memory.semantic_recall(scope,subject,event.get_message_str(),now,b,provider,lambda:current(event))
                 if not current(event):return
-                context=json.loads(event.get_extra('_hosted_context','{}'));context['state']=state
-                event.set_extra('_hosted_context',json.dumps(context,ensure_ascii=False))
             if b.get('memory',True) and b.get('memorySummary') and b.get('memorySemantic',True) and b.get('embeddingModel','').strip():
                 provider=provider_for(id)
                 state['conversation_summaries']=await st.reflection.semantic_recall(scope,event.get_message_str(),b,provider,lambda:current(event),stamps,subject=subject)
                 if not current(event):return
-                context=json.loads(event.get_extra('_hosted_context','{}'));context['state']=state
-                event.set_extra('_hosted_context',json.dumps(context,ensure_ascii=False))
             if social_cfg.get('memeEnabled') and social_cfg.get('memeSemantic'):
                 provider=provider_for(id)
                 social_context=await st.social.context_semantic(scope,event.get_message_str(),social_cfg,provider,lambda:current(event))
                 if not current(event):return
-                context=json.loads(event.get_extra('_hosted_context','{}'));context['social']=social_context
-                event.set_extra('_hosted_context',json.dumps(context,ensure_ascii=False))
+                assembly.contribute('social',{'social':social_context})
+            event.set_extra('_hosted_context',json.dumps(assembly.build(),ensure_ascii=False))
+            bot_pipeline.stage(event,'model_tools')
             return await original_execute(self,event)
         finally:st.active-=1;care.stamp(s['root'])
     async def send(self,message):
@@ -370,6 +415,7 @@ def install_runtime(core,settings):
         if not delivery_current(self) or self.get_extra('_hosted_generation')!=s.get('generation'):return
         if self.get_platform_id() in core.event_bus.stopped_platforms:return
         if message is None:return
+        bot_pipeline.stage(self,'output_plan')
         if self.get_extra('_hosted_model_error',False) and (self.get_extra('_hosted_group_decision') or self.get_extra('_hosted_initiative',False)):return
         if self.get_extra('_hosted_model_error',False):
             # AstrBot's native error reply can contain raw upstream exception
@@ -449,24 +495,47 @@ def install_runtime(core,settings):
         # disabled conversational bubbles on exactly those turns. Keep routing
         # components on the first bubble and emit approved media once, last.
         parts=initiative.split_text(text) if rhythm.get('splitMessages',False) and text.strip() and all(isinstance(x,(Plain,Face,Image,At,Reply)) for x in chain) else [None]
-        result=None
+        planned=[];delays=[]
         for index,part in enumerate(parts):
-            delay=typing_delay(text if part is None else part,rhythm)+(rhythm.get('sendIntervalMs',800)/1000 if index else 0)
-            if delay:await asyncio.sleep(delay)
-            if not delivery_current(self) or self.get_extra('_hosted_generation')!=s.get('generation'):return
+            delays.append(typing_delay(text if part is None else part,rhythm)+(rhythm.get('sendIntervalMs',800)/1000 if index else 0))
             outgoing=copy.copy(message)
             outgoing.chain=chain if part is None else ([x for x in chain if isinstance(x,(At,Reply))] if index==0 else [])+[Plain(part)]+([x for x in chain if isinstance(x,(Face,Image))] if index==len(parts)-1 else [])
+            planned.append(outgoing)
+        plan=bot_pipeline.OutputPlan(tuple(planned),tuple(delays));work=self.get_extra('_hosted_pipeline')
+        if work:work.planned_messages+=len(plan.messages)
+        result=None;confirmed_text=[]
+        for outgoing,delay in zip(plan.messages,plan.delays):
+            if delay:await asyncio.sleep(delay)
+            if not delivery_current(self) or self.get_extra('_hosted_generation')!=s.get('generation'):return
             self.set_extra('_hosted_protocol_blocked',False)
+            before_confirmed=work.confirmed if work else 0
             try:result=await original_send(self,outgoing)
             except Exception:
                 if image and setting(self) is s:metrics.setdefault(id,{})['lastMemeDecision']={'reason':'send_failed','at':time.time()}
                 raise
             if self.get_extra('_hosted_protocol_blocked',False):return result
+            if work and work.confirmed>before_confirmed:work.confirmed_messages+=1
             if setting(self) is s and self.get_extra('_hosted_protocol_dispatched'):autonomy.settle_send(store(id,s).db,self.get_extra('_hosted_autonomy_reservation'),'sent')
             if contact:self.set_extra('_hosted_contact_at_sent',True)
             # A committed protocol send cannot be recalled. Its late completion
             # must not recreate a released store or update the next generation.
             if setting(self) is not s or self.get_platform_id() in core.event_bus.stopped_platforms:return result
+            if work and work.confirmed>before_confirmed:
+                # A later bubble can fail after this one reached QQ. Refresh
+                # actual interaction clocks on the confirmed receipt; never
+                # record the unsent suffix as memory or a completed reply.
+                active_store=stores.get(id)
+                if active_store is not None:
+                    # Only carry this work's own confirmed receipt forward.
+                    # New interaction/pause during protocol I/O stays stale.
+                    admitted=delivery_current(self);decision=self.get_extra('_hosted_group_decision')
+                    confirmed_text.append(''.join(x.text for x in outgoing.chain if isinstance(x,Plain)))
+                    received_at=time.time();who='' if self.get_extra('_hosted_initiative',False) else str(self.get_sender_id())
+                    autonomy.note_interaction(active_store.db,s['config'],scope,who,received_at)
+                    if admitted and decision:
+                        self.set_extra('_hosted_group_decision',{**decision,'version':active_store.presence.snapshot(scope)[2]})
+                    if group:autonomy.note_reply(active_store.db,scope,who,received_at)
+                    initiative.outgoing(active_store.db,scope,'\n'.join(confirmed_text),received_at)
             if not self.get_extra('_hosted_initiative',False):
                 started=self.get_extra('_hosted_received_at')
                 if started is not None:
@@ -483,9 +552,11 @@ def install_runtime(core,settings):
             m['lastMemeDecision']={'reason':'sent','imageId':image['id'],'at':time.time()}
             if automatic_image_selected:m['imagesAutoSent']=m.get('imagesAutoSent',0)+1
         active_store=store(id,s)
+        bot_pipeline.stage(self,'commit')
         if rhythm.get('styleLearning'):social.expression_sent(scope,text)
-        autonomy.note_interaction(active_store.db,s['config'],scope,'' if self.get_extra('_hosted_initiative',False) else str(self.get_sender_id()),time.time())
-        if group:autonomy.note_reply(active_store.db,scope,'' if self.get_extra('_hosted_initiative',False) else str(self.get_sender_id()),time.time())
+        if not work or not work.confirmed:
+            autonomy.note_interaction(active_store.db,s['config'],scope,'' if self.get_extra('_hosted_initiative',False) else str(self.get_sender_id()),time.time())
+            if group:autonomy.note_reply(active_store.db,scope,'' if self.get_extra('_hosted_initiative',False) else str(self.get_sender_id()),time.time())
         if group:active_store.participation.outgoing(scope,text,subject='' if self.get_extra('_hosted_initiative',False) else str(self.get_sender_id()),request='' if self.get_extra('_hosted_initiative',False) else self.get_message_str(),event=getattr(self.message_obj,'message_id',''),persist=rhythm.get('memory',True))
         if not self.get_extra('_hosted_initiative',False) and not self.get_extra('_hosted_model_error',False):
             # Successful replies establish a real interaction, including a
@@ -589,14 +660,24 @@ def install_runtime(core,settings):
     async def guarded_execute(self,event):
         lease=setting(event)
         try:return await execute(self,event)
+        except asyncio.CancelledError:
+            bot_pipeline.stop(event,'cancelled');raise
+        except Exception as error:
+            bot_pipeline.stop(event,type(error).__name__,'error');raise
         finally:
             st=stores.get(event.get_platform_id())
-            key=event.get_extra('_hosted_autonomy_reservation')
-            if key and st is not None and settings.get(event.get_platform_id()) is lease:
-                row=st.db.execute('SELECT state FROM autonomy_sends WHERE event=?',(key,)).fetchone()
-                if row and row[0]=='pending':
-                    if event.get_extra('_hosted_timer_item'):initiative.release_unstarted(st.db,event.get_extra('_hosted_timer_item'),key)
-                    autonomy.settle_send(st.db,key,'released')
+            events=[event];selected=event.get_extra('_hosted_pipeline_selected_event')
+            if selected is not None and selected is not event:events.append(selected)
+            if st is not None and settings.get(event.get_platform_id()) is lease:
+                for owned_event in events:
+                    work=owned_event.get_extra('_hosted_pipeline')
+                    if work:st.pipeline.finish(work,metrics.setdefault(event.get_platform_id(),{}))
+                    key=owned_event.get_extra('_hosted_autonomy_reservation')
+                    if key:
+                        row=st.db.execute('SELECT state FROM autonomy_sends WHERE event=?',(key,)).fetchone()
+                        if row and row[0]=='pending':
+                            if owned_event.get_extra('_hosted_timer_item'):initiative.release_unstarted(st.db,owned_event.get_extra('_hosted_timer_item'),key)
+                            autonomy.settle_send(st.db,key,'released')
     PipelineScheduler.execute=guarded_execute;AiocqhttpMessageEvent.send=send
     timer=initiative.start(core,settings,store,metrics)
     def release(id):

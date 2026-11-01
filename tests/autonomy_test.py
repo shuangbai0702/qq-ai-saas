@@ -76,10 +76,11 @@ class AutonomyTest(unittest.IsolatedAsyncioTestCase):
     async def test_removed_whitelist_during_await_invalidates_result(self):
         self.provider.entered=asyncio.Event();self.provider.release=asyncio.Event();task=asyncio.create_task(self.judge());await self.provider.entered.wait()
         self.cfg['behavior']['groupParticipationGroups']=[];self.provider.release.set();self.assertFalse((await task)[0].reply)
-    async def test_group_refusal_is_local_and_blocks_new_autonomy(self):
-        initiative.incoming(self.db,'group:12345','22222222','99999999','不要主动找我',self.now)
-        self.assertIsNone(await self.judge());self.assertTrue((await self.judge(scope='group:67890',event='other'))[0].reply)
-        self.assertEqual(len(self.provider.calls),1)
+    async def test_group_quoted_refusal_reaches_model_without_permanent_lock(self):
+        initiative.incoming(self.db,'group:12345','22222222','99999999','他说“不要主动找我”，这句话怎么理解',self.now)
+        self.assertTrue((await self.judge())[0].reply);self.assertTrue((await self.judge(scope='group:67890',event='other'))[0].reply)
+        self.assertEqual(len(self.provider.calls),2)
+        self.assertEqual(self.db.execute('SELECT opted_out FROM contacts').fetchone()[0],0)
     async def test_group_pause_during_model_call_invalidates_delivery(self):
         self.provider.entered=asyncio.Event();self.provider.release=asyncio.Event();task=asyncio.create_task(self.judge());await self.provider.entered.wait()
         self.db.execute('INSERT INTO initiative_pauses VALUES(?,?)',('group:12345',self.now+3600));self.db.commit()
@@ -122,14 +123,38 @@ class AutonomyTest(unittest.IsolatedAsyncioTestCase):
         self.contact();self.provider.answer={'contact':False,'topic':''};self.cfg['behavior']['memorySummary']=True
         self.store.memory.remember('group:12345','11111111','爱好','看鱼','memory-event',self.now)
         self.store.reflection.incoming('group:12345','11111111','group-event','刚刚聊到鱼',self.now)
+        self.store.reflection.record('private:11111111','11111111','private-event','聊过的共同话题','自己的真实看法',self.now-1)
         self.store.reflection.incoming('private:22222222','22222222','secret-event','另一个人的私聊秘密',self.now)
         self.store.planner.maybe_start(self.cfg,self.provider,lambda:True,self.event,self.metrics,now=self.now+3600);await self.store.planner.task
         payload=json.loads(self.provider.calls[0]['prompt']);self.assertEqual(payload['owner_memory']['facts'][0]['value'],'看鱼')
         self.assertEqual(payload['owner_memory']['recent_uncompressed'][0]['source_event'],'group-event')
+        self.assertEqual(payload['owner_memory']['recent_private'][0]['source_event'],'private-event')
+        self.assertEqual(payload['owner_memory']['recent_private'][0]['bot'],'自己的真实看法')
+        self.assertEqual(payload['conversation_timing'],{'last_private_user_at':self.now-10000,'last_private_bot_at':None,'last_owner_interaction_at':self.now-10000,'owner_idle_seconds':13600,'private_idle_seconds':13600,'last_proactive_attempt_at':None})
         self.assertNotIn('另一个人的私聊秘密',self.provider.calls[0]['prompt'])
         self.assertEqual(self.db.execute('SELECT status FROM autonomy_owner_checks').fetchone()[0],'model_silent')
         self.store.close();self.store=BehaviorStore(self.path);self.db=self.store.db
         self.assertEqual(self.db.execute('SELECT status FROM autonomy_owner_checks').fetchone()[0],'model_silent')
+    async def test_owner_private_context_is_bounded_and_not_displaced_by_ambient_messages(self):
+        self.contact();self.provider.answer={'contact':False,'topic':''}
+        self.store.reflection.record('private:11111111','11111111','private','真实共同话题','曾经表达的看法',self.now-10)
+        for i in range(20):self.store.reflection.incoming('group:12345','11111111','ambient'+str(i),'群背景消息'+str(i),self.now+i)
+        self.store.reflection.incoming('private:22222222','22222222','other','别人的秘密',self.now)
+        self.store.planner.maybe_start(self.cfg,self.provider,lambda:True,self.event,self.metrics,now=self.now+3600);await self.store.planner.task
+        memory=json.loads(self.provider.calls[0]['prompt'])['owner_memory']
+        self.assertEqual(memory['recent_private'][0]['source_event'],'private')
+        self.assertEqual(memory['recent_private'][0]['sender_id'],'11111111')
+        self.assertEqual(len(memory['recent_uncompressed']),4)
+        for key in ('recent_private','recent_uncompressed'):
+            self.assertLessEqual(sum(len(r['user'])+len(r['bot']) for r in memory[key]),1200)
+        self.assertNotIn('别人的秘密',self.provider.calls[0]['prompt'])
+        self.assertNotIn('private',{r['source_event'] for r in self.store.reflection.recent('private:11111111','11111111',now=self.now+3600)},'normal replies keep using native current-session history without injecting it twice')
+    async def test_disabled_owner_memory_hides_current_and_cross_scope_pending(self):
+        self.contact();self.provider.answer={'contact':False,'topic':''};self.cfg['behavior']['memory']=False
+        for scope in ('private:11111111','group:12345'):self.store.reflection.incoming(scope,'11111111',scope,'关闭记忆后的旧材料',self.now)
+        self.store.planner.maybe_start(self.cfg,self.provider,lambda:True,self.event,self.metrics,now=self.now+3600);await self.store.planner.task
+        self.assertEqual(json.loads(self.provider.calls[0]['prompt'])['owner_memory'],{})
+        self.assertNotIn('关闭记忆后的旧材料',self.provider.calls[0]['prompt'])
     async def test_owner_timeout_is_recorded_separately_and_not_retried_each_sweep(self):
         self.contact();self.provider.fail=True
         self.store.planner.maybe_start(self.cfg,self.provider,lambda:True,self.event,self.metrics,now=self.now+3600);await self.store.planner.task
@@ -146,6 +171,8 @@ class AutonomyTest(unittest.IsolatedAsyncioTestCase):
         self.store.planner.maybe_start(self.cfg,self.provider,lambda:True,self.event,self.metrics,now=at);await self.provider.entered.wait()
         autonomy.note_interaction(self.db,self.cfg,'private:11111111','11111111',at+1);self.provider.release.set();await self.store.planner.task
         self.assertIsNone(autonomy.owner_delivery_candidate(self.db,self.cfg,at+2))
+        payload=json.loads(self.provider.calls[0]['prompt'])
+        self.assertEqual(payload['conversation_timing']['last_owner_interaction_at'],self.now-10000,'context retains the genuine candidate snapshot; new interaction invalidates rather than rewrites it')
     async def test_owner_old_route_does_not_duplicate_new_route(self):
         self.contact();self.cfg['behavior']['proactiveTargets']=['private:11111111'];self.provider.answer={'contact':False,'topic':''};at=self.now+3600
         self.store.planner.maybe_start(self.cfg,self.provider,lambda:True,self.event,self.metrics,now=at);await self.store.planner.task

@@ -1,5 +1,5 @@
 """Native SDK send wrapper with a controlled protocol-await barrier (no QQ I/O)."""
-import asyncio,os,sys,tempfile
+import asyncio,os,sys,tempfile,time
 from pathlib import Path
 from types import SimpleNamespace
 root=Path(__file__).resolve().parents[1]
@@ -18,7 +18,12 @@ from behavior import install_runtime
 async def run():
  entered,release=asyncio.Event(),asyncio.Event()
  captured=[]
- async def transport(self,message):captured.append(message);entered.set();await release.wait();return 'committed'
+ async def transport(self,message):
+  if self.get_extra('_partial_fixture',False):
+   st=runtime['stores']['qq'];work=self.get_extra('_hosted_pipeline');st.pipeline.sending(work)
+   if work.attempted==2:raise asyncio.TimeoutError()
+   st.pipeline.confirmed(work);return 'committed'
+  captured.append(message);entered.set();await release.wait();return 'committed'
  AiocqhttpMessageEvent.send=transport
  settings={};core=SimpleNamespace(event_bus=SimpleNamespace(stopped_platforms=set()))
  runtime=install_runtime(core,settings)
@@ -87,6 +92,24 @@ async def run():
     assert len(calls)==before+(0 if stale else 1),'late media conversion crossed configuration lease'
     assert extra.get('_hosted_protocol_blocked',False)==bool(stale),'blocked dispatch is visible to the outer send recorder'
   finally:AiocqhttpMessageEvent._parse_onebot_json=old_parse
+  # First bubble confirmed, second uncertain: preserve actual interaction
+  # timing without recording an unsent suffix as a completed conversation.
+  cfg={'behavior':{'splitMessages':True,'typingSimulation':False,'sendIntervalMs':0,'memory':True,'qqFaces':False}}
+  lease={'root':temp.name,'botId':'bot-A','generation':1,'config':cfg};settings['qq']=lease
+  extra={'_hosted_lease':lease,'_hosted_generation':1,'_partial_fixture':True}
+  event=SimpleNamespace(message_obj=SimpleNamespace(message_id='partial-fixture'),get_platform_id=lambda:'qq',get_self_id=lambda:'90000',get_group_id=lambda:'55555',get_sender_id=lambda:'12345678',get_message_str=lambda:'继续聊天',get_extra=lambda k,d=None:extra.get(k,d),set_extra=lambda k,v:extra.update({k:v}))
+  runtime['manage']('qq',{'action':'list'});st=runtime['stores']['qq']
+  import initiative
+  before=time.time();initiative.incoming(st.db,'group:55555','12345678','90000','继续聊天',before-1)
+  work=st.pipeline.bind(event,lease)
+  try:await AiocqhttpMessageEvent.send(event,MessageChain(chain=[Plain('第一条已经到达。\n第二条回执超时。')]))
+  except asyncio.TimeoutError:pass
+  else:raise AssertionError('Second send must remain uncertain')
+  st.pipeline.finish(work,runtime['metrics'].setdefault('qq',{}));assert work.status=='partial' and work.confirmed_messages==1
+  last_bot,last_output=st.db.execute("SELECT last_bot,last_output FROM contacts WHERE scope='group:55555'").fetchone()
+  assert last_bot>=before and last_output=='第一条已经到达。','partial receipt lost actual timing or invented unsent text'
+  assert st.presence.snapshot('group:55555')[1]>=before,'partial reply did not refresh local interaction clock'
+  assert st.db.execute("SELECT count(*) FROM memory_pending WHERE event='partial-fixture'").fetchone()[0]==0,'failed suffix became completed reply memory'
   print('PASS protocol send late completion after stop and replacement; no store resurrection')
  finally:runtime['close']()
 asyncio.run(run());temp.cleanup()

@@ -68,7 +68,8 @@ def run(file, data, connection=None):
                 if scope:conditions.append('scope=?');summary_args.append(scope)
                 if query:conditions.append('instr(text,?)>0');summary_args.append(query)
                 summaries=[dict(r) for r in db.execute('SELECT id,scope,text,updated FROM memory_summaries'+(' WHERE '+' AND '.join(conditions) if conditions else '')+' ORDER BY id DESC LIMIT 100',summary_args)]
-            return {'initialized': True, 'epoch': epoch, 'facts': facts, 'summaries':summaries,'patterns': patterns, 'contacts': contacts, 'relations': relations, 'stats': stats, 'limit': 100, 'companion': {t:[dict(r) for r in db.execute('SELECT * FROM '+t+(' WHERE scope=?' if scope else '')+' ORDER BY rowid DESC LIMIT 30',([scope] if scope else []))] for t in ['companion_interests','companion_motives','companion_emotion','companion_signals','dialogue_feedback'] if t in tables}}
+            decisions=[dict(r) for r in db.execute('SELECT * FROM autonomy_decisions'+pattern_where+' ORDER BY at DESC LIMIT 50',pattern_args)] if 'autonomy_decisions' in tables else []
+            return {'initialized': True, 'epoch': epoch, 'facts': facts, 'summaries':summaries,'patterns': patterns, 'contacts': contacts, 'decisions':decisions,'relations': relations, 'stats': stats, 'limit': 100, 'companion': {t:[dict(r) for r in db.execute('SELECT * FROM '+t+(' WHERE scope=?' if scope else '')+' ORDER BY rowid DESC LIMIT 30',([scope] if scope else []))] for t in ['companion_interests','companion_motives','companion_emotion','companion_signals','dialogue_feedback'] if t in tables}}
         initialize_controls(db)
         db.execute('BEGIN IMMEDIATE')
         action, scope = data['action'], data.get('scope', '')
@@ -131,9 +132,11 @@ def run(file, data, connection=None):
             if 'memory_reflection_control' in tables:
                 db.execute('UPDATE memory_reflection_control SET epoch=epoch+1 WHERE id=1')
         elif action == 'pause_contact':
-            # Resuming an explicit recipient opt-out requires their own incoming
-            # consent; platform users can pause but cannot override that consent.
+            # Explicit operator controls remain hard fences. Conversation text
+            # cannot grant or revoke platform permission.
             db.execute('UPDATE contacts SET opted_out=1 WHERE scope=?', (scope,))
+            if 'autonomy_decisions' in tables:
+                at=time.time();db.execute("INSERT INTO autonomy_decisions VALUES(?,?,?,'operator',0,0,0,0,'manual_pause')",(scope,'operator:'+str(at),at))
         else:
             return {'error': '不支持的数据操作', 'status': 400}
         db.commit()

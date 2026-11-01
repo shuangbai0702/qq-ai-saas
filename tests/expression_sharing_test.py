@@ -20,8 +20,11 @@ class SharingTests(unittest.TestCase):
   cfg={'styleLearning':True,'expressionSharing':'bot'}
   self.assertTrue(self.hints('group:30000',cfg));self.assertFalse(self.hints('private:10000',cfg));self.assertFalse(self.hints('group:30000',cfg,store=self.b))
   self.assertFalse(self.hints('group:20000',{**self.cfg,'expressionSharing':'local'}))
- def test_duplicate_expression_one_hint_and_facts_not_shared(self):
+ def test_duplicate_expression_one_hint_and_same_person_memory_stays_isolated(self):
   self.a.db.execute("INSERT INTO social_patterns VALUES('group:20000','有节目效果','开玩笑','[]',1,?)",(time.time(),));self.a.db.commit();self.assertEqual(len(self.hints('group:20000')),1)
-  self.a.observe('group:10000','12345','记住：饮料=绿茶','e',time.time());self.assertFalse(self.a.observe('group:20000','12345','喝什么','e2',time.time())['facts'])
+  self.a.observe('group:10000','12345','记住：饮料=绿茶','e',time.time())
+  same=self.a.observe('group:20000','12345','喝什么','e2',time.time())['facts'];self.assertEqual(same[0]['value'],'绿茶');self.assertEqual(same[0]['source_scope'],'group:10000')
+  self.assertFalse(self.a.observe('group:20000','67890','喝什么','e3',time.time())['facts'])
+  self.assertFalse(self.b.observe('group:20000','12345','喝什么','e4',time.time())['facts'])
 
 if __name__=='__main__':unittest.main(verbosity=2)

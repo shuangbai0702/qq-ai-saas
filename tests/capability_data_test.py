@@ -34,12 +34,14 @@ class ManagementTests(unittest.TestCase):
 
     def data(self,**filters):return run(self.file,{'action':'list',**filters})
 
-    def test_goodnight_pause_is_visible_without_deleting_data(self):
-        import initiative
+    def test_model_pause_and_source_are_visible_without_deleting_data(self):
+        import initiative,autonomy
         initiative.incoming(self.store.db,'private:123456','123456','900001','晚安',time.time())
-        contacts=run(self.file,{'action':'list'})['contacts']
+        with self.store.db:autonomy.record_decision(self.store.db,{},'private:123456','model1',{'cooldown_intervals':2,'cooldown_reason':'busy'},False,time.time(),'plan')
+        data=run(self.file,{'action':'list'});contacts=data['contacts']
         row=next(x for x in contacts if x['scope']=='private:123456')
         self.assertGreater(row['paused_until'],time.time());self.assertEqual(row['opted_out'],0)
+        self.assertEqual(data['decisions'][0]['reason'],'busy');self.assertEqual(data['decisions'][0]['extra_intervals'],2)
 
     def test_scope_subject_and_query(self):
         rows=self.data(scope='group:12345',subject='123456',query='红茶')['facts']
