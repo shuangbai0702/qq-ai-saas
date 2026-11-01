@@ -4,5 +4,7 @@
   "avoid": "不要嘲笑真实困难或安慰中的对方",
   "meaning": "笑到流泪，适合双方都在开玩笑或自嘲",
   "creator": "Twitter, Inc and other contributors",
-  "id": "laugh"
+  "id": "laugh",
+  "enabled": false,
+  "retired": true
 }

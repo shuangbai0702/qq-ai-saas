@@ -10,6 +10,8 @@ try{
  const page=await context.newPage(),errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(address+`/#/bots/${id}/config/faces`);
  await page.getByRole('heading',{name:'QQ内置表情',exact:true}).waitFor();await page.getByRole('checkbox',{name:/允许QQ内置表情/}).uncheck();
  await page.getByRole('link',{name:'聊天表情包',exact:true}).click();await page.getByRole('button',{name:'审核收录',exact:true}).waitFor();
+ await page.locator('img[src*="/meme-packs/blue-fat-fish/"]').first().waitFor();assert.equal(await page.getByText(/另含3张内置基础图/).count(),0);
+ const fishImage=await context.request.get(new URL(await page.locator('img[src*="/meme-packs/blue-fat-fish/"]').first().getAttribute('src') as string,address).href);assert.equal(fishImage.status(),200);assert.match(fishImage.headers()['content-type'],/image\/gif/);assert.match((await fishImage.body()).subarray(0,6).toString(),/^GIF8[79]a$/);
  await page.getByRole('checkbox',{name:/自动收集聊天表情包/}).check();await page.getByRole('checkbox',{name:/从机器人允许的全部群收集/}).uncheck();await page.getByLabel('允许收集的群号').fill('12345');await page.getByLabel('允许收集的群号').pressSequentially(',54321');assert.equal(await page.getByLabel('允许收集的群号').inputValue(),'12345,54321');
  await page.getByRole('button',{name:'保存并应用',exact:true}).click();await page.getByText(/版本 2 已保存/).waitFor();
  await page.getByRole('button',{name:'审核收录',exact:true}).click();await page.getByRole('dialog').getByLabel('这张表情适合什么场景').fill('大家轻松开玩笑时回应');await page.getByRole('dialog').getByRole('button',{name:'保存修改',exact:true}).click();await page.getByText('已收录 · 大家轻松开玩笑时回应',{exact:true}).waitFor();

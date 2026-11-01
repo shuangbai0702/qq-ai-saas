@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
 from social import SocialStore,maybe_learn
+FISH_ID=json.loads(Path('templates/meme-packs/blue-fat-fish/index.json').read_text(encoding='utf8'))['items'][0]['id']
 
 class SocialTests(unittest.TestCase):
  def setUp(self):
@@ -85,9 +86,7 @@ class SocialTests(unittest.TestCase):
   self.assertIsNone(choose('[MEME:invalid]','想你了',context['meme_candidates']))
   self.assertIsNone(choose('[MEME:'+chosen+']','想你了',[{'id':'qqf_fake'}]))
   self.assertIsNone(choose('[MEME:qqf_fake]','想你了',[{'id':'qqf_fake'}]))
-  builtins=self.s.context('group:1','普通聊天',{**cfg,'memePacks':[]})
-  item=builtins['meme_candidates'][0]
-  self.assertIsNotNone(self.s.select_image('[MEME:'+item['id']+']','group:1',{**cfg,'memePacks':[]},1000,candidates=builtins['meme_candidates'])[1])
+  self.assertEqual(self.s.context('group:1','普通聊天',{**cfg,'memePacks':[]})['meme_candidates'],[])
  def test_candidate_eligibility_has_no_daily_or_probability_gate(self):
   cfg={'memeEnabled':True,'memePacks':['blue-fat-fish'],'memeProbability':0,'dailyMemeLimit':0}
   self.assertTrue(self.s.image_available('group:1',cfg,1000,'普通聊天'))
@@ -109,15 +108,32 @@ class SocialTests(unittest.TestCase):
  def test_confused_context_offers_relevant_reaction(self):
   ctx=self.s.context('group:1','我有点困惑，没想明白',{'memeEnabled':True,'memePacks':['blue-fat-fish']})
   self.assertTrue(any(x.get('category')=='confused' for x in ctx['meme_candidates'][:2]))
- def test_valid_image_and_internal_tag_removed(self):text,img=self.s.select_image('哈哈[MEME:laugh]','private:1',{'memeEnabled':True,'memeProbability':1},1000);self.assertEqual(text,'哈哈');self.assertTrue(Path(img['path']).is_file())
+ def test_valid_image_and_internal_tag_removed(self):text,img=self.s.select_image('哈哈[MEME:'+FISH_ID+']','private:1',{'memeEnabled':True,'memeProbability':1},1000);self.assertEqual(text,'哈哈');self.assertTrue(Path(img['path']).is_file());self.assertEqual(Path(img['path']).suffix,'.gif')
  def test_invalid_id_cannot_read_path(self):text,img=self.s.select_image('你好[MEME:../../master.key]','p',{'memeEnabled':True,'memeProbability':1},1000);self.assertEqual(text,'你好');self.assertIsNone(img)
  def test_disabled_always_strips_marker(self):self.assertEqual(self.s.select_image('[MEME:laugh]','p',{},1000),('',None))
- def test_cooldown_attempt_reservation(self):self.s.reserve_image('p',1000);self.assertIsNone(self.s.select_image('[MEME:laugh]','p',{'memeEnabled':True},1001)[1]);self.assertIsNotNone(self.s.select_image('[MEME:laugh]','p',{'memeEnabled':True,'memeProbability':1},1061)[1])
+ def test_cooldown_attempt_reservation(self):self.s.reserve_image('p',1000);self.assertIsNone(self.s.select_image('[MEME:'+FISH_ID+']','p',{'memeEnabled':True},1001)[1]);self.assertIsNotNone(self.s.select_image('[MEME:'+FISH_ID+']','p',{'memeEnabled':True,'memeProbability':1},1061)[1])
  def test_old_daily_cap_and_zero_probability_do_not_block_or_erase_stats(self):
   for i in range(80):self.s.reserve_image('p',1000+i*20)
-  self.assertIsNotNone(self.s.select_image('[MEME:laugh]','other',{'memeEnabled':True,'dailyMemeLimit':0,'memeProbability':0},3000)[1])
-  self.assertIsNotNone(self.s.select_image('[MEME:laugh]','p',{'memeEnabled':True,'dailyMemeLimit':50,'memeProbability':0},3000)[1])
+  self.assertIsNotNone(self.s.select_image('[MEME:'+FISH_ID+']','other',{'memeEnabled':True,'dailyMemeLimit':0,'memeProbability':0},3000)[1])
+  self.assertIsNotNone(self.s.select_image('[MEME:'+FISH_ID+']','p',{'memeEnabled':True,'dailyMemeLimit':50,'memeProbability':0},3000)[1])
   self.assertEqual(self.db.execute('SELECT sum(count) FROM social_images').fetchone()[0],80)
+ def test_retired_reactions_never_return_or_send_even_with_legacy_override(self):
+  folder=self.root/'reactions';folder.mkdir()
+  for identifier in ('hug','laugh','thinking'):
+   (folder/(identifier+'.json')).write_text(json.dumps({'id':identifier,'meaning':'旧图仍启用','enabled':True}))
+   (folder/(identifier+'.png')).write_bytes(Path('templates/reactions/'+identifier+'.png').read_bytes())
+  for packs in (None,[],['blue-fat-fish']):
+   cfg={'memeEnabled':True,**({'memePacks':packs} if packs is not None else {})}
+   context=self.s.context('group:1','想你了',cfg)
+   self.assertTrue(all(x['id'].startswith('bf_') for x in context['meme_candidates']))
+   self.assertEqual(bool(context['meme_candidates']),packs!=[])
+   for identifier in ('hug','laugh','thinking'):
+    text,image=self.s.select_image('在呢[MEME:'+identifier+']','group:1',cfg,1000,candidates=[{'id':identifier}])
+    self.assertEqual(text,'在呢');self.assertIsNone(image,'old offered or remembered IDs must not revive retired assets')
+ def test_custom_upload_remains_available_without_fish_pack(self):
+  identifier='usr_0123456789abcdef';folder=self.root/'reactions';folder.mkdir();(folder/(identifier+'.json')).write_text(json.dumps({'id':identifier,'meaning':'自定义场景'}));(folder/(identifier+'.png')).write_bytes(Path('templates/reactions/laugh.png').read_bytes())
+  cfg={'memeEnabled':True,'memePacks':[]};context=self.s.context('group:1','自定义场景',cfg)
+  self.assertEqual([x['id'] for x in context['meme_candidates']],[identifier]);self.assertIsNotNone(self.s.select_image('[MEME:'+identifier+']','group:1',cfg,1000,candidates=context['meme_candidates'])[1])
 
 class LifecycleTests(unittest.IsolatedAsyncioTestCase):
  async def test_late_learner_cannot_write_after_replacement(self):

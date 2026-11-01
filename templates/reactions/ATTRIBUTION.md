@@ -1,4 +1,9 @@
-The three default reaction PNGs (laugh, hug, thinking) are Twemoji v14.0.2
+The three retired reaction PNGs (laugh, hug, thinking) are retained as isolated
+test fixtures and attribution only. They are not runtime image candidates or
+manageable platform reactions. The installed blue-fat-fish GIF pack is the
+default platform pack.
+
+These PNGs are Twemoji v14.0.2
 graphics by Twitter, Inc and other contributors, licensed under CC-BY 4.0.
 
 Source: https://github.com/twitter/twemoji/tree/v14.0.2/assets/72x72
