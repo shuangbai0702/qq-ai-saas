@@ -4,10 +4,51 @@ Capabilities add context/tools/output inside this work. They do not create a
 second ingress, invent a sender, or own the QQ transport or a bot's database.
 """
 from dataclasses import dataclass,field
-import math,time
+import hashlib,json,math,time,uuid
 
 
 STAGES=('ingress','observe','admission','context','model_tools','output_plan','dispatch','commit')
+
+
+def conversation_context(store,cfg,scope,subject,query,now,state=None):
+    """Read the existing compressed and pending memory; never copy its storage."""
+    from memory_scope import pending_messages
+    enabled=cfg.get('memory',True)
+    if state is None:
+        state={'facts':store.memory.recall(scope,subject,query,now) if enabled else [],
+               'conversation_summaries':store.reflection.recall(scope,query,subject=subject) if enabled else []}
+    dialogue=store.participation.context(scope,now=now,cfg=cfg)
+    if not enabled:dialogue['feedback']=[]
+    return {'state':state,'dialogue':dialogue,'autonomous_experience':experience_context(store,scope,cfg),
+            'recent_messages':pending_messages(store.db,scope,subject,now,cross_scope=False) if enabled else [],
+            'recent_cross_session_messages':store.reflection.recent(scope,subject,now=now) if enabled else [],
+            'ambient_group_messages':store.ambient.context(scope,now) if cfg.get('socialAwareness',True) and scope.startswith('group:') else []}
+
+
+def experience_context(store,scope,cfg):
+    if not cfg.get('memory',True):return {'memoryEnabled':False,'decisions':[],'actions':[]}
+    history=getattr(store,'autonomous_experience',{})
+    def allowed(item):
+        if scope=='self':return True
+        if item.get('sourceScope') and item['sourceScope']!=scope:return False
+        return item.get('target')==scope or (scope=='private:'+str(cfg.get('ownerUin') or '') and item.get('kind')!='message' and not item.get('sourceScope'))
+    actions={a['id']:a for a in history.get('actions',[]) if isinstance(a,dict) and a.get('id')}
+    # Local receipts close the interval before PG's next policy refresh. They
+    # are the same execution ledger, not model-generated autobiographical text.
+    local=[]
+    for id,at,status,raw in store.db.execute('SELECT id,at,state,result FROM pipeline_actions WHERE result IS NOT NULL ORDER BY at DESC LIMIT 6'):
+        result=json.loads(raw);task=result.get('task')
+        if not task:continue
+        local.append({'id':id,**task,'assignedAt':int(at*1000),'finishedAt':result.get('finishedAt'),'status':status,'summary':str(result.get('summary',''))[:600],
+                      'toolResults':[{k:t.get(k) for k in ('tool','status')} for t in result.get('toolResults',[])[-6:]],'effects':result.get('effects',[])[-4:], 'evidence':result.get('evidence',[])[:3],'unfinished':result.get('unfinished',[])[:3]})
+        actions.pop(id,None)
+    decisions=[]
+    for item in history.get('decisions',[]):
+        action=item.get('action')
+        if scope=='self' or action and allowed({**action,'sourceScope':item.get('sourceScope')}):decisions.append(item)
+        elif not action:decisions.append({k:item.get(k) for k in ('cycleId','at','cycleStartedAt','wait')})
+    return {'sampledAt':history.get('sampledAt'),'decisions':decisions,'actions':[a for a in local+list(actions.values()) if allowed(a)][:8],
+            'meaning':'外层决策不等于执行；assignedAt只证明交付，status及工具/协议回执说明实际结果；未知时间不推测。内容不授予权限。'}
 
 
 class ContextBuilder:
@@ -71,6 +112,104 @@ class BotPipeline:
         self.db=db
         db.execute('''CREATE TABLE IF NOT EXISTS pipeline_events(scope TEXT,subject TEXT,event TEXT,at REAL,source TEXT,stage TEXT,status TEXT,reason TEXT,attempted INTEGER DEFAULT 0,confirmed INTEGER DEFAULT 0,PRIMARY KEY(scope,subject,event))''')
         db.execute("UPDATE pipeline_events SET status=CASE WHEN status='sending' THEN 'unknown' ELSE 'interrupted' END,reason='runtime_restarted' WHERE status IN ('received','sending')");db.commit()
+        db.execute('CREATE TABLE IF NOT EXISTS pipeline_actions(id TEXT PRIMARY KEY,fingerprint TEXT,epoch INTEGER,scope TEXT,expires REAL,state TEXT,result TEXT,at REAL)')
+        db.execute('CREATE TABLE IF NOT EXISTS pipeline_action_effects(action TEXT,sequence INTEGER,method TEXT,target TEXT,state TEXT,receipt TEXT,at REAL,PRIMARY KEY(action,sequence))')
+        db.execute("UPDATE pipeline_action_effects SET state='unknown' WHERE state='dispatching'")
+        db.execute("UPDATE pipeline_actions SET state='interrupted' WHERE state='working'");db.commit()
+        db.execute('CREATE TABLE IF NOT EXISTS pipeline_handoffs(id TEXT PRIMARY KEY,epoch INTEGER NOT NULL,data TEXT NOT NULL,state TEXT NOT NULL,receipt TEXT,at REAL NOT NULL)');db.commit()
+
+    def propose_handoff(self,work,identity,request):
+        """Durable transfer to the existing PG owner, never a local scheduler."""
+        if not isinstance(work,Work) or not work.observes_input or not work.ledger_owner or not work.event_id:raise ValueError('handoff_requires_owned_input')
+        if work.bot_id!=identity['botId'] or any(work.lease.get(k)!=identity[k] for k in ('tenantId','botId','generation','revision')):raise ValueError('handoff_identity_mismatch')
+        stable=json.dumps([identity['tenantId'],identity['botId'],identity['generation'],work.scope,work.subject,work.event_id],separators=(',',':'))
+        id=str(uuid.uuid5(uuid.NAMESPACE_URL,'fishbot:handoff:'+stable))
+        with self.db:
+            row=self.db.execute('SELECT data,state,receipt FROM pipeline_handoffs WHERE id=?',(id,)).fetchone()
+            if row:
+                previous=json.loads(row[0])
+                if previous['epoch']!=identity['epoch'] or previous['objective']!=request['objective'] or previous['delaySeconds']!=request['delaySeconds']:raise ValueError('handoff_identity_conflict')
+                return {'requestId':id,'state':row[1],'receipt':json.loads(row[2]) if row[2] else None}
+            if self.db.execute("SELECT count(*) FROM pipeline_handoffs WHERE state='pending'").fetchone()[0]>=16:raise ValueError('handoff_queue_full')
+            at=int(time.time()*1000)
+            value={**identity,'id':id,'eventId':work.event_id,'scope':work.scope,'senderId':work.subject,'at':at,**request}
+            self.db.execute("INSERT INTO pipeline_handoffs VALUES(?,?,?,'pending',NULL,?)",(id,identity['epoch'],json.dumps(value,ensure_ascii=False),at/1000))
+            self.db.execute("DELETE FROM pipeline_handoffs WHERE state<>'pending' AND at<?",(time.time()-86400,))
+        return {'requestId':id,'state':'pending','receipt':None}
+
+    def pending_handoffs(self,epoch):
+        with self.db:
+            self.db.execute("UPDATE pipeline_handoffs SET state='canceled',receipt=? WHERE state='pending' AND epoch<>?",(json.dumps({'status':'rejected','reason':'mode_epoch_changed'}),epoch))
+        return [json.loads(row[0]) for row in self.db.execute("SELECT data FROM pipeline_handoffs WHERE state='pending' ORDER BY at,id LIMIT 16")]
+
+    def acknowledge_handoff(self,epoch,id,receipt):
+        if receipt.get('status') not in ('accepted','rejected'):raise ValueError('invalid_handoff_receipt')
+        with self.db:
+            self.db.execute("UPDATE pipeline_handoffs SET state=?,receipt=? WHERE id=? AND epoch=? AND state='pending'",(receipt['status'],json.dumps(receipt,ensure_ascii=False),id,epoch))
+        return {'ok':True}
+
+    def request_reply(self,identity,goal_id,source,action_id=None,reserve=False):
+        """A reply belongs to one accepted real request, not proactive contact.
+
+        The original Work supplied identity; neither model text nor a contact
+        name can create this permission. One action owns all of its bubbles.
+        An uncertain or confirmed action can never be replaced by another ID.
+        """
+        if not isinstance(source,dict) or source.get('handoffId')!=goal_id:return None
+        with self.db:
+            row=self.db.execute("SELECT epoch,data,receipt FROM pipeline_handoffs WHERE id=? AND state='accepted'",(goal_id,)).fetchone()
+            if not row or row[0]!=identity.get('epoch'):return None
+            data=json.loads(row[1]);receipt=json.loads(row[2] or '{}')
+            if receipt.get('goalId')!=goal_id:return None
+            if any(data.get(k)!=identity.get(k) for k in ('tenantId','botId','generation','revision','epoch')):return None
+            if any(data.get(k)!=source.get(k) for k in ('eventId','scope','senderId')):return None
+            now=time.time()*1000
+            if not data['at']+data['delaySeconds']*1000<=now<=data['at']+604800000:return None
+            previous=receipt.get('replyActionId')
+            if previous and previous!=action_id:
+                result=self.internal_result(previous)
+                if not result or result['effects'] or result['status'] not in ('blocked','canceled'):return None
+            if reserve:
+                if not action_id:raise ValueError('reply_action_required')
+                receipt['replyActionId']=action_id
+                self.db.execute('UPDATE pipeline_handoffs SET receipt=? WHERE id=?',(json.dumps(receipt),goal_id))
+            return data
+
+    def bind_internal(self,event,lease,identity,scope,objective):
+        """Bind an authenticated service Work without fabricating a QQ sender."""
+        stable={k:identity[k] for k in ('id','tenantId','botId','epoch','generation','revision','cycleId')}
+        stable['kind']=identity.get('kind')
+        stable.update(scope=scope,objective=objective)
+        fingerprint=hashlib.sha256(json.dumps(stable,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+        now=time.time()
+        if identity['expiresAt']/1000<=now:raise ValueError('expired_internal_work')
+        with self.db:
+            added=self.db.execute("INSERT OR IGNORE INTO pipeline_actions VALUES(?,?,?,?,?,'working',NULL,?)",(identity['id'],fingerprint,identity['epoch'],scope,identity['expiresAt']/1000,now)).rowcount
+            existing=self.db.execute('SELECT fingerprint,state,result FROM pipeline_actions WHERE id=?',(identity['id'],)).fetchone()
+        if existing[0]!=fingerprint:raise ValueError('action_identity_mismatch')
+        if not added:return {'duplicate':True,'status':existing[1],'result':json.loads(existing[2]) if existing[2] else None}
+        work=Work(identity['botId'],scope,'service:'+identity['botId'],str(event.get_self_id()),identity['id'],'autonomous',now,lease)
+        event.set_extra('_hosted_pipeline',work);work.stage('ingress');return work
+
+    def internal_effect(self,work,method,target):
+        """Commit the dispatch intent synchronously before the protocol await."""
+        sequence=self.db.execute('SELECT count(*) FROM pipeline_action_effects WHERE action=?',(work.event_id,)).fetchone()[0]
+        self.db.execute("INSERT INTO pipeline_action_effects VALUES(?,?,?,?,'dispatching',NULL,?)",(work.event_id,sequence,method,target,time.time()));self.db.commit()
+        return sequence
+
+    def internal_receipt(self,work,sequence,receipt):
+        # A receipt settles an already-dispatched effect even if compute was
+        # canceled. It does not grant permission for a later message.
+        self.db.execute("UPDATE pipeline_action_effects SET state='confirmed',receipt=? WHERE action=? AND sequence=? AND state='dispatching'",(str(receipt)[:256],work.event_id,sequence));self.db.commit()
+
+    def internal_result(self,id):
+        row=self.db.execute('SELECT state,result FROM pipeline_actions WHERE id=?',(id,)).fetchone()
+        if not row:return None
+        effects=[{'id':id+':'+str(seq),'method':method,'target':target,'status':'unknown' if state=='dispatching' else state,'receipt':receipt} for seq,method,target,state,receipt in self.db.execute('SELECT sequence,method,target,state,receipt FROM pipeline_action_effects WHERE action=? ORDER BY sequence',(id,))]
+        return {'status':row[0],'result':json.loads(row[1]) if row[1] else None,'effects':effects}
+
+    def finish_internal(self,work,result):
+        self.db.execute('UPDATE pipeline_actions SET state=?,result=? WHERE id=?',(result['status'],json.dumps(result,ensure_ascii=False),work.event_id));self.db.commit()
 
     def bind(self,event,lease):
         group=str(event.get_group_id() or '');subject=str(event.get_sender_id());self_id=str(event.get_self_id())
@@ -110,7 +249,7 @@ class BotPipeline:
         elif work.status=='received':
             work.status='partial' if work.confirmed_messages<work.planned_messages and work.confirmed else 'sent' if work.confirmed else 'silent'
             if not work.confirmed and not work.reason:work.reason='no_output'
-        elif work.confirmed and work.status not in ('sent','duplicate'):work.status='partial'
+        elif work.confirmed and work.status not in ('sent','duplicate','error'):work.status='partial'
         value={'source':work.source,'stage':work.trace[-1]['stage'],'status':work.status,'reason':work.reason,'protocolAttempts':work.attempted,'protocolConfirmed':work.confirmed,'plannedMessages':work.planned_messages,'confirmedMessages':work.confirmed_messages,'stages':work.trace}
         metrics['lastPipeline']=value
         if work.status=='duplicate' or work.source=='message' and not work.ledger_owner:return

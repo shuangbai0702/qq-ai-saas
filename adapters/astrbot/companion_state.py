@@ -1,7 +1,7 @@
 """Small durable companion state; no extra provider or resident workers.
 Interest heat follows DSH's bounded decay; identity is kept separate from user facts.
 """
-import hashlib,math,re,time
+import hashlib,json,math,re,time,uuid
 import emotion_state
 from hosted_memory import tokens
 
@@ -15,6 +15,7 @@ def initialize(db):
     CREATE TABLE IF NOT EXISTS companion_membership_checks(scope TEXT,subject TEXT,checked REAL,PRIMARY KEY(scope,subject));
     CREATE TABLE IF NOT EXISTS companion_seen(scope TEXT,event TEXT,at REAL,PRIMARY KEY(scope,event));''')
     db.execute('CREATE TABLE IF NOT EXISTS companion_signals(scope TEXT,event TEXT,kind TEXT,quote TEXT,at REAL,PRIMARY KEY(scope,event,kind))')
+    db.execute('CREATE TABLE IF NOT EXISTS companion_reflections(action TEXT,topic TEXT,fingerprint TEXT,result TEXT,at REAL,PRIMARY KEY(action,topic))')
 
 
 def bootstrap_members(db):
@@ -40,6 +41,44 @@ def note_interest(db,scope,topic,now,evidence,source):
     if row and {'persona':3,'bot_expression':2,'conversation_heat':1}.get(row[4],0)>{'persona':3,'bot_expression':2,'conversation_heat':1}.get(source,0):evidence,source=row[3],row[4]
     db.execute('INSERT OR REPLACE INTO companion_interests VALUES(?,?,?,?,?,?,?)',(scope,topic,weight,(row[1] if row else 0)+1,now,evidence[:120],source))
     db.execute('DELETE FROM companion_interests WHERE rowid NOT IN (SELECT rowid FROM companion_interests ORDER BY updated DESC LIMIT 512)')
+
+
+def reflect_interest(db,topic,operation,reason,action,evidence,now):
+    """An explicit model choice, backed by an actual read in this owned Work.
+
+    Keep the canonical interest row in companion_interests. The bounded second
+    table is only an idempotency/audit receipt, never another preference store.
+    Nothing here raises affinity, changes persona, or grants contact rights.
+    """
+    if not isinstance(topic,str) or not 2<=len(topic.strip())<=50:raise ValueError('invalid_interest_topic')
+    topic=topic.strip()
+    if re.search(r'https?://|[0-9]{5,}|[\x00-\x1f<>]|\bBearer\s|(?:api[_ -]?)?key\s*[:=]|sk-[A-Za-z0-9]{12,}',topic,re.I):raise ValueError('unsafe_interest_topic')
+    if operation not in ('explore','cool_down','drop'):raise ValueError('invalid_interest_operation')
+    if not isinstance(reason,str) or not 1<=len(reason.strip())<=240:raise ValueError('invalid_interest_reason')
+    if str(uuid.UUID(action))!=action:raise ValueError('invalid_interest_action')
+    allowed={'existing_companion_state','existing_memory','bilibili_public_search'}
+    sources=[{'source':e['source'],'referenceSha256':hashlib.sha256(e['reference'].encode()).hexdigest()} for e in evidence if isinstance(e,dict) and e.get('source') in allowed and isinstance(e.get('reference'),str) and e['reference']]
+    if not sources:raise ValueError('interest_requires_actual_read')
+    from memory_reflection import scrub
+    reason=scrub(reason.strip());sources=sources[:3]
+    fingerprint=hashlib.sha256(json.dumps([topic,operation,reason],ensure_ascii=False).encode()).hexdigest()
+    previous=db.execute('SELECT fingerprint,result FROM companion_reflections WHERE action=? AND topic=?',(action,topic)).fetchone()
+    if previous:
+        if previous[0]!=fingerprint:raise ValueError('interest_reflection_identity_conflict')
+        return json.loads(previous[1])
+    if db.execute('SELECT count(*) FROM companion_reflections WHERE action=?',(action,)).fetchone()[0]>=3:raise ValueError('interest_reflection_work_limit')
+    row=db.execute("SELECT weight,hits,updated FROM companion_interests WHERE scope='self' AND topic=? AND source='autonomous_choice'",(topic,)).fetchone()
+    heat=row[0]*2**(-max(0,now-row[2])/172800) if row else 0
+    value=min(4,heat+.4) if operation=='explore' else max(0,heat-.4) if operation=='cool_down' else 0
+    result={'topic':topic,'operation':operation,'changed':abs(value-heat)>1e-9,'heat':round(value,3),'reason':reason,'evidence':sources,'scope':'self','meaning':'自主关注方向的选择，不代表已掌握主题知识或发生了线下经历'}
+    with db:
+        if value>0:
+            db.execute("INSERT OR REPLACE INTO companion_interests VALUES('self',?,?,?,?,?,'autonomous_choice')",(topic,value,(row[1] if row else 0)+1,now,action))
+        else:db.execute("DELETE FROM companion_interests WHERE scope='self' AND topic=? AND source='autonomous_choice'",(topic,))
+        db.execute('INSERT INTO companion_reflections VALUES(?,?,?,?,?)',(action,topic,fingerprint,json.dumps(result,ensure_ascii=False),now))
+        db.execute('DELETE FROM companion_reflections WHERE rowid NOT IN (SELECT rowid FROM companion_reflections ORDER BY at DESC,rowid DESC LIMIT 512)')
+        db.execute('DELETE FROM companion_interests WHERE rowid NOT IN (SELECT rowid FROM companion_interests ORDER BY updated DESC LIMIT 512)')
+    return result
 
 
 def seed(db,cfg,now):
@@ -120,7 +159,7 @@ def targets(db,cfg,now):
 def select_members(db,cfg,scope,now,allow_without_topic=False):
     if not scope.startswith('group:') or not (cfg.get('behavior') or {}).get('autonomousGroupContact',True):return []
     b=cfg.get('behavior') or {}
-    rows=db.execute('SELECT subject,seen,directed FROM companion_members WHERE scope=? AND seen>? AND directed>? AND refused=0 AND pause<=? AND unanswered<? AND attempt<? ORDER BY directed DESC LIMIT 32',(scope,now-86400,now-7*86400,now,b.get('maxUnanswered',1),now-b.get('proactiveIntervalSeconds',3600))).fetchall()
+    rows=db.execute('SELECT subject,seen,directed FROM companion_members WHERE scope=? AND seen>? AND directed>? AND refused=0 AND pause<=? AND unanswered<? AND attempt<? ORDER BY directed DESC LIMIT 32',(scope,now-86400,now-7*86400,now,b.get('maxUnanswered',4),now-b.get('proactiveIntervalSeconds',3600))).fetchall()
     scored=[]
     for subject,seen,directed in rows:
         check=db.execute('SELECT checked FROM companion_membership_checks WHERE scope=? AND subject=?',(scope,subject)).fetchone()

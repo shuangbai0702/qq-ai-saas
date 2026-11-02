@@ -28,3 +28,7 @@ __pycache__/
 **/real-actions-validation-20261030.md
 **/status-report-2026-10-28.md
 **/windows-final-closeout.md
+
+# Private production evidence and preserved editor backup
+/docs/offline-resource-eviction-20261031/
+/apps/web/src/style.css.backup

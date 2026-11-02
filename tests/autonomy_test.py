@@ -112,8 +112,47 @@ class AutonomyTest(unittest.IsolatedAsyncioTestCase):
         autonomy.note_interaction(self.db,self.cfg,'group:67890','22222222',self.now+7000)
         self.assertIsNotNone(autonomy.owner_check_candidate(self.db,self.cfg,self.now+7100))
     def test_owner_rejection_and_no_response_prevent_checks(self):
+        self.cfg['behavior']['maxUnanswered']=1
         self.contact();self.db.execute("UPDATE contacts SET unanswered=1 WHERE scope='private:11111111'");self.db.commit();self.assertIsNone(autonomy.owner_check_candidate(self.db,self.cfg,self.now+7200))
         self.db.execute("UPDATE contacts SET unanswered=0,opted_out=1 WHERE scope='private:11111111'");self.db.commit();self.assertIsNone(autonomy.owner_check_candidate(self.db,self.cfg,self.now+7200))
+    def test_owner_default_allows_three_unanswered_and_stops_at_four(self):
+        self.cfg['behavior']['dailyProactiveLimit']=10
+        self.contact()
+        for count in range(1,5):
+            with self.subTest(unanswered=count):
+                self.db.execute('UPDATE contacts SET unanswered=?',(count,));self.db.commit()
+                self.db.execute('UPDATE autonomy_owner SET checked=?',(self.now,));self.db.commit()
+                candidate=autonomy.owner_check_candidate(self.db,self.cfg,self.now+7200)
+                self.assertEqual(candidate is None,count>3)
+                self.db.execute("UPDATE autonomy_owner SET checked=?,allowed=1,checked_version=version",(self.now+7200,));self.db.commit()
+                delivery=autonomy.owner_delivery_candidate(self.db,self.cfg,self.now+7200)
+                self.assertEqual(delivery is None,count>3)
+                if delivery:
+                    self.assertTrue(initiative.reserve(self.db,self.cfg,delivery,self.now+7200))
+                    self.assertEqual(self.db.execute('SELECT unanswered FROM contacts').fetchone()[0],count+1)
+    def test_directed_owner_group_conversation_answers_previous_outreach(self):
+        self.contact()
+        self.db.execute('UPDATE contacts SET unanswered=4,last_attempt=?,last_bot=?,last_output=?',(self.now,self.now+1,'previous outreach'));self.db.commit()
+        before=self.db.execute('SELECT last_user,last_text,last_bot,last_output,last_attempt FROM contacts').fetchone()
+        autonomy.note_interaction(self.db,self.cfg,'group:12345','11111111',self.now+3500)
+        self.assertEqual(self.db.execute('SELECT unanswered FROM contacts').fetchone()[0],0)
+        self.assertEqual(self.db.execute('SELECT last_user,last_text,last_bot,last_output,last_attempt FROM contacts').fetchone(),before)
+        self.assertIsNone(autonomy.owner_check_candidate(self.db,self.cfg,self.now+3600))
+        self.assertIsNotNone(autonomy.owner_check_candidate(self.db,self.cfg,self.now+7100))
+    def test_bystanders_and_stale_owner_events_cannot_clear_outreach(self):
+        self.contact();self.db.execute('UPDATE contacts SET unanswered=4,last_attempt=?',(self.now,));self.db.commit()
+        for subject,directed,at in [('22222222',True,self.now+10),('11111111',False,self.now+10),('11111111',True,self.now-1),('11111111',True,self.now)]:
+            with self.subTest(subject=subject,directed=directed,at=at):
+                autonomy.note_interaction(self.db,self.cfg,'group:12345',subject,at,directed=directed)
+                self.assertEqual(self.db.execute('SELECT unanswered FROM contacts').fetchone()[0],4)
+        self.assertIsNone(autonomy.owner_check_candidate(self.db,self.cfg,self.now+7200))
+    def test_resumed_owner_conversation_keeps_operator_opt_out_and_other_contacts(self):
+        self.contact();initiative.incoming(self.db,'private:22222222','22222222','99999999','other private chat',self.now)
+        self.db.execute('UPDATE contacts SET unanswered=4,last_attempt=?,opted_out=1',(self.now,));self.db.commit()
+        autonomy.note_interaction(self.db,self.cfg,'group:12345','11111111',self.now+1)
+        self.assertEqual(self.db.execute("SELECT unanswered,opted_out FROM contacts WHERE scope='private:11111111'").fetchone(),(0,1))
+        self.assertEqual(self.db.execute("SELECT unanswered,opted_out FROM contacts WHERE scope='private:22222222'").fetchone(),(4,1))
+        self.assertIsNone(autonomy.owner_check_candidate(self.db,self.cfg,self.now+7200))
     async def test_owner_can_recheck_same_anchor_after_silence(self):
         self.contact();self.provider.answer={'contact':False,'topic':''}
         for at in [self.now+3600,self.now+7200]:
@@ -161,6 +200,18 @@ class AutonomyTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.db.execute('SELECT status FROM autonomy_owner_checks').fetchone()[0],'timeout')
         self.store.planner.maybe_start(self.cfg,self.provider,lambda:True,self.event,self.metrics,now=self.now+3605)
         self.assertEqual(len(self.provider.calls),1)
+    async def test_owner_background_deadline_is_independent_of_group_decisions(self):
+        self.contact();self.cfg['behavior']['groupDecisionTimeoutSeconds']=1
+        self.provider.answer={'contact':True,'topic':'shared interest'}
+        deadlines=[]
+        async def captured_wait(awaitable,timeout):
+            deadlines.append(timeout)
+            return await awaitable
+        with patch('companion_schedule.asyncio.wait_for',side_effect=captured_wait):
+            self.store.planner.maybe_start(self.cfg,self.provider,lambda:True,self.event,self.metrics,now=self.now+3600)
+            await self.store.planner.task
+        self.assertEqual(deadlines,[60])
+        self.assertTrue(self.metrics['lastOwnerDecision']['contact'])
     async def test_owner_result_and_dispatch_invalidated_by_new_group_interaction(self):
         self.contact();self.provider.answer={'contact':True,'topic':'想接着聊共同兴趣'};at=self.now+3600
         self.store.planner.maybe_start(self.cfg,self.provider,lambda:True,self.event,self.metrics,now=at);await self.store.planner.task

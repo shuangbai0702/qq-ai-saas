@@ -5,6 +5,7 @@ No secondary model, no implicit recipients, no separate web server.
 import time,json,re,random,asyncio,uuid
 import companion_state
 import autonomy
+from message_layout import split_messages
 from datetime import datetime,timezone,timedelta
 ZONE=timezone(timedelta(hours=8))
 
@@ -56,7 +57,7 @@ def candidates(db,cfg,now,rng=random.random):
         selected=companion_state.select_member(db,cfg,scope,now,allow_without_topic=b.get('proactiveModelSchedule',False))
         automatic=scope not in b.get('proactiveTargets',[])
         if automatic and not selected:continue
-        if scope not in targets or opted_out or paused(db,scope,now) or unanswered>=b.get('maxUnanswered',1):continue
+        if scope not in targets or opted_out or paused(db,scope,now) or unanswered>=b.get('maxUnanswered',4):continue
         if scope.startswith('group:') and cfg.get('groups') and scope[6:] not in cfg['groups']:continue
         if now-last_user<b.get('silenceSeconds',1800) or now-max(last_bot,last_attempt)<b.get('proactiveIntervalSeconds',3600):continue
         topic=selected['topic'] if selected else ''
@@ -104,7 +105,7 @@ def reserve(db,cfg,item,now):
         total=db.execute('SELECT coalesce(sum(count),0) FROM deliveries WHERE day=?',(day,)).fetchone()[0]
         if total>=b.get('dailyProactiveLimit',10):return False
         r=db.execute('SELECT last_user,opted_out,unanswered FROM contacts WHERE scope=?',(item['scope'],)).fetchone()
-        if not r or r[0]!=item['last_user'] or r[1] or paused(db,item['scope'],now) or r[2]>=b.get('maxUnanswered',1):return False
+        if not r or r[0]!=item['last_user'] or r[1] or paused(db,item['scope'],now) or r[2]>=b.get('maxUnanswered',4):return False
         if item.get('owner_contact'):
             if not autonomy.owner_delivery_current(db,cfg,item,now):return False
             # A positive decision is consumed once, even if the reply model
@@ -114,7 +115,7 @@ def reserve(db,cfg,item,now):
                               (str(b.get('ownerUin') or ''),item['owner_checked'],item['owner_version'])).rowcount:return False
         if item.get('contact_subject'):
             if not companion_state.member_current(db,item['scope'],item['contact_subject'],item['contact_seen'],now):return False
-            changed=db.execute('UPDATE companion_members SET attempt=?,unanswered=unanswered+1 WHERE scope=? AND subject=? AND unanswered<? AND attempt<?',(now,item['scope'],item['contact_subject'],b.get('maxUnanswered',1),now-b.get('proactiveIntervalSeconds',3600))).rowcount
+            changed=db.execute('UPDATE companion_members SET attempt=?,unanswered=unanswered+1 WHERE scope=? AND subject=? AND unanswered<? AND attempt<?',(now,item['scope'],item['contact_subject'],b.get('maxUnanswered',4),now-b.get('proactiveIntervalSeconds',3600))).rowcount
             if not changed:return False
         db.execute('UPDATE contacts SET last_attempt=?,unanswered=unanswered+1 WHERE scope=?',(now,item['scope']))
         db.execute('INSERT INTO deliveries VALUES(?,?,1,?) ON CONFLICT(scope,day) DO UPDATE SET count=count+1,last_sent=excluded.last_sent',(item['scope'],day,now))
@@ -134,13 +135,7 @@ def release_unstarted(db,item,key):
             if item.get('contact_subject'):db.execute('UPDATE companion_members SET unanswered=max(0,unanswered-1) WHERE scope=? AND subject=? AND attempt=?',(scope,item['contact_subject'],at))
 
 def split_text(text,limit=4):
-    # The reply model chooses message boundaries with newlines. Punctuation
-    # alone must not turn every short answer into the same three-bubble rhythm.
-    if '```' in text or re.search(r'(?m)^\s*(?:[-*]|\d+[.、]) ',text):return [text]
-    chunks=[x.strip() for x in re.split(r'\n+',text) if x.strip()]
-    if len(chunks)<=1:return [text]
-    if len(chunks)>limit:chunks=chunks[:limit-1]+['\n'.join(chunks[limit-1:])]
-    return chunks
+    return split_messages(text,limit)
 
 def start(core,settings,store,metrics):
     async def sweep():
@@ -152,6 +147,8 @@ def start(core,settings,store,metrics):
             await asyncio.sleep(5)
             for id,s in list(settings.items()):
                 try:
+                    brain=getattr(core,'_hosted_autonomous',None)
+                    if brain and brain.owns(id):continue
                     cfg=s['config']
                     if not cfg.get('proactive') and not (cfg.get('behavior') or {}).get('groupParticipationEnabled',False):continue
                     st=store(id,s)

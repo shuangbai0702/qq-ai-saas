@@ -17,10 +17,16 @@ export const transferSchema={
  invitation_redemptions:['invitation_id','user_id','redeemed_at'],
  group_members:['bot_id','group_id','desired_state','observed_state','generation','applied_revision','joined_at'],
  audit_events:['id','tenant_id','event','bot_id','detail','created_at'],
+ autonomy_settings:['bot_id','tenant_id','epoch','runtime_epoch','config','state','goal_revision','summary','wait','observation','last_error','last_event_at','lease_owner','lease_until','next_wake_at','updated_at'],
+ autonomy_goals:['id','bot_id','tenant_id','origin','status','title','reason','progress','success_condition','source','revision','created_at','updated_at'],
+ autonomy_cycles:['id','bot_id','tenant_id','epoch','generation','config_revision','owner','state','budget','usage','reason','decision','started_at','finished_at'],
+ autonomy_actions:['id','cycle_id','bot_id','tenant_id','epoch','kind','target','objective','goal_id','status','expires_at','receipt','result','created_at','finished_at'],
+ autonomy_wakes:['bot_id','tenant_id','dedupe_key','epoch','due_at','reason','scope','created_at'],
+ autonomy_daily_usage:['bot_id','tenant_id','day','reserved_tokens','used_tokens','model_calls','tool_calls','external_actions'],
 } as const;
 export type TransferTable=keyof typeof transferSchema;
 export const transferTables=Object.keys(transferSchema) as TransferTable[];
-export const expectedSchemaVersions=['001','002','003','004','005'];
+export const expectedSchemaVersions=['001','002','003','004','005','006','007','008'];
 
 function canonical(value:any):any{
  if(value instanceof Date)return value.toISOString();

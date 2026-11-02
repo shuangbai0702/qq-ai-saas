@@ -12,7 +12,7 @@ export class AstrBotAdapter implements AiAdapter {
   async applyConfig(ctx:RuntimeContext){
     const cfg=ctx.config;
     const value={config_version:5,dashboard:{enable:false,host:'127.0.0.1'},admins_id:[],wake_prefix:[''],
-      platform_settings:{unique_session:false,enable_id_white_list:false,id_whitelist:[],wl_ignore_admin_on_group:false,friend_message_needs_wake_prefix:false},
+      platform_settings:{empty_mention_waiting:false,unique_session:false,enable_id_white_list:false,id_whitelist:[],wl_ignore_admin_on_group:false,friend_message_needs_wake_prefix:false},
       platform:[{id:'qq',type:'aiocqhttp',enable:true,ws_reverse_host:'127.0.0.1',ws_reverse_port:ctx.aiPort,ws_reverse_token:ctx.token}],
       provider_sources:[],provider:ctx.apiKey?[{id:'platform-model',type:'openai_chat_completion',provider_type:'chat_completion',enable:true,key:['$FISHBOT_MODEL_KEY'],api_base:cfg.baseUrl,model:cfg.model,timeout:60}]:[],
       provider_settings:{enable:!!ctx.apiKey,identifier:true,group_name_display:true,datetime_system_prompt:true,computer_use_runtime:'none',proactive_capability:{add_cron_tools:false}},
@@ -23,7 +23,7 @@ export class AstrBotAdapter implements AiAdapter {
     const root=path.join(ctx.root,'ai');await mkdir(path.join(root,'data'),{recursive:true});
     await writeFile(path.join(root,'data/cmd_config.json.tmp'),JSON.stringify(value,null,2),{mode:0o600});await rename(path.join(root,'data/cmd_config.json.tmp'),path.join(root,'data/cmd_config.json'));
     await writeFile(path.join(root,'persona.txt'),cfg.systemPrompt,{mode:0o600});
-    await writeFile(path.join(root,'runtime.json'),JSON.stringify({generation:ctx.generation,revision:ctx.revision,token:ctx.token,aiPort:ctx.aiPort,expectedUin:ctx.expectedUin,groups:cfg.groups,botId:ctx.botId,config:cfg}),{mode:0o600});
+    await writeFile(path.join(root,'runtime.json'),JSON.stringify({generation:ctx.generation,revision:ctx.revision,token:ctx.token,aiPort:ctx.aiPort,expectedUin:ctx.expectedUin,groups:cfg.groups,botId:ctx.botId,tenantId:ctx.tenantId,config:cfg}),{mode:0o600});
     return {appliedRevision:ctx.revision,restartRequired:!!(await this.host.inspect(ctx.botId,'ai'))};
   }
   async start(ctx:RuntimeContext){await this.provision(ctx);const root=path.join(ctx.root,'ai');

@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#e2eaf0">
+  <meta name="description" content="FishBot 01 · 蓝白基础 UI 样本。细线、柔雾、按钮、面板与小细节。">
+  <title>01 · 微蓝 / FishBot UI</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='10' fill='%23c9ddea'/%3E%3Cpath d='M7 17q9-15 18 0M11 23h10' fill='none' stroke='%236d8aa6' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./form.css">
+</head>
+<body>
+  <canvas id="paper-field" aria-hidden="true"></canvas>
+  <svg class="symbol-library" aria-hidden="true"><defs>
+    <symbol id="i-mark" viewBox="0 0 32 32"><path d="M7 17q9-15 18 0M11 23h10"/><circle cx="16" cy="9" r="1"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-5 5 5-5 5"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-heart" viewBox="0 0 24 24"><path d="M12 20S3 15 3 9a5 5 0 0 1 9-3 5 5 0 0 1 9 3c0 6-9 11-9 11Z"/></symbol>
+    <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7 18a5 5 0 1 1 .8-9.9A6 6 0 0 1 19 11a3.5 3.5 0 0 1-.5 7Z"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3q1 8 9 9-8 1-9 9-1-8-9-9 8-1 9-9Z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14A8 8 0 0 1 10 4a8.5 8.5 0 1 0 10 10Z"/></symbol>
+    <symbol id="i-seal" viewBox="0 0 24 24"><path d="M12 2q3-2 4 2 4-1 4 3 4 1 2 5 2 3-2 4 1 4-3 4-1 4-5 2-3 2-4-2-4 1-4-3-4-1-2-5-2-3 2-4-1-4 3-4Q9 0 12 2Z"/></symbol>
+  </defs></svg>
+  <a class="skip" href="#buttons">跳到按钮样本</a>
+  <header class="masthead wrap">
+    <a href="#top" class="brand" aria-label="FishBot UI 样本"><span class="brand-mark"><svg class="icon"><use href="#i-mark"/></svg></span><b>fishbot<small>A LITTLE BLUE</small></b></a>
+    <nav aria-label="样本参考"><a href="./saved/01-soft-clean-20261101/index.html">留档版 ↗</a><a href="/design-references/20261101/index.html">参考图库 ↗</a><a href="#details">小元素</a></nav>
+    <button id="motion" class="motion-toggle" aria-pressed="true" aria-label="暂停视觉动态"><span class="motion-indicator"></span><span id="motion-label">动态开启</span><svg class="icon"><use href="#i-moon"/></svg></button>
+  </header>
+  <main class="wrap" id="top">
+    <section class="intro" aria-labelledby="page-title">
+      <div><p class="eyebrow">SOFT FORMS, LITTLE DETAILS</p><h1 id="page-title">一点微蓝，<em>一点可爱。</em></h1><p class="intro-note">按钮、面板、背景，与基础小元素。</p></div>
+      <div class="intro-side"><div class="palette" aria-label="纸白、雾蓝、灰紫、墨蓝"><i></i><i></i><i></i><i></i></div><div class="edition">UI STUDY<b>01 / BLUE</b></div></div>
+    </section>
+    <section class="notebook" data-paper="cover" data-radius="25" data-flex="2" aria-label="蓝白基础 UI 样本集">
+      <div class="study-heading">
+        <div><span>FORM LIBRARY / 01</span><h2>从小小的元素开始。</h2><p>细线、柔雾，和有序的微光。</p></div>
+        <div class="heading-pattern" aria-label="生成式几何花纹"><canvas class="printed-pattern" data-pattern="garden" aria-hidden="true"></canvas><span>✧</span></div>
+      </div>
+      <div class="specimen-grid">
+        <article id="buttons" class="sheet button-sheet" data-paper="ivory" data-radius="17" data-flex="4" data-fold="12">
+          <div class="sheet-heading"><h3>按钮，软软一颗。</h3><span>01 / BUTTONS</span></div>
+          <div class="button-row main-buttons">
+            <button class="ui-button primary" data-paper="blue" data-radius="26" data-flex="10" data-pool><span>晴蓝按钮</span><svg class="icon"><use href="#i-arrow"/></svg></button>
+            <button class="ui-button secondary" data-paper="mist" data-radius="26" data-flex="9" data-pool><svg class="icon"><use href="#i-cloud"/></svg><span>云朵按钮</span></button>
+            <button class="ui-button outline" data-paper="clear" data-radius="26" data-flex="8" data-pool>细线</button>
+          </div>
+          <div class="button-row cuts-row">
+            <button class="ui-button cut-button" data-paper="mist" data-cut="lace" data-radius="15" data-flex="8" data-seam data-pool><svg class="icon"><path data-petal/></svg><span>软花边</span></button>
+            <button class="ui-button cut-button ticket" data-paper="ivory" data-cut="ticket" data-radius="8" data-flex="8" data-seam data-pool><span>小缺口</span><svg class="icon"><use href="#i-heart"/></svg></button>
+            <button class="ui-button cut-button" data-paper="lilac" data-cut="wave" data-radius="16" data-flex="8" data-pool><span>波浪边</span><svg class="icon"><use href="#i-spark"/></svg></button>
+          </div>
+          <div class="sample-divider"><span>缩小，也有细节</span><svg aria-hidden="true"><path data-divider/></svg></div>
+          <div class="button-row mini-buttons">
+            <button class="ui-button icon-button" data-paper="mist" data-radius="11" data-flex="7" aria-label="小加号按钮"><svg class="icon"><use href="#i-plus"/></svg></button>
+            <button class="ui-button icon-button round" data-paper="ivory" data-radius="30" data-flex="7" aria-label="小爱心按钮"><svg class="icon"><use href="#i-heart"/></svg></button>
+            <button class="ui-button icon-button flower-button" data-paper="lilac" data-cut="flower" data-radius="20" data-flex="7" aria-label="花形按钮"><svg class="icon"><path data-petal/></svg></button>
+            <button class="ui-button icon-button" data-paper="clear" data-radius="11" data-flex="7" aria-label="小箭头按钮"><svg class="icon"><use href="#i-arrow"/></svg></button>
+            <span class="tiny-split" aria-hidden="true"></span>
+            <button class="ui-button small" data-paper="mist" data-radius="12" data-flex="6" data-pool>小按钮</button>
+            <button class="ui-button micro" data-paper="ivory" data-radius="7" data-flex="5">更小一点</button>
+          </div>
+          <p class="quiet-note"><svg class="icon"><use href="#i-spark"/></svg>轻轻掠过，细节慢慢显现。</p>
+        </article>
+        <article class="sheet panel-sheet" data-paper="ivory" data-radius="17" data-flex="4" data-fold="12">
+          <div class="sheet-heading"><h3>面板，叠一层蓝。</h3><span>02 / PANELS</span></div>
+          <div class="paper-deck">
+            <div class="deck-layer deck-back" data-paper="slate" data-radius="14" data-flex="7" data-seam aria-hidden="true"></div>
+            <div class="deck-layer deck-middle" data-paper="clear" data-radius="14" data-flex="8" data-seam aria-hidden="true"></div>
+            <div class="deck-layer deck-front" data-paper="ivory" data-radius="14" data-flex="9" data-fold="17">
+              <div class="deck-pattern"><canvas class="printed-pattern" data-pattern="ribbons" aria-hidden="true"></canvas></div>
+              <div class="deck-top"><span class="mini-stamp"><svg class="icon"><use href="#i-sun"/></svg></span><span>HELLO,<br>LITTLE BLUE.</span></div>
+              <h4>轻蓝面板</h4>
+              <div class="deck-bottom"><span>柔雾 · 细边 · 轻层次</span><button class="ui-button icon-button" data-paper="mist" data-radius="9" data-flex="6" aria-label="面板内的小按钮"><svg class="icon"><use href="#i-plus"/></svg></button></div>
+            </div>
+          </div>
+          <p class="panel-note"><span>轮廓清楚</span><i>·</i><span>微光在边缘游走</span></p>
+        </article>
+      </div>
+      <div class="details-grid" id="details">
+        <article class="detail-sheet" data-paper="ivory" data-radius="16" data-flex="3" data-fold="9">
+          <div class="sheet-heading"><h3>小小的，刚刚好。</h3><span>03 / LITTLE UI</span></div>
+          <div class="detail-row"><span class="element-label">页签</span><div class="segmented" role="group" aria-label="页签视觉样本"><span class="segment-skin" data-paper="ivory" data-radius="9" data-flex="3"></span><button aria-pressed="true">晴蓝</button><button aria-pressed="false">柔雾</button><button aria-pressed="false">细线</button></div></div>
+          <div class="detail-row"><span class="element-label">开关</span><div class="switch-row"><button class="paper-switch" role="switch" aria-checked="true" aria-label="蓝色开关样本" data-paper="mist" data-radius="15" data-flex="5"><span></span></button><button class="paper-switch" role="switch" aria-checked="false" aria-label="浅色开关样本" data-paper="mist" data-radius="15" data-flex="5"><span></span></button><button class="check-sample" role="checkbox" aria-checked="true" aria-label="复选框样本" data-paper="ivory" data-radius="6" data-flex="4"><svg class="icon"><use href="#i-check"/></svg></button></div></div>
+          <div class="detail-row"><span class="element-label">标签</span><div class="badge-row"><span class="badge" data-paper="mist" data-radius="7" data-flex="3">一点蓝</span><span class="badge" data-paper="lilac" data-radius="7" data-flex="3"><svg class="icon"><use href="#i-spark"/></svg>软乎</span><span class="badge" data-paper="clear" data-radius="7" data-flex="3">细边</span></div></div>
+        </article>
+        <article class="detail-sheet" data-paper="ivory" data-radius="16" data-flex="3" data-fold="9">
+          <div class="sheet-heading"><h3>空隙，也很温柔。</h3><span>04 / DETAILS</span></div>
+          <div class="detail-row"><span class="element-label">输入</span><label class="field-shell" data-paper="recess" data-radius="13" data-flex="4"><svg class="icon"><use href="#i-search"/></svg><input aria-label="输入框视觉样本" placeholder="在这里留一点文字…" maxlength="36"><kbd>↵</kbd></label></div>
+          <div class="detail-row"><span class="element-label">滑块</span><div class="range-shell"><input class="paper-range" type="range" min="0" max="100" value="62" aria-label="滑块视觉样本"><span id="range-value">62</span></div></div>
+          <div class="detail-row"><span class="element-label">动感</span><div class="loaders" aria-hidden="true"><svg class="morph-loader" viewBox="0 0 24 24"><path/></svg><span class="breathing-dots"><i></i><i></i><i></i></span><svg class="little-wave" viewBox="0 0 50 13"><path/></svg></div></div>
+        </article>
+        <article class="detail-sheet texture-sheet" data-paper="ivory" data-radius="16" data-flex="3" data-fold="9">
+          <div class="sheet-heading"><h3>微光与纹理。</h3><span>05 / MATERIALS</span></div>
+          <div class="material-swatches">
+            <div class="material-swatch" data-paper="ivory" data-radius="9" data-flex="5"><div class="swatch-clip"><canvas class="printed-pattern" data-pattern="garden" aria-hidden="true"></canvas></div><span>花纹</span></div>
+            <div class="material-swatch" data-paper="ivory" data-radius="9" data-flex="5"><div class="swatch-clip"><canvas class="printed-pattern" data-pattern="ruling" aria-hidden="true"></canvas></div><span>微纹</span></div>
+            <div class="material-swatch" data-paper="ivory" data-radius="9" data-flex="5"><div class="swatch-clip"><canvas class="printed-pattern" data-pattern="halftone" aria-hidden="true"></canvas></div><span>网点</span></div>
+          </div>
+          <div class="swatch-line"><span>一点秩序，一点小变化。</span><svg class="icon"><use href="#i-cloud"/></svg></div>
+        </article>
+      </div>
+      <div class="board-foot"><span>形状、材质与细节。</span><span>FISHBOT · PURE UI STUDY 01</span></div>
+    </section>
+    <section class="trim-study" aria-label="细小饰边样本">
+      <article class="trim-card"><div class="trim-header"><h3>连续的细节</h3><span>LINKED FORMS</span></div><canvas class="trim-canvas" data-trim="lace" aria-hidden="true"></canvas></article>
+      <article class="trim-card"><div class="trim-header"><h3>有序的节奏</h3><span>LINE RHYTHM</span></div><canvas class="trim-canvas" data-trim="weave" aria-hidden="true"></canvas></article>
+      <article class="trim-card"><div class="trim-header"><h3>一点小可爱</h3><span>LITTLE GEOMETRY</span></div><canvas class="trim-canvas" data-trim="flowers" aria-hidden="true"></canvas></article>
+    </section>
+    <footer class="footer"><span>FISHBOT / SOFT FORMS 01</span><span class="footer-heart"><svg class="icon"><use href="#i-heart"/></svg>从细节，感受界面。</span><span><a href="./saved/01-soft-clean-20261101/index.html">清爽留档版 ↗</a></span></footer>
+  </main>
+  <script type="module" src="./form.js"></script>
+</body>
+</html>

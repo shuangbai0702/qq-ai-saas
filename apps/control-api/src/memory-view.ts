@@ -10,6 +10,8 @@ export function aggregate(rows:any[],complete=true){
 export function buildMemoryView(sample:any,local:any,bots:any[],host:any,now=Date.now()){
  const hostFresh=host&&numeric(host.sampledAt)&&now-host.sampledAt*1000>=-5000&&now-host.sampledAt*1000<=90000;
  const localComplete=!local.truncated&&!(local.errors||[]).length;
+ const localErrors=local.errors||[];
+ const discoveryComplete=!local.truncated&&!localErrors.some((e:any)=>!e.ownerId&&e.kind!=='api');
  const hostComplete=!!hostFresh&&!host.truncated&&!(host.errors||[]).length;
  const localRows=local.processes||[];
  const processes:any[]=hostFresh?(host.processes||[]).map((p:any)=>{
@@ -22,23 +24,30 @@ export function buildMemoryView(sample:any,local:any,bots:any[],host:any,now=Dat
  const botIds=new Set(bots.map(b=>b.id));const groupIds=new Set(bots.map(b=>b.group_id).filter(Boolean));
  const category=(p:any)=>p.kind==='api'?'api':p.kind==='protocol'?'protocol':p.kind==='ai'?(groupIds.has(p.ownerId)||p.ownerId?.startsWith('group-')?'shared':'dedicated'):p.container==='postgres'?'postgres':p.kind==='agent'?'agent':p.container==='api'?'api':'other';
  for(const p of processes)p.category=category(p);
- const ownerComplete=(id:string)=>localComplete&&!(local.errors||[]).some((e:any)=>e.ownerId===id);
- const categories=Object.entries(categoryNames).map(([id,name])=>({id,name,...aggregate(processes.filter(p=>p.category===id),id==='postgres'?hostComplete:id==='agent'?hostComplete&&localComplete:localComplete&&(!hostFresh||hostComplete))}));
+ const ownerComplete=(id:string,kind?:string)=>discoveryComplete&&!localErrors.some((e:any)=>e.ownerId===id&&(!kind||e.kind===kind));
+ const categoryComplete=(id:string)=>{
+   if(id==='postgres')return hostComplete;
+   if(!discoveryComplete||hostFresh&&!hostComplete)return false;
+   if(id==='agent')return hostComplete;
+   return !localErrors.some((e:any)=>id==='api'?e.kind==='api':id==='protocol'?e.kind==='protocol':id==='shared'?e.kind==='ai'&&e.ownerId?.startsWith('group-'):id==='dedicated'?e.kind==='ai'&&!e.ownerId?.startsWith('group-'):false);
+ };
+ const categories=Object.entries(categoryNames).map(([id,name])=>({id,name,...aggregate(processes.filter(p=>p.category===id),categoryComplete(id))}));
  const accounts=bots.map(b=>{
    const protocolRows=processes.filter(p=>p.ownerId===b.id&&p.kind==='protocol');
    const dedicatedRows=processes.filter(p=>p.ownerId===b.id&&p.kind==='ai');
    const complete=ownerComplete(b.id);const count=complete?protocolRows.length+dedicatedRows.length:null;
    const healthTime=Date.parse(b.health?.sampledAt||b.heartbeat_at||'');
    const healthFresh=Number.isFinite(healthTime)&&now-healthTime<=90000&&now-healthTime>=-5000;
-   const online=healthFresh&&b.health?.protocol?.online===true&&protocolRows.length>0&&complete&&b.desired_state==='running';
-   const status=online?'online':b.desired_state==='offline'?(count===0?'evicted':'offline'):b.desired_state==='stopped'?'stopped':!complete?'unknown':b.observed_state==='starting'?'starting':!healthFresh?'stale':'offline';
-   return{id:b.id,name:b.name,qq:b.qq_uin||b.expected_uin||null,protocol:b.protocol,runtimeMode:b.runtime_mode,groupId:b.group_id,status,desiredState:b.desired_state,observedState:b.observed_state,healthSampledAt:Number.isFinite(healthTime)?new Date(healthTime).toISOString():null,online,realOnline:online&&b.protocol!=='mock',residual:count===null?null:count>0&&!['running'].includes(b.desired_state),runtimeProcessCount:count,protocolMemory:aggregate(protocolRows,complete),dedicatedMemory:aggregate(dedicatedRows,complete)};
+   const protocolComplete=ownerComplete(b.id,'protocol');
+   const online=healthFresh&&b.health?.protocol?.online===true&&protocolRows.length>0&&protocolComplete&&b.desired_state==='running';
+   const status=online?'online':b.desired_state==='offline'?(count===0?'evicted':'offline'):b.desired_state==='stopped'?'stopped':!protocolComplete?'unknown':b.observed_state==='starting'?'starting':!healthFresh?'stale':'offline';
+   return{id:b.id,name:b.name,qq:b.qq_uin||b.expected_uin||null,protocol:b.protocol,runtimeMode:b.runtime_mode,groupId:b.group_id,status,desiredState:b.desired_state,observedState:b.observed_state,healthSampledAt:Number.isFinite(healthTime)?new Date(healthTime).toISOString():null,online,realOnline:online&&b.protocol!=='mock',residual:count===null?null:count>0&&!['running'].includes(b.desired_state),runtimeProcessCount:count,protocolMemory:aggregate(protocolRows,protocolComplete),dedicatedMemory:aggregate(dedicatedRows,ownerComplete(b.id,'ai'))};
  });
- const groups=[...new Set([...groupIds,...processes.filter(p=>p.category==='shared').map(p=>p.ownerId)])].filter(Boolean).map(id=>({id,configuredMembers:accounts.filter(b=>b.groupId===id).map(b=>({id:b.id,name:b.name,status:b.status,qq:b.qq})),onlineMemberCount:accounts.some(b=>b.groupId===id&&['stale','unknown'].includes(b.status))||!localComplete?null:accounts.filter(b=>b.groupId===id&&b.online).length,onlineMembers:accounts.filter(b=>b.groupId===id&&b.online).map(b=>({id:b.id,name:b.name,qq:b.qq})),...aggregate(processes.filter(p=>p.category==='shared'&&p.ownerId===id),ownerComplete(id as string))}));
+ const groups=[...new Set([...groupIds,...processes.filter(p=>p.category==='shared').map(p=>p.ownerId)])].filter(Boolean).map(id=>({id,configuredMembers:accounts.filter(b=>b.groupId===id).map(b=>({id:b.id,name:b.name,status:b.status,qq:b.qq})),onlineMemberCount:accounts.some(b=>b.groupId===id&&['stale','unknown'].includes(b.status))||!discoveryComplete?null:accounts.filter(b=>b.groupId===id&&b.online).length,onlineMembers:accounts.filter(b=>b.groupId===id&&b.online).map(b=>({id:b.id,name:b.name,qq:b.qq})),...aggregate(processes.filter(p=>p.category==='shared'&&p.ownerId===id),ownerComplete(id as string))}));
  const mem=sample.details.host.meminfoBytes||{};
  const sub=(a:any,b:any)=>numeric(a)&&numeric(b)?Math.max(0,a-b):null;
  const psi=(text:any,kind:string)=>{const m=typeof text==='string'&&text.match(new RegExp(`^${kind} avg10=([\\d.]+)`, 'm'));return m?Number(m[1]):null};
- const statusComplete=localComplete&&accounts.every(b=>!['stale','unknown'].includes(b.status));
+ const statusComplete=discoveryComplete&&accounts.every(b=>ownerComplete(b.id,'protocol')&&!['stale','unknown'].includes(b.status));
  const overview={totalBytes:sample.details.host.totalBytes,usedBytes:sub(sample.details.host.totalBytes,sample.hostAvailableBytes),availableBytes:sample.hostAvailableBytes,swapUsedBytes:sub(mem.SwapTotal,mem.SwapFree),zswapPhysicalBytes:mem.Zswap??null,zswappedLogicalBytes:mem.Zswapped??null,onlineQQ:statusComplete?accounts.filter(b=>b.realOnline).length:null,onlineMock:statusComplete?accounts.filter(b=>b.online&&b.protocol==='mock').length:null,runtimeProcesses:localComplete?processes.filter(p=>['protocol','shared','dedicated'].includes(p.category)).length:null,memoryPressureSome:psi(sample.details.host.memoryPressure,'some'),memoryPressureFull:psi(sample.details.host.memoryPressure,'full'),cpuPressureSome:psi(sample.details.host.cpuPressure,'some'),cpuPercent:null as number|null};
  return{overview,categories,accounts,groups,processes,coverage:{hostFresh:!!hostFresh,hostSampledAt:host?.sampledAt?new Date(host.sampledAt*1000).toISOString():null,hostComplete,localComplete,complete:hostComplete&&localComplete,errors:[...(local.errors||[]),...(hostFresh?host.errors||[]:[{reason:'host-sample-missing-or-stale'}])],truncated:!!local.truncated||!!host?.truncated},unassignedRuntime:processes.filter(p=>p.ownerId&&!botIds.has(p.ownerId)&&!groupIds.has(p.ownerId)&&p.kind!=='api').map(p=>p.pid)};
 }

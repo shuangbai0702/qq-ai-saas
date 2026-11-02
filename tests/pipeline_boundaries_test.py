@@ -49,7 +49,7 @@ async def run():
   receipts.clear();event,extra,st,work=fresh(message='semantic')
   now=time.time();st.db.execute("INSERT OR REPLACE INTO autonomy_groups(scope,checked,version,event) VALUES('group:55555',?,0,'semantic')",(now,));st.db.commit()
   extra['_hosted_group_decision']={'scope':'group:55555','checked':now,'version':0}
-  await AiocqhttpMessageEvent.send(event,MessageChain(chain=[Plain('第一段。\n第二段。\n第三段。'),Image.fromBytes(b'fixture')]))
+  await AiocqhttpMessageEvent.send(event,MessageChain(chain=[Plain('第一段。[QQ_BREAK]第二段。[QQ_BREAK]第三段。'),Image.fromBytes(b'fixture')]))
   st.pipeline.finish(work,{})
   assert len(receipts)==3,'own first receipt invalidated the rest of this admitted output'
   assert not any(isinstance(c,Image) for msg in receipts[:-1] for c in msg.chain)
@@ -59,7 +59,7 @@ async def run():
   receipts.clear();event,extra,st,work=fresh(message='interrupted')
   now=time.time();st.db.execute("INSERT OR REPLACE INTO autonomy_groups(scope,checked,version,event) VALUES('group:55555',?,0,'interrupted')",(now,));st.db.commit()
   extra.update({'_hosted_group_decision':{'scope':'group:55555','checked':now,'version':0},'_interrupt':True})
-  await AiocqhttpMessageEvent.send(event,MessageChain(chain=[Plain('已送出。\n不应送出的旧后续。')]))
+  await AiocqhttpMessageEvent.send(event,MessageChain(chain=[Plain('已送出。[QQ_BREAK]不应送出的旧后续。')]))
   st.pipeline.finish(work,{})
   assert len(receipts)==1 and work.status=='partial','new interaction during dispatch must still invalidate remaining bubbles'
  async def context_failure_releases_activity():

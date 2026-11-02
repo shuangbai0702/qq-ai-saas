@@ -1,110 +1,156 @@
-# 平台机器人管理平台
+# FishBot
 
-实际工作区：`D:\MYCODE\APP\fishbot\qq-ai-saas`。React/TypeScript + Fastify + PostgreSQL SQL Migration + 单节点进程 Supervisor + 独立/共享 AstrBot。没有修改旧 Coopanion 或研究源码快照。
+面向多租户的 QQ AI 机器人平台。支持网页扫码登录、共享 AstrBot、人格与记忆、群聊参与，以及由模型驱动的主动模式。
 
-2026-10-29 更新：激活码注册、管理员发码、自定义 URL/Key 自动发现模型；默认每账号一个机器人，删除完成后才能替换，停止不释放名额。默认每 8 个成员共用一个受控 AstrBot。当前全量测试 74 项通过，新增发布安全检查及 Docker 构建入口；有加密凭据时拒绝用新密钥替代丢失的 Master Key。Docker 部署步骤见 [Docker 使用说明](docker/README.md)，实际验收边界与证据见 [综合记录](docs/windows-final-closeout.md)。
+同一套 TypeScript / Python 源码运行于 Windows 与 Linux。Web 使用 React，控制 API 使用 Fastify；Node Agent 管理协议与 AI 运行实例。生产数据保存在源码目录之外。
 
-**当前可运行：Web、持久化、多租户权限、独立/共享 AstrBot、NapCat 网页扫码与会话恢复。已使用 `gpt-5.6-luna` 完成真实 QQ 私聊、多轮、显式事实记忆和主动发起聊天。两个授权 QQ 已加入同一个持久化共享组；两租户四逻辑 Bot 配置隔离、启停及恢复另有真实 AstrBot + 协议/模型替身测试。** 共享模式只支持平台受控能力，不是任意 Python 插件的安全沙箱。完整证据、未完成验收和 Plan vs Actual 见 [第三轮交付报告](docs/round3-delivery.md)。
+## 能做什么
 
-最新整合见 [吸收各家机制与记忆增强](docs/behavior-synthesis.md)：加入话题相关召回、稳定资料/事件区分，以及可关闭的明确自述自动记录。仍按 Bot、群/私聊和 QQ 用户隔离，不是所有自然语言都能自动理解。
+- **账号与运营**：激活码注册、多租户权限、管理员运维、机器人启停、QQ 登录状态与异常提示。
+- **QQ 接入**：NapCat 扫码与已有登录会话恢复；Mock 仅用于开发测试，不代表真实 QQ 在线。
+- **日常对话**：人格、可信主人身份、关系与情绪、群聊触发和跟聊、平台表情包、图片处理、分段发送。
+- **记忆**：已有记忆摘要与尚未压缩的近期对话共同构成上下文；跨会话信息按机器人、真实身份与会话授权边界读取，不在租户间共享。
+- **主动模式**：外层模型维护目标、选择下一项任务，内层 Agent 使用实际开放的工具执行；依据真实结果再次决策，或保存状态后休眠并等待唤醒。
+- **运行监控**：整机 RAM、Swap、zswap、组件 PSS 与 QQ 状态分组展示；共享 AI 按实际进程统计，缺失指标显示未知。
 
-第二轮实现、数据、容量边界和 Plan vs Actual 见 [交付报告](docs/round2-delivery.md)。历史约662MiB固定成本包含重复计数，已纠正，不能继续引用作基准。
+主动模式已经接入持久化与真实运行链路，但自主行为质量、长期资源成本和完整场景验收仍需持续验证。工具是否可用取决于配置、授权和协议支持，不能将模型说出的“已完成”视为执行成功。
 
-## 低内存生产启动（本地已验证）
+## 架构与公共管线
 
-```powershell
-npm run build:production
-$env:APP_ORIGIN='http://127.0.0.1:8787'
-npm run start:production
-# 另一个终端优雅停止
-.\scripts\Stop-Production.ps1
+```mermaid
+flowchart TD
+    Web[React 管理与机器人界面] --> API[控制 API]
+    API --> DB[(PostgreSQL / 本地 PGlite)]
+    API --> Agent[Node Agent]
+    Agent --> QQ[NapCat / Mock]
+    Agent --> AI[共享或独立 AstrBot]
+    QQ --> Pipeline[绑定 → 观察 → 参与判断 → 上下文]
+    Pipeline --> Inner[AstrBot 内层模型与工具循环]
+    Outer[外层自主决策] --> Work[持久 Work / lease / 配置代次]
+    Work --> Inner
+    Inner --> Output[OutputPlan → 发送许可 → 协议投递]
+    Output --> Receipt[真实回执 → 状态提交]
+    Receipt --> Outer
+    Outer --> Sleep[持久休眠 / 时间与事件唤醒]
+    Sleep --> Outer
 ```
 
-前端与API统一入口 <http://127.0.0.1:8787>，无常驻 Vite/tsx。首次安装需要下面的 npm ci/setup。默认 compact PGlite 和精简 AstrBot；可配置 `DB_MEMORY_PROFILE=balanced`、`FISHBOT_ASTRBOT_SLIM=0` 回退。
+外层负责“现在值得做什么”，内层负责完成具体任务。当前内层采用 AstrBot 原生 `ToolLoopAgentRunner`，没有为每个 QQ 增加一个常驻自主 Agent，也未将 DSH 作为线上执行内核。
 
-真实 QQ：先 `npm run setup:napcat`（下载官方便携依赖，版本/SHA在安装记录），网页选择 NapCat 后点击获取二维码。Key只在网页配置；真实上线必须等待手机确认及协议端coreReady，模拟模式明确标识。详见 [QQ说明](docs/round2-qq.md)。
+普通消息响应与自主任务复用人格、记忆、授权工具、输出和回执管线。主动模式接管原有主动调度，避免两套定时器重复发送；正常用户交互保持优先。外层读取受控的共享上下文和执行经历，不能从模型文本取得主人权限或改变真实发送身份。
 
-## Windows 启动
+共享 AstrBot 默认按组承载多个机器人，可减少重复 Python 运行时。共享成员拥有各自的配置、目标、记忆与预算；同一 Python 进程不构成任意第三方插件的安全沙箱。共享模式只接入平台受控能力。
 
-需要 Node.js 22+、Python、uv。本机已安装 Node 24、uv，以及 AstrBot Python 3.12 环境。
+## 主动与被动模式
 
-```powershell
-cd D:\MYCODE\APP\fishbot\qq-ai-saas
+| 模式 | 行为 |
+| --- | --- |
+| 被动 | 保留消息响应、群参与、主人联系及已有定时能力 |
+| 主动 | 保留正常响应，由外层模型编排自主任务并根据结果继续决策或休眠 |
+
+每个机器人可独立切换；切换使用配置代次和任务所有权撤销过期执行，不需要重新登录 QQ。目标、决策周期、动作、lease 和唤醒条件持久化。QQ 离线时自主任务挂起，不为后台活动擅自重启 QQ。
+
+内层勾选的能力形成实际工具清单，并同步给外层。聊天、群上下文、签名、空间和资料搜索仍受各自权限约束。B 站当前提供搜索与公开资料获取，不代表已经具备观看视频、评论或投稿能力。模型调用、工具、时间、Token 与外部动作保护可以配置，不能取消末端授权与真实回执校验；结果不明时不能盲目重发。
+
+标准群参与的判断间隔属于标准模式，外层自主群聊不继承这个间隔；白名单、安静时段、拒绝联系及发送安全检查继续生效。
+
+## 本地开发
+
+需要 Node.js 22+、npm、Python，以及 AstrBot 安装所需的 uv。真实 QQ 还需要适合当前系统的 NapCat 依赖。
+
+```sh
 npm ci
 npm run setup:astrbot
-# 可选：安装真实 Euler 实验环境
-npm run setup:euler
-Copy-Item .env.example .env # 仅首次且没有自己的 .env 时执行
-.\scripts\Start-Dev.ps1
+npm run setup:napcat
 ```
 
-- Web：<http://127.0.0.1:5173>；API：<http://127.0.0.1:8787/v1/health>。
-- 持邀请码注册新账号→创建机器人→选择大肥鱼/模型→选择**模拟协议**→测试二维码与确认→启动。AstrBot 是真实进程；Mock 二维码不能用手机 QQ 登录。已有账号直接登录，无需补填邀请码。
-- 真实协议需要先完成 [运行适配说明](docs/runtime.md) 中的基础设施配置。缺少签名服务或 NapCat 安装会返回具体错误，平台不会自动改成 Mock。
-- 停止：另一个 PowerShell 执行 `.\scripts\Stop-Dev.ps1`。它请求 API 优雅关闭实例和数据库。下次启动按持久化 desired state 恢复运行中的机器人。
-- 编译生产单入口请使用上方 `build:production` / `start:production`，避免 TS 开发加载器。
+首次使用时，将 `.env.example` 复制为 `.env`；已有配置请直接编辑，勿覆盖。Linux 上将 `ASTRBOT_PYTHON` 改为实际环境路径，例如 `references/astrbot/.venv/bin/python`。
 
-本地持久数据在 `.local/`，默认 PGlite（真实 PostgreSQL WASM 引擎，不是独立 PostgreSQL 服务）。保留 `.local/master.key`，否则已保存的 Key 无法解密。`.local/`、`.env`、依赖和上游副本均被忽略。生产切换 `DATABASE_URL=postgresql://...`，SQL Migration 仍相同；独立 PostgreSQL 分支本轮尚未实机验收。
+```sh
+npm run dev
+```
 
-## 管理员
+开发模式 Web 通常为 `http://127.0.0.1:5173`，API 默认 `http://127.0.0.1:8787`。Windows 也可使用 `scripts/Start-Dev.ps1` 与 `scripts/Stop-Dev.ps1` 管理本地开发进程。
 
-普通网页注册永远不授予管理员。停止 API 后通过本机命令创建：
+创建初始管理员：先设置环境变量 `BOOTSTRAP_ADMIN_PASSWORD`（至少 12 个字符），再运行：
 
-```powershell
-$env:BOOTSTRAP_ADMIN_PASSWORD='替换成至少12字符的密码'
+```sh
 npm run admin:create -- owner@example.com
-Remove-Item Env:BOOTSTRAP_ADMIN_PASSWORD
 ```
 
-登录该账号即可访问管理台。命令对已有邮箱会重置密码并授予管理员，只应由服务器维护者操作。
+该命令会创建管理员；若邮箱已存在，会更新其管理员权限和密码。完成后移除临时密码环境变量。普通用户通过管理员发放的激活码注册。
 
-平台采用邀请制。管理员登录后进入侧栏「邀请码」，生成邀请码并设置使用次数与有效期，也可撤销尚未使用完的邀请。完整码仅在生成时显示一次，数据库只存摘要；列表与审计记录不保存完整码。撤销或过期不影响已经注册的账号。普通用户不能创建邀请码或访问管理员接口。
+在页面配置模型服务地址、模型 ID 和 Key，选择 NapCat 并完成手机扫码确认。二维码已扫描与 QQ 真正在线是不同状态，必须等待协议连接成功；首次登录失败不会自动切换成 Mock。
 
-用户登录后只管理自己名下的机器人，可独立修改人格、System Prompt、模型 Base URL、API Key 与模型 ID。填写 URL 和 Key 后会自动读取供应商 `/models` 列表；已保存的 Key 可由服务端代为查询，浏览器不会读取明文。列表仅用于选择 ID，不代表模型推理、图片或工具能力已经验证；接口不支持列表时仍可手动填写。查询有超时、大小上限与切换页面/输入后的取消保护，不调用收费推理接口。
+## 配置与数据
 
-注册、登录、编辑配置和查询模型列表本身不会创建新的 AstrBot 进程。运行时默认加入每组最多 8 个成员的共享组，满组后再建组；需要任意自定义 Python 插件的机器人应使用独立模式。
+| 配置 | 用途 |
+| --- | --- |
+| `HOST` / `PORT` | API 监听地址与端口 |
+| `APP_ORIGIN` | 浏览器访问的完整 origin；部署时与反向代理一致 |
+| `DATA_ROOT` | 本地持久化数据根目录，默认 `.local` |
+| `DATABASE_URL` | 外部 PostgreSQL；留空使用本地持久化 PGlite |
+| `MASTER_KEY` | 凭据加密密钥；未指定时保留首次生成的 `master.key` |
+| `ASTRBOT_SOURCE` / `ASTRBOT_PYTHON` | AstrBot 源码与 Python 环境 |
+| `FISHBOT_MEMORY_POLICY` | 系统支持时启用空闲页面回收 |
+| `FISHBOT_CGROUP_ROOT` | Linux 已委派的 cgroup v2 根目录 |
+
+本地 PGlite 与生产独立 PostgreSQL 是两种部署方式。生产 API、Agent 可独立运行，不能让多个进程同时打开同一 PGlite 数据目录。数据库迁移位于 `packages/database/migrations`；已有数据迁移到 PostgreSQL 使用专用迁移脚本，并先完成备份与验证。
+
+**恢复必须同时具备数据库、原 Master Key 和机器人持久化目录。** QQ Session、身份文件、模型凭据、人格、记忆、图库和账号配置应完整保留。丢失原密钥后生成新密钥不能解密旧凭据。
+
+## 构建与部署
+
+```sh
+npm run build
+npm run build:production
+npm run start:production
+```
+
+`build` 执行 TypeScript 检查和 Web 构建；`build:production` 生成生产产物；`start:production` 启动编译后的入口，不常驻 Vite。上述命令是本地生产入口示例，不等于现有 Linux 独立 API / Agent 的滚动更新操作。
+
+容器构建、初始化、持久卷与恢复步骤见 [Docker 部署说明](docker/README.md)。对外部署应使用 HTTPS 与正确的 origin，仅公开平台入口，不公开 NapCat / AstrBot 管理端口。
+
+更新只部署受影响组件：Web / API 更新不能顺带重启 Agent、NapCat 或在线 QQ。Agent 与 AI 运行时更新必须另行安排可回退的受控替换，并核对运行身份与持久数据。**源码同步、构建完成与线上部署完成是不同状态。**
+
+Windows 和 Linux 使用同一个仓库与 `main` 分支。提交前先回收两端有效修改，保留并行前端成果；同步后核对提交号。运行数据、配置、研究副本和原始生产采样不进入 Git。
+
+## Linux 内存与生命周期
+
+当前生产策略保留 zswap + 磁盘 Swap、空闲动态回收、OOM / PSI Guard 和自动回退：
+
+- NapCat 与共享 AstrBot 的空闲 `memory.high` 为 48 MiB，独立 AstrBot 为 16 MiB；活跃任务按实际参与组件放宽。
+- 空闲 PAGEOUT 最短间隔 40 秒，结合活动识别与回退冷却，避免持续无效换页。
+- 不以低 `memory.max` 硬限制追求占用数字；具体阈值需由 Linux 的 cgroup 与控制器实际生效，Windows 不具备相同内核机制。
+- 启动超过 120 秒、等待 QQ 连接超过 180 秒、确认持续离线超过 5 分钟，按生命周期规则清退对应运行资源；用户主动停止与短暂断线分别处理。
+- 清退释放协议、AI 及相关子进程，保留账号与登录数据；共享组按实际成员释放，不误停其他在线成员。
+
+PSS 是分摊共享页面后的物理驻留内存，USS 是独占驻留内存；Swap 是换出的逻辑页面，zswap 池本身仍占物理 RAM。**不能将 PSS、USS、Swap 相加作为实际 RAM，也不能按关联机器人数量重复统计共享 AI。** 判断优化收益应同时观察整机 RAM、zswap、Swap IO、PSI、CPU、在线状态和真实消息延迟，不能用瞬时 USS 低点代表稳定成本。
 
 ## 验证
 
-新建机器人默认使用共享运行组（每组默认 8 个，仅平台受控功能），可通过 `SHARED_GROUP_CAPACITY=1/2/4/8` 调整新组容量，也可显式选择独立实例。已有组按数据库持久化容量运行，改环境变量不会自动改旧组或迁移历史；已有机器人的运行模式不会随升级自动改变。有原生历史或自定义插件的独立实例，切换前需要另行迁移验证。
-
-可选降低首次空库启动峰值：在构建机器执行 `npm run db:prepare-template`，将生成的整个 `resources/pglite-template/` 随部署文件一起分发。模板只含全新 PostgreSQL 空库，不含用户、密钥和业务表；初始化成本仍由构建机器承担。模板须与安装的 PGlite 版本一致，版本升级应输出到新目录（命令可传目标目录），再通过 `PGLITE_TEMPLATE_DIR` 指定。没有模板时沿用常规初始化；已有 `DATA_ROOT/postgres` 永远不会被替换。生产运行不应现场生成模板。
-
-```powershell
+```sh
 npm run build
 npm test
-# 先启动开发服务；首次需要浏览器包
-npx playwright install chromium
-# 从管理员页面生成一个可用测试邀请；不要把真实码提交到仓库
-$env:TEST_INVITE_CODE='本次测试的邀请码'
 npm run test:web
-Remove-Item Env:TEST_INVITE_CODE
-# 邀请制及模型发现完整页面回归：独立临时数据库，无需真实邀请/Key
-npx tsx tests/invitation-model-browser.ts
-references/euler/.venv/Scripts/python.exe experiments/protocol-lab/verify_euler.py
-references/astrbot/.venv/Scripts/python.exe scripts/sample_resources.py --seconds 30
 ```
 
-`npm test` 会启动真实 AstrBot，需要先安装其环境；使用独立测试数据目录，不使用演示用户的机器人。`test:web` 创建新的测试用户和机器人；为避免重复 QQ 绑定，测试生成独立模拟 QQ 号。截图与原始结果在 `test-results/`。
+Python 适配器测试位于 `tests/*_test.py`；涉及 AstrBot 原生事件、模型工具循环和协议的测试需要匹配的 AstrBot Python 环境，不能把替身测试当成真实模型或真实 QQ 验收。浏览器测试需要相应服务、环境和浏览器依赖。
 
-## 代码边界
+优先在隔离数据目录运行测试。完整运行时测试可能启动服务和临时数据库，应保证磁盘与内存余量，不在生产服务器上盲目执行整个测试集合。部署验收另行检查消息回执、多租户边界、模式切换、重启恢复、资源成本与回退。
 
-社交学习与配图基础版已接入：配置页可开启群体表达学习、语境选图，并上传本机器人专属 PNG。真实 `gpt-5.6-luna → QQ 图片` 已验收；自动收集/识别群友图片尚未启用。范围、限额、测试和失败记录见 [社交能力实施交付](docs/social-integration.md)。
+## 源码导航
 
-| 目录 | 职责 |
-|---|---|
-| apps/web | 中文管理台、注册、向导、配置、QR/SSE、日志、管理员 |
-| apps/control-api | 会话、租户授权、配置版本、密钥、命令与审计 |
-| apps/node-agent | 单节点命令执行、进程所有权、健康、有限退避恢复 |
-| packages/contracts | 当前必要的 AI/Protocol 接口、配置与人格模板 |
-| packages/database | pg/PGlite 双驱动、事务和真实 SQL Migration |
-| adapters/astrbot | 独立 root、配置生成、原版 AstrBot 无面板启动器 |
-| adapters/protocol | Euler/hiro 状态桥及 NapCat 私有管理 API 封装 |
-| adapters/mock | 明确模拟的 OneBot 端；仍与真实 AstrBot 通信 |
-| references | 安装脚本生成的上游独立副本，含版本记录 |
-| experiments/protocol-lab | 源码契约检查；不属于正式协议实现 |
+| 路径 | 职责 |
+| --- | --- |
+| `apps/web` | React 页面、配置与运维界面 |
+| `apps/control-api` | 认证、配置、管理与监控 API |
+| `apps/node-agent` | 进程生命周期、清退、维护与自主任务协调 |
+| `adapters/astrbot` | 公共机器人管线、模型工具、记忆和社交能力 |
+| `adapters/protocol` | QQ 协议接入 |
+| `packages/contracts` | 配置与跨组件合同 |
+| `packages/database` | 数据访问、迁移与自主生命周期存储 |
+| `tests` | 单测、运行时与浏览器验证 |
+| `scripts` / `docker` | 安装、构建、启动和容器交付 |
 
-当前进程/目录隔离不是恶意插件的安全沙箱。未开放任意插件安装。Linux cgroup 限制实现与 systemd 模板尚未在 Linux 实机验证；正式收客户前需完成独立 OS 身份/目录权限、真实 QQ 和付费模型验收。见 [验收与 Plan vs Actual](docs/delivery.md)、[下一阶段](docs/next-iteration.md)。
-
-
-能力统一管理入口：机器人 → 基本配置 → 能力管理。支持事实纠正/遗忘、表达停用/清理、图库场景编辑/启停、主动会话暂停和人物状态重置。实际范围及测试见 [能力管理交付](docs/capability-management-delivery.md)。自动收图识别仍未接入。
+进一步阅读：[机器人管线合同](docs/robot-pipeline-20261101.md)、[主动操作合同](docs/proactive-operations-contract-20261102.md)、[B 站工具与内层 Agent](docs/bilibili-tools-and-inner-agent-20261102.md)、[主动系统实施记录](docs/proactive-ai-implementation-20261101.md)。历史实验记录只证明对应版本的结果，不能代替当前版本的实际验收。

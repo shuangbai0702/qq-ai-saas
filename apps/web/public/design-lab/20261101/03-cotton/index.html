@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f4f4f0">
+  <meta name="description" content="FishBot 第三套基础 UI 材质样本。白色纸面、正红点缀，细密纤维与精密压印。">
+  <title>03 · 纸白与正红 / FishBot UI</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='10' fill='%23e7cccd'/%3E%3Cpath d='M7 17q9-15 18 0M11 23h10' fill='none' stroke='%23a66573' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./style.css">
+  <link rel="stylesheet" href="./refinement.css">
+</head>
+<body>
+  <canvas id="paper-background" aria-hidden="true"></canvas>
+  <canvas id="drawing-field" aria-hidden="true"></canvas>
+  <svg class="icons" aria-hidden="true"><defs>
+    <symbol id="mark" viewBox="0 0 32 32"><path d="M7 17q9-15 18 0M11 23h10"/><circle cx="16" cy="9" r="1"/></symbol>
+    <symbol id="arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-5 5 5-5 5"/></symbol>
+    <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="heart" viewBox="0 0 24 24"><path d="M12 20S3 15 3 9a5 5 0 0 1 9-3 5 5 0 0 1 9 3c0 6-9 11-9 11Z"/></symbol>
+    <symbol id="cloud" viewBox="0 0 24 24"><path d="M7 18a5 5 0 1 1 .8-9.9A6 6 0 0 1 19 11a3.5 3.5 0 0 1-.5 7Z"/></symbol>
+    <symbol id="spark" viewBox="0 0 24 24"><path d="M12 3q1 8 9 9-8 1-9 9-1-8-9-9 8-1 9-9Z"/></symbol>
+    <symbol id="sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></symbol>
+    <symbol id="check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/></symbol>
+    <symbol id="flower" viewBox="0 0 24 24"><path d="M12 8C5-3-2 11 8 12-3 19 11 26 12 16c7 11 14-3 4-4 11-7-3-14-4-4Z"/><circle cx="12" cy="12" r="2"/></symbol>
+    <symbol id="moon" viewBox="0 0 24 24"><path d="M20 14A8 8 0 0 1 10 4a8.5 8.5 0 1 0 10 10Z"/></symbol>
+    <symbol id="layers" viewBox="0 0 24 24"><path d="m3 8 9-5 9 5-9 5-9-5Zm0 5 9 5 9-5M3 17l9 5 9-5"/></symbol>
+  </defs></svg>
+  <a class="skip" href="#buttons">跳到按钮样本</a>
+  <header class="topbar wrap">
+    <a class="brand" href="#top" aria-label="FishBot 基础 UI"><span class="brand-mark"><svg class="icon"><use href="#mark"/></svg></span><b>fishbot<small>A SOFT LITTLE WORLD</small></b></a>
+    <nav aria-label="样本导航"><a href="../saved/02-soft-forms-20261101/index.html">02 归档 ↗</a><a href="../saved/01-soft-clean-20261101/index.html">01 留档 ↗</a><a href="#details">小元素</a></nav>
+    <button class="motion" id="motion" aria-pressed="true" aria-label="暂停视觉动态"><i></i><span id="motion-label">动态开启</span><svg class="icon"><use href="#moon"/></svg></button>
+  </header>
+  <main class="wrap" id="top">
+    <section class="intro" aria-labelledby="title">
+      <div><p class="eyebrow">PAPER / PIGMENT / A LITTLE SWEETNESS</p><h1 id="title">纸白，<em>落一点红。</em></h1><p>鼠标轻轻扫过，给画稿添一点颜色。过一会儿，再回到纸白。</p></div>
+      <div class="intro-aside"><div class="palette" aria-label="纸白、柔白、正红、浅灰"><i></i><i></i><i></i><i></i></div><div class="edition">MATERIAL STUDY<strong>03 <b>/ WHITE & RED</b></strong></div></div>
+    </section>
+    <section class="collection" data-stock="backing" data-cut="backing" data-relief="0.3" data-radius="5" aria-label="协调的纸感基础 UI 样本">
+      <div class="collection-top"><h2>同一种柔软，不同的小形状。</h2><span>ONE MATERIAL / MANY LITTLE FORMS</span></div>
+      <div class="main-grid">
+        <article class="sample-panel buttons-panel" id="buttons" data-stock="cream" data-cut="paper" data-radius="5" data-relief="0.35">
+          <div class="sample-heading"><h3>先碰一颗按钮。</h3><span>01 / BUTTONS</span></div>
+          <div class="button-row main-buttons">
+            <button class="ui-button primary" data-stock="cream" data-radius="9" data-relief="0.7"><span>纸白按钮</span><svg class="icon"><use href="#arrow"/></svg></button>
+          </div>
+          <div class="sample-rule"><span>同样的纸感，小一号</span><svg aria-hidden="true"><path data-stitch/></svg></div>
+          <div class="button-row mini-row">
+            <button class="ui-button small" data-stock="cream" data-radius="8">小按钮</button>
+            <button class="ui-button micro" data-stock="cream" data-radius="6">迷你</button>
+          </div>
+          <p class="sample-note"><svg class="icon"><use href="#spark"/></svg>按一下，让颜色轻轻沁进纸里。</p>
+        </article>
+        <article class="sample-panel panel-study" data-stock="cream" data-cut="torn" data-radius="4" data-relief="0.35">
+          <div class="sample-heading"><h3>面板，也轻轻叠。</h3><span>02 / PANELS</span></div>
+          <div class="panel-scene">
+            <div class="layer layer-back" data-stock="lilac" data-radius="17" data-relief="0.75" aria-hidden="true"></div>
+            <div class="layer layer-mid" data-stock="rose" data-radius="17" data-relief="0.75" aria-hidden="true"></div>
+            <div class="layer layer-front" data-stock="cream" data-cut="torn" data-radius="4" data-relief="0.65">
+              <div class="layer-top"><span>WHITE / PAPER</span><svg class="icon"><use href="#heart"/></svg></div>
+              <h4>白纸面板</h4><p>细细的纸纹，干净的留白。</p>
+              <div class="layer-watermark" aria-hidden="true"><canvas class="ink-stamp"></canvas></div>
+              <div class="layer-bottom"><span>轻压印 · 层叠切边</span></div>
+            </div>
+          </div>
+          <p class="scene-caption"><span>一层纸白</span><i>+</i><span>一点正红</span><i>+</i><span>刚好的厚度</span></p>
+        </article>
+      </div>
+      <div class="details-grid" id="details">
+        <article class="detail-panel" data-stock="cream" data-cut="angle" data-radius="4" data-relief="0.25">
+          <div class="sample-heading"><h3>一点点小可爱。</h3><span>03 / LITTLE UI</span></div>
+          <div class="detail-row"><span class="element-label">页签</span><div class="segmented" role="group" aria-label="页签视觉样本"><span class="segment-skin" data-stock="cream" data-radius="8"></span><button aria-pressed="true">纸白</button><button aria-pressed="false">正红</button><button aria-pressed="false">细纹</button></div></div>
+          <div class="detail-row"><span class="element-label">开关</span><div class="switch-row"><button class="stock-switch" role="switch" aria-label="正红开关样本" aria-checked="true" data-stock="cream" data-radius="14"><span class="track-imprint" aria-hidden="true">✧</span><span class="thumb"><svg class="icon switch-check" aria-hidden="true"><use href="#check"/></svg><i class="switch-dash" aria-hidden="true"></i></span></button><button class="stock-switch" role="switch" aria-label="浅色开关样本" aria-checked="false" data-stock="cream" data-radius="14"><span class="track-imprint" aria-hidden="true">✧</span><span class="thumb"><svg class="icon switch-check" aria-hidden="true"><use href="#check"/></svg><i class="switch-dash" aria-hidden="true"></i></span></button><button class="check-sample" role="checkbox" aria-label="复选框样本" aria-checked="true" data-stock="cream" data-radius="6"><svg class="icon"><use href="#check"/></svg></button></div></div>
+          <div class="detail-row"><span class="element-label">标签</span><div class="badges"><button class="badge" data-stock="cream" data-radius="6" aria-label="纸白标签样本">纸白</button><button class="badge" data-stock="lilac" data-radius="6" aria-label="软乎标签样本"><svg class="icon"><use href="#spark"/></svg>软乎</button><button class="badge" data-stock="cream" data-radius="6" aria-label="压印标签样本">压印</button></div></div>
+        </article>
+        <article class="detail-panel" data-stock="cream" data-cut="paper" data-radius="4" data-relief="0.25">
+          <div class="sample-heading"><h3>空隙，也有触感。</h3><span>04 / DETAILS</span></div>
+          <div class="detail-row"><span class="element-label">输入</span><label class="input-shell" data-stock="recess" data-radius="11"><svg class="icon"><use href="#search"/></svg><input aria-label="输入框视觉样本" placeholder="留一点小小的文字…" maxlength="36"><kbd>↵</kbd></label></div>
+          <div class="detail-row"><span class="element-label">滑块</span><div class="range-shell"><div class="range-control"><input type="range" min="0" max="100" value="58" aria-label="滑块视觉样本"><canvas class="range-pigment" aria-hidden="true"></canvas></div><span id="range-value">58</span></div></div>
+          <div class="detail-row"><span class="element-label">动感</span><div class="loaders" aria-hidden="true"><svg class="flower-loader" viewBox="0 0 24 24"><g/></svg><span class="loader-dots"><i></i><i></i><i></i></span><svg class="loader-line" viewBox="0 0 44 12"><path d="M1 6h42"/></svg></div></div>
+        </article>
+        <article class="detail-panel material-panel" data-stock="cream" data-cut="torn" data-radius="4" data-relief="0.25">
+          <div class="sample-heading"><h3>同一种材质。</h3><span>05 / MATERIALS</span></div>
+          <div class="swatches">
+            <div class="swatch" data-stock="cream" data-radius="10" data-relief="1.8" data-finish="fibers"><svg class="symbol icon"><use href="#flower"/></svg><span>纤维</span></div>
+            <div class="swatch" data-stock="rose" data-radius="10" data-relief="2.1" data-finish="emboss"><svg class="symbol icon"><use href="#heart"/></svg><span>压纹</span></div>
+            <div class="swatch" data-stock="lilac" data-radius="10" data-relief="1.7" data-finish="screen"><svg class="symbol icon"><use href="#spark"/></svg><span>细印</span></div>
+          </div>
+          <div class="swatch-note"><span>背景、面板与按钮，同样柔软。</span><svg class="icon"><use href="#heart"/></svg></div>
+        </article>
+      </div>
+      <div class="refinement-heading" id="refinements"><h2>墨迹，停在细节里。</h2><span>HOVER / FOCUS / TRANSLUCENCY / SELECTION</span></div>
+      <div class="refinement-grid">
+        <article class="refinement-panel plot-panel" data-stock="cream" data-cut="paper" data-radius="4" data-relief="0.25">
+          <div class="sample-heading"><h3>折线，也落在纸上。</h3><span>06 / INK PLOT</span></div>
+          <figure class="paper-plot"><canvas class="plot-ink" role="img" aria-label="折线图材质样本：两种配色使用同一干墨材质，无区域填充"></canvas><figcaption><span><i></i>样本一</span><span><i></i>样本二</span><small>轻轻掠过，看看墨迹。</small></figcaption></figure>
+        </article>
+        <article class="refinement-panel selection-panel" data-stock="cream" data-cut="paper" data-radius="4" data-relief="0.25">
+          <div class="sample-heading"><h3>把一句话，轻轻圈住。</h3><span>07 / SELECT & WRITE</span></div>
+          <p class="selection-copy" data-selectable>白纸留住了文字，也留住一点温柔的颜色。<br>试着选中这一句，让字迹在留白的印边里，轻轻显影。</p>
+          <label class="input-shell input-area" data-stock="recess" data-radius="8" data-relief="0.2"><textarea aria-label="多行输入与文本选择样本" rows="2" maxlength="180" spellcheck="false">光标落下，纸边有一点铅笔的痕迹。
+也可以选中这里的文字。</textarea></label>
+          <p class="refinement-note">原生输入与选区；打字、拖选、复制都照常。</p>
+        </article>
+        <article class="refinement-panel rows-panel" data-stock="cream" data-cut="angle" data-radius="4" data-relief="0.25">
+          <div class="sample-heading"><h3>普通的一行，也认真对待。</h3><span>08 / QUIET TABLE ROWS</span></div>
+          <div class="paper-table"><canvas class="table-ink" aria-hidden="true"></canvas><div class="table-scroll"><table aria-label="普通表格条目材质样本"><thead><tr><th>条目 / 名称</th><th>状态</th><th>数量</th><th>主值</th><th>副值</th><th>备注</th></tr></thead><tbody>
+            <tr tabindex="0"><td><b>白纸样本 001</b><small>一张白纸</small></td><td><span class="table-state">就绪</span></td><td>01</td><td>14.1</td><td>8.3</td><td><span>常规条目</span><small>细纹 / 平整 / 轻压印</small></td></tr>
+            <tr tabindex="0"><td><b>白纸样本 002</b><small>一点轻轻的颜色</small></td><td><span class="table-state">就绪</span></td><td>01</td><td>11.7</td><td>5.9</td><td><span>常规条目</span><small>细纹 / 平整 / 轻压印</small></td></tr>
+            <tr tabindex="0"><td><b>白纸样本 003</b><small>留一点空隙</small></td><td><span class="table-state">就绪</span></td><td>01</td><td>23.6</td><td>18.0</td><td><span>常规条目</span><small>细纹 / 平整 / 轻压印</small></td></tr>
+          </tbody></table></div></div>
+          <p class="refinement-note">两边落一点浅拓印，纸纹连续，行列保持平整。</p>
+        </article>
+      </div>
+      <div class="collection-foot"><span>纸的厚度，笔的温度。</span><span>FISHBOT / MATERIAL SYSTEM 03</span></div>
+    </section>
+    <section class="disclosure-study" aria-label="半透明折叠长条样本"><div class="refinement-heading"><h2>薄纸，轻轻透过。</h2><span>09 / TRANSLUCENT DISCLOSURES</span></div>
+      <details class="paper-disclosure"><summary data-stock="cream" data-radius="6" data-relief="0.12" data-transmission="0.76"><span class="disclosure-arrow" aria-hidden="true">▸</span><span>高级信息 · 可折叠长条</span><small>细白纸 / 浅透</small></summary><div class="disclosure-content" data-stock="cream" data-cut="paper" data-radius="4" data-relief="0.2">这里仅呈现纸面展开后的层次，文字与原生折叠操作保持清楚。</div></details>
+      <details class="paper-disclosure"><summary data-stock="cream" data-radius="6" data-relief="0.12" data-transmission="0.60"><span class="disclosure-arrow" aria-hidden="true">▸</span><span>更多细节 · 另一种透度</span><small>薄描图纸 / 漫透</small></summary><div class="disclosure-content" data-stock="cream" data-cut="paper" data-radius="4" data-relief="0.2">背景经过薄纸柔和透出，表面的字迹维持实色。</div></details>
+    </section>
+    <section class="material-strip" aria-label="切边、压纹与层次细节样本">
+      <article class="material-sample"><div class="material-object" data-stock="cream" data-cut="scallop" data-radius="12" data-relief="1.1"><svg class="icon"><use href="#flower"/></svg></div><div><h3>切边，小小一圈。</h3><p>清楚的切边与薄纸截面。</p><small>PRECISION CUT / PAPER EDGE</small></div></article>
+      <article class="material-sample"><div class="material-object" data-stock="rose" data-radius="12" data-relief="1.6" data-finish="emboss"><svg class="icon"><use href="#heart"/></svg></div><div><h3>压纹，浅浅一层。</h3><p>细细的压印，柔和的纸边。</p><small>LETTERPRESS / SOFT RELIEF</small></div></article>
+      <article class="material-sample"><div class="material-object" data-stock="lilac" data-radius="12" data-relief="1.2"><svg class="icon"><use href="#layers"/></svg></div><div><h3>厚度，刚好一点。</h3><p>层次清楚，也保持轻盈。</p><small>LAYERED / LIGHT & TACTILE</small></div></article>
+    </section>
+    <footer class="footer"><span>FISHBOT / PAPER & VERMILION 03</span><span class="footer-heart"><svg class="icon"><use href="#heart"/></svg>小小界面，精密细节。</span><span><a href="https://github.com/AATINF/deepseek-whale-girl-assets" target="_blank" rel="noreferrer">背景 · AATINF / C77 ↗</a></span></footer>
+  </main>
+  <script type="module" src="./study.js"></script>
+</body>
+</html>

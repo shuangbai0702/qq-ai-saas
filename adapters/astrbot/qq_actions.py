@@ -21,6 +21,8 @@ def author_text(event):
 
 def signature_mode(event,cfg):
     b=cfg.get('behavior') or {}
+    internal=event.get_extra('_hosted_autonomous_action')
+    if internal and internal.get('kind')=='profile_signature' and b.get('qqProfile') and b.get('autoSignature',True):return 'self'
     if not b.get('qqProfile') or str(event.get_sender_id())!=str(b.get('ownerUin') or '') or event.get_extra('_hosted_initiative',False):return None
     text=author_text(event)
     if 'signature' in intents(text):return 'owner'
@@ -54,6 +56,13 @@ def initialize(db):
 
 def allowed(event,cfg):
     b=cfg.get('behavior') or {};owner=str(b.get('ownerUin',''))
+    internal=event.get_extra('_hosted_internal_work');intent=event.get_extra('_hosted_autonomous_action')
+    if internal and intent:
+        # Internal work is not an owner. Inner feature settings authorize
+        # only this operation; the runtime still validates its live Work permit.
+        if intent.get('kind')=='profile_signature' and b.get('qqProfile') and b.get('autoSignature',True):return {'signature'}
+        if intent.get('kind')=='qzone_publish' and b.get('qzone'):return {'publish'}
+        return set()
     if not owner or str(event.get_sender_id())!=owner or event.get_extra('_hosted_initiative',False):return set()
     requested=intents(author_text(event))
     if signature_mode(event,cfg):requested.add('signature')
@@ -106,7 +115,7 @@ async def execute(event,cfg,db,action,value,current):
         if u.scheme!='https' or u.username or u.password or u.port not in (None,443) or not any(host==d or host.endswith('.'+d) for d in ('qq.com','qpic.cn')):return '未执行：头像必须来自当前消息的QQ图片。'
         method='set_qq_avatar';params={'file':image.url}
     # Reserve before network I/O: timeout may mean committed, never auto retry.
-    db.execute('INSERT INTO qq_action_attempts VALUES(?,?,?,?)',(event_id,action,time.time(),'attempted'));db.execute('DELETE FROM qq_action_attempts WHERE at<?',(time.time()-7*86400,));db.commit()
+    db.execute('INSERT INTO qq_action_attempts VALUES(?,?,?,?)',(event_id,action,time.time(),'attempted'));db.execute("DELETE FROM qq_action_attempts WHERE at<? AND status='confirmed'",(time.time()-7*86400,));db.commit()
     if action=='signature':
         db.execute('INSERT INTO qq_signature_history VALUES(?,?,?,?,?)',(event_id,day,mode,value,'attempted'))
         db.execute('DELETE FROM qq_signature_history WHERE day<?',((datetime.now(timezone(timedelta(hours=8)))-timedelta(days=7)).date().isoformat(),));db.commit()
@@ -163,6 +172,8 @@ def tools(event,cfg,db,current):
     if not permitted:return []
     from astrbot.core.agent.tool import FunctionTool
     descriptions={'nickname':'修改当前机器人QQ昵称','signature':'修改当前机器人QQ签名','avatar':'用主人当前附带或引用的QQ图片换头像，不接受URL参数','status':'设置QQ状态，可选在线、离开、隐身、忙碌、Q我吧、请勿打扰','publish':'真正发布文字到当前机器人自己的QQ空间。仅当当前主人要求实际发布时调用；结合本轮真实作者文字与对话理解意图，不要求固定措辞。询问是否具备能力、讨论空间、只写草稿、引用别人的话、假设或否定发布均不调用；意图不清楚先简短询问。主人允许自行选文案时可按人格写，但不能擅自自动发布。不在聊天中假装已发布，以本工具返回为准','view':'读取当前机器人自己的最近5条空间说说，仅在主人希望查看时调用，不读取其他人的空间'}
+    if event.get_extra('_hosted_internal_work') and 'publish' in permitted:
+        descriptions['publish']='执行已获平台授权的自主空间任务，发布文字到当前机器人自己的QQ空间；内容由当前任务与人物状态决定，不需要额外虚构主人指令。不得超出当前任务目的，不在聊天中假装发布成功，以本工具真实回执为准'
     class QQTool(FunctionTool):
         async def call(self,context,**kwargs):
             # Tool handles cannot be borrowed by another bot/event.

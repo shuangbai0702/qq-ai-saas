@@ -102,7 +102,7 @@ async def run():
   import initiative
   before=time.time();initiative.incoming(st.db,'group:55555','12345678','90000','继续聊天',before-1)
   work=st.pipeline.bind(event,lease)
-  try:await AiocqhttpMessageEvent.send(event,MessageChain(chain=[Plain('第一条已经到达。\n第二条回执超时。')]))
+  try:await AiocqhttpMessageEvent.send(event,MessageChain(chain=[Plain('第一条已经到达。\n\n第二条回执超时。')]))
   except asyncio.TimeoutError:pass
   else:raise AssertionError('Second send must remain uncertain')
   st.pipeline.finish(work,runtime['metrics'].setdefault('qq',{}));assert work.status=='partial' and work.confirmed_messages==1
@@ -110,6 +110,16 @@ async def run():
   assert last_bot>=before and last_output=='第一条已经到达。','partial receipt lost actual timing or invented unsent text'
   assert st.presence.snapshot('group:55555')[1]>=before,'partial reply did not refresh local interaction clock'
   assert st.db.execute("SELECT count(*) FROM memory_pending WHERE event='partial-fixture'").fetchone()[0]==0,'failed suffix became completed reply memory'
+  # A delivered error notice is not a completed model reply. Keep its actual
+  # protocol receipt while exposing the real failure to the common ledger.
+  extra={'_hosted_lease':lease,'_hosted_generation':1,'_partial_fixture':True,'_hosted_model_error':True}
+  event=SimpleNamespace(message_obj=SimpleNamespace(message_id='model-error-fixture'),get_platform_id=lambda:'qq',get_self_id=lambda:'90000',get_group_id=lambda:'',get_sender_id=lambda:'12345678',get_message_str=lambda:'普通消息',get_extra=lambda k,d=None:extra.get(k,d),set_extra=lambda k,v:extra.update({k:v}))
+  work=st.pipeline.bind(event,lease)
+  await AiocqhttpMessageEvent.send(event,MessageChain(chain=[Plain('raw upstream failure must remain private')]))
+  st.pipeline.finish(work,runtime['metrics'].setdefault('qq',{}))
+  assert work.confirmed==1 and work.status=='error' and work.reason=='model_error'
+  assert st.db.execute("SELECT count(*) FROM memory_pending WHERE event='model-error-fixture'").fetchone()[0]==0
+  print('PASS model failure with delivered sanitized notice remains error and preserves actual receipt')
   print('PASS protocol send late completion after stop and replacement; no store resurrection')
  finally:runtime['close']()
 asyncio.run(run());temp.cleanup()

@@ -1,0 +1,286 @@
+/* R3 / 01: soft industrial objects, anime illustration and observable routing. */
+body.sakura-console[data-theme=tide]{--paper:#fff8f3;--surface:#fffdf9;--ink:#655477;--muted:#9988a4;--accent:#cd6f9c;--line:#e6d5e6;--soft:#f2e7f6;--scene:#fcf4f7;--gold:#b797d4;--serif:"Segoe UI","Microsoft YaHei",sans-serif;--mono:"Consolas",monospace;background-color:var(--paper);background-image:radial-gradient(ellipse at 95% 0%,#eddcf477,transparent 43%),radial-gradient(ellipse at 0% 27%,#ffe3ec77,transparent 40%);color:var(--ink)}
+body.sakura-console .wrap{width:min(1376px,calc(100% - 96px))}
+body.sakura-console .grain{opacity:.018}
+body.sakura-console .masthead{height:86px;border-color:#e6d6e2;position:relative;z-index:3}
+body.sakura-console .brand-mark{background:linear-gradient(135deg,#edc6dd,#d4b9e8);color:#866794;border-radius:14px;box-shadow:inset 0 2px #fff9,0 3px 0 #d8bddb;transform:rotate(-6deg)}
+body.sakura-console .brand b{font-weight:800;letter-spacing:-1px;font-size:26px}
+body.sakura-console .brand b span{font-size:9px;color:#a08baa;letter-spacing:1.5px;font-weight:500}
+body.sakura-console .theme-switch{border-radius:30px;padding:5px 14px 5px 5px;gap:18px;background:#fffbf9a8;border-color:#e8d7e8;box-shadow:inset 0 1px #fff,0 3px 8px #b296bd0a}
+body.sakura-console .theme-switch button{border-radius:25px;padding:9px 17px;font-size:11px;font-weight:700;background:#ecdaf2;color:#84628f;box-shadow:inset 0 1px #fff9,0 2px #dcc3e4}
+body.sakura-console .theme-switch button span{font:12px var(--mono);opacity:1;color:#b07aab}
+body.sakura-console .theme-switch button i{background:#c690bc;border:0}
+.revision-tag{font:8px var(--mono);letter-spacing:1px;color:#a48bac}
+body.sakura-console .index-link{border:1px solid #ead7e5;border-radius:20px;padding:7px 12px;gap:10px;font-size:10px;background:#fffcf8}
+body.sakura-console .intro{height:365px;min-height:365px;padding:36px 0 26px;position:relative;display:block;overflow:visible;isolation:isolate}
+body.sakura-console .intro-copy{width:75%;position:relative;z-index:2;pointer-events:none}
+body.sakura-console .intro-copy a{pointer-events:auto}
+body.sakura-console .intro .eyebrow{font-size:8px;letter-spacing:1.8px;color:#a98fb4;gap:8px}
+.online-flower{font-size:16px;color:#c99acd}
+body.sakura-console .edition{font:7px var(--mono);margin-left:8px;color:#b69cc0;border:1px solid #e5cee9;padding:3px 6px;border-radius:5px}
+.hero-label{font-size:11px;color:#b479a5;font-weight:600;display:flex;align-items:center;gap:7px;margin-top:20px}
+.hero-label i{width:5px;height:5px;border-radius:2px;background:#cc8dbb;transform:rotate(45deg)}
+.hero-label>span{font-size:17px;margin-left:1px}
+body.sakura-console .intro h1{font:850 clamp(42px,4.55vw,66px)/1.3 "Segoe UI","Microsoft YaHei",sans-serif;letter-spacing:-3px;margin:5px 0 13px;color:#66517d;max-width:none;white-space:nowrap;text-shadow:0 4px #ecddea}
+.headline-pink{color:#d381ac;position:relative}
+.headline-pink:after{content:"";position:absolute;left:2px;right:4px;bottom:-4px;height:7px;border-radius:50%;border-top:2px solid #e9b7d1;transform:rotate(-1deg)}
+.headline-spark{position:absolute;right:-13px;top:-25px;font-size:31px;color:#ba94cd;text-shadow:none}
+.headline-stop{color:#b697c5}
+body.sakura-console .intro-text{font-size:12px;line-height:1.95;max-width:560px;color:#a08aa7}
+.hero-actions{display:flex;align-items:center;gap:18px;margin-top:20px}
+.hero-cta{display:flex;align-items:center;gap:18px;padding:10px 18px;border:1px solid #c4a8d4;border-radius:13px;background:linear-gradient(135deg,#ba9bd3,#ad91ca);color:white;font-size:11px;font-weight:650;box-shadow:inset 0 1px #ffffff55,0 4px 0 #9b7fbb,0 7px 12px #b49ac124;transition:box-shadow .18s}
+.hero-cta .icon{width:16px;height:16px}
+.hero-cta:hover{box-shadow:inset 0 1px #ffffffaa,0 4px 0 #9674b8,0 7px 15px #b49ac130}
+.hero-tip{font-size:9px;color:#b39cba;display:flex;gap:7px;align-items:center}
+.hero-tip i{width:5px;height:5px;border:1px solid #d1b6db;border-radius:50%}
+.hero-meta{display:flex;gap:28px;margin-top:22px}
+.hero-meta>span{font:600 16px var(--mono);color:#9f82b2;display:flex;align-items:baseline;gap:7px}
+.hero-meta small{font:8px "Segoe UI","Microsoft YaHei",sans-serif;color:#b6a2bd}
+.operator-art{position:absolute;right:0;top:0;width:365px;height:365px;z-index:1;--operator-x:0px;--operator-y:0px}
+.operator-disc{position:absolute;width:265px;height:265px;top:40px;left:50px;border-radius:50%;background:repeating-linear-gradient(-40deg,#ffffff2e 0 1px,transparent 1px 5px),linear-gradient(145deg,#f5dfec,#e8d9f1);border:1px solid #e5cce8;transform:rotate(-12deg);box-shadow:0 0 0 10px #fff7f6,0 0 0 11px #ead9eb}
+.operator-disc:after{content:"";position:absolute;inset:-19px;border:1px dashed #dac0e2;border-radius:50%}
+.operator-disc>i{position:absolute;width:180px;height:160px;inset:40px;background-image:radial-gradient(#c3a0d34d .8px,transparent .8px);background-size:5px 5px;border-radius:50%}
+.operator-disc b{position:absolute;right:12px;bottom:35px;font-size:50px;color:#fdf7f9}
+.operator-disc>span{position:absolute;bottom:15px;left:61px;font:8px var(--mono);letter-spacing:4px;color:#b597c4}
+.operator-image{position:absolute;right:49px;bottom:-7px;width:258px;height:387px;object-fit:contain;filter:drop-shadow(0 9px 0 #d2b9df24);transform:translate(var(--operator-x),var(--operator-y)) rotate(-3deg);animation:operator-bob 5s ease-in-out infinite;transform-origin:50% 80%}
+.operator-bubble{position:absolute;top:41px;right:-6px;background:#fffaf8;border:1px solid #e2c5df;border-radius:14px 14px 14px 3px;transform:rotate(8deg);padding:9px 13px;font-weight:800;font-size:15px;color:#c484b5;box-shadow:0 3px #ebd7e7}
+.operator-bubble small{display:block;font-size:8px;font-weight:400;letter-spacing:1px;margin-top:2px}
+.operator-sticker{position:absolute;left:10px;bottom:49px;border:3px solid #fffaf5;border-radius:11px;padding:7px 12px;background:#e1d3ef;box-shadow:0 2px 0 #cbb5dc;transform:rotate(-12deg);font-size:9px;line-height:1.4;text-align:center;color:#a58ab9}
+.operator-sticker b{font-size:12px;letter-spacing:1px;color:#9a7bb1}
+.operator-coordinate{position:absolute;bottom:0;right:16px;color:#b89cc3;font:6px var(--mono);letter-spacing:1px}
+.operator-star{position:absolute;color:#c29cd2;animation:soft-star 4s ease-in-out infinite}
+.star-a{font-size:38px;left:11px;top:37px}.star-b{font-size:26px;right:0;bottom:63px;animation-delay:-2s}
+.operator-rings{position:absolute;top:30px;left:18px;width:330px;height:300px;border:1px dashed #dfc6e8;border-radius:45%;transform:rotate(22deg);opacity:.5}
+.console-rail{display:flex;align-items:center;gap:24px;margin:15px 0 15px;padding:9px 17px;background:linear-gradient(105deg,#fffdfbce,#f9eef7d6);border:1px solid #e4cfe5;border-radius:18px;box-shadow:inset 0 2px #fff9,0 3px 0 #e6d5e633}
+.rail-brand{display:flex;align-items:center;gap:8px;white-space:nowrap}.rail-terminal{width:36px;height:36px}
+.rail-brand>b{font-size:11px;line-height:1.3;font-weight:750}.rail-brand small{display:block;font:6px var(--mono);color:#b49abd;letter-spacing:1px;margin-top:4px}
+.console-rail nav{display:flex;gap:3px;margin-left:30px;font-size:10px;color:#ad91b7}
+.console-rail nav a{padding:6px 17px;border-radius:10px;border:1px solid transparent;transition:background .2s,color .2s}
+.console-rail nav a:hover{background:#ebdff3;border-color:#e0cce7;color:#846b9c}
+.rail-status{margin-left:auto;display:flex;gap:7px;align-items:center;font-size:9px;color:#9d8aa9;white-space:nowrap}
+.rail-status>b{font-weight:500}.rail-status>i{width:6px;height:6px;border-radius:50%;background:#9abcb2;box-shadow:0 0 0 3px #a9cbb421}
+.rail-status>small{font:6px var(--mono);background:#eee4f2;padding:3px 5px;border-radius:4px;color:#b19bbd}.rail-status.offline>i{background:#b5a8bb;box-shadow:none}
+body.sakura-console .scene-board{grid-template-columns:minmax(0,1fr) 278px;border-radius:24px;border:1px solid #ddc7e4;overflow:hidden;box-shadow:inset 0 2px #fff,0 5px 0 #e9d8e84d,0 13px 32px #bca0c411;background:#fffaf7}
+body.sakura-console .scene-shell{background:linear-gradient(135deg,#fffaf9,#f6edf9);border-radius:0;isolation:isolate}
+body.sakura-console .scene-shell:before{content:"";position:absolute;inset:8px;border:1px solid #ffffffa6;border-radius:17px;z-index:-1;pointer-events:none}
+body.sakura-console .scene-heading{height:54px;padding:0 23px;gap:13px;border-bottom:1px solid #ead7e95e;background:#fffaf866}
+body.sakura-console .scene-heading h2{font:650 12px "Segoe UI","Microsoft YaHei",sans-serif;letter-spacing:0;color:#9779a6}
+body.sakura-console .scene-number{font:7px var(--mono);background:#f0e5f5;border:1px solid #dfcce9;color:#b093be;border-radius:6px;padding:4px 6px}
+body.sakura-console .live-tag{font-size:8px;color:#a28cae}.live-tag i{background:#a6beb1}
+body.sakura-console .scene-story{height:34px;padding:0 23px;border:0;background:#efe0f033;gap:10px}
+body.sakura-console .scene-story b{font-size:8px;color:#ab8fb6;max-width:70%}.story-phase{font:6px var(--mono);color:#bd8bb1}
+body.sakura-console .scene-area{height:346px}
+body.sakura-console .machine-nodes{display:block;position:absolute;inset:0;pointer-events:none}
+body.sakura-console .machine-node{pointer-events:auto;position:absolute;width:119px;min-width:0;padding:8px 9px;border:1px solid #dcc1e6;border-radius:13px;background:linear-gradient(135deg,#fffdfb,#f7edf9);box-shadow:inset 0 2px #ffffffdd,0 4px 0 #ddcbe659,0 6px 12px #b99bc615;transform:translate(-50%,-50%);display:grid;grid-template-columns:26px 1fr;gap:2px 7px;text-align:left;transition:border-color .2s,box-shadow .2s,background .2s;touch-action:none;cursor:grab;z-index:3}
+body.sakura-console .machine-node>span{grid-row:1/3;display:grid;place-items:center;width:26px;height:29px;border:1px solid #ead3e7;border-radius:9px;background:#f5e5f0;color:#c692b9;box-shadow:0 1px #fff inset}
+body.sakura-console .machine-node .icon{width:16px;height:16px}
+body.sakura-console .machine-node b{font-size:10px;color:#9a75a9;white-space:nowrap;letter-spacing:0}
+body.sakura-console .machine-node small{font:5px var(--mono);color:#c0a4ca;white-space:nowrap}
+body.sakura-console .machine-node:hover,body.sakura-console .machine-node:focus-visible{border-color:#be94ce;box-shadow:inset 0 2px #fff,0 4px 0 #d3b6e1,0 6px 15px #b99bc61f}
+body.sakura-console .machine-node.dragging{cursor:grabbing;box-shadow:inset 0 2px #fff,0 3px 0 #caa2d6,0 10px 20px #cba8d546;border-color:#c78ec8;background:#fff5fc}
+body.sakura-console .machine-node.phase-active{background:linear-gradient(135deg,#fbe0ef,#ecdef8);border-color:#d394c3;box-shadow:inset 0 2px #fff,0 3px 0 #d8b3d8}
+body.sakura-console .machine-node.route-disabled{opacity:.4;border-style:dashed;box-shadow:none}
+.core-caption{position:absolute;left:48%;top:61%;transform:translateX(-50%);pointer-events:none;text-align:center;display:flex;flex-direction:column;gap:3px}
+.core-caption>b{font:700 8px var(--mono);color:#a588b6;letter-spacing:2px}.core-caption>span{font:5px var(--mono);color:#bda5c7;letter-spacing:.8px}
+.stage-note{position:absolute;left:6%;top:72%;display:flex;gap:5px;align-items:center;pointer-events:none;color:#b99bc3;font-size:7px}
+.stage-note>b{font-weight:500}.stage-note>small{font-size:6px;color:#c8b0ce}
+body.sakura-console .scene-measure,body.sakura-console .scene-annotation{display:none}
+body.sakura-console .scene-bottom{bottom:6px;left:22px;right:22px;font-size:6px;color:#bba1c3}
+body.sakura-console .scene-bottom>span:first-child{font-size:6px}.scene-bottom .world-coordinate{display:none!important}
+.routing-readout{height:37px;border-top:1px solid #ead6e8;display:flex;align-items:center;gap:15px;padding:0 22px;background:#fff9fc;font-size:8px;color:#b69bc2}
+.routing-readout>span:first-child{display:flex;align-items:center;gap:6px}.routing-readout b{font-weight:650}
+.routing-readout i{width:5px;height:5px;background:#ceb1d8;display:block;border-radius:2px}.routing-readout>.route-count{margin-left:auto;font:6px var(--mono);letter-spacing:.7px}.route-count b{font-size:11px;color:#b18bbf}
+body.sakura-console .scene-controls{padding:25px 24px 19px;border-left:1px solid #e3cee7;background:linear-gradient(130deg,#fffdfad9,#f5e9f5b8);box-shadow:1px 0 #fff9 inset;display:flex;gap:0}
+body.sakura-console .control-kicker{color:#bd9bc5;font:7px var(--mono);letter-spacing:1.5px}.control-kicker .icon{color:#c991be}
+body.sakura-console .scene-controls h3{font:750 21px/1.5 "Segoe UI","Microsoft YaHei",sans-serif;margin-top:13px;letter-spacing:-.5px;color:#9f7aae}
+body.sakura-console .scene-controls>p{font-size:9px;color:#b19cbb;line-height:1.9;margin:8px 0 21px;display:block}
+body.sakura-console .range-field>span{font-size:10px;margin-bottom:12px;color:#a38aad}.range-field output{font:11px var(--mono);color:#c388b6}
+body.sakura-console .range-field>small{font-size:6px;color:#bba3c5}
+body.sakura-console input[type=range]{height:5px;border-radius:4px;background:linear-gradient(to right,#c9a4d5 0 var(--value,50%),#eadbed var(--value,50%) 100%);box-shadow:0 1px #fff;transition:none;margin-top:8px}
+body.sakura-console input[type=range]::-webkit-slider-thumb{height:15px;width:15px;border:2px solid #fffdfb;background:linear-gradient(135deg,#e4c5e4,#b694ce);box-shadow:0 0 0 1px #c8acd4,0 2px 3px #a789bb33;border-radius:6px;transition:box-shadow .2s}
+body.sakura-console input[type=range]:hover::-webkit-slider-thumb{box-shadow:0 0 0 3px #c9a9d333,0 0 0 1px #c3a1d0}
+body.sakura-console .scene-controls>.range-field+.range-field{margin-top:21px}
+body.sakura-console .motion-control{margin-top:20px;padding-top:14px;border-top:1px dashed #e6d2e7;font-size:9px}.motion-control b{font-weight:500}
+body.sakura-console .switch{width:34px;height:19px;border-radius:20px;background:#d4bddf;border:1px solid #cbb0d7;box-shadow:inset 0 1px 2px #aa8cbc26}
+body.sakura-console .switch>i{width:13px;height:13px;top:2px;left:2px;border-radius:50%;background:#fff9fc;box-shadow:0 1px 2px #b99ac555}
+body.sakura-console .switch[aria-checked=true]>i{transform:translateX(15px)}
+body.sakura-console .switch[aria-checked=false]{background:#eadfeb;border-color:#e0cfe3}
+body.sakura-console .button{border:1px solid #dcc4e5;border-radius:12px;font-weight:600;box-shadow:inset 0 2px #ffffffa8,0 3px 0 #dfcde65e;transition:background .2s,border-color .2s,box-shadow .2s;font-size:10px;min-height:38px;background:linear-gradient(140deg,#fffcfa,#f5eaf7);color:#ab82b7}
+body.sakura-console .button:active{transform:none;box-shadow:inset 0 2px 4px #b99dc721}
+body.sakura-console .button.primary{background:linear-gradient(135deg,#d6a0c8,#c9a5dc);color:#fffafc;border-color:#cc9dce;box-shadow:inset 0 2px #ffffff4d,0 4px 0 #b98abb,0 7px 12px #c89ac42e}
+body.sakura-console .button.primary:hover{background:linear-gradient(135deg,#d08bc0,#bb95d4);border-color:#c390c4}
+body.sakura-console #feed{margin-top:17px;gap:9px;font-size:10px}
+body.sakura-console #reset-scene{font-size:7px;margin-top:12px;color:#ba9dc6;justify-content:center}
+body.sakura-console .material-note{padding-top:13px;margin-top:13px;border-color:#e8d4e9}.material-note>span{font:6px var(--mono);letter-spacing:1px}.material-note small{font-size:7px}
+body.sakura-console .swatches{gap:5px;margin:7px 0}.swatches i{width:16px;height:16px;border:2px solid white;border-radius:5px;box-shadow:0 0 0 1px #e7d6e7}
+body.sakura-console .swatches i:nth-child(1){background:#fff9f3}body.sakura-console .swatches i:nth-child(2){background:#ecc8de}body.sakura-console .swatches i:nth-child(3){background:#d4c0e9}body.sakura-console .swatches i:nth-child(4){background:#b7d8de}body.sakura-console .swatches i:nth-child(5){background:#b092bc}
+body.sakura-console .scene-caption{margin-top:15px;font-size:8px;color:#b299bd;padding:0 3px}.scene-caption p{font-size:9px}
+body.sakura-console .world-key{margin-top:14px;padding:14px 3px;gap:15px;border-top:1px dashed #e6d2e5;border-bottom:1px dashed #e6d2e5;flex-direction:row;align-items:center}
+body.sakura-console .world-key>p{font-size:9px;line-height:1.8;max-width:65%;color:#ae95b8}.world-key>div{gap:14px}.world-key>div>span{font-size:7px;color:#b399be}
+body.sakura-console .world-key i{border-color:#cc9fc9}.world-key .symbol-1{background:#d6b2db;border-color:#cc9fc9}.world-key .symbol-2{border-color:#b6c5d7}
+body.sakura-console .specimens{padding-top:49px}
+body.sakura-console .section-heading{margin-bottom:25px;align-items:center}
+body.sakura-console .section-heading .eyebrow{font-size:7px;color:#b9a0c0;letter-spacing:1.8px}
+body.sakura-console .section-heading h2{font:800 30px/1.5 "Segoe UI","Microsoft YaHei",sans-serif;letter-spacing:-1px;margin-top:7px;color:#8d719e;display:flex;align-items:baseline}
+body.sakura-console .section-heading h2 em{font-style:normal;color:#cc8bb3;margin-left:4px}.section-heart{font-size:33px;color:#d9acd0;margin-left:12px;transform:rotate(12deg);display:inline-block}
+body.sakura-console .section-index{font:8px var(--mono);color:#b399be;text-align:right;line-height:1.8}.section-index>span{display:block;font-size:5px;letter-spacing:1px}
+body.sakura-console .specimen-grid{gap:19px}
+body.sakura-console .specimen{border:1px solid #e2cce6;border-radius:22px;padding:25px 24px 21px;background-color:#fffdf9;background-image:radial-gradient(ellipse at 100% 0%,#efe2f44d,transparent 50%),repeating-linear-gradient(0deg,#b394be02 0 1px,transparent 1px 4px);box-shadow:inset 0 2px #ffffffed,0 4px 0 #e6d3e747,0 7px 17px #c4a5cc0a;transition:border-color .2s,box-shadow .2s;transform:none!important;overflow:hidden}
+body.sakura-console .specimen:hover{border-color:#cda9d8;box-shadow:inset 0 2px #ffffffed,0 4px 0 #dfc8e74d,0 7px 17px #c4a5cc0e}
+body.sakura-console .specimen:before{display:block;inset:5px;border:1px solid #ffffffa1;border-radius:17px;opacity:1;width:auto;height:auto;background:none}
+body.sakura-console .specimen:after{inset:0;background:radial-gradient(ellipse at var(--mx,0%) var(--my,0%),#ffffff90,transparent 65%);z-index:-1;opacity:.3}
+body.sakura-console .specimen.identity{background-color:#f5edf9}
+body.sakura-console .specimen.personality{background-color:#fff5f8}
+body.sakura-console .specimen.capability{background-color:#f7f0fc}
+body.sakura-console .specimen.stickers{background-color:#fcf0f7}
+body.sakura-console .specimen.rhythm{background-color:#f2f5fa}
+body.sakura-console .card-heading{margin-bottom:19px;gap:8px}
+body.sakura-console .card-heading>span{font:7px var(--mono);letter-spacing:1px;color:#b79cc1;border:1px solid #ead9ed;padding:3px 7px;border-radius:6px;background:#ffffff61}
+body.sakura-console .card-heading>.icon{width:24px;height:24px;padding:4px;border:1px solid #e6cfeb;background:#f7eefa;border-radius:8px;color:#c19ace;box-shadow:inset 0 1px #fff}
+body.sakura-console .specimen h3{font:700 18px/1.5 "Segoe UI","Microsoft YaHei",sans-serif;letter-spacing:-.2px;color:#9c7aac}
+body.sakura-console .card-description{font-size:10px;line-height:1.8;color:#b39bbd;margin-top:5px}
+body.sakura-console #bot-avatar{width:74px;height:78px;overflow:visible}
+body.sakura-console .identity-top{gap:11px;margin:5px 0 19px}
+body.sakura-console .identity .identity-top h3{font:700 22px var(--mono);color:#9873aa;letter-spacing:-1px}
+body.sakura-console .identity-top .handwritten{font:6px var(--mono);color:#c19bc7;letter-spacing:.4px}
+body.sakura-console .identity-top p{font-size:8px;color:#b69cc2}.vertical-code{color:#cbb3d3}
+body.sakura-console .bot-selector{gap:5px;padding:0;position:relative}
+body.sakura-console .bot-selector button{font:8px var(--mono);padding:6px 8px;border-radius:8px;border:1px solid #e5cfe9;background:#fcf7fd;position:relative;color:#ad8dbb;box-shadow:inset 0 1px #fff}
+body.sakura-console .bot-selector button[aria-pressed=true]{background:#e6d3f0;color:#a080b2;border-color:#cdb0dd}
+body.sakura-console .bot-selector button i{width:4px;height:4px}
+body.sakura-console .identity-stats{margin:21px 0 16px;padding-top:15px;border-color:#e5d0e9;gap:10px}
+body.sakura-console .identity-stats>span{font-size:8px;color:#b49abe}.identity-stats b small{font-size:8px}
+body.sakura-console .identity-stats b{font:600 27px/1.6 var(--mono);color:#ad87bd}
+body.sakura-console .identity-stats .state-label{font:11px "Microsoft YaHei",sans-serif;padding-top:13px;color:#9cb5aa}
+body.sakura-console .identity-foot{margin-top:18px;padding-top:12px;border-color:#e4cce9}.identity-foot>span:first-child{font-size:7px;color:#b69cbe}.mini-seal{font-size:5px;color:#c2a7cb;border-color:#d6bcdf}
+body.sakura-console .hug-button{font-size:8px;color:#b48cbe;border-color:#e3cfe8;margin-top:15px;padding-top:12px}.hug-button>i{height:3px;border-radius:3px;background:#e6d5ec}.hug-button>i>b{background:#c397ca;border-radius:3px}
+body.sakura-console .personality .card-description{font-size:9px}
+body.sakura-console .persona-presets{gap:5px;margin-top:14px;position:relative}
+body.sakura-console .persona-presets button{font-size:8px;border:1px solid #ebd5e8;border-radius:8px;padding:5px 8px;background:#fffafd;color:#b28cba;box-shadow:inset 0 1px #fff}
+body.sakura-console .persona-presets button[aria-pressed=true]{background:#f2ddea;border-color:#d8adcd;color:#b57fa9}
+body.sakura-console .personality-body{min-height:177px;margin:7px 0 1px;gap:16px}
+body.sakura-console #radar{width:155px;filter:drop-shadow(0 3px 0 #ead6e92b)}
+body.sakura-console .radar-grid path{stroke:#dcc3e3;stroke-dasharray:2 4}
+body.sakura-console #radar text{font-size:8px;fill:#b58dc0}
+body.sakura-console #radar-shape{fill:#ddb8dd66;stroke:#c191c7;stroke-width:1.6;transition:d .3s cubic-bezier(.15,1.5,.5,1)}
+body.sakura-console .radar-handle{fill:#fff9fc;stroke:#c295ca;stroke-width:1.5;r:5;filter:drop-shadow(0 1px 0 #c69dce)}
+body.sakura-console .persona-sliders label>span{font-size:9px;color:#b18dbb}.persona-sliders output{font:8px var(--mono);color:#c18db8}
+body.sakura-console .persona-footer{font-size:8px;border-color:#ead5e8}.persona-footer b{font-weight:500;color:#b38cba;font-size:8px}
+body.sakura-console .pill{background:#f5e8f4;border:1px solid #e7d0e6;border-radius:6px;font-size:7px;color:#bc91be}
+body.sakura-console .persona-save{border-color:#e9d0e3;margin-top:13px;padding-top:12px}.persona-save>span{font-size:6px;color:#bfa2c8}.persona-save button{font-size:7px;color:#b18abb}.persona-save button:disabled{cursor:default}
+body.sakura-console .mini-tabs{border:1px solid #e4cfe6;border-radius:10px;padding:3px;gap:3px;background:#f5eaf6;position:relative;box-shadow:inset 0 1px 3px #c9b5d118}
+body.sakura-console .mini-tabs button{font-size:9px;padding:5px 10px;border-radius:7px;position:relative;z-index:1;color:#b396bd;background:transparent}
+body.sakura-console .mini-tabs button[aria-pressed=true]{background:#fffcfa;color:#ab83b7;box-shadow:0 1px 2px #c8acd04d,inset 0 1px #fff}
+.tab-follow{position:absolute;border-radius:8px;background:#d7b6e2;pointer-events:none;z-index:2}
+body.sakura-console .conversation-title{gap:4px}.conversation-title .pill{font-size:6px}
+body.sakura-console .conversation .chat-thread{height:211px;margin:17px 0 13px;scrollbar-width:thin;scrollbar-color:#e4ccdf transparent}
+body.sakura-console .chat-message{font-size:10px;line-height:1.8;margin-bottom:13px;gap:6px}
+body.sakura-console .user-message{background:#eedff4;border:1px solid #dfc9e7;border-radius:13px 13px 3px 13px;color:#a783b5;padding:9px 12px;box-shadow:inset 0 1px #fff8}
+body.sakura-console .bot-message>span:last-child{background:#fffcf8;border:1px solid #ead5e6;border-radius:13px 13px 13px 3px;padding:10px 11px;box-shadow:0 2px 0 #ecdbe945;color:#aa8eb5}
+body.sakura-console .chat-fish{height:34px;width:34px;flex-shrink:0}.chat-message small{font-size:6px;color:#c6aecd}
+body.sakura-console .composer{border:1px solid #e5cfe5;border-radius:12px;background:#fffcf9;box-shadow:inset 0 1px 3px #b596c010;padding:5px;gap:5px}
+body.sakura-console .composer input{font-size:10px;padding:5px 8px;color:#a182b1}.composer input::placeholder{color:#c5afd0}
+body.sakura-console .composer button{background:linear-gradient(135deg,#d5b4df,#d8a6ce);border-radius:9px;width:30px;height:30px;box-shadow:inset 0 1px #fff8,0 2px #bd94c6;color:#fff9fc}
+body.sakura-console .memory-title .tiny-note{font-size:8px;color:#c09dc7}
+body.sakura-console .memory-map{height:224px;margin:9px 0 14px;border:1px dashed #ead6e8;border-radius:18px;background:radial-gradient(ellipse,#eee0f338,transparent 65%),radial-gradient(#d8bce041 .7px,transparent .7px);background-size:auto,14px 14px}
+body.sakura-console .memory-node i{width:40px;height:40px;background:linear-gradient(140deg,#fffafc,#f2e2f4);color:#c198cb;border:1px solid #dec4e6;border-radius:12px;box-shadow:inset 0 2px #fff,0 3px 0 #e5d1ec88}
+body.sakura-console .memory-node[aria-pressed=true] i{background:linear-gradient(140deg,#dfc6eb,#eecce2);color:#fff;border-color:#cb9fd5}
+body.sakura-console .memory-node span{font-size:8px;color:#b594c1;margin-top:7px}.memory-node .icon{width:17px;height:17px}
+body.sakura-console #memory-lines path{stroke:#dac0e3;stroke-dasharray:3 4;stroke-width:1.1;transition:d .18s cubic-bezier(.2,1.4,.4,1)}
+body.sakura-console #memory-lines path.selected{stroke:#bd96cd;stroke-width:1.7;stroke-dasharray:3 5;animation:index-flow 2s linear infinite}
+body.sakura-console .memory-orbit{stroke:#e0c9e9;stroke-dasharray:2 7}.memory-orbit.outer{stroke:#ead9ed}
+body.sakura-console .memory-center{width:75px;height:75px;filter:drop-shadow(0 3px 0 #e9d7ed66)}
+body.sakura-console .memory-detail{padding-top:14px;border-color:#e9d4e8}.memory-detail small{font-size:7px;color:#c0a5c7}
+body.sakura-console .memory-detail p{font-size:9px;line-height:1.85;color:#ad92b7;min-height:34px}
+body.sakura-console .memory-tools{gap:12px}.memory-tools button{font-size:8px;color:#b88cbb}.memory-tools .icon{width:12px;height:12px}
+body.sakura-console #memory-editor{border:1px solid #dfc2e4;border-radius:11px;padding:11px;background:#fff8fb;box-shadow:inset 0 2px #fff}
+body.sakura-console #memory-editor label{font-size:9px;color:#b58abd}body.sakura-console #memory-text{border:1px solid #e4c9e7;border-radius:7px;background:#fffdf8;font-size:10px;color:#ad82b6;padding:8px}
+body.sakura-console #memory-editor>div,body.sakura-console #memory-editor button{font-size:8px;color:#bd97c2}
+body.sakura-console .capability .card-description{font-size:9px}
+body.sakura-console .flow-start,body.sakura-console .flow-finish{font-size:9px;color:#b08abb;background:#f5e8f8;border-color:#dfc5e8;border-radius:8px}
+body.sakura-console .flow-branches{gap:7px}
+body.sakura-console .flow-node{border:1px solid #e1c8e9;background:linear-gradient(145deg,#fffbfe,#f3e5fa);border-radius:11px;color:#b892c4;padding:9px 4px 7px;box-shadow:inset 0 1px #fff,0 3px 0 #e4cdeb3b;transition:background .2s,border-color .2s}
+body.sakura-console .flow-node>b{font-size:9px;font-weight:650}.flow-node>small{font-size:6px;color:#c8abd0}.flow-node>.icon{width:18px;height:18px;color:#c3a0ce}
+body.sakura-console .node-receipt{font-size:6px;border-top:1px dashed #dfc5e8;color:#b99cc8}
+body.sakura-console .flow-node.active{background:linear-gradient(140deg,#e8c6e9,#cbb1df);border-color:#b893cf;color:white;box-shadow:inset 0 2px #fff6,0 3px 0 #b995ce}
+body.sakura-console .flow-node.active .icon,body.sakura-console .flow-node.active small{color:#fffafc}
+body.sakura-console .flow-node.node-complete{background:#f4e3f4;border-color:#cda8d5}
+body.sakura-console .flow-node[aria-checked=false]{background:#f8f1f9;border-style:dashed;opacity:.45}
+body.sakura-console .flow-start.active,body.sakura-console .flow-finish.active{background:#e4cce9;border-color:#c79bd3;color:#aa7cbb}
+body.sakura-console .flow-diagram:before,body.sakura-console .flow-branches:before{border-color:#d4b7df}
+body.sakura-console .flow-result{font-size:8px;line-height:1.8;color:#b28abd;min-height:32px;margin-top:15px}
+body.sakura-console .flow-paper{font:6px var(--mono);border-color:#e0c5e8;background:#fcf5fd;color:#bb98c7;padding:8px 9px;border-radius:6px;gap:5px}.ticket-bars{color:#cfb0d8}
+body.sakura-console #flow-run{margin-top:8px;width:100%;font-size:9px}
+body.sakura-console .resources-title h3{font-size:17px}.compact button{padding:3px 7px!important;font-size:7px!important}
+body.sakura-console .data-readout{margin:25px 0 21px;gap:13px}.data-readout>b{color:#b58dc5;font-family:var(--mono);font-weight:500}
+body.sakura-console #resource-number{font-size:42px;color:#b18bc4}.data-readout>b>span{font:9px var(--mono);color:#c2a8cc}
+body.sakura-console .data-readout>p{font-size:8px;color:#b49bbd;border-color:#ead4e8;padding-left:11px}.data-readout>p>small{font-size:6px;color:#c6b0cf}.trend{color:#b7a2c1;background:#f5e9f5;padding:3px 5px;border-radius:5px;font-size:7px}
+body.sakura-console #chart-line{stroke:#bf94cc;stroke-width:2.4;stroke-linejoin:round;stroke-linecap:round}#chart-area{color:#d9b8e0}.chart-grid path{stroke:#ecd8ed;stroke-dasharray:2 6}#chart-cross{stroke:#d4addb}#chart-dot{fill:#fff8fb;stroke:#c29ace}
+body.sakura-console .chart-axis{font:7px var(--mono);color:#c4a8cc}.resource-legend{font-size:8px;color:#ba9ac6;border-color:#e9d3e8}.resource-legend>span{font-size:6px;color:#c9aed0}.resource-legend>i{background:#c69dd0}
+body.sakura-console .chart-playback{border-color:#e8d3eb;padding-top:13px;margin-top:15px}.chart-playback button{font-size:8px;color:#b58ac2}.chart-playback>span{font-size:6px;color:#c9aed0}
+body.sakura-console #chart-tip{font:8px var(--mono);background:#d1acdb;color:#fffafd;border-radius:7px}
+body.sakura-console .sticker-stage{height:174px;gap:10px;position:relative;margin-top:9px;border-radius:18px;background-image:radial-gradient(#d9b5d93d .8px,transparent .8px);background-size:8px 8px}
+body.sakura-console .sticker-stage>.device-glyph{width:135px;height:135px;filter:drop-shadow(0 5px 0 #d9b5d521);animation:terminal-float 3.6s ease-in-out infinite}
+body.sakura-console .sticker-stage>.handwritten{font:7px var(--mono);color:#c19ac6;background:#fff9fd;border:1px solid #e6c6e2;padding:6px 8px;border-radius:7px;transform:rotate(6deg)}
+body.sakura-console .sticker-picker{gap:8px}.sticker-picker button{background:#fff8fb;border:1px solid #ead0e4;border-radius:11px;box-shadow:inset 0 1px #fff;position:relative;padding:7px 3px}
+body.sakura-console .sticker-picker button[aria-pressed=true]{border-color:#cd9dc6;background:#efd9eb;box-shadow:inset 0 1px #fff,0 2px 0 #d8b4d7}
+body.sakura-console .sticker-picker button>.device-glyph{height:42px;width:46px;margin:auto}.sticker-picker button>span{font-size:7px;color:#b68fbb}
+.sticker-orbit{color:#d0a0ce}.sticker-orbit>i{color:#bda1d0}.sticker-orbit>b{color:#dbaac8}
+body.sakura-console #send-sticker{font-size:9px;color:#bb8bb9;margin-top:17px}
+body.sakura-console .clock-art{gap:16px;margin:19px 0}
+body.sakura-console .clock-art>svg{width:140px;height:140px;background:radial-gradient(circle,#fdf9ff 48%,transparent 49%);filter:drop-shadow(0 3px 0 #dac6e24f)}
+body.sakura-console .clock-ring{stroke:#e6d7ed;stroke-width:8}body.sakura-console #quiet-arc{stroke:#bfa8d6;stroke-width:8;stroke-linecap:round}.clock-art text{fill:#b8a2c9;font-size:7px}
+body.sakura-console #quiet-handle{fill:#fffaff;stroke:#b294c7;stroke-width:2;r:6}
+body.sakura-console #clock-hand{stroke:#c2a7d4;stroke-width:2;stroke-linecap:round}
+body.sakura-console .clock-art b{font:600 30px var(--mono);color:#b39ac6}.clock-art .eyebrow{font-size:6px;color:#c0acd0}.clock-art b small{font:9px "Microsoft YaHei",sans-serif;color:#bfaccb}.quiet-label{font-size:8px;color:#b6a3c4}
+body.sakura-console .quiet-footer{font-size:8px;color:#b29ec1;border-color:#dfd6ec}.quiet-footer .icon{color:#b09ac2}
+body.sakura-console .light-preview{border-color:#dcd3e8}.light-preview>span{font-size:7px;color:#b6a4c4}.light-preview button{font-size:7px;border-radius:6px;color:#b19ac1}.light-preview button[aria-pressed=true]{background:#e9dff2;border-color:#d3c2e1}
+body.sakura-console .states{text-align:center}.states .card-heading{text-align:left}
+body.sakura-console .states .state-illustration{border:1px dashed #e5c9e7;border-radius:29px;width:108px;height:108px;background:#f6e9f7;margin:21px auto 12px;transform:rotate(-6deg);box-shadow:inset 0 1px #fff,0 4px 0 #e8d1e94a}
+body.sakura-console .state-illustration .device-glyph{height:95px;width:95px;margin:auto;transform:rotate(6deg)}
+body.sakura-console .state-stars{font-size:13px;color:#d0a5ce}.states h3{font-size:17px}.states>p{font-size:9px;line-height:1.8;color:#b497be;max-width:270px;margin:6px auto 15px}
+body.sakura-console .states .button{font-size:9px}
+.terminal-eyes{transform-origin:55px 40px;animation:terminal-blink 5s infinite}
+.action-confetti{position:fixed;z-index:99;pointer-events:none;font-size:16px;color:#c18dbe;font-style:normal;text-shadow:0 1px white}
+body.sakura-console .closing{padding:39px 0 23px;margin-top:38px;border-top:1px dashed #e4cce5}
+body.sakura-console .closing h2{font:750 25px "Microsoft YaHei",sans-serif;letter-spacing:0;color:#ab87b8}.closing h2 em{font-style:normal;color:#c990b9}
+body.sakura-console .closing>p{font-size:10px;color:#ba9bc4;margin-top:10px}.closing-fish{color:#cda5d2}.closing>div{margin-top:28px;font:7px var(--mono);color:#bda0c6}.closing>div>a{font:9px "Microsoft YaHei",sans-serif}
+body.sakura-console footer{font-size:7px;color:#c7adce;border-color:#ead7e9;padding:20px 0 25px}
+body.sakura-console #toast{background:#fff9fd;border:1px solid #d9b8df;color:#b283ba;box-shadow:0 5px 20px #b99cc226;border-radius:14px;font-size:11px;padding:11px 20px}
+body.sakura-console dialog{background:linear-gradient(140deg,#fffaf6,#f5e5f5);border:1px solid #d7b2dd;border-radius:25px;box-shadow:inset 0 2px #fff,0 8px 0 #d9c0df55,0 30px 100px #8b689d22;color:#a47ab2}
+body.sakura-console dialog::backdrop{background:#a290b033;backdrop-filter:blur(7px)}
+body.sakura-console dialog h2{font:750 23px "Microsoft YaHei",sans-serif}.dialog-fish{width:115px;height:115px;margin:auto}dialog p{font-size:11px;color:#b293bd}dialog .eyebrow{color:#c29ac9}
+body.sakura-console[data-time=night]{--paper:#ece5f5;--surface:#f7effa;--scene:#eee4f4;--soft:#e8daf0;--line:#d9c8e4;background-color:var(--paper)}
+body.sakura-console[data-time=night] .specimen{background-color:#f3eaf7}body.sakura-console[data-time=night] .scene-shell{background:linear-gradient(135deg,#f5edf7,#e6dcf1)}
+body.sakura-console.motion-paused *,body.sakura-console.motion-paused *:before,body.sakura-console.motion-paused *:after{animation-play-state:paused!important}
+@keyframes operator-bob{0%,100%{translate:0 0}50%{translate:0 -5px}}
+@keyframes soft-star{0%,100%{scale:1;rotate:-8deg;opacity:.65}50%{scale:1.15;rotate:8deg;opacity:1}}
+@keyframes terminal-float{0%,100%{translate:0 0;rotate:-3deg}50%{translate:0 -5px;rotate:3deg}}
+@keyframes terminal-blink{0%,43%,47%,100%{transform:scaleY(1)}45%{transform:scaleY(.08)}}
+@keyframes index-flow{to{stroke-dashoffset:-16}}
+@media(min-width:1600px){body.sakura-console .intro h1{font-size:70px}body.sakura-console .operator-art{right:40px}body.sakura-console .scene-area{height:372px}}
+@media(max-width:1200px){body.sakura-console .wrap{width:calc(100% - 64px)}body.sakura-console .intro h1{font-size:52px}.operator-art{right:-10px;width:320px}.operator-disc{width:235px;height:235px;left:45px;top:56px}.operator-image{width:240px;height:360px;right:40px}.operator-bubble{right:-1px;top:50px;font-size:12px}.operator-sticker{left:9px;bottom:55px}.operator-coordinate{font-size:5px;right:25px}.operator-rings{width:295px;left:22px;top:35px}body.sakura-console .intro-copy{width:78%}body.sakura-console .intro h1{letter-spacing:-2px}body.sakura-console .scene-board{grid-template-columns:minmax(0,1fr) 250px}body.sakura-console .scene-controls{padding:23px 20px}body.sakura-console .scene-controls h3{font-size:19px}body.sakura-console .scene-heading{padding:0 19px;gap:8px}body.sakura-console .scene-heading h2{font-size:11px}body.sakura-console .scene-number{font-size:6px}body.sakura-console .scene-story{padding:0 19px}body.sakura-console .machine-node{width:107px;padding:7px;gap:2px 5px}body.sakura-console .machine-node b{font-size:9px}body.sakura-console .specimen{padding:23px 21px}body.sakura-console .specimen h3{font-size:16px}body.sakura-console .personality-body{gap:8px}body.sakura-console #radar{width:135px}body.sakura-console .persona-presets button{font-size:7px;padding:5px 6px}.identity-foot .mini-seal{display:none}body.sakura-console .flow-node>b{font-size:8px}.flow-node>small{font-size:5px}body.sakura-console .bot-selector button{font-size:7px;padding:5px 6px}body.sakura-console .identity .identity-top h3{font-size:20px}body.sakura-console .clock-art{gap:7px}.clock-art>svg{width:120px!important;height:120px!important}body.sakura-console .clock-art b{font-size:24px}body.sakura-console .world-key>p{max-width:64%}}
+@media(max-width:1000px){body.sakura-console .intro{height:350px;min-height:350px}body.sakura-console .intro h1{font-size:44px}.operator-art{width:285px;top:8px;right:-10px}.operator-image{width:210px;height:315px;right:38px;bottom:30px}.operator-disc{width:206px;height:206px;left:37px;top:62px}.operator-disc>span{font-size:6px;left:39px}.operator-bubble{top:54px;right:-1px;font-size:11px;padding:7px 10px}.operator-sticker{bottom:76px;left:0;font-size:7px}.operator-sticker b{font-size:9px}.operator-rings{width:254px;height:255px;top:38px}.operator-coordinate{bottom:28px;font-size:5px}.operator-star.star-a{font-size:27px;left:12px}.operator-star.star-b{font-size:21px;right:5px;bottom:85px}.hero-tip{display:none}body.sakura-console .scene-controls{padding:23px 19px}body.sakura-console .world-key{flex-direction:column;align-items:flex-start;gap:9px}body.sakura-console .world-key>p{max-width:none}.world-key>div>span{font-size:7px}body.sakura-console .specimen-grid{gap:18px;grid-template-columns:repeat(2,minmax(0,1fr))}body.sakura-console .specimen{grid-column:span 1!important}body.sakura-console .memory-card{grid-column:span 2!important}body.sakura-console .states{grid-column:span 2!important}.identity-foot .mini-seal{display:block}body.sakura-console .specimen h3{font-size:19px}body.sakura-console .identity .identity-top h3{font-size:23px}body.sakura-console .persona-presets button{font-size:8px}body.sakura-console .bot-selector button{font-size:9px;padding:5px 8px}body.sakura-console .flow-node>b{font-size:10px}.flow-node>small{font-size:7px}.node-receipt{font-size:7px}body.sakura-console #radar{width:155px}body.sakura-console .clock-art{gap:15px}body.sakura-console .clock-art b{font-size:29px}body.sakura-console .sticker-stage{flex-direction:row}.console-rail nav{margin-left:5px}.console-rail nav a{padding:6px 10px}.revision-tag{font-size:6px}.theme-switch{gap:10px!important}}
+@media(max-width:760px){body.sakura-console .wrap{width:calc(100% - 40px)}body.sakura-console .masthead{height:80px;padding:0;flex-wrap:nowrap;gap:12px}.revision-tag,body.sakura-console .index-link{display:none}body.sakura-console .brand b{font-size:23px}.brand b span{font-size:7px!important}.brand-mark{width:37px;height:37px}body.sakura-console .theme-switch{border:0;background:none;box-shadow:none;padding:0}body.sakura-console .theme-switch button{font-size:9px;padding:7px 11px;gap:6px}.theme-switch button span{font-size:9px!important}body.sakura-console .intro{height:328px;min-height:328px;padding-top:28px}body.sakura-console .intro .eyebrow{font-size:6px;letter-spacing:1px}body.sakura-console .edition{font-size:5px}.hero-label{font-size:9px;margin-top:19px}body.sakura-console .intro h1{font-size:38px;margin-top:7px;letter-spacing:-2px;line-height:1.5}.headline-spark{font-size:24px;top:-21px}body.sakura-console .intro-text{font-size:10px;max-width:320px}.hero-actions{margin-top:17px}.hero-cta{font-size:9px;padding:8px 13px;border-radius:10px}.hero-meta{gap:17px;margin-top:20px}.hero-meta>span{font-size:12px;gap:4px}.hero-meta small{font-size:6px}.operator-art{right:-15px;width:235px;top:12px;height:320px}.operator-image{width:185px;height:277px;right:22px;bottom:15px}.operator-disc{width:170px;height:170px;left:31px;top:74px;box-shadow:0 0 0 7px #fff7f6,0 0 0 8px #ead9eb}.operator-disc:after{inset:-14px}.operator-disc>span{font-size:5px;left:25px;bottom:12px;letter-spacing:2px}.operator-disc>i{inset:20px;width:130px;height:130px}.operator-bubble{top:48px;font-size:10px;right:3px;padding:6px 8px;border-radius:10px}.operator-bubble small{font-size:6px}.operator-sticker{left:0;bottom:60px;font-size:6px;padding:5px 8px}.operator-sticker b{font-size:8px}.operator-coordinate{bottom:10px;right:10px;font-size:4px}.operator-rings{width:212px;height:218px;top:55px;left:15px}.star-a{font-size:22px!important;left:9px!important;top:59px!important}.star-b{font-size:20px!important;bottom:52px!important}.console-rail{margin:6px 0 13px;padding:8px 11px;gap:10px;border-radius:14px}.console-rail nav{gap:0;margin-left:auto}.console-rail nav a{font-size:8px;padding:5px 7px}.rail-status{display:none}.rail-terminal{width:29px;height:29px}.rail-brand>b{font-size:9px}.rail-brand small{font-size:5px;letter-spacing:.6px}body.sakura-console .scene-board{grid-template-columns:minmax(0,1fr);border-radius:19px}body.sakura-console .scene-shell{grid-column:1;grid-row:1}body.sakura-console .scene-heading{height:49px;padding:0 18px;gap:9px}body.sakura-console .scene-heading h2{font-size:10px}body.sakura-console .scene-number{font-size:5px;padding:3px 4px}body.sakura-console .live-tag{font-size:6px}body.sakura-console .scene-story{height:31px;padding:0 18px}body.sakura-console .scene-story b{font-size:7px}.story-phase{font-size:5px}body.sakura-console .scene-area{height:345px}body.sakura-console .scene-controls{grid-column:1;grid-row:2;display:grid;grid-template-columns:1fr 1fr;padding:20px 21px;gap:15px 22px;border:0;border-top:1px solid #e5cee6;background:#fff7facc}body.sakura-console .scene-controls h3{grid-column:1;grid-row:1;margin:0;font-size:17px}body.sakura-console .scene-controls .control-kicker,body.sakura-console .scene-controls>p,body.sakura-console .material-note{display:none}body.sakura-console .scene-controls .motion-control{grid-column:2;grid-row:1;border:0;padding:0;margin:0;justify-content:flex-end;font-size:8px;gap:9px}body.sakura-console .scene-controls>.range-field{grid-row:2;margin:0!important}body.sakura-console .scene-controls>.range-field:nth-of-type(1){grid-column:1}body.sakura-console .scene-controls>.range-field:nth-of-type(2){grid-column:2}body.sakura-console #feed{grid-column:1;grid-row:3;margin:0;font-size:9px}body.sakura-console #reset-scene{grid-column:2;grid-row:3;margin:0;font-size:7px}body.sakura-console .scene-caption{font-size:6px;gap:7px}.scene-caption p{font-size:8px}.scene-caption>span{font-size:6px}body.sakura-console .world-key>p{font-size:9px}.world-key>div>span{font-size:7px}body.sakura-console .section-heading h2{font-size:25px}.section-heart{font-size:24px}.section-index{font-size:7px!important}body.sakura-console .specimens{padding-top:35px}body.sakura-console .specimen{padding:23px 20px}body.sakura-console .specimen h3{font-size:17px}body.sakura-console .identity .identity-top h3{font-size:19px}body.sakura-console .bot-selector button{font-size:7px;padding:5px 6px}body.sakura-console .identity-top{gap:7px}body.sakura-console #bot-avatar{width:59px;height:65px}body.sakura-console .persona-presets button{font-size:7px;padding:5px}body.sakura-console .personality-body{gap:7px}body.sakura-console #radar{width:130px}body.sakura-console .personality .card-description{font-size:8px}.persona-sliders label>span{font-size:8px!important}.persona-footer b{font-size:7px!important}.persona-save button{font-size:7px}.identity-foot .mini-seal{display:none}body.sakura-console .flow-node>b{font-size:9px}body.sakura-console .clock-art{gap:7px}body.sakura-console .clock-art b{font-size:23px}body.sakura-console .clock-art>svg{width:108px!important;height:108px!important}.quiet-label{font-size:7px}.data-readout>p{font-size:7px!important}.data-readout>p small{font-size:5px!important}body.sakura-console #resource-number{font-size:35px}.trend{display:none}body.sakura-console .sticker-stage{flex-direction:column;gap:0;height:165px}body.sakura-console .sticker-stage>.device-glyph{height:125px;width:125px}body.sakura-console .sticker-stage>.handwritten{padding:2px 5px;font-size:5px}.chart-playback{flex-wrap:wrap}.stage-note>small{display:none}.routing-readout{padding:0 18px;gap:10px;font-size:7px}.routing-readout>.route-count{font-size:5px}body.sakura-console .closing h2{font-size:22px}}
+@media(max-width:560px){body.sakura-console .wrap{width:calc(100% - 32px)}body.sakura-console .intro{height:354px;min-height:354px;padding-top:23px}body.sakura-console .intro-copy{width:100%}body.sakura-console .intro .eyebrow{font-size:5px;letter-spacing:1px}.hero-label{font-size:8px;margin-top:16px}body.sakura-console .intro h1{font-size:36px;line-height:1.4;margin-top:6px;letter-spacing:-2px}body.sakura-console .intro-text{font-size:9px;line-height:2.1;max-width:205px;margin-top:13px}body.sakura-console .intro-text br{display:none}.hero-actions{margin-top:17px}.hero-cta{font-size:8px;padding:8px 10px;gap:10px;min-height:34px}.hero-cta .icon{width:13px}.hero-meta{margin-top:22px;gap:14px}.hero-meta>span{font-size:12px;gap:4px}.hero-meta small{font-size:6px}.operator-art{width:177px;height:265px;top:92px;right:-12px}.operator-image{width:163px;height:244px;right:2px;bottom:12px}.operator-disc{width:143px;height:143px;left:15px;top:50px}.operator-disc>i{width:110px;height:110px;inset:15px}.operator-disc>span{font-size:4px;left:22px;letter-spacing:1.5px}.operator-rings{width:165px;height:180px;top:38px;left:0}.operator-bubble{top:11px;right:0;font-size:8px;padding:5px 6px}.operator-bubble small{font-size:5px}.operator-sticker{left:-5px;bottom:44px;font-size:5px;padding:4px 7px;border-width:2px}.operator-sticker b{font-size:7px}.operator-coordinate{font-size:4px;right:3px;bottom:5px;letter-spacing:0}.operator-star.star-a{top:24px!important;left:1px!important;font-size:19px!important}.operator-star.star-b{right:0;bottom:45px!important;font-size:17px!important}.console-rail{margin-top:3px;padding:7px 10px;gap:5px}.rail-brand>b{font-size:8px}.rail-brand small{font-size:4px;letter-spacing:.5px}.console-rail nav a{padding:5px 6px;font-size:7px}body.sakura-console .scene-heading{gap:7px;padding:0 13px;height:48px}body.sakura-console .scene-heading h2{font-size:8px}body.sakura-console .scene-number{font-size:5px}.live-tag{gap:5px!important}.live-tag span{font-size:5px}body.sakura-console .scene-story{height:30px;padding:0 13px}body.sakura-console .scene-story b{font-size:6px;max-width:72%}.story-phase{font-size:5px!important;letter-spacing:0;max-width:70px}body.sakura-console .scene-area{height:332px}body.sakura-console .machine-node{width:91px;padding:7px 6px;border-radius:12px;grid-template-columns:22px 1fr;gap:1px 4px}body.sakura-console .machine-node>span{width:22px;height:26px;border-radius:7px}body.sakura-console .machine-node b{font-size:7px}body.sakura-console .machine-node small{font-size:4px}body.sakura-console .machine-node .icon{width:13px;height:13px}.core-caption>b{font-size:6px;letter-spacing:1px}.core-caption>span{font-size:4px;letter-spacing:0}.stage-note{font-size:6px;left:7%;top:73%}body.sakura-console .scene-bottom{left:15px;right:15px;bottom:5px}body.sakura-console .scene-bottom>span:first-child{font-size:5px;max-width:none}body.sakura-console .scene-bottom>span:last-child{font-size:5px}.scene-bottom .icon{display:none}.routing-readout{height:34px;padding:0 13px;font-size:6px;gap:9px}.routing-readout>span:nth-child(2){font-size:5px}.route-count b{font-size:9px}body.sakura-console .scene-controls{padding:18px 17px;gap:16px 18px}body.sakura-console .scene-controls h3{font-size:16px}.scene-controls .range-field b{font-size:9px}.scene-controls .range-field output{font-size:9px}body.sakura-console .scene-controls #feed{font-size:8px}body.sakura-console #reset-scene{font-size:6px}body.sakura-console .scene-caption{align-items:flex-start;gap:7px;font-size:6px}.scene-caption p{font-size:7px}.scene-caption>span{font-size:5px;max-width:113px;text-align:right}body.sakura-console .world-key{padding:13px 0;gap:9px}body.sakura-console .world-key>p{font-size:8px;line-height:1.9}.world-key>div{gap:10px;width:100%;justify-content:space-between}.world-key>div>span{font-size:6px}.world-key i{width:10px}body.sakura-console .section-heading{margin-bottom:19px}body.sakura-console .section-heading .eyebrow{font-size:5px;letter-spacing:1.2px}body.sakura-console .section-heading h2{font-size:23px;letter-spacing:-1px;display:block}body.sakura-console .section-heading h2 em{display:inline;margin:0}.section-heart{font-size:23px;margin-left:5px}.section-index{font-size:6px!important;white-space:nowrap}.section-index span{font-size:4px;letter-spacing:0}body.sakura-console .specimen-grid{grid-template-columns:1fr;gap:17px}body.sakura-console .specimen,body.sakura-console .memory-card,body.sakura-console .states{grid-column:1!important;padding:25px 23px 22px}body.sakura-console .specimen h3{font-size:20px}body.sakura-console .card-heading>span{font-size:8px}body.sakura-console .identity .identity-top h3{font-size:25px}body.sakura-console .identity-top{gap:14px}body.sakura-console #bot-avatar{width:76px;height:80px}.identity-top .handwritten{font-size:7px!important}body.sakura-console .identity-top p{font-size:10px}body.sakura-console .bot-selector button{font-size:9px;padding:6px 9px}body.sakura-console .identity-stats b{font-size:30px}body.sakura-console .identity-stats>span{font-size:9px}body.sakura-console .identity-stats .state-label{font-size:13px}.identity-foot>span:first-child{font-size:8px}.identity-foot .mini-seal{display:block}.hug-button{font-size:9px!important}body.sakura-console .card-description,body.sakura-console .personality .card-description{font-size:10px}body.sakura-console .persona-presets button{font-size:9px;padding:6px 8px}body.sakura-console .personality-body{min-height:185px;gap:17px}body.sakura-console #radar{width:160px}.persona-sliders label>span{font-size:10px!important}.persona-sliders output{font-size:9px}.persona-footer b{font-size:9px!important}.persona-save button{font-size:8px!important}.persona-save>span{font-size:7px}body.sakura-console .mini-tabs button{font-size:10px;padding:6px 11px}body.sakura-console .conversation .chat-thread{height:216px}body.sakura-console .chat-message{font-size:11px}body.sakura-console .composer input{font-size:11px}body.sakura-console .memory-map{height:230px}body.sakura-console .memory-node span{font-size:9px}body.sakura-console .memory-detail p{font-size:10px}.memory-tools button{font-size:9px}body.sakura-console .flow-node>b{font-size:11px}.flow-node>small{font-size:7px}body.sakura-console .node-receipt{font-size:8px}.flow-result{font-size:9px!important}.flow-paper{font-size:7px!important}body.sakura-console .flow-start,body.sakura-console .flow-finish{font-size:10px}.resources-title h3{font-size:20px}body.sakura-console #resource-number{font-size:43px}.data-readout>p{font-size:9px!important}.data-readout>p small{font-size:6px!important}.chart-playback button{font-size:9px}.chart-playback>span{font-size:7px}.chart-axis{font-size:8px!important}.resource-legend{font-size:9px}.resource-legend>span{font-size:6px}body.sakura-console .sticker-stage{height:170px;flex-direction:row;gap:9px}body.sakura-console .sticker-stage>.device-glyph{height:138px;width:138px}body.sakura-console .sticker-stage>.handwritten{font-size:7px;padding:5px 8px}.sticker-picker button>span{font-size:9px}body.sakura-console .clock-art{gap:18px}body.sakura-console .clock-art>svg{width:140px!important;height:140px!important}body.sakura-console .clock-art b{font-size:29px}.quiet-label{font-size:9px}.clock-art b small{font-size:9px}.quiet-footer{font-size:9px!important}.light-preview>span{font-size:8px}.light-preview button{font-size:8px}.states>p{font-size:10px!important}.states .button{font-size:10px!important}body.sakura-console .closing{padding-top:29px;margin-top:30px}body.sakura-console .closing h2{font-size:21px}.closing>div{font-size:5px}.closing>div>a{font-size:8px}body.sakura-console .closing>p{font-size:8px}body.sakura-console footer{font-size:6px}}
+@media(max-width:360px){body.sakura-console .intro h1{font-size:31px}.operator-art{right:-16px;width:160px}.operator-image{width:150px;height:225px;bottom:15px}.operator-bubble{right:4px}body.sakura-console .intro-text{max-width:178px;font-size:8px}.hero-meta{gap:11px}.hero-meta>span{font-size:11px}.hero-meta small{font-size:5px}.console-rail nav a{padding:5px;font-size:6px}.rail-brand small{display:none}body.sakura-console .scene-heading h2{font-size:7px}.scene-number{font-size:4px!important}.scene-heading{gap:5px!important}.scene-story b{font-size:5px!important}.section-index{display:none}.stage-note{font-size:5px}}
+/* Shared stage geometry fills its companion mixer instead of leaving a dead strip. */
+body.sakura-console .scene-shell{display:grid;grid-template-rows:54px 34px minmax(346px,1fr) 37px}
+body.sakura-console .scene-area{height:auto;min-height:346px}
+body.sakura-console .scene-heading h2{color:#8c659e;font-size:12px}
+body.sakura-console .scene-story b{font-size:9px;color:#9c7aaa}
+body.sakura-console .story-phase{font-size:7px;color:#bd8bb1}
+body.sakura-console .machine-node b{color:#9770aa;font-size:11px}
+body.sakura-console .machine-node small{color:#b390c2;font-size:6px}
+body.sakura-console .range-field b{color:#a17bb1}
+body.sakura-console .scene-controls>p{color:#aa8db5;font-size:10px}
+body.sakura-console .card-description,body.sakura-console .personality .card-description{color:#a88ab4}
+body.sakura-console .memory-detail p,body.sakura-console .states>p{color:#a485b1}
+body.sakura-console .chat-message{color:#a17caf}
+body.sakura-console .bot-message>span:last-child{color:#a17caf}
+body.sakura-console .routing-readout{font-size:9px;color:#aa84b9}
+body.sakura-console .world-key>p{color:#a184ae}
+@media(max-width:1200px){body.sakura-console .scene-heading h2{font-size:10px}body.sakura-console .machine-node b{font-size:9px}body.sakura-console .machine-node small{font-size:5px}}
+@media(max-width:760px){body.sakura-console .scene-shell{grid-template-rows:49px 31px minmax(345px,1fr) 37px}body.sakura-console .scene-area{min-height:345px}body.sakura-console .scene-story b{font-size:8px}.operator-rings{max-width:calc(100% - 25px)}}
+@media(max-width:560px){body.sakura-console .scene-shell{grid-template-rows:48px 30px minmax(332px,1fr) 34px}body.sakura-console .scene-area{min-height:332px}body.sakura-console .scene-story b{font-size:6px}body.sakura-console .scene-heading h2{font-size:8px}body.sakura-console .machine-node b{font-size:8px}body.sakura-console .machine-node small{font-size:4px}body.sakura-console .routing-readout{font-size:6px}.operator-rings{width:140px;height:160px;left:10px;rotate:-10deg}.operator-art{right:-1px}.operator-bubble{right:6px}}
+@media(prefers-reduced-motion:reduce){body.sakura-console *,body.sakura-console *:before,body.sakura-console *:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}

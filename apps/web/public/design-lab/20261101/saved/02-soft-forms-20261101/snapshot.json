@@ -1,0 +1,33 @@
+{
+  "name": "02 微蓝 · 稳定轮廓与生成细节",
+  "savedAt": "2026-11-01T13:59:26.782Z",
+  "entry": "index.html",
+  "sourceEntry": "notebook-r7.html",
+  "note": "源入口原样留存为 source-entry.html；index.html 只修正归档内的留档版链接。四个运行资源逐字节复制。",
+  "files": [
+    {
+      "file": "index.html",
+      "sha256": "FF2DA5F577CF3DBBB15B2879B435915627675F5521624B8940AC035496A9CAD3"
+    },
+    {
+      "file": "source-entry.html",
+      "sha256": "94010A4AE9873B333DC369C0BBD9A475E0DAA96C6D7A519C7D26A26487DB38AD"
+    },
+    {
+      "file": "form.css",
+      "sha256": "C2B4860A505BA99E92642BABEC630C323C1EF20AD2162448E9313D90B43C1AC8"
+    },
+    {
+      "file": "form.js",
+      "sha256": "3DD2484F03FF1F7EAD0FE2B1234DEC36863F5AB55A74782A47A005E04FE58E45"
+    },
+    {
+      "file": "form-math.js",
+      "sha256": "CCAC784724EF128DA9B2881B687237647E7B12CE46BAA4DEB7E5675423BD233B"
+    },
+    {
+      "file": "form-field.js",
+      "sha256": "2B6D1B69FB551E4848461523FA3C4315073AC334B680003DAB7225E4804F3879"
+    }
+  ]
+}
