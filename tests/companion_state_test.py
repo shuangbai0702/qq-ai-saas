@@ -20,8 +20,14 @@ class CompanionState(unittest.IsolatedAsyncioTestCase):
   self.seen();items=initiative.candidates(self.db,self.cfg,self.now)
   self.assertEqual(items[0]['contact_subject'],'12345');self.assertTrue(initiative.reserve(self.db,self.cfg,items[0],self.now))
   self.s.close();self.s=BehaviorStore(self.path);self.db=self.s.db
-  self.assertEqual(initiative.candidates(self.db,self.cfg,self.now+90),[])
   self.assertEqual(self.db.execute('SELECT unanswered FROM companion_members').fetchone()[0],1)
+  # The common default now stops after four unanswered attempts. Restart must
+  # retain the first attempt, while allowing the remaining three at interval.
+  for index in range(1,4):
+   at=self.now+90*index;items=initiative.candidates(self.db,self.cfg,at)
+   self.assertEqual(items[0]['contact_subject'],'12345');self.assertTrue(initiative.reserve(self.db,self.cfg,items[0],at))
+  self.assertEqual(self.db.execute('SELECT unanswered FROM companion_members').fetchone()[0],4)
+  self.assertEqual(initiative.candidates(self.db,self.cfg,self.now+450),[])
  def test_no_stranger_no_cross_group_no_private_leak(self):
   self.seen(directed=False);self.assertEqual(initiative.candidates(self.db,self.cfg,self.now),[])
   cs.outgoing(self.db,self.cfg,'private:12345','12345','我喜欢乌龙茶','bot1',self.now)

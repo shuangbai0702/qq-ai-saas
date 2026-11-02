@@ -18,6 +18,18 @@ test('offline windows reset on reconnect, changed evidence, observation gaps and
  assert.equal(observeOffline(undefined,{alive:true,ready:true,loginState:'waiting_scan'},1000000,grace)?.graceMs,180000);
 });
 
+test('an established QQ whose session expires keeps the 300-second offline window and diagnostic through cleanup',()=>{
+ const grace={startup:120000,login:180000,offline:300000,fault:300000};
+ const protocol={alive:true,ready:true,online:false,loginState:'verification_required' as const,detail:'QQ reports the current login is invalid'};
+ let p=observeOffline(undefined,protocol,1000000,grace,{onlineSince:900000})!;
+ assert.equal(p.reason,'account-offline');assert.equal(p.graceMs,300000);assert.equal(p.detail,protocol.detail);
+ for(const now of [1005000,1180000])p=observeOffline(p,protocol,now,grace,{onlineSince:900000})!;
+ assert.equal(evictionDue(p,1180000),false,'an established session was treated as an incomplete first login');
+ for(const now of [1290000,1295000,1300000])p=observeOffline(p,{...protocol,detail:undefined},now,grace,{onlineSince:900000})!;
+ assert.equal(evictionDue(p,1300000),true);assert.equal(p.detail,protocol.detail);
+ const firstLogin=observeOffline(undefined,protocol,1000000,grace)!;assert.equal(firstLogin.reason,'login-incomplete');assert.equal(firstLogin.graceMs,180000);
+});
+
 test('startup 120s, QQ waiting 180s, offline 300s caps survive retry phases and persisted observation gaps',()=>{
  const grace={startup:120000,login:180000,offline:300000,fault:300000};const ai={alive:true,ready:false};
  let p=observeOffline(undefined,{alive:true,ready:true,online:true},1000000,grace,{ai,requestedAt:900000})!;

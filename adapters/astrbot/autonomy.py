@@ -99,6 +99,10 @@ def note_interaction(db, cfg, scope, subject, now, directed=True):
         # The real interaction clock restarts; old model waiting is obsolete.
         # Explicit operator permission remains in contacts.opted_out.
         db.execute('DELETE FROM initiative_pauses WHERE scope=?',('private:'+owner,))
+        # A real directed conversation with this owner answers the old outreach,
+        # even across scopes. Do not rewrite private history, refund deliveries,
+        # or let a delayed older interaction clear a newer outstanding attempt.
+        db.execute('UPDATE contacts SET unanswered=0 WHERE scope=? AND subject=? AND last_attempt<?', ('private:'+owner, owner, now))
         db.execute('INSERT INTO autonomy_owner(owner,interaction,version) VALUES(?,?,1) ON CONFLICT(owner) DO UPDATE SET interaction=max(interaction,excluded.interaction),version=version+1,allowed=0', (owner, now))
     db.commit()
 
@@ -307,7 +311,7 @@ def owner_check_candidate(db, cfg, now):
     day = datetime.fromtimestamp(now, timezone(timedelta(hours=8))).date().isoformat()
     sent=db.execute('SELECT coalesce(sum(count),0) FROM deliveries WHERE day=?',(day,)).fetchone()[0]
     if sent>=b.get('dailyProactiveLimit',10):return None
-    if paused(db, scope, now) or contact[5] >= b.get('maxUnanswered', 1):
+    if paused(db, scope, now) or contact[5] >= b.get('maxUnanswered', 4):
         return None
     if now-max(state[:2]) < max(15, b.get('ownerContactIntervalMinutes', 30))*60 or now-state[1] < b.get('ownerContactIdleMinutes', 10)*60:
         return None
@@ -326,7 +330,7 @@ def owner_delivery_candidate(db, cfg, now):
     if not data:
         return None
     owner, scope, c, state = data
-    if state[3] != 1 or state[2] != state[5] or now-state[0] > b.get('ownerContactIntervalMinutes', 30)*60 or paused(db, scope, now) or c[5] >= b.get('maxUnanswered', 1):
+    if state[3] != 1 or state[2] != state[5] or now-state[0] > b.get('ownerContactIntervalMinutes', 30)*60 or paused(db, scope, now) or c[5] >= b.get('maxUnanswered', 4):
         return None
     return {'scope': scope, 'subject': owner, 'self_id': c[1], 'last_text': c[7], 'last_output': c[8], 'last_user': c[2],
             'topic': state[4], 'owner_contact': True, 'owner_version': state[2], 'owner_checked': state[0]}

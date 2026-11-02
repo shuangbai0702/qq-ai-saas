@@ -1,0 +1,437 @@
+/* === 精炼高级设计 - 克制的程序化美学 === */
+
+/* 机器人卡片 - 简洁强大 */
+.bot-row {
+  background: rgba(255, 253, 248, 0.85) !important;
+  backdrop-filter: blur(20px) saturate(180%) !important;
+  border: 1px solid rgba(226, 222, 211, 0.8) !important;
+  box-shadow: 
+    0 2px 8px rgba(38, 38, 31, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8) !important;
+  transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+/* 简洁的左侧色条 */
+.bot-row::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 100%;
+  background: linear-gradient(180deg, 
+    #e85d3f 0%,
+    #4a93c7 100%
+  );
+  border-radius: 14px 0 0 14px;
+  opacity: 0;
+  transition: all 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.bot-row:hover {
+  background: rgba(255, 255, 255, 0.95) !important;
+  transform: translateY(-8px) translateX(2px) !important;
+  box-shadow: 
+    0 16px 48px rgba(38, 38, 31, 0.12),
+    0 4px 12px rgba(232, 93, 63, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 1) !important;
+  border-color: rgba(232, 93, 63, 0.3) !important;
+}
+
+.bot-row:hover::after {
+  opacity: 1;
+  width: 4px;
+}
+
+/* Bot 头像 - 简化动画 */
+.bot-avatar {
+  transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  filter: drop-shadow(0 2px 6px rgba(74, 147, 199, 0.2));
+}
+
+.bot-row:hover .bot-avatar {
+  transform: scale(1.1) rotate(5deg);
+  filter: drop-shadow(0 6px 16px rgba(74, 147, 199, 0.4));
+}
+
+/* 背景 - 程序化交互网格 */
+body {
+  background: #f6f3ec !important;
+  position: relative;
+  overflow: hidden;
+}
+
+/* 交互式网格系统 */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: 
+    /* 主网格 */
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 79px,
+      rgba(232, 93, 63, 0.08) 79px,
+      rgba(232, 93, 63, 0.08) 80px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 79px,
+      rgba(74, 147, 199, 0.08) 79px,
+      rgba(74, 147, 199, 0.08) 80px
+    ),
+    /* 细网格 */
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 19px,
+      rgba(38, 38, 31, 0.02) 19px,
+      rgba(38, 38, 31, 0.02) 20px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 19px,
+      rgba(38, 38, 31, 0.02) 19px,
+      rgba(38, 38, 31, 0.02) 20px
+    );
+  pointer-events: none;
+  opacity: 0.6;
+  z-index: 0;
+}
+
+/* 鼠标交互光标效果 */
+body::after {
+  content: '';
+  position: fixed;
+  width: 400px;
+  height: 400px;
+  background: radial-gradient(
+    circle,
+    rgba(232, 93, 63, 0.12) 0%,
+    rgba(74, 147, 199, 0.08) 40%,
+    transparent 70%
+  );
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  z-index: 1;
+  mix-blend-mode: multiply;
+  filter: blur(40px);
+}
+
+/* 坐标轴指示器 */
+.coordinate-system {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.coordinate-system::before,
+.coordinate-system::after {
+  content: '';
+  position: absolute;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(232, 93, 63, 0.3) 50%,
+    transparent 100%
+  );
+  transition: all 0.1s ease-out;
+}
+
+/* 横线 */
+.coordinate-system::before {
+  left: 0;
+  right: 0;
+  height: 1px;
+  top: 50%;
+}
+
+/* 竖线 */
+.coordinate-system::after {
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  left: 50%;
+}
+
+/* 网格点高亮 */
+.grid-highlight {
+  position: fixed;
+  width: 80px;
+  height: 80px;
+  border: 2px solid rgba(232, 93, 63, 0.4);
+  background: rgba(232, 93, 63, 0.05);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  z-index: 1;
+  box-shadow: 
+    0 0 20px rgba(232, 93, 63, 0.2),
+    inset 0 0 20px rgba(232, 93, 63, 0.1);
+}
+
+/* 数据流动效果 */
+.data-stream {
+  position: fixed;
+  width: 2px;
+  height: 80px;
+  background: linear-gradient(
+    180deg,
+    transparent,
+    rgba(74, 147, 199, 0.6),
+    transparent
+  );
+  pointer-events: none;
+  opacity: 0;
+  z-index: 1;
+  animation: stream-flow 2s ease-in-out;
+}
+
+@keyframes stream-flow {
+  0% {
+    opacity: 0;
+    transform: translateY(-100px);
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(100px);
+  }
+}
+
+/* 扫描线效果 */
+.scan-line {
+  position: fixed;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(232, 93, 63, 0.6),
+    transparent
+  );
+  pointer-events: none;
+  opacity: 0;
+  z-index: 1;
+  box-shadow: 0 0 20px rgba(232, 93, 63, 0.4);
+  animation: scan-move 3s ease-in-out;
+}
+
+@keyframes scan-move {
+  0% {
+    opacity: 0;
+    top: 0;
+  }
+  10% {
+    opacity: 0.8;
+  }
+  90% {
+    opacity: 0.8;
+  }
+  100% {
+    opacity: 0;
+    top: 100%;
+  }
+}
+
+/* 点击波纹 */
+.click-ripple {
+  position: fixed;
+  border: 2px solid rgba(232, 93, 63, 0.6);
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 3;
+  animation: ripple-expand 0.8s ease-out;
+}
+
+@keyframes ripple-expand {
+  0% {
+    width: 0;
+    height: 0;
+    opacity: 1;
+    margin: 0;
+  }
+  100% {
+    width: 200px;
+    height: 200px;
+    opacity: 0;
+    margin: -100px;
+  }
+}
+
+/* 统计卡片 - 保持高级网格 */
+.stats {
+  position: relative;
+  z-index: 10;
+}
+
+.stats::after {
+  background: 
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 19px,
+      rgba(232, 93, 63, 0.04) 19px,
+      rgba(232, 93, 63, 0.04) 20px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 19px,
+      rgba(74, 147, 199, 0.04) 19px,
+      rgba(74, 147, 199, 0.04) 20px
+    );
+  opacity: 0.8 !important;
+}
+
+/* 主内容区提升层级 */
+main {
+  position: relative;
+  z-index: 10;
+}
+
+/* 表单控件 - 简化但保持高级 */
+.field input:focus,
+.field select:focus,
+.field textarea:focus {
+  border-color: rgba(232, 93, 63, 0.5) !important;
+  background: white !important;
+  box-shadow: 
+    0 0 0 3px rgba(232, 93, 63, 0.15),
+    0 4px 12px rgba(38, 38, 31, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 1) !important;
+  transform: translateY(-2px) !important;
+}
+
+/* Toggle 开关 - 简洁版 */
+.toggle-row input[type=checkbox]:checked {
+  background: linear-gradient(135deg, #2d7d5e 0%, #3a9972 100%) !important;
+  box-shadow: 
+    0 0 0 3px rgba(45, 125, 94, 0.15),
+    0 2px 8px rgba(45, 125, 94, 0.3) !important;
+}
+
+/* 徽章 - 简化呼吸 */
+.badge.green {
+  animation: simple-breathe 2s ease-in-out infinite;
+}
+
+@keyframes simple-breathe {
+  0%, 100% {
+    box-shadow: 
+      0 2px 6px rgba(45, 125, 94, 0.3),
+      0 0 12px rgba(45, 125, 94, 0.2) !important;
+  }
+  50% {
+    box-shadow: 
+      0 3px 10px rgba(45, 125, 94, 0.4),
+      0 0 20px rgba(45, 125, 94, 0.3) !important;
+  }
+}
+
+/* 主按钮 - 简洁发光 */
+.primary {
+  animation: button-subtle-glow 2s ease-in-out infinite;
+}
+
+@keyframes button-subtle-glow {
+  0%, 100% {
+    box-shadow: 
+      0 2px 8px rgba(232, 93, 63, 0.25), 
+      0 1px 2px rgba(232, 93, 63, 0.15),
+      0 0 20px rgba(232, 93, 63, 0.2) !important;
+  }
+  50% {
+    box-shadow: 
+      0 4px 12px rgba(232, 93, 63, 0.35), 
+      0 2px 4px rgba(232, 93, 63, 0.2),
+      0 0 30px rgba(232, 93, 63, 0.3) !important;
+  }
+}
+
+/* Panel 卡片 - 保持玻璃态 */
+.panel {
+  background: rgba(255, 253, 248, 0.6) !important;
+  backdrop-filter: blur(20px) saturate(180%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.9) !important;
+  box-shadow: 
+    0 4px 16px rgba(38, 38, 31, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9) !important;
+  transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  position: relative;
+  z-index: 10;
+}
+
+.panel:hover {
+  background: rgba(255, 253, 248, 0.85) !important;
+  box-shadow: 
+    0 12px 40px rgba(38, 38, 31, 0.1),
+    0 0 0 1px rgba(232, 93, 63, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 1) !important;
+  transform: translateY(-4px) !important;
+}
+
+/* 顶部导航 - 保持玻璃态 */
+.app-header {
+  background: rgba(255, 253, 248, 0.8) !important;
+  backdrop-filter: blur(30px) saturate(180%) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.9) !important;
+  box-shadow: 
+    0 1px 0 rgba(255, 255, 255, 0.8) inset,
+    0 4px 16px rgba(38, 38, 31, 0.06) !important;
+  position: relative;
+  z-index: 100;
+}
+
+/* 品牌图标 - 简化但保持特色 */
+.brand-icon {
+  transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  position: relative;
+}
+
+.brand-icon::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    rgba(74, 147, 199, 0.4),
+    transparent 70%
+  );
+  opacity: 0;
+  filter: blur(12px);
+  transition: opacity 0.3s;
+  z-index: -1;
+}
+
+.brand:hover .brand-icon {
+  transform: scale(1.1) rotate(5deg);
+}
+
+.brand:hover .brand-icon::after {
+  opacity: 1;
+}
+
+/* 减少运动时简化 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

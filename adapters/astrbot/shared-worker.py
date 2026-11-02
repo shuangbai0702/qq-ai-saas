@@ -28,6 +28,7 @@ def validate_member(id,body):
     require(text(body.get('runtimeRoot'),4096,False) and '\x00' not in body['runtimeRoot'])
     require(text(body.get('uin',''),20) and (not body.get('uin') or re.fullmatch(r'\d{5,20}',body['uin']) is not None))
     require('botId' not in body or body['botId']==id)
+    require('tenantId' not in body or text(body['tenantId'],80,False))
     groups=body.get('groups')
     require(isinstance(groups,list) and len(groups)<=100 and all(isinstance(g,str) and re.fullmatch(r'\d{4,20}',g) for g in groups))
     cfg=body.get('config');platform=body.get('platform');behavior=body.get('behaviorConfig')
@@ -87,6 +88,7 @@ async def main():
     async def unload(id,permanent=False):
         # Invalidate learning callbacks before draining provider/platform awaits.
         behavior_settings.pop(id,None)
+        await behavior['drain'](id)
         active_store=behavior['stores'].get(id)
         if active_store:active_store.reflection.close();active_store.social.close()
         await core.event_bus.stop_platform(id)
@@ -105,6 +107,7 @@ async def main():
     async def install(id,body):
         cfg=copy.deepcopy(dict(core.astrbot_config));merge(cfg,body['config'])
         cfg['platform']=[];cfg['provider']=[];cfg['disable_builtin_commands']=True;cfg['plugin_set']=[]
+        cfg.setdefault('platform_settings',{})['empty_mention_waiting']=False
         cfg['agent_runner']['config']['persona']['persona_id']='persona-'+id
         cfg['agent_runner']['config']['model']['provider_id']='provider-'+id if body.get('key') else ''
         prompt=body['prompt'];persona='persona-'+id
@@ -115,7 +118,7 @@ async def main():
         member={k:v for k,v in body.items() if k not in ('key','config','prompt')}
         member.update(confId=conf_id,events=0,modelConfigured=bool(body.get('key')))
         members[id]=member
-        behavior_settings[id]={'root':body['runtimeRoot'],'botId':id,'config':body['behaviorConfig'],'generation':body['generation'],'revision':body['revision']}
+        behavior_settings[id]={'root':body['runtimeRoot'],'tenantId':body.get('tenantId'),'botId':id,'config':body['behaviorConfig'],'generation':body['generation'],'revision':body['revision'],'expectedUin':body.get('uin','')}
         if body.get('key'):
             provider=copy.deepcopy(body['config']['provider'][0]);provider.update(id='provider-'+id,key=[body['key']])
             # load_provider initializes the real SDK but does not save the key.
@@ -186,7 +189,12 @@ async def main():
             m=members.get(id)
             if not m or request.headers.get('X-Member-Generation')!=str(m['generation']) or request.headers.get('X-Member-Revision')!=str(m['revision']):raise web.HTTPConflict()
             return web.json_response(behavior['manage'](id,await request.json()))
-    app=web.Application(middlewares=[auth],client_max_size=131072);app.router.add_post('/members/{id}/behavior-data',manage_data);app.router.add_get('/health',health);app.router.add_put('/members/{id}',put);app.router.add_delete('/members/{id}',remove)
+    async def autonomous_work(request):
+        id=request.match_info['id'];m=members.get(id)
+        if not m or request.headers.get('X-Member-Generation')!=str(m['generation']) or request.headers.get('X-Member-Revision')!=str(m['revision']):raise web.HTTPConflict()
+        try:return web.json_response(await behavior['autonomous'](id,request.match_info['operation'],await request.json()))
+        except (ValueError,KeyError,TypeError):raise web.HTTPConflict(reason='Autonomous work invalid or stale') from None
+    app=web.Application(middlewares=[auth],client_max_size=131072);app.router.add_post('/members/{id}/autonomous/{operation}',autonomous_work);app.router.add_post('/members/{id}/behavior-data',manage_data);app.router.add_get('/health',health);app.router.add_put('/members/{id}',put);app.router.add_delete('/members/{id}',remove)
     runner=web.AppRunner(app);await runner.setup();await web.TCPSite(runner,'127.0.0.1',manifest['healthPort']).start()
     task=asyncio.create_task(core.start());stop=asyncio.Event()
     for sig in [signal.SIGINT,signal.SIGTERM]:

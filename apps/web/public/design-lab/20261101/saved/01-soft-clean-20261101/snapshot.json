@@ -1,0 +1,23 @@
+{
+  "name": "01 清爽软萌基线",
+  "savedAt": "2026-11-01T20:30:38.2847301+08:00",
+  "entry": "index.html",
+  "files": [
+    {
+      "file": "index.html",
+      "sha256": "538FE2E5957775D879A4FB9CA2994A9DDDD569468C17A23D2B0FAAE09352BC7B"
+    },
+    {
+      "file": "materials.css",
+      "sha256": "A1153AAB72C169BF6A6C1E0DF137EB65603870EFA164475EB8F24173A81F332C"
+    },
+    {
+      "file": "materials.js",
+      "sha256": "C225DA4A59231E52C9C85ED186425745DDCB7B0BDF44C246397E1D8EF5F7F3DD"
+    },
+    {
+      "file": "ui-field.js",
+      "sha256": "6C66B950F685708EACA2342E54DD3B1461D548F0764C3EF45E4AF174C8C8994F"
+    }
+  ]
+}

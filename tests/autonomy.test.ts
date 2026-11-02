@@ -13,9 +13,9 @@ test('autonomy scopes, conversation clocks, owner decisions and stale delivery',
  assert.equal(BotConfigSchema.safeParse({...defaultConfig,behavior:{groupParticipationIntervalMinutes:10,dailyPlanLimit:-1}}).success,true);
  assert.equal(BotConfigSchema.safeParse({...defaultConfig,behavior:{dailyPlanLimit:-2}}).success,false);
  for(const config of [defaultConfig,BotConfigSchema.parse({...defaultConfig,behavior:{}}),applyFishSocialPreset(defaultConfig)]){
-  assert.equal(config.behavior!.ownerContactIdleMinutes,10);assert.equal(config.behavior!.dailyProactiveLimit,10);assert.equal(config.behavior!.groupParticipationIntervalMinutes,10);assert.equal(config.behavior!.dailyPlanLimit,-1);
+  assert.equal(config.behavior!.ownerContactIdleMinutes,10);assert.equal(config.behavior!.dailyProactiveLimit,10);assert.equal(config.behavior!.groupParticipationIntervalMinutes,10);assert.equal(config.behavior!.dailyPlanLimit,-1);assert.equal(config.behavior!.maxUnanswered,4);
  }
  assert.equal(applyFishSocialPreset(defaultConfig).behavior?.ownerContactEnabled,true);
  const result=await promisify(execFile)(path.resolve('references/astrbot/.venv/'+(process.platform==='win32'?'Scripts/python.exe':'bin/python')),['-B','tests/autonomy_test.py'],{windowsHide:true,timeout:40000,maxBuffer:1024*1024});
- assert.match(result.stderr,/Ran 41 tests/);assert.match(result.stderr,/\bOK\b/);
+ assert.match(result.stderr,/Ran 46 tests/);assert.match(result.stderr,/\bOK\b/);
 });

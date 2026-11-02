@@ -1,0 +1,4 @@
+export const autonomousStates:Record<string,string>={disabled:'被动模式',ready:'等待自主思考',thinking:'正在思考',acting:'正在执行任务',sleeping:'自主休眠',backoff:'保护性等待',waiting_receipt:'等待核对结果',suspended_offline:'QQ 离线，已挂起',budget_wait:'今日预算已用完'};
+export const autonomousOutcomes:Record<string,string>={active:'进行中',paused:'AI 暂时搁置',paused_user:'用户已暂停',paused_mode:'随主动模式暂停',completed:'已完成',abandoned:'已放弃',planned:'待执行',executing:'执行中',blocked:'受阻',unknown:'结果未确认',partial:'部分完成',canceled:'已取消',budget_exhausted:'预算已用完'};
+export function autonomousDate(value:unknown){if(typeof value!=='string')return '暂无';const time=new Date(value);return Number.isNaN(time.getTime())?'时间未知':time.toLocaleString('zh-CN')}
+export function autonomousQQStatus(view:{fresh?:boolean;online?:boolean}){return view.fresh===false?'QQ 状态未知或已过期':view.fresh!==true?'QQ 状态未知':view.online===true?'QQ 在线':'QQ 离线'}

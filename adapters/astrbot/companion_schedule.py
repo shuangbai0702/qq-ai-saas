@@ -42,7 +42,7 @@ class Planner:
                 if row[1]<=clock[0] or now-max(clock[:2])<autonomy.cooldown_base(cfg,row[0],'group'):return False
             plan=self.plan(row[0],max(row[1:4]))
             return plan is None or not plan['allowed'] and now>=plan['due']
-        candidate=next((r for r in rows if r[0] in targets and not (b.get('ownerContactEnabled',False) and r[0]=='private:'+str(b.get('ownerUin') or '')) and (not r[0].startswith('group:') or autonomy.group_allowed(cfg,r[0])) and not r[7] and r[6]<b.get('maxUnanswered',1) and 300<=now-max(r[1:4])<=7*86400 and needs_plan(r)),None)
+        candidate=next((r for r in rows if r[0] in targets and not (b.get('ownerContactEnabled',False) and r[0]=='private:'+str(b.get('ownerUin') or '')) and (not r[0].startswith('group:') or autonomy.group_allowed(cfg,r[0])) and not r[7] and r[6]<b.get('maxUnanswered',4) and 300<=now-max(r[1:4])<=7*86400 and needs_plan(r)),None)
         if not candidate:return
         day=int((now+8*3600)//86400);used=self.db.execute('SELECT count FROM companion_plan_budget WHERE day=?',(day,)).fetchone()
         limit=b.get('dailyPlanLimit',-1)
@@ -121,7 +121,10 @@ class Planner:
                     memory={'facts':[fact_item(r,owner,'owner_contact_context') for r in fact_rows(self.db,scope,owner,limit=3)],'recent_private':pending_messages(self.db,scope,owner,now,limit=4,budget=1200,cross_scope=False),'recent_uncompressed':pending_messages(self.db,scope,owner,now,limit=4,budget=1200)}
                     if b.get('memorySummary'):memory['summaries']=[{**summary_item(r),'summary':r[1][:250]} for r in summary_rows(self.db,scope,owner,limit=3)]
                 timing={'last_private_user_at':contact[2],'last_private_bot_at':contact[3] or None,'last_owner_interaction_at':state[1],'owner_idle_seconds':max(0,int(now-state[1])),'private_idle_seconds':max(0,int(now-max(contact[2:4]))),'last_proactive_attempt_at':contact[4] or None}
-                result=await asyncio.wait_for(provider.text_chat(prompt=json.dumps({'owner_id':owner,'persona':str(cfg.get('systemPrompt') or '')[:4000],'companion':companion_state.context(self.db,cfg,scope,now),'owner_memory':memory,'conversation_timing':timing,'cooldown_base_seconds':autonomy.cooldown_base(cfg,scope,'owner'),'last_user_text':contact[7][:500],'last_bot_text':contact[8][:500],'current_time':datetime.fromtimestamp(now,timezone(timedelta(hours=8))).isoformat()},ensure_ascii=False),system_prompt=autonomy.OWNER_SYSTEM+autonomy.COOLDOWN_SYSTEM,contexts=[],func_tool=None,max_tokens=192,request_max_retries=1),10)
+                # Background owner checks are not time-sensitive group admission.
+                # Allow the configured chat provider to finish; real conversation
+                # or configuration changes still invalidate the result below.
+                result=await asyncio.wait_for(provider.text_chat(prompt=json.dumps({'owner_id':owner,'persona':str(cfg.get('systemPrompt') or '')[:4000],'companion':companion_state.context(self.db,cfg,scope,now),'owner_memory':memory,'conversation_timing':timing,'cooldown_base_seconds':autonomy.cooldown_base(cfg,scope,'owner'),'last_user_text':contact[7][:500],'last_bot_text':contact[8][:500],'current_time':datetime.fromtimestamp(now,timezone(timedelta(hours=8))).isoformat()},ensure_ascii=False),system_prompt=autonomy.OWNER_SYSTEM+autonomy.COOLDOWN_SYSTEM,contexts=[],func_tool=None,max_tokens=192,request_max_retries=1),60)
                 if self.closed or not current():return
                 latest=autonomy.owner_state(self.db,cfg,time.time())
                 if not latest or latest[0]!=owner or latest[2][2:5]!=contact[2:5] or paused(self.db,scope,time.time()) or quiet(cfg,time.time()):

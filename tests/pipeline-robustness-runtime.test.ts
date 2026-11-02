@@ -21,7 +21,7 @@ test('native semantic entry sends every bubble with one final image and refunds 
   const system=body.messages.filter((m:any)=>m.role==='system').map((m:any)=>m.content).join('\n');
   const kind=system.includes('判断是否以当前人格自然加入群聊')?'group':'reply';calls.push({kind,body});
   const input=JSON.stringify(body.messages),image=input.match(/"id"\s*:\s*"(bf_[a-f0-9]{16})"/)?.[1]||input.match(/\\"id\\"\s*:\s*\\"(bf_[a-f0-9]{16})\\"/)?.[1];
-  const answer=kind==='group'?JSON.stringify({reply:true,target:'open',participation:'open',information:'substantive',interest:'strong',reason_code:'shared_interest',confidence:'high'}):input.includes('COMBINED_SILENT')?'[NO_REPLY]':'[AT:12345678]先接上这个话题。\n还有一点想法。\n就这样聊聊。'+(image?'[MEME:'+image+']':'');
+  const answer=kind==='group'?JSON.stringify({reply:true,target:'open',participation:'open',information:'substantive',interest:'strong',reason_code:'shared_interest',confidence:'high'}):input.includes('COMBINED_SILENT')?'[NO_REPLY]':'[AT:12345678]先接上这个话题。[QQ_BREAK]还有一点想法。[QQ_BREAK]就这样聊聊。'+(image?'[MEME:'+image+']':'');
   res.setHeader('Content-Type','application/json');res.end(JSON.stringify({id:'robust-pipeline',model:body.model,choices:[{index:0,message:{role:'assistant',content:answer},finish_reason:'stop'}]}));
  });
  await new Promise<void>(r=>model.listen(0,'127.0.0.1',r));permitModelFixture(model);

@@ -1,0 +1,391 @@
+/* === 完全统一的设计语言 === */
+
+/* 修复滚动 */
+body, html {
+  overflow: auto !important;
+  height: auto !important;
+}
+
+/* 背景 - 程序化网格 */
+body {
+  background: #f6f3ec !important;
+  position: relative;
+}
+
+/* 静态网格背景 */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: 
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 79px,
+      rgba(232, 93, 63, 0.06) 79px,
+      rgba(232, 93, 63, 0.06) 80px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 79px,
+      rgba(74, 147, 199, 0.06) 79px,
+      rgba(74, 147, 199, 0.06) 80px
+    ),
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 19px,
+      rgba(38, 38, 31, 0.015) 19px,
+      rgba(38, 38, 31, 0.015) 20px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 19px,
+      rgba(38, 38, 31, 0.015) 19px,
+      rgba(38, 38, 31, 0.015) 20px
+    );
+  pointer-events: none;
+  opacity: 0.8;
+  z-index: 0;
+}
+
+main {
+  position: relative;
+  z-index: 10;
+}
+
+/* === 完全统一的卡片系统 === */
+
+.panel,
+.bot-row,
+.stat {
+  background: rgba(255, 253, 248, 0.7) !important;
+  backdrop-filter: blur(20px) saturate(180%) !important;
+  border: 1px solid rgba(226, 222, 211, 0.6) !important;
+  box-shadow: 
+    0 2px 8px rgba(38, 38, 31, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6) !important;
+  transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 统一的悬停 - 所有卡片完全一致 */
+.panel:hover,
+.bot-row:hover,
+.stat:hover {
+  background: rgba(255, 255, 255, 0.85) !important;
+  border-color: rgba(232, 93, 63, 0.25) !important;
+  box-shadow: 
+    0 8px 24px rgba(38, 38, 31, 0.08),
+    0 2px 8px rgba(232, 93, 63, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8) !important;
+  transform: translateY(-4px);
+}
+
+/* 机器人卡片 - 移除所有特殊效果 */
+.bot-row {
+  /* 与其他卡片完全一致，无特殊样式 */
+}
+
+/* Bot 头像 - 与其他元素一致 */
+.bot-avatar {
+  transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  filter: drop-shadow(0 2px 6px rgba(74, 147, 199, 0.15));
+}
+
+.bot-row:hover .bot-avatar {
+  transform: scale(1.05);
+  filter: drop-shadow(0 4px 12px rgba(74, 147, 199, 0.25));
+}
+
+/* === 统一的按钮系统 === */
+
+.primary {
+  background: linear-gradient(135deg, #e85d3f 0%, #f27059 100%) !important;
+  box-shadow: 
+    0 2px 8px rgba(232, 93, 63, 0.2),
+    0 1px 2px rgba(232, 93, 63, 0.1) !important;
+  transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  border: none !important;
+}
+
+.primary:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 
+    0 6px 20px rgba(232, 93, 63, 0.3),
+    0 2px 6px rgba(232, 93, 63, 0.15) !important;
+}
+
+.primary:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.secondary {
+  transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.secondary:hover:not(:disabled) {
+  background: rgba(232, 93, 63, 0.06) !important;
+  border-color: rgba(232, 93, 63, 0.3) !important;
+  transform: translateY(-1px);
+}
+
+.icon {
+  transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.icon:hover {
+  background: rgba(232, 93, 63, 0.08) !important;
+  color: var(--accent) !important;
+  transform: translateY(-2px);
+}
+
+/* === 统一的表单系统 === */
+
+.field input,
+.field select,
+.field textarea {
+  background: rgba(255, 255, 255, 0.8) !important;
+  border: 1px solid rgba(226, 222, 211, 0.8) !important;
+  transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.field input:focus,
+.field select:focus,
+.field textarea:focus {
+  background: white !important;
+  border-color: rgba(232, 93, 63, 0.4) !important;
+  box-shadow: 
+    0 0 0 3px rgba(232, 93, 63, 0.1),
+    0 2px 8px rgba(38, 38, 31, 0.06) !important;
+  transform: translateY(-1px);
+}
+
+.toggle-row input[type=checkbox] {
+  transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.toggle-row input[type=checkbox]:checked {
+  background: linear-gradient(135deg, #2d7d5e 0%, #3a9972 100%) !important;
+  box-shadow: 
+    0 0 0 3px rgba(45, 125, 94, 0.12),
+    0 2px 6px rgba(45, 125, 94, 0.25) !important;
+}
+
+.toggle-row {
+  transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: 8px;
+  margin: 0 -12px;
+  padding-left: 12px !important;
+  padding-right: 12px !important;
+}
+
+.toggle-row:hover {
+  background: rgba(232, 93, 63, 0.03);
+}
+
+/* === 统一的状态系统 === */
+
+.badge {
+  transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.badge.green {
+  background: linear-gradient(135deg, #2d7d5e 0%, #3a9972 100%) !important;
+  box-shadow: 0 2px 6px rgba(45, 125, 94, 0.2) !important;
+}
+
+.badge.green:hover {
+  box-shadow: 0 4px 12px rgba(45, 125, 94, 0.3) !important;
+  transform: scale(1.02);
+}
+
+.signal {
+  background: rgba(246, 243, 236, 0.6) !important;
+  border-radius: 6px;
+  transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.signal.good {
+  background: rgba(45, 125, 94, 0.08) !important;
+}
+
+.signal:hover {
+  background: rgba(255, 255, 255, 0.9) !important;
+  box-shadow: 0 2px 6px rgba(38, 38, 31, 0.06);
+  transform: translateX(2px);
+}
+
+/* === 统一的导航系统 === */
+
+.app-header {
+  background: rgba(255, 253, 248, 0.85) !important;
+  backdrop-filter: blur(30px) saturate(180%) !important;
+  border-bottom: 1px solid rgba(226, 222, 211, 0.6) !important;
+  box-shadow: 
+    0 1px 0 rgba(255, 255, 255, 0.6) inset,
+    0 2px 8px rgba(38, 38, 31, 0.04) !important;
+  position: relative;
+  z-index: 100;
+}
+
+.main-nav a {
+  transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+}
+
+.main-nav a:hover {
+  background: rgba(232, 93, 63, 0.06) !important;
+  transform: translateY(-1px);
+}
+
+.main-nav a.active {
+  background: rgba(232, 93, 63, 0.1) !important;
+  box-shadow: 
+    0 2px 6px rgba(232, 93, 63, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4) !important;
+}
+
+.main-nav a svg {
+  transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.main-nav a:hover svg {
+  transform: scale(1.1);
+}
+
+.brand-icon {
+  transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.brand:hover .brand-icon {
+  transform: scale(1.08);
+}
+
+/* === 统一的特殊组件 === */
+
+.stat strong {
+  background: linear-gradient(135deg, #e85d3f 0%, #f27059 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats {
+  position: relative;
+}
+
+.stats::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: 
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 19px,
+      rgba(232, 93, 63, 0.03) 19px,
+      rgba(232, 93, 63, 0.03) 20px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 19px,
+      rgba(74, 147, 199, 0.03) 19px,
+      rgba(74, 147, 199, 0.03) 20px
+    );
+  pointer-events: none;
+  opacity: 0.8;
+  border-radius: 10px;
+}
+
+.save-bar {
+  background: rgba(255, 253, 245, 0.9) !important;
+  backdrop-filter: blur(30px) saturate(180%) !important;
+  border: 1px solid rgba(226, 222, 211, 0.8) !important;
+  box-shadow: 
+    0 8px 24px rgba(61, 54, 35, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8) !important;
+  border-radius: 12px !important;
+}
+
+.companion-note {
+  background: linear-gradient(135deg, #fff9f2 0%, #fef5ea 100%) !important;
+  border: 1px solid rgba(232, 93, 63, 0.15) !important;
+  box-shadow: 
+    0 4px 16px rgba(232, 93, 63, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6) !important;
+  transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.companion-note:hover {
+  box-shadow: 
+    0 8px 24px rgba(232, 93, 63, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8) !important;
+  transform: translateY(-4px);
+}
+
+.companion-note img {
+  transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.companion-note:hover img {
+  transform: scale(1.03);
+}
+
+/* === 页面进入动画 === */
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.page-title {
+  animation: fade-in-up 0.5s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+.stats {
+  animation: fade-in-up 0.6s cubic-bezier(0.4, 0, 0.2, 1) 0.1s both;
+}
+
+.bot-rows {
+  animation: fade-in-up 0.7s cubic-bezier(0.4, 0, 0.2, 1) 0.2s both;
+}
+
+.bot-row:nth-child(1) { animation: fade-in-up 0.4s cubic-bezier(0.4, 0, 0.2, 1) 0ms both; }
+.bot-row:nth-child(2) { animation: fade-in-up 0.4s cubic-bezier(0.4, 0, 0.2, 1) 50ms both; }
+.bot-row:nth-child(3) { animation: fade-in-up 0.4s cubic-bezier(0.4, 0, 0.2, 1) 100ms both; }
+.bot-row:nth-child(4) { animation: fade-in-up 0.4s cubic-bezier(0.4, 0, 0.2, 1) 150ms both; }
+.bot-row:nth-child(5) { animation: fade-in-up 0.4s cubic-bezier(0.4, 0, 0.2, 1) 200ms both; }
+
+/* === 响应式 === */
+@media (max-width: 768px) {
+  .panel:hover,
+  .bot-row:hover,
+  .stat:hover {
+    transform: none;
+  }
+  
+  button:active,
+  a:active {
+    transform: scale(0.97) !important;
+  }
+}
+
+/* === 减少运动 === */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

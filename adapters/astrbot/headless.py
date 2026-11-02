@@ -20,6 +20,7 @@ async def main():
     guard_model_egress()
     core=AstrBotCoreLifecycle(broker,db_helper)
     await core.initialize()
+    core.astrbot_config['platform_settings']['empty_mention_waiting']=False
     prompt=(root/'persona.txt').read_text(encoding='utf8')
     existing=await db_helper.get_persona_by_id('platform')
     if existing:await db_helper.update_persona('platform',system_prompt=prompt,tools=[],skills=[])
@@ -37,7 +38,7 @@ async def main():
                 await original(message)
             platform.handle_msg=gated
     from behavior import install_runtime
-    behavior=install_runtime(core,{'qq':{'root':str(root.parent),'botId':manifest.get('botId',root.parent.name),'config':manifest.get('config',{}),'generation':manifest['generation']}})
+    behavior=install_runtime(core,{'qq':{'root':str(root.parent),'tenantId':manifest.get('tenantId'),'botId':manifest.get('botId',root.parent.name),'config':manifest.get('config',{}),'generation':manifest['generation'],'revision':manifest['revision'],'expectedUin':manifest.get('expectedUin','')}})
     stop=asyncio.Event()
     async def health(request):
         if request.headers.get('Authorization')!='Bearer '+manifest['token']:raise web.HTTPUnauthorized()
@@ -46,7 +47,12 @@ async def main():
         if request.headers.get('Authorization')!='Bearer '+manifest['token']:raise web.HTTPUnauthorized()
         if request.headers.get('X-Member-Generation')!=str(manifest['generation']) or request.headers.get('X-Member-Revision')!=str(manifest['revision']):raise web.HTTPConflict()
         return web.json_response(behavior['manage']('qq',await request.json()))
-    app=web.Application();app.router.add_get('/health',health);app.router.add_post('/behavior-data',manage_data)
+    async def autonomous_work(request):
+        if request.headers.get('Authorization')!='Bearer '+manifest['token']:raise web.HTTPUnauthorized()
+        if request.headers.get('X-Member-Generation')!=str(manifest['generation']) or request.headers.get('X-Member-Revision')!=str(manifest['revision']):raise web.HTTPConflict()
+        try:return web.json_response(await behavior['autonomous']('qq',request.match_info['operation'],await request.json()))
+        except (ValueError,KeyError,TypeError):raise web.HTTPConflict(reason='Autonomous work invalid or stale') from None
+    app=web.Application(client_max_size=131072);app.router.add_get('/health',health);app.router.add_post('/behavior-data',manage_data);app.router.add_post('/autonomous/{operation}',autonomous_work)
     runner=web.AppRunner(app);await runner.setup();await web.TCPSite(runner,'127.0.0.1',manifest['aiPort']+1).start()
     task=asyncio.create_task(core.start())
     for sig in [signal.SIGTERM,signal.SIGINT]:

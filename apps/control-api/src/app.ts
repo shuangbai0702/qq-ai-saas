@@ -4,6 +4,7 @@ import {createRequestBudget} from './request-budget.js';
 import {createMemoryMonitor,collectMemory,collectProcesses,readHostSnapshot} from './memory-monitor.js';
 import {buildMemoryView} from './memory-view.js';
 import {registerBehaviorData} from './behavior-data.js';
+import {registerAutonomous} from './autonomous.js';
 import {getBotQuota} from './bot-quota.js';
 import {probeModel} from '../../../packages/shared/model-probe.js';
 import {registerSocialMedia} from './social-media.js';
@@ -113,6 +114,7 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
  registerSocialMedia(app,root,owned);
  registerQQFavorites(app,root,owned);
  registerBehaviorData(app,root,owned,agent);
+ registerAutonomous(app,db,owned);
  const publicLogin=(s:any)=>({...s,qr:undefined,hasQr:!!s.qr});
  app.get<{Params:{id:string}}>('/v1/login-sessions/:id',async req=>publicLogin(await loginOwned(req)));
  app.get<{Params:{id:string}}>('/v1/bots/:id/login-session',async req=>{await owned(req,req.params.id);const [s]=await db.query('SELECT * FROM login_sessions WHERE bot_id=$1 ORDER BY created_at DESC LIMIT 1',[req.params.id]);return s?publicLogin(s):null});

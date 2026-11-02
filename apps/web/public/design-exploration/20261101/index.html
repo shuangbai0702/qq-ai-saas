@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="tidal">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="FishBot 三套可交互界面设计预览：潮汐工作室、鱼信事务所、深蓝指挥舱。">
+  <title>FishBot · 三种新的日常</title>
+  <link rel="stylesheet" href="preview.css">
+  <script src="preview.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">跳到主要内容</a>
+  <header class="design-bar">
+    <a class="lab-brand" href="#tidal/robots"><span class="lab-mark">F/</span><span>FISHBOT <b>DESIGN STUDIES</b></span></a>
+    <nav class="version-nav" aria-label="切换设计版本">
+      <button data-theme="tidal" aria-pressed="true"><span class="swatch tidal"></span><span>A <b>潮汐工作室</b></span></button>
+      <button data-theme="paper" aria-pressed="false"><span class="swatch paper"></span><span>B <b>鱼信事务所</b></span></button>
+      <button data-theme="midnight" aria-pressed="false"><span class="swatch midnight"></span><span>C <b>深蓝指挥舱</b></span></button>
+    </nav>
+    <span class="demo-badge"><i></i>交互预览 · 示例数据</span>
+  </header>
+  <div id="app"></div>
+  <dialog id="detail" aria-labelledby="detail-title"></dialog>
+  <div class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

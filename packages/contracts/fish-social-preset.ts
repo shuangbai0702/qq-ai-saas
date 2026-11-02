@@ -15,5 +15,7 @@ export const fishSocialPreset={
 };
 export function applyFishSocialPreset(config:BotConfig):BotConfig{
  return {...config,historyTurns:fishSocialPreset.historyTurns,proactive:true,
-  behavior:{...config.behavior,...fishSocialPreset.behavior,memePacks:[...fishSocialPreset.behavior.memePacks]} as NonNullable<BotConfig['behavior']>};
+  behavior:{...config.behavior,...fishSocialPreset.behavior,
+   dailyProactiveLimit:config.behavior?.dailyProactiveLimit??fishSocialPreset.behavior.dailyProactiveLimit,
+   memePacks:[...fishSocialPreset.behavior.memePacks]} as NonNullable<BotConfig['behavior']>};
 }

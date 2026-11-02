@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f7f9fc">
+  <meta name="description" content="01 · 纯 UI 材质样本。程序生成的按钮轮廓、面板细纹、柔性表面与交互波场。">
+  <title>01+ · 微光、花边与基础 UI</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='19' fill='%23e7f0fc'/%3E%3Cpath d='M18 33q14-22 28 0M24 40h16' fill='none' stroke='%237e9fce' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./materials.css">
+  <link rel="stylesheet" href="./flourish.css">
+</head>
+<body>
+  <canvas id="field" aria-hidden="true"></canvas>
+  <a class="skip" href="#buttons">跳到按钮样本</a>
+  <header class="masthead wrap">
+    <a class="brand" href="#top" aria-label="FishBot UI 样本"><span class="brand-symbol"><svg viewBox="0 0 32 32" fill="none"><path d="M7 17q9-15 18 0M11 23h10"/><circle cx="16" cy="9" r="1.2"/></svg></span><b>fishbot<span>UI MATERIALS</span></b><i>01+</i></a>
+    <nav aria-label="元素分类"><a href="./saved/01-soft-clean-20261101/index.html">保存版 ↗</a><a href="#surfaces">背景与面板</a><a href="#buttons">按钮</a><a href="#details">小元素</a></nav>
+    <button id="motion" class="motion-button" aria-pressed="true" aria-label="暂停视觉动态"><span class="motion-bars"><i></i><i></i></span><span id="motion-label">动态开启</span></button>
+  </header>
+  <main class="wrap" id="top">
+    <section class="intro">
+      <div><p class="eyebrow">FORM / LIGHT / SOFTNESS</p><h1>清爽一点，<em>软乎一点。</em><span class="intro-spark">✧</span></h1><p class="intro-note">按钮、背景、面板与基础元素。只有 UI 的形状、材质和运动。</p><div class="intro-tags" aria-hidden="true"><span><i></i>软软花边</span><span><i></i>虹彩薄膜</span><span><i></i>一小撮糖</span></div></div>
+      <div class="intro-index"><span>VISUAL STUDY</span><b>01<span> / UI</span></b><small>BLUE · MINT · A LITTLE SWEET</small></div>
+    </section>
+    <section class="field-stage" id="surfaces" aria-label="交互背景与面板材质样本">
+      <div class="section-bar"><h2><span>01</span>背景与面板</h2><div class="material-key"><span><i></i>柔性轮廓</span><span><i></i>连续光场</span><span><i></i>细腻纹理</span></div></div>
+      <div class="panel-grid">
+        <article class="show-panel porcelain" data-surface="porcelain" data-flex="6" data-radius="24">
+          <div class="panel-content"><div class="surface-kicker"><span>SOFT WHITE</span><span>01 / A</span></div><h3>奶白</h3><p class="surface-description">柔和的白，圆一点，也暖一点。</p><div class="porcelain-object" data-surface="ceramic" data-radius="23" data-flex="8" aria-hidden="true"><div class="object-mark"><i></i><i></i><i></i><span></span></div><b>✧</b></div><div class="panel-bottom"><span class="little-label"><i></i>绵密 / 细腻</span><button class="ui-button icon-only" data-surface="white" data-flex="5" data-radius="12" aria-label="方形小按钮"><svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button></div></div>
+        </article>
+        <article class="show-panel glass" data-surface="glass" data-flex="7" data-radius="24">
+          <div class="panel-content"><div class="surface-kicker"><span>AIR GLASS</span><span>01 / B</span></div><h3>轻透</h3><p class="surface-description">叠一层浅蓝，让光轻轻透过。</p><div class="glass-stack" aria-hidden="true"><i class="glass-sheet sheet-back" data-surface="glass" data-radius="15" data-flex="3"></i><i class="glass-sheet sheet-mid" data-surface="glass" data-radius="15" data-flex="4"></i><div class="glass-sheet sheet-front" data-surface="glass" data-radius="15" data-flex="6"><span></span><b></b><i></i></div></div><div class="panel-bottom"><span class="little-label"><i></i>通透 / 层叠</span><button class="ui-button icon-only" data-surface="glass" data-flex="5" data-radius="12" aria-label="玻璃小按钮"><svg class="icon" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></button></div></div>
+        </article>
+        <article class="show-panel enamel" data-surface="enamel" data-flex="6" data-radius="24">
+          <div class="panel-content"><div class="surface-kicker"><span>SKY BLUE</span><span>01 / C</span></div><h3>晴蓝</h3><p class="surface-description">像晴天一样，亮一点，软一点。</p><div class="enamel-object" data-surface="blue" data-radius="32" data-flex="9" aria-hidden="true"><svg viewBox="0 0 70 70"><path d="M23 36h24M38 26l10 10-10 10"/></svg><i></i><span>SOFT</span></div><div class="panel-bottom"><span class="little-label"><i></i>圆润 / 微光</span><button class="ui-button icon-only inverse" data-surface="ice" data-flex="5" data-radius="12" aria-label="蓝色小按钮"><svg class="icon" viewBox="0 0 24 24"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3Z"/></svg></button></div></div>
+        </article>
+      </div>
+      <div class="stage-foot"><p><span>↳</span>轻轻掠过会鼓起来，按下去再弹回来。空白处也有小小的波纹。</p><span>TOUCH THE SURFACE</span></div>
+    </section>
+    <section class="samples" id="buttons" aria-labelledby="buttons-heading">
+      <div class="samples-heading"><div><p class="eyebrow">THE SMALL THINGS</p><h2 id="buttons-heading">从一颗按钮开始。</h2></div><span>HOVER / PRESS / RELEASE</span></div>
+      <div class="sample-grid">
+        <article class="sample-tile button-lab" data-surface="paper" data-flex="2" data-radius="20">
+          <div class="tile-title"><h3>按钮</h3><span>02 / BUTTONS</span></div>
+          <div class="button-row main-buttons"><button class="ui-button primary large" data-surface="blue" data-radius="15" data-flex="9"><span>主按钮</span><svg class="icon" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></button><button class="ui-button large" data-surface="white" data-radius="15" data-flex="8"><span>轻按钮</span><svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button><button class="ui-button soft large" data-surface="mist" data-radius="15" data-flex="8">柔雾</button></div>
+          <div class="candy-buttons"><button class="ui-button candy" data-surface="rose" data-shape="cloud" data-radius="17" data-flex="9"><svg class="icon" viewBox="0 0 24 24"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3Z"/></svg>奶莓</button><button class="ui-button candy" data-surface="mint" data-radius="17" data-flex="9"><svg class="icon" viewBox="0 0 24 24"><path d="M6 18C3 10 9 5 19 5c0 11-5 15-13 13Zm0 0 9-8"/></svg>薄荷</button><button class="ui-button candy" data-surface="lemon" data-shape="cloud" data-radius="17" data-flex="9">软花边</button><button class="ui-button candy" data-surface="pearl" data-radius="17" data-flex="9">虹彩 <span>✧</span></button><span class="candy-note">多一点花样。</span></div>
+          <div class="sample-rule"><span>同一材质，不同比例</span><i></i></div>
+          <div class="button-row size-buttons"><button class="ui-button medium" data-surface="white" data-radius="12" data-flex="7">标准按钮<span class="keycap">M</span></button><button class="ui-button small" data-surface="white" data-radius="10" data-flex="6">小按钮</button><button class="ui-button tiny" data-surface="mist" data-radius="8" data-flex="5">更小一点</button><button class="ui-button pill" data-surface="glass" data-radius="30" data-flex="7">圆角胶囊 <span>↗</span></button></div>
+          <div class="sample-rule"><span>小小的，手感也完整</span><i></i></div>
+          <div class="button-row icon-buttons"><button class="ui-button icon-only" data-surface="blue" data-radius="12" data-flex="7" aria-label="蓝色加号按钮"><svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button><button class="ui-button icon-only" data-surface="white" data-radius="12" data-flex="7" aria-label="细线星形按钮"><svg class="icon" viewBox="0 0 24 24"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3Z"/></svg></button><button class="ui-button icon-only round" data-surface="glass" data-radius="50" data-flex="7" aria-label="圆形箭头按钮"><svg class="icon" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></button><button class="ui-button icon-only round" data-surface="mist" data-radius="50" data-flex="7" aria-label="柔雾圆形按钮"><svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2"/></svg></button><button class="ui-button icon-only micro" data-surface="white" data-radius="8" data-flex="5" aria-label="微型菜单按钮"><svg class="icon" viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14"/></svg></button><button class="ui-button icon-only" data-surface="mint" data-shape="flower" data-radius="17" data-flex="8" aria-label="薄荷花瓣按钮"><svg class="icon" viewBox="0 0 24 24"><path d="M12 6v12M6 12h12"/></svg></button><button class="ui-button icon-only" data-surface="lemon" data-shape="flower" data-radius="17" data-flex="8" aria-label="奶黄花瓣按钮"><svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/></svg></button><span class="button-caption">鼓起来，软软地弹回来。</span></div>
+        </article>
+        <article class="sample-tile detail-lab" id="details" data-surface="paper" data-flex="2" data-radius="20">
+          <div class="tile-title"><h3>基础小元素</h3><span>03 / DETAILS</span></div>
+          <div class="detail-row"><span class="element-label">页签</span><div class="segmented" role="group" aria-label="页签视觉样本"><span class="segment-skin" data-surface="white" data-radius="9" data-flex="5"></span><button aria-pressed="true">圆润</button><button aria-pressed="false">轻透</button><button aria-pressed="false">细线</button></div></div>
+          <div class="detail-row"><span class="element-label">开关</span><div class="switches"><button class="jelly-switch" role="switch" aria-label="蓝色开关样本" aria-checked="true" data-surface="switch" data-radius="20" data-flex="5"><span></span></button><button class="jelly-switch quiet" role="switch" aria-label="浅色开关样本" aria-checked="false" data-surface="switch" data-radius="20" data-flex="5"><span></span></button><button class="check-sample" role="checkbox" aria-label="复选框样本" aria-checked="true" data-surface="white" data-radius="7" data-flex="5"><svg viewBox="0 0 24 24"><path d="m6 12 4 4 8-9"/></svg></button></div></div>
+          <div class="detail-row"><span class="element-label">标签</span><div class="badges"><span data-surface="mist" data-radius="8" data-flex="3">浅蓝</span><span data-surface="glass" data-radius="8" data-flex="3">半透明</span><span data-surface="white" data-radius="20" data-flex="3"><i></i>细边</span><span class="tiny-badge">✧</span></div></div>
+          <div class="detail-row input-row"><span class="element-label">输入框</span><label class="field-shell" data-surface="recess" data-radius="11" data-flex="3"><span>Aa</span><input aria-label="输入框视觉样本" placeholder="输入框的表面与焦点…" maxlength="36"><kbd>↵</kbd></label></div>
+          <div class="detail-row"><span class="element-label">饰边</span><div class="border-samples" aria-hidden="true"><svg class="border-sample" viewBox="0 0 65 18"><path/></svg><svg class="border-sample" viewBox="0 0 65 18"><path/></svg><svg class="border-sample" viewBox="0 0 65 18"><path/></svg></div></div>
+          <div class="detail-row last-detail"><span class="element-label">动感</span><div class="motion-samples" aria-hidden="true"><span class="orbit-loader"><i></i><i></i><i></i></span><span class="breathing-dots"><i></i><i></i><i></i></span><span class="soft-line"><i></i></span><span class="mini-spark">✧</span></div></div>
+        </article>
+      </div>
+    </section>
+    <section class="edge-studies" aria-label="边缘与层次样本">
+      <article class="edge-tile" data-surface="porcelain" data-radius="21" data-flex="6"><span class="edge-number">04 / EDGE</span><div class="edge-demo"><i data-surface="white" data-radius="16" data-flex="8"></i><i data-surface="glass" data-radius="16" data-flex="8"></i></div><h3>软软的边缘</h3><p>转角、曲率、回弹，来自同一条连续轮廓。</p></article>
+      <article class="edge-tile" data-surface="glass" data-radius="21" data-flex="5"><span class="edge-number">05 / GRAIN</span><div class="grain-demo" data-surface="satin" data-radius="15" data-flex="6"><span></span><i></i></div><h3>柔雾与透光</h3><p>很薄的一层蓝，光会跟着指针游过。</p></article>
+      <article class="edge-tile" data-surface="porcelain" data-radius="21" data-flex="5"><span class="edge-number">06 / LAYER</span><div class="layer-demo"><i data-surface="mist" data-radius="12" data-flex="4"></i><i data-surface="glass" data-radius="12" data-flex="5"></i><i data-surface="white" data-radius="12" data-flex="7"><b>+</b></i></div><h3>轻盈的层次</h3><p>透明度、内阴影和厚度，共同构成触感。</p></article>
+    </section>
+    <footer><span>FISHBOT / PURE UI STUDY 01</span><p>形状和光，先说话。</p><span>CODE-DRAWN / NO BITMAP MATERIALS</span></footer>
+  </main>
+  <script type="module" src="./materials.js"></script>
+</body>
+</html>

@@ -9,7 +9,9 @@ Source: zexuanw958-svg/dafeiyu-config-pack, commit
 - DeepSeek 原生工具调用标记 DSML：<｜DSML｜function_calls> 整块、零散的 <｜DSML｜invoke …>、</｜DSML｜parameter> 等。
 - 老格式 <｜tool▁calls▁begin｜>…<｜tool▁calls▁end｜>、<tool_call>…</tool_call>。
 """
+import copy
 import re
+from message_layout import without_boundaries
 
 _BAR = r"[|｜]"
 _PATTERNS = [
@@ -24,6 +26,25 @@ _PATTERNS = [
     re.compile(r"User ID:\s*\d+\s*,\s*Nickname:[^\n<]*"),
 ]
 _HINT = re.compile(r"system_reminder|DSML|tool▁|tool_call|User ID:", re.I)
+_SPACE = r'[\s\u200b-\u200d\ufeff]*'
+_IMAGE_CONTROL = re.compile(r'\['+_SPACE+r'(?:(M'+_SPACE+'E'+_SPACE+'M'+_SPACE+'E)|(I'+_SPACE+'M'+_SPACE+'A'+_SPACE+'G'+_SPACE+'E))'+_SPACE+r':([^\]]{0,512})(?:\]|$)',re.I)
+
+
+def normalize_image_markers(text):
+    """Whitespace is presentation, never an alternative image identity.
+
+    Catalog/candidate authorization still happens after normalization. Invalid
+    control payloads disappear instead of becoming public assistant prose.
+    """
+    def replace(match):
+        identifier=re.sub(r'[\s\u200b-\u200d\ufeff]+','',match[3])
+        if not re.fullmatch(r'[a-z0-9_-]{1,32}',identifier):return ''
+        return '['+('MEME' if match[1] else 'IMAGE')+':'+identifier+']'
+    return _IMAGE_CONTROL.sub(replace,text)
+
+
+def without_image_markers(text):
+    return _IMAGE_CONTROL.sub('',text)
 
 
 def dirty(text: str) -> bool:
@@ -38,3 +59,14 @@ def clean(text: str) -> str:
     text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def prepare_history(messages: list) -> list:
+    """Remove leaked controls on a private copy, preserving dialogue paragraphs."""
+    result = copy.deepcopy(messages)
+    for message in result:
+        if not isinstance(message, dict) or message.get('role') != 'assistant' or not isinstance(message.get('content'), str):
+            continue
+        text = without_image_markers(without_boundaries(clean(message['content'])))
+        message['content'] = text
+    return result
