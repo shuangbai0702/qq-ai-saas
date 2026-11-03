@@ -1887,3 +1887,6 @@ main {
   }
 }
 
+
+/* Configuration hierarchy uses native, keyboard-accessible disclosure. */
+.config-nav-group>summary{cursor:pointer;font-weight:650;padding:12px 6px;color:var(--text);list-style-position:inside}.config-nav-group[open]>summary{margin-bottom:6px}.config-nav-group .status-pill{white-space:nowrap}@media(max-width:760px){.config-nav details{min-width:0}.config-nav-group>summary{padding:12px}.config-nav-group>a{min-height:44px}.config-main{min-width:0}}

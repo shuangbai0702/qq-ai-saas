@@ -177,9 +177,11 @@ class SocialStore:
                     if item.get('enabled',True) is False:
                         result.pop(identifier,None)
                         continue
-                    result[identifier]={'id':identifier,'meaning':str(item['meaning'])[:100],'avoid':str(item.get('avoid',''))[:100],'path':str(file.resolve())}
+                    result[identifier]={'id':identifier,'meaning':str(item['meaning'])[:100],'avoid':str(item.get('avoid',''))[:100],'path':str(file.resolve()),'source':'gallery' if gallery else 'local_reaction'}
                 except (OSError,ValueError,KeyError,TypeError):continue
-        return (self.stickers.catalog(scope) if scope and not gallery else [])+list(result.values())[:64]+(pack_catalog(self.root,packs)+favorite_catalog(self.root,favorite_account) if not gallery else [])
+        collected=[{**i,'source':'collected','source_scope':scope} for i in self.stickers.catalog(scope)] if scope and not gallery else []
+        packs_and_favorites=([{**i,'source':'platform_pack','pack':'blue-fat-fish'} for i in pack_catalog(self.root,packs)]+[{**i,'source':'qq_favorite_cache'} for i in favorite_catalog(self.root,favorite_account)]) if not gallery else []
+        return collected+list(result.values())[:64]+packs_and_favorites
 
     def context(self, scope, text, cfg, _meme_scores=None, _meme_catalog=None):
         context = {}

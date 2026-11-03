@@ -49,6 +49,7 @@ class RuntimeCare:
         self.last_gc = self.last_activity
         self.trimmed_activity = None
         self.failures = 0
+        self.favorite_reconciler = None
     def stamp(self, root):
         if self.closed: return
         self.last_activity = time.time()
@@ -94,6 +95,12 @@ class RuntimeCare:
             try:
                 for st in list(self.stores.values()):
                     if self.busy(st):self.stamp(st.root)
+                if self.favorite_reconciler:await self.favorite_reconciler()
+                # Existing process-wide maintenance clock, one bounded summary
+                # at a time. Persisted rounds/retry state survive a restart.
+                for st in list(self.stores.values()):
+                    if not self.busy(st) and st.reflection.retry():
+                        self.track(st,st.reflection.task);break
                 self.sweep()
             except (OSError,sqlite3.Error):self.failures+=1
     def close(self): self.closed = True

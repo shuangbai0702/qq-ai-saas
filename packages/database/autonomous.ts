@@ -228,7 +228,14 @@ export class AutonomyRepository {
  async feedback(claim:any,id:string,result:any){
   await this.db.query("UPDATE autonomy_actions SET status=$5,result=$6,receipt=$7,finished_at=now() WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND cycle_id=$4 AND status IN ('executing','unknown','partial')",[id,claim.bot_id,claim.tenant_id,claim.cycleId,result.status,JSON.stringify(result),JSON.stringify(result.effects||[])]);
  }
- async unconfirmed(tenantId:string,botId:string){return this.db.query("SELECT id,cycle_id FROM autonomy_actions WHERE bot_id=$1 AND tenant_id=$2 AND (status='unknown' OR status='partial' AND result->'effects' @> '[{\"status\":\"unknown\"}]'::jsonb) ORDER BY created_at LIMIT 16",[botId,tenantId])}
+ async unconfirmed(tenantId:string,botId:string){return this.db.query("SELECT id,cycle_id,kind,objective,result FROM autonomy_actions WHERE bot_id=$1 AND tenant_id=$2 AND coalesce((result->'receiptCheck'->>'nextAt')::double precision,0)<=extract(epoch FROM now()) AND (status='unknown' OR status='partial' AND result->'effects' @> '[{\"status\":\"unknown\"}]'::jsonb) ORDER BY created_at LIMIT 2",[botId,tenantId])}
+ async receiptChecked(bot:any,pending:any){
+  const attempts=Math.min(10,Number(pending.result?.receiptCheck?.attempts||0)+1);
+  await this.db.query("UPDATE autonomy_actions SET result=jsonb_set(coalesce(result,'{}'),'{receiptCheck}',$4::jsonb,true) WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND status IN ('unknown','partial')",[pending.id,bot.bot_id,bot.tenant_id,JSON.stringify({attempts,nextAt:Date.now()/1000+Math.min(300,30*2**Math.min(4,attempts-1))})]);
+ }
+ async otherDue(claim:any){
+  const rows=await this.db.query(`SELECT 1 FROM autonomy_settings s JOIN bots b ON b.id=s.bot_id AND b.tenant_id=s.tenant_id WHERE s.bot_id<>$1 AND s.config->>'mode'='active' AND s.runtime_epoch=s.epoch AND ${onlineSql} AND (s.lease_until IS NULL OR s.lease_until<now()) AND EXISTS(SELECT 1 FROM autonomy_wakes w WHERE w.bot_id=s.bot_id AND w.tenant_id=s.tenant_id AND w.epoch=s.epoch AND w.due_at<=now()) LIMIT 1`,[claim.bot_id]);return rows.length>0;
+ }
  async finish(claim:any,usage:{tokens:number;modelCalls:number;toolCalls:number;externalActions:number},reason:string,sleepSeconds:number){
   await this.db.transaction(async tx=>{
    const done=await tx.query('UPDATE autonomy_cycles SET state=$2,usage=$3,reason=$4,finished_at=now() WHERE id=$1 AND bot_id=$5 AND tenant_id=$6 AND finished_at IS NULL RETURNING id',[claim.cycleId,reason==='sleep'?'completed':'ended',JSON.stringify(usage),reason,claim.bot_id,claim.tenant_id]);

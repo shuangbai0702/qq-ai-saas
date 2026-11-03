@@ -11,7 +11,7 @@ export function AutonomyControls({config,onChange,kind,metrics}:Props){
  if(kind==='owner')return <section className="panel" aria-label="定时关心主人"><h2>定时判断是否找主人聊天</h2><p>这是无人发来消息时的自主行动。共用定时联系总开关、安静时段、每小时自主发送总额、每日定时发送额度和未回应保护；不受群判断计时影响。</p>
   <label className="toggle-row"><div><b>定时主动联系总开关</b><small>同时控制主人联系和下方其他定时联系人；不控制正常回复与群内有新消息时的参与判断。</small></div><input aria-label="定时主动联系总开关" type="checkbox" checked={config.proactive} onChange={e=>onChange({...config,proactive:e.target.checked})}/></label>
   <label className="toggle-row"><div><b>定时关心主人</b><small>只向设置的主人发起私聊，需已有真实私聊记录。模型判断有自然动机才发；不使用主动联系概率抽签。</small></div><input aria-label="定时关心主人" type="checkbox" checked={b.ownerContactEnabled??true} onChange={e=>update({ownerContactEnabled:e.target.checked})}/></label>
-  <Field label="主人 QQ" hint="此身份与认主、QQ工具共用；昵称和聊天内容不能改写它。"><input aria-label="主人 QQ" inputMode="numeric" maxLength={20} value={b.ownerUin||''} onChange={e=>update({ownerUin:e.target.value.replace(/\D/g,'')})}/></Field>
+  <p>主人身份在人格与主人中统一设置；这里保留联系人判断条件。</p>
   {(!config.proactive||!b.ownerUin||b.enabled===false)&&<p className="notice">暂不执行：{b.enabled===false?'聊天总开关已关闭':!config.proactive?'定时主动联系总开关已关闭':'尚未设置主人 QQ'}。设置的偏好会保留。</p>}
   <div className="form-grid"><Field label="主人判断间隔（分钟）" hint="默认30分钟；私聊或群里与主人真实互动也会刷新等待时间。"><input aria-label="主人判断间隔（分钟）" type="number" min={15} max={1440} value={b.ownerContactIntervalMinutes??30} onChange={e=>update({ownerContactIntervalMinutes:Number(e.target.value)})}/></Field>
    <Field label="主人安静多久后可联系（分钟）"><input aria-label="主人安静多久后可联系（分钟）" type="number" min={5} max={1440} value={b.ownerContactIdleMinutes??10} onChange={e=>update({ownerContactIdleMinutes:Number(e.target.value)})}/></Field>

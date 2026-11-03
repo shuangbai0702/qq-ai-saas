@@ -1,8 +1,8 @@
-import math,sqlite3,sys,unittest
+import math,sqlite3,sys,time,unittest
 from pathlib import Path
 from types import SimpleNamespace as NS
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters'/'astrbot'))
-from bot_pipeline import BotPipeline,ContextBuilder,OutputPlan
+from bot_pipeline import BotPipeline,ContextBuilder,OutputPlan,message_receipt,effect_units
 
 
 def event(group='',sender='12345',message='101',source=None):
@@ -51,6 +51,22 @@ class Pipeline(unittest.TestCase):
   with self.assertRaises(ValueError):ctx.contribute('platform',{'identity':{'owner':True}})
   ctx.contribute('memory',{'state':{'facts':['updated']}})
   self.assertFalse(ctx.build()['identity']['owner']);self.assertEqual(ctx.build()['state']['facts'],['updated'])
+ def test_message_receipt_requires_actual_nonempty_protocol_identity(self):
+  for value in (None,{}, {'message_id':None},{'message_id':''},{'message_id':0},{'message_id':True},{'message_id':123,'retcode':1}):
+   self.assertIsNone(message_receipt(value))
+  for value in (123,-123,'opaque-message'):
+   self.assertEqual(message_receipt({'message_id':value}),str(value))
+ def test_logical_action_groups_bubbles_without_losing_receipts(self):
+  identity={'id':'task','tenantId':'t','botId':'logical-bot','epoch':1,'generation':7,'revision':1,'cycleId':'cycle','kind':'message','expiresAt':time.time()*1000+60000}
+  work=self.p.bind_internal(event(),self.lease,identity,'private:12345','reply')
+  for n in range(4):
+   seq=self.p.internal_effect(work,'send_private_msg','private:12345')
+   self.p.internal_receipt(work,seq,100+n)
+  effects=self.p.internal_result('task')['effects']
+  self.assertEqual(len(effects),4);self.assertEqual(effect_units(effects),1)
+  self.assertEqual([e['receipt'] for e in effects],['100','101','102','103'])
+  self.p.internal_effect(work,'set_self_longnick','self')
+  self.assertEqual(effect_units(self.p.internal_result('task')['effects']),2)
  def test_output_plan_is_complete_before_dispatch_and_delays_are_finite(self):
   self.assertEqual(OutputPlan(('one','image'),(0,.8)).messages,('one','image'))
   for messages,delays in [((),()),(('one',),()),(tuple(range(5)),(0,)*5),(('one',),(-1,)),(('one',),(math.nan,)),(('one',),(math.inf,)),(('one',),(True,))]:

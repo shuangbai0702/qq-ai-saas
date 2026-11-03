@@ -140,7 +140,7 @@ def outgoing(db,cfg,scope,subject,text,event,now,internal=False,request=''):
 def context(db,cfg,scope,now):
     if not enabled(cfg):return {}
     seed(db,cfg,now)
-    interests=[{'topic':r[0],'heat':round(r[1]*2**(-max(0,now-r[3])/172800),2),'source':r[2]} for r in db.execute("SELECT topic,weight,source,updated FROM companion_interests WHERE scope IN (?, '*') ORDER BY weight DESC LIMIT 12",(scope,))]
+    interests=[{'topic':r[0],'heat':round(r[1]*2**(-max(0,now-r[3])/172800),2),'source':r[2],'source_scope':r[4]} for r in db.execute("SELECT topic,weight,source,updated,scope FROM companion_interests WHERE scope IN (?, '*') OR (scope='self' AND source='autonomous_choice') ORDER BY weight DESC LIMIT 12",(scope,))]
     motives=[{'topic':r[0],'subject':r[1],'expires':r[2],'status':r[3]} for r in db.execute("SELECT topic,subject,expires,status FROM companion_motives WHERE scope=? AND status IN ('open','contacted') AND expires>? ORDER BY due LIMIT 3",(scope,now))]
     mood=db.execute('SELECT valence,energy,updated FROM companion_mood WHERE scope=?',(scope,)).fetchone()
     val=mood[0]*2**(-max(0,now-mood[2])/7200) if mood else 0

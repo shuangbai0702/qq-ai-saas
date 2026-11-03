@@ -38,6 +38,14 @@ def run(file, data, connection=None):
         tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if data['action'] == 'list':
             scope, subject, query = data.get('scope', ''), data.get('subject', ''), data.get('query', '')
+            page=max(0,min(10000,int(data.get('page',0))));totals={};page_sizes={}
+            def listed(name,sql,args=(),size=100):
+                import re
+                base=re.split(r' ORDER BY ',sql,flags=re.I)[0]
+                base=re.sub(r' LIMIT \d+$','',base,flags=re.I)
+                totals[name]=db.execute('SELECT count(*) FROM ('+base+')',args).fetchone()[0];page_sizes[name]=size
+                return db.execute(sql+' OFFSET ?',tuple(args)+(page*size,))
+
             clauses, args = [], []
             for key, value in [('scope', scope), ('subject', subject)]:
                 if value:
@@ -47,19 +55,19 @@ def run(file, data, connection=None):
             if query:
                 fact_where += ' AND (instr(name,?)>0 OR instr(value,?)>0)'
                 args += [query, query]
-            facts = [dict(r) for r in db.execute('SELECT scope,subject,name,value,event,updated,version FROM facts WHERE ' + fact_where + ' ORDER BY updated DESC LIMIT 100', args)] if 'facts' in tables else []
+            facts = [dict(r) for r in listed('facts','SELECT scope,subject,name,value,event,updated,version FROM facts WHERE ' + fact_where + ' ORDER BY updated DESC LIMIT 100', args)] if 'facts' in tables else []
             pattern_args = [scope] if scope else []
             pattern_where = ' WHERE scope=?' if scope else ''
             patterns = []
             if 'social_patterns' in tables:
-                for r in db.execute('SELECT scope,expression,situation,sources,weight,updated FROM social_patterns' + pattern_where + ' ORDER BY updated DESC LIMIT 100', pattern_args):
+                for r in listed('patterns','SELECT scope,expression,situation,sources,weight,updated FROM social_patterns' + pattern_where + ' ORDER BY updated DESC LIMIT 100', pattern_args):
                     row = dict(r)
                     row['disabled'] = bool(db.execute('SELECT 1 FROM social_pattern_blocks WHERE scope=? AND expression=?', (r['scope'], r['expression'])).fetchone()) if 'social_pattern_blocks' in tables else False
                     row['expired'] = r['updated'] < time.time()-30*86400
                     patterns.append(row)
             pause_column='(SELECT until FROM initiative_pauses p WHERE p.scope=contacts.scope)' if 'initiative_pauses' in tables else 'NULL'
-            contacts = [dict(r) for r in db.execute('SELECT scope,last_user,last_bot,last_attempt,unanswered,opted_out,'+pause_column+' AS paused_until FROM contacts' + pattern_where + ' ORDER BY last_user DESC LIMIT 100', pattern_args)] if 'contacts' in tables else []
-            relations = [dict(r) for r in db.execute('SELECT scope,subject,affinity,emotion,expires,last_seen FROM relations' + (' WHERE '+' AND '.join(clauses) if clauses else '') + ' ORDER BY last_seen DESC LIMIT 100',([scope] if scope else [])+([subject] if subject else []))] if 'relations' in tables else []
+            contacts = [dict(r) for r in listed('contacts','SELECT scope,last_user,last_bot,last_attempt,unanswered,opted_out,'+pause_column+' AS paused_until FROM contacts' + pattern_where + ' ORDER BY last_user DESC LIMIT 100', pattern_args)] if 'contacts' in tables else []
+            relations = [dict(r) for r in listed('relations','SELECT scope,subject,affinity,emotion,expires,last_seen FROM relations' + (' WHERE '+' AND '.join(clauses) if clauses else '') + ' ORDER BY last_seen DESC LIMIT 100',([scope] if scope else [])+([subject] if subject else []))] if 'relations' in tables else []
             stats = {name: db.execute('SELECT count(*) FROM ' + name).fetchone()[0] for name in ['social_samples', 'social_patterns', 'social_learning'] if name in tables}
             epoch=db.execute('SELECT epoch FROM social_control WHERE id=1').fetchone()[0] if 'social_control' in tables else 0
             summaries=[]
@@ -67,9 +75,10 @@ def run(file, data, connection=None):
                 conditions=[];summary_args=[]
                 if scope:conditions.append('scope=?');summary_args.append(scope)
                 if query:conditions.append('instr(text,?)>0');summary_args.append(query)
-                summaries=[dict(r) for r in db.execute('SELECT id,scope,text,updated FROM memory_summaries'+(' WHERE '+' AND '.join(conditions) if conditions else '')+' ORDER BY id DESC LIMIT 100',summary_args)]
-            decisions=[dict(r) for r in db.execute('SELECT * FROM autonomy_decisions'+pattern_where+' ORDER BY at DESC LIMIT 50',pattern_args)] if 'autonomy_decisions' in tables else []
-            return {'initialized': True, 'epoch': epoch, 'facts': facts, 'summaries':summaries,'patterns': patterns, 'contacts': contacts, 'decisions':decisions,'relations': relations, 'stats': stats, 'limit': 100, 'companion': {t:[dict(r) for r in db.execute('SELECT * FROM '+t+(' WHERE scope=?' if scope else '')+' ORDER BY rowid DESC LIMIT 30',([scope] if scope else []))] for t in ['companion_interests','companion_motives','companion_emotion','companion_signals','dialogue_feedback'] if t in tables}}
+                summaries=[dict(r) for r in listed('summaries','SELECT id,scope,text,updated FROM memory_summaries'+(' WHERE '+' AND '.join(conditions) if conditions else '')+' ORDER BY id DESC LIMIT 100',summary_args)]
+            decisions=[dict(r) for r in listed('decisions','SELECT * FROM autonomy_decisions'+pattern_where+' ORDER BY at DESC LIMIT 50',pattern_args,50)] if 'autonomy_decisions' in tables else []
+            pending=[dict(r) for r in listed('pending','SELECT scope,subject,event,question,answer,at FROM memory_pending'+(' WHERE '+' AND '.join(clauses) if clauses else '')+' ORDER BY at DESC LIMIT 100',([scope] if scope else [])+([subject] if subject else []))] if 'memory_pending' in tables else []
+            return {'initialized': True, 'epoch': epoch, 'facts': facts, 'summaries':summaries,'patterns': patterns, 'contacts': contacts, 'decisions':decisions,'relations': relations, 'stats': stats, 'limit': 100,'pending':pending, 'companion': {t:[dict(r) for r in listed(t,'SELECT * FROM '+t+(' WHERE scope=?' if scope else '')+' ORDER BY rowid DESC LIMIT 30',([scope] if scope else []),30)] for t in ['companion_interests','companion_motives','companion_emotion','companion_signals','dialogue_feedback'] if t in tables},'pagination':{'page':page,'totals':totals,'pages':max([1]+[(totals[k]+page_sizes[k]-1)//page_sizes[k] for k in totals])}}
         initialize_controls(db)
         db.execute('BEGIN IMMEDIATE')
         action, scope = data['action'], data.get('scope', '')
@@ -94,12 +103,16 @@ def run(file, data, connection=None):
                     db.execute("INSERT INTO fact_metadata(scope,subject,name,kind,origin,importance) VALUES(?,?,?,'stable','explicit',.8) ON CONFLICT(scope,subject,name) DO UPDATE SET origin='explicit'",key)
         elif action == 'forget_summary':
             if 'memory_summaries' not in tables:return {'error':'摘要不存在','status':404}
-            old=db.execute('SELECT updated FROM memory_summaries WHERE id=? AND scope=?',(data['id'],scope)).fetchone()
+            old=db.execute('SELECT updated,sources FROM memory_summaries WHERE id=? AND scope=?',(data['id'],scope)).fetchone()
             if not old or old[0]!=data['expectedUpdated']:return {'error':'摘要已变化，请刷新后重试','status':409}
             db.execute('DELETE FROM memory_summaries WHERE id=? AND scope=?',(data['id'],scope))
             if 'memory_vectors' in tables:db.execute('DELETE FROM memory_vectors WHERE summary_id=?',(data['id'],))
-            db.execute('DELETE FROM memory_rounds WHERE scope=?',(scope,))
-            if 'memory_pending' in tables:db.execute('DELETE FROM memory_pending WHERE scope=?',(scope,))
+            # Forget only this summary's original events. New conversation debt
+            # in the same scope remains available for the next summary.
+            sources=json.loads(old[1])
+            if isinstance(sources,list):
+                db.executemany('DELETE FROM memory_rounds WHERE scope=? AND event=?',[(scope,str(event)) for event in sources[:1000]])
+                if 'memory_pending' in tables:db.executemany('DELETE FROM memory_pending WHERE scope=? AND event=?',[(scope,str(event)) for event in sources[:1000]])
             db.execute('UPDATE memory_reflection_control SET epoch=epoch+1 WHERE id=1')
         elif action == 'set_pattern':
             if db.execute('SELECT epoch FROM social_control WHERE id=1').fetchone()[0] != data['expectedEpoch']:

@@ -28,5 +28,5 @@ test('independent embedding address is visible and changes preserve Bot behavior
 
 test('bounded summary and personal fact semantics, independent SDK and late deletion fences',{timeout:30000},async()=>{
  const output=await new Promise<string>((resolve,reject)=>execFile(path.resolve(`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`),['-B','tests/long_memory_test.py'],{windowsHide:true,timeout:25000},(error,stdout,stderr)=>error?reject(new Error(`${error}\n${stdout}\n${stderr}`)):resolve(stdout+stderr)));
- assert.match(output,/Ran 13 tests/);assert.match(output,/OK/);
+ assert.match(output,/Ran 17 tests/);assert.match(output,/OK/);
 });
