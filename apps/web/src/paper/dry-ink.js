@@ -6,7 +6,7 @@ export class DryInk {
     if (!this.alive) return;
     this.w = w; this.h = h; const dpr = Math.min(devicePixelRatio || 1, 1.25);
     this.canvas.width = Math.max(1, Math.round(w * dpr)); this.canvas.height = Math.max(1, Math.round(h * dpr));
-    this.ctx = this.canvas.getContext('2d'); this.ctx?.setTransform(dpr, 0, 0, dpr, 0, 0); this.marks.length = 0;
+    this.ctx = this.canvas.getContext('2d'); this.ctx?.setTransform(dpr, 0, 0, dpr, 0, 0); this.marks.length = 0;this.painted=false;
   }
   add(from, to, time, pressure = .4, red = false) {
     if (!this.alive || !this.ctx) return;
@@ -16,9 +16,10 @@ export class DryInk {
     if (this.marks.length > this.budget) this.marks.splice(0, this.marks.length - this.budget);
   }
   draw(time) {
-    if (!this.alive || !this.ctx) return;
+    if (!this.alive || !this.ctx || (!this.marks.length&&!this.painted)) return;
     const ctx = this.ctx; ctx.clearRect(0, 0, this.w, this.h);
     this.marks = this.marks.filter(mark => time - mark.time < mark.life);
+    this.painted=this.marks.length>0;
     for (const mark of this.marks) {
       const age = Math.max(0, time - mark.time) / mark.life, fade = (1 - age) ** 2;
       const dx = mark.to.x - mark.from.x, dy = mark.to.y - mark.from.y, distance = Math.hypot(dx, dy), nx = -dy / distance, ny = dx / distance;

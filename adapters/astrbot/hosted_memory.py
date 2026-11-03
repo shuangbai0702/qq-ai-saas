@@ -142,7 +142,7 @@ class ScopedMemory:
 
     def close(self):self.closed=True
 
-    async def semantic_recall(self,scope,subject,query,now,cfg,provider,is_current):
+    async def semantic_recall(self,scope,subject,query,now,cfg,provider,is_current,metrics=None):
         if self.closed or not is_current() or cfg.get('memory') is False:return []
         fallback=self.recall(scope,subject,query,now)
         model=cfg.get('embeddingModel','').strip();base_url=cfg.get('embeddingBaseUrl','').strip()
@@ -158,17 +158,13 @@ class ScopedMemory:
         async with self.embedding_lock:
             try:
                 if not valid():return []
-                from memory_reflection import embedding_request,reserve_embedding
-                if not reserve_embedding(self.db,cfg):return fallback
+                from embedding_turn import request
                 space=hashlib.sha256(((base_url or str(provider.client.base_url)).rstrip('/')+'|'+model).encode()).hexdigest()
                 where,args=person_filter(scope,subject)
-                stored={(r[0],r[1]):r[2:] for r in self.db.execute('SELECT scope,name,version,fingerprint,vector FROM fact_vectors WHERE '+where+' AND model=? LIMIT 200',args+(space,))}
-                cached={r[0]:json.loads(stored[(r[7],r[0])][2]) for r in rows if (r[7],r[0]) in stored and stored[(r[7],r[0])][0]==r[3] and stored[(r[7],r[0])][1]==fingerprint(r)}
+                stored={(r[0],r[1]):r[2:] for r in self.db.execute('SELECT scope,name,version,fingerprint FROM fact_vectors WHERE '+where+' AND model=? LIMIT 200',args+(space,))}
+                cached={r[0] for r in rows if (r[7],r[0]) in stored and stored[(r[7],r[0])][0]==r[3] and stored[(r[7],r[0])][1]==fingerprint(r)}
                 missing=[r for r in rows if r[0] not in cached][:16]
-                response=await asyncio.wait_for(embedding_request(provider,base_url,model,[query[:800]]+[r[0]+' '+r[1] for r in missing]),6)
-                data=sorted(response.data,key=lambda x:x.index)
-                if len(data)!=len(missing)+1 or [x.index for x in data]!=list(range(len(data))):raise ValueError('invalid embedding count')
-                vectors=[x.embedding for x in data];dimension=len(vectors[0])
+                vectors=await request(provider,base_url,model,query,[r[0]+' '+r[1] for r in missing],self.db,cfg,metrics);dimension=len(vectors[0])
                 if not 1<=dimension<=4096 or any(len(v)!=dimension or any(not isinstance(x,(int,float)) or not math.isfinite(x) for x in v) or not any(v) for v in vectors):raise ValueError('invalid embedding')
                 # Lock the external admin writer across validation and commit.
                 # Triggers also fence delete/reinsert with identical evidence.
@@ -178,13 +174,17 @@ class ScopedMemory:
                     active={(r[10],r[0]):tuple(r[:5]) for r in fact_rows(self.db,scope,subject)}
                     if any(active.get((r[7],r[0]))!=tuple(r[:5]) for r in rows):return []
                     for row,vector in zip(missing,vectors[1:]):
-                        cached[row[0]]=vector
+                        cached.add(row[0])
                         self.db.execute('INSERT OR REPLACE INTO fact_vectors VALUES(?,?,?,?,?,?,?)',(row[7],subject,row[0],row[3],space,fingerprint(row),json.dumps(vector)))
-                def score(row):
-                    a=vectors[0];b=cached.get(row[0],[])
-                    if len(b)!=dimension or not any(b):return -1
-                    return sum(x*y for x,y in zip(a,b))/(math.sqrt(sum(x*x for x in a))*math.sqrt(sum(y*y for y in b)))
-                ranked=sorted(((score(r),r) for r in rows),key=lambda x:(x[0],x[1][4]),reverse=True)
+                by_id={(r[7],r[0]):r for r in rows};ranked=[];a=vectors[0];norm=math.sqrt(sum(x*x for x in a))
+                for source,name,version,fp,raw in self.db.execute('SELECT scope,name,version,fingerprint,vector FROM fact_vectors WHERE '+where+' AND model=? LIMIT 200',args+(space,)):
+                    row=by_id.get((source,name))
+                    if not row or version!=row[3] or fp!=fingerprint(row):continue
+                    b=json.loads(raw)
+                    if len(b)!=dimension or not all(isinstance(x,(int,float)) and math.isfinite(x) for x in b) or not any(b):continue
+                    score=sum(x*y for x,y in zip(a,b))/(norm*math.sqrt(sum(y*y for y in b)))
+                    if score>=.35:
+                        ranked.append((score,row));ranked.sort(key=lambda x:(x[0],x[1][4]),reverse=True);del ranked[8:]
                 semantic=[{'name':r[0],'value':r[1],'source_event':r[2],'version':r[3],'remembered_at':r[4],'kind':r[5],'origin':r[6],'source_scope':r[7],'subject':subject,'recall_reason':'semantic_match'} for similarity,r in ranked if similarity>=.35]
                 selected=[];seen=set();used=0
                 for item in semantic+fallback:
@@ -195,4 +195,5 @@ class ScopedMemory:
                 return selected
             except asyncio.CancelledError:raise
             except Exception:
+                if metrics is not None:metrics['embeddingFailures']=metrics.get('embeddingFailures',0)+1
                 return fallback if valid() else []

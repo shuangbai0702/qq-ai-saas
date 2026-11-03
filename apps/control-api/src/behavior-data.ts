@@ -40,7 +40,7 @@ export function registerBehaviorData(app:FastifyInstance,root:string,owned:(req:
  }
  app.get<{Params:{id:string}}>('/v1/bots/:id/behavior-data',async req=>{
   const bot=await owned(req,req.params.id);
-  const query=z.object({scope:scope.optional(),subject:person.optional(),query:z.string().max(80).optional()}).parse(req.query);
+  const query=z.object({scope:scope.optional(),subject:person.optional(),query:z.string().max(80).optional(),page:z.coerce.number().int().min(0).max(10000).default(0)}).parse(req.query);
   return access(bot,{action:'list',...query});
  });
  app.post<{Params:{id:string}}>('/v1/bots/:id/behavior-data',{config:{rateLimit:{max:30,timeWindow:'1 minute'}}},async req=>{

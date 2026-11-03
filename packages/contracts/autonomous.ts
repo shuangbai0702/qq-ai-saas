@@ -10,7 +10,7 @@ export const AutonomyConfigSchema=z.object({
   initiativeAfterIdleMinutes:z.number().int().min(5).max(1440).default(30),
   cycleModelCalls:z.number().int().min(2).max(64).default(24),
   cycleToolCalls:z.number().int().min(1).max(128).default(32),
-  cycleExternalActions:z.number().int().min(0).max(4).default(2),
+  cycleExternalActions:z.number().int().min(0).max(4).describe('逻辑对外行动次数；同一聊天行动的1–4条投递共计一次，每条仍独立记录回执').default(2),
   cycleTokenBudget:z.number().int().min(4000).max(2000000).default(500000),
   dailyTokenBudget:z.number().int().min(0).max(100000000).refine(v=>v===0||v>=4000,'每日上限为0表示不限制，否则至少4000').default(0),
   cycleSeconds:z.number().int().min(30).max(180).default(90),
@@ -70,10 +70,11 @@ export interface InternalWork {
 }
 
 export interface TaskFeedback {
+ actionUnitVersion?:2;
  status:'completed'|'blocked'|'unknown'|'partial'|'canceled'|'budget_exhausted';
  summary:string;evidence:Array<{source:string;reference:string}>;
  response?:string; // Conversation content; delivery certainty comes from effects.
  evidenceLimits?:string[];
- effects:Array<{id:string;status:string;receipt?:string}>;
+ effects:Array<{id:string;logicalActionId?:string;status:string;receipt?:string}>;
  unfinished:string[];
 }

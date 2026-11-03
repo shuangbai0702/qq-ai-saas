@@ -36,7 +36,7 @@ class Plugins(unittest.IsolatedAsyncioTestCase):
  async def test_budget_and_secret_redaction(self):
   self.s.reflection.record('private:11111','11111','key','sk-abcdefghijklmnop123456','secret')
   self.assertNotIn('sk-',self.s.db.execute('SELECT question FROM memory_rounds').fetchone()[0]);self.seed()
-  self.s.reflection.maybe_start('group:12345',{'memorySummary':True,'summaryRounds':5,'dailySummaryLimit':0},NS(text_chat=None),lambda:True,{},self.var);self.assertIsNone(self.s.reflection.task)
+  self.s.reflection.maybe_start('group:12345',{'memorySummary':True,'summaryRounds':5},NS(text_chat=None),lambda:True,{},self.var);self.assertIsNone(self.s.reflection.task,'unavailable provider cannot start summary work')
  async def test_qq_permissions_intent_and_bound_target(self):
   cfg={'behavior':{'ownerUin':'11111','qqProfile':True,'qzone':True,'qzoneVisibility':'self'}}
   self.assertEqual(qq_actions.allowed(self.event(sender='22222'),cfg),set());self.assertEqual(qq_actions.allowed(self.event(extra={'_hosted_initiative':True}),cfg),set())

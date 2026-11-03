@@ -28,7 +28,7 @@ async def run():
   if after_send:after_send()
  async def no_model(self,event):raise AssertionError('unmentioned collection must not call model')
  AiocqhttpMessageEvent.send=transport;PipelineScheduler.execute=no_model
- async def fetch(url):return (root/'templates/reactions/laugh.png').read_bytes()
+ async def fetch(url,max_bytes=1048576):return (root/'templates/reactions/laugh.png').read_bytes()
  sticker_collection._download=fetch
  settings={name:{'botId':name,'generation':1,'root':str(Path(tmp.name)/name),'config':{'trigger':'mention','behavior':{'qqFaces':False,'naturalConversation':False,'followupSeconds':0,'stickerCollect':True,'stickerGroups':['12345'],'memeEnabled':True,'memeProbability':1,'galleryEnabled':True,'dailyMemeLimit':20,'memeCooldownSeconds':20}}} for name in ['a','b']}
  runtime=install_runtime(SimpleNamespace(event_bus=SimpleNamespace(stopped_platforms=set())),settings)

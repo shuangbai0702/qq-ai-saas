@@ -10,6 +10,26 @@ import hashlib,json,math,time,uuid
 STAGES=('ingress','observe','admission','context','model_tools','output_plan','dispatch','commit')
 
 
+def delivery_scope(event):
+    """The owned Work fixes a service task's recipient; sender stays service 0."""
+    work=event.get_extra('_hosted_pipeline')
+    if work is not None:return work.scope
+    return 'group:'+str(event.get_group_id()) if event.get_group_id() else 'private:'+str(event.get_sender_id())
+
+
+def message_receipt(result):
+    """An unwrapped OneBot response must prove a message was accepted."""
+    if not isinstance(result,dict) or result.get('retcode',0)!=0 or result.get('status') in ('failed','error'):return None
+    value=result.get('message_id')
+    if type(value) not in (str,int) or not str(value).strip() or str(value).strip()=='0':return None
+    return str(value).strip()[:100]
+
+
+def effect_units(effects):
+    """One OutputPlan owns its bubbles; other writes remain separate actions."""
+    return len({e.get('logicalActionId',e['id']) for e in effects if e.get('status') in ('confirmed','unknown','dispatching')})
+
+
 def conversation_context(store,cfg,scope,subject,query,now,state=None):
     """Read the existing compressed and pending memory; never copy its storage."""
     from memory_scope import pending_messages
@@ -17,6 +37,10 @@ def conversation_context(store,cfg,scope,subject,query,now,state=None):
     if state is None:
         state={'facts':store.memory.recall(scope,subject,query,now) if enabled else [],
                'conversation_summaries':store.reflection.recall(scope,query,subject=subject) if enabled else []}
+    else:state=dict(state)
+    relation=store.db.execute('SELECT affinity,emotion,expires,last_seen FROM relations WHERE scope=? AND subject=?',(scope,subject)).fetchone()
+    if relation:
+        state.update(affinity=relation[0],relationship='熟悉' if relation[0]>=5 else '初识',emotion=relation[1] if relation[2]>now else '平静',emotion_expired=relation[2]<=now,relationship_observed_at=relation[3])
     dialogue=store.participation.context(scope,now=now,cfg=cfg)
     if not enabled:dialogue['feedback']=[]
     return {'state':state,'dialogue':dialogue,'autonomous_experience':experience_context(store,scope,cfg),
@@ -205,10 +229,16 @@ class BotPipeline:
     def internal_result(self,id):
         row=self.db.execute('SELECT state,result FROM pipeline_actions WHERE id=?',(id,)).fetchone()
         if not row:return None
-        effects=[{'id':id+':'+str(seq),'method':method,'target':target,'status':'unknown' if state=='dispatching' else state,'receipt':receipt} for seq,method,target,state,receipt in self.db.execute('SELECT sequence,method,target,state,receipt FROM pipeline_action_effects WHERE action=? ORDER BY sequence',(id,))]
-        return {'status':row[0],'result':json.loads(row[1]) if row[1] else None,'effects':effects}
+        effects=[{'id':id+':'+str(seq),'logicalActionId':id+':message:'+target if method in ('send_private_msg','send_group_msg') else id+':'+str(seq),'method':method,'target':target,'status':'unknown' if state=='dispatching' else state,'receipt':receipt} for seq,method,target,state,receipt in self.db.execute('SELECT sequence,method,target,state,receipt FROM pipeline_action_effects WHERE action=? ORDER BY sequence',(id,))]
+        result=json.loads(row[1]) if row[1] else None
+        if result:
+            result['effects']=effects
+            if result.get('status') in ('unknown','partial') and effects and all(e['status']=='confirmed' for e in effects):
+                result.update(status='partial',stopReason='receipts_settled_reassessment_required',summary='此前不明的对外操作已获得真实回执；任务完整性需要重新评估，已确认操作不可重复。')
+        return {'status':result['status'] if result else row[0],'result':result,'effects':effects}
 
     def finish_internal(self,work,result):
+        result['actionUnitVersion']=2
         self.db.execute('UPDATE pipeline_actions SET state=?,result=? WHERE id=?',(result['status'],json.dumps(result,ensure_ascii=False),work.event_id));self.db.commit()
 
     def bind(self,event,lease):

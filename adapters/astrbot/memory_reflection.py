@@ -28,7 +28,7 @@ async def embedding_request(provider,base_url,model,texts):
 
 def reserve_embedding(db,cfg):
     # Shared by fact and summary retrieval; charge before the network await.
-    day=int(time.time()//86400)
+    day=int((time.time()+8*3600)//86400)
     limit=max(0,min(1000,int(cfg.get('dailyEmbeddingLimit',100))))
     used=db.execute('SELECT count FROM memory_embedding_budget WHERE day=?',(day,)).fetchone()
     if (used[0] if used else 0)>=limit:return False
@@ -46,20 +46,20 @@ def invalidate(db,scope,subject=''):
         # Include legacy source scopes as well as summaries with exact event
         # attribution. A correction in private cannot leave an old group copy.
         db.execute('DELETE FROM memory_summaries WHERE scope=? OR id IN (SELECT summary_id FROM memory_summary_people WHERE subject=?) OR scope IN (SELECT scope FROM facts WHERE '+where+')',(scope,subject)+args)
-        db.execute('DELETE FROM memory_rounds WHERE scope=? OR subject=?',(scope,subject))
+        where,args=person_filter(scope,subject)
     else:
         db.execute('DELETE FROM memory_summaries WHERE scope=?',(scope,))
-        db.execute('DELETE FROM memory_rounds WHERE scope=?',(scope,))
+    where,args=person_filter(scope,subject) if subject else ('scope=?',(scope,))
+    db.execute('DELETE FROM memory_rounds WHERE '+where,args)
     if 'memory_pending' in tables:
-        where,args=person_filter(scope,subject)
-        db.execute('DELETE FROM memory_pending WHERE scope=? OR ('+where+')',(scope,)+args)
+        db.execute('DELETE FROM memory_pending WHERE '+where,args)
     if 'memory_vectors' in tables:db.execute('DELETE FROM memory_vectors WHERE summary_id NOT IN (SELECT id FROM memory_summaries)')
     db.execute('UPDATE memory_reflection_control SET epoch=epoch+1 WHERE id=1')
 
 
 class Reflection:
     def __init__(self,db):
-        self.db=db;self.closed=False;self.task=None;self.memory=None
+        self.db=db;self.closed=False;self.task=None;self.memory=None;self.binding=None
         db.executescript('''CREATE TABLE IF NOT EXISTS memory_rounds(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT,subject TEXT,event TEXT,question TEXT,answer TEXT,at REAL,UNIQUE(scope,event));
         CREATE TABLE IF NOT EXISTS memory_summaries(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT,text TEXT,sources TEXT,updated REAL);
         CREATE TABLE IF NOT EXISTS memory_reflection_budget(day INTEGER PRIMARY KEY,count INTEGER);
@@ -72,6 +72,7 @@ class Reflection:
           DELETE FROM memory_summary_people WHERE summary_id=OLD.id;
         END;
         CREATE TABLE IF NOT EXISTS memory_embedding_budget(day INTEGER PRIMARY KEY,count INTEGER);''')
+        db.execute('CREATE TABLE IF NOT EXISTS memory_reflection_retry(scope TEXT PRIMARY KEY,attempts INTEGER,next_at REAL)')
         db.executescript('''CREATE TABLE IF NOT EXISTS memory_pending(scope TEXT,subject TEXT,event TEXT,question TEXT,answer TEXT,at REAL,PRIMARY KEY(scope,event));
         CREATE INDEX IF NOT EXISTS memory_pending_subject_at ON memory_pending(subject,at);
         CREATE INDEX IF NOT EXISTS memory_pending_scope_at ON memory_pending(scope,at);''')
@@ -95,7 +96,12 @@ class Reflection:
     def prune_pending(self,now=None):
         now=time.time() if now is None else now
         self.db.execute('DELETE FROM memory_pending WHERE at<?',(now-7*86400,))
-        self.db.execute('DELETE FROM memory_pending WHERE rowid NOT IN (SELECT rowid FROM memory_pending ORDER BY rowid DESC LIMIT 1000)')
+        # Keep recent material from each conversation before allocating extra
+        # slots to a busy group. The total and seven-day retention stay bounded.
+        self.db.execute('''DELETE FROM memory_pending WHERE rowid NOT IN (
+          SELECT rowid FROM (SELECT rowid,at,row_number() OVER (
+            PARTITION BY scope ORDER BY at DESC,rowid DESC) AS scope_rank FROM memory_pending)
+          ORDER BY scope_rank,at DESC,rowid DESC LIMIT 1000)''')
     def incoming(self,scope,subject,event,question,now=None):
         if self.closed or not question.strip() or not event or not shared_person(scope,subject):return
         now=time.time() if now is None else now
@@ -110,9 +116,17 @@ class Reflection:
         # Redact common secret forms before persisting raw reflection material.
         self.db.execute('INSERT OR IGNORE INTO memory_rounds(scope,subject,event,question,answer,at) VALUES(?,?,?,?,?,?)',(scope,subject,str(event),scrub(question),scrub(answer),now or time.time()))
         if shared_person(scope,subject):
-            self.db.execute('INSERT INTO memory_pending VALUES(?,?,?,?,?,?) ON CONFLICT(scope,event) DO UPDATE SET answer=excluded.answer WHERE memory_pending.subject=excluded.subject AND memory_pending.answer=\'\'',(scope,subject,str(event),scrub(question),scrub(answer),now or time.time()))
+            self.db.execute('INSERT INTO memory_pending VALUES(?,?,?,?,?,?) ON CONFLICT(scope,event) DO UPDATE SET answer=excluded.answer WHERE memory_pending.subject=excluded.subject AND memory_pending.question=excluded.question',(scope,subject,str(event),scrub(question),scrub(answer),now or time.time()))
             self.prune_pending(now)
-        self.db.execute('DELETE FROM memory_rounds WHERE id NOT IN (SELECT id FROM memory_rounds ORDER BY id DESC LIMIT 1000)');self.db.commit()
+        self.db.execute('''DELETE FROM memory_rounds WHERE id NOT IN (
+          SELECT id FROM (SELECT id,at,row_number() OVER (
+            PARTITION BY scope ORDER BY id DESC) AS scope_rank FROM memory_rounds)
+          ORDER BY scope_rank,at DESC,id DESC LIMIT 1000)''');self.db.commit()
+    def confirmed_prefix(self,scope,subject,event,answer,epoch):
+        # An incomplete multi-bubble reply is evidence, not a completed round.
+        # Update only the original inbound row and never recreate forgotten data.
+        if self.closed or self.epoch()!=epoch or not event:return
+        self.db.execute('UPDATE memory_pending SET answer=? WHERE scope=? AND subject=? AND event=?',(scrub(answer),scope,subject,str(event)));self.db.commit()
     def recall(self,scope,query,limit=3,subject=''):
         if self.closed:return []
         rows=summary_rows(self.db,scope,subject)
@@ -134,34 +148,35 @@ class Reflection:
         epoch=self.epoch()
         async with self.embedding_lock:
             if self.closed or not is_current() or self.epoch()!=epoch:return []
-            if not reserve_embedding(self.db,cfg):return fallback
             try:
                 # Fingerprint endpoint/model; cache reads are filtered again by
                 # the authoritative, attributed same-person candidate set.
                 endpoint=base_url or str(provider.client.base_url)
                 space=hashlib.sha256((endpoint.rstrip('/')+'|'+model).encode()).hexdigest()
                 allowed={r[0] for r in rows}
-                cached={r[0]:json.loads(r[1]) for r in self.db.execute('SELECT summary_id,vector FROM memory_vectors WHERE model=? LIMIT 1000',(space,)) if r[0] in allowed}
+                cached={r[0] for r in self.db.execute('SELECT summary_id FROM memory_vectors WHERE model=? LIMIT 1000',(space,)) if r[0] in allowed}
                 missing=[r for r in rows if r[0] not in cached][:16]
-                metrics['embeddingRequests']=metrics.get('embeddingRequests',0)+1
-                response=await asyncio.wait_for(embedding_request(provider,base_url,model,[query[:800]]+[r[1] for r in missing]),6)
-                data=sorted(response.data,key=lambda x:x.index)
-                if len(data)!=1+len(missing) or [x.index for x in data]!=list(range(len(data))):raise ValueError('invalid embedding count')
-                vectors=[x.embedding for x in data]
+                from embedding_turn import request
+                vectors=await request(provider,base_url,model,query,[r[1] for r in missing],self.db,cfg,metrics)
                 dimension=len(vectors[0])
                 if not 1<=dimension<=4096 or any(len(v)!=dimension or any(not isinstance(x,(int,float)) or not math.isfinite(x) for x in v) or not any(v) for v in vectors):raise ValueError('invalid embedding')
                 if self.closed or not is_current() or self.epoch()!=epoch:return []
                 with self.db:
                     for row,vector in zip(missing,vectors[1:]):
-                        cached[row[0]]=vector
+                        cached.add(row[0])
                         self.db.execute('INSERT OR REPLACE INTO memory_vectors VALUES(?,?,?)',(row[0],space,json.dumps(vector)))
                     self.db.execute('DELETE FROM memory_vectors WHERE summary_id NOT IN (SELECT id FROM memory_summaries)')
-                def score(row):
-                    a=vectors[0];b=cached.get(row[0],[])
-                    if len(b)!=dimension:return -1
-                    return sum(x*y for x,y in zip(a,b))/(math.sqrt(sum(x*x for x in a))*math.sqrt(sum(y*y for y in b)))
-                ranked=sorted(((score(r),r) for r in rows),key=lambda x:(x[0],x[1][3]),reverse=True)
-                selected=[r for similarity,r in ranked if similarity>=0.35][:3]
+                # Decode one persisted vector at a time. A 1000x4096 Python
+                # float cache would dwarf the shared AI's idle RAM target.
+                by_id={r[0]:r for r in rows};ranked=[];a=vectors[0];norm=math.sqrt(sum(x*x for x in a))
+                for identifier,raw in self.db.execute('SELECT summary_id,vector FROM memory_vectors WHERE model=? LIMIT 1000',(space,)):
+                    if identifier not in by_id:continue
+                    b=json.loads(raw)
+                    if len(b)!=dimension or not all(isinstance(x,(int,float)) and math.isfinite(x) for x in b) or not any(b):continue
+                    similarity=sum(x*y for x,y in zip(a,b))/(norm*math.sqrt(sum(y*y for y in b)))
+                    if similarity>=.35:
+                        ranked.append((similarity,by_id[identifier]));ranked.sort(key=lambda x:(x[0],x[1][3]),reverse=True);del ranked[3:]
+                selected=[r for _,r in ranked]
                 # Until indexing catches up, retain lexical matches from the
                 # unindexed portion instead of hiding old, relevant evidence.
                 pending=[r for r in rows if r[0] not in cached and tokens(query)&tokens(r[1])]
@@ -174,13 +189,22 @@ class Reflection:
                 metrics['embeddingFailures']=metrics.get('embeddingFailures',0)+1
                 return [] if self.closed or not is_current() or self.epoch()!=epoch else fallback
     def maybe_start(self,scope,cfg,provider,is_current,metrics,event_var):
-        if self.closed or not cfg.get('memorySummary') or provider is None or self.task and not self.task.done():return
+        self.binding=(cfg,provider,is_current,metrics,event_var)
+        return self.retry()
+    def retry(self):
+        if not self.binding:return False
+        cfg,provider,is_current,metrics,event_var=self.binding
+        if self.closed or cfg.get('memory') is False or not cfg.get('memorySummary') or not callable(getattr(provider,'text_chat',None)) or not is_current() or self.task and not self.task.done():return False
         rounds=max(5,min(50,cfg.get('summaryRounds',10)))
+        candidate=self.db.execute('SELECT r.scope FROM memory_rounds r LEFT JOIN memory_reflection_retry q ON q.scope=r.scope WHERE coalesce(q.next_at,0)<=? GROUP BY r.scope HAVING count(*)>=? ORDER BY min(r.id) LIMIT 1',(time.time(),rounds)).fetchone()
+        if not candidate:return False
+        scope=candidate[0]
         rows=self.db.execute('SELECT id,subject,event,question,answer,at FROM memory_rounds WHERE scope=? ORDER BY id LIMIT ?',(scope,rounds)).fetchall()
-        if len(rows)<rounds:return
-        day=int(time.time()//86400);used=self.db.execute('SELECT count FROM memory_reflection_budget WHERE day=?',(day,)).fetchone()
-        if (used[0] if used else 0)>=cfg.get('dailySummaryLimit',12):return
+        day=int((time.time()+8*3600)//86400)
         self.db.execute('INSERT INTO memory_reflection_budget VALUES(?,1) ON CONFLICT(day) DO UPDATE SET count=count+1',(day,));self.db.execute('DELETE FROM memory_reflection_budget WHERE day<?',(day-7,));self.db.commit()
+        attempts=self.db.execute('SELECT attempts FROM memory_reflection_retry WHERE scope=?',(scope,)).fetchone()
+        attempts=(attempts[0] if attempts else 0)+1
+        self.db.execute('INSERT OR REPLACE INTO memory_reflection_retry VALUES(?,?,?)',(scope,attempts,time.time()+min(1800,60*2**min(5,attempts-1))));self.db.commit()
         epoch=self.epoch()
         insight_mode=self.memory is not None and cfg.get('naturalConversation',True)
         pending=self.db.execute('SELECT subject,event,question,answer,at FROM memory_pending WHERE scope=? AND at<=? ORDER BY at LIMIT 50',(scope,rows[-1][5])).fetchall()
@@ -218,13 +242,20 @@ class Reflection:
                     self.db.executemany('INSERT OR IGNORE INTO memory_summary_people VALUES(?,?)',[(identifier,subject) for subject in {r['sender_id'] for r in payload} if shared_person(scope,subject)])
                     self.db.executemany('DELETE FROM memory_pending WHERE scope=? AND event=? AND subject=? AND question=? AND answer=?',[(scope,r['event'],r['sender_id'],r['user'],r['bot']) for r in payload])
                     self.db.execute('DELETE FROM memory_rounds WHERE scope=? AND id<=?',(scope,rows[-1][0]))
+                    self.db.execute('DELETE FROM memory_reflection_retry WHERE scope=?',(scope,))
                     self.db.execute('DELETE FROM memory_summaries WHERE id NOT IN (SELECT id FROM memory_summaries ORDER BY id DESC LIMIT 1000)')
                     self.db.execute('DELETE FROM memory_vectors WHERE summary_id NOT IN (SELECT id FROM memory_summaries)')
                 metrics['summariesSaved']=metrics.get('summariesSaved',0)+1
             except asyncio.CancelledError:raise
             except Exception:metrics['summaryFailures']=metrics.get('summaryFailures',0)+1
-            finally:event_var.reset(token)
+            finally:
+                # Config changes and operator deletion are not provider failures.
+                # Let a fresh binding retry retained source material immediately.
+                if not self.closed and (not is_current() or self.epoch()!=epoch):
+                    self.db.execute('DELETE FROM memory_reflection_retry WHERE scope=? AND attempts=?',(scope,attempts));self.db.commit()
+                event_var.reset(token)
         self.task=asyncio.create_task(run())
+        return True
     def close(self):
-        self.closed=True
+        self.closed=True;self.binding=None
         if self.task:self.task.cancel()

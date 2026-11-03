@@ -62,10 +62,12 @@ class BehaviorStore:
                     autonomy.note_reply(self.db,scope,subject,at)
                     self.db.execute('UPDATE autonomy_groups SET interaction=max(interaction,?) WHERE scope=?',(at,scope));self.db.commit()
         for scope,subject,at in self.db.execute('SELECT scope,partner,last_reply FROM autonomy_groups WHERE last_reply>? AND last_reply<=? ORDER BY last_reply DESC LIMIT 128',(time.time()-300,time.time())):
-            self.participation.scopes[scope]={'topic':set(),'sent':[at],'last':at,'subject':subject,'participants':{subject:at} if subject else {},'turns':[]}
+            self.participation.scopes.setdefault(scope,{'topic':set(),'sent':[at],'last':at,'subject':subject,'participants':{subject:at} if subject else {},'turns':[]})
         self.presence=autonomy.GroupPresence(self.db)
         self.pipeline=bot_pipeline.BotPipeline(self.db)
         group_actions.initialize(self.db)
+        import qq_favorite_tools
+        qq_favorite_tools.initialize(self.db)
         self.social=SocialStore(self.db,Path(path).parent)
         self.last={};self.active=0;self.batches={};self.ambient=Ambient()
     def observe(self,scope,subject,text,event,now=None,auto_capture=False,memory_enabled=True,directed=True):
@@ -79,7 +81,7 @@ class BehaviorStore:
             fresh=self.db.execute('INSERT OR IGNORE INTO relation_events VALUES(?,?,?,?)',(scope,subject,str(event),now)).rowcount==1
         if fresh:
             progress=self.db.execute('SELECT last_gain,day,gains FROM relation_progress WHERE scope=? AND subject=?',(scope,subject)).fetchone()
-            day=int(now//86400);gains=progress[2] if progress and progress[1]==day else 0
+            day=int((now+8*3600)//86400);gains=progress[2] if progress and int((progress[0]+8*3600)//86400)==day else 0
             positive=emotional_phrase(text,'谢谢|喜欢你|做得好');negative=emotional_phrase(text,'不喜欢你|讨厌你|滚开|闭嘴')
             interval=60 if positive or negative else 300
             delta=0
@@ -209,6 +211,7 @@ def install_runtime(core,settings):
             event.set_extra('_hosted_protocol_dispatched',True)
         work=event.get_extra('_hosted_pipeline') if event else None
         owned=stores.get(event.get_platform_id()) if event else None
+        receipts_before=event.get_extra('_hosted_protocol_receipt_count',0) if event else 0
         if work and owned:owned.pipeline.sending(work)
         if event and event.get_extra('_hosted_internal_work'):
             # The author remains the service principal (sender=0). Resolve the
@@ -218,7 +221,9 @@ def install_runtime(core,settings):
             call.arguments['is_group']=work.scope.startswith('group:')
             result=await dispatch_original(*call.args,**call.kwargs)
         else:result=await dispatch_original(cls,*args,**kwargs)
-        if work and owned:owned.pipeline.confirmed(work)
+        if work and owned:
+            if event.get_extra('_hosted_protocol_receipt_count',0)<=receipts_before:raise RuntimeError('missing_protocol_receipt')
+            owned.pipeline.confirmed(work)
         return result
     # Media conversion may await downloads. Fence again at the final OneBot
     # dispatch, after conversion, for ordinary replies and controlled tools.
@@ -227,7 +232,9 @@ def install_runtime(core,settings):
         instances=getattr(getattr(core,'provider_manager',None),'inst_map',{})
         return instances.get('provider-'+id) or (instances.get('platform-model') if len(settings)==1 else None)
     def store(id,s):
-        if id not in stores:stores[id]=BehaviorStore(Path(s['root'])/'behavior.sqlite')
+        if id not in stores:
+            stores[id]=BehaviorStore(Path(s['root'])/'behavior.sqlite')
+        stores[id].reflection.binding=({**(s['config'].get('behavior') or {}),'_persona':s['config'].get('systemPrompt','')},provider_for(id),lambda:settings.get(id) is s and id not in core.event_bus.stopped_platforms,metrics.setdefault(id,{}),current_message_event)
         return stores[id]
     def internal_context(id,event,scope,objective):
         s=settings[id];st=store(id,s);b=s['config'].get('behavior') or {};now=time.time()
@@ -241,30 +248,69 @@ def install_runtime(core,settings):
         assembly.contribute('conversation',{key:shared[key] for key in ('dialogue','ambient_group_messages')})
         if (event.get_extra('_hosted_autonomous_action') or {}).get('kind')=='message':
             social_cfg={**b,'_qqAccount':str(event.get_self_id())}
+            gate=st.social.image_status(scope,social_cfg,request=objective)
+            social_cfg['memeEnabled']=gate['reason']=='available'
             social=st.social.context(scope,objective,social_cfg)
             assembly.contribute('social',{'social':social})
-            event.set_extra('_hosted_meme_allowed',bool(social.get('meme_candidates')))
+            event.set_extra('_hosted_meme_gate',gate)
+            event.set_extra('_hosted_meme_allowed',gate['reason']=='available')
         value=assembly.build();event.set_extra('_hosted_context',json.dumps(value,ensure_ascii=False))
         for name in ('requests','received','replies','failures'):metrics.setdefault(id,{}).setdefault(name,0)
         return value
     from autonomous_runtime import AutonomousRuntime
+    from native_internal import WorkBudgetExceeded
     brain=AutonomousRuntime(core,settings,store,provider_for,metrics,care,internal_context)
     core._hosted_autonomous=brain
+    async def reconcile_favorites():
+        import qq_favorite_tools
+        for id,st in list(stores.items()):
+            s=settings.get(id)
+            if not s or id in core.event_bus.stopped_platforms or care.busy(st):continue
+            account=str(s.get('expectedUin') or '')
+            if not qq_favorite_tools.due(st.db,account):continue
+            platform=next((p for p in core.platform_manager.get_insts() if p.meta().id==id),None)
+            if platform:
+                await qq_favorite_tools.reconcile(st.db,platform.bot,account,None,lambda:settings.get(id) is s and id not in core.event_bus.stopped_platforms and stores.get(id) is st)
+                break
+    care.favorite_reconciler=reconcile_favorites
     from aiocqhttp import CQHttp
     action_original=CQHttp.call_action
+    def note_message_receipt(event,result):
+        receipt=bot_pipeline.message_receipt(result)
+        if receipt is None:raise RuntimeError('missing_protocol_receipt')
+        receipts=list(event.get_extra('_hosted_protocol_receipts',[]));receipts.append(receipt)
+        event.set_extra('_hosted_protocol_receipts',receipts[-4:])
+        event.set_extra('_hosted_protocol_receipt_count',event.get_extra('_hosted_protocol_receipt_count',0)+1)
+        return receipt
     async def call_action(self,action,**params):
         event=current_message_event.get()
+        if event and getattr(event,'bot',None) is self and action in ('send_private_msg','send_group_msg'):
+            favorite_file=event.get_extra('_hosted_favorite_wire')
+            # Only a renderer-bound QQ favorite gets the custom-sticker flag;
+            # ordinary model images and user-provided wire data stay unchanged.
+            if favorite_file and isinstance(params.get('message'),list):
+                params['message']=[{**part,'data':{**part['data'],'sub_type':1}} if part.get('type')=='image' and part.get('data',{}).get('file')==favorite_file else part for part in params['message']]
         if not event or not event.get_extra('_hosted_internal_work'):
             result=await action_original(self,action,**params)
-            if event and getattr(event,'bot',None) is self and action in ('send_private_msg','send_group_msg') and isinstance(result,dict) and result.get('message_id') is not None:
-                receipts=event.get_extra('_hosted_protocol_receipts',[]);receipts.append(str(result['message_id'])[:100]);event.set_extra('_hosted_protocol_receipts',receipts[-4:])
+            if event and getattr(event,'bot',None) is self and action in ('send_private_msg','send_group_msg'):note_message_receipt(event,result)
             return result
         identity=event.get_extra('_hosted_internal_work');id=event.get_platform_id();s=setting(event)
         if event.bot is not self or not brain.valid(id,identity):raise asyncio.CancelledError('stale internal tool')
-        allowed_reads={'get_login_info','get_status','get_group_info','get_group_member_info'}
-        if action in allowed_reads:return await action_original(self,action,**params)
+        if action=='get_msg':
+            import quote_reply
+            st=stores.get(id);selected=quote_reply.selected(st.db,event,s) if st else None
+            media=quote_reply.media_reference(st.db,event,s) if st else None
+            if not (selected and str(params.get('message_id'))==selected[0] or media and str(params.get('message_id'))==media['message_id']):raise ValueError('internal quote read denied')
+            return await action_original(self,action,**params)
+        allowed_reads={'get_login_info','get_status','get_group_info','get_group_member_info','get_group_list','get_group_member_list','fetch_custom_face_detail'}
+        if action in allowed_reads:
+            allowed=group_actions.read_groups(event,s['config'])
+            if action in ('get_group_info','get_group_member_info','get_group_member_list') and str(params.get('group_id')) not in allowed:raise asyncio.CancelledError('internal group read denied')
+            result=await action_original(self,action,**params)
+            return [row for row in result if str(row.get('group_id')) in allowed] if action=='get_group_list' and isinstance(result,list) else result
         work=event.get_extra('_hosted_pipeline');intent=event.get_extra('_hosted_autonomous_action') or {}
         permitted={'message':{'send_private_msg','send_group_msg'},'profile_signature':{'set_self_longnick'},'qzone_publish':{'send_qzone_msg'}}.get(intent.get('kind'),set())
+        if intent.get('kind')=='message' and (s['config'].get('behavior') or {}).get('qqFavoriteSaveEnabled',True):permitted=permitted|{'add_custom_face'}
         if action not in permitted or not brain.effect_current(event) or not work:raise asyncio.CancelledError('internal effect denied')
         st=stores.get(id)
         if st is None:raise asyncio.CancelledError('member unloaded')
@@ -273,12 +319,17 @@ def install_runtime(core,settings):
             actual=('group:'+str(params.get('group_id'))) if action=='send_group_msg' else ('private:'+str(params.get('user_id')))
             if actual!=target:raise asyncio.CancelledError('internal destination mismatch')
         effects=st.pipeline.internal_result(work.event_id)['effects']
-        if len(effects)>=identity['budget'].get('externalActions',0):raise asyncio.CancelledError('external action budget')
+        logical=work.event_id+':message:'+target if action in ('send_private_msg','send_group_msg') else work.event_id+':'+str(len(effects))
+        proposed=effects+[{'id':logical,'logicalActionId':logical,'status':'dispatching'}]
+        if bot_pipeline.effect_units(proposed)>identity['budget'].get('externalActions',0):raise WorkBudgetExceeded('external_action_budget')
         # No await between the final epoch/permit check and the network call.
         sequence=st.pipeline.internal_effect(work,action,target)
+        if action=='add_custom_face':
+            event.set_extra('_hosted_favorite_verifier',lambda proof:st.pipeline.internal_receipt(work,sequence,proof) if stores.get(id) is st else None)
+            st.db.execute('UPDATE qq_favorite_writes SET action=?,sequence=? WHERE account=? AND md5=?',(work.event_id,sequence,str(event.get_self_id()),event.get_extra('_hosted_favorite_md5')));st.db.commit()
         result=await action_original(self,action,**params)
-        receipt=result.get('message_id') if isinstance(result,dict) and action in ('send_private_msg','send_group_msg') else 'onebot_ack'
-        if receipt is None:raise RuntimeError('missing_protocol_receipt')
+        if action=='add_custom_face':return result # confirmed only by QQ favorite detail readback
+        receipt=note_message_receipt(event,result) if action in ('send_private_msg','send_group_msg') else 'onebot_ack'
         # Settle the already-dispatched effect in its original store while
         # unload drains it. A new settings lease revokes future sends, not an
         # authoritative receipt for an effect that already happened.
@@ -303,7 +354,9 @@ def install_runtime(core,settings):
             foreground=not event.get_extra('_hosted_internal_work')
             # Autonomy owns durable goals, not the foreground Agent's tools.
             # Each tool retains its existing real-event permission checks.
-            extra_tools=qq_actions.tools(event,s['config'],st.db,lambda:delivery_current(event))+group_actions.tools(event,s['config'],st.db,lambda:delivery_current(event),group_sent)
+            extra_tools=qq_actions.tools(event,s['config'],st.db,lambda:delivery_current(event))+group_actions.tools(event,s['config'],st.db,lambda:delivery_current(event),group_sent,social=st.social)
+            import quote_reply,qq_favorite_tools
+            extra_tools+=quote_reply.tools(event,s['config'],st.db,s,lambda:delivery_current(event))+qq_favorite_tools.tools(event,s['config'],st.db,s['root'],lambda:delivery_current(event))
             if foreground:
                 from research_tools import tools as research_tools
                 evidence=event.get_extra('_hosted_research_evidence')
@@ -340,6 +393,9 @@ def install_runtime(core,settings):
             if deferred and work.reason=='deferred_output_already_attempted':st.presence.discard(deferred)
             return
         work.stage('observe')
+        if not internal and not deferred:
+            import quote_reply
+            quote_reply.observe(st.db,event,s,scope)
         mentioned=any(isinstance(c,At) and str(c.qq)==str(event.get_self_id()) for c in event.get_messages())
         quoted_bot=any(isinstance(c,Reply) and str(c.sender_id)==str(event.get_self_id()) for c in event.get_messages())
         mentioned=mentioned or quoted_bot
@@ -455,13 +511,15 @@ def install_runtime(core,settings):
             gate=st.social.image_status(scope,social_cfg,request=event.get_message_str())
             social_cfg['memeEnabled']=gate['reason']=='available'
             social_context=st.social.context(scope,event.get_message_str(),social_cfg)
-            meme_allowed=bool(social_context.get('meme_candidates'))
-            if social_cfg['memeEnabled']:gate={'reason':'offered' if meme_allowed else 'no_candidates','candidates':len(social_context.get('meme_candidates',[]))}
-            stamps['memeCandidatesOffered']=stamps.get('memeCandidatesOffered',0)+int(meme_allowed)
+            meme_allowed=social_cfg['memeEnabled']
+            candidates_offered=bool(social_context.get('meme_candidates'))
+            if meme_allowed:gate={'reason':'offered' if candidates_offered else 'no_candidates','candidates':len(social_context.get('meme_candidates',[]))}
+            stamps['memeCandidatesOffered']=stamps.get('memeCandidatesOffered',0)+int(candidates_offered)
             stamps['lastMemeDecision']={**gate,'at':time.time()}
             event.set_extra('_hosted_meme_gate',gate);event.set_extra('_hosted_meme_allowed',meme_allowed)
             assembly=bot_pipeline.ContextBuilder(identity,'internal_timer' if internal else 'deferred_real_QQ' if deferred else 'real_QQ')
             shared=bot_pipeline.conversation_context(st,cfg.get('behavior') or {},scope,subject,event.get_message_str(),now,state=state)
+            state=shared['state']
             assembly.contribute('memory',{key:shared[key] for key in ('state','recent_messages','recent_cross_session_messages','autonomous_experience')})
             assembly.contribute('companion',{'companion':companion_state.context(st.db,cfg,scope,now)})
             assembly.contribute('social',{'social':social_context})
@@ -478,11 +536,12 @@ def install_runtime(core,settings):
                 if not current(event):return
             if b.get('memory',True) and b.get('memorySemantic',True) and b.get('embeddingModel','').strip():
                 provider=provider_for(id)
-                state['facts']=await st.memory.semantic_recall(scope,subject,event.get_message_str(),now,b,provider,lambda:current(event))
-                if not current(event):return
-            if b.get('memory',True) and b.get('memorySummary') and b.get('memorySemantic',True) and b.get('embeddingModel','').strip():
-                provider=provider_for(id)
-                state['conversation_summaries']=await st.reflection.semantic_recall(scope,event.get_message_str(),b,provider,lambda:current(event),stamps,subject=subject)
+                from embedding_turn import EmbeddingTurn
+                async with EmbeddingTurn():
+                    state['facts']=await st.memory.semantic_recall(scope,subject,event.get_message_str(),now,b,provider,lambda:current(event),stamps)
+                    if not current(event):return
+                    if b.get('memorySummary'):
+                        state['conversation_summaries']=await st.reflection.semantic_recall(scope,event.get_message_str(),b,provider,lambda:current(event),stamps,subject=subject)
                 if not current(event):return
             if social_cfg.get('memeEnabled') and social_cfg.get('memeSemantic'):
                 provider=provider_for(id)
@@ -540,6 +599,8 @@ def install_runtime(core,settings):
             gallery=None
         if self.get_extra('_hosted_meme_sent',False) or self.get_extra('_hosted_model_error',False):gallery=None
         if self.get_extra('_hosted_meme_sent',False) or self.get_extra('_hosted_model_error',False) or re.search('去世|自杀|丧事|重病|葬礼',self.get_message_str()):image=None
+        prepared=self.get_extra('_hosted_tool_sticker')
+        if prepared and gate['reason']=='available' and self.get_extra('_hosted_meme_allowed') is not False and not self.get_extra('_hosted_meme_sent',False) and not self.get_extra('_hosted_model_error',False):image=prepared;gallery=None
         if self.get_extra('_hosted_meme_allowed') is False:reason=self.get_extra('_hosted_meme_gate',{}).get('reason',reason)
         if self.get_extra('_hosted_model_error',False):reason='model_error'
         elif self.get_extra('_hosted_meme_sent',False):reason='already_sent'
@@ -569,14 +630,18 @@ def install_runtime(core,settings):
             # Materialize bounded approved bytes before the network await. A
             # concurrent catalog deletion must not break a textual reply.
             chosen=image or gallery
-            try:component=Image.fromBytes(social.stickers.image(chosen['id'],scope) if chosen.get('sticker') else Path(chosen['path']).read_bytes())
+            try:component=Image.fromBytes(chosen['bytes'] if chosen.get('bytes') else social.stickers.image(chosen['id'],scope) if chosen.get('sticker') else Path(chosen['path']).read_bytes())
             except OSError:
                 image=None;gallery=None;m=metrics.setdefault(id,{});m['imageReadFailures']=m.get('imageReadFailures',0)+1
                 m['lastMemeDecision']={'reason':'read_failed','at':time.time()}
             else:
+                if chosen is prepared or chosen.get('source')=='qq_favorite_cache':self.set_extra('_hosted_favorite_wire',component.file)
                 chain=[x for x in chain if not isinstance(x,Face)]+[component]
                 if image:social.reserve_image(scope)
                 self.set_extra('_hosted_meme_sent',True)
+        import quote_reply
+        quote=await quote_reply.resolve(store(id,s).db,self,s,lambda:delivery_current(self))
+        if quote and delivery_current(self):chain=[Reply(id=quote[0],sender_id=quote[1])]+[x for x in chain if not isinstance(x,Reply)]
         if '表情包' in self.get_message_str() or ('收藏' in self.get_message_str() and '表情' in self.get_message_str()):
             # A QQ face is not an image sticker, including when no image was selected.
             chain=[x for x in chain if not isinstance(x,Face)]
@@ -648,6 +713,8 @@ def install_runtime(core,settings):
                     if group:autonomy.note_reply(active_store.db,scope,who,received_at)
                     initiative.outgoing(active_store.db,scope,'\n'.join(confirmed_text),received_at)
                     self.set_extra('_hosted_final_text','\n'.join(confirmed_text))
+                    if rhythm.get('memory',True) and not self.get_extra('_hosted_initiative',False) and not self.get_extra('_hosted_model_error',False):
+                        active_store.reflection.confirmed_prefix(scope,str(self.get_sender_id()),getattr(self.message_obj,'message_id',''),'\n'.join(confirmed_text),self.get_extra('_hosted_memory_epoch',-1))
             if not self.get_extra('_hosted_initiative',False):
                 started=self.get_extra('_hosted_received_at')
                 if started is not None:
@@ -685,7 +752,7 @@ def install_runtime(core,settings):
         if rhythm.get('memory',True) and self.get_extra('_hosted_memory_epoch',active_store.reflection.epoch())==active_store.reflection.epoch() and not self.get_extra('_hosted_initiative',False) and not self.get_extra('_hosted_model_error',False):
             active_store.reflection.record(scope,str(self.get_sender_id()),getattr(self.message_obj,'message_id',''),self.get_message_str(),text)
             provider=provider_for(id)
-            active_store.reflection.maybe_start(scope,{**rhythm,'_persona':s['config'].get('systemPrompt','')},provider,lambda:delivery_current(self),metrics[id],current_message_event)
+            active_store.reflection.maybe_start(scope,{**rhythm,'_persona':s['config'].get('systemPrompt','')},provider,lambda:settings.get(id) is s and id not in core.event_bus.stopped_platforms,metrics[id],current_message_event)
             care.track(active_store,active_store.reflection.task)
         return result
     def inject(original,self,args,kwargs):

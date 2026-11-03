@@ -1,9 +1,9 @@
-import asyncio,json,os,sqlite3,sys,unittest,contextvars
+import asyncio,json,os,sqlite3,sys,unittest,contextvars,time
 from pathlib import Path
 from types import SimpleNamespace as NS
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters'/'astrbot'))
-from memory_reflection import Reflection
+from memory_reflection import Reflection,invalidate
 from hosted_memory import ScopedMemory
 from data_admin import run
 
@@ -22,6 +22,13 @@ class LongMemory(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):self.r.close();self.db.close()
     def summary(self,text,scope='group:1'):
         self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated) VALUES(?,?,?,?)',(scope,text,'["real-event"]',1));self.db.commit()
+    async def test_person_correction_preserves_other_people_raw_evidence(self):
+        for scope,person,event in [('group:12345','12345678','a'),('group:12345','23456789','b'),('private:12345678','12345678','c')]:
+            self.r.record(scope,person,event,'真实输入','真实回答',1)
+        invalidate(self.db,'group:12345','12345678');self.db.commit()
+        self.assertEqual(self.db.execute('SELECT subject,event FROM memory_pending').fetchall(),[('23456789','b')])
+        self.assertEqual(self.db.execute('SELECT subject,event FROM memory_rounds').fetchall(),[('23456789','b')])
+        self.assertEqual(self.r.epoch(),1)
     async def recall(self,query='drink',current=lambda:True):
         return await self.r.semantic_recall('group:1',query,self.cfg,self.provider,current,{})
     async def test_full_bounded_library_progressive_and_scoped(self):
@@ -216,5 +223,57 @@ class FactSemantics(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[0]['recall_reason'],'semantic_match')
         self.assertEqual(json.loads(requests[0].content)['input'],['beverage','爱好 红茶'])
         self.assertEqual(requests[0].headers['authorization'],'Bearer test-bot-key');self.assertTrue(clients[0].is_closed)
+
+class ReflectionDebt(unittest.IsolatedAsyncioTestCase):
+    async def test_busy_group_cannot_evict_another_conversation_before_summary(self):
+        db=sqlite3.connect(':memory:');r=Reflection(db);now=time.time()
+        quiet='private:12345678';busy='group:55555'
+        try:
+            for n in range(5):r.record(quiet,'12345678','quiet'+str(n),'安静会话的问题','已确认回答',now-100+n)
+            for n in range(996):
+                db.execute('INSERT INTO memory_pending VALUES(?,?,?,?,?,?)',(busy,'87654321','busy'+str(n),'群聊消息','已确认回答',now+n/1000))
+                db.execute('INSERT INTO memory_rounds(scope,subject,event,question,answer,at) VALUES(?,?,?,?,?,?)',(busy,'87654321','busy'+str(n),'群聊消息','已确认回答',now+n/1000))
+            db.commit();r.record(busy,'87654321','new-busy','新的群聊消息','已确认回答',now+1)
+            for table in ('memory_pending','memory_rounds'):
+                self.assertEqual(db.execute('SELECT count(*) FROM '+table).fetchone()[0],1000)
+                self.assertEqual(db.execute('SELECT count(*) FROM '+table+' WHERE scope=?',(quiet,)).fetchone()[0],5)
+            calls=[]
+            async def chat(**kw):calls.append(kw);return NS(completion_text='安静会话的真实摘要')
+            r.maybe_start(busy,{'memorySummary':True,'summaryRounds':5,'naturalConversation':False},NS(text_chat=chat),lambda:True,{},contextvars.ContextVar('fair_debt',default=None));await r.task
+            self.assertEqual(db.execute('SELECT scope FROM memory_summaries').fetchone()[0],quiet)
+            self.assertEqual(db.execute('SELECT count(*) FROM memory_pending WHERE scope=?',(quiet,)).fetchone()[0],0)
+            self.assertEqual(len(calls),1)
+        finally:r.close();db.close()
+    async def test_no_daily_summary_gate_and_busy_scopes_retry(self):
+        db=sqlite3.connect(':memory:');r=Reflection(db);calls=[];gate=asyncio.Event()
+        async def chat(**kw):
+            calls.append(kw);await gate.wait();return NS(completion_text='真实对话摘要')
+        cfg={'memory':True,'memorySummary':True,'summaryRounds':5,'dailySummaryLimit':0,'naturalConversation':False}
+        try:
+            for scope in ('private:12345678','private:87654321'):
+                for n in range(5):r.record(scope,scope[8:],str(n),'真实问题','真实回答')
+            self.assertTrue(r.maybe_start('private:12345678',cfg,NS(text_chat=chat),lambda:True,{},contextvars.ContextVar('debt_event',default=None)))
+            self.assertFalse(r.retry());gate.set();await r.task
+            self.assertTrue(r.retry());await r.task
+            self.assertEqual(len(calls),2);self.assertEqual(db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],2)
+        finally:r.close();db.close()
+    async def test_failed_debt_survives_restart_and_no_duplicate_partial_round(self):
+        db=sqlite3.connect(':memory:');r=Reflection(db);scope='private:12345678'
+        for n in range(5):r.record(scope,'12345678',str(n),'真实问题','真实回答')
+        async def fail(**kw):raise RuntimeError('provider unavailable')
+        cfg={'memorySummary':True,'summaryRounds':5};var=contextvars.ContextVar('debt_event',default=None)
+        try:
+            r.maybe_start(scope,cfg,NS(text_chat=fail),lambda:True,{},var);await r.task
+            self.assertFalse(r.retry());r.close();r=Reflection(db)
+            self.assertEqual(db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],5)
+            r.incoming(scope,'12345678','partial','原问题');r.confirmed_prefix(scope,'12345678','partial','首条已发送',r.epoch())
+            self.assertEqual(db.execute("SELECT answer FROM memory_pending WHERE event='partial'").fetchone()[0],'首条已发送')
+            self.assertEqual(db.execute("SELECT count(*) FROM memory_rounds WHERE event='partial'").fetchone()[0],0)
+            async def success(**kw):return NS(completion_text='实际整理完成')
+            db.execute('UPDATE memory_reflection_retry SET next_at=0');db.commit()
+            r.maybe_start(scope,cfg,NS(text_chat=success),lambda:True,{},var);await r.task
+            self.assertEqual(db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1)
+        finally:r.close();db.close()
 
 if __name__=='__main__':unittest.main()

@@ -11,40 +11,47 @@ def initialize(db):
     CREATE TABLE IF NOT EXISTS sticker_inbox(id TEXT PRIMARY KEY,scope TEXT,subject TEXT,event TEXT,status TEXT,meaning TEXT,created REAL,version INTEGER,png BLOB);
     CREATE TABLE IF NOT EXISTS sticker_attempts(day TEXT PRIMARY KEY,count INTEGER,last_attempt REAL);
     CREATE TABLE IF NOT EXISTS sticker_caption_budget(day TEXT PRIMARY KEY,count INTEGER);
+    CREATE TABLE IF NOT EXISTS sticker_originals(id TEXT PRIMARY KEY,bytes BLOB,mime TEXT,animated INTEGER);
+    CREATE TRIGGER IF NOT EXISTS sticker_original_deleted AFTER DELETE ON sticker_inbox BEGIN DELETE FROM sticker_originals WHERE id=OLD.id; END;
+    CREATE TRIGGER IF NOT EXISTS sticker_original_rejected AFTER UPDATE OF status ON sticker_inbox WHEN NEW.status='rejected' BEGIN DELETE FROM sticker_originals WHERE id=NEW.id; END;
     ''')
 
 
-def png_thumbnail(raw):
-    if len(raw)>1048576:raise ValueError('oversize')
+def png_thumbnail(raw,max_bytes=1048576,max_pixels=1048576):
+    if len(raw)>max_bytes:raise ValueError('media_too_large')
     # Lazy import: unused Bots do not load an image decoder for this feature.
     from PIL import Image
     with warnings.catch_warnings():
         warnings.simplefilter('error',Image.DecompressionBombWarning)
         with Image.open(io.BytesIO(raw)) as source:
-            if source.format not in ('PNG','JPEG','GIF','WEBP') or source.width*source.height>1048576:raise ValueError('unsupported image')
+            if source.format not in ('PNG','JPEG','GIF','WEBP') or source.width*source.height>max_pixels:raise ValueError('unsupported_image_dimensions_or_format')
             source.seek(0);source.thumbnail((512,512));image=source.convert('RGBA')
             out=io.BytesIO();image.save(out,format='PNG',optimize=True);data=out.getvalue()
     if len(data)>262144:raise ValueError('thumbnail too large')
     return data
 
 
-async def download(url):
-    async with _download_slots:return await _download(url)
+async def download(url,max_bytes=1048576):
+    async with _download_slots:return await _download(url,max_bytes)
 
 
-async def _download(url):
+async def _download(url,max_bytes=1048576):
     import aiohttp
     parts=urlsplit(url)
-    if parts.scheme!='https' or parts.username or parts.password or parts.port not in (None,443):raise ValueError('unsupported origin')
+    if parts.scheme not in ('http','https') or parts.username or parts.password or parts.port not in (None,80 if parts.scheme=='http' else 443):raise ValueError('unsupported origin')
     host=(parts.hostname or '').lower()
-    if not (host=='qpic.cn' or host.endswith('.qpic.cn') or host=='multimedia.nt.qq.com'):raise ValueError('unsupported origin')
+    if not any(host==suffix or host.endswith('.'+suffix) for suffix in ('qpic.cn','qq.com','qq.com.cn','gtimg.cn')):raise ValueError('unsupported origin')
+    # OneBot can report an HTTP QQ CDN URL. Fetch its HTTPS equivalent only;
+    # never permit plaintext downloads or redirects to another origin.
+    url=parts._replace(scheme='https',netloc=host).geturl()
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10),trust_env=False) as client:
         async with client.get(url,allow_redirects=False) as response:
-            if response.status!=200 or (response.content_length or 0)>1048576:raise ValueError('download failed')
+            if response.status!=200:raise ValueError('media_http_'+str(response.status))
+            if (response.content_length or 0)>max_bytes:raise ValueError('media_too_large')
             out=bytearray()
             async for block in response.content.iter_chunked(32768):
                 out.extend(block)
-                if len(out)>1048576:raise ValueError('oversize')
+                if len(out)>max_bytes:raise ValueError('media_too_large')
             return bytes(out)
 
 
@@ -59,7 +66,7 @@ class StickerCollector:
         segments=raw.get('message',[])
         if not isinstance(segments,list):return
         # sub_type=1 is NapCat's sticker tag. Ordinary photos are never collected.
-        item=next((s.get('data',{}) for s in segments if isinstance(s,dict) and s.get('type')=='image' and isinstance(s.get('data'),dict) and str(s['data'].get('sub_type'))=='1'),None)
+        item=next((s.get('data',{}) for s in segments if isinstance(s,dict) and isinstance(s.get('data'),dict) and (s.get('type')=='mface' or s.get('type')=='image' and str(s['data'].get('sub_type'))=='1')),None)
         if not item or not isinstance(item.get('url'),str):return
         now=time.time();day=time.strftime('%Y-%m-%d',time.gmtime(now));row=self.db.execute('SELECT count,last_attempt FROM sticker_attempts WHERE day=?',(day,)).fetchone()
         if row and (row[0]>=cfg.get('dailyStickerCollectLimit',10) or now-row[1]<60):return
@@ -72,9 +79,13 @@ class StickerCollector:
                 raw=await fetch(url)
                 if self.closed or not is_current():return
                 data=png_thumbnail(raw)
+                from PIL import Image
+                with Image.open(io.BytesIO(raw)) as source:
+                    mime=Image.MIME.get(source.format,'application/octet-stream');animated=int(getattr(source,'is_animated',False))
                 if self.closed or not is_current():return
-                identifier='cap_'+hashlib.sha256(scope.encode()+b'\0'+data).hexdigest()[:16]
+                identifier='cap_'+hashlib.sha256(scope.encode()+b'\0'+raw).hexdigest()[:16]
                 inserted=self.db.execute("INSERT OR IGNORE INTO sticker_inbox VALUES(?,?,?,?,'pending','',?,1,?)",(identifier,scope,subject,event,now,data)).rowcount
+                if inserted:self.db.execute('INSERT OR REPLACE INTO sticker_originals VALUES(?,?,?,?)',(identifier,raw,mime,animated))
                 self.db.execute("DELETE FROM sticker_inbox WHERE status='rejected' AND id NOT IN (SELECT id FROM sticker_inbox WHERE status='rejected' ORDER BY created DESC LIMIT 200)");self.db.commit()
                 if inserted:
                     metrics['stickerCollected']=metrics.get('stickerCollected',0)+1
@@ -104,7 +115,7 @@ class StickerCollector:
         return [{'id':r[0],'meaning':r[1],'avoid':'仅在来源群使用','sticker':True} for r in self.db.execute("SELECT id,meaning FROM sticker_inbox WHERE scope=? AND status='approved' ORDER BY created DESC LIMIT 20",(scope,))]
 
     def image(self,identifier,scope):
-        row=self.db.execute("SELECT png FROM sticker_inbox WHERE id=? AND scope=? AND status='approved'",(identifier,scope)).fetchone()
+        row=self.db.execute("SELECT coalesce(o.bytes,i.png) FROM sticker_inbox i LEFT JOIN sticker_originals o ON o.id=i.id WHERE i.id=? AND i.scope=? AND i.status='approved'",(identifier,scope)).fetchone()
         if not row:raise OSError('sticker no longer available')
         return bytes(row[0])
 
@@ -116,8 +127,8 @@ class StickerCollector:
 def manage(db,data):
     initialize(db);action=data['action']
     if action=='list_stickers':
-        rows=db.execute("SELECT id,scope,subject,event,status,meaning,created,version FROM sticker_inbox WHERE status!='rejected' ORDER BY created DESC LIMIT 30")
-        return {'items':[dict(zip(('id','scope','subject','event','status','meaning','created','version'),r)) for r in rows],'pendingLimit':10,'approvedLimit':20}
+        rows=db.execute("SELECT i.id,scope,subject,event,status,meaning,created,version,coalesce(o.animated,0) FROM sticker_inbox i LEFT JOIN sticker_originals o ON o.id=i.id WHERE status!='rejected' ORDER BY created DESC LIMIT 30")
+        return {'items':[dict(zip(('id','scope','subject','event','status','meaning','created','version','animated'),r)) for r in rows],'pendingLimit':10,'approvedLimit':20}
     row=db.execute('SELECT status,version,png FROM sticker_inbox WHERE id=?',(data['id'],)).fetchone()
     if not row:return {'error':'表情包不存在','status':404}
     if action=='get_sticker':

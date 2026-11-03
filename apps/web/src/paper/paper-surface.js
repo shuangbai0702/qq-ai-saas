@@ -5,6 +5,8 @@ const NS = 'http://www.w3.org/2000/svg', TAU = Math.PI * 2;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const hash = value => { const n = Math.sin(value * 127.1 + 23.1) * 43758.5453; return n - Math.floor(n); };
 const svg = (tag, attrs = {}, parent) => { const node = document.createElementNS(NS, tag); for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, value); parent?.append(node); return node; };
+// Reassigning even an identical SVG filter/transform invalidates browser paint.
+const attribute = (node, name, value) => { if (node.getAttribute(name) !== value) node.setAttribute(name, value); };
 const spline = points => {
   const f = n => n.toFixed(2), n = points.length; let d = `M${f(points[0].x)},${f(points[0].y)}`;
   for (let i = 0; i < n; i++) { const a = points[(i + n - 1) % n], b = points[i], c = points[(i + 1) % n], e = points[(i + 2) % n]; d += `C${f(b.x + (c.x - a.x) / 6)},${f(b.y + (c.y - a.y) / 6)} ${f(c.x - (e.x - b.x) / 6)},${f(c.y - (e.y - b.y) / 6)} ${f(c.x)},${f(c.y)}`; }
@@ -117,19 +119,19 @@ export class PaperSurface {
         this.materialKey = key; this.drawn = true;
       }
       const dx = .25, dy = 2.4 + this.hover * .8 - this.press * 1.7;
-      this.shadow.setAttribute('dx', dx.toFixed(2)); this.shadow.setAttribute('dy', dy.toFixed(2)); this.shadow.setAttribute('stdDeviation', (2.1 - this.press * .9).toFixed(2));
-      this.shadow.setAttribute('flood-opacity', (.10 - this.press * .035).toFixed(3));
-      this.depths.forEach((node, i) => node.setAttribute('transform', `translate(0,${((i + 1) * (.85+this.hover*.25) * (1 - this.press * .68)).toFixed(2)})`));
-      this.rimGradient.setAttribute('x1', '.1');
-      this.rimGradient.setAttribute('y1', '0');
+      attribute(this.shadow,'dx', dx.toFixed(2)); attribute(this.shadow,'dy', dy.toFixed(2)); attribute(this.shadow,'stdDeviation', (2.1 - this.press * .9).toFixed(2));
+      attribute(this.shadow,'flood-opacity', (.10 - this.press * .035).toFixed(3));
+      this.depths.forEach((node, i) => attribute(node,'transform', `translate(0,${((i + 1) * (.85+this.hover*.25) * (1 - this.press * .68)).toFixed(2)})`));
+      attribute(this.rimGradient,'x1', '.1');
+      attribute(this.rimGradient,'y1', '0');
       this.brush.draw(time);
-      this.section.setAttribute('opacity',(.35+this.hover*.25-this.press*.2).toFixed(3));
-      this.section.setAttribute('transform',`translate(0,${(-this.press*.8).toFixed(2)})`);
-      this.pencil.setAttribute('stroke-dasharray',`${(this.pencilLength * (.025+this.hover*.68)).toFixed(2)} ${this.pencilLength.toFixed(2)}`);
-      this.pencil.setAttribute('stroke-dashoffset',(-this.pencilLength*.42).toFixed(2));
-      this.pencil.setAttribute('opacity',(.15+this.hover*.7).toFixed(3));
+      attribute(this.section,'opacity',(.35+this.hover*.25-this.press*.2).toFixed(3));
+      attribute(this.section,'transform',`translate(0,${(-this.press*.8).toFixed(2)})`);
+      attribute(this.pencil,'stroke-dasharray',`${(this.pencilLength * (.025+this.hover*.68)).toFixed(2)} ${this.pencilLength.toFixed(2)}`);
+      attribute(this.pencil,'stroke-dashoffset',(-this.pencilLength*.42).toFixed(2));
+      attribute(this.pencil,'opacity',(.15+this.hover*.7).toFixed(3));
       const hasAccent=this.node.matches('.primary,.layer-front,.material-object,.swatch');
-      this.transfer.setAttribute('opacity',hasAccent ? (.18+this.hover*.48+this.press*.18).toFixed(3) : '0');
+      attribute(this.transfer,'opacity',hasAccent ? (.18+this.hover*.48+this.press*.18).toFixed(3) : '0');
     }
   }
   destroy() { if (!this.alive) return; this.alive = false; this.brush.destroy(); this.canvas.width = this.canvas.height = this.feedbackCanvas.width = this.feedbackCanvas.height = 0; this.svg.remove(); this.node.classList.remove('stock-ready'); this.points.length = 0; }

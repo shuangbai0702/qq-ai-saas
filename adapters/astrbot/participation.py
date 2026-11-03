@@ -1,5 +1,5 @@
 """Per-scope optional attention/fatigue; explicit requests bypass suppression."""
-import time
+import time,re
 from hosted_memory import tokens
 
 class Participation:
@@ -7,6 +7,10 @@ class Participation:
         self.scopes={};self.db=db
         if db is not None:
             db.execute('CREATE TABLE IF NOT EXISTS dialogue_feedback(scope TEXT,event TEXT,subject TEXT,at REAL,reply TEXT,state TEXT,PRIMARY KEY(scope,event))');db.commit()
+            now=time.time()
+            rows=db.execute('SELECT scope,subject,at,reply FROM (SELECT scope,subject,at,reply FROM dialogue_feedback WHERE at>? AND at<=? ORDER BY at DESC LIMIT 200) ORDER BY at',(now-1800,now)).fetchall()
+            for scope,subject,at,reply in rows:
+                if re.fullmatch(r'(group|private):\d{4,20}',scope):self.outgoing(scope,reply,at,subject=subject,persist=False)
     def observe(self,scope,text,now=None):
         now=time.time() if now is None else now
         state=self.scopes.setdefault(scope,{'topic':set(),'sent':[],'last':now})

@@ -15,6 +15,28 @@ async function fixture(count=1){
 }
 const usage={modelCalls:1,toolCalls:0,tokens:400};
 
+test('a slow member policy cannot block the active lease heartbeat',async()=>{
+ const db=await fixture(2);let releaseModel!:()=>void,releaseSlow!:()=>void,enteredSlow!:()=>void;
+ const modelGate=new Promise<void>(resolve=>releaseModel=resolve),slowGate=new Promise<void>(resolve=>releaseSlow=resolve),slowEntered=new Promise<void>(resolve=>enteredSlow=resolve);
+ let slow=false,activePolicies=0;
+ const coordinator=new AutonomyCoordinator(db,async(bot,op,body:any)=>{
+  if(op==='policy'){
+   if(bot.bot_id==='bot-0')activePolicies++;
+   if(slow&&bot.bot_id==='bot-1'){enteredSlow();await slowGate}
+   return{};
+  }
+  if(op==='snapshot'||op==='cancel')return{};
+  await modelGate;return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:null,summary:'rest',reason:'model choice',wait:{kind:'time',seconds:600}}};
+ });
+ try{
+  for(let n=0;n<2;n++)await coordinator.repo.configure('tenant','bot-'+n,1,{mode:'active'});
+  await coordinator.tick();assert.ok(coordinator.active);slow=true;
+  const blockedTick=coordinator.tick();await slowEntered;
+  const before=activePolicies;await coordinator.heartbeat();assert.ok(activePolicies>before,'renew active owner while peer IPC remains unresolved');
+  releaseSlow();await blockedTick;releaseModel();await coordinator.active?.task;
+ }finally{releaseSlow();releaseModel();await coordinator.stop();await db.close()}
+});
+
 test('shared experience survives coordinator replacement, labels decisions and failures, and isolates members',async()=>{
  const db=await fixture(2);let count=0;
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
@@ -33,6 +55,43 @@ test('shared experience survives coordinator replacement, labels decisions and f
   const view=await coordinator.repo.view('tenant','bot-0');await coordinator.repo.configure('tenant','bot-0',view.settings.epoch,{mode:'passive'});
   assert.ok((await coordinator.repo.policies()).some(b=>b.bot_id==='bot-0'),'mode switch hid durable experience from runtime recovery');
   await replacement.stop();
+ }finally{await coordinator.stop();await db.close()}
+});
+
+test('four receipt-bearing bubbles consume one versioned logical chat action and return to outer',async()=>{
+ const db=await fixture();let plans=0;
+ const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
+  if(op==='policy'||op==='snapshot')return{};
+  if(op==='execute')return{status:'completed',actionUnitVersion:2,summary:'four bubbles actually confirmed by fixture protocol',effects:Array.from({length:4},(_,n)=>({id:body.work.id+':'+n,logicalActionId:body.work.id+':message:private:12345678',method:'send_private_msg',target:'private:12345678',status:'confirmed',receipt:'real-fixture-'+n})),evidence:[],unfinished:[],usage};
+  plans++;return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:plans===1?{kind:'message',target:'private:12345678',objective:'one conversational action'}:null,summary:'reassessed receipts',reason:'own choice',wait:{kind:plans===1?'after_result':'time',seconds:plans===1?0:300}}};
+ });
+ try{await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',cycleExternalActions:1});await coordinator.tick();await coordinator.active?.task;const view=await coordinator.repo.view('tenant','bot-0');assert.equal(view.usage.external_actions,1);assert.equal(view.actions[0].result.effects.length,4);assert.equal(new Set(view.actions[0].result.effects.map((e:any)=>e.receipt)).size,4);assert.equal(plans,2)}finally{await coordinator.stop();await db.close()}
+});
+
+test('a completed task yields to another due member without losing its own durable result',async()=>{
+ const db=await fixture(2),executions:string[]=[];
+ const coordinator=new AutonomyCoordinator(db,async(bot,op,body:any)=>{
+  if(op==='policy'||op==='snapshot')return{};
+  if(op==='execute'){executions.push(bot.bot_id);return{status:'completed',summary:'actual result '+bot.bot_id,effects:[],evidence:[],unfinished:[],usage}}
+  return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:{kind:'research',objective:'one meaningful task'},summary:'working',reason:'independent interest',wait:{kind:'after_result',seconds:0}}};
+ });
+ try{
+  for(let n=0;n<2;n++)await coordinator.repo.configure('tenant','bot-'+n,1,{mode:'active'});
+  await coordinator.tick();await coordinator.active?.task;assert.equal(executions.length,1);const first=executions[0];assert.equal((await coordinator.repo.view('tenant',first)).cycles[0].reason,'fair_yield');
+  await coordinator.tick();await coordinator.active?.task;assert.notEqual(executions[1],first);assert.equal((await coordinator.repo.view('tenant',first)).actions[0].result.summary,'actual result '+first);
+ }finally{await coordinator.stop();await db.close()}
+});
+
+test('an absent stopped read-only task closes unknown without replaying an external effect',async()=>{
+ const db=await fixture();let executed=0;
+ const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
+  if(op==='policy'||op==='snapshot')return{};
+  if(op==='receipt')return{exists:false,active:false,effects:[]};
+  if(op==='execute'){executed++;return{status:'unknown',summary:'read interrupted',effects:[],evidence:[],unfinished:['read'],usage}}
+  return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:{kind:'research',objective:'read public facts'},summary:'read',reason:'interest',wait:{kind:'after_result',seconds:0}}};
+ });
+ try{
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await coordinator.tick();await coordinator.active?.task;await coordinator.repo.configure('tenant','bot-0',2,{mode:'passive'});(coordinator as any).sampled.clear();await coordinator.tick();const view=await coordinator.repo.view('tenant','bot-0');assert.equal(executed,1);assert.equal(view.actions[0].status,'blocked');assert.equal(view.actions[0].result.stopReason,'read_execution_interrupted');assert.equal(view.usage.external_actions,0);
  }finally{await coordinator.stop();await db.close()}
 });
 
@@ -434,7 +493,8 @@ test('passive mode settles old receipts without a model call, new wake or repeat
   await coordinator.repo.configure('tenant','bot-0',2,{mode:'passive'});
   (coordinator as any).sampled.clear();await coordinator.tick();assert.equal(receiptCalls,1);assert.equal(coordinator.active,undefined);
   assert.equal((await coordinator.repo.policies()).length,1,'pending old receipt disappeared once passive policy was applied');
-  settled=true;(coordinator as any).sampled.clear();await coordinator.tick();
+  settled=true;(coordinator as any).sampled.clear();await coordinator.tick();assert.equal(receiptCalls,1,'receipt checks must honor the persisted backoff');
+  await db.query("UPDATE autonomy_actions SET result=jsonb_set(result,'{receiptCheck,nextAt}','0') WHERE id=$1",[actionId]);(coordinator as any).sampled.clear();await coordinator.tick();
   const view=await coordinator.repo.view('tenant','bot-0');assert.equal(view.actions[0].status,'completed');assert.equal(view.actions[0].result.effects[0].receipt,'late-real-id');assert.equal(view.settings.config.mode,'passive');assert.equal(view.settings.runtime_epoch,3);assert.equal(executions,1);assert.equal(receiptCalls,2);
   const policies=await coordinator.repo.policies();assert.equal(policies.length,1,'durable history remains readable in passive mode');assert.equal(policies[0].config.mode,'passive');assert.equal((await db.query('SELECT * FROM autonomy_wakes')).length,0);assert.equal((await db.query('SELECT * FROM commands')).length,0);
  }finally{await coordinator.stop();await db.close()}

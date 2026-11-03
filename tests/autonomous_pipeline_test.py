@@ -1,5 +1,5 @@
 """Actual SDK output/OneBot boundaries with a fixture protocol, never real QQ."""
-import asyncio,copy,json,os,sqlite3,sys,tempfile,time,uuid
+import asyncio,copy,hashlib,json,os,sqlite3,sys,tempfile,time,uuid
 from pathlib import Path
 from types import SimpleNamespace as NS
 from unittest.mock import patch
@@ -19,6 +19,10 @@ from autonomous_runtime import evidence_limits,decision_environment,decision_clo
 
 
 async def main():
+    # The fixture constructs Core directly. Production initializes this shared
+    # SDK database before platform startup; do the same before concurrent sends.
+    from astrbot.core import db_helper
+    await db_helper.initialize();db_helper.inited=True
     source={'scope':'private:12345678','lastUserAt':100,'lastReplyAt':120,'lastAttemptAt':0,'unanswered':0,'lastText':'private raw text','lastOutput':'private raw reply','mayInitiate':True}
     translated=decision_contacts([source],200)[0]
     assert translated['lastUserAt']==100000 and translated['lastReplyAt']==120000 and translated['lastAttemptAt'] is None
@@ -37,10 +41,25 @@ async def main():
     unknown=decision_feedback(historical,{'now':200000,'innerTools':[]})
     assert unknown['readiness']['tools']==[],'a missing tool was invented as available'
     print('PIPELINE historical failures remain immutable while current readiness and retry clocks use actual tool state passed')
+    bubbles=2;favorite_md5=''
     calls=[];barrier=asyncio.Event();release=asyncio.Event();mode='normal';research_requests=[];message_requests=[]
     class Provider:
         provider_config={'id':'fixture','max_context_tokens':0}
         async def text_chat(self,**kwargs):
+            if mode in ('favorite','favorite_cooled'):
+                message_requests.append(kwargs)
+                if len(message_requests)==1:
+                    return LLMResponse(role='assistant',tools_call_name=['hosted_qq_favorites'],tools_call_args=[{'operation':'list'}],tools_call_ids=['actual-favorite-list'],usage=TokenUsage(input_other=50,output=10))
+                if len(message_requests)==2:
+                    return LLMResponse(role='assistant',tools_call_name=['hosted_qq_favorites'],tools_call_args=[{'operation':'prepare','favorite_handle':'qf_'+hashlib.sha256(b'90000000|fixture-favorite').hexdigest()[:20]}],tools_call_ids=['actual-favorite-prepare'],usage=TokenUsage(input_other=50,output=10))
+                if mode=='favorite_cooled':st.social.reserve_image('private:12345678')
+                return LLMResponse(role='assistant',completion_text='这张收藏[QQ_BREAK]第二条',usage=TokenUsage(input_other=50,output=10))
+            if mode=='quoted':
+                message_requests.append(kwargs)
+                if len(message_requests)==1:
+                    handle=st.db.execute('SELECT handle FROM pipeline_quote_sources').fetchone()[0]
+                    return LLMResponse(role='assistant',tools_call_name=['hosted_quote_reply'],tools_call_args=[{'handle':handle}],tools_call_ids=['actual-quote'],usage=TokenUsage(input_other=50,output=10))
+                return LLMResponse(role='assistant',completion_text='第一条[QQ_BREAK]第二条',usage=TokenUsage(input_other=50,output=10))
             if mode=='wrapped_text':return LLMResponse(role='assistant',completion_text='开发\n我？！\n\n别把你的代\n码搅成一锅\n饭！',usage=TokenUsage(input_other=50,output=10))
             if mode in ('self_signature','self_publish','self_signature_changed','self_publish_interrupted'):
                 message_requests.append(kwargs)
@@ -66,10 +85,12 @@ async def main():
                 if len(research_requests)==1:return LLMResponse(role='assistant',tools_call_name=['inspect_context'],tools_call_args=[{}],tools_call_ids=['read-1'],usage=TokenUsage(input_other=50,output=10))
                 return LLMResponse(role='assistant',completion_text=json.dumps({'status':'completed','summary':'inspected actual companion context','unfinished':[]}),usage=TokenUsage(input_other=50,output=10))
             message_requests.append(kwargs)
-            return LLMResponse(role='assistant',completion_text='第一条[QQ_BREAK]第二条',usage=TokenUsage(input_other=50,output=10))
+            return LLMResponse(role='assistant',completion_text='第一条[QQ_BREAK]第二条' if bubbles==2 else '[QQ_BREAK]'.join('消息'+str(i+1) for i in range(bubbles)),usage=TokenUsage(input_other=50,output=10))
     bot=CQHttp()
     async def protocol(action,**params):
         calls.append((action,params))
+        if action=='get_msg':return {'message_id':params['message_id'],'sender':{'user_id':12345678}}
+        if action=='fetch_custom_face_detail':return [{'md5':favorite_md5,'resId':'fixture-favorite','url':'https://qpic.cn/fixture.gif'}]
         if action=='get_login_info':return {'user_id':90000001 if mode=='self_signature_changed' and len(calls)>1 else 90000000}
         if mode in ('late','member_late','member_unknown_late') or mode=='member_second_late' and len(calls)==2:barrier.set();await release.wait()
         if mode in ('unknown','member_unknown_late') or mode=='member_second_late' and len(calls)==2:return {}
@@ -273,7 +294,7 @@ async def main():
         print('PIPELINE ambient admission stays observable without canceling work; actual silent model feedback still advances freshness passed')
 
         mode='think_provenance';research_requests.clear();p,w,st=setup('outer-provenance');settings['qq']['config']['behavior']['bilibiliSearchEnabled']=True
-        observation={'eventId':'actual-private-reply','scope':'private:12345678','senderId':'12345678','owner':True,'result':{'status':'sent','protocolConfirmed':1,'response':'an unverified cross-conversation completion claim'}}
+        observation={'eventId':'actual-private-reply','scope':'private:12345678','senderId':'12345678','owner':True,'result':{'status':'sent','protocolConfirmed':1,'messageIds':['real-receipt-marker'],'evidence':[{'source':'actual-tool-marker','reference':'actual-reference-marker'}],'toolResults':[{'tool':'actual-tool-marker','status':'returned'}],'response':'an unverified cross-conversation completion claim'}}
         data={'work':w,'goalRevision':0,'goals':[],'summary':'unverified historical completion claim','recentForeground':observation,'feedback':{'status':'blocked','toolResults':[{'tool':'bilibili_search','status':'unavailable','retryAfterSeconds':900}]}}
         result=await brain.think('qq',data);assert result['status']=='completed'
         request=research_requests[-1];messages=[m.model_dump() if hasattr(m,'model_dump') else m for m in request['contexts']]
@@ -283,6 +304,9 @@ async def main():
         payload=json.loads(message_text(next(m for m in messages if m['role']=='user')))
         assert 'summary' not in payload and payload['priorModelState']=={'summary':data['summary'],'executionEvidence':False}
         assert payload['recentForeground']['eventId']=='actual-private-reply' and 'result' not in payload['recentForeground']
+        execution=payload['recentForeground']['execution']
+        assert execution['messageIds']==['real-receipt-marker'] and execution['toolResults'][0]['tool']=='actual-tool-marker'
+        assert execution['evidence'][0]['reference']=='actual-reference-marker' and 'response' not in execution
         assert not any(key in payload['environment'] for key in ('contexts','observedConversations','selfExperiences','foregroundFeedback','event')),'duplicate notification/history payload'
         assert payload['environment']['sharedContext']['memoryEnabled'] is False
         assert all('lastText' not in contact and 'lastOutput' not in contact for contact in payload['environment']['contacts'])
@@ -307,6 +331,7 @@ async def main():
         assert any(m['role']=='system' and DELIBERATION_GUIDANCE in message_text(m) for m in messages)
         assert calls==[],'checking provenance sent an external message'
         print('PIPELINE actual outer request distinguishes unverified model state and current-scope reply receipts from task execution passed')
+
 
         # Both layers read the same live compressed/pending memory, independent
         # of the notification slot and contact-send cooldown.
@@ -498,7 +523,7 @@ async def main():
         row=st.db.execute("SELECT hits FROM companion_interests WHERE scope='self' AND topic='茶叶'").fetchone();assert row[0]==1
         assert any(i['topic']=='茶叶' and i['source']=='autonomous_choice' for i in brain.snapshot('qq')['self']['interests'])
         import companion_state
-        assert not any(i['source']=='autonomous_choice' for i in companion_state.context(st.db,settings['qq']['config'],'private:12345678',time.time())['interests'])
+        assert any(i['source']=='autonomous_choice' and i['source_scope']=='self' for i in companion_state.context(st.db,settings['qq']['config'],'private:12345678',time.time())['interests'])
         await brain.handle('qq','execute',{'work':w,'action':reflection_action})
         assert st.db.execute('SELECT count(*) FROM companion_reflections').fetchone()[0]==1 and len(research_requests)==3,'replayed Work reflected twice'
         check={**w,'kind':'research'}
@@ -567,6 +592,67 @@ async def main():
             runtime['release']('other');settings.pop('other')
         print('PIPELINE member unload preserves a late confirmed receipt, drains once and leaves the other tenant valid passed')
 
+        mode='quoted';p,w,st=setup('internal-quote');calls.clear();message_requests.clear()
+        import quote_reply
+        observed=NS(message_obj=NS(message_id=42),get_sender_id=lambda:'12345678',get_self_id=lambda:'90000000',get_message_str=lambda:'actual observed message')
+        quote_reply.observe(st.db,observed,settings['qq'],'private:12345678')
+        result=await brain.execute('qq',{'work':w,'action':{'kind':'message','target':'private:12345678','objective':'quote the actual observed message'}})
+        assert result['status']=='completed',result
+        assert calls[0]==('get_msg',{'message_id':42}),{'calls':calls,'result':result,'requests':len(message_requests)}
+        sent=[params['message'] for action,params in calls if action=='send_private_msg']
+        assert len(sent)==2 and sent[0][0]['type']=='reply' and str(sent[0][0]['data']['id'])=='42',sent
+        assert not any(c['type']=='reply' for c in sent[1]),sent
+        event=brain.make_event('qq',w,'private:12345678','untrusted arbitrary query','90000000')
+        from astrbot.core.platform.astr_message_event import current_message_event
+        token=current_message_event.set(event)
+        try:
+            try:await event.bot.get_msg(message_id=43)
+            except ValueError as error:assert str(error)=='internal quote read denied'
+            else:raise AssertionError('unselected internal message read was allowed')
+        finally:current_message_event.reset(token)
+        print('PIPELINE internal quote verifies only selected observed source and routes reply on first bubble passed')
+
+        import io,qq_favorite_tools
+        from PIL import Image
+        image=io.BytesIO();Image.new('RGB',(3,3),'blue').save(image,format='GIF',save_all=True,append_images=[Image.new('RGB',(3,3),'red')],duration=100,loop=0);favorite_md5=hashlib.md5(image.getvalue()).hexdigest()
+        for mode in ('favorite','favorite_cooled'):
+            p,w,st=setup('internal-'+mode);calls.clear();message_requests.clear()
+            settings['qq']['config']['behavior']['memeEnabled']=True
+            assert st.social.context('private:12345678','发收藏',settings['qq']['config']['behavior'])['meme_candidates']==[]
+            with patch.object(qq_favorite_tools,'download',return_value=image.getvalue()):
+                result=await brain.execute('qq',{'work':w,'action':{'kind':'message','target':'private:12345678','objective':'发收藏'}})
+            assert result['status']=='completed',result
+            sent=[params['message'] for method,params in calls if method=='send_private_msg']
+            images=[c for chain in sent for c in chain if c['type']=='image']
+            assert len(images)==(1 if mode=='favorite' else 0),(mode,images,result)
+            if images:assert images[0]['data'].get('sub_type')==1,images
+            assert len(sent)==2,sent
+        print('PIPELINE real QQ favorites do not depend on platform candidates and final cooldown still fences concurrent output passed')
+
+        for bubbles in (1,2,3,4):
+            mode='normal';p,w,st=setup('logical-budget-'+str(bubbles));w['budget']['externalActions']=1;calls.clear()
+            result=await brain.execute('qq',{'work':w,'action':{'kind':'message','target':'private:12345678','objective':'one logical reply'}})
+            assert result['status']=='completed' and len(calls)==bubbles,result
+            assert result['actionUnitVersion']==2 and len({e['logicalActionId'] for e in result['effects']})==1,result
+        bubbles=2
+        print('PIPELINE one logical action delivers all 1-4 bubbles with independent receipts passed')
+        from astrbot.api.event import MessageChain
+        from astrbot.core.message.components import Plain
+        from astrbot.core.platform.astr_message_event import current_message_event
+        p,w,st=setup('foreground-no-message-id');mode='unknown';calls.clear()
+        event=brain.make_event('qq',w,'private:12345678','real event fixture','90000000')
+        event.message_obj.sender.user_id='12345678';event.message_obj.message_id='foreground-without-receipt'
+        event.set_extra('_hosted_internal_work',None);event.set_extra('_hosted_initiative',False)
+        work=st.pipeline.bind(event,settings['qq']);token=current_message_event.set(event)
+        try:
+            try:await event.send(MessageChain([Plain('fixture reply')]))
+            except RuntimeError as error:assert str(error)=='missing_protocol_receipt'
+            else:raise AssertionError('empty OneBot response was accepted as delivery')
+        finally:current_message_event.reset(token)
+        st.pipeline.finish(work,{})
+        assert work.status=='unknown' and work.attempted==1 and work.confirmed==0 and work.confirmed_messages==0
+        assert not event.get_extra('_hosted_protocol_receipts')
+        print('PIPELINE foreground missing message ID stays unknown and never commits a successful reply passed')
         mode='normal';p,w,st=setup('foreign')
         foreign={**p,'tenantId':'tenant-b'}
         try:brain.install('qq',foreign)
@@ -577,7 +663,17 @@ async def main():
         brain.observe('qq',NS(get_group_id=lambda:'',get_sender_id=lambda:'12345678'),True)
         assert not brain.valid('qq',w),'foreground input did not interrupt cycle'
         print('PIPELINE tenant / bot / foreground interruption fences passed')
-    finally:runtime['close']();await asyncio.sleep(0)
+    finally:
+        runtime['close']();await asyncio.sleep(0)
+        from astrbot.core.utils.metrics import Metric
+        # Finish already scheduled uploads first: they may create the periodic
+        # flusher after an earlier cancellation. Then stop that idle SDK owner.
+        metrics=[task for task in asyncio.all_tasks() if task is not asyncio.current_task() and getattr(task.get_coro(),'__qualname__','').startswith('Metric.') and getattr(task.get_coro(),'__qualname__','')!='Metric._flush_periodically']
+        if metrics:await asyncio.wait_for(asyncio.gather(*metrics),5)
+        flushers=[task for task in asyncio.all_tasks() if getattr(task.get_coro(),'__qualname__','')=='Metric._flush_periodically']
+        for task in flushers:task.cancel()
+        if flushers:await asyncio.gather(*flushers,return_exceptions=True)
+        await db_helper.engine.dispose()
 
 
 asyncio.run(main())

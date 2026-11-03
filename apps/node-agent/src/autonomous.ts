@@ -26,14 +26,23 @@ export function taskResultFacts(kind:string,result:any,limit=350){
 /** One shared scheduler. PostgreSQL owns clocks and work; Python owns execution. */
 export class AutonomyCoordinator {
  readonly repo:AutonomyRepository;readonly owner='autonomy-'+randomUUID();
- timer?:NodeJS.Timeout;closed=false;busy=false;active?:{claim:any;actionId?:string;feedbackVersion?:number;task:Promise<void>};
+ timer?:NodeJS.Timeout;heartbeatTimer?:NodeJS.Timeout;heartbeatTask?:Promise<void>;closed=false;busy=false;active?:{claim:any;actionId?:string;feedbackVersion?:number;task:Promise<void>};
+ private policyCursor=0;
+ private policySerial=0;
  private events=new Map<string,number>();private sampled=new Map<string,number>();
  constructor(public db:Sql,private call:RuntimeCall){this.repo=new AutonomyRepository(db)}
- start(){if(this.timer||this.closed)return;this.timer=setInterval(()=>void this.tick().catch(()=>{}),5000);this.timer.unref();void this.tick().catch(()=>{})}
- async stop(){this.closed=true;if(this.timer)clearInterval(this.timer);this.timer=undefined;while(this.busy)await new Promise(resolve=>setTimeout(resolve,10));const active=this.active;if(active){await this.call(active.claim,'cancel',{},2000).catch(()=>{});await active.task.catch(()=>{})}}
+ start(){if(this.timer||this.closed)return;this.timer=setInterval(()=>void this.tick().catch(()=>{}),5000);this.timer.unref();this.heartbeatTimer=setInterval(()=>void this.heartbeat(),4000);this.heartbeatTimer.unref();void this.tick().catch(()=>{})}
+ async heartbeat(){
+  if(this.closed||this.heartbeatTask||!this.active)return;
+  const active=this.active;
+  const task=(async()=>{if(await this.repo.renew(active.claim)&&this.active===active&&!this.closed)await this.call(active.claim,'policy',await this.policy(active.claim,active.claim.cycleId,active.actionId),2000)})().catch(()=>{});
+  this.heartbeatTask=task;try{await task}finally{if(this.heartbeatTask===task)this.heartbeatTask=undefined}
+ }
+ async stop(){this.closed=true;if(this.timer)clearInterval(this.timer);if(this.heartbeatTimer)clearInterval(this.heartbeatTimer);this.timer=undefined;this.heartbeatTimer=undefined;await this.heartbeatTask;while(this.busy)await new Promise(resolve=>setTimeout(resolve,10));const active=this.active;if(active){await this.call(active.claim,'cancel',{},2000).catch(()=>{});await active.task.catch(()=>{})}}
  private async policy(bot:any,cycleId='',actionId=''){
+  const issuedAt=this.policySerial=Math.max(Date.now(),this.policySerial+1);
   const experience=await this.repo.experience(bot.tenant_id,bot.bot_id);
-  return{tenantId:bot.tenant_id,botId:bot.bot_id,epoch:bot.epoch,generation:bot.generation,revision:bot.revision,config:AutonomyConfigSchema.parse(bot.config),observedThrough:Number(bot.observation?.at||0),latestFeedback:bot.observation?.latestFeedback||(bot.observation?.phase==='foreground_result'?bot.observation:undefined),experience,until:Date.now()+14000,cycleId,actionId};
+  return{tenantId:bot.tenant_id,botId:bot.bot_id,epoch:bot.epoch,generation:bot.generation,revision:bot.revision,config:AutonomyConfigSchema.parse(bot.config),observedThrough:Number(bot.observation?.at||0),latestFeedback:bot.observation?.latestFeedback||(bot.observation?.phase==='foreground_result'?bot.observation:undefined),experience,issuedAt,until:Date.now()+14000,cycleId,actionId};
  }
  private async freshSnapshot(bot:any){
   const snapshot=await this.call(bot,'snapshot',{},3000);
@@ -53,30 +62,39 @@ export class AutonomyCoordinator {
   if(this.closed||this.busy)return;this.busy=true;
   try{
    await this.repo.suspendOffline();
-   const policies=await this.repo.policies();
-   for(const bot of policies){
-    if(this.closed)break;
-    if(!online(bot)){if(bot.config.mode==='passive')await this.repo.applied(bot.tenant_id,bot.bot_id,bot.epoch);continue}
+   const all=await this.repo.policies();
+   const owner=all.find(bot=>bot.bot_id===this.active?.claim.bot_id);
+   const others=all.filter(bot=>bot!==owner);
+   const policies=owner?[owner]:[];
+   for(let n=0;n<Math.min(8,others.length);n++)policies.push(others[(this.policyCursor+n)%others.length]);
+   if(others.length)this.policyCursor=(this.policyCursor+8)%others.length;
+   // Slow/offline members do not monopolize renewal or discovery of due work.
+   // A single process-wide heartbeat renews in-flight work independently.
+   await Promise.all(policies.map(async bot=>{
+    if(this.closed)return;
+    if(!online(bot)){if(bot.config.mode==='passive')await this.repo.applied(bot.tenant_id,bot.bot_id,bot.epoch);return}
     const owned=this.active?.claim.bot_id===bot.bot_id?this.active:undefined;
     const current=owned&&owned.claim.epoch===bot.epoch&&owned.claim.generation===bot.generation&&owned.claim.revision===bot.revision&&online(bot)&&await this.repo.renew(owned.claim);
     try{
      const installed=await this.call(bot,'policy',await this.policy(bot,current?owned.claim.cycleId:'',current?owned.actionId:''),2000);
      await this.repo.applied(bot.tenant_id,bot.bot_id,bot.epoch);
-     if(!installed?.pendingHandoffs&&Date.now()-(this.sampled.get(bot.bot_id)||0)<30000)continue;
+     if(!installed?.pendingHandoffs&&Date.now()-(this.sampled.get(bot.bot_id)||0)<30000)return;
      this.sampled.set(bot.bot_id,Date.now());
      for(const pending of await this.repo.unconfirmed(bot.tenant_id,bot.bot_id)){
-      const receipt=await this.call(bot,'receipt',{id:pending.id},2000).catch(()=>null);
+      const receipt=await this.call(bot,'receipt',{id:pending.id},4000).catch(()=>null);
       if(receipt?.result&&receipt.result.status!=='unknown')await this.repo.feedback({...bot,cycleId:pending.cycle_id},pending.id,receipt.result);
+      else if(receipt&&receipt.active===false&&pending.kind==='research'&&!(receipt.effects||[]).length)await this.repo.feedback({...bot,cycleId:pending.cycle_id},pending.id,{...pending.result,status:'blocked',summary:'只读任务已不在执行；没有对外副作用，结束等待并重新评估。',stopReason:'read_execution_interrupted',effects:[],unfinished:[pending.objective]});
+      else await this.repo.receiptChecked(bot,pending);
      }
      // Querying an existing receipt grants no new effect. Keep settling old
      // actions after a mode switch, without waking a model or restarting QQ.
-     if(bot.config.mode!=='active')continue;
+     if(bot.config.mode!=='active')return;
      await this.freshSnapshot(bot);
     }catch{
      // No fresh permit means no effects, even if a model call is still running.
      if(bot.config.mode==='passive'&&!online(bot))await this.repo.applied(bot.tenant_id,bot.bot_id,bot.epoch);
     }
-   }
+   }));
    if(this.active||this.closed)return;
    const claim=await this.repo.claim(this.owner);if(!claim)return;
    const active={claim,actionId:undefined as string|undefined,task:Promise.resolve()};this.active=active;
@@ -99,7 +117,10 @@ export class AutonomyCoordinator {
  private charge(usage:Usage,result:any){
   if(!result.usage)throw new Error('missing_model_usage');
   for(const name of ['tokens','modelCalls','toolCalls'] as const){const value=result.usage[name];if(!Number.isSafeInteger(value)||value<0)throw new Error('invalid_model_usage');usage[name]+=value}
-  usage.externalActions+=(result.effects||[]).filter((e:any)=>e.status==='confirmed'||e.status==='unknown').length;
+  const effects=(result.effects||[]).filter((e:any)=>e.status==='confirmed'||e.status==='unknown');
+  // Versioned results preserve historical physical accounting. A new chat
+  // action owns its OutputPlan; every bubble still has a separate receipt.
+  usage.externalActions+=result.actionUnitVersion===2?new Set(effects.map((e:any)=>e.logicalActionId||e.id)).size:effects.length;
   if(result.usage.estimated)usage.conservative=true;
  }
  private async think(claim:any,body:unknown,timeout:number,usage:Usage){
@@ -205,6 +226,7 @@ export class AutonomyCoordinator {
     if(feedback.status==='unknown'||feedback.status==='partial'&&(feedback.effects||[]).some((effect:any)=>effect.status!=='confirmed')){reason='waiting_receipt';break}
     if(feedback.status==='canceled'){reason='foreground_or_mode_changed';sleep=15;break}
     if(['blocked','partial','budget_exhausted'].includes(feedback.status))orientation=null;
+    if(await this.repo.otherDue(c)){reason='fair_yield';sleep=1;break}
    }
    if(!settled&&(usage.modelCalls>=config.cycleModelCalls||usage.tokens>=tokenBudget))reason='budget_exhausted';
    // A bounded computation slice yields; only a committed model choice sleeps.

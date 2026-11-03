@@ -48,7 +48,7 @@ export class WallpaperPaint {
       canvas.width = Math.max(1, Math.round(w * this.scale)); canvas.height = Math.max(1, Math.round(h * this.scale));
       canvas.getContext('2d')?.setTransform(this.scale, 0, 0, this.scale, 0, 0);
     }
-    this.ctx = this.canvas.getContext('2d'); this.clear();
+    this.ctx = this.canvas.getContext('2d'); this.clear();this.paintedBounds=null;this.fullRedraw=true;
     if (this.ready) this.prepare();
   }
   prepare() {
@@ -74,7 +74,7 @@ export class WallpaperPaint {
       for (let c = 0; c < 3; c++) data[i + c] = data[i + c] * .83 + 255 * .17;
     }
     base.putImageData(drawing, 0, 0); ctx.putImageData(original, 0, 0);
-    this.dirty = true;
+    this.dirty = true;this.fullRedraw=true;
   }
   add(from, to, time, pressure = .35) {
     if (!this.alive || !this.ready) return;
@@ -124,10 +124,35 @@ export class WallpaperPaint {
     if (!this.alive || !this.ctx || !this.ready || (!this.dirty && !this.marks.length)) return;
     const mask = this.mask.getContext('2d'), reveal = this.reveal.getContext('2d'), ctx = this.ctx;
     if (!mask || !reveal) return;
-    mask.clearRect(0, 0, this.w, this.h);
     this.expire(time);
+    // Held strokes are identical between input events. Only redraw once their
+    // opacity changes; keep the original time-based hold and fade unchanged.
+    let changed=this.dirty,bounds=null;
+    for(const mark of this.marks){
+      const alpha=1-smooth((time-mark.time-HOLD)/FADE);
+      if(mark.alpha!==alpha)changed=true;mark.alpha=alpha;
+      for(const tile of mark.tiles.values()){
+        if(!bounds)bounds={left:tile.x,top:tile.y,right:tile.x+TILE,bottom:tile.y+TILE};
+        else{bounds.left=Math.min(bounds.left,tile.x);bounds.top=Math.min(bounds.top,tile.y);bounds.right=Math.max(bounds.right,tile.x+TILE);bounds.bottom=Math.max(bounds.bottom,tile.y+TILE);}
+      }
+    }
+    // Expired strokes also need their previous rectangle restored to paper.
+    const previous=this.paintedBounds;
+    if(previous&&!bounds)changed=true;
+    if(!changed)return;
+    const area=this.fullRedraw?{left:0,top:0,right:this.w,bottom:this.h}:bounds&&previous?{
+      left:Math.min(bounds.left,previous.left),top:Math.min(bounds.top,previous.top),
+      right:Math.max(bounds.right,previous.right),bottom:Math.max(bounds.bottom,previous.bottom)
+    }:bounds||previous;
+    if(!area){this.dirty=false;return;}
+    // Align the clip to physical pixels, including the resampling edge. Keep
+    // full-image coordinates so DPR rounding and image sampling stay identical.
+    const x=Math.max(0,Math.floor(area.left*this.scale)-2)/this.scale,y=Math.max(0,Math.floor(area.top*this.scale)-2)/this.scale;
+    const right=Math.min(this.canvas.width,Math.ceil(area.right*this.scale)+2)/this.scale,bottom=Math.min(this.canvas.height,Math.ceil(area.bottom*this.scale)+2)/this.scale;
+    for(const context of [mask,reveal,ctx]){context.save();context.beginPath();context.rect(x,y,right-x,bottom-y);context.clip();}
+    mask.clearRect(x,y,right-x,bottom-y);
     for (const mark of this.marks) {
-      mask.globalAlpha=1-smooth((time-mark.time-HOLD)/FADE);
+      mask.globalAlpha=mark.alpha;
       for(const tile of mark.tiles.values())mask.drawImage(tile.canvas,tile.x,tile.y,TILE,TILE);
     }
     mask.globalAlpha=1;
@@ -136,7 +161,8 @@ export class WallpaperPaint {
     reveal.drawImage(this.mask, 0, 0, this.w, this.h); reveal.globalCompositeOperation = 'source-over';
     ctx.clearRect(0, 0, this.w, this.h); ctx.drawImage(this.base, 0, 0, this.w, this.h);
     ctx.globalAlpha = .9; ctx.drawImage(this.reveal, 0, 0, this.w, this.h); ctx.globalAlpha = 1;
-    this.dirty = false;
+    for(const context of [mask,reveal,ctx])context.restore();
+    this.paintedBounds=bounds;this.fullRedraw=false;this.dirty = false;
   }
   destroy() {
     if (!this.alive) return;
