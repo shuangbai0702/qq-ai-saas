@@ -247,6 +247,10 @@ class AutonomousRuntime:
         observation=self.events.get(id);p=self.policies.get(id)
         if not observation or not p or p['config']['mode']!='active' or not work.observes_input or not work.ledger_owner:return
         if observation['eventId']!=work.event_id or observation['scope']!=work.scope or observation['senderId']!=work.subject:return
+        # Returning from an ingress coroutine does not finish its Work when a
+        # batch owner will execute it later. Keep directed input pending until
+        # that owner commits the actual model/tool/delivery result.
+        if work.status in ('waiting','combined'):return
         handoff=event.get_extra('_hosted_task_handoff')
         # Observing an ambient message is not an inner execution result. Only
         # actual model/tool work, a dispatch attempt or a registered handoff
@@ -260,7 +264,7 @@ class AutonomousRuntime:
     def foreground_prompt(self,id,event):
         p=self.policies.get(id)
         if not p or p['config']['mode']!='active' or not event.get_extra('_hosted_handoff_available'):return ''
-        return '\n[后台任务登记]\n主动模式采用外层管理目标、内层执行的分工。本轮先理解真实用户意图：普通闲聊、已有结果解释和连续对话直接自然回应；本轮即时任务由内层直接使用当前已授权工具完成，工具失败时根据真实结果调整做法。需要跨轮持续推进、延后执行，或改变、停止已有持久目标时，调用propose_background_task把完整要求交给外层管理；不要将已完成的即时任务再次登记执行。由模型判断意图，不依赖关键词。延续当前目标的普通聊天不重复建任务；需要改变目标时明确关联原要求，不自造目标ID。只有真实工具回执才能证明登记；pending表示等待后台审核，不是保证准点执行。未成功登记时，明确说明尚未安排，不用聊天文字承诺稍后会自动回来。登记、接受请求和完成执行分别表述；没有对应工具结果及目的会话的发送回执，不能声称已在其他会话联系、发言或完成任务。当前私聊回复送达只证明本次回复送达。\n'
+        return '\n[后台任务登记]\n主动模式采用外层管理目标、内层执行的分工。以下规则适用于本轮决定参与交流之后，不替代群聊的接话判断。先理解真实用户意图：普通闲聊、已有结果解释和连续对话自然回应；本轮即时任务由内层直接使用当前已授权工具完成，工具失败时根据真实结果调整做法。需要跨轮持续推进、延后执行，或改变、停止已有持久目标时，调用propose_background_task把完整要求交给外层管理；不要将已完成的即时任务再次登记执行。由模型判断意图，不依赖关键词。延续当前目标的普通聊天不重复建任务；需要改变目标时明确关联原要求，不自造目标ID。只有真实工具回执才能证明登记；pending表示等待后台审核，不是保证准点执行。未成功登记时，明确说明尚未安排，不用聊天文字承诺稍后会自动回来。登记、接受请求和完成执行分别表述；没有对应工具结果及目的会话的发送回执，不能声称已在其他会话联系、发言或完成任务。当前私聊回复送达只证明本次回复送达。\n'
 
     def foreground_tools(self,id,event,current):
         p=self.policies.get(id)
@@ -395,7 +399,7 @@ class AutonomousRuntime:
             assembly.contribute('conversation',shared)
             assembly.contribute('companion',{'companion':companion_state.context(st.db,s['config'],scope,now)})
             conversations.append(assembly.build())
-        return {'sampledAt':int(now*1000),'memoryEnabled':b.get('memory',True),'conversations':conversations,'autonomous_experience':bot_pipeline.experience_context(st,'self',b)}
+        return {'sampledAt':int(now*1000),'memoryEnabled':b.get('memory',True),'conversations':conversations,'autonomous_experience':bot_pipeline.experience_context(st,'self',b),'execution_experience':(getattr(st,'autonomous_experience',{}).get('execution') if b.get('memory',True) else {'memoryEnabled':False,'experiences':[]})}
 
     def can_reflect(self,id):
         p=self.policies.get(id);s=self.settings.get(id)
@@ -411,10 +415,12 @@ class AutonomousRuntime:
 
     async def invoke(self,id,identity,prompt,system,tools=(),context=None,contexts=None):
         control=self.control(id,identity);s=self.settings[id];st=self.store(id,s)
-        if st.active or self.provider(id) is None:return {'status':'blocked','reason':'foreground_work_busy' if st.active else 'model_unavailable','text':'','usage':{'tokens':0,'modelCalls':0,'toolCalls':0,'estimated':False},'seconds':0,'evidence':[]}
+        if st.active or getattr(st,'waiting',0) or self.provider(id) is None:return {'status':'blocked','reason':'foreground_work_busy' if st.active or getattr(st,'waiting',0) else 'model_unavailable','text':'','usage':{'tokens':0,'modelCalls':0,'toolCalls':0,'estimated':False},'seconds':0,'evidence':[]}
         self.running[id]=control;st.active+=1;self.care.stamp(s['root'])
         from astrbot.core.platform.astr_message_event import current_message_event
         event=getattr(context,'event',None);token=current_message_event.set(event)
+        epoch=event.get_extra('_hosted_memory_epoch',st.reflection.epoch()) if event else st.reflection.epoch()
+        control.current=lambda:self.valid(id,identity) and st.reflection.epoch()==epoch
         control.output_tokens=8192 if tools else 4096
         token_limit=autonomy.decision_token_limit.set(control.output_tokens)
         try:
@@ -425,7 +431,7 @@ class AutonomousRuntime:
             current_message_event.reset(token)
             autonomy.decision_token_limit.reset(token_limit)
             if self.running.get(id) is control:self.running.pop(id,None)
-            st.active-=1;self.care.stamp(s['root'])
+            st.active-=1;st.slot_changed.set();self.care.stamp(s['root'])
 
     async def orient(self,id,data):
         snapshot=self.snapshot(id)
@@ -549,12 +555,20 @@ capabilityCatalog和innerTools来自实际内层装配器，表示当前可交�
             def checkpoint(self,value):
                 control=runtime.running[id];control.checkpoints.append(value);control.checkpoints[:]=control.checkpoints[-4:]
         search_enabled=(s['config'].get('behavior') or {}).get('bilibiliSearchEnabled',False)
-        tools+=research_tools(lambda:runtime.valid(id,identity) and (s['config'].get('behavior') or {}).get('bilibiliSearchEnabled',False),Evidence(),enabled=search_enabled)
+        from bilibili_tools import tools as bilibili_tools, manifest as bilibili_manifest
+        bili=bilibili_tools(s,None,lambda:runtime.valid(id,identity),Evidence(),identity)
+        tools+=bili
+        if bilibili_manifest(s) is None:
+            tools+=research_tools(lambda:runtime.valid(id,identity) and (s['config'].get('behavior') or {}).get('bilibiliSearchEnabled',False),Evidence(),enabled=search_enabled)
         return tools
 
     def task_tools(self,id,identity,scope,event=None):
         """One assembly path for actual execution and outer capability metadata."""
         result=self.tools(id,identity,scope)
+        if event is not None:
+            import execution_memory
+            s=self.settings[id];st=self.store(id,s);epoch=st.reflection.epoch()
+            result+=execution_memory.tools(s,event,scope,lambda:self.valid(id,identity) and st.reflection.epoch()==epoch,identity)
         if identity.get('kind') in ('research','message') and event is not None:
             import group_actions
             s=self.settings[id];st=self.store(id,s)
@@ -573,7 +587,9 @@ capabilityCatalog和innerTools来自实际内层装配器，表示当前可交�
         from research_tools import availability
         policy=self.policies[id]['config'];b=self.settings[id]['config'].get('behavior') or {}
         entries=[];descriptions={}
-        search_enabled=b.get('bilibiliSearchEnabled',False)
+        from bilibili_tools import manifest as bilibili_manifest
+        bili_bridge=bilibili_manifest(self.settings[id])
+        search_enabled=b.get('bilibiliSearchEnabled',False) if bili_bridge is None else any(t.get('operation')=='search' for t in bili_bridge.get('operations',[])) and bili_bridge.get('allowAutonomous',False)
         if not search_enabled:descriptions['bilibili_search']={'name':'bilibili_search','available':False,'reason':'机器人未开启B站公开搜索；主动模式不授予此能力','blockedScope':'tool','code':'feature_disabled'}
         specs=[('research','根据自身兴趣或已有目标读取状态、回忆或研究公开资料','research'),('message','自己选择本轮允许的对象和话题，交内层聊天并经公共管线发送',None),('profile_signature','按人物状态和意愿更新自己的QQ签名','profile_signature'),('qzone_publish','按自身经历、兴趣和意愿发布自己QQ空间的文字动态','qzone_publish')]
         for kind,description,cap in specs:
@@ -591,7 +607,13 @@ capabilityCatalog和innerTools来自实际内层装配器，表示当前可交�
             if policy.get('rollout')=='shadow' and kind!='research':reasons.append('影子模式只记录意图，不执行对外操作')
             for tool in tools:
                 name=tool.name;ready=True;reason=''
-                search_state=availability() if name=='bilibili_search' else None
+                search_state=availability() if name=='bilibili_search' and bili_bridge is None else None
+                if name.startswith('bilibili_') and bili_bridge and bili_bridge.get('cooldownUntil'):
+                    from datetime import datetime,timezone
+                    try:
+                        remaining=(datetime.fromisoformat(bili_bridge['cooldownUntil'].replace('Z','+00:00'))-datetime.now(timezone.utc)).total_seconds()
+                        if remaining>0:search_state={'available':False,'retryAfterSeconds':int(remaining)+1}
+                    except (ValueError,TypeError):pass
                 if search_state and not search_state['available']:ready=False;reason='B站公开搜索暂处服务冷却，执行时再次核对'
                 if name=='recall_memory' and not b.get('memory',True):ready=False;reason='记忆已关闭，无可检索的记忆数据'
                 descriptions[name]={'name':name,'description':tool.description,'parameters':tool.parameters,'enabled':True,'authorized':authorized,'available':ready,'readiness':'available_to_attempt' if ready else 'temporarily_unavailable','evidence':'not_executed_by_catalog',**({'reason':reason} if reason else {})}
@@ -604,7 +626,7 @@ capabilityCatalog和innerTools来自实际内层装配器，表示当前可交�
             if kind=='message':limits={'targets':[c['scope'] for c in contacts],'delivery':'内层回复经OutputPlan投递，是否成功以协议回执为准'}
             if kind=='profile_signature':limits={'maxChars':40,'dailyLimit':b.get('dailyAutoSignatureLimit',2),'remaining':'执行前查现有操作账本；不得假设仍有额度'}
             if kind=='qzone_publish':limits={'maxChars':500,'visibility':b.get('qzoneVisibility','friends'),'protocolSupport':'尚未由本次调用验证；以实际QQ接口回执为准'}
-            if kind=='research':limits={'network':'只有B站公开视频搜索元数据；不含观看、评论、投稿或通用网页搜索' if search_enabled else '联网搜索未开启；仅现有状态与已开启的记忆读取'}
+            if kind=='research':limits={'network':'以innerTools中的实际B站工具、权限和回执为准；字幕不等于观看声画，未列出的能力不可用' if any(n.startswith('bilibili_') for n in names) else '联网工具未开启；仅现有状态与已开启的记忆读取'}
             entries.append({'kind':kind,'description':description,'authorized':authorized,'available':authorized and not reasons,'tools':names,'blockedReasons':reasons,'limits':limits})
         return {'capabilityCatalog':entries,'innerTools':list(descriptions.values())}
 
@@ -678,24 +700,27 @@ capabilityCatalog和innerTools来自实际内层装配器，表示当前可交�
             event.set_extra('_hosted_timer_item',{'scope':scope,'reserved_at':now})
             st.db.execute('UPDATE contacts SET last_attempt=?,unanswered=unanswered+1 WHERE scope=?',(now,scope))
             st.db.execute('INSERT INTO deliveries VALUES(?,?,1,?) ON CONFLICT(scope,day) DO UPDATE SET count=count+1,last_sent=excluded.last_sent',(scope,day,now));st.db.commit()
-        work.stage('context');context=self.prepare_context(id,event,scope,action['objective'])
-        tools=self.task_tools(id,identity,scope,event)
-        context_object=SimpleNamespace(event=event)
-        prior=data.get('feedback')
-        # A prior conversation's dispatch failure is not this task's admission
-        # result, even when the two tasks contact the same person. Current chat
-        # history comes from ContextBuilder; only internal research may supply
-        # separate findings to a newly admitted outgoing conversation.
-        if kind=='message' and prior and prior.get('contextScope')!='self':prior=None
-        # The provider hook assembles the same ContextBuilder result once.
-        prompt=json.dumps({'task':action,'priorFeedback':prior},ensure_ascii=False)
-        system=s['config'].get('systemPrompt','')+'\n这是平台授权的内部任务，不是主人发来一条新消息。sender=0是服务身份，不拥有主人权限；真实联系人是recipient。仅执行当前任务，工具返回才是实际结果。对话任务最后输出要实际发给目标的一轮自然内容，允许[MEME:真实候选id]及[QQ_BREAK]，不假装已经发送。研究任务返回有证据的结论、未完成事项，不能用虚构检索结果。没有工具能力时如实说明。'
-        if kind=='message':system+='\n本轮聊天任务及固定会话已通过当前初始准入，最终投递仍由公共管线实时校验并记录回执。历史任务的失败不是本轮的发送状态；你的最终内容将作为消息发给当前对象，不要替平台编造投递结果。'
-        if kind=='research':system+='\n本任务为内部研究，最后只输出JSON：{"status":"completed或blocked或partial","summary":"已证实的结果或受阻原因","unfinished":["实际未完成项"]}。这是当前任务步骤的结果，不是长期目标的终态。检索成功但无匹配时，准确报告无匹配；这不表示长期目标已实现。工具拒绝、失败或未执行时必须blocked或partial，不能用通用常识替代任务完成。引用和证据以平台实际工具回执为准。摘要中区分工具实际返回的内容、未经核验的推测与缺失材料；只得到目录、标题、摘要或检索元数据时，不得声称已读取完整内容或验证其中事实，获取具体知识所需的原文或媒体未读取则列入unfinished。'
         memory_epoch=st.reflection.epoch()
         result={'status':'blocked','reason':'task_not_started','text':'','usage':{'tokens':0,'modelCalls':0,'toolCalls':0},'evidence':[]}
         failure=''
         try:
+            import execution_memory
+            event.set_extra('_hosted_execution_memory',await execution_memory.context(s,event,scope,lambda:self.valid(id,identity) and st.reflection.epoch()==memory_epoch,identity))
+            if not self.valid(id,identity) or st.reflection.epoch()!=memory_epoch:raise asyncio.CancelledError('stale internal memory context')
+            work.stage('context');context=self.prepare_context(id,event,scope,action['objective'])
+            tools=self.task_tools(id,identity,scope,event)
+            context_object=SimpleNamespace(event=event)
+            prior=data.get('feedback')
+            # A prior conversation's dispatch failure is not this task's admission
+            # result, even when the two tasks contact the same person. Current chat
+            # history comes from ContextBuilder; only internal research may supply
+            # separate findings to a newly admitted outgoing conversation.
+            if kind=='message' and prior and prior.get('contextScope')!='self':prior=None
+            # The provider hook assembles the same ContextBuilder result once.
+            prompt=json.dumps({'task':action,'priorFeedback':prior},ensure_ascii=False)
+            system=s['config'].get('systemPrompt','')+'\n这是平台授权的内部任务，不是主人发来一条新消息。sender=0是服务身份，不拥有主人权限；真实联系人是recipient。仅执行当前任务，工具返回才是实际结果。对话任务最后输出要实际发给目标的一轮自然内容，允许[MEME:真实候选id]及[QQ_BREAK]，不假装已经发送。研究任务返回有证据的结论、未完成事项，不能用虚构检索结果。没有工具能力时如实说明。'
+            if kind=='message':system+='\n本轮聊天任务及固定会话已通过当前初始准入，最终投递仍由公共管线实时校验并记录回执。历史任务的失败不是本轮的发送状态；你的最终内容将作为消息发给当前对象，不要替平台编造投递结果。'
+            if kind=='research':system+='\n本任务为内部研究，最后只输出JSON：{"status":"completed或blocked或partial","summary":"已证实的结果或受阻原因","unfinished":["实际未完成项"]}。这是当前任务步骤的结果，不是长期目标的终态。检索成功但无匹配时，准确报告无匹配；这不表示长期目标已实现。工具拒绝、失败或未执行时必须blocked或partial，不能用通用常识替代任务完成。引用和证据以平台实际工具回执为准。摘要中区分工具实际返回的内容、未经核验的推测与缺失材料；只得到目录、标题、摘要或检索元数据时，不得声称已读取完整内容或验证其中事实，获取具体知识所需的原文或媒体未读取则列入unfinished。'
             result=await self.invoke(id,identity,prompt,system,tools=tools,context=context_object)
             if self.settings.get(id) is s and result['status']=='completed' and kind=='message' and result['text'].strip():
                 from astrbot.api.event import MessageChain

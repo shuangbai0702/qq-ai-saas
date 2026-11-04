@@ -1,16 +1,22 @@
 """Per-scope optional attention/fatigue; explicit requests bypass suppression."""
 import time,re
+import message_provenance
 from hosted_memory import tokens
+
+MODEL_GUIDANCE='''[群聊参与判断，先于回复格式与任务执行]
+本轮消息只是进入了参与候选，平台没有决定你需要回应。先结合真实作者、@与引用对象、近期双方实际发言和话题走向，判断这句话在对谁说，以及你现在是否有想贡献的内容。同一群、近期说过话、同一人再次发言或提到你，均只是判断材料，不自动构成对你的提问。可以自然接住正在与你进行的对话，也可以因有切实关联的想法加入其他成员的交流，不要求重新@。
+决定不参与时最终只输出[NO_REPLY]，本轮不产生发送或其他外部写入；不用确认收到、解释沉默、替自己表态或给话题收尾。若需要核对交流对象或事实，可以先读取已授权的上下文。决定参与后再按人格、工具和表达规则处理；这些规则只规定如何回应，不要求你每轮都回应。不要在聊天正文中展示这一判断过程。'''
 
 class Participation:
     def __init__(self,db=None):
         self.scopes={};self.db=db
         if db is not None:
             db.execute('CREATE TABLE IF NOT EXISTS dialogue_feedback(scope TEXT,event TEXT,subject TEXT,at REAL,reply TEXT,state TEXT,PRIMARY KEY(scope,event))');db.commit()
+            message_provenance.initialize(db)
             now=time.time()
-            rows=db.execute('SELECT scope,subject,at,reply FROM (SELECT scope,subject,at,reply FROM dialogue_feedback WHERE at>? AND at<=? ORDER BY at DESC LIMIT 200) ORDER BY at',(now-1800,now)).fetchall()
-            for scope,subject,at,reply in rows:
-                if re.fullmatch(r'(group|private):\d{4,20}',scope):self.outgoing(scope,reply,at,subject=subject,persist=False)
+            rows=db.execute('SELECT scope,subject,at,reply,event FROM (SELECT scope,subject,at,reply,event FROM dialogue_feedback WHERE at>? AND at<=? ORDER BY at DESC LIMIT 200) ORDER BY at',(now-1800,now)).fetchall()
+            for scope,subject,at,reply,event in rows:
+                if re.fullmatch(r'(group|private):\d{4,20}',scope):self.outgoing(scope,reply,at,subject=subject,event=event,persist=False)
     def observe(self,scope,text,now=None):
         now=time.time() if now is None else now
         state=self.scopes.setdefault(scope,{'topic':set(),'sent':[],'last':now})
@@ -40,7 +46,7 @@ class Participation:
         now=time.time() if now is None else now;state=self.scopes.get(scope,{})
         feedback=[]
         if self.db:
-            feedback=[{'reply':r[0],'result':'unobserved' if r[1]=='observing' and now-r[2]>180 else r[1]} for r in self.db.execute('SELECT reply,state,at FROM dialogue_feedback WHERE scope=? ORDER BY at DESC LIMIT 3',(scope,))]
+            feedback=[{'reply':r[0],'result':'unobserved' if r[1]=='observing' and now-r[2]>180 else r[1],'recipient_id':r[3],'event_id':r[4],'at':r[2]} for r in self.db.execute('SELECT reply,state,at,subject,event FROM dialogue_feedback WHERE scope=? ORDER BY at DESC LIMIT 3',(scope,))]
         cfg=cfg or {}
         rhythm={'enabled':cfg.get('fatigueEnabled',True),'window_seconds':cfg.get('fatigueWindowSeconds',300),'recent_replies':sum(0<=now-at<cfg.get('fatigueWindowSeconds',300) for at in state.get('sent',[])),'reference_max':cfg.get('fatigueMaxReplies',4)}
         return {'rhythm':rhythm,'participants':[p for p,at in state.get('participants',{}).items() if 0<=now-at<600],
@@ -68,7 +74,19 @@ class Participation:
         people={p:at for p,at in state.get('participants',{}).items() if now-at<600}
         if subject:people[subject]=now
         state['participants']=dict(sorted(people.items(),key=lambda x:x[1],reverse=True)[:8])
-        state['turns']=(state.get('turns',[])+[{'subject':subject,'request':request[:160],'reply':text[:200]}])[-6:]
+        state['turns']=(state.get('turns',[])+[{'subject':subject,'request':request[:160],'reply':text[:500],'source_scope':scope,'source_event':str(event),'at':now}])[-6:]
         state['topic']=tokens(text)|tokens(request);state['subject']=subject;state['sent']=(state['sent']+[now])[-50:]
         if self.db and event and persist:
             self.db.execute("INSERT OR IGNORE INTO dialogue_feedback VALUES(?,?,?,?,?,'observing')",(scope,str(event),subject,now,text[:240]));self.db.commit()
+
+    def confirmed(self,scope,text,now,subject,event,source):
+        """Record a confirmed prefix without charging each bubble as a reply.
+
+        The caller fences its store/config/memory epoch after protocol I/O.
+        Repeated receipt updates settle one existing dialogue action.
+        """
+        if not self.db or not event or not text.strip() or source.get('receipt')!='confirmed' or not source.get('message_ids'):return
+        self.db.execute("INSERT INTO dialogue_feedback VALUES(?,?,?,?,?,'observing') ON CONFLICT(scope,event) DO UPDATE SET reply=excluded.reply",(scope,str(event),subject,now,text[:2000]))
+        message_provenance.put(self.db,scope,event,'outgoing',source)
+        self.db.execute('DELETE FROM dialogue_feedback WHERE at<? OR rowid NOT IN (SELECT rowid FROM dialogue_feedback ORDER BY at DESC LIMIT 300)',(now-7*86400,))
+        self.db.commit()

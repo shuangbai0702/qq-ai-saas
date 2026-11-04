@@ -71,6 +71,14 @@ class SocialTests(unittest.TestCase):
  def test_image_ranking_prefers_phrase_over_incidental_character(self):
   ctx=self.s.context('group:1','喝茶',{'memeEnabled':True},_meme_catalog=[{'id':'irrelevant','meaning':'喝彩','category':'other'},{'id':'relevant','meaning':'喝茶；用于休息喝茶','category':'other'}])
   self.assertEqual(ctx['meme_candidates'][0]['id'],'relevant')
+  mixed=[{'id':'fish','meaning':'打招呼','source':'platform_pack'},{'id':'qqf_fixture','meaning':'挥手问好','source':'qq_favorite_cache'}]
+  ctx=self.s.context('group:1','我收藏了一个视频',{'memeEnabled':True},_meme_catalog=mixed)
+  self.assertEqual({i['id'] for i in ctx['meme_candidates']},{'fish','qqf_fixture'})
+  self.assertIn('不按来源固定偏好',ctx['meme_rule'])
+  many=[{'id':'p'+str(i),'meaning':'笑死哈哈开心','source':'platform_pack'} for i in range(12)]+[mixed[1]]
+  ctx=self.s.context('group:1','哈哈开心',{'memeEnabled':True},_meme_catalog=many)
+  self.assertEqual(len(ctx['meme_candidates']),8)
+  self.assertIn('qq_favorite_cache',{i['source'] for i in ctx['meme_candidates']})
  def test_model_text_only_does_not_get_forced_image(self):
   cfg={'memeEnabled':True,'memeProbability':0,'dailyMemeLimit':0,'memePacks':['blue-fat-fish']}
   context=self.s.context('group:1','想你了',cfg)

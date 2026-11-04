@@ -4,6 +4,7 @@ Callers own one bot's SQLite connection. This module never opens another bot's
 database or infers a person from chat text, nicknames, or model output.
 """
 import json,re
+import message_provenance
 
 
 def shared_person(scope,subject):
@@ -66,5 +67,6 @@ def pending_messages(db,scope,subject,now,limit=16,budget=3000,cross_scope=True)
         question=question[:400];answer=answer[:400]
         if used+len(question)+len(answer)>budget:continue
         result.append({'kind':'recent_uncompressed_message','source_scope':source,'sender_id':person,'source_event':event,'at':at,'age_seconds':max(0,int(now-at)),'user':question,'bot':answer})
+        result[-1]['source']=message_provenance.get(db,source,event)
         used+=len(question)+len(answer)
     return list(reversed(result))

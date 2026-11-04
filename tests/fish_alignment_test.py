@@ -39,14 +39,13 @@ class Alignment(unittest.TestCase):
    raw={'message_id':'1','message':[{'type':'image','data':{'sub_type':1,'url':'https://gchat.qpic.cn/fixture'}}]}
    import sticker_collection
    async def download(url):return (root/'templates/reactions/laugh.png').read_bytes()
-   old=sticker_collection._download;sticker_collection._download=download
    try:
     cfg={'stickerCollect':True,'stickerAllGroups':True,'stickerGroups':[]}
-    collector.observe(raw,'private:12345','sender','bot',cfg,lambda:True,{})
+    collector.observe(raw,'private:12345','sender','bot',cfg,lambda:True,{},fetch=download)
     self.assertIsNone(collector.task)
-    collector.observe(raw,'group:12345','sender','bot',cfg,lambda:True,{})
+    collector.observe(raw,'group:12345','sender','bot',cfg,lambda:True,{},fetch=download)
     self.assertIsNotNone(collector.task);await collector.task
     self.assertEqual(db.execute('SELECT count(*) FROM sticker_inbox').fetchone()[0],1)
-   finally:collector.close();db.close();sticker_collection._download=old
+   finally:collector.close();db.close()
   asyncio.run(run())
 if __name__=='__main__':unittest.main(verbosity=2)

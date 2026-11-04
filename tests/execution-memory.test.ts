@@ -1,0 +1,86 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,readFile} from 'node:fs/promises';
+import {randomUUID} from 'node:crypto';
+import path from 'node:path';
+import {createApp} from '../apps/control-api/src/app.js';
+import {issueTestInvite} from './helpers/invitations.js';
+import {bridgeToken} from '../packages/shared/tool-bridge.js';
+import {ExecutionMemory} from '../packages/database/execution-memory.js';
+import {AutonomyRepository} from '../packages/database/autonomous.js';
+
+test('shared execution memory recalls durable receipts with disabled tools and preserves audience, account and tenant fences',async t=>{
+ const root=await mkdtemp(path.resolve('.local/execution-memory-'));let app=await createApp({root,agent:false});t.after(()=>app.app.close());
+ const auth=await app.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(app.db,3),email:'memory@fixture.test',password:'memory-fixture-123',name:'fixture'}});
+ const cookies={fish_session:auth.cookies[0].value};
+ const make=async()=>{const r=await app.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'memory bot',protocol:'mock'}});assert.equal(r.statusCode,201,r.body);return r.json().id};
+ const id=await make(),sibling=await make(),[bot]=await app.db.query('SELECT * FROM bots WHERE id=$1',[id]);
+ await app.db.query("UPDATE bot_config_revisions SET config=jsonb_set(config,'{behavior,ownerUin}','\"12345678\"') WHERE bot_id=$1",[id]);
+ const key=Buffer.from((await readFile(path.join(root,'master.key'),'utf8')).trim(),'hex'),headers={authorization:'Bearer '+bridgeToken(key,id,bot.generation,bot.revision)};
+ const url='/internal/v1/bots/'+id+'/memory/experience';
+ const get=async(body:any,custom=headers)=>app.app.inject({method:'POST',url,headers:custom,payload:body});
+ const memory=new ExecutionMemory(app.db);
+ const add=async(operation:string,scope:string,result:any,options:any={})=>{
+  const aid=randomUUID();await app.db.query("INSERT INTO tool_effects(id,tenant_id,bot_id,work_id,step_id,operation,args,args_digest,authority,sender_id,generation,config_revision,settings_revision,state,deadline_at,result,origin_scope,account_uid) VALUES($1,$2,$3,$1,'step',$4,$5,'fixture','foreground',$6,1,1,1,$7,now()+interval '1 hour',$8,$9,$10)",[aid,bot.tenant_id,options.bot??id,operation,JSON.stringify({bvid:options.bvid??'BV1Nn436kEPz',text:'PRIVATE-COMMENT-SECRET'}),options.sender??'12345678',options.state??'finished',JSON.stringify(result),scope,options.account??null]);return aid;
+ };
+ const complete={execution:'completed',receipt:{status:'not_applicable'},data:{bvid:'BV1Nn436kEPz',clip:[0,10],part:1,audio:{analyzed:false},analysis:'画面是聊天界面 PRIVATE-QUESTION-SECRET'}};
+ const own=await add('analyze','private:12345678',complete),group=await add('like','group:963105233',{execution:'completed',receipt:{status:'confirmed'}});
+ const unknown=await add('comment','group:963105233',{execution:'failed',receipt:{status:'unknown'},error:{code:'write_outcome_unknown'}},{state:'unknown'});
+ const other=await add('analyze','private:23456789',complete,{sender:'23456789'});
+ const siblingAction=await add('like','group:963105233',{execution:'completed',receipt:{status:'confirmed'}},{bot:sibling});
+ const oldAccount=await add('analyze','group:963105233',complete,{account:'old-account'});
+ const legacy=await add('comment','',{execution:'completed',receipt:{status:'confirmed'}});
+ // Autonomous public work is shared as receipt metadata, never a private
+ // goal's narrative. Use the actual linked lifecycle, not a fake authority flag.
+ const cycle=randomUUID(),work=randomUUID();
+ await app.db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget) VALUES($1,$2,$3,1,1,1,'fixture','executing','{}')",[cycle,id,bot.tenant_id]);
+ await app.db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at) VALUES($1,$2,$3,$4,1,'research','','self exploration','executing',now()+interval '1 hour')",[work,cycle,id,bot.tenant_id]);
+ const repo=new AutonomyRepository(app.db);await repo.ensure(bot.tenant_id,id);
+ const internal={scope:'self',senderId:'0',work:{id:work,epoch:1}};
+ assert.equal((await get(internal)).statusCode,403,'passive mode cannot claim an internal task');
+ await app.db.query("UPDATE autonomy_settings SET config=jsonb_set(config,'{mode}','\"active\"') WHERE bot_id=$1",[id]);
+ assert.equal((await get(internal)).statusCode,200);
+ assert.equal((await get({...internal,work:{id:work,epoch:2}})).statusCode,403,'stale internal epoch was accepted');
+ await app.db.query("UPDATE autonomy_settings SET config=jsonb_set(config,'{mode}','\"passive\"') WHERE bot_id=$1",[id]);
+ const selfActivity=await add('analyze','self',complete);
+ await app.db.query("UPDATE tool_effects SET authority='autonomous',work_id=$2,sender_id='0' WHERE id=$1",[selfActivity,work]);
+ const unrelated=await get({scope:'group:55555555',senderId:'23456789'});
+ assert.equal(unrelated.statusCode,200,unrelated.body);
+ assert.deepEqual(unrelated.json().experiences.map((x:any)=>x.actionId),[selfActivity]);
+ assert.ok(!unrelated.body.includes('PRIVATE-QUESTION-SECRET'));
+ const privateGoal=randomUUID();
+ await app.db.query("INSERT INTO autonomy_goals(id,bot_id,tenant_id,origin,status,title,reason,source) VALUES($1,$2,$3,'owner_request','active','private task','real source',$4)",[privateGoal,id,bot.tenant_id,JSON.stringify({scope:'private:12345678'})]);
+ await app.db.query('UPDATE autonomy_actions SET goal_id=$2 WHERE id=$1',[work,privateGoal]);
+ assert.equal((await get({scope:'group:55555555',senderId:'23456789'})).json().experiences.length,0,'a private goal was laundered into independent public activity');
+ await app.db.query('UPDATE autonomy_actions SET goal_id=NULL WHERE id=$1',[work]);
+ const body={scope:'group:963105233',senderId:'12345678'};
+ const reply=await get(body);assert.equal(reply.statusCode,200,reply.body);
+ assert.deepEqual(new Set(reply.json().experiences.map((x:any)=>x.actionId)),new Set([group,unknown,selfActivity]));
+ assert.equal(reply.json().experiences.find((x:any)=>x.actionId===unknown).receipt.status,'unknown');
+ const exported=await get({...body,shareOwnerActivity:true});assert.equal(exported.statusCode,200,exported.body);
+ const publicItem=exported.json().experiences.find((x:any)=>x.actionId===own);assert.ok(publicItem);assert.deepEqual(publicItem.coverage.clip,[0,10]);assert.equal(publicItem.summary,undefined);assert.equal(publicItem.coverage.audioAnalyzed,false);
+ assert.ok(exported.json().experiences.some((x:any)=>x.actionId===legacy),'legacy owner receipt remains readable without invented source');
+ for(const denied of [other,siblingAction,oldAccount])assert.ok(!exported.body.includes(denied));
+ assert.ok(!exported.body.includes('PRIVATE-QUESTION-SECRET'));assert.ok(!exported.body.includes('PRIVATE-COMMENT-SECRET'));
+ const privateReply=await get({scope:'private:12345678',senderId:'12345678',shareOwnerActivity:true});assert.ok(privateReply.body.includes('PRIVATE-QUESTION-SECRET'));
+ assert.equal((await get({...body,senderId:'23456789',shareOwnerActivity:true})).statusCode,403);
+ assert.equal((await get({scope:'private:12345678',senderId:'23456789'})).statusCode,403);
+ assert.equal((await get({scope:'self',senderId:'0'})).statusCode,403);
+ assert.equal((await get(body,{authorization:'Bearer '+bridgeToken(key,sibling,bot.generation,bot.revision)})).statusCode,401);
+ const outer=await new AutonomyRepository(app.db).experience(bot.tenant_id,id);assert.ok(outer.execution.experiences.some((x:any)=>x.actionId===own));
+ assert.ok(!JSON.stringify(outer).includes(siblingAction));
+ assert.equal((await memory.recall('foreign-tenant',id,{scope:'self',senderId:'0',ownerId:''})).experiences.length,0);
+ // Resetting the query/client has no effect on durable history, nor does the
+ // absence of Bilibili settings, a model or an enabled autonomous policy.
+ assert.ok((await new ExecutionMemory(app.db).recall(bot.tenant_id,id,{scope:'group:963105233',senderId:'12345678',ownerId:'12345678'})).experiences.some((x:any)=>x.actionId===group));
+ const wildcard=await get({...body,query:'%'});assert.equal(wildcard.statusCode,200);assert.equal(wildcard.json().experiences.length,0);
+ await app.db.query("UPDATE tool_effects SET result=jsonb_set(result,'{receipt,status}','\"confirmed\"'),updated_at=now() WHERE id=$1",[unknown]);
+ assert.equal((await get(body)).json().experiences.find((x:any)=>x.actionId===unknown).receipt.status,'confirmed','a later authoritative receipt replaces the old unknown snapshot by the same action ID');
+ await app.db.query("UPDATE bot_config_revisions SET config=jsonb_set(config,'{behavior,memory}','false') WHERE bot_id=$1",[id]);
+ assert.equal((await get(body)).json().memoryEnabled,false);
+ await app.db.query('UPDATE bots SET revision=revision+1 WHERE id=$1',[id]);assert.equal((await get(body)).statusCode,401);
+ await app.db.query('UPDATE bots SET revision=$2 WHERE id=$1',[id,bot.revision]);
+ await app.db.query("UPDATE bot_config_revisions SET config=jsonb_set(config,'{behavior,memory}','true') WHERE bot_id=$1",[id]);
+ await app.app.close();app=await createApp({root,agent:false});
+ const recovered=await get(body);assert.equal(recovered.statusCode,200,recovered.body);assert.ok(recovered.json().experiences.some((x:any)=>x.actionId===group),'API restart reads the original durable ledger without a memory rebuild');
+});

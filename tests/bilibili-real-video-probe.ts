@@ -1,0 +1,18 @@
+/** Read-only Linux probe: current test bot image model, anonymous Bili source. */
+import {createRequire} from 'node:module';import {readFile,mkdtemp,copyFile,rm} from 'node:fs/promises';import path from 'node:path';import os from 'node:os';import {randomUUID} from 'node:crypto';
+import {loadKey} from '../packages/shared/security.js';import {BiliWeb} from '../apps/node-agent/src/bilibili/web-adapter.js';import {VideoEvidence} from '../apps/node-agent/src/bilibili/video-evidence.js';import {BilibiliConfigSchema} from '../packages/contracts/bilibili.js';
+const require=createRequire('/app/package.json'),{Pool}=require('pg'),password=process.env.PGPASSWORD_FILE?(await readFile(process.env.PGPASSWORD_FILE,'utf8')).trim():process.env.PGPASSWORD;
+const pool=new Pool(process.env.DATABASE_URL?{connectionString:process.env.DATABASE_URL,max:1}:{host:process.env.PGHOST,port:Number(process.env.PGPORT||5432),user:process.env.PGUSER,database:process.env.PGDATABASE,password,max:1});
+const db:any={query:async(sql:string,args?:any[])=>(await pool.query(sql,args)).rows},root=await mkdtemp(path.join(os.tmpdir(),'fishbot-real-video-'));
+try{
+ const [bot]=await db.query("SELECT b.id,b.tenant_id,b.revision FROM bots b JOIN bot_config_revisions c ON c.bot_id=b.id AND c.revision=b.revision LEFT JOIN qq_bindings q ON q.bot_id=b.id WHERE b.deleted_at IS NULL AND (q.qq_uin LIKE '23%' OR q.qq_uin LIKE '24%') AND c.config->'behavior'->>'ownerUin'='768687099' ORDER BY CASE WHEN (q.qq_uin LIKE '23%' OR q.qq_uin LIKE '24%') THEN 0 ELSE 1 END,b.created_at DESC LIMIT 1");if(!bot)throw new Error('authorized_test_bot_missing');
+ await copyFile('/var/lib/fishbot/media-resources.json',path.join(root,'media-resources.json'));
+ const key=await loadKey('/var/lib/fishbot',{createIfMissing:false}),web=new BiliWeb();
+ const fixture=process.env.FISHBOT_TEST_MEDIA_FIXTURE;let candidate:any,io:any={};
+ if(fixture){candidate={bvid:'BV1xx411c7mD'};web.video=async()=>({title:'隔离合成测试图案',pages:[{page:1,cid:123,duration:4}]});web.get=async()=>({dash:{video:[{baseUrl:'https://fixture.bilivideo.com/test.mp4',bandwidth:1}]}});io.download=async(_url:string,dest:string,budget:any,signal:AbortSignal)=>{signal.throwIfAborted();const {stat}=await import('node:fs/promises');const bytes=(await stat(fixture)).size;budget.remaining-=bytes;budget.received+=bytes;await copyFile(fixture,dest)}}else{
+ const popular=await web.get('/x/web-interface/popular',{pn:1,ps:10});candidate=popular.list?.find((v:any)=>Number(v.duration)>10&&Number(v.duration)<=300);if(!candidate)throw new Error('no_bounded_public_sample');}
+ const job={id:randomUUID(),bot_id:bot.id,tenant_id:bot.tenant_id,config_revision:bot.revision,args:{bvid:candidate.bvid,part:1,start:0,seconds:10,question:'概述这几帧中可直接观察到的内容。说明无法验证的声音和帧间内容。'}};
+ const started=Date.now();const result=await new VideoEvidence(db,root,key,web,undefined,io).analyze(job,{config:BilibiliConfigSchema.parse({enabled:true,scopes:['media.analyze'],model:{provider:'bot'}})},undefined,AbortSignal.timeout(90000));
+ console.log(JSON.stringify({kind:process.env.FISHBOT_TEST_MEDIA_FIXTURE?'synthetic-video-real-existing-image-model':'actual-public-video-and-existing-image-model',elapsedMs:Date.now()-started,...result,memory:process.memoryUsage(),platformWrites:0,accountLogins:0}));
+}catch(error){console.log(JSON.stringify({kind:process.env.FISHBOT_TEST_MEDIA_FIXTURE?'synthetic-video-real-existing-image-model':'actual-public-video-and-existing-image-model',status:'not_passed',code:(error as any).code||'probe_error',message:(error as any).message,platformWrites:0,accountLogins:0}));process.exitCode=1}
+finally{await pool.end();await rm(root,{recursive:true,force:true})}

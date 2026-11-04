@@ -19,6 +19,16 @@ class ReplyRhythmTest(unittest.TestCase):
         self.assertEqual(prepare_history([{'role':'user','content':raw}])[0]['content'],raw)
 
     def test_soft_wrap_repair_preserves_structured_and_explicit_formatting(self):
+        from output_clean import clean
+        raw='是呀，就叫大肥鱼。\n\n听着像道菜，其实是条蓝鲸。\n\n<br>\n\n---\n\n'+'<br>\n\n'*80
+        self.assertEqual(clean(raw),'是呀，就叫大肥鱼。\n\n听着像道菜，其实是条蓝鲸。')
+        self.assertEqual(split_text(raw),['是呀，就叫大肥鱼。','听着像道菜，其实是条蓝鲸。'])
+        self.assertEqual(clean('甲<br/>乙<BR />丙'),'甲\n乙\n丙')
+        code='```html\n<br>\n\n\n---\n```'
+        self.assertEqual(clean(code),code)
+        self.assertEqual(clean('标签 `<br>` 的意思'), '标签 `<br>` 的意思')
+        self.assertEqual(prepare_history([{'role':'assistant','content':raw}])[0]['content'],clean(raw))
+        self.assertEqual(prepare_history([{'role':'user','content':raw}])[0]['content'],raw)
         for raw in ['```py\n名字=1\n```','- 第一个\n- 第二个','> 引用\n下一行','| 名字 |\n| 数值 |','姓名：\n双白','甲句。\n乙句。','first\nsecond','保留  \n换行']:
             self.assertEqual(repair_soft_wraps(raw),raw)
     def test_short_assistant_history_keeps_natural_paragraphs(self):

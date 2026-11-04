@@ -25,6 +25,16 @@ class SocialContract(unittest.IsolatedAsyncioTestCase):
         self.event=NS(bot=NS(get_login_info=login,fetch_custom_face_detail=details,add_custom_face=add),message_obj=NS(message_id=42,raw_message={'message':[{'type':'image','data':{'url':'https://qpic.cn/fixture.gif','sub_type':1}}]}),get_sender_id=lambda:'12345678',get_self_id=lambda:'900001',get_group_id=lambda:'55555',get_message_str=lambda:'这张表情',get_extra=lambda k,d=None:self.extra.get(k,d),set_extra=lambda k,v:self.extra.update({k:v}))
         self.lease={'botId':'owned-bot','generation':7};self.context=NS(context=NS(event=self.event))
     def tearDown(self):self.st.close();self.tmp.cleanup()
+    async def test_favorite_list_uses_same_semantics_and_disable_state_as_automatic_candidates(self):
+        row={'md5':'a'*32,'resId':'fixture-resid','url':'https://qpic.cn/fixture'};self.favorite_rows.append(row)
+        folder=Path(self.tmp.name)/'qq-favorites';folder.mkdir()
+        identifier='qqf_'+hashlib.sha256(row['md5'].encode()).hexdigest()[:16]
+        (folder/'index.json').write_text(json.dumps({'account':'900001','enabled':True,'items':[{'id':identifier,'meaning':'向对方挥手打招呼','avoid':'不用于嘲笑','enabled':False}]}),encoding='utf8')
+        tool=qq_favorite_tools.tools(self.event,{'behavior':{}},self.st.db,self.tmp.name,lambda:True)[0]
+        listed=json.loads(await tool.call(self.context,operation='list'))['items'][0]
+        self.assertEqual(listed['meaning'],'向对方挥手打招呼');self.assertEqual(listed['avoid'],'不用于嘲笑');self.assertTrue(listed['selection_disabled'])
+        result=json.loads(await tool.call(self.context,operation='prepare',favorite_handle=listed['handle']))
+        self.assertEqual(result['status'],'disabled_favorite');self.assertNotIn('_hosted_tool_sticker',self.extra)
     async def test_favorite_requires_readback_and_preserves_original_animation(self):
         tool=qq_favorite_tools.tools(self.event,{'behavior':{}},self.st.db,self.tmp.name,lambda:True)[0]
         self.assertEqual(tool.parameters['properties']['source_id']['enum'],['current'])

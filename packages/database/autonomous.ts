@@ -1,5 +1,6 @@
 import {createHash,randomUUID} from 'node:crypto';
 import type {Sql} from './index.js';
+import {ExecutionMemory} from './execution-memory.js';
 import {AutonomyConfigSchema,defaultAutonomyConfig,TaskHandoffSchema,type AutonomyConfig,type DecisionEnvelope} from '../contracts/autonomous.js';
 
 const daySql="to_char(now() AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD')";
@@ -13,7 +14,8 @@ export class AutonomyRepository {
   // Read the canonical lifecycle ledger; this is not a second memory store.
   const decisions=await this.db.query(`SELECT c.id AS "cycleId",c.decision->>'decidedAt' AS at,c.started_at AS "cycleStartedAt",c.decision->>'reason' AS reason,c.decision->'action' AS action,c.decision->'wait' AS wait,g.source->>'scope' AS "sourceScope" FROM autonomy_cycles c LEFT JOIN autonomy_goals g ON g.id::text=c.decision->'action'->>'goalId' AND g.bot_id=c.bot_id AND g.tenant_id=c.tenant_id WHERE c.tenant_id=$1 AND c.bot_id=$2 AND c.decision ? 'expectedGoalRevision' ORDER BY c.started_at DESC LIMIT 4`,[tenantId,botId]);
   const actions=await this.db.query(`SELECT a.id,a.kind,a.target,a.objective,a.status,a.created_at AS "assignedAt",a.finished_at AS "finishedAt",g.source->>'scope' AS "sourceScope",a.result FROM autonomy_actions a LEFT JOIN autonomy_goals g ON g.id=a.goal_id AND g.bot_id=a.bot_id AND g.tenant_id=a.tenant_id WHERE a.tenant_id=$1 AND a.bot_id=$2 ORDER BY a.created_at DESC LIMIT 6`,[tenantId,botId]);
-  return{sampledAt:Date.now(),decisions,actions:actions.map(a=>({id:a.id,kind:a.kind,target:a.target,objective:a.objective.slice(0,400),status:a.status,assignedAt:a.assignedAt,finishedAt:a.finishedAt,sourceScope:a.sourceScope,outerDecision:a.result?.task?.outerDecision,summary:String(a.result?.summary||'').slice(0,600),toolResults:(a.result?.toolResults||[]).slice(-6).map((t:any)=>({tool:t.tool,status:t.status,detail:String(t.detail||'').slice(0,200)})),effects:(a.result?.effects||[]).slice(-4).map((e:any)=>({method:e.method,target:e.target,status:e.status,receipt:e.receipt})),evidence:(a.result?.evidence||[]).slice(0,3),unfinished:(a.result?.unfinished||[]).slice(0,3)}))};
+  const execution=await new ExecutionMemory(this.db).recall(tenantId,botId,{scope:'self',senderId:'0',ownerId:'',limit:8});
+  return{sampledAt:Date.now(),execution,decisions,actions:actions.map(a=>({id:a.id,kind:a.kind,target:a.target,objective:a.objective.slice(0,400),status:a.status,assignedAt:a.assignedAt,finishedAt:a.finishedAt,sourceScope:a.sourceScope,outerDecision:a.result?.task?.outerDecision,summary:String(a.result?.summary||'').slice(0,600),toolResults:(a.result?.toolResults||[]).slice(-6).map((t:any)=>({tool:t.tool,status:t.status,detail:String(t.detail||'').slice(0,200)})),effects:(a.result?.effects||[]).slice(-4).map((e:any)=>({method:e.method,target:e.target,status:e.status,receipt:e.receipt})),evidence:(a.result?.evidence||[]).slice(0,3),unfinished:(a.result?.unfinished||[]).slice(0,3)}))};
  }
  async activity(tenantId:string,botId:string,windowMinutes:number,config:Pick<AutonomyConfig,'fatigueRecoveryMinutes'|'fatigueCapacityMinutes'|'initiativeAfterIdleMinutes'>=defaultAutonomyConfig){
   // Existing durable receipts, scoped to this robot. A planning-only decision
@@ -213,12 +215,12 @@ export class AutonomyRepository {
    const revision=s.goal_revision+(decision.goalChanges.length?1:0);
    await tx.query('UPDATE autonomy_settings SET goal_revision=$3,summary=$4,state=$5,wait=$6,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2',[s.bot_id,s.tenant_id,revision,decision.summary,decision.action?'acting':'sleeping',JSON.stringify(decision.wait)]);
    const [committed]=await tx.query("UPDATE autonomy_cycles SET decision=COALESCE(decision,'{}'::jsonb)||$2::jsonb||jsonb_build_object('decidedAt',now()),usage=$3,state=$4 WHERE id=$1 AND bot_id=$5 AND tenant_id=$6 RETURNING decision->>'decidedAt' AS at",[claim.cycleId,JSON.stringify(decision),JSON.stringify(usage),decision.action?'acting':'observing',s.bot_id,s.tenant_id]);
-   if(!decision.action)return{goalRevision:revision,action:null,decidedAt:committed.at};
+   if(!decision.action)return{goalRevision:revision,action:null,source:undefined,decidedAt:committed.at};
    if(decision.action.goalId&&!goals.some(g=>g.id===decision.action!.goalId&&g.status==='active'))throw new AutonomyConflict('动作目标不属于当前机器人或已暂停/结束');
    if(decision.action.goalId&&Number(goals.find(g=>g.id===decision.action!.goalId)?.source?.notBefore||0)>Date.now())throw new AutonomyConflict('尚未到该任务最早执行时间');
    const action={id:randomUUID(),...decision.action,goalId:decision.action.goalId||(createdGoals.length===1?createdGoals[0]:undefined)};
    await tx.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,goal_id,status,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'planned',now()+($10*interval '1 second'))",[action.id,claim.cycleId,s.bot_id,s.tenant_id,s.epoch,action.kind,action.target,action.objective,action.goalId||null,claim.config.cycleSeconds]);
-   return{goalRevision:revision,action,decidedAt:committed.at};
+   return{goalRevision:revision,action,source:goals.find(g=>g.id===action.goalId)?.source,decidedAt:committed.at};
   });
  }
  async markExecuting(claim:any,id:string){

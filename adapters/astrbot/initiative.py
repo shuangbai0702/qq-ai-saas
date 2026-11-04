@@ -148,6 +148,9 @@ def start(core,settings,store,metrics):
             for id,s in list(settings.items()):
                 try:
                     brain=getattr(core,'_hosted_autonomous',None)
+                    from bilibili_tools import resume_completion
+                    st=store(id,s)
+                    if not st.active and await resume_completion(core,id,s,st,settings):continue
                     if brain and brain.owns(id):continue
                     cfg=s['config']
                     if not cfg.get('proactive') and not (cfg.get('behavior') or {}).get('groupParticipationEnabled',False):continue

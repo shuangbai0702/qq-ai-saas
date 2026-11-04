@@ -61,6 +61,7 @@ async def main():
                     return LLMResponse(role='assistant',tools_call_name=['hosted_quote_reply'],tools_call_args=[{'handle':handle}],tools_call_ids=['actual-quote'],usage=TokenUsage(input_other=50,output=10))
                 return LLMResponse(role='assistant',completion_text='第一条[QQ_BREAK]第二条',usage=TokenUsage(input_other=50,output=10))
             if mode=='wrapped_text':return LLMResponse(role='assistant',completion_text='开发\n我？！\n\n别把你的代\n码搅成一锅\n饭！',usage=TokenUsage(input_other=50,output=10))
+            if mode=='memory_late':barrier.set();await release.wait()
             if mode in ('self_signature','self_publish','self_signature_changed','self_publish_interrupted'):
                 message_requests.append(kwargs)
                 if len(message_requests)==1:return LLMResponse(role='assistant',tools_call_name=['hosted_qq_publish' if mode.startswith('self_publish') else 'hosted_qq_signature'],tools_call_args=[{'content':'真实授权的测试内容'}],tools_call_ids=['self-operation'],usage=TokenUsage(input_other=50,output=10))
@@ -374,6 +375,16 @@ async def main():
         other.pipeline.finish_internal(local_work,{'status':'blocked','task':{'kind':'research','target':'','objective':'fresh actual failure'},'summary':'actual failure before PG refresh','effects':[],'toolResults':[{'tool':'bilibili_search','status':'failed'}]})
         latest=experience_context(other,'private:12345678',settings['qq']['config']['behavior'])
         assert latest['actions'][0]['id']==w['id'] and latest['actions'][0]['status']=='blocked'
+        # A research task belongs to its source conversation even without a
+        # send target. A legacy local receipt must not erase durable provenance.
+        other.autonomous_experience['actions'].append({'id':w['id'],'kind':'research','target':'','sourceScope':'group:34567890','objective':'trusted group research','status':'executing'})
+        group=experience_context(other,'group:34567890',settings['qq']['config']['behavior'])
+        assert group['actions'][0]['id']==w['id'] and group['actions'][0]['sourceScope']=='group:34567890'
+        assert all(a['id']!=w['id'] for a in experience_context(other,'group:99999999',settings['qq']['config']['behavior'])['actions'])
+        assert all(a['id']!=w['id'] for a in experience_context(other,'private:12345678',settings['qq']['config']['behavior'])['actions'])
+        other.autonomous_experience['actions'][-1].update(status='completed',finishedAt=int(time.time()*1000),summary='durable final result')
+        final=experience_context(other,'group:34567890',settings['qq']['config']['behavior'])['actions'][0]
+        assert final['status']=='completed' and final['summary']=='durable final result'
         assert brain.valid('qq',w),'experience synchronization incorrectly invalidated autonomous work'
         settings['qq']['config']['behavior']['memory']=False
         assert experience_context(other,'private:12345678',settings['qq']['config']['behavior'])['actions']==[]
@@ -511,8 +522,29 @@ async def main():
         await asyncio.wait_for(barrier.wait(),5)
         st.db.execute('UPDATE memory_reflection_control SET epoch=epoch+1 WHERE id=1');st.db.commit()
         release.set();result=await asyncio.wait_for(task,5)
-        assert result['status']=='completed' and st.db.execute("SELECT count(*) FROM facts WHERE scope='self' AND subject='0'").fetchone()[0]==1,'late research restored memory after a reset'
+        assert result['status']=='canceled' and result['stopReason']=='internal_work_stale' and len(research_requests)==1,result
+        assert st.db.execute("SELECT count(*) FROM facts WHERE scope='self' AND subject='0'").fetchone()[0]==1,'late research restored memory after a reset'
         print('PIPELINE read-only research uses shared identity/memory, actual tool evidence and no QQ send passed')
+
+        calls.clear();mode='memory_late';barrier=asyncio.Event();release=asyncio.Event();p,w,st=setup('memory-reply-reset')
+        settings['qq']['config']['behavior']['memory']=True
+        task=asyncio.create_task(brain.handle('qq','execute',{'work':w,'action':data['action']}))
+        await asyncio.wait_for(barrier.wait(),5)
+        st.db.execute('UPDATE memory_reflection_control SET epoch=epoch+1 WHERE id=1');st.db.commit();release.set()
+        result=await asyncio.wait_for(task,5)
+        assert calls==[] and result['status']=='blocked' and result['stopReason']=='internal_work_stale',result
+        assert st.db.execute('SELECT count FROM deliveries').fetchone()[0]==0,'canceled old-memory reply retained its send reservation'
+        replay=await brain.handle('qq','execute',{'work':w,'action':data['action']})
+        assert replay['stopReason']=='internal_work_stale' and calls==[],'replay sent the canceled old-memory reply'
+        print('PIPELINE memory reset stops an in-flight reply before tools/output and releases its reservation passed')
+
+        mode='normal';calls.clear();p,w,st=setup('memory-context-canceled')
+        with patch('execution_memory.context',side_effect=asyncio.CancelledError('controlled context cancellation')):
+            result=await brain.handle('qq','execute',{'work':w,'action':data['action']})
+        assert calls==[] and result['stopReason']=='task_canceled',result
+        assert st.db.execute('SELECT count FROM deliveries').fetchone()[0]==0,'canceled context leaked its send reservation'
+        assert st.pipeline.internal_result(w['id'])['result']['stopReason']=='task_canceled','canceled context left unclosed work'
+        print('PIPELINE context cancellation settles Work and refunds an unstarted send passed')
 
         mode='reflect';research_requests.clear();calls.clear();p,w,st=setup('self-reflection')
         settings['qq']['config']['behavior']['memory']=True
@@ -618,6 +650,7 @@ async def main():
         for mode in ('favorite','favorite_cooled'):
             p,w,st=setup('internal-'+mode);calls.clear();message_requests.clear()
             settings['qq']['config']['behavior']['memeEnabled']=True
+            settings['qq']['config']['behavior']['memePacks']=[] # Prove the live QQ tool works without platform/cache candidates.
             assert st.social.context('private:12345678','发收藏',settings['qq']['config']['behavior'])['meme_candidates']==[]
             with patch.object(qq_favorite_tools,'download',return_value=image.getvalue()):
                 result=await brain.execute('qq',{'work':w,'action':{'kind':'message','target':'private:12345678','objective':'发收藏'}})

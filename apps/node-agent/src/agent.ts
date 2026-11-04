@@ -5,11 +5,13 @@ import path from 'node:path';import {mkdir,appendFile,readFile,writeFile,rm,open
 import type {Sql} from '../../../packages/database/index.js';import {decrypt,redact} from '../../../packages/shared/security.js';import {terminalLogin,type RuntimeContext,type ProtocolAdapter,type LoginSnapshot} from '../../../packages/contracts/index.js';
 import {SharedAstrBotAdapter} from '../../../adapters/astrbot/shared.js';
 import {AutonomyCoordinator,runtimeClient} from './autonomous.js';
+import {BilibiliExecutor} from './bilibili/executor.js';
 import {ProcessHost} from './process-host.js';import {AstrBotAdapter} from '../../../adapters/astrbot/index.js';import {MockProtocolAdapter} from '../../../adapters/mock/index.js';import {NapCatAdapter} from '../../../adapters/protocol/napcat/index.js';import {EulerAdapter} from '../../../adapters/protocol/euler/index.js';
 export class NodeAgent {
  host:ProcessHost;ai:AstrBotAdapter;shared:SharedAstrBotAdapter;protocols:Record<string,ProtocolAdapter>;busy=false;closed=false;timer?:NodeJS.Timeout;lastHealth=0;
  private releaseLease?:(()=>Promise<void>);
  autonomy:AutonomyCoordinator;
+ bilibili:BilibiliExecutor;
  recovery=new Map<string,{attempts:number;next:number;healthySince:number}>();
  offlineGrace:{offline:number;fault:number;login:number;startup?:number}={offline:offlineGrace(process.env.FISHBOT_OFFLINE_GRACE_SECONDS,300),fault:offlineGrace(process.env.FISHBOT_PROTOCOL_FAULT_GRACE_SECONDS,300),login:offlineGrace(process.env.FISHBOT_LOGIN_IDLE_GRACE_SECONDS,180),startup:offlineGrace(process.env.FISHBOT_STARTUP_GRACE_SECONDS,120)};
  constructor(public db:Sql,public root:string,public key:Buffer){
@@ -17,15 +19,17 @@ export class NodeAgent {
    this.host=new ProcessHost(root,python);this.ai=new AstrBotAdapter(this.host,source,python);this.shared=new SharedAstrBotAdapter(db,this.host,this.ai,source,python,bot=>this.context(bot));
    this.protocols={mock:new MockProtocolAdapter(this.host),napcat:new NapCatAdapter(this.host,path.join(root,'napcat')),euler:new EulerAdapter(this.host,path.resolve(process.env.EULER_SOURCE||'references/euler'),path.resolve(process.env.EULER_PYTHON||`references/euler/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`))};
    this.autonomy=new AutonomyCoordinator(db,runtimeClient(db));
+   this.bilibili=new BilibiliExecutor(db,root,key);
  }
  async context(bot:any):Promise<RuntimeContext>{const [instance]=await this.db.query('SELECT * FROM instances WHERE bot_id=$1',[bot.id]);const [revision]=await this.db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[bot.id,bot.revision]);const [secret]=await this.db.query('SELECT ciphertext FROM secrets WHERE bot_id=$1 AND tenant_id=$2',[bot.id,bot.tenant_id]);return{botId:bot.id,tenantId:bot.tenant_id,root:path.join(this.root,'bots',bot.id),generation:bot.generation,revision:bot.revision,aiPort:instance.ai_port,protocolPort:instance.protocol_port,token:instance.token,config:BotConfigSchema.parse(revision.config),apiKey:secret?decrypt(this.key,`${bot.tenant_id}:${bot.id}`,secret.ciphertext):'',expectedUin:bot.expected_uin||'',runtimeMode:bot.runtime_mode,groupId:bot.group_id}}
  aiFor(bot:any){return bot.runtime_mode==='shared'?this.shared:this.ai}
  async log(bot:any,text:string){const root=path.join(this.root,'bots',bot.id);await mkdir(root,{recursive:true});const file=path.join(root,'runtime.log');try{if((await stat(file)).size>2*1024*1024)await writeFile(file,'[platform] log rotated\n')}catch{};await appendFile(file,`[platform ${new Date().toISOString()}] ${redact(text)}\n`)}
  async begin():Promise<void>{await mkdir(this.root,{recursive:true});this.releaseLease=await acquireLease(this.root,'agent');try{await writeFile(path.join(this.root,'agent.lock'),String(process.pid));
    await this.db.query("UPDATE commands SET status='pending' WHERE status='processing'");
+   await this.bilibili.recover();
    this.timer=setInterval(()=>void this.tick().catch(e=>console.error('agent tick:',redact(String(e)))),500);this.timer.unref();await this.tick();this.autonomy.start();}catch(error){if(this.timer)clearInterval(this.timer);await rm(path.join(this.root,'agent.lock'),{force:true});await this.releaseLease?.();this.releaseLease=undefined;throw error}
  }
- async shutdown(){if(this.closed)return;this.closed=true;if(this.timer)clearInterval(this.timer);await this.autonomy.stop();while(this.busy)await new Promise(r=>setTimeout(r,20));let failure:unknown;
+ async shutdown(){if(this.closed)return;this.closed=true;if(this.timer)clearInterval(this.timer);await this.bilibili.stop();await this.autonomy.stop();while(this.busy)await new Promise(r=>setTimeout(r,20));let failure:unknown;
   try{for(const bot of await this.db.query('SELECT * FROM bots WHERE deleted_at IS NULL')){await this.aiFor(bot).stop(bot.id).catch(e=>{failure??=e});await this.protocols[bot.protocol].stop(bot.id).catch(e=>{failure??=e})}}catch(e){failure??=e}
   finally{try{
    // Database failure must not leave a shared group or QQ child alive. These
@@ -35,6 +39,7 @@ export class NodeAgent {
   if(failure)throw failure;
  }
  async tick(){if(this.busy||this.closed)return;this.busy=true;try{
+   this.bilibili.tick();
    const [command]=await this.db.query("SELECT * FROM commands WHERE status='pending' ORDER BY created_at LIMIT 1");
    if(command)await this.execute(command);
    const sessions=await this.db.query("SELECT s.*,b.protocol,b.expected_uin,b.tenant_id FROM login_sessions s JOIN bots b ON b.id=s.bot_id WHERE s.state NOT IN ('online','expired','canceled','failed') AND b.deleted_at IS NULL");

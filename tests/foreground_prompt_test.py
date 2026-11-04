@@ -51,9 +51,27 @@ async def main():
             if active:
                 assert '本轮即时任务由内层直接使用当前已授权工具完成' in system
                 assert '不先自行执行后补登记' not in system
+                assert '以下规则适用于本轮决定参与交流之后' in system
             assert ('目的会话的发送回执' in system)==active,'foreground may claim a cross-conversation action without its receipt'
             assert ('[本轮图片表达规则，以此为准]' in system)==meme
             assert 'original persona' in system
+            event.set_extra('_hosted_context',json.dumps({'conversation_candidate':True}))
+            token=current_message_event.set(event)
+            try:await ProviderOpenAIOfficial.text_chat(NS(),prompt='candidate',system_prompt='original persona',contexts=[])
+            finally:current_message_event.reset(token)
+            candidate_system=requests[-1]['system'];marker='[群聊参与判断，先于回复格式与任务执行]'
+            assert marker in candidate_system and '本轮不产生发送或其他外部写入' in candidate_system
+            if active:assert candidate_system.index(marker)<candidate_system.index('[后台任务登记]')
+        st=runtime['stores'][id];event.set_extra('_hosted_memory_epoch',st.reflection.epoch())
+        st.db.execute('UPDATE memory_reflection_control SET epoch=epoch+1 WHERE id=1');st.db.commit()
+        before=len(requests);token=current_message_event.set(event)
+        try:
+            try:await ProviderOpenAIOfficial.text_chat(NS(),prompt='must not request with forgotten context',system_prompt='original persona',contexts=[])
+            except asyncio.CancelledError:pass
+            else:raise AssertionError('stale context started a new model request')
+        finally:current_message_event.reset(token)
+        assert len(requests)==before,'old memory was sent to the provider after reset'
+        print('PASS forgotten foreground context is fenced before the next provider request')
         for active in (False,True):
             id='empty-'+str(active)
             settings[id]={'tenantId':'tenant','botId':id,'generation':1,'revision':1,'root':str(Path(TEMP.name)/id),'config':{'proactive':False,'behavior':{'memory':False,'qqProfile':False,'memeEnabled':False,'styleLearning':False,'fatigueEnabled':False,'burstDebounceMs':0}}}

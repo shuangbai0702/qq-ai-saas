@@ -5,10 +5,12 @@ import {createMemoryMonitor,collectMemory,collectProcesses,readHostSnapshot} fro
 import {buildMemoryView} from './memory-view.js';
 import {registerBehaviorData} from './behavior-data.js';
 import {registerAutonomous} from './autonomous.js';
+import {registerBilibili} from './bilibili.js';
 import {getBotQuota} from './bot-quota.js';
 import {probeModel} from '../../../packages/shared/model-probe.js';
 import {registerSocialMedia} from './social-media.js';
 import {registerQQFavorites} from './qq-favorites.js';
+import {createFavoriteCaptioner} from './qq-favorite-semantics.js';
 import {registerInvitations} from './invitations.js';
 import {registerModelCatalog} from './model-catalog.js';
 import Fastify from 'fastify';import cookie from '@fastify/cookie';import rateLimit from '@fastify/rate-limit';import serveStatic from '@fastify/static';import {z} from 'zod';
@@ -17,7 +19,7 @@ import {openDatabase,configuredDatabaseUrl,type Sql} from '../../../packages/dat
 declare module 'fastify'{interface FastifyRequest{user?:{id:string;email:string;name:string;is_admin:boolean;tenant_id:string}}}
 export async function createApp(options:{root?:string;databaseUrl?:string;agent?:boolean;logger?:boolean}={}){
  const root=path.resolve(options.root||process.env.DATA_ROOT||'.local');await mkdir(root,{recursive:true});
- const databaseUrl=options.databaseUrl??await configuredDatabaseUrl();const db=await openDatabase(root,databaseUrl);let key:Buffer;try{key=await loadKey(root,{createIfMissing:!(await db.query('SELECT 1 FROM secrets LIMIT 1')).length})}catch(error){await db.close();throw error}const agent=new NodeAgent(db,root,key);
+ const databaseUrl=options.databaseUrl??await configuredDatabaseUrl();const db=await openDatabase(root,databaseUrl);let key:Buffer;try{key=await loadKey(root,{createIfMissing:!(await db.query('SELECT 1 FROM secrets UNION ALL SELECT 1 FROM bilibili_accounts UNION ALL SELECT 1 FROM bilibili_settings WHERE model_secret IS NOT NULL UNION ALL SELECT 1 FROM bilibili_logins WHERE secret<>\'\' LIMIT 1')).length})}catch(error){await db.close();throw error}const agent=new NodeAgent(db,root,key);
  const streams=new Set<import('node:http').ServerResponse>();const streamOwners=new Map<string,number>();
  const app=Fastify({logger:options.logger??false,bodyLimit:65536});await app.register(cookie);await app.register(rateLimit,{max:180,timeWindow:'1 minute'});
  app.addHook('onSend',async(req,reply,payload)=>{reply.header('X-Content-Type-Options','nosniff').header('Referrer-Policy','same-origin').header('X-Frame-Options','DENY').header('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");if(req.url.startsWith('/v1/'))reply.header('Cache-Control','no-store');return payload});
@@ -112,9 +114,10 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
    const id=randomUUID();await tx.query("INSERT INTO login_sessions(id,bot_id,generation,state,expires_at) VALUES($1,$2,$3,'created',$4)",[id,bot.id,bot.generation,new Date(Date.now()+120000)]);await tx.query("INSERT INTO commands(id,bot_id,idempotency_key,generation,kind) VALUES($1,$2,$3,$4,'login')",[randomUUID(),bot.id,`login-${id}`,bot.generation]);return{id};})});
  async function loginOwned(req:any){if(!z.uuid().safeParse(req.params.id).success)fail('登录会话不存在',404);const [s]=await db.query('SELECT * FROM login_sessions WHERE id=$1',[req.params.id]);if(!s)fail('登录会话不存在',404);await owned(req,s.bot_id);return s}
  registerSocialMedia(app,root,owned);
- registerQQFavorites(app,root,owned);
+ registerQQFavorites(app,root,owned,{caption:createFavoriteCaptioner(db,key,root)});
  registerBehaviorData(app,root,owned,agent);
  registerAutonomous(app,db,owned);
+ registerBilibili(app,db,key,owned,root);
  const publicLogin=(s:any)=>({...s,qr:undefined,hasQr:!!s.qr});
  app.get<{Params:{id:string}}>('/v1/login-sessions/:id',async req=>publicLogin(await loginOwned(req)));
  app.get<{Params:{id:string}}>('/v1/bots/:id/login-session',async req=>{await owned(req,req.params.id);const [s]=await db.query('SELECT * FROM login_sessions WHERE bot_id=$1 ORDER BY created_at DESC LIMIT 1',[req.params.id]);return s?publicLogin(s):null});

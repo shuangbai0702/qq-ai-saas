@@ -1890,3 +1890,24 @@ main {
 
 /* Configuration hierarchy uses native, keyboard-accessible disclosure. */
 .config-nav-group>summary{cursor:pointer;font-weight:650;padding:12px 6px;color:var(--text);list-style-position:inside}.config-nav-group[open]>summary{margin-bottom:6px}.config-nav-group .status-pill{white-space:nowrap}@media(max-width:760px){.config-nav details{min-width:0}.config-nav-group>summary{padding:12px}.config-nav-group>a{min-height:44px}.config-main{min-width:0}}
+
+/* Capability pages follow the same navigation, fields and save bar as settings. */
+.capability-page [hidden]{display:none!important}
+.capability-page .config-nav button{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 14px;min-height:44px;border:0;border-radius:6px;background:transparent;color:var(--muted);text-align:left;font-size:13px;box-shadow:none;transform:none}
+.capability-page .config-nav button:hover,.capability-page .config-nav button.active{background:#e8deca;color:var(--text)}
+.capability-page .config-nav button.active{font-weight:650}
+.capability-page fieldset{border:0;padding:0;margin:0;min-width:0}
+.capability-page .memory-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:0 0 24px}
+.capability-page .memory-card{display:flex;flex-direction:column;gap:8px;min-width:0;padding:16px;border:1px solid var(--line);border-radius:8px;background:var(--surface);overflow-wrap:anywhere}
+.capability-page .memory-card>span,.capability-page .memory-card>small{color:var(--muted);font-size:12px}
+.capability-page .memory-card>strong{font-size:18px;line-height:1.5}
+.capability-page .save-bar{position:static;margin:0 0 20px;flex-wrap:wrap}
+.capability-page .save-bar>.button-row{flex-wrap:wrap}
+.capability-page article{padding:18px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
+.capability-page article:last-child{border-bottom:0}
+.capability-page .command{flex-wrap:wrap;align-items:flex-start}
+.capability-page .command>p,.capability-page .command>details{flex-basis:100%;min-width:0}
+.capability-page pre{max-width:100%;font-size:12px}
+.capability-page .config-main>p{overflow-wrap:anywhere}
+@media(max-width:940px){.capability-page .config-nav nav{display:flex;flex-wrap:wrap;gap:14px}.capability-page .config-nav-group{flex:1;min-width:140px}}
+@media(max-width:640px){.capability-page .memory-cards{grid-template-columns:1fr}.capability-page .config-nav nav{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.capability-page .config-nav-group{min-width:0}.capability-page .config-nav button{padding:11px 10px;font-size:13px}.capability-page .save-bar>.button-row{width:100%;justify-content:flex-start}.capability-page .save-bar button{flex:1;white-space:normal}.capability-page .save-bar small{font-size:11px}}
