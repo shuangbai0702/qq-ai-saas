@@ -37,6 +37,8 @@ test('native semantic entry sends every bubble with one final image and refunds 
   const sends=async()=>(await mock.call(ctx,'/messages')as any[]).filter(x=>x.action.startsWith('send_'));
   await mock.call(ctx,'/message',{group:'777111',sender:'12345678',mention:false,messageId:82001,text:'公开讨论这个话题'});
   await until(async()=>(await sends()).length===3,'all three semantic reply bubbles');
+  const admittedReply=calls.find(x=>x.kind==='reply');assert.ok(admittedReply,'the semantic decision reaches the real reply model');
+  assert.ok(!admittedReply.body.messages.filter((m:any)=>m.role==='system').some((m:any)=>m.content.includes('[群聊参与判断，先于回复格式与任务执行]')),'a real semantic entry permit must not require a duplicate participation judgment');
   const sent=await sends();assert.ok(sent[0].params.message.some((x:any)=>x.type==='at'),'real mention belongs to first bubble');
   assert.ok(sent[2].params.message.some((x:any)=>x.type==='image'),'model-selected fish image arrives with final bubble');
   assert.equal(sent.flatMap(x=>x.params.message).filter((x:any)=>x.type==='image').length,1);

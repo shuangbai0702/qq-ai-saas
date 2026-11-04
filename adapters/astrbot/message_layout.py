@@ -6,6 +6,21 @@ _FENCES = re.compile(r'(```|~~~)[\s\S]*?(?:\1|$)')
 _STRUCTURED = re.compile(r'(?m:^\s*(?:[-*+#>]|\d+[.)、]|\|))')
 
 
+def normalize_chat_layout(text):
+    """QQ plain text cannot render HTML breaks; retain literal code examples."""
+    def prose(value):
+        value = re.sub(r'<br\s*/?\s*>', '\n', value, flags=re.I)
+        value = re.sub(r'\n[ \t]*(?:[-*_][ \t]*){3,}(?=\n|$)(?:\s*\n)*$', '', value)
+        return re.sub(r'\n(?:[ \t]*\n){2,}', '\n\n', value)
+    chunks=[]; end=0
+    # Inline code as well as fenced code remains literal.
+    for match in re.finditer(r'(```|~~~)[\s\S]*?(?:\1|$)|`[^`\n]*`', text):
+        chunks.extend((prose(text[end:match.start()]), match.group()))
+        end=match.end()
+    chunks.append(prose(text[end:]))
+    return ''.join(chunks).strip()
+
+
 def repair_soft_wraps(text):
     """Repair CJK mid-sentence folding without erasing paragraphs or layout."""
     if len(text)>1500 or _FENCES.search(text) or _STRUCTURED.search(text):return text
@@ -20,6 +35,7 @@ def repair_soft_wraps(text):
 
 def split_messages(text, limit=4):
     """Keep prose paragraphs separate; code/list formatting is not chat pacing."""
+    text = normalize_chat_layout(text)
     chunks = ['']
     end = 0
     for match in _FENCES.finditer(text):

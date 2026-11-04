@@ -3,6 +3,7 @@ Inspired by LivingMemory's ten-round reflection and source/revision fencing.
 Summaries are conversation evidence, never verified profile facts or instructions.
 """
 import asyncio,json,time,math,hashlib
+import message_provenance
 from hosted_memory import tokens
 from memory_scope import shared_person,person_filter,summary_rows,summary_item,pending_messages
 
@@ -76,6 +77,7 @@ class Reflection:
         db.executescript('''CREATE TABLE IF NOT EXISTS memory_pending(scope TEXT,subject TEXT,event TEXT,question TEXT,answer TEXT,at REAL,PRIMARY KEY(scope,event));
         CREATE INDEX IF NOT EXISTS memory_pending_subject_at ON memory_pending(subject,at);
         CREATE INDEX IF NOT EXISTS memory_pending_scope_at ON memory_pending(scope,at);''')
+        message_provenance.initialize(db)
         db.execute('INSERT OR IGNORE INTO memory_pending SELECT scope,subject,event,question,answer,at FROM memory_rounds WHERE at>?',(time.time()-7*86400,))
         self.prune_pending()
         # Recover old participation only from trusted scope IDs / matching real
@@ -102,10 +104,13 @@ class Reflection:
           SELECT rowid FROM (SELECT rowid,at,row_number() OVER (
             PARTITION BY scope ORDER BY at DESC,rowid DESC) AS scope_rank FROM memory_pending)
           ORDER BY scope_rank,at DESC,rowid DESC LIMIT 1000)''')
-    def incoming(self,scope,subject,event,question,now=None):
+    def incoming(self,scope,subject,event,question,now=None,source=None):
         if self.closed or not question.strip() or not event or not shared_person(scope,subject):return
         now=time.time() if now is None else now
         self.db.execute('INSERT OR IGNORE INTO memory_pending VALUES(?,?,?,?,?,?)',(scope,subject,str(event),scrub(question),'',now))
+        if source and source.get('sender_id')==subject:
+            original=self.db.execute('SELECT subject FROM memory_pending WHERE scope=? AND event=?',(scope,str(event))).fetchone()
+            if original and original[0]==subject:message_provenance.put(self.db,scope,event,'incoming',source)
         self.prune_pending(now);self.db.commit()
     def recent(self,scope,subject,event='',now=None):
         if self.closed or not shared_person(scope,subject):return []
@@ -212,6 +217,11 @@ class Reflection:
         for person,event,question,answer,at in pending:
             turns[event]={'sender_id':person,'event':event,'user':question,'bot':answer or turns.get(event,{}).get('bot',''),'at':at}
         payload=sorted(turns.values(),key=lambda r:r['at'])
+        for turn in payload:
+            turn['source']=message_provenance.get(self.db,scope,turn['event'])
+        sent_messages=[]
+        if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dialogue_feedback'").fetchone():
+            sent_messages=[item for item in message_provenance.timeline(self.db,scope,rows[-1][1],rows[-1][5],since=min(r['at'] for r in payload)) if item['role']=='self']
         if insight_mode:
             from companion_insights import snapshot
             before=snapshot(self.db,scope,{r['sender_id'] for r in payload})
@@ -223,10 +233,11 @@ class Reflection:
                 if insight_mode:
                     from companion_insights import SYSTEM as insight_system
                     system=insight_system
-                prompt=payload
+                system+='\nturns中的sender_id是原作者；source.sender_name仅是该作者显示名，mentions/reply_to是被提及或引用对象，不能移作作者。sent_messages是本机器人有回执的发送记录，发送成功不证明正文中的称呼或事实正确；不得把机器人旧说法升级为用户资料或已核实事实。'
+                prompt={'turns':payload,'sent_messages':sent_messages}
                 if insight_mode:
                     motives=[{'subject':r[0],'topic':r[1],'status':r[2]} for r in self.db.execute("SELECT subject,topic,status FROM companion_motives WHERE scope=? AND expires>? ORDER BY due LIMIT 6",(scope,time.time()))]
-                    prompt={'persona':str(cfg.get('_persona',''))[:5000],'turns':payload,'unfinished_topics':motives}
+                    prompt={'persona':str(cfg.get('_persona',''))[:5000],'turns':payload,'sent_messages':sent_messages,'unfinished_topics':motives}
                 response=await asyncio.wait_for(provider.text_chat(prompt=json.dumps(prompt,ensure_ascii=False),system_prompt=system,contexts=[],func_tool=None),20)
                 if self.closed or not is_current() or self.epoch()!=epoch:return
                 from output_clean import clean
@@ -235,6 +246,10 @@ class Reflection:
                 text=clean(data['summary']).strip()[:800]
                 if not text:return
                 with self.db:
+                    # Serialize with admin writers and validate inside the
+                    # transaction, at the same boundary as derived writes.
+                    self.db.execute('BEGIN IMMEDIATE')
+                    if self.closed or not is_current() or self.epoch()!=epoch:return
                     if insight_mode:
                         from companion_insights import apply
                         metrics['insightsSaved']=metrics.get('insightsSaved',0)+apply(self.db,self.memory,scope,cfg,payload,data,before)

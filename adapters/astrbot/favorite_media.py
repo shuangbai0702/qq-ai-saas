@@ -30,6 +30,21 @@ def normalize(source,dest):
    suffix='.gif' if animated else '.png';file=Path(str(dest)+suffix);file.write_bytes(data)
    return {'suffix':suffix,'mime':'image/gif' if animated else 'image/png','bytes':len(data),'animated':animated}
 
+def preview(source,dest):
+ if Path(source).stat().st_size>1048576:raise ValueError('preview input limit')
+ with warnings.catch_warnings():
+  warnings.simplefilter('error',Image.DecompressionBombWarning)
+  with Image.open(source) as image:
+   count=getattr(image,'n_frames',1)
+   if image.width*image.height>4194304 or count>300:raise ValueError('preview limit')
+   indices=sorted(set((0,count//2,count-1))) if count>1 else [0]
+   sheet=Image.new('RGB',(192*len(indices),192),'white')
+   for column,index in enumerate(indices):
+    image.seek(index);frame=image.convert('RGBA');frame.thumbnail((192,192))
+    sheet.paste(frame,(192*column,0),frame.getchannel('A'))
+   sheet.save(dest,format='JPEG',quality=75)
+   return {'sampledFrames':indices,'totalFrames':count,'audio':False}
+
 if __name__=='__main__':
- try:print(json.dumps(normalize(sys.argv[1],sys.argv[2])))
+ try:print(json.dumps(preview(sys.argv[2],sys.argv[3]) if sys.argv[1]=='--preview' else normalize(sys.argv[1],sys.argv[2])))
  except Exception:print('Unsupported or oversized QQ favorite',file=sys.stderr);sys.exit(1)

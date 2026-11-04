@@ -1,6 +1,19 @@
 """Per-bot QQ favorites; account ID comes from the real QQ event, never text."""
-import json,re
+import json,re,hashlib
 from pathlib import Path
+
+
+def descriptions(root,account):
+ """Same semantic authority for the live QQ tool and cached candidates."""
+ try:
+  data=json.loads((Path(root)/'qq-favorites'/'index.json').read_text(encoding='utf8'))
+  if str(data.get('account',''))!=str(account):return {}
+  return {i['id']:{'meaning':str(i.get('meaning',''))[:100],'avoid':str(i.get('avoid',''))[:100],'enabled':bool(i.get('enabled'))} for i in data.get('items',[])[:200] if re.fullmatch(r'qqf_[a-f0-9]{16}',str(i.get('id','')))}
+ except (OSError,ValueError,KeyError,TypeError):return {}
+
+
+def description_id(row):
+ return 'qqf_'+hashlib.sha256(str(row.get('md5') or row.get('resId') or row.get('url') or '').encode()).hexdigest()[:16]
 
 def catalog(root,account):
  if not account:return []

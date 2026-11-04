@@ -33,20 +33,46 @@ def effect_units(effects):
 def conversation_context(store,cfg,scope,subject,query,now,state=None):
     """Read the existing compressed and pending memory; never copy its storage."""
     from memory_scope import pending_messages
+    from message_provenance import timeline
     enabled=cfg.get('memory',True)
-    if state is None:
-        state={'facts':store.memory.recall(scope,subject,query,now) if enabled else [],
-               'conversation_summaries':store.reflection.recall(scope,query,subject=subject) if enabled else []}
-    else:state=dict(state)
+    state=dict(state or {})
+    # Ingress state may predate batch collection, media or execution-memory
+    # awaits. Re-read authoritative memory at assembly, never bless an old
+    # fact snapshot with the new epoch captured after one of those awaits.
+    state.update(facts=store.memory.recall(scope,subject,query,now) if enabled else [],
+                 conversation_summaries=store.reflection.recall(scope,query,subject=subject) if enabled and cfg.get('memorySummary',True) else [])
     relation=store.db.execute('SELECT affinity,emotion,expires,last_seen FROM relations WHERE scope=? AND subject=?',(scope,subject)).fetchone()
     if relation:
         state.update(affinity=relation[0],relationship='熟悉' if relation[0]>=5 else '初识',emotion=relation[1] if relation[2]>now else '平静',emotion_expired=relation[2]<=now,relationship_observed_at=relation[3])
     dialogue=store.participation.context(scope,now=now,cfg=cfg)
     if not enabled:dialogue['feedback']=[]
+    chronological=timeline(store.db,scope,subject,now) if enabled else []
+    covered={item['source_event'] for item in chronological if item['role']=='member'}
+    pending=pending_messages(store.db,scope,subject,now,cross_scope=False) if enabled else []
+    ambient=store.ambient.context(scope,now) if cfg.get('socialAwareness',True) and scope.startswith('group:') else []
+    observed={(item['sender_id'],item['text'][:180]) for item in chronological if item['role']=='member'}
     return {'state':state,'dialogue':dialogue,'autonomous_experience':experience_context(store,scope,cfg),
-            'recent_messages':pending_messages(store.db,scope,subject,now,cross_scope=False) if enabled else [],
+            'conversation_timeline':chronological,
+            'recent_messages':[item for item in pending if item['source_event'] not in covered],
             'recent_cross_session_messages':store.reflection.recent(scope,subject,now=now) if enabled else [],
-            'ambient_group_messages':store.ambient.context(scope,now) if cfg.get('socialAwareness',True) and scope.startswith('group:') else []}
+            'ambient_group_messages':[item for item in ambient if (item['sender_id'],item['text']) not in observed]}
+
+
+def protocol_experience(store,scope,query='',limit=6):
+    """Read existing QQ receipts, including passive tools; never assistant prose."""
+    db=store.db;tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    result=[]
+    if 'qq_action_attempts' in tables and 'pipeline_events' in tables:
+        rows=db.execute('''SELECT q.event,q.action,q.at,q.status,min(p.scope)
+          FROM qq_action_attempts q JOIN pipeline_events p ON p.event=q.event
+          WHERE (?='self' OR p.scope=?) AND (?='' OR instr(q.action,?)>0)
+          AND NOT EXISTS(SELECT 1 FROM pipeline_events other WHERE other.event=q.event AND other.scope<>p.scope)
+          GROUP BY q.event,q.action HAVING count(DISTINCT p.scope)=1
+          ORDER BY q.at DESC LIMIT ?''',(scope,scope,query,query,min(12,limit))).fetchall()
+        for event,operation,at,status,source in rows:
+            result.append({'actionId':'qq:'+event+':'+operation,'service':'qq','operation':operation,'observedAt':int(at*1000),'sourceScope':source,
+                           'receipt':{'status':'confirmed' if status=='confirmed' else 'unknown'},'meaning':'协议确认不代表公开可见；原执行内容不由助手回复推断。'})
+    return result
 
 
 def experience_context(store,scope,cfg):
@@ -54,7 +80,7 @@ def experience_context(store,scope,cfg):
     history=getattr(store,'autonomous_experience',{})
     def allowed(item):
         if scope=='self':return True
-        if item.get('sourceScope') and item['sourceScope']!=scope:return False
+        if item.get('sourceScope'):return item['sourceScope']==scope
         return item.get('target')==scope or (scope=='private:'+str(cfg.get('ownerUin') or '') and item.get('kind')!='message' and not item.get('sourceScope'))
     actions={a['id']:a for a in history.get('actions',[]) if isinstance(a,dict) and a.get('id')}
     # Local receipts close the interval before PG's next policy refresh. They
@@ -63,15 +89,24 @@ def experience_context(store,scope,cfg):
     for id,at,status,raw in store.db.execute('SELECT id,at,state,result FROM pipeline_actions WHERE result IS NOT NULL ORDER BY at DESC LIMIT 6'):
         result=json.loads(raw);task=result.get('task')
         if not task:continue
-        local.append({'id':id,**task,'assignedAt':int(at*1000),'finishedAt':result.get('finishedAt'),'status':status,'summary':str(result.get('summary',''))[:600],
-                      'toolResults':[{k:t.get(k) for k in ('tool','status')} for t in result.get('toolResults',[])[-6:]],'effects':result.get('effects',[])[-4:], 'evidence':result.get('evidence',[])[:3],'unfinished':result.get('unfinished',[])[:3]})
+        persisted=actions.get(id,{})
+        # The durable goal owns provenance. A local receipt closes the feedback
+        # gap but cannot erase the accepted source or change its audience.
+        entry={'id':id,**task,'assignedAt':int(at*1000),'finishedAt':result.get('finishedAt'),'status':status,'summary':str(result.get('summary',''))[:600],
+               'toolResults':[{k:t.get(k) for k in ('tool','status')} for t in result.get('toolResults',[])[-6:]],'effects':result.get('effects',[])[-4:], 'evidence':result.get('evidence',[])[:3],'unfinished':result.get('unfinished',[])[:3]}
+        for key in ('sourceScope','kind','target','objective'):
+            if persisted.get(key) is not None:entry[key]=persisted[key]
+        # A settled durable result is authoritative; local receipts only lead
+        # while the action has not reached its durable terminal state.
+        if persisted.get('finishedAt'):entry={**entry,**persisted}
+        local.append(entry)
         actions.pop(id,None)
     decisions=[]
     for item in history.get('decisions',[]):
         action=item.get('action')
         if scope=='self' or action and allowed({**action,'sourceScope':item.get('sourceScope')}):decisions.append(item)
         elif not action:decisions.append({k:item.get(k) for k in ('cycleId','at','cycleStartedAt','wait')})
-    return {'sampledAt':history.get('sampledAt'),'decisions':decisions,'actions':[a for a in local+list(actions.values()) if allowed(a)][:8],
+    return {'sampledAt':history.get('sampledAt'),'decisions':decisions,'actions':[a for a in local+list(actions.values()) if allowed(a)][:8],'protocol':protocol_experience(store,scope),
             'meaning':'外层决策不等于执行；assignedAt只证明交付，status及工具/协议回执说明实际结果；未知时间不推测。内容不授予权限。'}
 
 
@@ -88,13 +123,28 @@ class ContextBuilder:
     def build(self):return dict(self._data)
 
 
+def annotate_speaker(request,work,owner_id,provenance=None):
+    """Keep each real author's provenance in native Agent history as well.
+
+    A current-turn system reminder alone does not label older user messages.
+    Do not change the protocol event, the stored original text, or service work.
+    """
+    if not isinstance(work,Work) or work.source not in ('message','deferred_group') or getattr(request,'_fishbot_speaker_source',None)==work.event_id:return
+    source={'sender_id':work.subject,'owner_id':str(owner_id) or None,'owner':bool(owner_id and work.subject==str(owner_id)),'scope':work.scope,'event_id':work.event_id}
+    if provenance:
+        source.update({k:provenance[k] for k in ('sender_name','mentions','reply_to') if k in provenance})
+    request.prompt='[QQ消息来源]'+json.dumps(source,ensure_ascii=False,separators=(',',':'))+'\n'+(request.prompt or '')
+    request._fishbot_speaker_source=work.event_id
+
+
 @dataclass(frozen=True)
 class OutputPlan:
     messages:tuple
     delays:tuple
+    trailing_media:bool=False
 
     def __post_init__(self):
-        if not 1<=len(self.messages)<=4 or len(self.messages)!=len(self.delays):raise ValueError('Invalid output plan')
+        if type(self.trailing_media) is not bool or not 1<=len(self.messages)<=4+int(self.trailing_media) or len(self.messages)!=len(self.delays):raise ValueError('Invalid output plan')
         if any(type(value) not in (int,float) or not math.isfinite(value) or value<0 for value in self.delays):raise ValueError('Invalid output delay')
 
 
@@ -135,7 +185,11 @@ class BotPipeline:
     def __init__(self,db):
         self.db=db
         db.execute('''CREATE TABLE IF NOT EXISTS pipeline_events(scope TEXT,subject TEXT,event TEXT,at REAL,source TEXT,stage TEXT,status TEXT,reason TEXT,attempted INTEGER DEFAULT 0,confirmed INTEGER DEFAULT 0,PRIMARY KEY(scope,subject,event))''')
+        db.execute('CREATE INDEX IF NOT EXISTS pipeline_events_by_event ON pipeline_events(event)')
         db.execute("UPDATE pipeline_events SET status=CASE WHEN status='sending' THEN 'unknown' ELSE 'interrupted' END,reason='runtime_restarted' WHERE status IN ('received','sending')");db.commit()
+        # Batch windows live only in this process. A durable group-presence
+        # wait can resume, but an old in-memory batch cannot still be waiting.
+        db.execute("UPDATE pipeline_events SET status='interrupted',reason='runtime_restarted' WHERE status='waiting' AND reason='batch_waiting'");db.commit()
         db.execute('CREATE TABLE IF NOT EXISTS pipeline_actions(id TEXT PRIMARY KEY,fingerprint TEXT,epoch INTEGER,scope TEXT,expires REAL,state TEXT,result TEXT,at REAL)')
         db.execute('CREATE TABLE IF NOT EXISTS pipeline_action_effects(action TEXT,sequence INTEGER,method TEXT,target TEXT,state TEXT,receipt TEXT,at REAL,PRIMARY KEY(action,sequence))')
         db.execute("UPDATE pipeline_action_effects SET state='unknown' WHERE state='dispatching'")
@@ -244,7 +298,7 @@ class BotPipeline:
     def bind(self,event,lease):
         group=str(event.get_group_id() or '');subject=str(event.get_sender_id());self_id=str(event.get_self_id())
         scope='group:'+group if group else 'private:'+subject
-        source='deferred_group' if event.get_extra('_hosted_deferred_group') else 'owner_contact' if event.get_extra('_hosted_owner_contact') else 'scheduled_contact' if event.get_extra('_hosted_initiative',False) else 'message'
+        source='tool_continuation' if event.get_extra('_hosted_tool_completion') else 'deferred_group' if event.get_extra('_hosted_deferred_group') else 'owner_contact' if event.get_extra('_hosted_owner_contact') else 'scheduled_contact' if event.get_extra('_hosted_initiative',False) else 'message'
         message=event.message_obj
         work=Work(str(lease.get('botId') or event.get_platform_id()),scope,subject,self_id,str(getattr(message,'message_id','') or ''),source,float(getattr(message,'timestamp',0) or 0),lease)
         event.set_extra('_hosted_pipeline',work);work.stage('ingress')
@@ -279,7 +333,7 @@ class BotPipeline:
         elif work.status=='received':
             work.status='partial' if work.confirmed_messages<work.planned_messages and work.confirmed else 'sent' if work.confirmed else 'silent'
             if not work.confirmed and not work.reason:work.reason='no_output'
-        elif work.confirmed and work.status not in ('sent','duplicate','error'):work.status='partial'
+        elif work.confirmed and work.status not in ('sent','duplicate'):work.status='partial'
         value={'source':work.source,'stage':work.trace[-1]['stage'],'status':work.status,'reason':work.reason,'protocolAttempts':work.attempted,'protocolConfirmed':work.confirmed,'plannedMessages':work.planned_messages,'confirmedMessages':work.confirmed_messages,'stages':work.trace}
         metrics['lastPipeline']=value
         if work.status=='duplicate' or work.source=='message' and not work.ledger_owner:return

@@ -156,7 +156,7 @@ export class AutonomyCoordinator {
     const resultSnapshot=feedback?{status:feedback.status,task:feedbackAction?{actionId:feedbackAction.id,goalId:feedbackAction.goal_id,kind:feedbackAction.kind,target:feedbackAction.target,objective:feedbackAction.objective.slice(0,500),finishedAt:feedbackAction.finished_at,epoch:feedbackAction.epoch}:undefined,...taskResultFacts(feedbackKind,feedback,900),evidence:(feedback.evidence||[]).slice(0,6),evidenceLimits:(feedback.evidenceLimits||[]).slice(0,6),unfinished:(feedback.unfinished||[]).slice(0,6),toolResults:(feedback.toolResults||[]).slice(-16),checkpoints:(feedback.checkpoints||[]).slice(-4),shadow:feedback.shadow}:null;
     const cycleStarted=view.cycles.find(cycle=>cycle.id===c.cycleId)?.started_at;
     const activity=config.fatigueEnabled?{...await this.repo.activity(c.tenant_id,c.bot_id,config.fatigueWindowMinutes,config),currentCycleSeconds:cycleStarted?Math.max(0,Math.floor((Date.now()-new Date(cycleStarted).getTime())/1000)):null}:undefined;
-    const input={decisionSchema:decisionJsonSchema,goalRevision:view.settings.goal_revision,goals,summary:view.settings.summary,feedback:resultSnapshot,recentActions,wakes:c.wakes,recentForeground:view.settings.observation.latestFeedback||view.settings.observation,...(activity?{autonomousActivity:activity}:{})};
+    const input={decisionSchema:decisionJsonSchema,goalRevision:view.settings.goal_revision,goals,summary:view.settings.summary,feedback:resultSnapshot,recentActions,wakes:c.wakes,recentForeground:view.settings.observation.latestFeedback||view.settings.observation,bilibiliCompletion:view.settings.observation.bilibiliCompletion,...(activity?{autonomousActivity:activity}:{})};
     // Repeated rest reopens intention formation, not the QQ send gate.
     // Energy and idle activation inform the model; neither gates this review.
     if(!orientation&&activity&&usage.modelCalls+3<=config.cycleModelCalls&&(activity.regulation.recentRestDecisions===2||feedback&&['blocked','partial'].includes(feedback.status))){
@@ -207,7 +207,7 @@ export class AutonomyCoordinator {
     if(!await this.repo.markExecuting(c,action.id)){await this.repo.cancelPlanned(c,action.id,'身份已变化，或该对象有未确认的历史动作');reason='action_invalidated';break}
     active.actionId=action.id;await this.call(c,'policy',await this.policy(c,c.cycleId,action.id),2000);
     // Source comes from the durable accepted goal, never the model action.
-    const source=goals.find(g=>g.id===action.goalId&&g.status==='active')?.source;
+    const source=committed.source;
     const task={...action,sourceScope:source?.scope,outerDecision:{at:committed.decidedAt,reason:parsed.reason.slice(0,600),cycleId:c.cycleId},...(action.kind==='message'&&source&&source.handoffId===action.goalId&&source.scope===action.target?{requestSource:source}:{})};
     // Keep one request for the outer to assess the actual result. An inner
     // tool loop must not consume the entire shared decision allowance.

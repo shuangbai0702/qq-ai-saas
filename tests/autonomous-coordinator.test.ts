@@ -15,6 +15,23 @@ async function fixture(count=1){
 }
 const usage={modelCalls:1,toolCalls:0,tokens:400};
 
+test('a newly committed delegated goal delivers its trusted source to the inner in the same cycle',async()=>{
+ const db=await fixture();let decisions=0,executions=0;
+ const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
+  if(op==='policy'||op==='snapshot')return{};
+  if(op==='think'){decisions++;return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,
+   goalChanges:decisions===1?[{operation:'create',title:'actual group request',reason:'delegation',sourceEventId:'real-source'}]:[],
+   action:decisions===1?{kind:'research',objective:'read for the source group'}:null,summary:'actual progress',reason:'delegated request',wait:{kind:decisions===1?'after_result':'time',seconds:decisions===1?0:600}}}}
+  if(op==='execute'){executions++;assert.equal(body.action.sourceScope,'group:963105233');return{status:'completed',summary:'actual read',effects:[],evidence:[],unfinished:[],usage}}
+  throw Error(op);
+ });
+ try{
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});
+  await coordinator.repo.event({tenant_id:'tenant',bot_id:'bot-0',epoch:2},Date.now(),{scope:'group:963105233',senderId:'12345678',owner:true,eventId:'real-source',directed:true,phase:'foreground_result',result:{status:'sent'}},15);
+  await coordinator.tick();await coordinator.active?.task;assert.equal(executions,1);
+ }finally{await coordinator.stop();await db.close()}
+});
+
 test('a slow member policy cannot block the active lease heartbeat',async()=>{
  const db=await fixture(2);let releaseModel!:()=>void,releaseSlow!:()=>void,enteredSlow!:()=>void;
  const modelGate=new Promise<void>(resolve=>releaseModel=resolve),slowGate=new Promise<void>(resolve=>releaseSlow=resolve),slowEntered=new Promise<void>(resolve=>enteredSlow=resolve);

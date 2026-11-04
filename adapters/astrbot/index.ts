@@ -14,7 +14,7 @@ export class AstrBotAdapter implements AiAdapter {
     const value={config_version:5,dashboard:{enable:false,host:'127.0.0.1'},admins_id:[],wake_prefix:[''],
       platform_settings:{empty_mention_waiting:false,unique_session:false,enable_id_white_list:false,id_whitelist:[],wl_ignore_admin_on_group:false,friend_message_needs_wake_prefix:false},
       platform:[{id:'qq',type:'aiocqhttp',enable:true,ws_reverse_host:'127.0.0.1',ws_reverse_port:ctx.aiPort,ws_reverse_token:ctx.token}],
-      provider_sources:[],provider:ctx.apiKey?[{id:'platform-model',type:'openai_chat_completion',provider_type:'chat_completion',enable:true,key:['$FISHBOT_MODEL_KEY'],api_base:cfg.baseUrl,model:cfg.model,timeout:60}]:[],
+      provider_sources:[],provider:ctx.apiKey?[{id:'platform-model',type:'openai_chat_completion',provider_type:'chat_completion',modalities:['text','image','tool_use'],enable:true,key:['$FISHBOT_MODEL_KEY'],api_base:cfg.baseUrl,model:cfg.model,timeout:60,...(cfg.reasoningEffort?{custom_extra_body:{reasoning_effort:cfg.reasoningEffort}}:{})}]:[],
       provider_settings:{enable:!!ctx.apiKey,identifier:true,group_name_display:true,datetime_system_prompt:true,computer_use_runtime:'none',proactive_capability:{add_cron_tools:false}},
       agent_runner:{runner_type:'local',config:{model:{provider_id:ctx.apiKey?'platform-model':''},persona:{persona_id:'platform',safety_mode:true},compression:{max_turns:cfg.historyTurns,overflow_strategy:'truncate_by_turns'},misc:{max_steps:5}}},
       provider_ltm_settings:{group_icl_enable:false,group_message_history_enable:true,group_message_history_max_cnt:100,active_reply:{enable:false,method:'possibility_reply',possibility_reply:0.02,whitelist:cfg.groups}},

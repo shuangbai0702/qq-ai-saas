@@ -31,7 +31,7 @@ if(process.platform==='linux'&&process.env.NAPCAT_RUNTIME_DIR){
 const db = await openDatabase(root, databaseUrl);
 let key: Buffer;
 try {
-  key = await loadKey(root, {createIfMissing: !(await db.query('SELECT 1 FROM secrets LIMIT 1')).length});
+  key = await loadKey(root, {createIfMissing: !(await db.query('SELECT 1 FROM secrets UNION ALL SELECT 1 FROM bilibili_accounts UNION ALL SELECT 1 FROM bilibili_settings WHERE model_secret IS NOT NULL UNION ALL SELECT 1 FROM bilibili_logins WHERE secret<>\'\' LIMIT 1')).length});
 } catch (error) {
   await db.close();
   throw error;

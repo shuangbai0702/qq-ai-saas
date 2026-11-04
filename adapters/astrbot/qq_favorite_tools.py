@@ -4,6 +4,7 @@ from pathlib import Path
 from sticker_collection import download,png_thumbnail
 from bot_pipeline import delivery_scope
 import quote_reply
+from qq_favorites import descriptions,description_id
 
 MAX_FAVORITE_BYTES=8*1048576
 SEND_CACHE_BYTES=32*1048576
@@ -137,18 +138,23 @@ def tools(event,cfg,db,root,current):
     source_ids=['current']+[r['handle'] for r in observed]
     if hasattr(event,'get_sender_id'):
         source_ids+=[r[0] for r in db.execute("SELECT id FROM sticker_inbox WHERE scope=? AND status='approved' ORDER BY created DESC LIMIT 30",(delivery_scope(event),))] if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sticker_inbox'").fetchone() else []
+    meanings={}
     async def details():
+        nonlocal meanings
         if not current():raise ValueError('配置或执行身份已变化')
         login=await asyncio.wait_for(event.bot.get_login_info(),3)
         if not current() or str(login.get('user_id'))!=str(event.get_self_id()):raise ValueError('QQ身份已变化')
         rows=await asyncio.wait_for(event.bot.fetch_custom_face_detail(count=200),5)
         if not current() or not isinstance(rows,list):raise ValueError('QQ收藏协议不支持或返回无效')
+        meanings=descriptions(root,str(event.get_self_id()))
         settle_readback(db,str(event.get_self_id()),rows)
         return rows[:200]
     def handle(row):return 'qf_'+hashlib.sha256((str(event.get_self_id())+'|'+str(row.get('resId') or row.get('md5'))).encode()).hexdigest()[:20]
     def item(row):
         saved=db.execute("SELECT scope,at FROM qq_favorite_writes WHERE account=? AND md5=? AND state='confirmed'",(str(event.get_self_id()),str(row.get('md5','')).lower())).fetchone()
-        return {'handle':handle(row),'meaning':str(row.get('modifyWord') or row.get('desc') or row.get('ocrWord') or '')[:100],
+        semantic=meanings.get(description_id(row))
+        return {'handle':handle(row),'meaning':semantic['meaning'] if semantic else str(row.get('modifyWord') or row.get('desc') or row.get('ocrWord') or '')[:100],
+                'avoid':semantic['avoid'] if semantic else '', 'selection_disabled':bool(semantic and not semantic['enabled']),
                 'saved_from_this_conversation':bool(saved and saved[0]==delivery_scope(event)),
                 'saved_at':saved[1] if saved and saved[0]==delivery_scope(event) else None}
     def confirmed(row,existing=False):
@@ -174,6 +180,7 @@ def tools(event,cfg,db,root,current):
                         return json.dumps({'status':'unavailable',**gate,'meaning':'未准备：本轮表情发送条件不满足，请保留文字回复。'},ensure_ascii=False)
                     rows=await details();row=next((r for r in rows if handle(r)==favorite_handle),None)
                     if not row:return json.dumps({'status':'invalid_favorite','items':[item(r) for r in rows],'meaning':'未设置附图；prepare的favorite_handle必须来自真实收藏列表。'},ensure_ascii=False)
+                    if item(row)['selection_disabled']:return json.dumps({'status':'disabled_favorite','meaning':'该收藏已停用或语义尚未确认，未准备附图。'},ensure_ascii=False)
                     raw,source=await prepare_original(row,root,account,current)
                     if not current():return '未准备：配置已变化。'
                     event.set_extra('_hosted_tool_sticker',{'id':favorite_handle,'bytes':raw,'source':source})

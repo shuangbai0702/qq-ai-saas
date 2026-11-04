@@ -11,7 +11,8 @@ Source: zexuanw958-svg/dafeiyu-config-pack, commit
 """
 import copy
 import re
-from message_layout import without_boundaries
+from message_layout import without_boundaries, normalize_chat_layout
+from reply_voice import without_markers as without_voice_markers
 
 _BAR = r"[|｜]"
 _PATTERNS = [
@@ -52,6 +53,7 @@ def dirty(text: str) -> bool:
 
 
 def clean(text: str) -> str:
+    text = normalize_chat_layout(text)
     if not dirty(text):
         return text
     for p in _PATTERNS:
@@ -67,6 +69,6 @@ def prepare_history(messages: list) -> list:
     for message in result:
         if not isinstance(message, dict) or message.get('role') != 'assistant' or not isinstance(message.get('content'), str):
             continue
-        text = without_image_markers(without_boundaries(clean(message['content'])))
+        text = without_voice_markers(without_image_markers(without_boundaries(clean(message['content']))))
         message['content'] = text
     return result
