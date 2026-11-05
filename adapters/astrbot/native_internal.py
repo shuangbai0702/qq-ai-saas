@@ -3,7 +3,7 @@
 No chat sender, database connection, timer or per-bot resident Agent lives here.
 The caller supplies a current service identity, existing tools and effect fences.
 """
-import asyncio,json,time
+import asyncio,json,time,hashlib
 from dataclasses import dataclass,field
 from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
 from astrbot.core.agent.run_context import ContextWrapper
@@ -37,6 +37,8 @@ class RunControl:
     checkpoints:list=field(default_factory=list)
     failure:str=''
     last_progress:float=field(default_factory=time.monotonic)
+    trace:dict=field(default_factory=dict)
+    diagnostic_lease:dict=field(default_factory=dict,repr=False)
 
     def progress(self):self.last_progress=time.monotonic()
 
@@ -74,6 +76,13 @@ class BoundedProvider:
         finally:decision_token_limit.reset(limit_token)
         usage=getattr(response,'usage',None)
         total=getattr(usage,'total',None)
+        if c.trace:
+            from astrbot.core import logger
+            from model_cache import usage_evidence,record_diagnostic
+            diagnostic={'systemSha':hashlib.sha256(str(kwargs['system_prompt']).encode()).hexdigest()[:16] if 'system_prompt' in kwargs else None,**c.trace,'requestIndex':c.used_models,
+                        **usage_evidence(response)}
+            record_diagnostic(c.diagnostic_lease,{'kind':'usage',**diagnostic})
+            logger.info('FISHBOT_MODEL_USAGE '+json.dumps(diagnostic,ensure_ascii=False,separators=(',',':')))
         if type(total) is int and total>0:c.used_tokens+=total
         else:
             # Missing billing data cannot refund an unobserved model request.

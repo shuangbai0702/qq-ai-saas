@@ -31,14 +31,14 @@ def ranges(pid):
                 current['locked'] = 'lo' in line.split()[1:]
 
 
-def pageout(pid, created, group):
+def pageout(pid, created, group, cursor=0):
     control = Path('/var/lib/fishbot-memory-control')
     if (control/'disabled').exists():
         raise RuntimeError('Reclamation disabled')
     if time.time()-(control/'guard-heartbeat').stat().st_mtime > 5:
         raise RuntimeError('Independent guard unavailable')
     relative = next(x.split(':', 2)[2] for x in Path(f'/proc/{pid}/cgroup').read_text().splitlines() if x.startswith('0::'))
-    if relative != group or not re.fullmatch(r'/system.slice/docker-[a-f0-9]+\.scope/fishbot-[a-z-]+', group):
+    if relative != group or not re.fullmatch(r'/system.slice/docker-[a-f0-9]+\.scope/fishbot-[a-z-]+(?:/runtime-[0-9]+-[0-9]+)?', group):
         raise RuntimeError('Cgroup ownership mismatch')
     libc = ctypes.CDLL(None, use_errno=True)
     class Vec(ctypes.Structure):
@@ -47,24 +47,47 @@ def pageout(pid, created, group):
     libc.process_madvise.restype = ctypes.c_ssize_t
     fd = os.pidfd_open(pid)
     advised = 0
+    next_cursor = cursor
+    budget = 64*1048576
+    chunk = 4*1048576
     started = time.monotonic()
     try:
         if start_time(pid) != created:
             raise RuntimeError('Process lifetime mismatch')
-        for start, end in ranges(pid):
-            if time.monotonic()-started > 3 or (control/'disabled').exists() or (control/('activity-wake-'+Path(group).name)).exists():
+        spans = list(ranges(pid))
+        # Continue through large mappings over successive attempts; do not
+        # repeatedly spend the budget on the same beginning of the heap.
+        if not any(end > cursor for _, end in spans):
+            cursor = 0
+        for start, end in spans:
+            start = max(start, cursor)
+            while start < end and budget > 0:
+                if time.monotonic()-started > 3 or (control/'disabled').exists() or (control/('activity-wake-'+Path(group).name)).exists():
+                    return {'pid': pid, 'created': created, 'advisedVirtualBytes': advised,
+                            'nextCursor': next_cursor, 'durationMs': round((time.monotonic()-started)*1000, 2)}
+                if start_time(pid) != created:
+                    raise RuntimeError('Process lifetime changed')
+                current_group = next(x.split(':', 2)[2] for x in Path(f'/proc/{pid}/cgroup').read_text().splitlines() if x.startswith('0::'))
+                if current_group != group or time.time()-(control/'guard-heartbeat').stat().st_mtime > 5:
+                    raise RuntimeError('Reclamation ownership or guard changed')
+                length = min(end-start, chunk, budget)
+                count = libc.process_madvise(fd, ctypes.byref(Vec(start, length)), 1, 21, 0)
+                if count < 0:
+                    code = ctypes.get_errno()
+                    if code not in (errno.EINVAL, errno.EFAULT):
+                        raise OSError(code, 'process_madvise failed')
+                else:
+                    advised += count
+                start += length
+                next_cursor = start
+                budget -= length
+            if budget <= 0:
                 break
-            count = libc.process_madvise(fd, ctypes.byref(Vec(start, end-start)), 1, 21, 0)
-            if count < 0:
-                code = ctypes.get_errno()
-                if code in (errno.EINVAL, errno.EFAULT):
-                    continue  # A mapping can disappear while inspecting smaps.
-                raise OSError(code, 'process_madvise failed')
-            advised += count
     finally:
         os.close(fd)
-    return {'pid': pid, 'advisedVirtualBytes': advised, 'durationMs': round((time.monotonic()-started)*1000, 2)}
+    return {'pid': pid, 'created': created, 'advisedVirtualBytes': advised,
+            'nextCursor': next_cursor, 'durationMs': round((time.monotonic()-started)*1000, 2)}
 
 
 if __name__ == '__main__':
-    print(json.dumps(pageout(int(sys.argv[1]), sys.argv[2], sys.argv[3])))
+    print(json.dumps(pageout(int(sys.argv[1]), sys.argv[2], sys.argv[3], int(sys.argv[4]) if len(sys.argv)>4 else 0)))

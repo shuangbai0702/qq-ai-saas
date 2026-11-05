@@ -1,8 +1,11 @@
 import asyncio,json,sys,time,unittest
+import sqlite3
+from unittest.mock import patch
 from pathlib import Path
 root=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(root/'references/astrbot'),str(root/'adapters/astrbot')]
-from group_freshness import GroupFreshness,history_override
+from group_freshness import GroupFreshness,history_override,review_system,guard_dispatch,PreDispatchRejected
+from types import SimpleNamespace as NS
 
 class Freshness(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -16,6 +19,59 @@ class Freshness(unittest.IsolatedAsyncioTestCase):
     async def test_unchanged_and_other_group_never_call_model(self):
         self.f.observe('group:54321','2','22222','另一个群')
         self.assertEqual((await self.run_check())['reason'],'unchanged');self.assertEqual(self.calls,[])
+    async def test_invalid_work_is_rejected_even_without_new_messages(self):
+        result=await self.run_check(valid=lambda:False)
+        self.assertEqual(result['reason'],'stale_work');self.assertEqual(result['action'],'drop')
+        self.assertEqual(self.calls,[])
+    def test_reviewer_uses_stable_trusted_owner_not_draft_claims(self):
+        text=review_system('固定人格','12345','99999')
+        identity=json.loads(text.rsplit('\n',1)[1])
+        self.assertEqual(identity['owner_id'],'12345');self.assertEqual(identity['self_id'],'99999')
+        self.assertIn('对外执行信息边界',text)
+        self.assertIsNone(json.loads(review_system('固定人格',None,'99999').rsplit('\n',1)[1])['owner_id'])
+    def test_final_fence_uses_destination_not_originating_private_work(self):
+        event=NS(get_extra=lambda key: {'group:12345':self.cursor} if key=='_hosted_freshness_cursors' else None)
+        store=NS(freshness=self.f)
+        guard_dispatch(event,store,lambda:True,'send_group_msg',{'group_id':12345})
+        self.f.observe('group:54321','2','22222','别的群')
+        guard_dispatch(event,store,lambda:True,'send_group_msg',{'group_id':12345})
+        self.f.observe('group:12345','3','33333','目标群新消息')
+        with self.assertRaises(PreDispatchRejected):guard_dispatch(event,store,lambda:True,'send_group_msg',{'group_id':12345})
+        with self.assertRaises(PreDispatchRejected):guard_dispatch(event,store,lambda:False,'send_private_msg',{'user_id':11111})
+    async def test_group_tool_known_rejection_is_not_unknown_or_confirmed(self):
+        import group_actions
+        db=sqlite3.connect(':memory:');extra={};entered=asyncio.Event();release=asyncio.Event();sent=[]
+        event=NS(get_extra=lambda key,default=None:extra.get(key,default),get_sender_id=lambda:'11111',get_self_id=lambda:'99999',get_group_id=lambda:'',message_obj=NS(message_id='real-source'))
+        async def access(*args,**kwargs):return None
+        async def review(scope,text):
+            extra['_hosted_freshness_cursors']={scope:self.f.cursor(scope)}
+            return {'action':'keep'}
+        async def send_group_msg(**params):
+            entered.set();await release.wait()
+            guard_dispatch(event,NS(freshness=self.f),lambda:True,'send_group_msg',params)
+            sent.append(params);return {'message_id':123}
+        event.bot=NS(send_group_msg=send_group_msg)
+        try:
+            with patch.object(group_actions,'group_access',access):
+                task=asyncio.create_task(group_actions.send(event,{'behavior':{'ownerUin':'11111'}},db,'12345','真实目标群文本','',lambda:True,lambda *args:None,review=review))
+                await entered.wait();self.f.observe('group:12345','3','33333','复核后新消息');release.set()
+                result=json.loads(await task)
+            self.assertEqual(result['status'],'not_sent');self.assertEqual(sent,[])
+            self.assertEqual(db.execute('SELECT state FROM group_message_attempts').fetchone()[0],'not_sent')
+        finally:db.close()
+    async def test_failed_review_with_new_arrivals_must_retry_before_fallback(self):
+        self.f.observe('group:12345','2','22222','补充')
+        async def fail(data):
+            self.f.observe('group:12345','3','33333','新消息')
+            raise TimeoutError('provider')
+        result=await self.f.check('group:12345',self.cursor,self.start,'1','草稿','',fail,lambda:True,fallback=True)
+        self.assertEqual(result['action'],'retry');self.assertNotIn('quote_original',result)
+    async def test_replacement_cannot_smuggle_renderer_accepted_partial_controls(self):
+        self.f.observe('group:12345','2','22222','补充')
+        for text in ('新回复[AT:12345','新回复[M E M E:bf_new','新回复[V O I C E:long'):
+            async def call(data):return json.dumps({'action':'replace','text':text})
+            result=await self.f.check('group:12345',self.cursor,self.start,'1','原回复','',call,lambda:True)
+            self.assertEqual(result['action'],'drop');self.assertEqual(result['reason'],'review_unavailable')
     async def test_keep_replace_drop_use_real_author_and_target(self):
         self.f.observe('group:12345','2','22222','最新补充',{'reply_to':{'event_id':'1','sender_id':'11111'}})
         for action in ('keep','replace','drop'):

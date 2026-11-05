@@ -43,10 +43,22 @@ class RollbackTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             base=Path(root);(base/'limits.json').write_text('[]')
             with patch.object(guard,'BASE',base):
-                for now,expected in [(1000,30),(1035,60),(1100,120),(1300,240),(1600,480),(2100,600),(2801,30)]:
+                for now,expected in [(1000,30),(1035,60),(1100,120),(1300,240),(1600,480),(2100,600),(2801,600)]:
                     (base/'disabled').unlink(missing_ok=True)
                     with patch.object(guard.time,'time',return_value=now):guard.rollback('pressure')
                     self.assertEqual(json.loads((base/'recovery.json').read_text())['cooldown'],expected)
+                (base/'disabled').unlink()
+                value=json.loads((base/'recovery.json').read_text());value['healthySince']=2810
+                (base/'recovery.json').write_text(json.dumps(value))
+                with patch.object(guard.time,'time',return_value=3411):guard.rollback('pressure')
+                self.assertEqual(json.loads((base/'recovery.json').read_text())['cooldown'],30)
+
+    def test_unarmed_or_restarted_guard_cannot_claim_stable_time(self):
+        with tempfile.TemporaryDirectory() as root, patch.object(guard,'BASE',Path(root)):
+            path=Path(root)/'recovery.json'
+            path.write_text(json.dumps({'at':1000,'count':6,'cooldown':600,'healthySince':1010}))
+            guard.mark_healthy(None)
+            self.assertEqual(guard.recovery_count(json.loads(path.read_text()),2000),6)
     def test_relaxes_every_registered_limit_and_disables_controller(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('PI_SCRATCH_DIR')) as root:
             base = Path(root)

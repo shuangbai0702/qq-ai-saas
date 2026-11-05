@@ -124,6 +124,51 @@ class ClassificationTest(unittest.TestCase):
         self.assertEqual(controller.classify({'argv': 'python shared-worker.py', 'ppid': 1}, {}), 'shared-ai')
         self.assertEqual(controller.classify({'argv': 'python worker.py', 'ppid': 1}, {}), 'dedicated-ai')
 
+    def test_instance_quota_follows_tree_not_number_of_shared_members(self):
+        rows = [{'pid': 10, 'ppid': 1, 'created': '100'},
+                {'pid': 11, 'ppid': 10, 'created': '101'},
+                {'pid': 20, 'ppid': 1, 'created': '200'},
+                {'pid': 30, 'ppid': 1, 'created': '300'}]
+        owners = controller.instance_owners(rows, {10:'napcat',11:'napcat',20:'napcat',30:'shared-ai'})
+        self.assertEqual(owners[10], owners[11])
+        self.assertNotEqual(owners[10], owners[20])
+        self.assertEqual(owners[30], 'shared-ai:30-300')
+
+    def test_only_busy_runtime_wakes_among_shared_instances(self):
+        rows = [{'pid': 10}, {'pid': 20}]
+        with patch.object(controller, 'activity', side_effect=lambda rs,records=None:(100, rs[0]['pid']==10) if rs else (0,False)):
+            wakes=controller.activity_wakes(rows,{10:'shared-ai:10-1',20:'shared-ai:20-2'},200)
+        self.assertTrue(wakes['shared-ai:10-1'])
+        self.assertFalse(wakes['shared-ai:20-2'])
+
+    def test_activity_files_are_loaded_once_for_many_instances(self):
+        rows=[{'pid':n} for n in range(20)]
+        with patch.object(controller,'activity_records',return_value=[]) as load, patch.object(controller,'activity',return_value=(0,False)):
+            controller.activity_wakes(rows,{n:f'shared-ai:{n}-1' for n in range(20)},200)
+        load.assert_called_once()
+
+
+class RecoveryTest(unittest.TestCase):
+    def test_ramp_reaches_original_target_in_bounded_steps(self):
+        mib=1048576
+        value=controller.ramp_high('max',201*mib,48*mib,0)
+        self.assertEqual(value,str(201*mib))
+        self.assertEqual(controller.ramp_high(value,201*mib,48*mib,4),value)
+        for _ in range(10):
+            nxt=controller.ramp_high(value,201*mib,48*mib,5)
+            self.assertLessEqual(int(value)-int(nxt),32*mib)
+            value=nxt
+        self.assertEqual(value,str(48*mib))
+
+    def test_reclaim_state_survives_restart_but_not_boot_or_container_change(self):
+        with tempfile.TemporaryDirectory() as root, patch.object(controller,'BASE',Path(root)):
+            key=(42,'3000')
+            controller.save_reclaim('container-a','boot-a',{key:1100},{key:3},{key:0x4000000})
+            allowed,failures,cursors=controller.load_reclaim('container-a','boot-a',1000)
+            self.assertEqual((allowed[key],failures[key],cursors[key]),(1100,3,0x4000000))
+            for identity,boot in [('container-b','boot-a'),('container-a','boot-b')]:
+                self.assertEqual(controller.load_reclaim(identity,boot,1000),({},{},{}))
+
 
 if __name__ == '__main__':
     unittest.main()
