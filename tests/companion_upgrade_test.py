@@ -12,8 +12,8 @@ class Upgrades(unittest.IsolatedAsyncioTestCase):
   self.tmp=tempfile.TemporaryDirectory();self.store=BehaviorStore(Path(self.tmp.name)/'behavior.sqlite');self.db=self.store.db;self.now=time.time();self.var=contextvars.ContextVar('event',default=None)
  def tearDown(self):self.store.close();self.tmp.cleanup()
  async def test_one_background_call_persists_summary_facts_and_own_interest(self):
-  cfg={'memory':True,'memoryAutoCapture':True,'memorySummary':True,'summaryRounds':5,'selfDevelopment':True,'naturalConversation':True}
-  for i in range(5):self.store.reflection.record('group:1','11111',str(i),'我搬到了苏州','我喜欢昆曲的水磨腔。')
+  cfg={'memory':True,'memoryAutoCapture':True,'memorySummary':True,'summaryRounds':30,'selfDevelopment':True,'naturalConversation':True}
+  for i in range(30):self.store.reflection.record('group:1','11111',str(i),'我搬到了苏州','我喜欢昆曲的水磨腔。')
   calls=[]
   async def chat(**kw):
    calls.append(kw);return NS(completion_text=json.dumps({'summary':'11111说自己搬到了苏州，机器人喜欢昆曲。','facts':[{'event':'0','name':'居住城市','value':'苏州','quote':'我搬到了苏州'}],'interests':[{'event':'0','topic':'昆曲','quote':'我喜欢昆曲的水磨腔。'}]}))

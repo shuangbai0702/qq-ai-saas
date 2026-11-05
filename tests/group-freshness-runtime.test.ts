@@ -1,4 +1,4 @@
-import {permitModelFixture} from './helpers/model-fixture.js';
+import {permitModelFixture,nativeMessages} from './helpers/model-fixture.js';
 import {issueTestInvite} from './helpers/invitations.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -21,11 +21,11 @@ test('native group preflight keeps, replaces and drops delayed drafts with true 
   const system=body.messages.filter((m:any)=>m.role==='system').map((m:any)=>m.content).join('\n');
   let answer:string;
   if(system.includes('你是群聊发送前复核器')){
-   const payload=JSON.parse(body.messages.at(-1).content);reviews.push({body,payload});
+   const payload=JSON.parse(nativeMessages(body).at(-1).content);reviews.push({body,payload});
    const latest=JSON.stringify(payload.latest_messages);
    answer=latest.includes('LATEST_FALLBACK')?'invalid JSON':JSON.stringify(latest.includes('LATEST_REPLACE')?{action:'replace',text:'结合刚才的补充回答。',reason:'updated'}:latest.includes('LATEST_DROP')?{action:'drop',reason:'already_resolved'}:{action:'keep',reason:'unrelated'});
   }else{
-   const input=JSON.stringify(body.messages.at(-1));
+   const input=JSON.stringify(nativeMessages(body).at(-1));
    const label=input.match(/CASE_(REPLACE|KEEP|DROP|FALLBACK|PARTIAL|HOTSEED|HOTBATCH)/)?.[1];
    if(!label)throw Error('Unexpected model request');
    replyRequests.push({label,body});

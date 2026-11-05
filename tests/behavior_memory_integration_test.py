@@ -172,10 +172,14 @@ class MemoryPolicy(unittest.TestCase):
 
     def test_actual_owned_child_native_windows_or_linux_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
-            script=Path(tmp)/'fixture.py';script.write_text('import time;time.sleep(30)')
+            script=Path(tmp)/'fixture.py';script.write_text("import time;from pathlib import Path;Path(__file__).with_suffix('.ready').write_text('ready');time.sleep(30)")
             p=subprocess.Popen([sys.executable,str(script)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
             try:
                 import psutil
+                deadline=time.monotonic()+5
+                while not script.with_suffix('.ready').exists():
+                    if p.poll() is not None or time.monotonic()>=deadline:self.fail('owned child did not finish exec')
+                    time.sleep(.01)
                 row=dict(pid=p.pid,created=psutil.Process(p.pid).create_time(),root=tmp)
                 self.assertEqual(memory.owned(row).pid,p.pid)
                 if sys.platform=='win32':
@@ -198,7 +202,7 @@ class BehaviorIntegration(unittest.TestCase):
     def test_ambient_scope_ttl_limit(self):
         a=Ambient();b=Ambient()
         for i in range(30):a.observe('group:1',str(i),'a'*300,i)
-        self.assertEqual(len(a.context('group:1',30)),12)
+        self.assertEqual(len(a.context('group:1',30)),30)
         self.assertEqual(len(a.context('group:1',30)[0]['text']),180)
         self.assertEqual(b.context('group:1',30),[])
         self.assertEqual(a.context('group:2',30),[])

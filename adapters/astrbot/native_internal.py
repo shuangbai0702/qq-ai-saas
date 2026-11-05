@@ -105,12 +105,18 @@ async def run(provider,control,prompt,system,tools=(),handlers=None,context=None
             except (TypeError,ValueError):pass
             unavailable=isinstance(parsed,dict) and parsed.get('available') is False
             item={'tool':tool.name,'status':'unavailable' if unavailable else 'failed' if isinstance(value,CallToolResult) and value.isError else 'returned'}
+            from tool_outcome import project
+            outcome=project(parsed if isinstance(parsed,dict) else value,write=bool(getattr(tool,'hosted_effect',False)))
+            item['receipt']=outcome['receipt']
+            item['evidence']=outcome.get('evidence',[])
             if unavailable:
                 item.update(code=str(parsed.get('code') or 'unavailable')[:80],scope=str(parsed.get('scope') or 'tool')[:40])
             # These two hosted tools return controlled operation status only.
             # Preserve the refusal reason without exposing arbitrary tool data
             # (notably group chat bodies) to the outer decision model.
-            if tool.name in ('hosted_qq_signature','hosted_qq_publish') and isinstance(value,str):item['detail']=value[:400]
+            if tool.name in ('hosted_qq_signature','hosted_qq_publish','hosted_qq_avatar') and isinstance(value,str):
+                detail=parsed.get('data',{}).get('message') if isinstance(parsed,dict) and isinstance(parsed.get('data'),dict) else None
+                item['detail']=(detail if isinstance(detail,str) else value)[:400]
             if unavailable and parsed.get('scope')=='service' and type(parsed.get('retryAfterSeconds')) in (int,float) and parsed['retryAfterSeconds']>0:
                 # The service rejected all queries for this period. Withdraw
                 # only this tool from this work; other useful tools still run.

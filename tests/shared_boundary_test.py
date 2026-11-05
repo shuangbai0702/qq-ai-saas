@@ -53,16 +53,23 @@ async def run():
     sys.path.insert(0,str(root/'adapters/astrbot'))
     from tenant_tools import install
     install({'bot-A':{'generation':1,'revision':2}})
-    ctx=SimpleNamespace(context=SimpleNamespace(event=SimpleNamespace(get_platform_id=lambda:'bot-A',get_extra=lambda key:{'generation':1,'revision':2})))
+    work=SimpleNamespace(confirmed=0,attempted=0)
+    async def send(chain):forwarded.append(chain);work.attempted+=1;work.confirmed+=1
+    extra={'_hosted_lease':{'generation':1,'revision':2},'_hosted_pipeline':work}
+    ctx=SimpleNamespace(context=SimpleNamespace(event=SimpleNamespace(get_platform_id=lambda:'bot-A',get_extra=lambda key:extra.get(key),send=send)))
     for messages in [None,{},'text',[],[None],['text'],[{'type':[]}],[{'type':'plain','text':{}}],[{'type':'plain','text':'x'*20001}],[{'type':'plain','text':'ok'}]*101,[{'type':'unknown'}],[{'type':'image'}],[{'type':'plain','text':'x','extra':'x'}]]:
         assert (await Send().call(ctx,messages=messages)).startswith('error:')
     assert not forwarded
-    for kind,fields in [('plain',{'text':'hello'}),('mention_user',{'mention_user_id':'12345'}),*[(k,{'url':'https://example.com/media'}) for k in ('image','record','video','file')]]:
-        assert await Send().call(ctx,messages=[{'type':kind,**fields}])=='forwarded'
+    from unittest.mock import patch
+    async def download(url,path,**kwargs):Path(path).write_bytes(b'fixture-media')
+    with patch('media_egress.download_file',side_effect=download):
+        for kind,fields in [('plain',{'text':'hello'}),('mention_user',{'mention_user_id':'12345'}),*[(k,{'url':'https://example.com/media'}) for k in ('image','record','video','file')]]:
+            assert json.loads(await Send().call(ctx,messages=[{'type':kind,**fields}]))['status']=='confirmed'
+    assert work.confirmed==6,'All valid native sends must pass the owned event/OutputPlan path'
     count=len(forwarded)
     assert 'local file' in await Send().call(ctx,messages=[{'type':'file','path':'/private/key'}])
     for kind in ('image','record','video','file'):
-        for url in ('file:///etc/passwd','file:///C:/Windows/win.ini','/etc/passwd','C:\\Windows\\win.ini','\\\\server\\share\\private','data:text/plain,secret','ftp://example.com/a','https:///missing-host','https://user:pass@example.com/a','https://example.com:bad/a','https://example.com/\nprivate'):
+        for url in ('http://127.0.0.1/a','http://169.254.169.254/a','http://10.0.0.1/a','file:///etc/passwd','file:///C:/Windows/win.ini','/etc/passwd','C:\\Windows\\win.ini','\\\\server\\share\\private','data:text/plain,secret','ftp://example.com/a','https:///missing-host','https://user:pass@example.com/a','https://example.com:bad/a','https://example.com/\nprivate'):
             assert (await Send().call(ctx,messages=[{'type':kind,'url':url}])).startswith('error:'),f'Accepted unsafe {kind} URL {url!r}'
     assert len(forwarded)==count
     assert 'cross-bot' in await Send().call(ctx,session='bot-B:GroupMessage:12345',messages=[{'type':'plain','text':'hello'}])

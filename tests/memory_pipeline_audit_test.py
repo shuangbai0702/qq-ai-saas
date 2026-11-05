@@ -35,15 +35,15 @@ class CommitBoundaries(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             st=BehaviorStore(Path(tmp)/'behavior.sqlite');scope='private:12345678'
             try:
-                for i in range(5):st.reflection.record(scope,'12345678',str(i),'原问题'+str(i),'真实回答')
+                for i in range(30):st.reflection.record(scope,'12345678',str(i),'原问题'+str(i),'真实回答')
                 async def chat(**kwargs):return NS(completion_text='迟到摘要')
                 def decode(_):
                     # Deterministically inject deletion after the initial
                     # response check, before the summary write transaction.
                     invalidate(st.db,scope,'12345678');st.db.commit()
                     return {'summary':'已删除的旧聊天不应复活'}
-                with patch('companion_insights.decode',side_effect=decode):
-                    self.assertTrue(st.reflection.maybe_start(scope,{'memory':True,'memorySummary':True,'summaryRounds':5,'naturalConversation':False},NS(text_chat=chat),lambda:True,{},contextvars.ContextVar('audit',default=None)))
+                with patch('output_clean.clean',side_effect=lambda value:decode(value)['summary']):
+                    self.assertTrue(st.reflection.maybe_start(scope,{'memory':True,'memorySummary':True,'summaryRounds':30,'naturalConversation':False},NS(text_chat=chat),lambda:True,{},contextvars.ContextVar('audit',default=None)))
                     await st.reflection.task
                 self.assertEqual(st.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],0)
                 self.assertEqual(st.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],0)

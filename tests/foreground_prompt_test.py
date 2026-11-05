@@ -26,7 +26,7 @@ async def main():
     async def get_cid(umo):return 'existing-session'
     async def get_conversation(umo,cid):return NS(cid=cid,history='[]')
     async def capture(provider,prompt,system_prompt='',contexts=None,func_tool=None,**kwargs):
-        requests.append({'prompt':prompt,'system':system_prompt});return NS(completion_text='captured',raw_completion=None)
+        requests.append({'prompt':prompt,'system':system_prompt,'contexts':contexts});return NS(completion_text='captured',raw_completion=None)
     ProviderOpenAIOfficial.text_chat=capture
     settings={};core=NS(event_bus=NS(stopped_platforms=set()),provider_manager=NS(inst_map={}),conversation_manager=NS(get_curr_conversation_id=get_cid,get_conversation=get_conversation))
     runtime=install_runtime(core,settings);brain=core._hosted_autonomous
@@ -47,6 +47,8 @@ async def main():
             try:await ProviderOpenAIOfficial.text_chat(NS(),prompt=event.get_message_str(),system_prompt='original persona',contexts=[])
             finally:current_message_event.reset(token)
             system=requests[-1]['system']
+            from bot_pipeline import EXECUTION_DISCLOSURE_POLICY
+            assert system.count(EXECUTION_DISCLOSURE_POLICY)==1,'outward disclosure policy missing or duplicated'
             assert ('[后台任务登记]' in system)==active,('handoff prompt missing',meme,active)
             if active:
                 assert '本轮即时任务由内层直接使用当前已授权工具完成' in system
@@ -60,8 +62,26 @@ async def main():
             try:await ProviderOpenAIOfficial.text_chat(NS(),prompt='candidate',system_prompt='original persona',contexts=[])
             finally:current_message_event.reset(token)
             candidate_system=requests[-1]['system'];marker='[群聊参与判断，先于回复格式与任务执行]'
+            current_context=requests[-1]['contexts'][-1]
+            from context_protocol import READONLY_CURRENT
+            assert current_context['role']=='user' and current_context['content'].startswith(READONLY_CURRENT)
             assert marker in candidate_system and '本轮不产生发送或其他外部写入' in candidate_system
-            if active:assert candidate_system.index(marker)<candidate_system.index('[后台任务登记]')
+            assert marker not in current_context['content'],'participation restrictions must stay system authority'
+            if active:assert '[后台任务登记]' in candidate_system
+        # Exercise the actual patched native reset, not just the pure limiter.
+        from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
+        from astrbot.core.agent.run_context import ContextWrapper
+        from astrbot.core.agent.hooks import BaseAgentRunHooks
+        from astrbot.core.provider.entities import ProviderRequest
+        from native_history import LogicalTurnLimiter
+        owned=ToolLoopAgentRunner()
+        await owned.reset(provider=NS(provider_config={'id':'fixture','max_context_tokens':100000}),request=ProviderRequest(prompt='fixture',contexts=[]),run_context=ContextWrapper(context=NS(event=event)),tool_executor=NS(),agent_hooks=BaseAgentRunHooks(),enforce_max_turns=30)
+        assert isinstance(owned.request_context_manager.truncator,LogicalTurnLimiter)
+        assert owned.request_context_manager.config.enforce_max_turns==30 and owned.request_context_manager.config.max_context_tokens==100000
+        foreign=ToolLoopAgentRunner()
+        await foreign.reset(provider=NS(provider_config={'id':'unmanaged'}),request=ProviderRequest(prompt='fixture',contexts=[]),run_context=ContextWrapper(context=None),tool_executor=NS(),agent_hooks=BaseAgentRunHooks())
+        assert not isinstance(foreign.request_context_manager.truncator,LogicalTurnLimiter)
+        print('PASS native reset uses complete turns only for owned work and preserves token guard')
         st=runtime['stores'][id];event.set_extra('_hosted_memory_epoch',st.reflection.epoch())
         st.db.execute('UPDATE memory_reflection_control SET epoch=epoch+1 WHERE id=1');st.db.commit()
         before=len(requests);token=current_message_event.set(event)

@@ -17,7 +17,7 @@ const signingNav={wbi_img:{img_url:'https://i0.hdslb.com/bfs/wbi/0123456789abcde
 
 test('identical cross-Work searches reuse original receipts without refreshing age or crossing audience and account fences',async t=>{
  const f=await fixture(t);let searches=0;
- const executor=new BilibiliExecutor(f.db,f.root,f.key,new BiliWeb(async url=>String(url).includes('/nav')?json(signingNav):(searches++,json({result:[{bvid:'BV1xx411c7mD',title:'original evidence'}]}))));
+ const executor=new BilibiliExecutor(f.db,f.root,f.key,new BiliWeb(async url=>String(url).includes('/nav')?json(signingNav):(searches++,json({result:[{bvid:'BV1xx411c7mD',title:'original evidence',pic:'https://i0.hdslb.com/bfs/archive/fixture.jpg'}]}))));
  const run=async(work:string,args:any={query:'same topic'},scope='group:963105233')=>{
   const row=await f.repo.admit(f.bot,f.call('search',args,{workId:work,origin:{scope,eventId:work,objective:'actual query'}}));
   await executor.execute(await f.repo.claim('reuse-reader'),new AbortController().signal);return(await f.repo.get(f.bot.tenant_id,f.id,row.id)).result;
@@ -28,6 +28,7 @@ test('identical cross-Work searches reuse original receipts without refreshing a
  await f.db.query("INSERT INTO autonomy_goals(id,bot_id,tenant_id,origin,status,title,reason,source) VALUES($1,$2,$3,'owner_request','active','actual source','delegated',$4)",[goal,f.id,f.bot.tenant_id,JSON.stringify({scope:'group:963105233'})]);
  await f.db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at,goal_id) VALUES($1,$2,$3,$4,1,'research','','actual query','completed',now()+interval '1 hour',$5)",[work,cycle,f.id,f.bot.tenant_id,goal]);
  await f.db.query("UPDATE tool_effects SET authority='autonomous',origin_scope='',work_id=$2 WHERE id=$1",[original.actionId,work]);
+ assert.equal(original.data.videos[0].cover,'https://i0.hdslb.com/bfs/archive/fixture.jpg');
  const next=await run('second');assert.equal(searches,1);assert.equal(next.data.reused.actionId,original.actionId);assert.equal(next.evidence.at,original.evidence.at);
  await f.db.query("INSERT INTO tool_service_cooldowns(service,until_at,reason) VALUES('bilibili',now()+interval '15 minutes','fixture')");
  const duringCooldown=await run('cooldown');assert.equal(duringCooldown.execution,'completed');assert.equal(duringCooldown.data.reused.actionId,original.actionId);assert.equal(searches,1);
@@ -200,10 +201,28 @@ test('QR uses Set-Cookie and verified self UID; login cancellation wins against 
 
 test('bounded responses, subtitle CID/part, timestamps and risk control are explicit',async()=>{
  await assert.rejects(()=>boundedJson(new Response('x'.repeat(100)),32),/超过允许大小/);
- const paths:string[]=[];const web=new BiliWeb(async url=>{const u=String(url);paths.push(u);if(u.includes('/view'))return json({pages:[{page:1,cid:111,duration:10},{page:2,cid:222,duration:20}]});if(u.includes('/v2'))return json({subtitle:{subtitles:[{lan:'zh-CN',subtitle_url:'https://i0.hdslb.com/sub.json'}]}});return new Response(JSON.stringify({body:[{from:1,to:3,content:'第二P内容'}]}))});
- const result=await web.transcript('BV1xx411c7mD',2,'zh-CN');assert.equal(result.cid,222);assert.ok(paths[1].includes('cid=222'));assert.equal(result.modality,'subtitles');assert.deepEqual(result.coveredRanges,[[1,3]]);
+ const paths:string[]=[];const web=new BiliWeb(async url=>{const u=String(url);paths.push(u);if(u.includes('/view'))return json({bvid:'BV1xx411c7mD',aid:170001,pages:[{page:1,cid:111,duration:10},{page:2,cid:222,duration:20}]});if(u.includes('/nav'))return json({wbi_img:{img_url:'https://i0.hdslb.com/bfs/wbi/'+ 'a'.repeat(32)+'.png',sub_url:'https://i0.hdslb.com/bfs/wbi/'+ 'b'.repeat(32)+'.png'}});if(u.includes('/wbi/v2'))return json({aid:170001,bvid:'BV1xx411c7mD',cid:222,subtitle:{subtitles:[{lan:'ai-zh',ai_type:0,id_str:'2064770642603168768',subtitle_url:'https://i0.hdslb.com/sub.json?auth_key=opaque'}]}});return new Response(JSON.stringify({body:[{from:1,to:3,content:'第二P内容'}]}))});
+ const result=await web.transcript('BV1xx411c7mD',2,'zh-CN');assert.equal(result.cid,222);assert.ok(paths.some(u=>u.includes('/wbi/v2')&&u.includes('cid=222')&&u.includes('aid=170001')&&u.includes('w_rid=')));assert.equal(result.modality,'subtitles');assert.deepEqual(result.coveredRanges,[[1,3]]);assert.equal(result.aiGenerated,true);assert.equal(result.binding?.subtitleId,'2064770642603168768');assert.ok(paths.some(u=>u.includes('auth_key=opaque')));assert.ok(!result.source?.includes('auth_key'));
  await assert.rejects(()=>new BiliWeb(async()=>new Response('',{status:412})).get('/x/web-interface/popular'),(e:any)=>e instanceof BiliError&&e.code==='risk_control');
  assert.equal(BilibiliConfigSchema.parse({}).enabled,false);
+});
+
+test('subtitle identity and signed endpoint cannot silently fall back to unrelated legacy data',async()=>{
+ const paths:string[]=[];const web=new BiliWeb(async url=>{const u=String(url);paths.push(u);if(u.includes('/view'))return json({bvid:'BV1xx411c7mD',aid:170001,pages:[{page:1,cid:111,duration:10}]});if(u.includes('/nav'))return json({wbi_img:{img_url:'https://i0.hdslb.com/bfs/wbi/'+ 'a'.repeat(32)+'.png',sub_url:'https://i0.hdslb.com/bfs/wbi/'+ 'b'.repeat(32)+'.png'}});return json({aid:999,bvid:'BV1xx411c7mD',cid:111,subtitle:{subtitles:[{lan:'zh-CN',subtitle_url:'https://i0.hdslb.com/wrong.json'}]}})});
+ await assert.rejects(()=>web.transcript('BV1xx411c7mD',1,'zh-CN'),(e:any)=>e.code==='subtitle_identity');assert.ok(!paths.some(u=>u.includes('wrong.json')));assert.ok(!paths.some(u=>u.includes('/x/player/v2')));
+});
+
+test('signed subtitles still reject out-of-range timelines and missing authenticated URLs',async()=>{
+ for(const scenario of ['timeline','missing-url']){
+  const web=new BiliWeb(async url=>{
+   const u=String(url);
+   if(u.includes('/view'))return json({bvid:'BV1xx411c7mD',aid:170001,pages:[{page:1,cid:111,duration:20}]});
+   if(u.includes('/nav'))return json({wbi_img:{img_url:'https://i0.hdslb.com/bfs/wbi/'+ 'a'.repeat(32)+'.png',sub_url:'https://i0.hdslb.com/bfs/wbi/'+ 'b'.repeat(32)+'.png'}});
+   if(u.includes('/wbi/v2'))return json({bvid:'BV1xx411c7mD',aid:170001,cid:111,subtitle:{subtitles:[{lan:'zh-CN',subtitle_url:scenario==='missing-url'?'':'https://i0.hdslb.com/sub.json'}]}});
+   return new Response(JSON.stringify({body:[{from:1,to:999,content:'不属于本视频时间范围'}]}));
+  });
+  await assert.rejects(()=>web.transcript('BV1xx411c7mD',1,'zh-CN'),(error:any)=>error.code===(scenario==='timeline'?'subtitle_integrity':'subtitle_unavailable'));
+ }
 });
 
 

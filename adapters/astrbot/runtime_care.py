@@ -12,7 +12,7 @@ import sqlite3
 
 class Ambient:
     def __init__(self): self.scopes = OrderedDict()
-    def observe(self, scope, sender, text, now, limit=12):
+    def observe(self, scope, sender, text, now, limit=50):
         self.prune(now)
         if not scope.startswith('group:') or not text.strip(): return
         limit=max(1,min(50,int(limit)))
@@ -24,6 +24,11 @@ class Ambient:
     def context(self, scope, now):
         self.prune(now)
         return [{'sender_id': x['sender_id'], 'text': x['text']} for x in self.scopes.get(scope, [])]
+    def acknowledged(self,scope,through):
+        rows=self.scopes.get(scope)
+        if rows is not None:
+            while rows and rows[0]['at']<=through:rows.popleft()
+            if not rows:self.scopes.pop(scope,None)
     def prune(self, now):
         for scope, rows in list(self.scopes.items()):
             while rows and (now-rows[0]['at'] > 600 or rows[0]['at'] > now): rows.popleft()

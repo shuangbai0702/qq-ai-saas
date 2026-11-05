@@ -42,6 +42,8 @@ def preview(source,dest):
    for column,index in enumerate(indices):
     image.seek(index);frame=image.convert('RGBA');frame.thumbnail((192,192))
     sheet.paste(frame,(192*column,0),frame.getchannel('A'))
+   from model_images import MAX_EDGE
+   sheet.thumbnail((MAX_EDGE,MAX_EDGE),Image.Resampling.LANCZOS)
    sheet.save(dest,format='JPEG',quality=75)
    return {'sampledFrames':indices,'totalFrames':count,'audio':False}
 

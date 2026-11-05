@@ -3,6 +3,7 @@
 Mechanisms informed by MaiBot expression learners, AstrBot Self Learning and
 Meme Manager/Magpie; implementation here owns per-bot state and lifecycle.
 """
+from memory_strength import decay,relevance,EXPRESSION_HALF_LIFE,EXPRESSION_USE_INTERVAL
 import asyncio
 import json
 import re
@@ -48,6 +49,19 @@ LEARN_SYSTEM = '''从群聊样本中提炼反复出现的表达习惯，不改�
 def requests_meme(text):
     return bool(re.search(r'(?:发|来|给|看).{0,12}(?:表情包|表情图|收藏表情)|斗图',text))
 
+def reinforce_expression(db,scope,expression,kind,event,now):
+    if db.execute('SELECT 1 FROM social_pattern_blocks WHERE scope=? AND expression=?',(scope,expression)).fetchone():return
+    row=db.execute('SELECT weight,updated FROM social_patterns WHERE scope=? AND expression=?',(scope,expression)).fetchone()
+    if not row:return
+    prior=db.execute('SELECT at,event FROM expression_reinforcement WHERE scope=? AND expression=? AND kind=?',(scope,expression,kind)).fetchone()
+    if prior and (prior[1]==event or now-prior[0]<EXPRESSION_USE_INTERVAL):return
+    weight=decay(row[0],row[1],now,EXPRESSION_HALF_LIFE)
+    gain=.3 if kind=='positive' else -.3 if kind=='negative' else .05
+    db.execute('UPDATE social_patterns SET weight=?,updated=? WHERE scope=? AND expression=?',(max(.05,min(5,weight+gain)),now,scope,expression))
+    db.execute('INSERT OR REPLACE INTO expression_reinforcement VALUES(?,?,?,?,?)',(scope,expression,kind,now,event))
+    db.execute('DELETE FROM expression_reinforcement WHERE rowid NOT IN (SELECT rowid FROM expression_reinforcement ORDER BY at DESC LIMIT 2000)')
+
+
 class SocialStore:
     def __init__(self, db, root):
         self.db, self.root = db, Path(root)
@@ -62,6 +76,7 @@ class SocialStore:
         CREATE TABLE IF NOT EXISTS social_samples(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT,event TEXT,subject TEXT,text TEXT,created REAL,UNIQUE(scope,event));
         CREATE TABLE IF NOT EXISTS social_patterns(scope TEXT,expression TEXT,situation TEXT,sources TEXT,weight INTEGER,updated REAL,PRIMARY KEY(scope,expression));
         CREATE TABLE IF NOT EXISTS social_learning(scope TEXT,started REAL,watermark INTEGER);
+        CREATE TABLE IF NOT EXISTS expression_reinforcement(scope TEXT,expression TEXT,kind TEXT,at REAL,event TEXT,PRIMARY KEY(scope,expression,kind));
         CREATE TABLE IF NOT EXISTS social_images(scope TEXT,day TEXT,count INTEGER,last_sent REAL,PRIMARY KEY(scope,day));
         CREATE TABLE IF NOT EXISTS expression_usage(scope TEXT,expression TEXT,at REAL,PRIMARY KEY(scope,expression));
         CREATE TABLE IF NOT EXISTS meme_usage(scope TEXT,id TEXT,at REAL,PRIMARY KEY(scope,id));
@@ -97,9 +112,7 @@ class SocialStore:
     def learning_batch(self, scope, now=None):
         now = time.time() if now is None else now
         recent = self.db.execute('SELECT max(started),coalesce(max(watermark),0) FROM social_learning WHERE scope=?', (scope,)).fetchone()
-        if recent[0] is not None and now-recent[0] < 900:
-            return []
-        if self.db.execute('SELECT count(*) FROM social_learning WHERE started>?', (now-86400,)).fetchone()[0] >= 4:
+        if recent[0] is not None and now-recent[0] < 1800:
             return []
         rows = self.db.execute('SELECT id,subject,text FROM social_samples WHERE scope=? AND id>? AND created>=? ORDER BY id DESC LIMIT 24', (scope,recent[1],now-7*86400)).fetchall()
         if len(rows) < 12 or len({r[1] for r in rows}) < 2:
@@ -108,11 +121,15 @@ class SocialStore:
 
     def reserve_learning(self, scope, batch, now=None):
         now = time.time() if now is None else now
-        self.db.execute('INSERT INTO social_learning VALUES(?,?,?)', (scope,now,max(x['id'] for x in batch)))
+        # Reserve the cooldown, not the samples. Failed/cancelled calls keep
+        # watermark=0 so the next eligible request can retry after a restart.
+        attempt=self.db.execute('INSERT INTO social_learning VALUES(?,?,?)', (scope,now,0)).lastrowid
         self.db.execute('DELETE FROM social_learning WHERE started<?', (now-8*86400,))
         self.db.commit()
 
-    def accept_learning(self, scope, batch, raw, now=None):
+        return attempt
+
+    def accept_learning(self, scope, batch, raw, now=None,attempt=None):
         now = time.time() if now is None else now
         try:
             data = json.loads(raw.strip().removeprefix('```json').removesuffix('```').strip())
@@ -121,6 +138,7 @@ class SocialStore:
         patterns = data.get('patterns') if isinstance(data,dict) else None
         if not isinstance(patterns,list) or len(patterns)>3:
             return 0
+        if attempt is not None and not self.db.execute('SELECT 1 FROM social_learning WHERE rowid=? AND scope=? AND watermark=0',(attempt,scope)).fetchone():return 0
         evidence = {str(x['id']):x for x in batch}
         count = 0
         for item in patterns:
@@ -133,7 +151,8 @@ class SocialStore:
             if len({r['sender'] for r in rows if r and phrase in r['text']})<2:continue
             self.db.execute('INSERT INTO social_patterns VALUES(?,?,?,?,1,?) ON CONFLICT(scope,expression) DO UPDATE SET situation=excluded.situation,sources=excluded.sources,weight=min(5,weight+1),updated=excluded.updated', (scope,phrase,situation,json.dumps(ids[:24]),now))
             count += 1
-        self.db.execute('DELETE FROM social_patterns WHERE updated<? OR rowid NOT IN (SELECT rowid FROM social_patterns ORDER BY updated DESC LIMIT 200)', (now-30*86400,))
+        if attempt is not None:self.db.execute('UPDATE social_learning SET watermark=? WHERE rowid=? AND scope=? AND watermark=0',(max(x['id'] for x in batch),attempt,scope))
+        self.db.execute('DELETE FROM social_patterns WHERE rowid NOT IN (SELECT rowid FROM social_patterns ORDER BY weight DESC,updated DESC LIMIT 200)')
         self.db.commit()
         return count
 
@@ -147,20 +166,23 @@ class SocialStore:
         slots=','.join('?' for _ in scopes)
         predicate=f'scope IN ({slots})';args=scopes
         if sharing=='bot' and scope.startswith('group:'):predicate="scope LIKE 'group:%'";args=[]
-        rows = self.db.execute(f'SELECT expression,situation,weight,scope FROM social_patterns WHERE {predicate} AND updated>=? AND NOT EXISTS (SELECT 1 FROM social_pattern_blocks b WHERE b.scope IN (social_patterns.scope,?) AND b.expression=social_patterns.expression) ORDER BY updated DESC LIMIT 200', (*args,time.time()-30*86400,scope)).fetchall()
+        rows = self.db.execute(f'SELECT expression,situation,weight,scope,updated FROM social_patterns WHERE {predicate} AND NOT EXISTS (SELECT 1 FROM social_pattern_blocks b WHERE b.scope IN (social_patterns.scope,?) AND b.expression=social_patterns.expression) ORDER BY updated DESC LIMIT 200', (*args,scope)).fetchall()
         # Prefer situation overlap; keep only three small hints, never overwrite persona.
         query=tokens(text)
         used={r[0] for r in self.db.execute('SELECT expression FROM expression_usage WHERE scope=? AND at>?',(scope,time.time()-300))}
-        rows.sort(key=lambda r:(len(query & tokens(r[1])),r[3]==scope,r[2]),reverse=True)
+        rows.sort(key=lambda r:(relevance(r[0]+' '+r[1],text),decay(r[2],r[4],time.time(),EXPRESSION_HALF_LIFE),r[3]==scope),reverse=True)
         selected={}
         for row in rows:
             if row[0] not in selected and (row[0] not in used or row[0] in text):selected[row[0]]={'expression':row[0],'situation':row[1]}
         return list(selected.values())[:3]
 
-    def expression_sent(self,scope,text,now=None):
+    def expression_sent(self,scope,text,now=None,request=''):
         now=time.time() if now is None else now
+        learn_use=not re.search('复述|引用|翻译|假装|扮演|按我说|说一句|提示词',request)
         for expression, in self.db.execute('SELECT DISTINCT expression FROM social_patterns LIMIT 200'):
-            if expression in text:self.db.execute('INSERT OR REPLACE INTO expression_usage VALUES(?,?,?)',(scope,expression,now))
+            if expression in text:
+                self.db.execute('INSERT OR REPLACE INTO expression_usage VALUES(?,?,?)',(scope,expression,now))
+                if learn_use:reinforce_expression(self.db,scope,expression,'use',str(int(now//EXPRESSION_USE_INTERVAL)),now)
         self.db.execute('DELETE FROM expression_usage WHERE at<?',(now-86400,));self.db.commit()
 
     def catalog(self, scope='', gallery=False, packs=None, favorite_account=None):
@@ -335,7 +357,7 @@ def maybe_learn(st, scope, cfg, provider, is_current, metrics, event_var):
     if not cfg.get('styleLearning') or st.closed or provider is None or (st.task and not st.task.done()):return
     batch = st.learning_batch(scope)
     if not batch:return
-    st.reserve_learning(scope,batch)
+    attempt=st.reserve_learning(scope,batch)
     epoch=st.db.execute('SELECT epoch FROM social_control WHERE id=1').fetchone()[0]
     async def run():
         token=event_var.set(None)
@@ -344,7 +366,7 @@ def maybe_learn(st, scope, cfg, provider, is_current, metrics, event_var):
             response = await asyncio.wait_for(provider.text_chat(prompt=json.dumps(batch,ensure_ascii=False),system_prompt=LEARN_SYSTEM,contexts=[],func_tool=None),20)
             if st.closed or not is_current():return
             if st.db.execute('SELECT epoch FROM social_control WHERE id=1').fetchone()[0]!=epoch:return
-            accepted=st.accept_learning(scope,batch,response.completion_text)
+            accepted=st.accept_learning(scope,batch,response.completion_text,attempt=attempt)
             metrics['learnedPatterns']=metrics.get('learnedPatterns',0)+accepted
         except asyncio.CancelledError:raise
         except Exception:

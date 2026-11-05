@@ -20,6 +20,8 @@ class LimitedStream(httpx.AsyncByteStream):
 
 class GuardedTransport(httpx.AsyncHTTPTransport):
     async def handle_async_request(self,request):
+        from model_request_capture import begin,CaptureStream
+        capture=begin(request)
         # Bound decoded memory as well as wire bytes. A malicious provider must
         # not turn a tiny compressed reply into a shared-process memory bomb.
         request.headers['Accept-Encoding']='identity'
@@ -29,6 +31,9 @@ class GuardedTransport(httpx.AsyncHTTPTransport):
             await response.aclose()
             raise httpx.ReadError('Model response encoding or size is not supported')
         response.stream=LimitedStream(response.stream)
+        if capture:
+            capture.status=response.status_code
+            response.stream=CaptureStream(response.stream,capture)
         return response
 
 def public_ip(value):

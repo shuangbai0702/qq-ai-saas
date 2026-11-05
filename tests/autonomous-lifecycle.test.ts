@@ -20,7 +20,7 @@ test('message intents require a complete scope instead of an ambiguous QQ number
  assert.equal(ActionIntentSchema.parse({kind:'research',objective:'read actual context'}).target,'');
 });
 test('autonomy defaults remain passive; invalid budgets and permissions are rejected',()=>{
- assert.equal(defaultAutonomyConfig.mode,'passive');assert.equal(defaultAutonomyConfig.rollout,'shadow');
+ assert.equal(defaultAutonomyConfig.mode,'passive');assert.equal(defaultAutonomyConfig.rollout,'live');
  assert.equal(defaultAutonomyConfig.minSleepSeconds,300);
  assert.equal(defaultAutonomyConfig.cycleModelCalls,24);assert.equal(defaultAutonomyConfig.cycleToolCalls,32);assert.equal(defaultAutonomyConfig.cycleTokenBudget,500000);
  assert.equal(defaultAutonomyConfig.fatigueEnabled,true);assert.equal(defaultAutonomyConfig.fatigueWindowMinutes,60);

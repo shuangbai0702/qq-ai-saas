@@ -76,9 +76,7 @@ async def resolve(db,event,lease,current):
 def tools(event,cfg,db,lease,current):
     if not (cfg.get('behavior') or {}).get('quoteReplyEnabled',True):return []
     from astrbot.core.agent.tool import FunctionTool
-    candidates=catalog(db,event,lease) if hasattr(event,'get_self_id') else []
     parameter={'type':'string','maxLength':24,'description':'从本次真实消息候选选择handle；留空重新读取候选，不接受消息编号。'}
-    if hasattr(event,'get_self_id'):parameter['enum']=['']+[r['handle'] for r in candidates]
     class Quote(FunctionTool):
         async def call(self,context,handle=''):
             if not current() or context.context.event is not event:return '引用已失效。'
@@ -87,4 +85,4 @@ def tools(event,cfg,db,lease,current):
             if not any(r['handle']==handle for r in rows):return json.dumps({'status':'invalid_reference','messages':rows,'meaning':'未设置引用；只能从当前真实候选选择handle，不能把消息编号当handle。'},ensure_ascii=False)
             event.set_extra('_hosted_quote_handle',handle)
             return '已为本轮首条回复设置真实引用；尚未发送，最终结果以QQ消息回执为准。'
-    return [Quote(name='hosted_quote_reply',description='选择并真实引用当前会话的一条别人消息回复。省略handle可查看近期可信句柄，指定handle设置本轮首条引用；不是发送工具，不得自行填写消息编号。当前可信候选：'+json.dumps(candidates,ensure_ascii=False),parameters={'type':'object','properties':{'handle':parameter},'additionalProperties':False})]
+    return [Quote(name='hosted_quote_reply',description='选择并真实引用当前会话的一条别人消息回复。省略handle可查看近期可信句柄，指定handle设置本轮首条引用；不是发送工具，不得自行填写消息编号。当前候选见本轮可信上下文tool_context.quote_reply，调用时重新校验来源。',parameters={'type':'object','properties':{'handle':parameter},'additionalProperties':False})]

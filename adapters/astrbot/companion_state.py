@@ -3,6 +3,7 @@ Interest heat follows DSH's bounded decay; identity is kept separate from user f
 """
 import hashlib,json,math,re,time,uuid
 import emotion_state
+from memory_strength import interest_strength,relevance,INTEREST_REINFORCE_INTERVAL
 from hosted_memory import tokens
 
 
@@ -37,7 +38,8 @@ def note_interest(db,scope,topic,now,evidence,source):
     topic=topic.strip()[:50]
     if len(topic)<2 or re.search(r'Key|Bearer|sk-|主人|指令|提示词|系统|https?://',topic,re.I):return
     row=db.execute('SELECT weight,hits,updated,evidence,source FROM companion_interests WHERE scope=? AND topic=?',(scope,topic)).fetchone()
-    weight=min(4,(row[0]*2**(-max(0,now-row[2])/172800) if row else 0)+.4)
+    if row and (row[3]==evidence[:120] or now-row[2]<INTEREST_REINFORCE_INTERVAL or source=='bot_expression'):return
+    weight=min(4,(interest_strength(row[0],row[1],row[2],now,row[4]) if row else 0)+.4)
     if row and {'persona':3,'bot_expression':2,'conversation_heat':1}.get(row[4],0)>{'persona':3,'bot_expression':2,'conversation_heat':1}.get(source,0):evidence,source=row[3],row[4]
     db.execute('INSERT OR REPLACE INTO companion_interests VALUES(?,?,?,?,?,?,?)',(scope,topic,weight,(row[1] if row else 0)+1,now,evidence[:120],source))
     db.execute('DELETE FROM companion_interests WHERE rowid NOT IN (SELECT rowid FROM companion_interests ORDER BY updated DESC LIMIT 512)')
@@ -68,12 +70,13 @@ def reflect_interest(db,topic,operation,reason,action,evidence,now):
         return json.loads(previous[1])
     if db.execute('SELECT count(*) FROM companion_reflections WHERE action=?',(action,)).fetchone()[0]>=3:raise ValueError('interest_reflection_work_limit')
     row=db.execute("SELECT weight,hits,updated FROM companion_interests WHERE scope='self' AND topic=? AND source='autonomous_choice'",(topic,)).fetchone()
-    heat=row[0]*2**(-max(0,now-row[2])/172800) if row else 0
-    value=min(4,heat+.4) if operation=='explore' else max(0,heat-.4) if operation=='cool_down' else 0
+    heat=interest_strength(row[0],row[1],row[2],now,'autonomous_choice') if row else 0
+    increment=0 if row and now-row[2]<INTEREST_REINFORCE_INTERVAL else .4
+    value=min(4,heat+increment) if operation=='explore' else max(0,heat-.4) if operation=='cool_down' else 0
     result={'topic':topic,'operation':operation,'changed':abs(value-heat)>1e-9,'heat':round(value,3),'reason':reason,'evidence':sources,'scope':'self','meaning':'自主关注方向的选择，不代表已掌握主题知识或发生了线下经历'}
     with db:
         if value>0:
-            db.execute("INSERT OR REPLACE INTO companion_interests VALUES('self',?,?,?,?,?,'autonomous_choice')",(topic,value,(row[1] if row else 0)+1,now,action))
+            db.execute("INSERT OR REPLACE INTO companion_interests VALUES('self',?,?,?,?,?,'autonomous_choice')",(topic,value,(row[1] if row else 0)+int(increment>0),now if increment>0 or operation!='explore' else row[2],action))
         else:db.execute("DELETE FROM companion_interests WHERE scope='self' AND topic=? AND source='autonomous_choice'",(topic,))
         db.execute('INSERT INTO companion_reflections VALUES(?,?,?,?,?)',(action,topic,fingerprint,json.dumps(result,ensure_ascii=False),now))
         db.execute('DELETE FROM companion_reflections WHERE rowid NOT IN (SELECT rowid FROM companion_reflections ORDER BY at DESC,rowid DESC LIMIT 512)')
@@ -106,7 +109,9 @@ def observe(db,cfg,scope,subject,text,event,now,directed=False):
         db.execute('DELETE FROM companion_members WHERE seen<?',(now-30*86400,))
         db.execute('DELETE FROM companion_members WHERE rowid NOT IN (SELECT rowid FROM companion_members ORDER BY seen DESC LIMIT 1000)')
     # Heat is evidence of a shared topic, never proof of the bot's preference.
-    for topic, in db.execute("SELECT topic FROM companion_interests WHERE scope IN (?, '*') ORDER BY weight DESC LIMIT 24",(scope,)).fetchall():
+    candidates=db.execute("SELECT topic,weight,hits,updated,source FROM companion_interests WHERE scope IN (?, '*') LIMIT 512",(scope,)).fetchall()
+    candidates.sort(key=lambda r:(relevance(r[0],text),interest_strength(r[1],r[2],r[3],now,r[4])),reverse=True)
+    for topic,*_ in candidates[:24]:
         if tokens(topic)&tokens(text):note_interest(db,scope,topic,now,text,'conversation_heat')
     emotion_state.observe(db,scope,text,now,directed)
     if directed:
@@ -137,10 +142,12 @@ def outgoing(db,cfg,scope,subject,text,event,now,internal=False,request=''):
     db.execute('DELETE FROM companion_motives WHERE rowid NOT IN (SELECT rowid FROM companion_motives ORDER BY expires DESC LIMIT 64)');db.commit()
 
 
-def context(db,cfg,scope,now):
+def context(db,cfg,scope,now,query=''):
     if not enabled(cfg):return {}
     seed(db,cfg,now)
-    interests=[{'topic':r[0],'heat':round(r[1]*2**(-max(0,now-r[3])/172800),2),'source':r[2],'source_scope':r[4]} for r in db.execute("SELECT topic,weight,source,updated,scope FROM companion_interests WHERE scope IN (?, '*') OR (scope='self' AND source='autonomous_choice') ORDER BY weight DESC LIMIT 12",(scope,))]
+    rows=db.execute("SELECT topic,weight,source,updated,scope,hits FROM companion_interests WHERE scope IN (?, '*') OR (scope='self' AND source='autonomous_choice') LIMIT 512",(scope,)).fetchall()
+    rows.sort(key=lambda r:(relevance(r[0],query),interest_strength(r[1],r[5],r[3],now,r[2])),reverse=True)
+    interests=[{'topic':r[0],'heat':round(interest_strength(r[1],r[5],r[3],now,r[2]),4),'source':r[2],'source_scope':r[4],'consolidated':r[5]>=3} for r in rows[:12]]
     motives=[{'topic':r[0],'subject':r[1],'expires':r[2],'status':r[3]} for r in db.execute("SELECT topic,subject,expires,status FROM companion_motives WHERE scope=? AND status IN ('open','contacted') AND expires>? ORDER BY due LIMIT 3",(scope,now))]
     mood=db.execute('SELECT valence,energy,updated FROM companion_mood WHERE scope=?',(scope,)).fetchone()
     val=mood[0]*2**(-max(0,now-mood[2])/7200) if mood else 0
@@ -166,7 +173,8 @@ def select_members(db,cfg,scope,now,allow_without_topic=False):
         if check and now-check[0]<300:continue
         relation=db.execute('SELECT affinity FROM relations WHERE scope=? AND subject=?',(scope,subject)).fetchone()
         motive=db.execute("SELECT topic FROM companion_motives WHERE scope=? AND subject=? AND status='open' AND due<=? AND expires>? LIMIT 1",(scope,subject,now,now)).fetchone()
-        interest=db.execute("SELECT topic FROM companion_interests WHERE scope IN (?, '*') AND (source='persona' OR hits>=2) ORDER BY weight DESC LIMIT 1",(scope,)).fetchone()
+        interests=db.execute("SELECT topic,weight,hits,updated,source FROM companion_interests WHERE scope IN (?, '*') AND (source='persona' OR hits>=2) LIMIT 512",(scope,)).fetchall()
+        interest=max(interests,key=lambda r:interest_strength(r[1],r[2],r[3],now,r[4]),default=None)
         if not motive and not interest and not allow_without_topic:continue
         score=(10 if motive else 0)+(relation[0]/20 if relation else 0)+max(0,1-(now-seen)/86400)
         scored.append((score,subject,seen,motive[0] if motive else interest[0] if interest else ''))

@@ -15,10 +15,27 @@ from astrbot.core.platform.platform_metadata import PlatformMetadata
 from astrbot.core.provider.entities import LLMResponse,TokenUsage
 from behavior import install_runtime
 from native_internal import WorkStopped
-from autonomous_runtime import evidence_limits,decision_environment,decision_clock,decision_contacts,decision_feedback,DELIBERATION_GUIDANCE
+from autonomous_runtime import evidence_limits,decision_environment,decision_clock,decision_contacts,decision_feedback,decision_request_view,decision_model_request,DELIBERATION_GUIDANCE
 
 
 async def main():
+    original={'work':{'budget':{'tokens':19}},'goalRevision':7,'environment':{'now':123,'contacts':[{'scope':'private:12345678'}],'identity':{'ownerId':'12345678'},'innerTools':[{'name':'read','available':False,'retryAfterSeconds':123}],'capabilityCatalog':[{'kind':'research'}],'futureField':{'value':'keep me'}},'futureTop':[3,1,2]}
+    before=copy.deepcopy(original);projected=decision_request_view(original)
+    assert projected==original and original==before,'request ordering changed context values or mutated its authority'
+    assert list(projected)[0]=='environment' and list(projected['environment'])[:2]==['identity','innerTools']
+    changed=copy.deepcopy(original);changed['environment']['innerTools'][0].update(available=True,retryAfterSeconds=0)
+    assert decision_request_view(changed)['environment']['innerTools'][0]['available'] is True,'ordering cached old tool readiness'
+    assert decision_request_view({'environment':None,'unknown':True})=={'environment':None,'unknown':True}
+    system,live=decision_model_request(original,'actual persona and permissions')
+    definitions=json.loads(system.rsplit('\n',1)[1]);live=json.loads(live)
+    assert not set(definitions['environment']) & set(live['environment'])
+    restored={**live,'environment':{**definitions['environment'],**live['environment']}}
+    assert restored==original and original==before,'decision split lost fresh data or mutated authority'
+    assert live['environment']['now']==123 and live['environment']['futureField']=={'value':'keep me'}
+    changed_system,_=decision_model_request(changed,'actual persona and permissions')
+    assert json.loads(changed_system.rsplit('\n',1)[1])['environment']['innerTools'][0]['available'] is True
+    assert decision_model_request({'unknown':True},'authority')==('authority','{"unknown":true}')
+    print('PIPELINE outer request ordering preserves current permissions, future fields, arrays and source object passed')
     # The fixture constructs Core directly. Production initializes this shared
     # SDK database before platform startup; do the same before concurrent sends.
     from astrbot.core import db_helper
@@ -67,6 +84,10 @@ async def main():
                 if len(message_requests)==1:return LLMResponse(role='assistant',tools_call_name=['hosted_qq_publish' if mode.startswith('self_publish') else 'hosted_qq_signature'],tools_call_args=[{'content':'真实授权的测试内容'}],tools_call_ids=['self-operation'],usage=TokenUsage(input_other=50,output=10))
                 if mode=='self_publish_interrupted':brain.cancel('qq',invalidate=True);await asyncio.sleep(0)
                 return LLMResponse(role='assistant',completion_text='工具结果已取得',usage=TokenUsage(input_other=50,output=10))
+            if mode=='self_avatar':
+                message_requests.append(kwargs)
+                if len(message_requests)==1:return LLMResponse(role='assistant',tools_call_name=['hosted_qq_avatar'],tools_call_args=[{'image_handle':avatar_handle}],tools_call_ids=['self-avatar'],usage=TokenUsage(input_other=50,output=10))
+                return LLMResponse(role='assistant',completion_text=json.dumps({'status':'completed','summary':'QQ avatar ACK verified','unfinished':[]}),usage=TokenUsage(input_other=50,output=10))
             if mode=='orientation':
                 research_requests.append(kwargs)
                 return LLMResponse(role='assistant',completion_text=json.dumps({'disposition':'engage','motive':'own fresh intention','desiredOutcome':'learn something meaningful','reason':'recovered energy and accumulated activity inclination'}),usage=TokenUsage(input_other=50,output=10))
@@ -197,6 +218,25 @@ async def main():
             assert result['toolResults'][0]['detail']=='QQ接口已确认操作成功。',result
             assert settings['qq']['expectedUin']=='','execution silently rewrote the durable identity binding'
         print('PIPELINE empty legacy expectedUin binds only the actual member protocol, self tools recheck and confirm once passed')
+        mode='self_avatar';p,w,st=setup(mode);settings['qq']['config']['behavior'].update(qqProfile=True)
+        import bilibili_images,io
+        from PIL import Image
+        image=io.BytesIO();Image.new('RGB',(16,16),'blue').save(image,format='PNG')
+        asset_revision=str(settings['qq']['generation'])+':'+str(settings['qq']['revision'])
+        asset=bilibili_images.record(st.db,{'execution':'completed','data':{'pic':'https://i0.hdslb.com/fixture.jpg'}},'video_info',w['id'],asset_revision)[0]
+        avatar_handle=asset['handle'];st.db.execute('UPDATE bili_image_assets SET png=? WHERE handle=?',(image.getvalue(),avatar_handle));st.db.commit()
+        calls.clear();message_requests.clear()
+        result=await brain.handle('qq','execute',{'work':w,'action':{'kind':'research','target':'','objective':'use authorized prepared image as QQ avatar'}})
+        assert result['status']=='completed' and len(result['effects'])==1 and result['effects'][0]['status']=='confirmed',result
+        assert [c[0] for c in calls]==['get_login_info','set_qq_avatar'],calls
+        assert calls[-1][1]['file'].startswith('base64://') and result['toolResults'][0]['detail']=='QQ接口已确认操作成功。'
+        again=await brain.handle('qq','execute',{'work':w,'action':{'kind':'research','target':'','objective':'use authorized prepared image as QQ avatar'}})
+        assert [c[0] for c in calls].count('set_qq_avatar')==1 and again['status']=='completed'
+        p,w,st=setup('self-avatar-shadow');settings['qq']['config']['behavior'].update(qqProfile=True);p['config']['rollout']='shadow'
+        calls.clear();message_requests.clear()
+        shadow=await brain.handle('qq','execute',{'work':w,'action':{'kind':'research','target':'','objective':'shadow must never set an avatar'}})
+        assert shadow['status']=='blocked' and shadow['effects']==[] and not calls,shadow
+        print('PIPELINE shared inner registry avatar reaches actual CQHttp effect fence once and preserves confirmed receipt passed')
         mode='self_signature_changed';p,w,st=setup(mode);settings['qq']['expectedUin']='';settings['qq']['config']['behavior'].update(qqProfile=True,autoSignature=True)
         calls.clear();message_requests.clear()
         result=await brain.handle('qq','execute',{'work':w,'action':{'kind':'profile_signature','target':'','objective':'must not execute after actual login changes'}})
@@ -229,6 +269,17 @@ async def main():
         assert 'hosted_qq_publish' in snapshot['availableTools'] and 'hosted_qq_signature' in snapshot['availableTools']
         assert '自主空间任务' in descriptions['hosted_qq_publish']['description']
         assert descriptions['hosted_qq_publish']['parameters']['required']==['content']
+        assert 'hosted_qq_avatar' in descriptions
+        import inner_tools
+        original_features=inner_tools.features
+        from astrbot.core.agent.tool import FunctionTool
+        extension=FunctionTool(name='future_inner_capability',description='fixture registered only at the common inner assembly',parameters={'type':'object','properties':{}})
+        def with_extension(*args,**kwargs):return original_features(*args,**kwargs)+[extension]
+        with patch.object(inner_tools,'features',with_extension):
+            extended=brain.snapshot('qq')
+            assert any(t['name']=='future_inner_capability' for t in extended['innerTools'])
+            assert extended['capabilityRevision']!=snapshot['capabilityRevision']
+        assert brain.snapshot('qq')['capabilityRevision']==snapshot['capabilityRevision']
         cfg['behavior']['bilibiliSearchEnabled']=False
         disabled=brain.snapshot('qq')
         assert 'bilibili_search' not in disabled['availableTools']
@@ -322,7 +373,11 @@ async def main():
         assert 'readiness' not in data['feedback']
         assert payload['environment']['clock']['timezone']=='UTC+08:00'
         assert payload['environment']['clock']['localDateTime'].endswith('+08:00')
-        quiet=payload['environment']['wakePolicy']['quietHours']
+        definition_message=next(m for m in messages if m['role']=='system' and '[本轮环境配置片段]' in message_text(m))
+        current_definitions=json.loads(message_text(definition_message).rsplit('\n',1)[1])['environment']
+        assert not set(current_definitions) & set(payload['environment']),'decision fields duplicated across messages'
+        assert current_definitions['innerTools']==decision_request_view({'environment':brain.snapshot('qq')})['environment']['innerTools']
+        quiet=current_definitions['wakePolicy']['quietHours']
         assert (quiet['startHour'],quiet['endHour'])==(0,0)
         assert quiet['enabled'] is False and quiet['activeNow'] is False
         assert quiet['timezone']=='UTC+08:00' and quiet['scope']=='unsolicited_outbound_messages'
@@ -560,7 +615,7 @@ async def main():
         assert st.db.execute('SELECT count(*) FROM companion_reflections').fetchone()[0]==1 and len(research_requests)==3,'replayed Work reflected twice'
         check={**w,'kind':'research'}
         assert any(t.name=='reflect_interest' for t in brain.tools('qq',check,'self'))
-        assert all(t.name!='reflect_interest' for t in brain.tools('qq',{**w,'kind':'message'},'private:12345678'))
+        assert any(t.name=='reflect_interest' for t in brain.tools('qq',{**w,'kind':'message'},'private:12345678'))
         settings['qq']['config']['behavior']['memory']=False
         assert all(t.name!='reflect_interest' for t in brain.tools('qq',check,'self'))
         settings['qq']['config']['behavior']['memory']=True;settings['qq']['config']['behavior']['selfDevelopment']=False

@@ -40,7 +40,7 @@ export const behaviorDefaults={
  memorySemantic:true,
  embeddingModel:'',
  dailyEmbeddingLimit:100,
- summaryRounds:10,
+ summaryRounds:30,
  qqProfile:true,
  qzone:true,
  qzoneVisibility:'friends' as const,

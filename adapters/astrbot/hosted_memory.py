@@ -121,7 +121,8 @@ class ScopedMemory:
             overlap=q&doc;evidence=sum(math.log(1+(len(rows)+1)/(df[t]+1))for t in overlap)
             if len(r[0])>=2 and r[0] in query:evidence+=4
             if any(cue in query for cue in ALIASES.get(r[0],())):evidence+=4
-            anchor=max(r[4],r[8]);activation=1 if r[5]=='stable' else 2**(-max(0,now-anchor)/(86400*30*(1+2*r[6])))
+            from memory_strength import fact_strength
+            activation=fact_strength(r[5],r[4],now,r[6])
             # Relevance admits a memory; freshness only ranks it. Old relevant
             # events can still be recalled, unrelated fresh events get no boost.
             score=evidence*(.6+.25*activation+.15*r[6])

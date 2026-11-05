@@ -93,20 +93,24 @@ class SharedMemory(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.search.search(self.private,self.person,'木雕师'),[])
         self.assertEqual(self.store.search.search(self.group,self.person,'木雕展览',summaries=True),[])
     async def test_new_reflection_persists_real_participants_and_survives_restart(self):
-        for i in range(5):self.store.reflection.record(self.group,self.person,'round'+str(i),'平江路夜景','夜景很好')
+        for i in range(30):self.store.reflection.record(self.group,self.person,'round'+str(i),'平江路夜景','夜景很好')
         async def text_chat(**kw):return NS(completion_text=json.dumps({'summary':'平江路夜景，提到87654321但此人未参与。'}))
-        self.store.reflection.maybe_start(self.group,{'memorySummary':True,'summaryRounds':5},NS(text_chat=text_chat),lambda:True,{},contextvars.ContextVar('event',default=None))
+        self.store.reflection.maybe_start(self.group,{'memorySummary':True,'summaryRounds':30},NS(text_chat=text_chat),lambda:True,{},contextvars.ContextVar('event',default=None))
         await self.store.reflection.task
         self.assertEqual([r[0] for r in self.db.execute('SELECT subject FROM memory_summary_people')],[self.person])
         self.store.close();self.store=BehaviorStore(self.path);self.db=self.store.db
         self.assertTrue(self.store.reflection.recall(self.private,'夜景',subject=self.person))
-        self.assertEqual(self.store.reflection.recall('private:87654321','夜景',subject='87654321'),[])
+        # Shared background is visible across this Bot's conversations; that
+        # does not turn a mentioned QQ into an actual source participant.
+        shared=self.store.reflection.recall('private:87654321','夜景',subject='87654321')
+        self.assertEqual(shared[0]['source_scope'],self.group)
+        self.assertEqual([r[0] for r in self.db.execute('SELECT subject FROM memory_summary_people')],[self.person])
     async def test_late_reflection_cannot_restore_shared_forgotten_sources(self):
         self.say('记住：夜景=平江路')
-        for i in range(5):self.store.reflection.record(self.group,self.person,'round'+str(i),'平江路','夜景')
+        for i in range(30):self.store.reflection.record(self.group,self.person,'round'+str(i),'平江路','夜景')
         entered=asyncio.Event();release=asyncio.Event()
         async def text_chat(**kw):entered.set();await release.wait();return NS(completion_text='平江路旧摘要')
-        self.store.reflection.maybe_start(self.group,{'memorySummary':True,'summaryRounds':5},NS(text_chat=text_chat),lambda:True,{},contextvars.ContextVar('event',default=None))
+        self.store.reflection.maybe_start(self.group,{'memorySummary':True,'summaryRounds':30},NS(text_chat=text_chat),lambda:True,{},contextvars.ContextVar('event',default=None))
         await entered.wait();self.say('忘记：夜景',self.private);release.set();await self.store.reflection.task
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],0)
     async def test_late_cross_scope_fact_vector_is_discarded(self):

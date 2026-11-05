@@ -139,8 +139,8 @@ class Companion(unittest.IsolatedAsyncioTestCase):
   self.assertIn('不会重复',await qq_actions.execute(event,cfg,self.db,'publish','今天喝茶',lambda:lease[0]));self.assertEqual(len(calls),2)
   async def stale(**kw):lease[0]=False
   event.bot.send_qzone_msg=stale;event.message_obj.message_id='stale'
-  self.assertIn('过期',await qq_actions.execute(event,cfg,self.db,'publish','明天喝茶',lambda:lease[0]))
-  self.assertEqual(self.db.execute('SELECT status FROM qq_action_attempts WHERE event=?',('stale',)).fetchone()[0],'attempted')
+  self.assertIn('原操作已获协议回执并记录；配置已变化',await qq_actions.execute(event,cfg,self.db,'publish','明天喝茶',lambda:lease[0]))
+  self.assertEqual(self.db.execute('SELECT status FROM qq_action_attempts WHERE event=?',('stale',)).fetchone()[0],'confirmed')
  async def test_qzone_fixed_origin_account_and_timeout(self):
   from unittest.mock import patch
   requests=[]

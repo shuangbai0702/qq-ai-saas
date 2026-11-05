@@ -31,4 +31,9 @@ def recall(store,scope,subject,query,cfg,current,metrics):
             if len(summaries)>=5:break
     metrics['semanticContextTurns']=metrics.get('semanticContextTurns',0)+1
     metrics['semanticContextCandidates']=len(selected)+len(summaries)
+    # The current conversation always sees its rolling big + pending small
+    # summaries. Cross-session recall remains attributed and bounded above.
+    rolling=store.reflection.rolling(scope)
+    local_ids={item['id'] for item in rolling}
+    summaries=rolling+[item for item in summaries if item['id'] not in local_ids and item.get('source_scope')!=scope]
     return selected,summaries

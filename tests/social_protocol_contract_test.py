@@ -25,6 +25,32 @@ class SocialContract(unittest.IsolatedAsyncioTestCase):
         self.event=NS(bot=NS(get_login_info=login,fetch_custom_face_detail=details,add_custom_face=add),message_obj=NS(message_id=42,raw_message={'message':[{'type':'image','data':{'url':'https://qpic.cn/fixture.gif','sub_type':1}}]}),get_sender_id=lambda:'12345678',get_self_id=lambda:'900001',get_group_id=lambda:'55555',get_message_str=lambda:'这张表情',get_extra=lambda k,d=None:self.extra.get(k,d),set_extra=lambda k,v:self.extra.update({k:v}))
         self.lease={'botId':'owned-bot','generation':7};self.context=NS(context=NS(event=self.event))
     def tearDown(self):self.st.close();self.tmp.cleanup()
+    async def test_dynamic_candidates_do_not_change_tool_schemas_or_authorize_foreign_handles(self):
+        from astrbot.core.agent.tool import ToolSet
+        import inner_tools
+        self.extra['_hosted_lease']=self.lease
+        self.extra['_hosted_context']='{"identity":{"sender_id":"12345678"},"state":{"x":1}}'
+        cfg={'behavior':{}}
+        def schema():
+            return ToolSet(tools=quote_reply.tools(self.event,cfg,self.st.db,self.lease,lambda:True)+qq_favorite_tools.tools(self.event,cfg,self.st.db,self.tmp.name,lambda:True)).get_func_desc_openai_style()
+        quote_reply.observe(self.st.db,self.event,self.lease,'group:55555')
+        before=schema();first=quote_reply.catalog(self.st.db,self.event,self.lease)
+        self.event.message_obj.message_id=43
+        quote_reply.observe(self.st.db,self.event,self.lease,'group:55555')
+        after=schema();second=quote_reply.catalog(self.st.db,self.event,self.lease)
+        self.assertNotEqual(first,second);self.assertEqual(before,after)
+        self.extra['_hosted_tool_context']={'quote_reply':second,'qq_favorites':qq_favorite_tools.context(self.event,self.st.db)}
+        context=json.loads(inner_tools.request_context(self.event))
+        self.assertEqual(context['tool_context']['quote_reply'],second)
+        self.assertEqual(context['state'],{'x':1})
+        tool=quote_reply.tools(self.event,cfg,self.st.db,self.lease,lambda:True)[0]
+        denied=json.loads(await tool.call(self.context,'qr_'+'f'*20))
+        self.assertEqual(denied['status'],'invalid_reference');self.assertNotIn('_hosted_quote_handle',self.extra)
+        # A stable schema does not remove the actual scope/generation checks.
+        self.lease['generation']=8
+        denied=json.loads(await tool.call(self.context,first[0]['handle']))
+        self.assertEqual(denied['status'],'invalid_reference')
+
     async def test_favorite_list_uses_same_semantics_and_disable_state_as_automatic_candidates(self):
         row={'md5':'a'*32,'resId':'fixture-resid','url':'https://qpic.cn/fixture'};self.favorite_rows.append(row)
         folder=Path(self.tmp.name)/'qq-favorites';folder.mkdir()
@@ -37,7 +63,7 @@ class SocialContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['status'],'disabled_favorite');self.assertNotIn('_hosted_tool_sticker',self.extra)
     async def test_favorite_requires_readback_and_preserves_original_animation(self):
         tool=qq_favorite_tools.tools(self.event,{'behavior':{}},self.st.db,self.tmp.name,lambda:True)[0]
-        self.assertEqual(tool.parameters['properties']['source_id']['enum'],['current'])
+        self.assertEqual(qq_favorite_tools.context(self.event,self.st.db)['source_ids'],['current'])
         self.assertIn('favorite_handle',tool.parameters['properties'])
         with patch.object(qq_favorite_tools,'download',return_value=self.raw):
             result=await tool.call(self.context,operation='save');self.assertIn('真实收藏成功',result)
@@ -216,7 +242,7 @@ class SocialContract(unittest.IsolatedAsyncioTestCase):
         async def get_msg(**kw):self.assertEqual(kw['message_id'],42);return native
         self.event.bot.get_msg=get_msg;self.event.message_obj=NS(message_id=43,raw_message={'message':[]})
         tool=qq_favorite_tools.tools(self.event,{'behavior':{}},self.st.db,self.tmp.name,lambda:True)[0]
-        self.assertIn(source['handle'],tool.parameters['properties']['source_id']['enum'])
+        self.assertIn(source['handle'],qq_favorite_tools.context(self.event,self.st.db)['source_ids'])
         with patch.object(qq_favorite_tools,'download',return_value=self.raw):
             self.assertEqual(json.loads(await tool.call(self.context,operation='save'))['status'],'confirmed')
         self.event.get_sender_id=lambda:'87654321'
@@ -275,7 +301,7 @@ class SocialContract(unittest.IsolatedAsyncioTestCase):
     async def test_quote_ids_are_scope_account_and_generation_bound(self):
         quote_reply.observe(self.st.db,self.event,self.lease,'group:55555');first=quote_reply.catalog(self.st.db,self.event,self.lease)[0]['handle']
         tool=quote_reply.tools(self.event,{'behavior':{}},self.st.db,self.lease,lambda:True)[0]
-        self.assertIn(first,tool.parameters['properties']['handle']['enum'])
+        self.assertIn(first,[r['handle'] for r in quote_reply.catalog(self.st.db,self.event,self.lease)])
         await tool.call(self.context,handle=first);self.assertEqual(quote_reply.selected(self.st.db,self.event,self.lease),('42','12345678'))
         async def existing(**_):return {'message_id':42,'group_id':55555,'sender':{'user_id':12345678}}
         self.event.bot.get_msg=existing

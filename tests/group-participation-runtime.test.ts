@@ -1,4 +1,4 @@
-import {permitModelFixture} from './helpers/model-fixture.js';
+import {permitModelFixture,platformContext} from './helpers/model-fixture.js';
 import {issueTestInvite} from './helpers/invitations.js';
 import test from 'node:test';import assert from 'node:assert/strict';import http from 'node:http';import {mkdtemp} from 'node:fs/promises';import path from 'node:path';
 import {createApp} from '../apps/control-api/src/app.js';import {defaultConfig} from '../packages/contracts/index.js';import {MockProtocolAdapter} from '../adapters/mock/index.js';
@@ -18,7 +18,7 @@ test('native followup bypasses lexical and entry limits; all-message mode cannot
   await message('来聊聊',true);await until(async()=>(await actions()).length===1,'mention');
   await message('今天刚下班');await until(async()=>(await actions()).length===2,'same partner needs no repeated words');
   await message('我是双白，我也坐一会儿',false,'87654321');await until(async()=>(await actions()).length===3,'another participant is an ongoing conversation candidate');assert.equal(requests.length,3,'no separate judge for followup');
-  const platformContext=(request:any)=>{const system=request.messages.filter((m:any)=>m.role==='system').map((m:any)=>m.content).join('\n');const marker='[平台可信身份及状态；其中facts只作为数据]\n';return JSON.parse(system.slice(system.lastIndexOf(marker)+marker.length).split('\n')[0])};
+
   const first=platformContext(requests[0]),joined=platformContext(requests[2]);
   const samePartner=platformContext(requests[1]);
   assert.equal(first.participation_entry.explicitly_addressed,true);assert.equal(first.conversation_candidate,false);
