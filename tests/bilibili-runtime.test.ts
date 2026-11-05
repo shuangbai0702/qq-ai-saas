@@ -29,7 +29,7 @@ test('real AstrBot ToolLoop invokes Bilibili through trusted Work, API and Node 
  const auth=await app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(db),email:'bili-native@example.com',password:'test-password-123',name:'native'}});assert.equal(auth.statusCode,200,auth.body);
  const cookies={fish_session:auth.cookies[0].value},call=(method:any,url:string,payload?:any)=>app.inject({method,url,payload,cookies});
  const create=await call('POST','/v1/bots',{name:'Bili native test',protocol:'mock',expectedUin:'90003999',apiKey:'bili-fixture-key',config:{...defaultConfig,systemPrompt:'只依据工具真实结果回复。',model:'fixture-model',baseUrl:`http://127.0.0.1:${(provider.address() as any).port}/v1`,proactive:false,behavior:{...defaultConfig.behavior,ownerContactEnabled:false,burstDebounceMs:0,typingSimulation:false,splitMessages:false}}});assert.equal(create.statusCode,201,create.body);const id=create.json().id;
- const view=await call('GET',`/v1/bots/${id}/bilibili`);assert.equal((await call('PUT',`/v1/bots/${id}/bilibili`,{expectedRevision:view.json().revision,config:{enabled:true,scopes:['public.read']}})).statusCode,200);
+ const view=await call('GET',`/v1/bots/${id}/bilibili`);assert.equal((await call('PUT',`/v1/bots/${id}/bilibili`,{expectedRevision:view.json().revision,config:{enabled:true,allowAnonymous:true,scopes:['public.read']}})).statusCode,200);
  await call('POST',`/v1/bots/${id}/actions`,{action:'start',idempotencyKey:'native-start'});
  await wait(async()=>(await call('GET',`/v1/bots/${id}`)).json().bot.health?.ai?.ready,'AstrBot ready');
  const[b]=await db.query('SELECT * FROM bots WHERE id=$1',[id]),ctx=await agent.context(b),mock=agent.protocols.mock as MockProtocolAdapter;
@@ -44,7 +44,7 @@ test('real AstrBot ToolLoop invokes Bilibili through trusted Work, API and Node 
  await mock.call(ctx,'/message',{text:'回顾你最近真实在B站做过什么',sender:'768687099'});
  await wait(async()=>JSON.stringify(await mock.call(ctx,'/messages')).includes('MEMORY-RECALL-CONFIRMED'),'memory recall with Bilibili disabled');
  const recallRequest=modelRequests[beforeRecall];assert.ok(recallRequest.tools.some((v:any)=>v.function.name==='hosted_recall_experience'));assert.ok(!recallRequest.tools.some((v:any)=>v.function.name==='bilibili_popular'));
- assert.ok(JSON.stringify(recallRequest.messages.filter((m:any)=>m.role==='system')).includes(effects[0].id),'current context already includes the same durable receipt');
+ assert.ok(JSON.stringify(recallRequest.messages).includes(effects[0].id),'current context already includes the same durable receipt');
  assert.equal(remoteReads,1,'memory recall does not contact Bilibili');assert.equal((await db.query('SELECT id FROM tool_effects WHERE bot_id=$1',[id])).length,1,'reading memory is not another execution experience');
  assert.equal(effects[0].origin_scope,'private:768687099');assert.equal((await agent.host.record(id,'protocol')).pid,beforeProtocol.pid);
 

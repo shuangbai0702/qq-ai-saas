@@ -3,7 +3,7 @@
 The Node Agent publishes a fenced, purpose-specific bridge manifest. Both the
 foreground Agent and autonomous inner Agent use exactly this registry.
 """
-import asyncio,hashlib,json,time
+import asyncio,hashlib,json,re,time
 from pathlib import Path
 import aiohttp
 
@@ -58,12 +58,14 @@ def manifest(settings):
         return value
     except (OSError,ValueError,KeyError,TypeError):return None
 
-def tools(settings,event,current,evidence,identity=None):
+def tools(settings,event,current,evidence,identity=None,db=None):
     bridge=manifest(settings)
     if not bridge:return []
     if identity and not bridge.get('allowAutonomous'):return []
     from astrbot.core.agent.tool import FunctionTool
     class BiliTool(FunctionTool):
+        @property
+        def hosted_effect(self):return any(s.get('operation')==self.name[len('bilibili_'):] and s.get('write') for s in bridge.get('operations',[]))
         async def call(self,context,**args):
             if not current():raise asyncio.CancelledError('stale Bilibili Work')
             live=manifest(settings)
@@ -122,6 +124,11 @@ def tools(settings,event,current,evidence,identity=None):
                         async with client.get(base+'/'+job_id,allow_redirects=False) as response:job=await small(response)
                     if not current():raise asyncio.CancelledError('stale Bilibili result')
                     result=job.get('result') or {'execution':'canceled','receipt':{'status':'rejected'},'error':{'code':'canceled_before_dispatch'}}
+                    if db is not None:
+                        from bilibili_images import record
+                        revision=str(settings.get('generation'))+':'+str(settings.get('revision'))
+                        images=record(db,result,operation,work_id,revision)
+                        if images:result={**result,'imageCandidates':images}
                     if evidence is not None:
                         evidence.append({'source':'bilibili_tool','reference':job_id,'status':result.get('receipt',{}).get('status')})
                         checkpoint=getattr(evidence,'checkpoint',None)
@@ -138,13 +145,14 @@ def tools(settings,event,current,evidence,identity=None):
     result=[]
     for spec in bridge.get('operations',[]):
         op=spec.get('operation')
-        if op not in DESCRIPTIONS:continue
+        if not isinstance(op,str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,63}',op):continue
         if event is not None and event.get_extra('_hosted_tool_completion') and op=='analyze':continue
         if not identity and (spec.get('write') or spec.get('scope')!='public.read'):
             owner=str((settings.get('config',{}).get('behavior') or {}).get('ownerUin') or '')
             if event is None or not owner or str(event.get_sender_id())!=owner:continue
         parameters=dict(spec.get('args') or {});parameters.pop('$schema',None)
-        result.append(BiliTool(name='bilibili_'+op,description=DESCRIPTIONS[op]+'。由服务端校验当前账号、权限、工作身份和真实回执；失败/未知不得编造成功。',parameters=parameters))
+        description=DESCRIPTIONS.get(op) or '调用已授权B站能力'+op+'，只按当前工具参数合同执行，以真实返回为准'
+        result.append(BiliTool(name='bilibili_'+op,description=description+'。由服务端校验当前账号、权限、工作身份和真实回执；失败/未知不得编造成功。',parameters=parameters))
     return result
 
 

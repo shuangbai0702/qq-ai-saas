@@ -8,5 +8,5 @@ test('pipeline receipts, stale interruption, context failure and selected-work c
  const python=path.resolve(`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`);
  const result=await promisify(execFile)(python,['-B','tests/pipeline_boundaries_test.py'],{windowsHide:true,timeout:25000,maxBuffer:1024*1024});
  // Voice, pipeline and old-memory output boundaries must all run.
- assert.equal((result.stdout.match(/^PASS /gm)||[]).length,8,result.stdout+result.stderr);
+ assert.equal((result.stdout.match(/^PASS /gm)||[]).length,9,result.stdout+result.stderr);
 });

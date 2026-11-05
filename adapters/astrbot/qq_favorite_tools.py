@@ -128,16 +128,26 @@ async def reconcile(db,bot,account,action,current):
         logger.warning('QQ favorite readback pending: %s',type(error).__name__)
         return {'checked':True,'confirmed':{}} # No write retry; uncertainty stays visible.
 
+def context(event,db):
+    """Fresh source data, separate from the stable tool schema; not authority."""
+    initialize(db)
+    lease=event.get_extra('_hosted_lease') or {}
+    observed=quote_reply.media_catalog(db,event,lease) if all(hasattr(event,name) for name in ('get_group_id','get_sender_id','get_self_id')) else []
+    source_ids=['current']+[r['handle'] for r in observed]
+    if hasattr(event,'get_sender_id'):
+        source_ids+=[r[0] for r in db.execute("SELECT id FROM sticker_inbox WHERE scope=? AND status='approved' ORDER BY created DESC LIMIT 30",(delivery_scope(event),))] if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sticker_inbox'").fetchone() else []
+    media=[{k:v for k,v in r.items() if not k.startswith('_')} for r in observed]
+    recent=[{'state':r[0],'md5':r[1],'at':r[2]} for r in db.execute('SELECT state,md5,at FROM qq_favorite_writes WHERE account=? AND scope=? ORDER BY at DESC LIMIT 3',(str(event.get_self_id()),delivery_scope(event)))] if hasattr(event,'get_self_id') else []
+    return {'source_ids':source_ids,'media':media,'recent_writes':recent}
+
+
 def tools(event,cfg,db,root,current):
     b=cfg.get('behavior') or {}
     if not b.get('qqFavoriteSaveEnabled',True) and not b.get('memeEnabled',True):return []
     initialize(db)
     lease=event.get_extra('_hosted_lease') or {}
-    observed=quote_reply.media_catalog(db,event,lease) if all(hasattr(event,name) for name in ('get_group_id','get_sender_id','get_self_id')) else []
     from astrbot.core.agent.tool import FunctionTool
-    source_ids=['current']+[r['handle'] for r in observed]
-    if hasattr(event,'get_sender_id'):
-        source_ids+=[r[0] for r in db.execute("SELECT id FROM sticker_inbox WHERE scope=? AND status='approved' ORDER BY created DESC LIMIT 30",(delivery_scope(event),))] if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sticker_inbox'").fetchone() else []
+    source_ids=context(event,db)['source_ids']
     meanings={}
     async def details():
         nonlocal meanings
@@ -235,6 +245,4 @@ def tools(event,cfg,db,root,current):
                     if current() and digest in checked['confirmed']:return confirmed(checked['confirmed'][digest])
                 code='favorite_confirmation_pending' if submitted else str(error) if isinstance(error,ValueError) and str(error).startswith(('media_','unsupported_')) else 'favorite_'+phase+'_unavailable'
                 return json.dumps({'status':'unknown' if submitted else 'blocked','code':code,'submitted':submitted,'phase':phase,'meaning':('请求已经发起，结果未确认；后台仅核查真实收藏，不会重复上传。等待确认不能解释为保存失败或QQ网络故障。' if submitted else '操作在提交前受阻，没有写入QQ收藏。')+'单张上限8MiB、首帧4百万像素，保留原动图。'},ensure_ascii=False)
-    media=[{k:v for k,v in r.items() if not k.startswith('_')} for r in observed]
-    recent=[{'state':r[0],'md5':r[1],'at':r[2]} for r in db.execute('SELECT state,md5,at FROM qq_favorite_writes WHERE account=? AND scope=? ORDER BY at DESC LIMIT 3',(str(event.get_self_id()),delivery_scope(event)))] if hasattr(event,'get_self_id') else []
-    return [Favorites(name='hosted_qq_favorites',description='当前登录QQ的真实自定义表情：list读取收藏并核实历史未确认写入；prepare用list返回的favorite_handle选择收藏随本轮回复发送，也可由群发工具将已选图发往授权群；save用source_id保存收到的原图。current取本条图片，无图时只取当前发送者最近15分钟最新消息中唯一的图片；多图需选可信句柄。source_id与favorite_handle不能混用，都不是URL或路径。保存不是平台收图；按实际回执说明结果。unknown只表示待确认，不是失败或网络故障；confirmed才可报告成功。本会话最近真实收藏记录：'+json.dumps(recent,ensure_ascii=False)+'。可信近期图片：'+json.dumps(media,ensure_ascii=False),parameters={'type':'object','properties':{'operation':{'type':'string','enum':['list','prepare','save']},'source_id':{'type':'string','enum':source_ids,'description':'仅save使用；current或近期可信图片/已审核素材句柄。'},'favorite_handle':{'type':'string','pattern':'^qf_[a-f0-9]{20}$','description':'仅prepare使用；从list或save真实返回的handle选择。'}},'required':['operation'],'additionalProperties':False})]
+    return [Favorites(name='hosted_qq_favorites',description='当前登录QQ的真实自定义表情：list读取收藏并核实历史未确认写入；prepare用list返回的favorite_handle选择收藏随本轮回复发送，也可由群发工具将已选图发往授权群；save用source_id保存收到的原图。current取本条图片，无图时只取当前发送者最近15分钟最新消息中唯一的图片；多图需选可信句柄。source_id与favorite_handle不能混用，都不是URL或路径。保存不是平台收图；按实际回执说明结果。unknown只表示待确认，不是失败或网络故障；confirmed才可报告成功。当前来源、近期图片和真实收藏记录见本轮可信上下文tool_context.qq_favorites；执行时仍校验账号、会话与真实来源。',parameters={'type':'object','properties':{'operation':{'type':'string','enum':['list','prepare','save']},'source_id':{'type':'string','maxLength':128,'description':'仅save使用；current或近期可信图片/已审核素材句柄。'},'favorite_handle':{'type':'string','pattern':'^qf_[a-f0-9]{20}$','description':'仅prepare使用；从list或save真实返回的handle选择。'}},'required':['operation'],'additionalProperties':False})]

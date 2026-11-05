@@ -24,7 +24,7 @@ def run(file, data, connection=None):
     if connection is None and not file.exists() and data['action'] not in ('list_stickers','get_sticker','review_sticker'):
         if data['action'] != 'list':
             return {'error': '机器人尚未产生行为数据', 'status': 409}
-        return {'facts': [], 'patterns': [], 'contacts': [], 'relations': [], 'stats': {}, 'epoch': 0, 'initialized': False}
+        return {'persona_core_note':{'text':'','updated':0},'facts': [], 'patterns': [], 'contacts': [], 'relations': [], 'stats': {}, 'epoch': 0, 'initialized': False}
     if data['action'] in ('list_stickers','get_sticker','review_sticker') and not file.exists() and connection is None:
         return {'items':[],'pendingLimit':10,'approvedLimit':20} if data['action']=='list_stickers' else {'error':'表情包不存在','status':404}
     db = connection or sqlite3.connect(file.as_uri() + '?mode=rw', uri=True, timeout=3)
@@ -78,7 +78,8 @@ def run(file, data, connection=None):
                 summaries=[dict(r) for r in listed('summaries','SELECT id,scope,text,updated FROM memory_summaries'+(' WHERE '+' AND '.join(conditions) if conditions else '')+' ORDER BY id DESC LIMIT 100',summary_args)]
             decisions=[dict(r) for r in listed('decisions','SELECT * FROM autonomy_decisions'+pattern_where+' ORDER BY at DESC LIMIT 50',pattern_args,50)] if 'autonomy_decisions' in tables else []
             pending=[dict(r) for r in listed('pending','SELECT scope,subject,event,question,answer,at FROM memory_pending'+(' WHERE '+' AND '.join(clauses) if clauses else '')+' ORDER BY at DESC LIMIT 100',([scope] if scope else [])+([subject] if subject else []))] if 'memory_pending' in tables else []
-            return {'initialized': True, 'epoch': epoch, 'facts': facts, 'summaries':summaries,'patterns': patterns, 'contacts': contacts, 'decisions':decisions,'relations': relations, 'stats': stats, 'limit': 100,'pending':pending, 'companion': {t:[dict(r) for r in listed(t,'SELECT * FROM '+t+(' WHERE scope=?' if scope else '')+' ORDER BY rowid DESC LIMIT 30',([scope] if scope else []),30)] for t in ['companion_interests','companion_motives','companion_emotion','companion_signals','dialogue_feedback'] if t in tables},'pagination':{'page':page,'totals':totals,'pages':max([1]+[(totals[k]+page_sizes[k]-1)//page_sizes[k] for k in totals])}}
+            core=db.execute('SELECT text,updated FROM memory_core_notes WHERE slot=1').fetchone() if 'memory_core_notes' in tables else None
+            return {'persona_core_note':{'text':core['text'],'updated':core['updated']} if core else {'text':'','updated':0},'initialized': True, 'epoch': epoch, 'facts': facts, 'summaries':summaries,'patterns': patterns, 'contacts': contacts, 'decisions':decisions,'relations': relations, 'stats': stats, 'limit': 100,'pending':pending, 'companion': {t:[dict(r) for r in listed(t,'SELECT * FROM '+t+(' WHERE scope=?' if scope else '')+' ORDER BY rowid DESC LIMIT 30',([scope] if scope else []),30)] for t in ['companion_interests','companion_motives','companion_emotion','companion_signals','dialogue_feedback'] if t in tables},'pagination':{'page':page,'totals':totals,'pages':max([1]+[(totals[k]+page_sizes[k]-1)//page_sizes[k] for k in totals])}}
         initialize_controls(db)
         db.execute('BEGIN IMMEDIATE')
         action, scope = data['action'], data.get('scope', '')
@@ -110,6 +111,8 @@ def run(file, data, connection=None):
             # Forget only this summary's original events. New conversation debt
             # in the same scope remains available for the next summary.
             sources=json.loads(old[1])
+            from memory_reflection import forget_core_notes
+            forget_core_notes(db,scope=scope,events=sources if isinstance(sources,list) else [])
             if isinstance(sources,list):
                 db.executemany('DELETE FROM memory_rounds WHERE scope=? AND event=?',[(scope,str(event)) for event in sources[:1000]])
                 if 'memory_pending' in tables:db.executemany('DELETE FROM memory_pending WHERE scope=? AND event=?',[(scope,str(event)) for event in sources[:1000]])

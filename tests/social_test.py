@@ -14,7 +14,7 @@ class SocialTests(unittest.TestCase):
   return self.s.learning_batch(scope,now=1100)
  def learned(self,scope='group:1',now=None):
   batch=self.batch(scope);raw=json.dumps({'patterns':[{'expression':'有节目效果','situation':'轻松开玩笑','source_ids':[batch[0]['id'],batch[1]['id']]}]});return self.s.accept_learning(scope,batch,raw,now=time.time() if now is None else now)
- def test_expired_expression_is_not_recalled_without_new_learning(self):self.learned(now=1200);self.assertEqual(self.s.expressions('group:1','开玩笑'),[])
+ def test_cold_expression_can_return_for_related_context(self):self.learned(now=1200);self.assertEqual(self.s.expressions('group:1','开玩笑')[0]['expression'],'有节目效果')
  def test_expired_samples_never_enter_new_learning(self):self.batch();self.assertEqual(self.s.learning_batch('group:1',now=1000000),[])
  def test_pruned_samples_do_not_reuse_learning_ids(self):
   batch=self.batch();self.s.reserve_learning('group:1',batch,1100);self.db.execute('DELETE FROM social_samples');self.db.commit()
@@ -47,11 +47,19 @@ class SocialTests(unittest.TestCase):
  def test_one_sender_cannot_teach_shared_expression(self):
   for i in range(12):self.s.observe('group:1','same','有节目效果',str(i),1000+i)
   self.assertEqual(self.s.learning_batch('group:1',1100),[])
- def test_learning_budget_and_watermark(self):
-  batch=self.batch();self.s.reserve_learning('group:1',batch,1100);self.assertEqual(self.s.learning_batch('group:1',1200),[])
-  self.assertEqual(self.s.learning_batch('group:1',3000),[])
-  for i in range(3):self.s.reserve_learning('group:other',batch,1100+i)
-  self.assertEqual(self.s.learning_batch('group:1',3000),[])
+ def test_learning_retry_and_success_watermark(self):
+  batch=self.batch();attempt=self.s.reserve_learning('group:1',batch,1100);self.assertEqual(self.s.learning_batch('group:1',1200),[])
+  self.assertEqual(len(self.s.learning_batch('group:1',3000)),12,'an uncompleted attempt must retain its samples')
+  self.s.accept_learning('group:1',batch,'{"patterns":[]}',now=3000,attempt=attempt)
+  self.assertEqual(self.s.learning_batch('group:1',3000),[],'a valid empty result still consumes the batch')
+ def test_learning_has_no_global_daily_quota(self):
+  batch=self.batch()
+  for i in range(5):self.s.reserve_learning('group:other',batch,1100+i)
+  self.assertEqual(len(self.s.learning_batch('group:1',3000)),12)
+ def test_bad_learning_response_does_not_consume_samples(self):
+  batch=self.batch();attempt=self.s.reserve_learning('group:1',batch,1100)
+  self.s.accept_learning('group:1',batch,'invalid',now=1101,attempt=attempt)
+  self.assertEqual(len(self.s.learning_batch('group:1',3000)),12)
  def test_learning_survives_restart(self):self.learned();second=SocialStore(self.db,self.root);self.assertEqual(len(second.expressions('group:1','开玩笑')),1);second.close()
  def test_no_config_no_context(self):self.learned();self.assertEqual(self.s.context('group:1','你好',{}),{})
  def test_no_filesystem_paths_in_prompt(self):self.assertNotIn('path',json.dumps(self.s.context('group:1','你好',{'memeEnabled':True})))
@@ -144,6 +152,18 @@ class SocialTests(unittest.TestCase):
   self.assertEqual([x['id'] for x in context['meme_candidates']],[identifier]);self.assertIsNotNone(self.s.select_image('[MEME:'+identifier+']','group:1',cfg,1000,candidates=context['meme_candidates'])[1])
 
 class LifecycleTests(unittest.IsolatedAsyncioTestCase):
+ async def test_failed_model_preserves_learning_batch_across_reopen(self):
+  from unittest.mock import patch
+  with tempfile.TemporaryDirectory() as folder:
+   db=sqlite3.connect(Path(folder)/'data.db');store=SocialStore(db,folder)
+   for i in range(12):store.observe('group:1',str(i%2),'有节目效果',str(i),now=1000)
+   async def fail(**kwargs):raise ConnectionError('isolated model unavailable')
+   metrics={}
+   with patch('social.time.time',return_value=1100):
+    maybe_learn(store,'group:1',{'styleLearning':True},SimpleNamespace(text_chat=fail),lambda:True,metrics,contextvars.ContextVar('test',default=None));await store.task
+   self.assertEqual(metrics['learningFailures'],1);self.assertEqual(db.execute('SELECT max(watermark) FROM social_learning').fetchone()[0],0)
+   store.close();db.close();db=sqlite3.connect(Path(folder)/'data.db');store=SocialStore(db,folder)
+   self.assertEqual(len(store.learning_batch('group:1',now=3000)),12);store.close();db.close()
  async def test_late_learner_cannot_write_after_replacement(self):
   with tempfile.TemporaryDirectory() as folder:
    db=sqlite3.connect(Path(folder)/'data.db');s=SocialStore(db,folder)

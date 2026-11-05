@@ -2,7 +2,7 @@ import {z} from 'zod';
 
 export const AutonomyConfigSchema=z.object({
   mode:z.enum(['passive','active']).default('passive'),
-  rollout:z.enum(['shadow','live']).default('shadow'),
+  rollout:z.enum(['shadow','live']).default('live'),
   fatigueEnabled:z.boolean().default(true),
   fatigueWindowMinutes:z.number().int().min(10).max(1440).default(60),
   fatigueRecoveryMinutes:z.number().int().min(5).max(240).default(30),

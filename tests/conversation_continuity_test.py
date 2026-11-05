@@ -16,9 +16,9 @@ class Continuity(unittest.IsolatedAsyncioTestCase):
     def pending(self,event='unanswered',person=None,scope=None):
         self.store.reflection.incoming(scope or self.scope,person or self.person,event,'刚在群里开头了',self.now)
     def seed(self):
-        for i in range(5):self.store.reflection.record(self.scope,self.person,'answered'+str(i),'真实问题'+str(i),'真实回复'+str(i),self.now+i+1)
+        for i in range(30):self.store.reflection.record(self.scope,self.person,'answered'+str(i),'真实问题'+str(i),'真实回复'+str(i),self.now+i+1)
     async def summarize(self,chat,current=lambda:True):
-        self.store.reflection.maybe_start(self.scope,{'memorySummary':True,'summaryRounds':5},NS(text_chat=chat),current,{},self.event_var)
+        self.store.reflection.maybe_start(self.scope,{'memorySummary':True,'summaryRounds':30},NS(text_chat=chat),current,{},self.event_var)
         await self.store.reflection.task
     def test_unanswered_group_visible_in_private_with_real_source_and_time(self):
         self.pending()
@@ -62,13 +62,13 @@ class Continuity(unittest.IsolatedAsyncioTestCase):
     async def test_failure_and_stale_summary_do_not_erase_pending(self):
         self.pending();self.seed()
         async def failed(**kw):raise TimeoutError()
-        await self.summarize(failed);self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],6)
+        await self.summarize(failed);self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],31)
         async def chat(**kw):return NS(completion_text='迟到摘要')
         await self.summarize(chat,lambda:False)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],6)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],31)
     def test_ambient_messages_do_not_create_more_summary_calls_and_forget_clears(self):
         for i in range(35):self.pending(str(i))
-        self.store.reflection.maybe_start(self.scope,{'memorySummary':True,'summaryRounds':5},NS(text_chat=None),lambda:True,{},self.event_var)
+        self.store.reflection.maybe_start(self.scope,{'memorySummary':True,'summaryRounds':30},NS(text_chat=None),lambda:True,{},self.event_var)
         self.assertIsNone(self.store.reflection.task)
         invalidate(self.db,self.private,self.person);self.db.commit()
         self.assertEqual(self.store.reflection.recent(self.private,self.person),[])
@@ -113,8 +113,10 @@ class GroupActions(unittest.IsolatedAsyncioTestCase):
     async def test_late_receipt_cannot_write_to_replaced_store(self):
         async def send(**kw):self.current=False;return {'message_id':123}
         self.event.bot.send_group_msg=send
-        self.assertIn('过期',await self.send());self.assertEqual(self.recorded,[])
-        self.assertEqual(self.db.execute('SELECT state FROM group_message_attempts').fetchone()[0],'attempted')
+        self.assertIn('配置已变化',await self.send());self.assertEqual(self.recorded,[])
+        # The original execution ledger keeps a real late ACK; the replacement
+        # conversation still receives no state write or follow-up action.
+        self.assertEqual(self.db.execute('SELECT state FROM group_message_attempts').fetchone()[0],'confirmed')
     async def test_refused_member_not_contacted(self):
         self.db.execute("INSERT INTO companion_members(scope,subject,seen,refused) VALUES('group:55555','87654321',?,1)",(time.time(),));self.db.commit()
         self.assertIn('拒绝主动联系',await self.send(mention='87654321'));self.assertEqual(self.sent,[])

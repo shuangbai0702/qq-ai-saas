@@ -32,10 +32,11 @@ export function registerAutonomous(app:FastifyInstance,db:Sql,owned:(req:any,id:
  app.get<{Params:{id:string}}>('/v1/bots/:id/autonomous',async req=>{
   const bot=await owned(req,req.params.id);const value=await repo.view(bot.tenant_id,bot.id);
   const status=runtimeStatus(bot);
-  return{...value,pendingRuntime:value.settings.epoch!==value.settings.runtime_epoch,online:bot.desired_state==='running'&&status.online,fresh:status.fresh};
+  return{...value,canConfigureShadow:!!req.user?.is_admin,pendingRuntime:value.settings.epoch!==value.settings.runtime_epoch,online:bot.desired_state==='running'&&status.online,fresh:status.fresh};
  });
  app.put<{Params:{id:string}}>('/v1/bots/:id/autonomous',async req=>{
   const bot=await owned(req,req.params.id),body=z.object({expectedEpoch:z.number().int().positive(),config:AutonomyConfigSchema}).strict().parse(req.body);
+  if(body.config.rollout==='shadow'&&!req.user?.is_admin)throw Object.assign(new Error('影子模式仅供管理员测试'),{statusCode:403});
   try{return await repo.configure(bot.tenant_id,bot.id,body.expectedEpoch,body.config)}catch(error){if(error instanceof AutonomyConflict)throw Object.assign(error,{statusCode:409});throw error}
  });
  app.post<{Params:{id:string}}>('/v1/bots/:id/autonomous/wake',async req=>{

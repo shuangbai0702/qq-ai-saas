@@ -13,7 +13,7 @@ class NaturalConversation(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.path=Path(self.tmp.name)/'behavior.sqlite'
         self.store=BehaviorStore(self.path);self.db=self.store.db;self.now=time.time()
-        self.cfg={'memory':True,'memoryAutoCapture':True,'memorySummary':True,'summaryRounds':5,'selfDevelopment':True,'naturalConversation':True}
+        self.cfg={'memory':True,'memoryAutoCapture':True,'memorySummary':True,'summaryRounds':30,'selfDevelopment':True,'naturalConversation':True}
     def tearDown(self):self.store.close();self.tmp.cleanup()
     def fact(self,name,value,scope='group:1',subject='11111',event='fact'):
         self.store.memory.remember(scope,subject,name,value,event,self.now)
@@ -32,7 +32,7 @@ class NaturalConversation(unittest.IsolatedAsyncioTestCase):
         self.summary('平江路秘密约定',scope='group:2',at=200)
         facts,summaries=recall(self.store,'group:1','11111','还记得平江路的夜景吗',self.cfg,lambda:True,{})
         self.assertIn('平江路',summaries[0]['summary']);self.assertNotIn('秘密',json.dumps(summaries,ensure_ascii=False))
-        self.assertEqual(summaries[0]['recall_reason'],'scoped_bm25')
+        self.assertEqual(summaries[0]['recall_reason'],'rolling_background')
     def test_fact_index_obeys_person_scope_correction_and_forget(self):
         self.fact('职业','木雕师');self.fact('职业','不应出现的私密职业',subject='22222')
         result=self.store.search.search('group:1','11111','木雕师');self.assertEqual(result[0]['value'],'木雕师')
@@ -109,7 +109,7 @@ class NaturalConversation(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(p.in_conversation('group:1','我也想听',{**cfg,'followupSeconds':0},1001))
     async def test_delayed_combined_reflection_cannot_undo_forget(self):
         self.fact('居住城市','杭州')
-        for i in range(5):self.store.reflection.record('group:1','11111',str(i),'我搬到了苏州','我喜欢昆曲')
+        for i in range(30):self.store.reflection.record('group:1','11111',str(i),'我搬到了苏州','我喜欢昆曲')
         entered=asyncio.Event();release=asyncio.Event()
         async def chat(**kw):
             entered.set();await release.wait()

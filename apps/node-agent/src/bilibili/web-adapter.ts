@@ -77,16 +77,22 @@ export class BiliWeb {
  }
  async transcript(bvid:string,part:number,language:string,c?:Credential,signal?:AbortSignal){
   const video=await this.video(bvid,c,signal),p=video.pages?.find((p:any)=>p.page===part);if(!p)throw new BiliError('part_missing','视频分P不存在');
-  const player=await this.get('/x/player/v2',{bvid,cid:p.cid},c,signal),available=player?.subtitle?.subtitles||[];
+  if(video.bvid!==bvid||!Number.isSafeInteger(video.aid)||video.aid<=0||!Number.isSafeInteger(p.cid)||p.cid<=0||!Number.isFinite(p.duration)||p.duration<=0)throw new BiliError('subtitle_identity','视频和分P身份无法核实');
+  // The legacy unsigned endpoint can return unrelated subtitle URLs even
+  // while echoing the requested BV/CID. Never fall back to that response.
+  const player=await this.signed('/x/player/wbi/v2',{aid:String(video.aid),cid:String(p.cid)},c,signal);
+  if(player?.bvid!==bvid||player?.aid!==video.aid||player?.cid!==p.cid)throw new BiliError('subtitle_identity','字幕播放器与目标视频身份不匹配');
+  const available=player?.subtitle?.subtitles||[];
   const sub=available.find((s:any)=>s.lan===language)||available.find((s:any)=>String(s.lan).includes('zh'))||available[0];
   if(!sub)return{modality:'subtitles',bvid,cid:p.cid,part,segments:[],coveredRanges:[],limitations:['平台未提供可用字幕；未分析音频或画面']};
+  if(typeof sub.subtitle_url!=='string'||!sub.subtitle_url)throw new BiliError('subtitle_unavailable','平台未提供有效字幕地址，不能改用未核实的字幕');
   const url=new URL(sub.subtitle_url.startsWith('//')?'https:'+sub.subtitle_url:sub.subtitle_url);
-  if(url.protocol!=='https:'||!/(^|\.)hdslb\.com$/.test(url.hostname))throw new BiliError('invalid_subtitle_source','字幕来源不允许');
-  const response=await this.transport(url,{signal:AbortSignal.any([signal??new AbortController().signal,AbortSignal.timeout(15000)]),redirect:'error'});
+  if(url.protocol!=='https:'||url.username||url.password||url.port&&url.port!=='443'||url.hash||!/(^|\.)hdslb\.com$/.test(url.hostname))throw new BiliError('invalid_subtitle_source','字幕来源不允许');
+  const response=await this.transport(url,{headers:{'User-Agent':'Mozilla/5.0','Referer':'https://www.bilibili.com/'},signal:AbortSignal.any([signal??new AbortController().signal,AbortSignal.timeout(15000)]),redirect:'error'});
   if(!response.ok){await response.body?.cancel();throw new BiliError('subtitle_unavailable','字幕读取失败')}
   const raw=await boundedJson(response);if(!Array.isArray(raw.body))throw new BiliError('invalid_subtitles','字幕格式无效');
   const segments=raw.body.slice(0,1000).map((v:any)=>({from:Number(v.from),to:Number(v.to),text:String(v.content).slice(0,600)}));
   if(segments.some((v:any,i:number)=>!Number.isFinite(v.from)||!Number.isFinite(v.to)||v.from<0||v.to<v.from||v.to>Number(p.duration)+5||i>0&&v.from<segments[i-1].from))throw new BiliError('subtitle_integrity','字幕时间轴不匹配，不能作为可靠内容');
-  return{modality:'subtitles',bvid,cid:p.cid,part,duration:p.duration,language:sub.lan,aiGenerated:!!sub.ai_type,source:url.origin+url.pathname,segments,coveredRanges:segments.map((v:any)=>[v.from,v.to]),limitations:['仅字幕文字，未观看画面、未分析声音',...(raw.body.length>1000?['字幕已截断']:[])]};
+  return{modality:'subtitles',bvid,cid:p.cid,part,duration:p.duration,language:sub.lan,aiGenerated:String(sub.lan).startsWith('ai-')||!!sub.ai_type,source:url.origin+url.pathname,binding:{aid:video.aid,bvid,cid:p.cid,endpoint:'/x/player/wbi/v2',subtitleId:typeof sub.id_str==='string'?sub.id_str:Number.isSafeInteger(sub.id)?String(sub.id):null},segments,coveredRanges:segments.map((v:any)=>[v.from,v.to]),limitations:['仅字幕文字，未观看画面、未分析声音','已核对签名播放器身份与时间轴；不保证字幕转写和翻译完全准确',...(raw.body.length>1000?['字幕已截断']:[])]};
  }
 }

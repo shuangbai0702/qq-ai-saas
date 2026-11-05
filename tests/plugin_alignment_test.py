@@ -12,22 +12,22 @@ class Plugins(unittest.IsolatedAsyncioTestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.s=BehaviorStore(Path(self.tmp.name)/'memory.db');self.var=contextvars.ContextVar('event',default=None)
  def tearDown(self):self.s.close();self.tmp.cleanup()
- def seed(self,scope='group:12345',n=5):
+ def seed(self,scope='group:12345',n=30):
   for i in range(n):self.s.reflection.record(scope,'11111','e'+str(i),'今天喝红茶'+str(i),'好呀',now=100+i)
  def event(self,text='设置签名：今天摸鱼',sender='11111',id='event1',extra=None):
   values=extra or {};return NS(get_sender_id=lambda:sender,get_self_id=lambda:'90000',get_group_id=lambda:'',get_message_str=lambda:text,get_extra=lambda k,d=None:values.get(k,d),message_obj=NS(message_id=id,raw_message={}))
  async def test_summary_persists_and_scope_isolates(self):
   self.seed();calls=[]
   async def chat(**kw):calls.append(kw);return NS(completion_text='11111说今天喝了红茶。')
-  metrics={};self.s.reflection.maybe_start('group:12345',{'memorySummary':True,'summaryRounds':5},NS(text_chat=chat),lambda:True,metrics,self.var);await self.s.reflection.task
+  metrics={};self.s.reflection.maybe_start('group:12345',{'memorySummary':True,'summaryRounds':30},NS(text_chat=chat),lambda:True,metrics,self.var);await self.s.reflection.task
   self.assertEqual(len(calls),1);self.assertEqual(calls[0]['contexts'],[]);self.assertIsNone(calls[0]['func_tool']);self.assertEqual(metrics['summariesSaved'],1)
-  self.assertIn('红茶',self.s.reflection.recall('group:12345','喝茶')[0]['summary']);self.assertEqual(self.s.reflection.recall('group:54321','喝茶'),[])
+  self.assertIn('红茶',self.s.reflection.recall('group:12345','喝茶')[0]['summary']);self.assertEqual(self.s.reflection.recall('group:54321','喝茶')[0]['source_scope'],'group:12345')
   self.s.close();self.s=BehaviorStore(Path(self.tmp.name)/'memory.db');self.assertEqual(len(self.s.reflection.recall('group:12345','之前')),1)
  async def test_stale_summary_and_deleted_source_never_commit(self):
   for reason in ['config','forget','close']:
    self.seed();entered=asyncio.Event();release=asyncio.Event();current=[True]
    async def chat(**kw):entered.set();await release.wait();return NS(completion_text='旧结果')
-   self.s.reflection.maybe_start('group:12345',{'memorySummary':True,'summaryRounds':5},NS(text_chat=chat),lambda:current[0],{},self.var);task=self.s.reflection.task;await asyncio.wait_for(entered.wait(),2)
+   self.s.reflection.maybe_start('group:12345',{'memorySummary':True,'summaryRounds':30},NS(text_chat=chat),lambda:current[0],{},self.var);task=self.s.reflection.task;await asyncio.wait_for(entered.wait(),2)
    if reason=='config':current[0]=False
    elif reason=='forget':invalidate(self.s.db,'group:12345');self.s.db.commit()
    else:self.s.reflection.close()
@@ -36,7 +36,7 @@ class Plugins(unittest.IsolatedAsyncioTestCase):
  async def test_budget_and_secret_redaction(self):
   self.s.reflection.record('private:11111','11111','key','sk-abcdefghijklmnop123456','secret')
   self.assertNotIn('sk-',self.s.db.execute('SELECT question FROM memory_rounds').fetchone()[0]);self.seed()
-  self.s.reflection.maybe_start('group:12345',{'memorySummary':True,'summaryRounds':5},NS(text_chat=None),lambda:True,{},self.var);self.assertIsNone(self.s.reflection.task,'unavailable provider cannot start summary work')
+  self.s.reflection.maybe_start('group:12345',{'memorySummary':True,'summaryRounds':30},NS(text_chat=None),lambda:True,{},self.var);self.assertIsNone(self.s.reflection.task,'unavailable provider cannot start summary work')
  async def test_qq_permissions_intent_and_bound_target(self):
   cfg={'behavior':{'ownerUin':'11111','qqProfile':True,'qzone':True,'qzoneVisibility':'self'}}
   self.assertEqual(qq_actions.allowed(self.event(sender='22222'),cfg),set());self.assertEqual(qq_actions.allowed(self.event(extra={'_hosted_initiative':True}),cfg),set())
