@@ -9,6 +9,25 @@ BASE = Path('/var/lib/fishbot-memory-control')
 CONTAINERS = os.environ.get('FISHBOT_GUARD_CONTAINERS', 'fishbot-current-platform').split(',')
 
 
+def recovery_count(old, now):
+    """A cooldown is not healthy running time. Only sustained armed time resets."""
+    since = old.get('healthySince')
+    healthy = isinstance(since, (int, float)) and float(old.get('at', now)) <= since <= now and now-since >= 600
+    return 1 if healthy else max(1, min(6, int(old.get('count', 0))+1))
+
+
+def mark_healthy(now):
+    try:
+        path = BASE/'recovery.json'
+        value = json.loads(path.read_text())
+        value['healthySince'] = now
+        temp = path.with_suffix('.tmp')
+        temp.write_text(json.dumps(value))
+        temp.replace(path)
+    except (OSError, ValueError, TypeError):
+        pass
+
+
 def rollback(reason):
     marker = BASE / 'disabled'
     if marker.exists():
@@ -17,7 +36,7 @@ def rollback(reason):
     now = time.time()
     try:
         old = json.loads((BASE/'recovery.json').read_text())
-        count = max(1, min(6, int(old.get('count', 0))+1)) if 0 <= now-float(old.get('at', 0)) < 600 else 1
+        count = recovery_count(old, now)
     except (OSError, ValueError, TypeError, AttributeError, OverflowError):
         count = 1
     try:
@@ -69,10 +88,12 @@ def inspect_container(name):
 
 def main():
     BASE.mkdir(mode=0o700, exist_ok=True)
+    mark_healthy(None)  # A guard restart cannot certify an unobserved interval.
     recovered_since = None
     previous = None
     bad_health = 0
     samples = []
+    healthy_since = None
     while True:
         try:
             identities = {name: inspect_container(name) for name in CONTAINERS}
@@ -99,9 +120,11 @@ def main():
             if bad_health >= 2:
                 reason = 'api-health-failed-twice'
             if reason:
+                healthy_since = None
                 recovered_since = None
                 rollback(reason)
             elif (BASE / 'disabled').exists():
+                healthy_since = None
                 recovered_since = recovered_since or now
                 try:
                     cooldown = max(30, min(600, float(json.loads((BASE/'recovery.json').read_text())['cooldown'])))
@@ -110,6 +133,14 @@ def main():
                 if now - recovered_since >= cooldown:
                     (BASE / 'disabled').unlink(missing_ok=True)
                     recovered_since = None
+            elif (BASE/'armed').exists() and now-(BASE/'armed').stat().st_mtime <= 15:
+                if healthy_since is None:
+                    healthy_since = now
+                    mark_healthy(now)
+            else:
+                if healthy_since is not None:
+                    mark_healthy(None)
+                healthy_since = None
             (BASE / 'guard-heartbeat').write_text(str(time.time()))
         except Exception as error:
             recovered_since = None

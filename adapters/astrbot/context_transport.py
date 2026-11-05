@@ -14,6 +14,30 @@ READONLY_FIELDS=frozenset(('origin','conversation_environment','state','recent_m
     'previous_proactive_output','dialogue','conversation_candidate','participation_entry',
     'reply_to','execution_memory_guidance','tool_context','autonomous_experience','execution_experience'))
 
+MODEL_STRENGTH_DIGITS=1
+
+
+def social_context_view(context):
+    """Shared presentation precision; never change persisted/ranked strength."""
+    result=copy.deepcopy(context)
+    if not isinstance(result,dict):return result
+    companion=result.get('companion')
+    if isinstance(companion,dict):
+        for row in companion['interests'] if isinstance(companion.get('interests'),list) else []:
+            if isinstance(row,dict) and type(row.get('heat')) in (int,float):row['heat']=round(row['heat'],MODEL_STRENGTH_DIGITS)
+        mood=companion.get('mood')
+        if isinstance(mood,dict) and type(mood.get('energy')) in (int,float):mood['energy']=round(mood['energy'],MODEL_STRENGTH_DIGITS)
+    def age(rows):
+        if not isinstance(rows,list):return
+        for row in rows:
+            if isinstance(row,dict) and type(row.get('at')) in (int,float) and row.get('source_event') is not None:row.pop('age_seconds',None)
+    for key in ('recent_messages','recent_cross_session_messages','conversation_timeline','ambient_group_messages'):age(result.get(key))
+    rounds=result.get('group_round_history')
+    if isinstance(rounds,list):
+        for row in rounds:
+            if isinstance(row,dict):age(row.get('messages'))
+    return result
+
 
 def split_context_snapshot(context):
     """Order the current snapshot, never cache or freeze memory/permissions.
@@ -203,7 +227,7 @@ def model_messages(messages):
 
 def memory_context_view(context):
     """Share exact event bodies, retain distinct state/recipient/receipt metadata."""
-    result=copy.deepcopy(context);seen={};changed=False
+    result=social_context_view(context);seen={};changed=False
     # Full event membership belongs to the database's coverage/forget logic.
     # The model needs the summary and its conversation/person provenance, not
     # thousands of opaque event IDs. Never compact evidence in real receipts.

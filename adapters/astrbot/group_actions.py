@@ -1,5 +1,6 @@
 """Protocol-bound mentions and owner-requested group messages, no scheduler."""
 import asyncio,json,re,time,copy,hashlib,base64
+from group_freshness import PreDispatchRejected
 
 MARKER=re.compile(r'\[AT:([^\]\r\n]*)(?:\]|$)',re.I)
 
@@ -159,6 +160,9 @@ async def send(event,cfg,db,group,text,mention,current,on_sent,include_prepared_
         try:on_sent('group:'+group,text,mention)
         except Exception:return json.dumps({'status':'partial','message_id':str(receipt),'scope':'group:'+group,'protocol_status':'confirmed','state_committed':False,'meaning':'QQ已确认群消息发送成功；会话状态更新未完成，请勿重复发送。'},ensure_ascii=False)
         return json.dumps({'status':'confirmed','message_id':str(receipt),'scope':'group:'+group,'image':bool(prepared),'meaning':'QQ已返回消息编号，已向指定群发送'+('并真实艾特所选成员。' if mention else '。')},ensure_ascii=False)
+    except PreDispatchRejected as error:
+        db.execute("UPDATE group_message_attempts SET state='not_sent' WHERE event=?",(key,));db.commit()
+        return json.dumps({'status':'not_sent','reason':str(error),'meaning':'发送前会话或配置已变化，未向QQ提交；不会把未发送当作成功。'},ensure_ascii=False)
     except asyncio.CancelledError:raise
     except Exception:return 'QQ未确认群消息成功，结果可能已提交；不会自动重试，请先查看群实际结果。'
 

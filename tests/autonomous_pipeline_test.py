@@ -20,6 +20,7 @@ from autonomous_runtime import evidence_limits,decision_environment,decision_clo
 
 async def main():
     original={'work':{'budget':{'tokens':19}},'goalRevision':7,'environment':{'now':123,'contacts':[{'scope':'private:12345678'}],'identity':{'ownerId':'12345678'},'innerTools':[{'name':'read','available':False,'retryAfterSeconds':123}],'capabilityCatalog':[{'kind':'research'}],'futureField':{'value':'keep me'}},'futureTop':[3,1,2]}
+    original['environment']['wakePolicy']={'idleCheckSeconds':300,'quietHours':{'startHour':0,'endHour':6,'enabled':True,'activeNow':False}}
     before=copy.deepcopy(original);projected=decision_request_view(original)
     assert projected==original and original==before,'request ordering changed context values or mutated its authority'
     assert list(projected)[0]=='environment' and list(projected['environment'])[:2]==['identity','innerTools']
@@ -30,10 +31,27 @@ async def main():
     definitions=json.loads(system.rsplit('\n',1)[1]);live=json.loads(live)
     assert not set(definitions['environment']) & set(live['environment'])
     restored={**live,'environment':{**definitions['environment'],**live['environment']}}
+    status=restored['environment'].pop('innerToolStatus')
+    restored['environment']['innerTools']=[{**tool,**state} for tool,state in zip(restored['environment']['innerTools'],status)]
+    restored['environment']['wakePolicy']['quietHours'].update(restored['environment'].pop('wakeStatus')['quietHours'])
     assert restored==original and original==before,'decision split lost fresh data or mutated authority'
     assert live['environment']['now']==123 and live['environment']['futureField']=={'value':'keep me'}
     changed_system,_=decision_model_request(changed,'actual persona and permissions')
-    assert json.loads(changed_system.rsplit('\n',1)[1])['environment']['innerTools'][0]['available'] is True
+    assert changed_system==system,'transient readiness invalidated the trusted prefix'
+    changed['environment']['wakePolicy']['quietHours']['activeNow']=True
+    assert decision_model_request(changed,'actual persona and permissions')[0]==system,'current quiet-hour status invalidated the configured prefix'
+    changed['environment']['innerTools'][0]['authorized']=False
+    assert decision_model_request(changed,'actual persona and permissions')[0]!=system,'permission change did not invalidate trusted prefix'
+    for field in ('availableTools','unavailableTools'):
+        changed=copy.deepcopy(original);changed['environment'][field]=['read']
+        assert decision_model_request(changed,'actual persona and permissions')[0]==system
+    for tool_patch in ({'parameters':{'type':'object'}},{'enabled':False},{'futurePermission':False}):
+        changed=copy.deepcopy(original);changed['environment']['innerTools'][0].update(tool_patch)
+        assert decision_model_request(changed,'actual persona and permissions')[0]!=system
+    collision=copy.deepcopy(original);collision['environment']['innerToolStatus']={'future':'preserve'}
+    collision_system,collision_live=decision_model_request(collision,'authority')
+    assert json.loads(collision_system.rsplit('\n',1)[1])['environment']['innerTools']==original['environment']['innerTools']
+    assert json.loads(collision_live)['environment']['innerToolStatus']=={'future':'preserve'}
     assert decision_model_request({'unknown':True},'authority')==('authority','{"unknown":true}')
     print('PIPELINE outer request ordering preserves current permissions, future fields, arrays and source object passed')
     # The fixture constructs Core directly. Production initializes this shared
@@ -353,7 +371,8 @@ async def main():
         def message_text(message):
             content=message['content']
             return content if isinstance(content,str) else ''.join(part.get('text','') for part in content)
-        payload=json.loads(message_text(next(m for m in messages if m['role']=='user')))
+        from decision_context import restore_append
+        payload=restore_append([{'role':m['role'],'content':message_text(m)} for m in messages])
         assert 'summary' not in payload and payload['priorModelState']=={'summary':data['summary'],'executionEvidence':False}
         assert payload['recentForeground']['eventId']=='actual-private-reply' and 'result' not in payload['recentForeground']
         execution=payload['recentForeground']['execution']
@@ -376,10 +395,11 @@ async def main():
         definition_message=next(m for m in messages if m['role']=='system' and '[本轮环境配置片段]' in message_text(m))
         current_definitions=json.loads(message_text(definition_message).rsplit('\n',1)[1])['environment']
         assert not set(current_definitions) & set(payload['environment']),'decision fields duplicated across messages'
-        assert current_definitions['innerTools']==decision_request_view({'environment':brain.snapshot('qq')})['environment']['innerTools']
+        restored_tools=[{**tool,**state} for tool,state in zip(current_definitions['innerTools'],payload['environment']['innerToolStatus'])]
+        assert restored_tools==decision_request_view({'environment':brain.snapshot('qq')})['environment']['innerTools']
         quiet=current_definitions['wakePolicy']['quietHours']
         assert (quiet['startHour'],quiet['endHour'])==(0,0)
-        assert quiet['enabled'] is False and quiet['activeNow'] is False
+        assert quiet['enabled'] is False and payload['environment']['wakeStatus']['quietHours']['activeNow'] is False
         assert quiet['timezone']=='UTC+08:00' and quiet['scope']=='unsolicited_outbound_messages'
         assert decision_clock(0)['localDateTime']=='1970-01-01T08:00:00+08:00'
         assert 'replyDeliveryScope' not in observation['result'],'evidence labeling mutated the durable observation'
@@ -387,6 +407,36 @@ async def main():
         assert any(m['role']=='system' and DELIBERATION_GUIDANCE in message_text(m) for m in messages)
         assert calls==[],'checking provenance sent an external message'
         print('PIPELINE actual outer request distinguishes unverified model state and current-scope reply receipts from task execution passed')
+
+        # Request history is disposable transport. It cannot alter current
+        # memory or keep writing after cancellation / forgetting / lease loss.
+        from decision_context import restore_append
+        continuation=[]
+        async def decision_fixture(*args,**kwargs):
+            continuation.append((args,copy.deepcopy(kwargs)))
+            return {'status':'completed','text':'{"action":null}'}
+        brain.decision_histories.clear()
+        base={'mood':'happy','background':'stable actual input '*300}
+        with patch.object(brain,'invoke',decision_fixture):
+            await brain.invoke_decision('qq',data['work'],json.dumps(base),'current authority','planning')
+            current={**base,'mood':'calm'}
+            await brain.invoke_decision('qq',data['work'],json.dumps(current),'current authority','planning')
+            args,kwargs=continuation[-1]
+            assert any(m.get('role')=='assistant' and m.get('content')=='{"action":null}' for m in kwargs['contexts'])
+            assert restore_append(kwargs['contexts']+[{'role':'user','content':args[2]}])==current
+            assert 'current authority' in args[3] and data['work']['id']==args[1]['id']
+            await brain.invoke_decision('qq',data['work'],json.dumps(current),'changed current authority','planning')
+            args,kwargs=continuation[-1]
+            assert not any(m.get('role')=='assistant' for m in kwargs['contexts'])
+            assert restore_append(kwargs['contexts']+[{'role':'user','content':args[2]}])==current
+        async def canceled_fixture(*args,**kwargs):raise asyncio.CancelledError()
+        with patch.object(brain,'invoke',canceled_fixture):
+            try:await brain.invoke_decision('qq',data['work'],json.dumps(current),'changed current authority','planning')
+            except asyncio.CancelledError:pass
+            else:assert False,'cancellation swallowed'
+        assert brain.decision_histories[('qq','planning')].history==[]
+        brain.decision_histories.clear()
+        print('PIPELINE actual decision entrance preserves latest state, system authority, Work and cancellation ownership passed')
 
 
         # Both layers read the same live compressed/pending memory, independent
@@ -403,7 +453,7 @@ async def main():
         st.reflection.incoming(scope,'12345678','shared-newer','new without any outer notification',now)
         research_requests.clear();await brain.think('qq',data)
         contexts=[m.model_dump() if hasattr(m,'model_dump') else m for m in research_requests[-1]['contexts']]
-        current=json.loads(message_text(next(m for m in contexts if m['role']=='user')))['environment']['sharedContext']
+        current=restore_append([{'role':m['role'],'content':message_text(m)} for m in contexts])['environment']['sharedContext']
         assert 'new without any outer notification' in json.dumps(current)
         st.db.execute("DELETE FROM memory_pending WHERE event IN ('shared-pending','shared-newer')")
         st.db.execute("UPDATE memory_summaries SET text='replacement compressed history' WHERE scope=?",(scope,));st.db.commit()
@@ -452,7 +502,7 @@ async def main():
         result=await brain.handle('qq','think',{'phase':'orientation','work':w,'decisionSchema':{'type':'object'},'goals':[],'autonomousActivity':{'regulation':{'fatigue':0,'initiativePressure':0.95}}})
         assert result['status']=='completed' and result['decision']['disposition']=='engage' and result['usage']['modelCalls']==1
         messages=[m.model_dump() if hasattr(m,'model_dump') else m for m in research_requests[-1]['contexts']]
-        payload=json.loads(message_text(next(m for m in messages if m['role']=='user')))
+        payload=restore_append([{'role':m['role'],'content':message_text(m)} for m in messages])
         assert payload['autonomousActivity']['regulation']['initiativePressure']==0.95
         assert 'priorModelState' not in payload and 'summary' not in payload
         assert all(k not in payload['environment'] for k in ('contexts','observedConversations','selfExperiences','foregroundFeedback'))

@@ -1,5 +1,6 @@
 """Pinned native runner contracts; provider is deterministic, not a real model."""
 import asyncio,json,os,sys,tempfile,unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 ROOT=Path(__file__).resolve().parents[1]
@@ -20,6 +21,18 @@ class Provider:
 
 class NativeTests(unittest.IsolatedAsyncioTestCase):
     def control(self,**kw):return RunControl(**{'model_calls':4,'tool_calls':3,'tokens':24000,'seconds':10,'current':lambda:True,**kw})
+    async def test_diagnostics_correlate_usage_without_logging_prompt_or_changing_request(self):
+        seen=[]
+        async def reply(n,kw):
+            seen.append(kw)
+            return LLMResponse(role='assistant',completion_text='done',usage=TokenUsage(input_other=10,input_cached=20,output=3),raw_completion={'id':'request-id','usage':{'prompt_tokens':30,'prompt_tokens_details':{'cached_tokens':20},'completion_tokens':3}})
+        control=self.control(trace={'botId':'bot','cycleId':'cycle','workId':'work','phase':'planning'})
+        with patch('astrbot.core.logger.info') as log:
+            await BoundedProvider(Provider(reply),control).text_chat(prompt='private prompt',system_prompt='private system')
+        payload=log.call_args.args[0]
+        self.assertNotIn('private prompt',payload);self.assertNotIn('private system',payload)
+        data=json.loads(payload.split(' ',1)[1]);self.assertEqual(data['cachedTokens'],20);self.assertEqual(data['phase'],'planning');self.assertEqual(data['responseId'],'request-id')
+        self.assertEqual(seen,[{'prompt':'private prompt','system_prompt':'private system'}])
     async def test_native_tools_feed_the_next_model_turn(self):
         observed=[]
         class Read(FunctionTool):

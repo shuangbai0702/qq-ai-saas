@@ -283,8 +283,12 @@ def install_runtime(core,settings):
             m['groupFreshnessModelCalls']=m.get('groupFreshnessModelCalls',0)+1
             try:
                 if work.scope==scope:payload['original_message']={'event':work.event_id,'sender_id':work.subject,'text':event.get_message_str()[:600]}
-                response=await provider.text_chat(prompt=json.dumps(payload,ensure_ascii=False),system_prompt=group_freshness.SYSTEM+'\n人格（只用于保持措辞）：'+str(s['config'].get('systemPrompt',''))[:4000],contexts=[],func_tool=None,request_max_retries=0)
+                from model_cache import decision_scope
+                with decision_scope(provider,s,'group_freshness'):
+                    response=await provider.text_chat(prompt=model_json(payload),system_prompt=group_freshness.review_system(s['config'].get('systemPrompt',''),(s['config'].get('behavior') or {}).get('ownerUin'),event.get_self_id()),contexts=[],func_tool=None,request_max_retries=0)
                 usage=getattr(response,'usage',None)
+                from model_cache import usage_evidence
+                m['lastGroupFreshnessUsage']={'at':time.time(),**usage_evidence(response)}
                 m['groupFreshnessTokens']=m.get('groupFreshnessTokens',0)+(getattr(usage,'total',0) or 0)
                 return response.completion_text
             finally:
@@ -376,6 +380,8 @@ def install_runtime(core,settings):
     async def call_action(self,action,**params):
         event=current_message_event.get()
         if event and getattr(event,'bot',None) is self and action in ('send_private_msg','send_group_msg'):
+            if event.get_extra('_hosted_lease') is not None:
+                group_freshness.guard_dispatch(event,stores.get(event.get_platform_id()),lambda:delivery_current(event),action,params)
             favorite_file=event.get_extra('_hosted_favorite_wire')
             # Only a renderer-bound QQ favorite gets the custom-sticker flag;
             # ordinary model images and user-provided wire data stay unchanged.
@@ -1095,6 +1101,11 @@ def install_runtime(core,settings):
                 m=metrics[e.get_platform_id()];m['successes']=m.get('successes',0)+1
                 raw=response.raw_completion
                 m['lastCall']={'time':time.time(),'model':getattr(raw,'model',None),'responseId':getattr(raw,'id',None),'latencyMs':round((time.time()-started)*1000),'promptHash':hashlib.sha256(str(b.arguments.get('system_prompt','')).encode()).hexdigest(),'usageReportedTotal':getattr(getattr(raw,'usage',None),'total_tokens',None)}
+                from model_cache import usage_evidence
+                m['lastCall'].update(usage_evidence(response))
+                if not e.get_extra('_hosted_internal_work'):
+                    from astrbot.core import logger
+                    logger.info('FISHBOT_MODEL_USAGE '+model_json({'botId':e.get_platform_id(),'phase':'foreground','eventId':str(getattr(e.message_obj,'message_id','')),'scope':bot_pipeline.delivery_scope(e),**m['lastCall']}))
             if isinstance(getattr(response,'completion_text',None),str):response.completion_text=clean_internal(response.completion_text)
             return response
         except Exception as error:
