@@ -29,6 +29,8 @@ def validate_member(id,body):
     require(text(body.get('uin',''),20) and (not body.get('uin') or re.fullmatch(r'\d{5,20}',body['uin']) is not None))
     require('botId' not in body or body['botId']==id)
     require('tenantId' not in body or text(body['tenantId'],80,False))
+    permit=body.get('systemChangePermitId')
+    require(permit is None or isinstance(permit,str) and re.fullmatch(r'\d{1,20}',permit) is not None)
     groups=body.get('groups')
     require(isinstance(groups,list) and len(groups)<=100 and all(isinstance(g,str) and re.fullmatch(r'\d{4,20}',g) for g in groups))
     cfg=body.get('config');platform=body.get('platform');behavior=body.get('behaviorConfig')
@@ -118,7 +120,7 @@ async def main():
         member={k:v for k,v in body.items() if k not in ('key','config','prompt')}
         member.update(confId=conf_id,events=0,modelConfigured=bool(body.get('key')))
         members[id]=member
-        behavior_settings[id]={'root':body['runtimeRoot'],'tenantId':body.get('tenantId'),'botId':id,'config':body['behaviorConfig'],'generation':body['generation'],'revision':body['revision'],'expectedUin':body.get('uin','')}
+        behavior_settings[id]={'root':body['runtimeRoot'],'tenantId':body.get('tenantId'),'botId':id,'config':body['behaviorConfig'],'generation':body['generation'],'revision':body['revision'],'systemChangePermitId':body.get('systemChangePermitId'),'expectedUin':body.get('uin','')}
         if body.get('key'):
             provider=copy.deepcopy(body['config']['provider'][0]);provider.update(id='provider-'+id,key=[body['key']])
             # load_provider initializes the real SDK but does not save the key.

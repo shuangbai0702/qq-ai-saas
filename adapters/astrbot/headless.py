@@ -38,7 +38,7 @@ async def main():
                 await original(message)
             platform.handle_msg=gated
     from behavior import install_runtime
-    behavior=install_runtime(core,{'qq':{'root':str(root.parent),'tenantId':manifest.get('tenantId'),'botId':manifest.get('botId',root.parent.name),'config':manifest.get('config',{}),'generation':manifest['generation'],'revision':manifest['revision'],'expectedUin':manifest.get('expectedUin','')}})
+    behavior=install_runtime(core,{'qq':{'root':str(root.parent),'tenantId':manifest.get('tenantId'),'botId':manifest.get('botId',root.parent.name),'config':manifest.get('config',{}),'generation':manifest['generation'],'revision':manifest['revision'],'systemChangePermitId':manifest.get('systemChangePermitId'),'expectedUin':manifest.get('expectedUin','')}})
     stop=asyncio.Event()
     async def health(request):
         if request.headers.get('Authorization')!='Bearer '+manifest['token']:raise web.HTTPUnauthorized()

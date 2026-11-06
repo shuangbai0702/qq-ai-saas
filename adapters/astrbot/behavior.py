@@ -37,6 +37,8 @@ class BehaviorStore:
         self.model_journals={}
         Path(path).parent.mkdir(parents=True,exist_ok=True)
         self.db=sqlite3.connect(path)
+        from system_contract import SystemContract
+        self.system_contract=SystemContract(self.db)
         self.db.executescript('''PRAGMA journal_mode=WAL;
         CREATE TABLE IF NOT EXISTS facts(scope TEXT,subject TEXT,name TEXT,value TEXT,event TEXT,updated REAL,version INTEGER,active INTEGER,PRIMARY KEY(scope,subject,name,version));
         CREATE TABLE IF NOT EXISTS relations(scope TEXT,subject TEXT,affinity INTEGER,emotion TEXT,expires REAL,last_seen REAL,PRIMARY KEY(scope,subject));
@@ -131,10 +133,12 @@ class BehaviorStore:
         return autonomy.reserve_send(self.db,scope,event,cfg,now)
     def close(self):self.planner.close();self.memory.close();self.reflection.close();self.social.close();autonomy.recover_unstarted(self.db);self.db.close()
 
+def is_no_reply_marker(text):return isinstance(text,str) and text.strip()=='[NO_REPLY]'
+
 def clean_text(text,max_chars=500):
     text=clean_internal(text)
     text=re.sub(r'<think>.*?</think>','',text,flags=re.S|re.I)
-    if '[NO_REPLY]' in text:return []
+    if is_no_reply_marker(text):return []
     text=re.sub(r'\[(?:TOOL|INTERNAL|SYSTEM)[^\]]*\]','',text,flags=re.I)
     parts=[];offset=0
     for m in re.finditer(r'\[QQ_FACE:(\d{1,3})\]',text):
@@ -151,6 +155,23 @@ def clean_text(text,max_chars=500):
             value=value[:max(0,max_chars-count)];count+=len(value)
             if value.strip():out.append((kind,value))
     return out
+
+def suppress_separate_reasoning(response,event):
+    """Hide only a typed reasoning-only response; never guess from prose."""
+    raw=getattr(response,'raw_completion',None)
+    if raw is None:return False
+    from model_cache import response_shape
+    shape=response_shape(raw)
+    if not shape.get('reasoningReported') or not (shape.get('reasoningChars') or 0):return False
+    if shape.get('contentChars') not in (None,0):return False
+    choices=raw.get('choices') if isinstance(raw,dict) else getattr(raw,'choices',None)
+    choice=choices[0] if isinstance(choices,(list,tuple)) and choices else None
+    message=(choice.get('message') if isinstance(choice,dict) else getattr(choice,'message',None)) if choice is not None else None
+    tool_calls=message.get('tool_calls') if isinstance(message,dict) else getattr(message,'tool_calls',None)
+    if tool_calls or getattr(response,'tools_call',None):return False
+    if isinstance(getattr(response,'completion_text',None),str):response.completion_text=''
+    if event:event.set_extra('_hosted_reply_withheld',True)
+    return True
 
 def install_runtime(core,settings):
     installed=getattr(core,'_hosted_runtime_binding',None)
@@ -321,7 +342,11 @@ def install_runtime(core,settings):
     def store(id,s):
         if id not in stores:
             stores[id]=BehaviorStore(Path(s['root'])/'behavior.sqlite')
-        stores[id].reflection.binding=({**(s['config'].get('behavior') or {}),'_persona':s['config'].get('systemPrompt','')},provider_for(id),lambda:settings.get(id) is s and id not in core.event_bus.stopped_platforms,metrics.setdefault(id,{}),current_message_event)
+        provider=provider_for(id)
+        stores[id].reflection.binding=({**(s['config'].get('behavior') or {}),'_persona':s['config'].get('systemPrompt','')},provider,lambda:settings.get(id) is s and id not in core.event_bus.stopped_platforms,metrics.setdefault(id,{}),current_message_event)
+        if provider is not None:
+            from model_cache import bind_system_contract
+            bind_system_contract(provider,stores[id].system_contract,s)
         return stores[id]
     def internal_context(id,event,scope,objective):
         s=settings[id];st=store(id,s);b=s['config'].get('behavior') or {};now=time.time()
@@ -756,7 +781,7 @@ def install_runtime(core,settings):
                 conversation=await manager.get_conversation(event.unified_msg_origin,cid)
                 if conversation is None:raise RuntimeError('empty mention conversation unavailable')
                 if not current(event):return
-                event.set_extra('provider_request',ProviderRequest(conversation=conversation,prompt=json.dumps({'event':'mention','text':'','sender_id':subject,'self_id':str(event.get_self_id())},ensure_ascii=False),system_prompt='本轮是协议确认的空艾特事件，没有用户正文。结合当前对话自然回应，不假设对方提出了任务。'))
+                event.set_extra('provider_request',ProviderRequest(conversation=conversation,prompt=json.dumps({'event':'mention','text':'','sender_id':subject,'self_id':str(event.get_self_id()),'meaning':'本轮是协议确认的空艾特事件，没有用户正文。结合当前对话自然回应，不假设对方提出了任务。'},ensure_ascii=False),system_prompt=s['config'].get('systemPrompt','')))
             bot_pipeline.stage(event,'model_tools')
             if group:
                 event.set_extra('_hosted_freshness_cursors',{scope:st.freshness.cursor(scope)})
@@ -781,10 +806,16 @@ def install_runtime(core,settings):
         if self.get_extra('_hosted_model_error',False):
             # AstrBot's native error reply can contain raw upstream exception
             # text. Keep typed failure telemetry, never forward it to QQ.
-            message=copy.copy(message);message.chain=[Plain('我这边刚才没连上，稍后再跟我说一声。')]
+            guard_error=self.get_extra('_hosted_context_guard_error')
+            text='本轮上下文完整性校验未通过，未发送回复。' if guard_error else '我这边刚才没连上，稍后再跟我说一声。'
+            message=copy.copy(message);message.chain=[Plain(text)]
             bot_pipeline.stop(self,'model_error','error')
-        if any(isinstance(x,Plain) and '[NO_REPLY]' in x.text for x in message.chain):
-            metrics.setdefault(self.get_platform_id(),{})['lastMemeDecision']={'reason':'no_reply','at':time.time()};return
+        if all(isinstance(x,Plain) for x in message.chain) and is_no_reply_marker(''.join(x.text for x in message.chain if isinstance(x,Plain))):
+            metrics.setdefault(self.get_platform_id(),{})['lastMemeDecision']={'reason':'no_reply','at':time.time()}
+            # A designed silence still needs its own terminal reason: without it
+            # "chose not to answer" and "had no visible text" look identical.
+            bot_pipeline.stop(self,'model_no_reply_marker','silent')
+            return
         id=self.get_platform_id();group=str(self.get_group_id() or '');scope='group:'+group if group else 'private:'+str(self.get_sender_id())
         if self.get_extra('_hosted_internal_work'):scope=self.get_extra('_hosted_pipeline').scope
         social=store(id,s).social
@@ -865,7 +896,11 @@ def install_runtime(core,settings):
                 return
             if str(member.get('user_id'))!=str(contact) or not delivery_current(self):return
             chain=[At(qq=contact)]+[x for x in chain if not isinstance(x,At)]
-        if not chain and not voice_bytes:return
+        if not chain and not voice_bytes:
+            # Distinguish "the reply was withheld because it was reasoning" from
+            # "the model produced nothing visible"; both stay silent.
+            bot_pipeline.stop(self,'reasoning_only_reply' if self.get_extra('_hosted_reply_withheld') else 'empty_visible_text','silent')
+            return
         rhythm=s['config'].get('behavior') or {}
         if not self.get_extra('_hosted_model_error',False):
             for x in chain:
@@ -995,8 +1030,15 @@ def install_runtime(core,settings):
             m=metrics.setdefault(id,{});m['autonomousGroupSent']=m.get('autonomousGroupSent',0)+1
             active_store.db.execute("UPDATE companion_motives SET status='contacted' WHERE scope=? AND subject=? AND status='open'",(scope,contact));active_store.db.commit()
         initiative.outgoing(active_store.db,scope,text,time.time());metrics.setdefault(id,{}).setdefault('replies',0);metrics[id]['replies']+=1
-        if rhythm.get('memory',True) and self.get_extra('_hosted_memory_epoch',active_store.reflection.epoch())==active_store.reflection.epoch() and not self.get_extra('_hosted_initiative',False) and not self.get_extra('_hosted_model_error',False):
-            active_store.reflection.record(scope,str(self.get_sender_id()),getattr(self.message_obj,'message_id',''),self.get_message_str(),text,context_through=self.get_extra('_hosted_context_at'),context_messages=self.get_extra('_hosted_group_round_messages'),materials=self.get_extra('_hosted_summary_materials'))
+        complete_receipts=bool(work and work.planned_messages>0 and work.confirmed_messages==work.planned_messages)
+        if complete_receipts and rhythm.get('memory',True) and self.get_extra('_hosted_memory_epoch',active_store.reflection.epoch())==active_store.reflection.epoch() and not self.get_extra('_hosted_initiative',False) and not self.get_extra('_hosted_model_error',False):
+            # Media-only replies are completed business rounds too. Preserve
+            # only their confirmed type, never invent a textual description.
+            answer=text
+            if not answer.strip():
+                kinds=list(dict.fromkeys(type(c).__name__ for outgoing in plan.messages for c in outgoing.chain if isinstance(c,(Image,Record,Face))))
+                if kinds:answer='[平台已确认发送非文本消息：'+','.join(kinds)+']'
+            active_store.reflection.record(scope,str(self.get_sender_id()),getattr(self.message_obj,'message_id',''),self.get_message_str(),answer,context_through=self.get_extra('_hosted_context_at'),context_messages=self.get_extra('_hosted_group_round_messages'),materials=self.get_extra('_hosted_summary_materials'))
             provider=provider_for(id)
             active_store.reflection.maybe_start(scope,{**rhythm,'_persona':s['config'].get('systemPrompt','')},provider,lambda:settings.get(id) is s and id not in core.event_bus.stopped_platforms,metrics[id],current_message_event)
             care.track(active_store,active_store.reflection.task)
@@ -1007,7 +1049,10 @@ def install_runtime(core,settings):
         if event and event.get_extra('_hosted_lease') is not None and not delivery_current(event):raise asyncio.CancelledError('stale bot configuration')
         if event and setting(event):
             from context_protocol import persona_prompt
-            bound.arguments['system_prompt']=persona_prompt(bound.arguments.get('system_prompt'),images=bool((setting(event)['config'].get('behavior') or {}).get('memeEnabled')))
+            # Keep the same base system bytes for every event. Whether a visual
+            # capability is configured is supplied in the current platform
+            # event data and the actual tool list, both rechecked by the backend.
+            bound.arguments['system_prompt']=persona_prompt(bound.arguments.get('system_prompt'),images=True)
             # Clean assistant history only; never rewrite a user's words or tool
             # arguments. Copy first because upstream may retain this list.
             if isinstance(bound.arguments.get('contexts'),list):
@@ -1066,7 +1111,7 @@ def install_runtime(core,settings):
                     current_rules+='\n[本轮真实发言者]'+json.dumps({'sender_id':speaker.get('sender_id'),'owner_id':speaker.get('owner_id'),'relationship':'已绑定主人' if speaker.get('owner') else '普通聊天对象；不是主人'},ensure_ascii=False)+'。这标识作者，不表示必须回复；群聊是否需要接话仍结合participation_entry与实际对象判断。不要把其他人的话或旧回复的称呼移到当前对象身上。\n'
             except (TypeError,ValueError):pass
             from context_transport import request_context_view
-            bound.arguments['system_prompt'],bound.arguments['contexts']=request_context_view(bound.arguments.get('system_prompt'),bound.arguments.get('contexts'),bound.arguments.get('prompt'),protocol,current_rules,request_context(event),bound.arguments.get('tool_calls_result'))
+            bound.arguments['system_prompt'],bound.arguments['contexts']=request_context_view(bound.arguments.get('system_prompt'),bound.arguments.get('contexts'),bound.arguments.get('prompt'),protocol,current_rules,request_context(event),bound.arguments.get('tool_calls_result'),incremental_policy=True)
             metrics[event.get_platform_id()]['requests']+=1
         bound.arguments['request_max_retries']=0
         return bound
@@ -1079,16 +1124,38 @@ def install_runtime(core,settings):
         if not pending:return
         model_journal_pending.set(None)
         owned,key,journal,prepared,epoch=pending
-        valid=(current(event) and (not event.get_extra('_hosted_internal_work') or delivery_current(event)) and stores.get(event.get_platform_id()) is owned
-               and owned.model_journals.get(key) is journal and owned.reflection.epoch()==epoch)
+        from readonly_journal import visible_summary_ids
         retained=False
-        if success and valid:retained=journal.commit(prepared)
-        elif valid:journal.abort_candidate(prepared)
-        else:journal.retire_committed(prepared,'authority_changed')
+        if event.get_extra('_hosted_internal_work'):
+            # Existing inner-Work lifecycle remains outside the foreground R4
+            # scope; keep its prior settlement behavior unchanged.
+            valid=(current(event) and delivery_current(event) and stores.get(event.get_platform_id()) is owned
+                   and owned.model_journals.get(key) is journal and owned.reflection.epoch()==epoch)
+            material_current=owned.reflection.context_dependency(visible_summary_ids(prepared.state))==prepared.retirement
+            if success and valid and material_current:retained=journal.commit(prepared)
+            elif valid and material_current:journal.abort_candidate(prepared)
+            else:journal.retire_committed(prepared,'authority_changed')
+        else:
+            same_owner=(stores.get(event.get_platform_id()) is owned and owned.model_journals.get(key) is journal)
+            latest=journal.serial==prepared.serial
+            valid=False;material_current=True
+            if same_owner:
+                valid=current(event) and owned.reflection.epoch()==epoch
+                material_current=owned.reflection.context_dependency(visible_summary_ids(prepared.state),key)==prepared.retirement
+            elif not owned.reflection.closed:
+                # Release only this stale candidate's permit. The replacement
+                # store and its committed prefix remain untouched.
+                journal.abort_candidate(prepared)
+            if same_owner and latest and not material_current:
+                # A real forget/summary dependency change invalidates the old
+                # wire view. A stale event lease or failed request does not.
+                journal.retire_committed(prepared,'memory_state_changed')
+            elif same_owner and latest and success and valid:retained=journal.commit(prepared)
+            elif same_owner and latest:journal.abort_candidate(prepared)
         from model_cache import record_diagnostic
         record_diagnostic(event.get_extra('_hosted_lease'),{'kind':'context_result','phase':'inner_execution' if event.get_extra('_hosted_internal_work') else 'foreground',
-            'status':('commit' if retained else 'not_retained') if success and valid else 'abort' if valid else 'retire',
-            'reason':None if retained else 'candidate_or_size_boundary' if success and valid else 'request_failed' if valid else 'authority_changed',
+            'status':('commit' if retained else 'not_retained') if success and valid and material_current else 'abort' if valid and material_current else 'retire',
+            'reason':None if retained else 'candidate_or_size_boundary' if success and valid and material_current else 'request_failed' if valid and material_current else 'summary_changed_during_request' if valid else 'authority_changed',
             'resetDetail':prepared.detail,**(prepared.usage or {})})
     async def prepare_chat_payload(self,*args,**kwargs):
         payload,query=await prepare(self,*args,**kwargs)
@@ -1102,9 +1169,14 @@ def install_runtime(core,settings):
         from summary_material import coverage,project_history,source,digest,snapshots
         owned=stores.get(image_event.get_platform_id()) if image_event else None
         work=image_event.get_extra('_hosted_pipeline') if image_event else None
-        capture=bool(owned and work and work.source in ('message','deferred_group') and (setting(image_event)['config'].get('behavior') or {}).get('memory',True))
+        from model_cache import is_foreground_event
+        foreground=is_foreground_event(image_event)
+        if foreground and owned is None:
+            from readonly_journal import ContextRecoveryUnavailable
+            raise ContextRecoveryUnavailable('A foreground request has no bot-owned append-only journal.')
+        memory_capture=bool(foreground and (setting(image_event)['config'].get('behavior') or {}).get('memory',True))
         signatures={}
-        if capture:
+        if memory_capture:
             signatures={str(origin['event_id']):digest(m) for m in projected if (origin:=source(m)) and origin['scope']==work.scope}
             before_count=len(projected)
             projected=project_history(projected,coverage(owned.db,work.scope,signatures),work.scope,work.event_id)
@@ -1113,28 +1185,42 @@ def install_runtime(core,settings):
         projected=await constrain_messages(projected)
         if image_event and image_event.get_extra('_hosted_lease') is not None and not delivery_current(image_event):
             raise asyncio.CancelledError('stale_model_image_request')
-        if capture:image_event.set_extra('_hosted_summary_materials',snapshots(projected,work.scope,signatures))
+        if memory_capture:image_event.set_extra('_hosted_summary_materials',snapshots(projected,work.scope,signatures))
         internal_identity=image_event.get_extra('_hosted_internal_work') if image_event else None
         internal=bool(owned and work and work.source=='autonomous' and isinstance(internal_identity,dict) and internal_identity.get('id')==work.event_id)
-        if (capture or internal) and isinstance(projected,list):
-            from readonly_journal import ReadonlyJournal
+        if (foreground or internal) and isinstance(projected,list):
+            from readonly_journal import ReadonlyJournal,visible_summary_ids
             key=('autonomous',work.event_id) if internal else work.scope
             journal=owned.model_journals.pop(key,None)
-            if journal is None:journal=ReadonlyJournal()
+            if journal is None:journal=ReadonlyJournal(owned.db,key if isinstance(key,str) else None)
             owned.model_journals[key]=journal
             # The one active Work is temporary and must not evict a chat's
             # warm prefix. Its journal is released by invoke's finally.
             chat_keys=[k for k in owned.model_journals if isinstance(k,str)]
             for old_key in chat_keys[:-8]:owned.model_journals.pop(old_key)
             epoch=owned.reflection.epoch()
+            dependency=owned.reflection.context_dependency(visible_summary_ids(projected),work.scope if foreground else None)
             stamp=(id(self),setting(image_event).get('generation'),setting(image_event).get('revision'),epoch,
                    hashlib.sha256(model_json({k:payload.get(k) for k in ('model','tools','tool_choice','reasoning_effort')}).encode()).hexdigest())
-            group_turn=(work.scope,str(work.event_id),str(work.subject)) if capture and image_event.get_extra('_hosted_group_round_history') and work.scope.startswith('group:') else None
-            prepared=journal.prepare(projected,stamp,group_turn=group_turn)
+            group_turn=(work.scope,str(work.event_id),str(work.subject)) if foreground and image_event.get_extra('_hosted_group_round_history') and work.scope.startswith('group:') else None
+            lease=setting(image_event);audit_id=lease.get('systemChangePermitId');web_proof=None
+            if audit_id not in (None,''):
+                web_proof={'permitId':str(audit_id),'revision':lease.get('revision'),'contextScope':work.scope}
+            try:
+                prepared=journal.prepare(projected,stamp,group_turn=group_turn,
+                                         reconstruction_authority=owned.reflection,reconstruction_scope=work.scope,
+                                         reconstruction_web_proof=web_proof,reconstruction_context_scope=work.scope,
+                                         retirement=dependency,strict=foreground,compact_policy=foreground)
+            except BaseException:
+                if foreground and journal.last is None:owned.model_journals.pop(key,None)
+                raise
             if prepared:
                 journal_reason=prepared.reason or 'append'
                 projected=prepared.wire
                 model_journal_pending.set((owned,key,journal,prepared,epoch))
+                if foreground:
+                    from model_cache import expect_append_only_messages
+                    expect_append_only_messages(projected)
                 from model_cache import record_diagnostic
                 record_diagnostic(image_event.get_extra('_hosted_lease'),{'kind':'context','phase':'inner_execution' if internal else 'foreground',
                     'workId':work.event_id,'resetReason':prepared.reason or None,'resetDetail':prepared.detail or None,
@@ -1154,12 +1240,21 @@ def install_runtime(core,settings):
         b=inject(chat,self,args,kwargs)
         started=time.time()
         journal_token=model_journal_pending.set(None)
-        from model_cache import begin_attempt,finish_attempt,reset_attempt
-        attempt_token=begin_attempt(current_message_event.get(),self)
+        from model_cache import begin_attempt,finish_attempt,reset_attempt,current_lease
+        event=current_message_event.get();lease=current_lease(event,self)
+        system_store=stores.get(event.get_platform_id()) if event else None
+        if system_store is None and isinstance(lease,dict) and lease.get('root'):
+            root=str(Path(lease['root']).resolve())
+            system_store=next((candidate for candidate in stores.values() if str(candidate.root.resolve())==root),None)
+        from model_cache import is_foreground_event
+        foreground=is_foreground_event(event)
+        attempt_token=begin_attempt(event,self,system_contract=getattr(system_store,'system_contract',None) if foreground else None,
+                                    system_permit_id=lease.get('systemChangePermitId') if foreground and isinstance(lease,dict) else None)
         try:
             response=await chat(*b.args,**b.kwargs)
-            finish_attempt('completed',response)
             e=current_message_event.get()
+            if foreground:suppress_separate_reasoning(response,e)
+            finish_attempt('completed',response)
             settle_journal(e,True)
             if e and current(e) and e.get_platform_id() in metrics:
                 m=metrics[e.get_platform_id()];m['successes']=m.get('successes',0)+1
@@ -1177,9 +1272,15 @@ def install_runtime(core,settings):
             e=current_message_event.get()
             settle_journal(e,False)
             if e and current(e) and e.get_platform_id() in metrics:
-                metrics[e.get_platform_id()]['failures']+=1
-                metrics[e.get_platform_id()]['lastFailure']={'time':time.time(),'type':type(error).__name__}
+                metric=metrics[e.get_platform_id()];metric['failures']=metric.get('failures',0)+1
+                metric['lastFailure']={'time':time.time(),'type':type(error).__name__}
                 e.set_extra('_hosted_model_error',True)
+                from readonly_journal import ContextCapacityExceeded,ContextPrefixViolation,ContextReconstructionDenied,ContextRecoveryUnavailable
+                from system_contract import SystemContractViolation
+                from model_cache import AppendOnlyWireViolation
+                if isinstance(error,(ContextCapacityExceeded,ContextPrefixViolation,ContextReconstructionDenied,ContextRecoveryUnavailable,SystemContractViolation,AppendOnlyWireViolation)):
+                    e.set_extra('_hosted_context_guard_error',type(error).__name__)
+                    bot_pipeline.stop(e,'context_integrity:'+type(error).__name__,'error')
             raise
         except asyncio.CancelledError:
             finish_attempt('canceled',reason='cancelled')
@@ -1191,8 +1292,16 @@ def install_runtime(core,settings):
     async def text_stream(self,*args,**kwargs):
         b=inject(stream,self,args,kwargs)
         journal_token=model_journal_pending.set(None)
-        from model_cache import begin_attempt,finish_attempt,reset_attempt
-        attempt_token=begin_attempt(current_message_event.get(),self)
+        from model_cache import begin_attempt,finish_attempt,reset_attempt,current_lease
+        event=current_message_event.get();lease=current_lease(event,self)
+        system_store=stores.get(event.get_platform_id()) if event else None
+        if system_store is None and isinstance(lease,dict) and lease.get('root'):
+            root=str(Path(lease['root']).resolve())
+            system_store=next((candidate for candidate in stores.values() if str(candidate.root.resolve())==root),None)
+        from model_cache import is_foreground_event
+        foreground=is_foreground_event(event)
+        attempt_token=begin_attempt(event,self,system_contract=getattr(system_store,'system_contract',None) if foreground else None,
+                                    system_permit_id=lease.get('systemChangePermitId') if foreground and isinstance(lease,dict) else None)
         last_response=None
         try:
             async for response in stream(*b.args,**b.kwargs):
@@ -1200,6 +1309,7 @@ def install_runtime(core,settings):
                 first_response()
                 last_response=response
                 event=current_message_event.get()
+                if foreground:suppress_separate_reasoning(response,event)
                 if event and event.get_extra('_hosted_lease') is not None and not delivery_current(event):return
                 yield response
             finish_attempt('completed',last_response)
@@ -1208,8 +1318,8 @@ def install_runtime(core,settings):
             finish_attempt('failed',reason=type(error).__name__)
             e=current_message_event.get()
             if e and current(e) and e.get_platform_id() in metrics:
-                metrics[e.get_platform_id()]['failures']+=1
-                metrics[e.get_platform_id()]['lastFailure']={'time':time.time(),'type':type(error).__name__}
+                metric=metrics[e.get_platform_id()];metric['failures']=metric.get('failures',0)+1
+                metric['lastFailure']={'time':time.time(),'type':type(error).__name__}
                 e.set_extra('_hosted_model_error',True)
             raise
         finally:
@@ -1258,6 +1368,8 @@ def install_runtime(core,settings):
     timer=initiative.start(core,settings,store,metrics)
     def release(id):
         brain.release(id)
+        from model_cache import unbind_system_contract
+        unbind_system_contract(provider_for(id))
         st=stores.pop(id,None)
         if st:care.stamp(st.root);st.close()
         metrics.pop(id,None)
@@ -1265,6 +1377,8 @@ def install_runtime(core,settings):
         if core._hosted_runtime_binding['closed']:return
         core._hosted_runtime_binding['closed']=True
         brain.close()
+        from model_cache import unbind_system_contract
+        for id in list(settings):unbind_system_contract(provider_for(id))
         care.close();care_timer.cancel()
         timer.cancel()
         for s in stores.values():s.close()

@@ -6,7 +6,7 @@ Serialization preserves dictionary insertion order, arrays and string contents.
 """
 import hashlib,json,re
 
-PERSONA_PREFIX='important[要时刻注意自己应该保持人格，不要机械性、任务性，要像人之间的聊天；不要向用户做无关解释，避免长文解释；擅长优先用QQ收藏表情包，其次平台自带表情包，你要像一个真实的人，表达自己情绪，可以拒绝别人，也可以主动找别人]'
+PERSONA_PREFIX='important[要时刻注意自己应该保持人格，不要机械性，任务性得对话]'
 PERSONA_IMAGES='自然交流时多用贴合语境的表情表达，优先选语义合适的QQ收藏表情；没有合适收藏再选平台表情。遇到自己喜欢、适合以后使用的QQ表情，可以主动调用已启用的收藏工具保存，以真实回执确认结果。不为凑图打断交流，不覆盖专门的角色输出格式，具体发送以已启用能力和真实回执为准。'
 
 def persona_prompt(value,images=False):

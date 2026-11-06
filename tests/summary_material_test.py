@@ -83,6 +83,61 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         from memory_reflection import invalidate
         invalidate(self.db,SCOPE,'12345678');self.db.commit()
         self.assertEqual(material.coverage(self.db,SCOPE),{})
+
+    async def test_only_exact_successful_35_round_summary_mints_single_use_permit(self):
+        async def summarize(**kw):return NS(completion_text=json.dumps({'summary':'35轮已成功整理的真实摘要'}))
+        for index in range(35):
+            self.store.reflection.record(SCOPE,'12345678',f'checkpoint-{index}',f'真实问题{index}',f'已确认回复{index}')
+        self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=summarize),lambda:True,{},self.var))
+        await self.drain()
+        row=self.db.execute('SELECT round_count,state,summary_id FROM memory_reconstruction_checkpoints WHERE scope=?',(SCOPE,)).fetchone()
+        self.assertEqual(row[:2],(35,'available'));self.assertIsNotNone(row[2])
+        permit=self.store.reflection.reserve_context_reconstruction(SCOPE,'failed-candidate',[row[2]])
+        self.assertIsNotNone(permit);self.assertTrue(self.store.reflection.settle_context_reconstruction(permit,False))
+        retry=self.store.reflection.reserve_context_reconstruction(SCOPE,'successful-candidate',[row[2]])
+        self.assertIsNotNone(retry);self.assertTrue(self.store.reflection.settle_context_reconstruction(retry,True))
+        self.assertEqual(self.db.execute('SELECT state FROM memory_reconstruction_checkpoints WHERE scope=?',(SCOPE,)).fetchone()[0],'consumed')
+        self.assertIsNone(self.store.reflection.reserve_context_reconstruction(SCOPE,'replay',[row[2]]))
+        self.assertIsNone(self.store.reflection.reserve_context_reconstruction('private:87654321','unrelated-scope',[row[2]]))
+        self.assertIsNone(self.store.reflection.reserve_context_reconstruction(SCOPE,'unshown-summary',[row[2]+1000]))
+
+    async def test_summary_commit_fences_inflight_scope_even_if_prior_rows_survive(self):
+        entered,release=asyncio.Event(),asyncio.Event()
+        async def summarize(**kw):
+            entered.set();await release.wait()
+            return NS(completion_text=json.dumps({'summary':'本会话35轮完成的新摘要'}))
+        for index in range(35):self.store.reflection.record(SCOPE,'12345678',f'fence-{index}','真实问题','已确认答复')
+        before=self.store.reflection.context_dependency([],SCOPE)
+        unrelated=self.store.reflection.context_dependency([],'private:87654321')
+        self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=summarize),lambda:True,{},self.var))
+        await asyncio.wait_for(entered.wait(),2)
+        self.assertEqual(before,self.store.reflection.context_dependency([],SCOPE))
+        release.set();await self.drain()
+        self.assertNotEqual(before,self.store.reflection.context_dependency([],SCOPE))
+        self.assertEqual(unrelated,self.store.reflection.context_dependency([],'private:87654321'))
+
+    async def test_web_save_permit_is_trusted_scope_bound_and_single_use(self):
+        proof={'permitId':'audit-123','revision':19,'contextScope':'private:12345678'}
+        permit=self.store.reflection.reserve_context_reconstruction('private:12345678','first',[],proof)
+        self.assertEqual(permit['kind'],'web_config')
+        self.assertTrue(self.store.reflection.settle_context_reconstruction(permit,False))
+        retry=self.store.reflection.reserve_context_reconstruction('private:12345678','retry',[],proof)
+        self.assertTrue(self.store.reflection.settle_context_reconstruction(retry,True))
+        self.assertIsNone(self.store.reflection.reserve_context_reconstruction('private:12345678','replay',[],proof))
+        other_scope={**proof,'contextScope':'private:99999999'}
+        self.assertIsNone(self.store.reflection.reserve_context_reconstruction('private:12345678','other-scope',[],other_scope))
+
+    async def test_30_round_and_failed_summary_never_mint_reconstruction_permit(self):
+        async def summarize(**kw):return NS(completion_text=json.dumps({'summary':'ordinary summary'}))
+        for index in range(30):self.store.reflection.record(SCOPE,'12345678',f'ordinary-{index}',f'真问题{index}',f'已确认{index}')
+        self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':30,'naturalConversation':False},NS(text_chat=summarize),lambda:True,{},self.var))
+        await self.drain()
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints').fetchone()[0],0)
+        for index in range(35):self.store.reflection.record(SCOPE,'12345678',f'failed-{index}',f'问题{index}',f'回复{index}')
+        async def fail(**kw):raise RuntimeError('offline fixture failure')
+        self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=fail),lambda:True,{},self.var))
+        await self.drain()
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints').fetchone()[0],0)
     async def test_failed_vision_keeps_rounds_and_no_coverage(self):
         self.add(image=True)
         async def chat(**kw):raise RuntimeError('vision failed')

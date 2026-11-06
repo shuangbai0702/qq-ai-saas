@@ -99,6 +99,16 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('持续背景',self.store.reflection.recall(self.scope,'毫不相关的问题')[0]['summary'])
         self.assertEqual(sum('最多1500' in c['system_prompt'] for c in calls),1)
         self.assertEqual(sum('本次同时生成' in c['system_prompt'] for c in calls),3)
+    async def test_default_thirty_five_round_cadence(self):
+        calls=[]
+        async def chat(**kw):calls.append(kw);return NS(completion_text=json.dumps({'summary':'有来源的持续信息'}))
+        cfg={'memory':True,'memorySummary':True,'naturalConversation':True}
+        self.add(34)
+        self.assertFalse(self.store.reflection.maybe_start(self.scope,cfg,NS(text_chat=chat),lambda:True,{},self.var))
+        self.add(1,34)
+        self.assertTrue(self.store.reflection.retry());await self.drain()
+        self.assertEqual(len(calls),1);self.assertEqual(len(json.loads(calls[0]['prompt'])['turns']),35)
+        self.assertIn('本次同时生成',calls[0]['system_prompt'])
     async def test_rollup_failure_and_late_forget(self):
         for i in range(3):self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated) VALUES(?,?,?,?)',(self.scope,'旧摘要'+str(i),'[]',time.time()))
         self.db.commit()
@@ -147,22 +157,22 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         with patch('social.time.time',return_value=now+90*DAY):self.assertEqual(social.expressions(self.scope,'喝红茶')[0]['expression'],'齁啦')
         self.db.execute('INSERT OR IGNORE INTO social_pattern_blocks VALUES(?,?)',(self.scope,'齁啦'))
         self.assertEqual(social.expressions(self.scope,'喝红茶'),[])
-    def test_group_rounds_retain_twenty_messages_and_thirty_rounds(self):
+    def test_group_rounds_retain_thirteen_messages_and_thirty_five_rounds(self):
         scope='group:55555';base=time.time()-1000
-        for turn in range(30):
+        for turn in range(35):
             for i in range(25):
                 at=base+turn*30+i
                 self.store.reflection.incoming(scope,'12345678',f'{turn}-{i}','真实群消息'+str(i),at)
             self.store.reflection.record(scope,'12345678',f'{turn}-24','真实群消息24','本轮回复',base+turn*30+26,context_through=base+turn*30+25)
         history=self.store.reflection.group_context(scope)
-        self.assertEqual(len(history),30)
-        self.assertTrue(all(len(x['messages'])==15 and x['reply'] for x in history))
-        self.assertEqual(sum(len(x['messages'])+1 for x in history),480)
-        self.store.reflection.incoming(scope,'12345678','new','下一轮',base+1000)
+        self.assertEqual(len(history),35)
+        self.assertTrue(all(len(x['messages'])==13 and x['reply'] for x in history))
+        self.assertEqual(sum(len(x['messages'])+1 for x in history),490)
+        self.store.reflection.incoming(scope,'12345678','new','下一轮',base+1100)
         history=self.store.reflection.group_context(scope)
-        self.assertEqual(len(history),30);self.assertEqual(len(history[-1]['messages']),1)
+        self.assertEqual(len(history),35);self.assertEqual(len(history[-1]['messages']),1)
         self.assertIsNone(history[-1]['reply'])
-        self.assertEqual(len(history[-2]['messages']),15)
+        self.assertEqual(len(history[-2]['messages']),13)
 
     def test_legacy_round_retains_original_question(self):
         scope='group:55555';at=time.time()
@@ -197,11 +207,11 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         for i in range(15):self.store.reflection.incoming(scope,'12345678','old'+str(i),'原始输入'+str(i),at+i)
         snapshot=self.store.reflection.group_context(scope)[-1]['messages']
         for i in range(40):self.store.reflection.incoming(scope,'23456789','new'+str(i),'新输入'+str(i),at+30+i)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending WHERE scope=?',(scope,)).fetchone()[0],15)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending WHERE scope=?',(scope,)).fetchone()[0],13)
         self.store.reflection.record(scope,'12345678','old14','原始输入14','真实回复',at+80,context_through=at+20,context_messages=snapshot)
         history=self.store.reflection.group_context(scope)
         self.assertEqual(len(history),2)
-        self.assertEqual([m['source_event'] for m in history[0]['messages']],['old'+str(i) for i in range(15)])
-        self.assertEqual([m['source_event'] for m in history[1]['messages']],['new'+str(i) for i in range(25,40)])
+        self.assertEqual([m['source_event'] for m in history[0]['messages']],['old'+str(i) for i in range(2,15)])
+        self.assertEqual([m['source_event'] for m in history[1]['messages']],['new'+str(i) for i in range(27,40)])
 
 if __name__=='__main__':unittest.main()
