@@ -12,6 +12,29 @@ import {SharedAstrBotAdapter} from '../../../adapters/astrbot/shared.js';
 import {redact} from '../../../packages/shared/security.js';
 import {FavoriteMaintenance} from './favorite-maintenance.js';
 
+/** Refresh only trusted frontend configuration transport; retain all owners. */
+export async function installForegroundContextRuntime(agent:NodeAgent,release:string){
+ if(!/^[a-f0-9]{64}$/.test(release)||agent.closed)throw new Error('Invalid foreground release');
+ const marker=Symbol.for('fishbot.foreground.context'),live=agent as any;
+ if(live[marker]?.release===release)return{unchanged:true,pid:process.pid,release};
+ const timer=agent.timer;if(timer)clearInterval(timer);agent.timer=undefined;
+ const prototype=Object.getPrototypeOf(agent);
+ const previous={context:prototype.context,apply:agent.ai.applyConfig,attach:agent.shared.attach};
+ const children=[...agent.host.children].map(([id,child])=>({id,child,pid:child.pid}));
+ try{
+  const deadline=Date.now()+20000;
+  while(agent.busy&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
+  if(agent.busy||agent.closed)throw new Error('Agent did not reach foreground maintenance boundary');
+  prototype.context=NodeAgent.prototype.context;
+  agent.ai.applyConfig=AstrBotAdapter.prototype.applyConfig;
+  agent.shared.attach=SharedAstrBotAdapter.prototype.attach;
+  for(const owned of children)if(agent.host.children.get(owned.id)!==owned.child||owned.child.pid!==owned.pid||owned.child.exitCode!==null)throw new Error('Foreground maintenance changed child owner');
+  live[marker]={release,at:Date.now()};
+  return{pid:process.pid,release,preservedChildren:children.map(({id,pid})=>({id,pid}))};
+ }catch(error){prototype.context=previous.context;agent.ai.applyConfig=previous.apply;agent.shared.attach=previous.attach;throw error}
+ finally{if(timer&&!agent.closed){agent.timer=setInterval(()=>void agent.tick().catch(()=>{}),500);agent.timer.unref()}}
+}
+
 /** Update the existing maintenance owner without replacing protocol children. */
 export async function installFavoriteRuntime(agent:NodeAgent,release:string){
  if(!/^[a-f0-9]{64}$/.test(release)||agent.closed)throw new Error('Invalid favorite maintenance release');

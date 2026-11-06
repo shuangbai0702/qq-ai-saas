@@ -146,9 +146,9 @@ class Reflection:
               FROM memory_summaries s LEFT JOIN memory_summary_levels l ON l.id=s.id
               WHERE s.id IN ('''+marks+''') ORDER BY s.scope,s.text,s.sources''',ids).fetchall()
             by_id={}
-            for identifier,scope,text,sources,level in rows:
-                origins=[row[0] for row in self.db.execute('SELECT scope FROM memory_summary_origins WHERE summary_id=? ORDER BY scope',(identifier,))] or [scope]
-                material={'scope':scope,'text':text,'sources':sources,'level':level,'origins':origins}
+            for identifier,summary_scope,text,sources,level in rows:
+                origins=[row[0] for row in self.db.execute('SELECT scope FROM memory_summary_origins WHERE summary_id=? ORDER BY scope',(identifier,))] or [summary_scope]
+                material={'scope':summary_scope,'text':text,'sources':sources,'level':level,'origins':origins}
                 digest=hashlib.sha256(model_json(material).encode()).hexdigest();by_id[identifier]=digest;summaries.append(material)
             coverage_rows=self.db.execute('SELECT scope,event,subject,digest,summary_id FROM memory_summary_coverage WHERE summary_id IN ('+marks+') ORDER BY scope,event,subject,digest',ids).fetchall()
             coverage=[{'scope':scope,'event':event,'subject':subject,'digest':digest,'summary':by_id.get(identifier,'missing')}
