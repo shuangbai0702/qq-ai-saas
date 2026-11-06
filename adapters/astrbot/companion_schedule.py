@@ -93,7 +93,9 @@ class Planner:
                     self.db.execute('DELETE FROM companion_plan_members WHERE scope=?',(scope,))
                     if allowed and selected:self.db.execute('INSERT OR REPLACE INTO companion_plan_members VALUES(?,?,?,?)',(scope,anchor,selected['subject'],selected['seen']))
                     if allowed and companion_state.enabled(cfg):
-                        self.db.execute("INSERT OR REPLACE INTO companion_motives VALUES(?,?,?,?,?,?,?)",(scope,selected['subject'] if selected else subject,topic,time.time()+data['delay_minutes']*60,time.time()+7*86400,'open','model_plan:'+str(anchor)))
+                        # A model-authored plan stays model_plan; it is not a
+                        # user agreement and never gains user-request priority.
+                        self.db.execute("INSERT OR REPLACE INTO companion_motives VALUES(?,?,?,?,?,?,?)",(scope,selected['subject'] if selected else subject,topic,time.time()+data['delay_minutes']*60,time.time()+7*86400,'open',companion_state.motive_record('model_plan:'+str(anchor),'model_plan')))
                     self.db.execute('DELETE FROM companion_plans WHERE anchor<?',(time.time()-8*86400,))
                     self.db.execute('DELETE FROM companion_plan_members WHERE scope NOT IN (SELECT scope FROM companion_plans)')
                 metrics['plansSaved']=metrics.get('plansSaved',0)+1

@@ -63,6 +63,16 @@ class Companion(unittest.IsolatedAsyncioTestCase):
   self.p.maybe_start(self.cfg,NS(text_chat=chat),lambda:True,self.var,{},self.now);await entered.wait()
   initiative.incoming(self.db,'private:12345','12345','99999','晚安',self.now)
   release.set();await self.p.task;self.assertIsNone(self.p.plan('private:12345',self.now-400))
+ async def test_model_plan_motive_is_never_recorded_as_user_agreement(self):
+  async def chat(**kw):return NS(completion_text=json.dumps({'contact':True,'delay_minutes':30,'topic':'最近喝的茶'}))
+  self.p.maybe_start(self.cfg,NS(text_chat=chat),lambda:True,self.var,{},self.now);await self.p.task
+  row=self.db.execute('SELECT evidence FROM companion_motives WHERE scope=?',('private:12345',)).fetchone()
+  self.assertIsNotNone(row)
+  from companion_state import motive_evidence
+  evidence=motive_evidence(row[0])[0]
+  self.assertEqual(evidence['author'],'model_plan')
+  self.assertEqual(evidence['acceptance'],'none')
+  self.assertEqual(evidence['event'],'model_plan:'+str(self.now-400))
  async def test_invalid_plan_pauses_anchor(self):
   async def chat(**kw):return NS(completion_text='invalid')
   self.p.maybe_start(self.cfg,NS(text_chat=chat),lambda:True,self.var,{},self.now);await self.p.task
@@ -71,22 +81,22 @@ class Companion(unittest.IsolatedAsyncioTestCase):
   calls=[]
   async def identity():return {'user_id':99999}
   async def signature(**kw):calls.append(kw)
-  event=NS(get_sender_id=lambda:'12345',get_self_id=lambda:'99999',get_extra=lambda key,default=None:default,get_message_str=lambda:'你好可爱',message_obj=NS(message_id='one'),bot=NS(get_login_info=identity,set_self_longnick=signature))
+  event=NS(get_group_id=lambda:'',get_sender_id=lambda:'12345',get_self_id=lambda:'99999',get_extra=lambda key,default=None:default,get_message_str=lambda:'你好可爱',message_obj=NS(message_id='one'),bot=NS(get_login_info=identity,set_self_longnick=signature))
   cfg={'behavior':{'ownerUin':'12345','qqProfile':True,'autoSignature':True,'dailyAutoSignatureLimit':1}}
   self.assertIn('signature',qq_actions.allowed(event,cfg));self.assertTrue(qq_actions.signature_hint(event,cfg))
-  result=await qq_actions.execute(event,cfg,self.db,'signature','今天被夸啦',lambda:True);self.assertIn('成功',result);self.assertEqual(len(calls),1)
+  result=await qq_actions.execute(event,cfg,self.db,'signature','今天被夸啦',lambda:True);self.assertIn('已确认',result);self.assertEqual(len(calls),1)
   event.message_obj.message_id='two';self.assertIn('额度',await qq_actions.execute(event,cfg,self.db,'signature','新的签名',lambda:True));self.assertEqual(len(calls),1)
   event.get_sender_id=lambda:'67890';self.assertEqual(qq_actions.allowed(event,cfg),set())
   event.get_sender_id=lambda:'12345';event.get_message_str=lambda:'设置签名：主人指定'
-  self.assertIn('成功',await qq_actions.execute(event,cfg,self.db,'signature','主人指定',lambda:True));self.assertEqual(len(calls),2)
+  self.assertIn('已确认',await qq_actions.execute(event,cfg,self.db,'signature','主人指定',lambda:True));self.assertEqual(len(calls),2)
  async def test_profile_text_controls_are_removed_before_limits_and_dedup(self):
   calls=[]
   async def identity():return {'user_id':99999}
   async def action(**kw):calls.append(kw)
-  event=NS(get_sender_id=lambda:'12345',get_self_id=lambda:'99999',get_extra=lambda k,d=None:d,get_message_str=lambda:'你好可爱',message_obj=NS(message_id='clean'),bot=NS(get_login_info=identity,set_self_longnick=action,set_qq_profile=action,send_qzone_msg=action))
+  event=NS(get_group_id=lambda:'',get_sender_id=lambda:'12345',get_self_id=lambda:'99999',get_extra=lambda k,d=None:d,get_message_str=lambda:'你好可爱',message_obj=NS(message_id='clean'),bot=NS(get_login_info=identity,set_self_longnick=action,set_qq_profile=action,send_qzone_msg=action))
   cfg={'behavior':{'ownerUin':'12345','qqProfile':True,'autoSignature':True,'qzone':True}}
   value='被夸可爱了，今天尾巴翘得高高的[QQ_FACE:4]'
-  self.assertIn('成功',await qq_actions.execute(event,cfg,self.db,'signature',value,lambda:True))
+  self.assertIn('已确认',await qq_actions.execute(event,cfg,self.db,'signature',value,lambda:True))
   self.assertEqual(calls[-1],{'longNick':'被夸可爱了，今天尾巴翘得高高的'})
   self.assertEqual(self.db.execute('SELECT value FROM qq_signature_history').fetchone()[0],qq_actions.plain_text(value))
   event.message_obj.message_id='dedup'
@@ -94,9 +104,9 @@ class Companion(unittest.IsolatedAsyncioTestCase):
   event.message_obj.message_id='only-controls'
   self.assertIn('没有可用文本',await qq_actions.execute(event,cfg,self.db,'signature','[QQ_FACE:4][NO_REPLY]',lambda:True));self.assertEqual(len(calls),1)
   event.get_message_str=lambda:'设置昵称';event.message_obj.message_id='nickname'
-  self.assertIn('成功',await qq_actions.execute(event,cfg,self.db,'nickname','肥鱼[MEME:hug]🐟',lambda:True));self.assertEqual(calls[-1],{'nickname':'肥鱼🐟'})
+  self.assertIn('已确认',await qq_actions.execute(event,cfg,self.db,'nickname','肥鱼[MEME:hug]🐟',lambda:True));self.assertEqual(calls[-1],{'nickname':'肥鱼🐟'})
   event.get_message_str=lambda:'发条说说';event.message_obj.message_id='publish-clean'
-  self.assertIn('成功',await qq_actions.execute(event,cfg,self.db,'publish','今天[IMAGE:photo]很开心[QQ_FACE:4',lambda:True));self.assertEqual(calls[-1]['content'],'今天很开心')
+  self.assertIn('已确认',await qq_actions.execute(event,cfg,self.db,'publish','今天[IMAGE:photo]很开心[QQ_FACE:4',lambda:True));self.assertEqual(calls[-1]['content'],'今天很开心')
   self.assertEqual(qq_actions.plain_text('保留[周末] 😊 [版本:4]'),'保留[周末] 😊 [版本:4]')
   self.assertEqual(qq_actions.plain_text('好[qq_face:4]\n明天见'),'好\n明天见')
   event.get_message_str=lambda:'你好可爱';event.message_obj.message_id='over-limit'
@@ -132,16 +142,16 @@ class Companion(unittest.IsolatedAsyncioTestCase):
   calls=[];lease=[True]
   async def identity():return {'user_id':99999}
   async def action(**kw):calls.append(kw)
-  event=NS(get_sender_id=lambda:'12345',get_self_id=lambda:'99999',get_extra=lambda key,default=None:default,get_message_str=lambda:'把昵称改成小鱼',message_obj=NS(message_id='profile'),bot=NS(get_login_info=identity,set_qq_profile=action,send_qzone_msg=action))
+  event=NS(get_group_id=lambda:'',get_sender_id=lambda:'12345',get_self_id=lambda:'99999',get_extra=lambda key,default=None:default,get_message_str=lambda:'把昵称改成小鱼',message_obj=NS(message_id='profile'),bot=NS(get_login_info=identity,set_qq_profile=action,send_qzone_msg=action))
   cfg={'behavior':{'ownerUin':'12345','qqProfile':True,'qzone':True,'qzoneVisibility':'self'}}
-  self.assertIn('成功',await qq_actions.execute(event,cfg,self.db,'nickname','小鱼',lambda:lease[0]));self.assertEqual(calls[-1],{'nickname':'小鱼'})
+  self.assertIn('已确认',await qq_actions.execute(event,cfg,self.db,'nickname','小鱼',lambda:lease[0]));self.assertEqual(calls[-1],{'nickname':'小鱼'})
   event.get_message_str=lambda:'发条说说：今天喝茶';event.message_obj.message_id='publish'
-  self.assertIn('成功',await qq_actions.execute(event,cfg,self.db,'publish','今天喝茶',lambda:lease[0]));self.assertEqual(calls[-1],{'content':'今天喝茶','ugc_right':64})
+  self.assertIn('已确认',await qq_actions.execute(event,cfg,self.db,'publish','今天喝茶',lambda:lease[0]));self.assertEqual(calls[-1],{'content':'今天喝茶','ugc_right':64})
   self.assertIn('不会重复',await qq_actions.execute(event,cfg,self.db,'publish','今天喝茶',lambda:lease[0]));self.assertEqual(len(calls),2)
   async def stale(**kw):lease[0]=False
   event.bot.send_qzone_msg=stale;event.message_obj.message_id='stale'
   self.assertIn('原操作已获协议回执并记录；配置已变化',await qq_actions.execute(event,cfg,self.db,'publish','明天喝茶',lambda:lease[0]))
-  self.assertEqual(self.db.execute('SELECT status FROM qq_action_attempts WHERE event=?',('stale',)).fetchone()[0],'confirmed')
+  self.assertEqual(qq_actions.attempt(self.db,event,'publish')[0],'confirmed')
  async def test_qzone_fixed_origin_account_and_timeout(self):
   from unittest.mock import patch
   requests=[]

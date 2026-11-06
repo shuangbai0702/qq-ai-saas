@@ -36,7 +36,8 @@ export const GoalChangeSchema=z.discriminatedUnion('operation',[
  z.object({...goalFields,operation:z.literal('create'),title:z.string().min(1).max(160),id:z.never().optional()}).strict(),
  z.object({...goalFields,operation:z.enum(['update','pause','resume','complete','abandon']),id:z.string().uuid()}).strict(),
 ]);
-export const ActionIntentSchema=z.object({goalId:z.string().uuid().optional(),kind:z.enum(['research','message','profile_signature','qzone_publish']),target:z.string().regex(/^(?:|private:[0-9]{5,20}|group:[0-9]{4,20})$/).describe('message 必须原样选择本轮 contacts[].scope，保留 private: 或 group: 前缀；其他任务留空。').default(''),objective:z.string().min(1).max(1000)}).strict().superRefine((value,ctx)=>{
+export const ActionIntentSchema=z.object({goalId:z.string().uuid().optional(),kind:z.enum(['research','message','profile_signature','qzone_publish']),target:z.string().regex(/^(?:|private:[0-9]{5,20}|group:[0-9]{4,20})$/).describe('message 必须原样选择本轮 contacts[].scope，保留 private: 或 group: 前缀；其他任务留空。').default(''),objective:z.string().min(1).max(1000),
+ evidenceRefs:z.array(z.string().min(1).max(120)).max(8).optional().describe('可选；最多8项，每项引用本轮已提供记录的稳定ref（如本轮recentForeground的eventId）。引用只说明内容归属，不授予任何跨会话发送或许可；伪造、过期或本轮未提供的引用会被整体拒绝。省略表示无引用。')}).strict().superRefine((value,ctx)=>{
  if(value.kind==='message'&&!value.target)ctx.addIssue({code:'custom',path:['target'],message:'聊天动作必须提供本轮允许的完整会话 scope'});
 });
 export const DecisionEnvelopeSchema=z.object({

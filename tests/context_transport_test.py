@@ -93,7 +93,7 @@ class Views(unittest.TestCase):
 
     def test_short_text_and_missing_ids_unchanged(self):
         for row in [message(text='短话'),{**message(),'source_event':''}]:
-            raw={'conversation_timeline':[row],'recent_messages':[row]};self.assertEqual(memory_context_view(raw),raw)
+            raw={'conversation_timeline':[row],'recent_messages':[row]};projected=memory_context_view(raw);raw['observedAt']=projected.get('observedAt');self.assertEqual(projected,raw)
 
     def test_all_contextbuilder_entrances_use_same_view(self):
         row=message()
@@ -103,25 +103,80 @@ class Views(unittest.TestCase):
 
 
 class RequestLayout(unittest.TestCase):
+    def test_new_work_first_input_retains_current_task_after_shared_background(self):
+        from context_transport import request_context_view,READONLY_CURRENT
+        systems=[]
+        for identifier in ['new-work-a','new-work-b']:
+            task={'id':identifier,'objective':'真实任务'}
+            prompt=json.dumps({'task':task})
+            history=[{'role':'system','content':'人格'},{'role':'user','content':[{'type':'text','text':prompt}]}]
+            context={'identity':{'principal':'autonomous-service','owner':False},'recipient':{'id':'55555'},'task':task,'state':{'facts':[]}}
+            original=copy.deepcopy(history)
+            system,wire=request_context_view('',history,None,'策略','当前规则',json.dumps(context))
+            self.assertEqual(history,original);self.assertEqual(wire[-1],history[-1]);self.assertTrue(wire[-2]['content'].startswith(READONLY_CURRENT))
+            self.assertNotIn(identifier,system);systems.append(system)
+        self.assertEqual(systems[0],systems[1])
+    def test_internal_tool_continuation_keeps_first_request_authority_and_prefix(self):
+        from context_transport import request_context_view
+        from readonly_journal import ReadonlyJournal
+        task={'id':'work-current','objective':'read then decide'}
+        context={'identity':{'principal':'autonomous-service','owner':False},'recipient':{'id':'55555'},'permissions':{'read':True,'send':False},'task':task,'state':{'facts':[]}}
+        native=[{'role':'user','content':[{'type':'text','text':json.dumps({'task':task})}]}]
+        original=copy.deepcopy(native);journal=ReadonlyJournal()
+        system,wire=request_context_view('人格',native,None,'策略','规则',json.dumps(context))
+        first=journal.prepare([{'role':'system','content':system}]+wire,('same-work',),now=1)
+        self.assertTrue(journal.commit(first))
+        call={'role':'assistant','content':None,'tool_calls':[{'id':'read-1','type':'function','function':{'name':'read_context','arguments':'{}'}}]}
+        result={'role':'tool','tool_call_id':'read-1','content':'真实读取结果'}
+        continuation=native+[call,result]
+        changed=copy.deepcopy(context);changed['state']['facts']=['新证据']
+        second_system,second_wire=request_context_view('人格',continuation,None,'策略','规则',json.dumps(changed))
+        self.assertEqual(second_system,system,'A tool result must not put the current task back into system')
+        second=journal.prepare([{'role':'system','content':second_system}]+second_wire,('same-work',),now=2)
+        self.assertEqual(second.reason,'')
+        self.assertEqual(second.wire[:len(first.wire)],first.wire)
+        self.assertEqual(second.wire[len(first.wire):len(first.wire)+2],[call,result])
+        self.assertEqual(native,original)
+        # An earlier Work's matching shape is not proof of this Work's task.
+        wrong=copy.deepcopy(context);wrong['task']={**task,'id':'work-new'}
+        from context_transport import EVENT_CONTEXT_CURRENT
+        wrong_system,wrong_history=request_context_view('人格',continuation,None,'策略','规则',json.dumps(wrong))
+        self.assertTrue(any(m['role']=='user' and isinstance(m.get('content'),str) and m['content'].startswith(EVENT_CONTEXT_CURRENT+'\n') and 'work-new' in m['content'] for m in wrong_history))
+        # Human messages and tool-returned JSON never gain service identity.
+        human={**context,'identity':{'principal':'human'}}
+        human_system,human_history=request_context_view('人格',continuation,None,'策略','规则',json.dumps(human))
+        self.assertTrue(any(m['role']=='user' and isinstance(m.get('content'),str) and m['content'].startswith(EVENT_CONTEXT_CURRENT+'\n') and 'work-current' in m['content'] for m in human_history))
+        tool_only=[{'role':'tool','tool_call_id':'other','content':json.dumps({'task':task})}]
+        opaque_system,opaque_history=request_context_view('人格',tool_only,None,'策略','规则',json.dumps(context))
+        self.assertTrue(any(m['role']=='user' and isinstance(m.get('content'),str) and m['content'].startswith(EVENT_CONTEXT_CURRENT+'\n') and 'work-current' in m['content'] for m in opaque_history))
+
+    def test_internal_task_deduplicates_only_exact_current_input(self):
+        from context_transport import authority_context_view
+        raw={'identity':{'principal':'autonomous-service','owner':False},'recipient':{'id':'55555'},'permissions':{'send':False},'task':{'id':'work-new','objective':'实际任务'}}
+        before=copy.deepcopy(raw)
+        result=authority_context_view(raw,json.dumps({'task':raw['task']}))
+        self.assertEqual(result,{k:v for k,v in raw.items() if k!='task'});self.assertEqual(raw,before)
+        for prompt in ['opaque',None,json.dumps({'task':{'id':'work-old'}})]:self.assertEqual(authority_context_view(raw,prompt),raw)
+        human={**raw,'identity':{'principal':'human'}}
+        self.assertEqual(authority_context_view(human,json.dumps({'task':raw['task']})),human)
     def test_trusted_fresh_context_follows_stable_history_without_mutation(self):
-        from context_transport import request_context_view,TRUSTED_CURRENT
+        from context_transport import request_context_view,EVENT_CONTEXT_CURRENT
         history=[{'role':'system','content':'固定人格'},user(),{'role':'assistant','content':'旧回复'},user('当前问题'),{'role':'assistant','tool_calls':[{'id':'1'}]},{'role':'tool','tool_call_id':'1','content':'结果'}]
         before=copy.deepcopy(history)
         system,projected=request_context_view(None,history,None,'固定策略','只参与相关对话','{"identity":{"owner":false}}')
-        self.assertEqual(system,'固定策略');self.assertEqual(history,before)
-        self.assertEqual(projected[3]['role'],'system');self.assertIn(TRUSTED_CURRENT,projected[3]['content'])
-        self.assertEqual(projected[:3],history[:3]);self.assertEqual(projected[4:],history[3:])
-        self.assertIn('"owner":false',projected[3]['content'])
+        self.assertNotIn('固定策略',system);self.assertEqual(history,before)
+        self.assertEqual(projected[:-1],history);self.assertEqual(projected[-1]['role'],'user');self.assertTrue(projected[-1]['content'].startswith(EVENT_CONTEXT_CURRENT+'\n'))
+        self.assertIn('"owner":false',projected[-1]['content']);self.assertIn('固定策略',projected[-1]['content'])
         second,other=request_context_view(None,history,None,'固定策略','','{"identity":{"owner":true}}')
-        self.assertEqual(system,second);self.assertIn('"owner":true',other[3]['content'])
-        self.assertNotIn('"owner":false',other[3]['content'])
+        self.assertEqual(system,second);self.assertIn('"owner":true',other[-1]['content'])
+        self.assertNotIn('"owner":false',other[-1]['content'])
     def test_separate_current_prompt_and_direct_tool_result_fallback(self):
         from context_transport import request_context_view
         history=[user(),{'role':'assistant','content':'旧回复'}]
         system,projected=request_context_view('人格',history,'本轮问题','策略','','可信数据')
-        self.assertEqual(projected[:-1],history);self.assertEqual(projected[-1]['role'],'system')
+        self.assertEqual(projected[:2],history);self.assertEqual(projected[-1]['role'],'user')
         system,projected=request_context_view('人格',history,None,'策略','','可信数据',tool_results=object())
-        self.assertIs(projected,history);self.assertIn('可信数据',system)
+        self.assertEqual(projected[:2],history);self.assertTrue(any('可信数据' in str(m.get('content')) for m in projected))
 
 class SnapshotLayout(unittest.TestCase):
     def snapshot(self):
@@ -177,7 +232,7 @@ class SnapshotLayout(unittest.TestCase):
         self.assertEqual(background,after)
         self.assertEqual(json.loads(current)['execution_experience'],raw['execution_experience'])
         changed,history=request_context_view('人格',[],None,'策略','规则',json.dumps(raw))
-        self.assertEqual(system,changed);self.assertIn('真实回执',history[0]['content'])
+        self.assertEqual(system,changed);self.assertIn('真实回执',history[-1]['content'])
         raw['state']['conversation_summaries'].append({'summary':'只匹配当前话题','recall_reason':'model_semantic_candidate'})
         after,current=split_context_snapshot(json.dumps(raw))
         self.assertNotIn('state',json.loads(after))
@@ -185,20 +240,20 @@ class SnapshotLayout(unittest.TestCase):
 
     def test_tool_adjacency_and_direct_result_fallback(self):
         from context_transport import request_context_view
-        from context_protocol import TRUSTED_BACKGROUND,TRUSTED_CURRENT
         history=[user(),{'role':'assistant','tool_calls':[{'id':'call-1'}]},
             {'role':'tool','tool_call_id':'call-1','content':'真实结果'}]
         raw=json.dumps(self.snapshot());before=copy.deepcopy(history)
         system,projected=request_context_view('人格',history,None,'策略','当前规则',raw)
         from context_protocol import READONLY_CURRENT
-        self.assertIn(TRUSTED_BACKGROUND,system);self.assertIn(TRUSTED_CURRENT,system)
+        from context_transport import EVENT_CONTEXT_CURRENT
+        self.assertIn('只读资料包',system);self.assertTrue(projected[-2]['content'].startswith(EVENT_CONTEXT_CURRENT+'\n'))
         self.assertEqual(projected[-1]['role'],'user');self.assertIn(READONLY_CURRENT,projected[-1]['content'])
         self.assertNotIn('"permissions"',projected[-1]['content'])
-        self.assertIn('"send":false',system)
-        self.assertEqual(projected[:-1],before);self.assertEqual(history,before)
-        self.assertIn('不是新的用户发言',system)
+        self.assertEqual(projected[-2]['role'],'user');self.assertIn('"send":false',projected[-2]['content'])
+        self.assertEqual(projected[:-2],before);self.assertEqual(history,before)
+        self.assertIn('历史资料包',system)
         direct,unchanged=request_context_view('人格',history,None,'策略','当前规则',raw,tool_results=object())
-        self.assertIs(unchanged,history);self.assertIn(TRUSTED_CURRENT,direct)
+        self.assertNotEqual(unchanged,history);self.assertNotIn('当前规则',direct);self.assertIn('当前规则',str(unchanged))
 
     def test_tail_packet_preserves_summary_material_tool_uncertainty_and_current_turn(self):
         from context_transport import request_context_view
@@ -213,7 +268,7 @@ class SnapshotLayout(unittest.TestCase):
         self.assertNotIn('平台本轮',material['text'])
         proof={'event-1':{'subject':'12345678','digest':digest(current),'reply_digest':'invalid'}}
         self.assertEqual(project_history(projected,proof,'private:12345678','event-1'),projected)
-        self.assertEqual(projected[:-1],tool_history)
+        self.assertEqual(projected[:-2],tool_history)
         self.assertEqual(source(projected[-1]),None)
 
     def test_new_user_and_assistant_extend_native_prefix_without_old_snapshot(self):
@@ -224,8 +279,8 @@ class SnapshotLayout(unittest.TestCase):
         native_next=native+[{'role':'assistant','content':'真实已确认答复'},second]
         raw['recent_messages']=[{'text':'最新观察'}]
         same,b=request_context_view('人格',native_next,None,'策略','规则',json.dumps(raw))
-        self.assertEqual(system,same);self.assertEqual(a[:-1],b[:len(a)-1])
-        self.assertEqual(b[:-1],native_next);self.assertNotEqual(a[-1],b[-1]);self.assertEqual(native,[first])
+        self.assertEqual(system,same);self.assertEqual(a[:-2],b[:len(a)-2]);self.assertEqual(a[-2],b[-2])
+        self.assertEqual(b[:-2],native_next);self.assertNotEqual(a[-1],b[-1]);self.assertEqual(native,[first])
 
     def test_unknown_contexts_preserve_contract(self):
         from context_transport import split_context_snapshot
@@ -237,26 +292,25 @@ class SnapshotLayout(unittest.TestCase):
         raw=self.snapshot();raw['new_permission_contract']={'enabled':False}
         raw['contact_target']={'user_id':'87654321'}
         system,history=request_context_view('人格',[],None,'策略','当前规则',json.dumps(raw))
-        self.assertIn('"new_permission_contract":{"enabled":false}',system)
-        self.assertIn('"contact_target":{"user_id":"87654321"}',system)
-        self.assertNotIn('"identity"',history[0]['content'])
-        self.assertNotIn('"permissions"',history[0]['content'])
+        self.assertEqual(history[0]['role'],'user')
+        self.assertIn('"new_permission_contract":{"enabled":false}',history[0]['content'])
+        self.assertIn('"contact_target":{"user_id":"87654321"}',history[0]['content'])
+        self.assertNotIn('"identity"',history[-1]['content'])
+        self.assertNotIn('"permissions"',history[-1]['content'])
         raw['identity']['owner']=True;raw['permissions']['send']=True
-        changed,_=request_context_view('人格',[],None,'策略','当前规则',json.dumps(raw))
-        self.assertIn('"owner":true',changed);self.assertNotEqual(system,changed)
+        changed,changed_history=request_context_view('人格',[],None,'策略','当前规则',json.dumps(raw))
+        self.assertIn('"owner":true',changed_history[0]['content']);self.assertNotEqual(history[0],changed_history[0]);self.assertEqual(system,changed)
 
     def test_request_envelopes_reconstruct_full_current_snapshot(self):
-        from context_transport import request_context_view
-        from context_protocol import TRUSTED_BACKGROUND,TRUSTED_CURRENT
+        from context_transport import request_context_view,EVENT_CONTEXT_CURRENT
         raw=self.snapshot();system,history=request_context_view('',[],None,'','规则',json.dumps(raw))
-        background=json.loads(system.split(TRUSTED_BACKGROUND+'\n',1)[1].split('\n'+TRUSTED_CURRENT,1)[0])
-        authority=json.loads(system.split(TRUSTED_CURRENT+'\n规则\n',1)[1].split('\n',1)[0])
-        readonly=json.loads(history[0]['content'].split('\n',1)[1])
+        event=json.loads(history[0]['content'].split('\n',1)[1]);authority=event['authority']
+        readonly=json.loads(history[1]['content'].split('\n',1)[1])
         def merge(target,patch):
             for key,value in patch.items():
                 if isinstance(value,dict) and isinstance(target.get(key),dict):merge(target[key],value)
                 else:target[key]=value
-        merge(authority,readonly);merge(authority,background)
+        merge(authority,readonly)
         self.assertEqual(authority,raw)
 
 class Wiring(unittest.IsolatedAsyncioTestCase):
@@ -271,9 +325,24 @@ class Wiring(unittest.IsolatedAsyncioTestCase):
             async def prepare(self,*args,**kwargs):
                 messages=copy.deepcopy(kwargs['contexts']);return {'messages':messages,'model':'fixture'},messages
             ProviderOpenAIOfficial._prepare_chat_payload=prepare
+            control={}
+            async def fake_chat(self,prompt=None,contexts=None,system_prompt=None,request_max_retries=0):
+                from astrbot.core.platform.astr_message_event import current_message_event
+                current_message_event.set(control['event'])
+                payload,_=await self._prepare_chat_payload(contexts=contexts)
+                control['payload']=payload
+                control['runtime']['metrics'].pop('fixture',None)
+                if control.get('cancel'):raise asyncio.CancelledError()
+                if control.get('fail'):raise RuntimeError('isolated failure')
+                if control.get('invalidate'):control['settings'].clear()
+                if control.get('invalidate_work'):control['work_valid']=False
+                return NS(completion_text=None)
+            ProviderOpenAIOfficial.text_chat=fake_chat
             from behavior import install_runtime
             core=NS(event_bus=NS(stopped_platforms=set()),provider_manager=NS(inst_map={}))
             settings={};runtime=install_runtime(core,settings)
+            self.assertIs(install_runtime(core,settings),runtime)
+            with self.assertRaises(RuntimeError):install_runtime(core,{})
             try:
                 payload,query=await ProviderOpenAIOfficial._prepare_chat_payload(NS(),contexts=[user()])
                 self.assertIs(payload['messages'],query);self.assertEqual(len(query[0]['content']),2)
@@ -295,11 +364,101 @@ class Wiring(unittest.IsolatedAsyncioTestCase):
                 token=current_message_event.set(event)
                 try:
                     async def identity_images(messages):return messages
+                    from context_transport import EVENT_CONTEXT_CURRENT
+                    from context_protocol import model_json
+                    event_packet={'role':'user','content':EVENT_CONTEXT_CURRENT+'\n'+model_json({'authority':{'identity':{'sender_id':'12345678'}},'policy':'fixed policy','currentGuidance':'current guidance','meaning':'platform event data'})}
                     with patch('model_images.constrain_messages',identity_images):
-                        payload,query=await ProviderOpenAIOfficial._prepare_chat_payload(NS(),contexts=[user(),{'role':'assistant','content':'历史回复'},latest])
-                    self.assertEqual(len(query),1)
+                        from readonly_journal import ContextRecoveryUnavailable
+                        with self.assertRaises(ContextRecoveryUnavailable):
+                            await ProviderOpenAIOfficial._prepare_chat_payload(NS(),contexts=[user(),{'role':'assistant','content':'历史回复'},latest,event_packet])
                     self.assertEqual(extra['_hosted_summary_materials'][0]['event'],'event-2')
                     self.assertEqual(runtime['metrics']['fixture']['summaryHistoryMessagesOmitted'],2)
+                    # Exercise the installed text_chat wrapper commit, failure,
+                    # cancellation and late configuration invalidation. Entry
+                    # has no event; the fake SDK binds it before real prepare.
+                    from context_protocol import READONLY_CURRENT,model_json
+                    from readonly_journal import ReadonlyJournal
+                    provider=NS();provider._prepare_chat_payload=lambda **kw:ProviderOpenAIOfficial._prepare_chat_payload(provider,**kw)
+                    control.update(event=event,runtime=runtime,settings=settings)
+                    def packet(value):return {'role':'user','content':READONLY_CURRENT+'\n'+model_json({'recent_messages':[value]})}
+                    def live_event():return {'role':'user','content':EVENT_CONTEXT_CURRENT+'\n'+model_json({'authority':{'identity':{'sender_id':'12345678'}},'policy':'fixed policy','currentGuidance':'current guidance','meaning':'platform event data'})}
+                    def packets(value):return [live_event(),packet(value)]
+                    scope='private:87654321';extra['_hosted_pipeline']=NS(source='message',scope=scope,event_id='event-2')
+                    native=[latest]
+                    async def invoke(messages):
+                        current_message_event.set(None)
+                        return await ProviderOpenAIOfficial.text_chat(provider,contexts=messages)
+                    await invoke(native+packets('first'))
+                    journal=owned.model_journals[scope];first=copy.deepcopy(journal.last.wire)
+                    native+=[{'role':'assistant','content':'confirmed answer'},{'role':'user','content':'next actual question'}]
+                    await invoke(native+packets('second'))
+                    self.assertEqual(control['payload']['messages'][:len(first)],first)
+                    self.assertIsNotNone(journal.last)
+                    committed=journal.last
+                    for failure in ('fail','cancel'):
+                        control[failure]=True
+                        with self.assertRaises(RuntimeError if failure=='fail' else asyncio.CancelledError):await invoke(native+packets(failure))
+                        self.assertIs(journal.last,committed);control.pop(failure)
+                    control['invalidate']=True
+                    await invoke(native+packets('stale'));self.assertIs(journal.last,committed)
+                    control.pop('invalidate');settings['fixture']=lease
+                    # Autonomous ToolLoop uses the same wire continuity, but
+                    # its owner is the exact Work, never the chat scope.
+                    internal={'id':'internal-a'}
+                    foreground_journal=owned.model_journals[scope];foreground_last=foreground_journal.last
+                    for index in range(7):owned.model_journals['private:'+str(20000000+index)]=ReadonlyJournal()
+                    foreground_keys={key for key in owned.model_journals if isinstance(key,str)}
+                    extra['_hosted_internal_work']=internal
+                    extra['_hosted_pipeline']=NS(source='autonomous',scope=scope,event_id='internal-a')
+                    native=[{'role':'user','content':'actual internal task'}]
+                    from unittest.mock import patch
+                    with patch.object(core._hosted_autonomous,'valid',lambda *args:control.get('work_valid',True)):
+                        await invoke(native+[packet('internal first')])
+                        key=('autonomous','internal-a');journal=owned.model_journals[key];first=copy.deepcopy(journal.last.wire)
+                        native+=[{'role':'assistant','content':None,'tool_calls':[{'id':'read-1','type':'function','function':{'name':'read','arguments':'{}'}}]},
+                                 {'role':'tool','tool_call_id':'read-1','content':'actual result'}]
+                        await invoke(native+[packet('internal latest')])
+                        wire=control['payload']['messages'];self.assertEqual(wire[:len(first)],first)
+                        self.assertEqual(wire[len(first):len(first)+2],native[-2:])
+                        self.assertIs(owned.model_journals[scope],foreground_journal)
+                        self.assertIs(foreground_journal.last,foreground_last)
+                        self.assertTrue(foreground_keys<=owned.model_journals.keys())
+                        internal={'id':'internal-b'};extra['_hosted_internal_work']=internal
+                        extra['_hosted_pipeline']=NS(source='autonomous',scope=scope,event_id='internal-b')
+                        await invoke([{'role':'user','content':'new Work task'},packet('other task')])
+                        other=owned.model_journals[('autonomous','internal-b')]
+                        self.assertFalse(any(m.get('role')=='tool' for m in other.last.wire))
+                        control['invalidate_work']=True
+                        await invoke([{'role':'user','content':'new Work task'},packet('late')])
+                        self.assertIsNotNone(other.last,'Retirement preserves the last committed evidence')
+                        self.assertEqual(other.retired_reason,'authority_changed')
+                        from readonly_journal import ContextRecoveryUnavailable
+                        with self.assertRaises(ContextRecoveryUnavailable):
+                            other.prepare([{'role':'user','content':'new Work task'},packet('late')],'retry')
+                        self.assertIsNotNone(journal.last)
+                        control.pop('invalidate_work');control.pop('work_valid')
+                    extra.pop('_hosted_internal_work');extra['_hosted_pipeline']=NS(source='message',scope=scope,event_id='event-2')
+                    # The real group runner intentionally supplies only this
+                    # turn. An existing confirmed reflection round, not the
+                    # mere disappearance of native history, allows continuity.
+                    import time
+                    group='group:55555';person='12345678'
+                    extra['_hosted_group_round_history']=True
+                    def group_message(identifier):
+                        return {'role':'user','content':SOURCE+model_json({'scope':group,'event_id':identifier,'sender_id':person})+'\nquestion '+identifier}
+                    def group_packet():
+                        return [live_event(),{'role':'user','content':READONLY_CURRENT+'\n'+model_json({'group_round_history':owned.reflection.group_context(group),'state':{'facts':[]}})}]
+                    owned.reflection.incoming(group,person,'group-one','question group-one')
+                    extra['_hosted_pipeline']=NS(source='message',scope=group,event_id='group-one',subject=person)
+                    await invoke([group_message('group-one')]+group_packet())
+                    prior=copy.deepcopy(control['payload']['messages'])
+                    owned.reflection.record(group,person,'group-one','question group-one','actually sent reply',context_through=time.time())
+                    owned.reflection.incoming(group,person,'group-two','question group-two')
+                    extra['_hosted_pipeline']=NS(source='message',scope=group,event_id='group-two',subject=person)
+                    await invoke([group_message('group-two')]+group_packet())
+                    self.assertEqual(control['payload']['messages'][:len(prior)],prior)
+                    self.assertEqual(owned.model_journals[group].last.turns,2)
+                    extra.pop('_hosted_group_round_history')
                 finally:current_message_event.reset(token)
                 lease={'config':{}};settings['fixture']=lease
                 event=NS(get_platform_id=lambda:'fixture',get_extra=lambda k,d=None:lease if k=='_hosted_lease' else d)
@@ -312,4 +471,25 @@ class Wiring(unittest.IsolatedAsyncioTestCase):
             finally:runtime['close']()
 
 
+if __name__=='__main__':unittest.main()
+
+class ViewAnchors(unittest.TestCase):
+ def test_observed_anchor_added_once_per_snapshot(self):
+  import time as _t
+  from context_transport import social_context_view
+  base={'recent_messages':[{'source_scope':'group:1','source_event':'1','sender_id':'2','at':98,'age_seconds':12,'text':'真实消息'}],
+        'companion':{'interests':[{'topic':'鱼','heat':.4231}]}}
+  view=social_context_view(base)
+  self.assertNotIn('age_seconds',view['recent_messages'][0]);self.assertEqual(view['recent_messages'][0]['at'],98)
+  self.assertTrue(type(view.get('observedAt')) is int and abs(view['observedAt']-_t.time())<5)
+  plain=social_context_view({'companion':{'mood':{'energy':.73}}})
+  self.assertNotIn('observedAt',plain)
+ def test_experience_view_keeps_attribution_whole(self):
+  from context_transport import experience_view
+  data={'view':'raw','actions':[{'id':'a1','status':'completed','objective':'在群聊group:113里回应关于昨晚平江路拍照约定的具体进展并保留时间限定','summary':'已确认'*300,'toolResults':[{'tool':'x','status':'returned','detail':'回执细节'*100}]}],'decisions':[{'id':'d1','reason':'因为'*200}]}
+  view=experience_view(data)
+  action=view['actions'][0]
+  self.assertTrue(action['objective'].endswith('并保留时间限定'))
+  self.assertGreater(len(action['summary']),500);self.assertGreater(len(action['toolResults'][0]['detail']),200)
+  self.assertEqual(view['view'],'brief_v1')
 if __name__=='__main__':unittest.main()

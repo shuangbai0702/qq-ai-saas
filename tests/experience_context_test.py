@@ -21,12 +21,20 @@ def fixture():
 
 class BriefExperience(unittest.TestCase):
     def test_prose_is_bounded_and_explicitly_marked_as_abridged(self):
-        raw=fixture();view=experience_view(raw);action=view['actions'][0]
+        raw=fixture();raw_action=raw['actions'][0];view=experience_view(raw);action=view['actions'][0]
         self.assertEqual(view['view'],'brief_v1');self.assertIn('截断',view['meaning'])
-        for key,limit in [('objective',80),('summary',96)]:self.assertEqual(len(action[key]),limit+1);self.assertTrue(action[key].endswith('…'))
-        self.assertEqual(len(action['unfinished'][0]),65);self.assertEqual(len(action['toolResults'][0]['detail']),97)
+        # D5: bounds stay but sit above the upstream authoring limits so
+        # scope/time attribution qualifiers are never cut away; only truly
+        # oversized prose is still visibly abridged.
+        # D5: authoring-sized prose stays whole (attribution intact); only
+        # genuinely oversized values are still visibly abridged.
+        self.assertEqual(action['objective'],raw_action['objective']);self.assertNotIn('…',action['objective'])
+        self.assertEqual(len(action['unfinished'][0]),201);self.assertEqual(len(action['toolResults'][0]['detail']),241)
+        oversized=experience_view({'view':'raw','actions':[{'id':'big','objective':'超'*700}],'decisions':[]})['actions'][0]
+        self.assertEqual(len(oversized['objective']),601);self.assertTrue(oversized['objective'].endswith('…'))
         self.assertNotIn('reason',action['outerDecision']);self.assertEqual(action['outerDecision']['cycleId'],'cycle')
-        self.assertLess(len(json.dumps(view)),len(json.dumps(raw))*.6)
+        # D5: the brief never grows the ledger and stays explicitly marked.
+        self.assertLessEqual(len(json.dumps(view)),len(json.dumps(raw)))
 
     def test_raw_records_immutable_and_projection_idempotent(self):
         raw=fixture();before=copy.deepcopy(raw);view=experience_view(raw)

@@ -12,7 +12,29 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT/'scripts'), str(ROOT/'adapters/astrbot')]
 import runtime_memory as memory
 from runtime_care import Ambient, RuntimeCare
-from behavior import BehaviorStore, clean_text
+from behavior import BehaviorStore, clean_text, is_no_reply_marker, suppress_separate_reasoning
+
+
+class VisibleOutputTerminalTests(unittest.TestCase):
+    def test_no_reply_marker_is_exact_not_a_substring_filter(self):
+        self.assertTrue(is_no_reply_marker(' [NO_REPLY] '))
+        self.assertEqual(clean_text('[NO_REPLY]'),[])
+        for text in ('quoted: [NO_REPLY]', '她说[NO_REPLY]，我没听懂。', '正常的 Planning reply'):
+            self.assertFalse(is_no_reply_marker(text))
+            self.assertTrue(clean_text(text),text)
+
+    def test_only_typed_reasoning_only_response_is_suppressed(self):
+        from types import SimpleNamespace as NS
+        extra={};event=NS(set_extra=lambda k,v:extra.__setitem__(k,v))
+        response=NS(raw_completion={'choices':[{'message':{'content':'','reasoning_content':'private thought'},'finish_reason':'stop'}]},completion_text='private thought')
+        self.assertTrue(suppress_separate_reasoning(response,event))
+        self.assertEqual(response.completion_text,'')
+        self.assertTrue(extra['_hosted_reply_withheld'])
+        normal=NS(raw_completion={'choices':[{'message':{'content':'**Planning**\nThe answer is ready.','reasoning_content':'separate thought'},'finish_reason':'stop'}]},completion_text='**Planning**\nThe answer is ready.')
+        self.assertFalse(suppress_separate_reasoning(normal,event))
+        self.assertEqual(normal.completion_text,'**Planning**\nThe answer is ready.')
+        tool=NS(raw_completion={'choices':[{'message':{'content':'','reasoning_content':'private thought','tool_calls':[{'id':'call-1'}]},'finish_reason':'tool_calls'}]},completion_text='')
+        self.assertFalse(suppress_separate_reasoning(tool,event))
 
 
 class MemoryPolicy(unittest.TestCase):
@@ -240,6 +262,29 @@ class BehaviorIntegration(unittest.TestCase):
                 self.assertTrue(json.loads((group/'memory-activity.json').read_text())['active'])
                 care.close()
             finally:a.close();b.close()
+
+    def test_debounce_and_native_queue_are_not_idle(self):
+        import asyncio
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            st=BehaviorStore(Path(tmp)/'behavior.sqlite');care=RuntimeCare({'a':st})
+            queue=asyncio.Queue();core=SimpleNamespace(event_queue=queue,event_bus=SimpleNamespace(_pending_tasks={}))
+            try:
+                self.assertTrue(care.status(core)['idle'])
+                for field,value in [('batches',{'group:1':[object()]}),('ingress',1),('waiting',1)]:
+                    previous=getattr(st,field);setattr(st,field,value)
+                    self.assertTrue(care.busy(st));self.assertFalse(care.status(core)['idle'])
+                    care.last_activity=0;care.last_gc=0;self.assertFalse(care.sweep(1000))
+                    setattr(st,field,previous)
+                queue.put_nowait(object());self.assertFalse(care.status(core)['idle']);queue.get_nowait()
+                # Match the native registry contract: tasks are its keys.
+                class Pending:
+                    def done(self):return False
+                core.event_bus._pending_tasks={Pending():object()}
+                self.assertEqual(care.status(core)['pending'],1);self.assertFalse(care.status(core)['idle'])
+                core.event_bus._pending_tasks.clear();self.assertTrue(care.status(core)['idle'])
+                self.assertFalse(care.status(SimpleNamespace())['idle'],'missing native queue must fail closed')
+            finally:care.close();st.close()
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

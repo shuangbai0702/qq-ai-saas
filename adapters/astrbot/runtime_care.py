@@ -38,7 +38,21 @@ class Ambient:
 class RuntimeCare:
     @staticmethod
     def busy(store):
-        return bool(store.active or any(task and not task.done() for task in (store.social.task, store.social.stickers.task, store.reflection.task, getattr(getattr(store,'planner',None),'task',None))))
+        # Admission/debounce and capacity waits own inbound work too. Counting
+        # model calls alone can declare a five-second burst window idle.
+        return bool(store.active or getattr(store,'ingress',0) or store.batches or getattr(store,'waiting',0) or any(task and not task.done() for task in (store.social.task, store.social.stickers.task, store.reflection.task, getattr(getattr(store,'planner',None),'task',None))))
+
+    def status(self,core):
+        """Inspect native queue/task ownership; expose no message content."""
+        queue=getattr(core,'event_queue',None)
+        bus=getattr(core,'event_bus',None)
+        tasks=getattr(bus,'_pending_tasks',{})
+        queued=queue.qsize() if queue is not None else None
+        pending=sum(not task.done() for task in tasks)
+        active=sum(self.busy(store) for store in self.stores.values())
+        return {'queued':queued,'pending':pending,'busyMembers':active,
+                'idle':queued==0 and pending==0 and active==0,
+                'lastActivity':self.last_activity}
 
     def track(self, store, task):
         if not task or task.done() or getattr(task, '_hosted_care', False): return
@@ -81,9 +95,7 @@ class RuntimeCare:
         # Full Python GC touches cold object pages. Do it once per activity
         # epoch, rather than repeatedly faulting an unchanged idle heap back in.
         if self.trimmed_activity == self.last_activity: return False
-        if any(getattr(getattr(s,'planner',None),'task',None) and not s.planner.task.done() for s in self.stores.values()):return False
-        if any(s.active or s.batches or (s.social.task and not s.social.task.done()) or (s.social.stickers.task and not s.social.stickers.task.done()) for s in self.stores.values()): return False
-        if any(getattr(s,'reflection',None) and s.reflection.task and not s.reflection.task.done() for s in self.stores.values()): return False
+        if any(self.busy(s) for s in self.stores.values()):return False
         for st in self.stores.values(): st.db.execute('PRAGMA shrink_memory')
         gc.collect()
         # Allocator release concerns this interpreter only, not foreign processes.

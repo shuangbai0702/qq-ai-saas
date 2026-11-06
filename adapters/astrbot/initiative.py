@@ -39,6 +39,26 @@ def paused(db,scope,now):
 def outgoing(db,scope,text,now):
     db.execute('UPDATE contacts SET last_bot=?,last_output=? WHERE scope=?',(now,text[:500],scope));db.commit()
 
+def sweep_reason(db,cfg,now):
+    """Transparent reason for a proactive sweep that produced nothing (D7.1).
+
+    The daily send budget being exhausted is encoded separately from a
+    genuinely empty candidate set, and the owner path's status stays explicit.
+    This reports facts only: no owner quota is added and no default changes.
+    """
+    b=cfg.get('behavior') or {}
+    if b.get('enabled',True) is False or not cfg.get('proactive'):return {'reason':'disabled'}
+    if quiet(cfg,now):return {'reason':'quiet_hours'}
+    day=datetime.fromtimestamp(now,ZONE).date().isoformat()
+    limit=b.get('dailyProactiveLimit',10)
+    total=db.execute('SELECT coalesce(sum(count),0) FROM deliveries WHERE day=?',(day,)).fetchone()[0]
+    budget={'used':int(total),'limit':limit}
+    if total>=limit:return {'reason':'budget_exhausted','budget':budget,'owner':'not_considered_daily_budget_exhausted'}
+    if autonomy.owner_delivery_candidate(db,cfg,now):return {'reason':'ok_owner','budget':budget}
+    if not companion_state.targets(db,cfg,now):return {'reason':'no_candidates','budget':budget,'owner':'not_due'}
+    return {'reason':'no_candidates','budget':budget,'owner':'not_due'}
+
+
 def candidates(db,cfg,now,rng=random.random):
     b=cfg.get('behavior') or {};targets=set(companion_state.targets(db,cfg,now))
     if b.get('enabled',True) is False or not cfg.get('proactive') or quiet(cfg,now):return []
@@ -181,7 +201,11 @@ def start(core,settings,store,metrics):
                             task.add_done_callback(finished)
                         if getattr(core,'_hosted_care',None):core._hosted_care.track(st,task)
                     items=candidates(st.db,cfg,time.time())
-                    if not items:continue
+                    if not items:
+                        # Keep the empty-sweep reason visible instead of folding
+                        # budget exhaustion into ordinary idleness.
+                        metrics.setdefault(id,{})['proactiveSweepReason']=sweep_reason(st.db,cfg,time.time())
+                        continue
                     platform=next((p for p in core.platform_manager.get_insts() if p.meta().id==id),None)
                     if not platform or id in core.event_bus.stopped_platforms:continue
                     item=items[0]

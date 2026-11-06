@@ -23,7 +23,7 @@ export class AstrBotAdapter implements AiAdapter {
     const root=path.join(ctx.root,'ai');await mkdir(path.join(root,'data'),{recursive:true});
     await writeFile(path.join(root,'data/cmd_config.json.tmp'),JSON.stringify(value,null,2),{mode:0o600});await rename(path.join(root,'data/cmd_config.json.tmp'),path.join(root,'data/cmd_config.json'));
     await writeFile(path.join(root,'persona.txt'),cfg.systemPrompt,{mode:0o600});
-    await writeFile(path.join(root,'runtime.json'),JSON.stringify({generation:ctx.generation,revision:ctx.revision,token:ctx.token,aiPort:ctx.aiPort,expectedUin:ctx.expectedUin,groups:cfg.groups,botId:ctx.botId,tenantId:ctx.tenantId,config:cfg}),{mode:0o600});
+    await writeFile(path.join(root,'runtime.json'),JSON.stringify({generation:ctx.generation,revision:ctx.revision,systemChangePermitId:ctx.systemChangePermitId,token:ctx.token,aiPort:ctx.aiPort,expectedUin:ctx.expectedUin,groups:cfg.groups,botId:ctx.botId,tenantId:ctx.tenantId,config:cfg}),{mode:0o600});
     return {appliedRevision:ctx.revision,restartRequired:!!(await this.host.inspect(ctx.botId,'ai'))};
   }
   async start(ctx:RuntimeContext){await this.provision(ctx);const root=path.join(ctx.root,'ai');

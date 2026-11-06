@@ -74,7 +74,7 @@ class MemeSemantic(unittest.IsolatedAsyncioTestCase):
         count=len(self.calls);self.assertEqual(self.ids(await self.context()),[]);self.assertEqual(len(self.calls),count)
         folder=Path(self.tmp.name)/'qq-favorites';(folder/'images').mkdir(parents=True)
         identifier='qqf_'+'a'*16;(folder/'images'/(identifier+'.png')).write_bytes(b'png')
-        index={'account':'12345','enabled':True,'items':[{'id':identifier,'file':identifier+'.png','enabled':True,'meaning':'收藏茶'}]}
+        index={'account':'12345','enabled':True,'items':[{'id':identifier,'file':identifier+'.png','enabled':True,'meaning':'收藏茶','manual':True}]}
         (folder/'index.json').write_text(json.dumps(index),encoding='utf8');self.cfg['_qqAccount']='12345'
         self.assertEqual(self.ids(await self.context('发收藏表情')),[identifier])
         self.assertEqual(self.calls[-1]['input'],['发收藏表情','收藏茶'])

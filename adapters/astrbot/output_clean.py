@@ -8,6 +8,9 @@ Source: zexuanw958-svg/dafeiyu-config-pack, commit
   没闭合的 <system_reminder> 从它删到这一行末尾。没带标签的「User ID: 数字, Nickname: …」也删。
 - DeepSeek 原生工具调用标记 DSML：<｜DSML｜function_calls> 整块、零散的 <｜DSML｜invoke …>、</｜DSML｜parameter> 等。
 - 老格式 <｜tool▁calls▁begin｜>…<｜tool▁calls▁end｜>、<tool_call>…</tool_call>。
+
+`without_analysis()` 保留为兼容 API，但不再猜测并删除正常正文。只有 provider 明确分开的
+reasoning 字段能在响应映射处被识别；无法从正文可靠识别的泄露会被保留并记录无正文诊断。
 """
 import copy
 import re
@@ -29,6 +32,15 @@ _PATTERNS = [
 _HINT = re.compile(r"system_reminder|DSML|tool▁|tool_call|User ID:", re.I)
 _SPACE = r'[\s\u200b-\u200d\ufeff]*'
 _IMAGE_CONTROL = re.compile(r'\['+_SPACE+r'(?:(M'+_SPACE+'E'+_SPACE+'M'+_SPACE+'E)|(I'+_SPACE+'M'+_SPACE+'A'+_SPACE+'G'+_SPACE+'E))'+_SPACE+r':([^\]]{0,512})(?:\]|$)',re.I)
+
+def without_analysis(text: str) -> str:
+    """Compatibility shim; text heuristics must never delete a user-visible answer.
+
+    Providers that expose reasoning separately are handled from their typed
+    response object. Once reasoning has been mapped into ordinary content,
+    this function cannot safely infer intent from words, language or headings.
+    """
+    return text
 
 
 def normalize_image_markers(text):
@@ -54,7 +66,7 @@ def dirty(text: str) -> bool:
 
 def clean(text: str) -> str:
     text = normalize_chat_layout(text)
-    if not dirty(text):
+    if not text or not dirty(text):
         return text
     for p in _PATTERNS:
         text = p.sub("", text)

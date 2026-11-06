@@ -20,6 +20,8 @@ class LimitedStream(httpx.AsyncByteStream):
 
 class GuardedTransport(httpx.AsyncHTTPTransport):
     async def handle_async_request(self,request):
+        from model_cache import observe_wire_request
+        observe_wire_request(request)
         from model_request_capture import begin,CaptureStream
         capture=begin(request)
         # Bound decoded memory as well as wire bytes. A malicious provider must

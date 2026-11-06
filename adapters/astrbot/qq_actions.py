@@ -49,9 +49,26 @@ def intents(text):
     }.items() if re.search(pattern,text,re.I)}
 
 
+QQ_ACTION_WINDOW_SECONDS=86400
+QQ_ACTION_WINDOW_LIMIT=20
+OWNER_SIGNATURE_LIMIT=10
+
+def limit_context(db,cfg):
+    initialize(db)
+    return {'scope':'this_bot_all_qq_profile_actions','windowSeconds':QQ_ACTION_WINDOW_SECONDS,'limit':QQ_ACTION_WINDOW_LIMIT,
+            'used':db.execute('SELECT count(*) FROM qq_action_attempts WHERE at>?',(time.time()-QQ_ACTION_WINDOW_SECONDS,)).fetchone()[0],
+            'autoSignatureDailyLimit':(cfg.get('behavior') or {}).get('dailyAutoSignatureLimit',2),'ownerSignatureDailyLimit':OWNER_SIGNATURE_LIMIT,
+            'meaning':'当前观察值，不是执行许可；每次动作仍需实时校验。'}
+
 def initialize(db):
-    db.executescript('''CREATE TABLE IF NOT EXISTS qq_action_attempts(event TEXT,action TEXT,at REAL,status TEXT,PRIMARY KEY(event,action));''')
+    db.execute('''CREATE TABLE IF NOT EXISTS qq_action_attempts(event TEXT,action TEXT,at REAL,status TEXT,PRIMARY KEY(event,action))''')
     db.execute('CREATE TABLE IF NOT EXISTS qq_signature_history(event TEXT PRIMARY KEY,day TEXT,mode TEXT,value TEXT,status TEXT)')
+
+def attempt(db,event,action):
+    from bot_pipeline import operation_source
+    # Old uncertain attempts remain a conservative fence after the key upgrade.
+    return db.execute('SELECT status FROM qq_action_attempts WHERE event IN (?,?) AND action=? ORDER BY (event=?) DESC LIMIT 1',
+                      (operation_source(event),str(getattr(event.message_obj,'message_id','')),action,operation_source(event))).fetchone()
 
 
 def allowed(event,cfg):
@@ -80,18 +97,20 @@ async def execute(event,cfg,db,action,value,current,settings=None,image_handle='
         if not value:return '未执行：去除内部标记后没有可用文本。'
     limits={'nickname':36,'signature':120,'publish':500,'status':12}
     if action in limits and len(value)>limits[action]:return '未执行：内容过长。'
-    initialize(db);event_id=str(getattr(event.message_obj,'message_id',''))
-    if not event_id:return '未执行：缺少真实消息编号。'
+    initialize(db)
+    if not str(getattr(event.message_obj,'message_id','')):return '未执行：缺少真实消息编号。'
+    from bot_pipeline import operation_source
+    event_id=operation_source(event)
     try:identity=await asyncio.wait_for(event.bot.get_login_info(),5)
     except asyncio.CancelledError:raise
     except Exception:return '未执行：当前QQ身份核实失败，请确认真实在线后重试。'
     if not current() or str(identity.get('user_id'))!=str(event.get_self_id()):return '未执行：QQ账号已变化。'
-    if db.execute('SELECT 1 FROM qq_action_attempts WHERE event=? AND action=?',(event_id,action)).fetchone():return '该消息已尝试此操作；不会重复执行。'
-    if db.execute('SELECT count(*) FROM qq_action_attempts WHERE at>?',(time.time()-86400,)).fetchone()[0]>=20:return '未执行：今日QQ操作次数已达20次。'
+    if attempt(db,event,action):return '该消息已尝试此操作；不会重复执行。'
+    if db.execute('SELECT count(*) FROM qq_action_attempts WHERE at>?',(time.time()-QQ_ACTION_WINDOW_SECONDS,)).fetchone()[0]>=QQ_ACTION_WINDOW_LIMIT:return '未执行：今日QQ操作次数已达20次。'
     if action=='signature':
         mode=signature_mode(event,cfg)
         day=datetime.now(timezone(timedelta(hours=8))).date().isoformat()
-        limit=(cfg.get('behavior') or {}).get('dailyAutoSignatureLimit',2) if mode=='self' else 10
+        limit=(cfg.get('behavior') or {}).get('dailyAutoSignatureLimit',2) if mode=='self' else OWNER_SIGNATURE_LIMIT
         if mode=='self' and len(value)>40:return '未执行：自动签名最多40字。'
         if db.execute('SELECT count(*) FROM qq_signature_history WHERE day=? AND mode=?',(day,mode)).fetchone()[0]>=limit:return '未执行：今日此类签名额度已用完。'
         if db.execute('SELECT 1 FROM qq_signature_history WHERE value=? AND status=? ORDER BY rowid DESC LIMIT 1',(value,'confirmed')).fetchone():return '此签名已使用，不重复修改。'
@@ -120,19 +139,25 @@ async def execute(event,cfg,db,action,value,current,settings=None,image_handle='
     if action=='signature':
         db.execute('INSERT INTO qq_signature_history VALUES(?,?,?,?,?)',(event_id,day,mode,value,'attempted'))
         db.execute('DELETE FROM qq_signature_history WHERE day<?',((datetime.now(timezone(timedelta(hours=8)))-timedelta(days=7)).date().isoformat(),));db.commit()
+    confirmed=False
     try:
-        if not current():return '未执行：机器人配置已变化。'
+        if not current():
+            db.execute("UPDATE qq_action_attempts SET status='not_sent' WHERE event=? AND action=?",(event_id,action));db.commit()
+            return '未执行：机器人配置已变化。'
         if action=='view':result=await own_feed(event,current)
         else:
             await asyncio.wait_for(getattr(event.bot,method)(**params),15)
-            result='QQ接口已确认操作成功。'
+            confirmed=True
+            result='QQ协议已确认该操作回执。'
         db.execute('UPDATE qq_action_attempts SET status=? WHERE event=? AND action=?',('confirmed',event_id,action));db.commit()
         if action=='signature':db.execute('UPDATE qq_signature_history SET status=? WHERE event=?',('confirmed',event_id));db.commit()
         if not current():return '原操作已获协议回执并记录；配置已变化，不继续执行后续动作。'
         return result
     except asyncio.CancelledError:raise
     except QzoneUnavailable as error:return str(error)
-    except Exception:return 'QQ接口未确认成功；可能不支持、超时或需重新登录。不会自动重试，请先检查QQ实际结果。'
+    except Exception:
+        if confirmed:return json.dumps({'execution':'completed','receipt':{'status':'confirmed'},'state_committed':False,'data':{'message':'QQ已确认，但本地状态提交失败；不得重新发送。'}},ensure_ascii=False)
+        return 'QQ接口未确认成功；可能不支持、超时或需重新登录。不会自动重试，请先检查QQ实际结果。'
 
 
 class QzoneUnavailable(RuntimeError):pass
@@ -201,8 +226,11 @@ def tools(event,cfg,db,current,settings=None):
             import json
             from tool_outcome import project
             event_id=str(getattr(event.message_obj,'message_id',''))
-            row=db.execute('SELECT status FROM qq_action_attempts WHERE event=? AND action=?',(event_id,action)).fetchone()
-            status='confirmed' if row and row[0]=='confirmed' else 'unknown' if row else 'rejected'
+            row=attempt(db,event,action)
+            status='confirmed' if row and row[0]=='confirmed' else 'rejected' if not row or row[0]=='not_sent' else 'unknown'
+            try:structured_result=json.loads(result)
+            except (ValueError,TypeError):structured_result=None
+            if isinstance(structured_result,dict) and isinstance(structured_result.get('receipt'),dict):return json.dumps(project(structured_result,write=action!='view'),ensure_ascii=False)
             if action=='view':return json.dumps(project(result,write=False),ensure_ascii=False)
             return json.dumps(project({'receipt':{'status':status},'data':{'message':result},'evidence':[{'type':'qq_action_attempt','event':event_id,'operation':action,'state':row[0] if row else 'not_dispatched'}]},write=True),ensure_ascii=False)
     descriptions['avatar']='更换当前机器人QQ头像：默认使用主人当前附带或引用的QQ图片；或先用hosted_bilibili_image准备B站公开图片，再传其真实image_handle。内部任务由QQ资料管理开关授权，不需要虚构主人命令。不能传URL、路径或任意base64；准备图片不等于换头像，必须以本工具实际回执为准'

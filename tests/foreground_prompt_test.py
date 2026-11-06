@@ -47,15 +47,18 @@ async def main():
             try:await ProviderOpenAIOfficial.text_chat(NS(),prompt=event.get_message_str(),system_prompt='original persona',contexts=[])
             finally:current_message_event.reset(token)
             system=requests[-1]['system']
+            from context_transport import EVENT_CONTEXT_CURRENT
+            current_packet=next(json.loads(m['content'].split('\n',1)[1]) for m in requests[-1]['contexts'] if isinstance(m.get('content'),str) and m['content'].startswith(EVENT_CONTEXT_CURRENT+'\n'))
+            policy=current_packet['policy']
             from bot_pipeline import EXECUTION_DISCLOSURE_POLICY
-            assert system.count(EXECUTION_DISCLOSURE_POLICY)==1,'outward disclosure policy missing or duplicated'
-            assert ('[后台任务登记]' in system)==active,('handoff prompt missing',meme,active)
+            assert (system+policy).count(EXECUTION_DISCLOSURE_POLICY)==1,'outward disclosure policy missing or duplicated'
+            assert ('[后台任务登记]' in policy)==active,('handoff prompt missing',meme,active)
             if active:
-                assert '本轮即时任务由内层直接使用当前已授权工具完成' in system
-                assert '不先自行执行后补登记' not in system
-                assert '以下规则适用于本轮决定参与交流之后' in system
-            assert ('目的会话的发送回执' in system)==active,'foreground may claim a cross-conversation action without its receipt'
-            assert ('[本轮图片表达规则，以此为准]' in system)==meme
+                assert '本轮即时任务由内层直接使用当前已授权工具完成' in policy
+                assert '不先自行执行后补登记' not in policy
+                assert '以下规则适用于本轮决定参与交流之后' in policy
+            assert ('目的会话的发送回执' in policy)==active,'foreground may claim a cross-conversation action without its receipt'
+            assert ('[本轮图片表达规则，以此为准]' in policy)==meme
             assert 'original persona' in system
             event.set_extra('_hosted_context',json.dumps({'conversation_candidate':True}))
             token=current_message_event.set(event)
@@ -65,9 +68,12 @@ async def main():
             current_context=requests[-1]['contexts'][-1]
             from context_protocol import READONLY_CURRENT
             assert current_context['role']=='user' and current_context['content'].startswith(READONLY_CURRENT)
-            assert marker in candidate_system and '本轮不产生发送或其他外部写入' in candidate_system
-            assert marker not in current_context['content'],'participation restrictions must stay system authority'
-            if active:assert '[后台任务登记]' in candidate_system
+            assert candidate_system==system,'An event participation change must not rewrite System'
+            candidate_packet=next(json.loads(m['content'].split('\n',1)[1]) for m in requests[-1]['contexts'] if isinstance(m.get('content'),str) and m['content'].startswith(EVENT_CONTEXT_CURRENT+'\n'))
+            assert marker in candidate_packet['currentGuidance'] and '本轮不产生发送或其他外部写入' in candidate_packet['currentGuidance']
+            assert marker not in current_context['content'],'event rules must not be mixed into historical memory'
+            assert '后端' in candidate_system and '重新授权' in candidate_system
+            if active:assert '[后台任务登记]' in candidate_packet['policy']
         # Exercise the actual patched native reset, not just the pure limiter.
         from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
         from astrbot.core.agent.run_context import ContextWrapper
@@ -102,11 +108,37 @@ async def main():
             event.set_extra('_hosted_lease',settings[id]);event.set_extra('_hosted_generation',1)
             await PipelineScheduler.execute(NS(),event)
             request=pipeline_requests[-1]
-            assert json.loads(request.prompt)=={'event':'mention','text':'','sender_id':'12345678','self_id':'90000000'}
-            assert '空艾特事件' in request.system_prompt and request.conversation.cid=='existing-session'
+            facts=json.loads(request.prompt)
+            assert '空艾特事件' in facts.pop('meaning')
+            assert facts=={'event':'mention','text':'','sender_id':'12345678','self_id':'90000000'}
+            assert request.system_prompt==settings[id]['config'].get('systemPrompt','') and request.conversation.cid=='existing-session'
             assert event.get_message_str()=='' and event.get_messages()==[msg.message[0]],'input facts were mutated'
             assert request.prompt.find('你友好地询问')==-1
         print('PASS empty mention uses common pipeline, actual event facts and bound history in both modes')
+        # H1: a 21-message burst seals the whole window. Every arrival reaches
+        # the single reply; none is dropped and silently marked combined.
+        id='burst-21'
+        settings[id]={'tenantId':'tenant','botId':id,'generation':1,'revision':1,'root':str(Path(TEMP.name)/id),'config':{'proactive':False,'behavior':{'memory':True,'qqProfile':False,'memeEnabled':False,'styleLearning':False,'fatigueEnabled':False,'burstDebounceMs':80}}}
+        runtime['manage'](id,{'action':'list'})
+        brain.install(id,{'tenantId':'tenant','botId':id,'generation':1,'revision':1,'epoch':1,'until':time.time()*1000+14000,'config':{'mode':'active','rollout':'live','capabilities':[]}})
+        burst_events=[]
+        for n in range(21):
+            msg=AstrBotMessage();msg.type=MessageType.GROUP_MESSAGE;msg.self_id='90000000';msg.group_id='44556677';msg.session_id='44556677';msg.message_id='burst-%d'%n;msg.sender=MessageMember('1234567%d'%(n%10),'群友%d'%n);msg.message=[At(qq='90000000'),Plain('突发消息第%d条，包含需要被看到的关键信息%d。'%(n,n))];msg.message_str=msg.message[1].text;msg.raw_message={'post_type':'message'}
+            event=AiocqhttpMessageEvent(msg.message_str,msg,PlatformMetadata('aiocqhttp','fixture',id),'44556677',bot=None)
+            event.set_extra('_hosted_lease',settings[id]);event.set_extra('_hosted_generation',1)
+            burst_events.append(event)
+        before=len(pipeline_requests)
+        burst_tasks=[asyncio.create_task(PipelineScheduler.execute(NS(),event)) for event in burst_events]
+        await asyncio.gather(*burst_tasks)
+        assert len(pipeline_requests)-before<=1,'the burst window produced %d replies instead of one sealed batch'%(len(pipeline_requests)-before)
+        # The full window seals as one batch: exactly one Work survives as the
+        # reply carrier and every other arrival merged into it (batch_combined),
+        # instead of the old pop(1) that dropped one message unseen.
+        statuses=[w.get_extra('_hosted_pipeline').status for w in burst_events if w.get_extra('_hosted_pipeline')]
+        assert len(statuses)==21
+        merged=statuses.count('combined')
+        assert len(statuses)-merged==1,'exactly one sealed carrier expected, got %s'%(len(statuses)-merged)
+        print('PASS 21-message burst seals one batch and every arrival reaches the reply')
         print('PASS actual hosted request preserves handoff and media prompts; passive has no handoff')
     finally:runtime['close']()
 

@@ -2,7 +2,7 @@
 import asyncio,hashlib,io,json,sqlite3,sys,tempfile,time,unittest
 from pathlib import Path
 from types import SimpleNamespace as NS
-from unittest.mock import patch
+from unittest.mock import AsyncMock,patch
 ROOT=Path(__file__).resolve().parents[1];sys.path[:0]=[str(ROOT/'references/astrbot'),str(ROOT/'adapters/astrbot')]
 from behavior import BehaviorStore
 import quote_reply,qq_favorite_tools,sticker_collection,group_actions,base64
@@ -61,6 +61,51 @@ class SocialContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(listed['meaning'],'向对方挥手打招呼');self.assertEqual(listed['avoid'],'不用于嘲笑');self.assertTrue(listed['selection_disabled'])
         result=json.loads(await tool.call(self.context,operation='prepare',favorite_handle=listed['handle']))
         self.assertEqual(result['status'],'disabled_favorite');self.assertNotIn('_hosted_tool_sticker',self.extra)
+    async def test_prepare_is_idempotent_per_work_and_never_resends_after_dispatch(self):
+        row={'md5':'a'*32,'resId':'fixture-resid','url':'https://qpic.cn/fixture'};self.favorite_rows.append(row)
+        other={'md5':'b'*32,'resId':'fixture-resid-2','url':'https://qpic.cn/fixture2'};self.favorite_rows.append(other)
+        folder=Path(self.tmp.name)/'qq-favorites';folder.mkdir(exist_ok=True)
+        identifier='qqf_'+hashlib.sha256(row['md5'].encode()).hexdigest()[:16]
+        second='qqf_'+hashlib.sha256(other['md5'].encode()).hexdigest()[:16]
+        (folder/'index.json').write_text(json.dumps({'account':'900001','enabled':True,'items':[
+            {'id':identifier,'file':identifier+'.gif','meaning':'挥手','avoid':'严肃','enabled':True,'semantic':{'confidence':'clear'}},
+            {'id':second,'file':second+'.gif','meaning':'点头','avoid':'哀伤','enabled':True,'semantic':{'confidence':'clear'}}]}),encoding='utf8')
+        tool=qq_favorite_tools.tools(self.event,{'behavior':{'memeEnabled':True}},self.st.db,self.tmp.name,lambda:True)[0]
+        items=json.loads(await tool.call(self.context,operation='list'))['items']
+        first_handle=next(i['handle'] for i in items if i['meaning']=='挥手')
+        second_handle=next(i['handle'] for i in items if i['meaning']=='点头')
+        with patch.object(qq_favorite_tools,'prepare_original',return_value=(self.raw,'send_cache')) as prepared:
+            result=await tool.call(self.context,operation='prepare',favorite_handle=first_handle)
+            self.assertIn('已选定真实QQ收藏',result);self.assertEqual(prepared.call_count,1)
+            sticker=self.extra['_hosted_tool_sticker'];self.assertEqual(sticker['digest'],hashlib.md5(self.raw).hexdigest())
+            again=await tool.call(self.context,operation='prepare',favorite_handle=first_handle)
+            self.assertEqual(json.loads(again)['status'],'already_prepared');self.assertEqual(prepared.call_count,1,'a repeated prepare must not download the same item again')
+            # A different attachment may replace the pending one before dispatch.
+            replaced=await tool.call(self.context,operation='prepare',favorite_handle=second_handle)
+            self.assertIn('已选定真实QQ收藏',replaced);self.assertEqual(prepared.call_count,2)
+            self.assertEqual(self.extra['_hosted_tool_sticker']['id'],second_handle)
+            # Once the round was dispatched (or its ACK is unknown) nothing is
+            # downloaded or re-attached again in the same Work.
+            self.extra['_hosted_meme_sent']=True
+            blocked=await tool.call(self.context,operation='prepare',favorite_handle=first_handle)
+            self.assertEqual(json.loads(blocked)['status'],'already_sent');self.assertEqual(prepared.call_count,2)
+    async def test_raw_qq_text_is_never_selection_semantics(self):
+        row={'md5':'c'*32,'modifyWord':'来自QQ的文字','resId':'r3'};self.favorite_rows.append(row)
+        folder=Path(self.tmp.name)/'qq-favorites';folder.mkdir(exist_ok=True)
+        identifier='qqf_'+hashlib.sha256(row['md5'].encode()).hexdigest()[:16]
+        (folder/'index.json').write_text(json.dumps({'account':'900001','enabled':True,'items':[
+            {'id':identifier,'file':identifier+'.gif','rawText':'来自QQ的文字','meaning':'','avoid':'','enabled':False,'semanticStatus':'raw_text'}]}),encoding='utf8')
+        tool=qq_favorite_tools.tools(self.event,{'behavior':{'memeEnabled':True}},self.st.db,self.tmp.name,lambda:True)[0]
+        listed=json.loads(await tool.call(self.context,operation='list'))['items'][0]
+        self.assertEqual(listed['meaning'],'','QQ raw text must not be presented as a usable meaning')
+        self.assertEqual(listed['rawText'],'来自QQ的文字')
+        self.assertTrue(listed['selection_disabled'])
+        result=json.loads(await tool.call(self.context,operation='prepare',favorite_handle=listed['handle']))
+        self.assertEqual(result['status'],'disabled_favorite')
+        self.assertNotIn('_hosted_tool_sticker',self.extra)
+        evidence=qq_favorite_tools.descriptions(self.tmp.name,'900001')[identifier]
+        self.assertEqual(evidence['rawText'],'来自QQ的文字');self.assertEqual(evidence['semanticStatus'],'raw_text')
+
     async def test_favorite_requires_readback_and_preserves_original_animation(self):
         tool=qq_favorite_tools.tools(self.event,{'behavior':{}},self.st.db,self.tmp.name,lambda:True)[0]
         self.assertEqual(qq_favorite_tools.context(self.event,self.st.db)['source_ids'],['current'])
@@ -99,13 +144,18 @@ class SocialContract(unittest.IsolatedAsyncioTestCase):
             await tool.call(self.context,operation='prepare',favorite_handle=selected)
             self.assertEqual(self.extra['_hosted_tool_sticker']['source'],'qq_download')
             recreated=qq_favorite_tools.tools(self.event,{'behavior':{}},self.st.db,self.tmp.name,lambda:True)[0]
-            await recreated.call(self.context,operation='prepare',favorite_handle=selected)
-            self.assertEqual(fetch.await_count,1)
-            self.assertEqual(self.extra['_hosted_tool_sticker']['source'],'send_cache')
+            repeat=json.loads(await recreated.call(self.context,operation='prepare',favorite_handle=selected))
+            self.assertEqual(repeat['status'],'already_prepared','a repeated prepare of the same Work attachment is already_prepared')
+            self.assertEqual(fetch.await_count,1,'the repeated prepare never downloads again')
+            self.assertEqual(self.extra['_hosted_tool_sticker']['source'],'qq_download','the pending attachment is not replaced')
+            # The send-cache hit path is still available to a later Work and
+            # never crosses accounts.
+            _,cache_source=await qq_favorite_tools.prepare_original(row,self.tmp.name,'900001',lambda:True)
+            self.assertEqual(cache_source,'send_cache')
+            _,source=await qq_favorite_tools.prepare_original(row,self.tmp.name,'900002',lambda:True)
+            self.assertEqual(source,'qq_download')
             # Another actual account cannot select this account's send-cache
             # path, even if QQ happens to list the same image digest there.
-            _,source=await qq_favorite_tools.prepare_original(row,self.tmp.name,'900002',lambda:True)
-            self.assertEqual(source,'qq_download');self.assertEqual(fetch.await_count,2)
         self.assertEqual(self.extra['_hosted_tool_sticker']['bytes'],self.raw)
     async def test_favorite_cache_verifies_content_and_never_writes_after_unbind(self):
         digest=hashlib.md5(self.raw).hexdigest();row={'md5':digest,'url':'https://qpic.cn/original.gif'}

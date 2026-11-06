@@ -36,10 +36,12 @@ class Participation:
     def incoming(self,scope,subject,text,now=None,directed=False):
         now=time.time() if now is None else now
         if not self.db or not text.strip():return
-        # Only clear conversation evidence counts as engagement. A quiet group
-        # or unrelated people talking is not rejection and is never penalized.
+        # A directed arrival is only a neutral replied signal (D6.5): engagement,
+        # corrections or rejection are semantic outcomes decided by the
+        # evidence-backed effects flow, never by a 180-second time window, a
+        # question mark or wording. Interrogation produces no engagement score.
         if directed:
-            self.db.execute("UPDATE dialogue_feedback SET state='engaged' WHERE scope=? AND subject=? AND state='observing' AND at>=?",(scope,subject,now-180))
+            self.db.execute("UPDATE dialogue_feedback SET state='replied' WHERE scope=? AND subject=? AND state='observing' AND at>=?",(scope,subject,now-180))
         self.db.execute("UPDATE dialogue_feedback SET state='unobserved' WHERE state='observing' AND at<?",(now-180,))
         self.db.execute('DELETE FROM dialogue_feedback WHERE at<? OR rowid NOT IN (SELECT rowid FROM dialogue_feedback ORDER BY at DESC LIMIT 300)',(now-7*86400,));self.db.commit()
     def context(self,scope,now=None,cfg=None):

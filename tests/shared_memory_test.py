@@ -100,10 +100,10 @@ class SharedMemory(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r[0] for r in self.db.execute('SELECT subject FROM memory_summary_people')],[self.person])
         self.store.close();self.store=BehaviorStore(self.path);self.db=self.store.db
         self.assertTrue(self.store.reflection.recall(self.private,'夜景',subject=self.person))
-        # Shared background is visible across this Bot's conversations; that
-        # does not turn a mentioned QQ into an actual source participant.
+        # Merely mentioning a QQ cannot disclose this group's history to it.
+        # The actual participant above still recalls the group after restart.
         shared=self.store.reflection.recall('private:87654321','夜景',subject='87654321')
-        self.assertEqual(shared[0]['source_scope'],self.group)
+        self.assertEqual(shared,[])
         self.assertEqual([r[0] for r in self.db.execute('SELECT subject FROM memory_summary_people')],[self.person])
     async def test_late_reflection_cannot_restore_shared_forgotten_sources(self):
         self.say('记住：夜景=平江路')
