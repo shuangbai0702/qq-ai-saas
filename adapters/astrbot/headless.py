@@ -42,7 +42,7 @@ async def main():
     stop=asyncio.Event()
     async def health(request):
         if request.headers.get('Authorization')!='Bearer '+manifest['token']:raise web.HTTPUnauthorized()
-        return web.json_response({'ready':True,'generation':manifest['generation'],'revision':manifest['revision'],'root':str(root),'pid':os.getpid(),'modelConfigured':bool(os.getenv('FISHBOT_MODEL_KEY')),'metrics':behavior['metrics']})
+        return web.json_response({'ready':True,'generation':manifest['generation'],'revision':manifest['revision'],'root':str(root),'pid':os.getpid(),'modelConfigured':bool(os.getenv('FISHBOT_MODEL_KEY')),'metrics':behavior['metrics'],'activity':behavior['activity']()})
     async def manage_data(request):
         if request.headers.get('Authorization')!='Bearer '+manifest['token']:raise web.HTTPUnauthorized()
         if request.headers.get('X-Member-Generation')!=str(manifest['generation']) or request.headers.get('X-Member-Revision')!=str(manifest['revision']):raise web.HTTPConflict()

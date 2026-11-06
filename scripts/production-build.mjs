@@ -10,6 +10,7 @@ async function collect(dir){for(const item of await readdir(dir,{withFileTypes:t
 for(const dir of ['apps/control-api','apps/node-agent','packages','adapters'])await collect(dir);
 entries.push(path.resolve('scripts/migrate-pglite-postgres.ts'));
 await build({entryPoints:entries,outbase:'.',outdir:'dist-server',platform:'node',target:'node22',format:'esm',bundle:false,sourcemap:true,logLevel:'info'});
+await copyFile('packages/contracts/memory-defaults.json','dist-server/packages/contracts/memory-defaults.json');
 // A maintenance import must contain the changed canonical methods even when
 // the running Agent has already cached their ordinary ESM modules.
 await build({entryPoints:['apps/node-agent/src/maintenance.ts'],outfile:'dist-server/apps/node-agent/src/maintenance.js',platform:'node',target:'node22',format:'esm',bundle:true,packages:'external',sourcemap:true,logLevel:'info'});

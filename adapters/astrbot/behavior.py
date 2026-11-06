@@ -34,6 +34,7 @@ def emotional_phrase(text,pattern):
 class BehaviorStore:
     def __init__(self,path):
         self.root=Path(path).parent
+        self.model_journals={}
         Path(path).parent.mkdir(parents=True,exist_ok=True)
         self.db=sqlite3.connect(path)
         self.db.executescript('''PRAGMA journal_mode=WAL;
@@ -74,7 +75,7 @@ class BehaviorStore:
         import qq_favorite_tools
         qq_favorite_tools.initialize(self.db)
         self.social=SocialStore(self.db,Path(path).parent)
-        self.last={};self.active=0;self.batches={};self.ambient=Ambient();self.slot_changed=asyncio.Event();self.waiting=0
+        self.last={};self.active=0;self.ingress=0;self.batches={};self.ambient=Ambient();self.slot_changed=asyncio.Event();self.waiting=0
         self.freshness=group_freshness.GroupFreshness()
     async def wait_capacity(self,valid,timeout=15):
         if self.waiting>=8:return False
@@ -152,6 +153,11 @@ def clean_text(text,max_chars=500):
     return out
 
 def install_runtime(core,settings):
+    installed=getattr(core,'_hosted_runtime_binding',None)
+    if installed is not None:
+        if installed['settings'] is not settings or installed['closed']:
+            raise RuntimeError('FishBot runtime owner cannot be replaced by repeated installation')
+        return installed['runtime']
     from tenant_tools import install as install_tool_guards
     install_tool_guards(settings)
     from astrbot.core.pipeline.scheduler import PipelineScheduler
@@ -218,7 +224,11 @@ def install_runtime(core,settings):
     commit_original=AiocqhttpAdapter.commit_event
     def commit(self,event):
         s=setting(event)
-        if s:event.set_extra('_hosted_lease',s)
+        if s:
+            event.set_extra('_hosted_lease',s)
+            # Native admission precedes model execution and burst waiting.
+            # Refresh the quiet-period clock before returning to the event loop.
+            care.stamp(s['root'])
         return commit_original(self,event)
     AiocqhttpAdapter.commit_event=commit
     session_original=AiocqhttpAdapter.send_by_session
@@ -284,7 +294,7 @@ def install_runtime(core,settings):
             try:
                 if work.scope==scope:payload['original_message']={'event':work.event_id,'sender_id':work.subject,'text':event.get_message_str()[:600]}
                 from model_cache import decision_scope
-                with decision_scope(provider,s,'group_freshness'):
+                with decision_scope(provider,s,'group_freshness',work.event_id):
                     response=await provider.text_chat(prompt=model_json(payload),system_prompt=group_freshness.review_system(s['config'].get('systemPrompt',''),(s['config'].get('behavior') or {}).get('ownerUin'),event.get_self_id()),contexts=[],func_tool=None,request_max_retries=0)
                 usage=getattr(response,'usage',None)
                 from model_cache import usage_evidence
@@ -996,6 +1006,8 @@ def install_runtime(core,settings):
         bound=inspect.signature(original).bind_partial(self,*args,**kwargs);event=current_message_event.get()
         if event and event.get_extra('_hosted_lease') is not None and not delivery_current(event):raise asyncio.CancelledError('stale bot configuration')
         if event and setting(event):
+            from context_protocol import persona_prompt
+            bound.arguments['system_prompt']=persona_prompt(bound.arguments.get('system_prompt'),images=bool((setting(event)['config'].get('behavior') or {}).get('memeEnabled')))
             # Clean assistant history only; never rewrite a user's words or tool
             # arguments. Copy first because upstream may retain this list.
             if isinstance(bound.arguments.get('contexts'),list):
@@ -1059,8 +1071,28 @@ def install_runtime(core,settings):
         bound.arguments['request_max_retries']=0
         return bound
     prepare=ProviderOpenAIOfficial._prepare_chat_payload
+    from contextvars import ContextVar
+    model_journal_pending=ContextVar('fishbot_model_journal_pending',default=None)
+    def settle_journal(event,success):
+        if not event:return
+        pending=model_journal_pending.get()
+        if not pending:return
+        model_journal_pending.set(None)
+        owned,key,journal,prepared,epoch=pending
+        valid=(current(event) and (not event.get_extra('_hosted_internal_work') or delivery_current(event)) and stores.get(event.get_platform_id()) is owned
+               and owned.model_journals.get(key) is journal and owned.reflection.epoch()==epoch)
+        retained=False
+        if success and valid:retained=journal.commit(prepared)
+        elif valid:journal.abort_candidate(prepared)
+        else:journal.retire_committed(prepared,'authority_changed')
+        from model_cache import record_diagnostic
+        record_diagnostic(event.get_extra('_hosted_lease'),{'kind':'context_result','phase':'inner_execution' if event.get_extra('_hosted_internal_work') else 'foreground',
+            'status':('commit' if retained else 'not_retained') if success and valid else 'abort' if valid else 'retire',
+            'reason':None if retained else 'candidate_or_size_boundary' if success and valid else 'request_failed' if valid else 'authority_changed',
+            'resetDetail':prepared.detail,**(prepared.usage or {})})
     async def prepare_chat_payload(self,*args,**kwargs):
         payload,query=await prepare(self,*args,**kwargs)
+        journal_reason=None
         from context_transport import model_messages
         # One boundary covers streaming, foreground and internal ToolLoop calls.
         # Keep raw conversation/receipt storage intact; project only this request.
@@ -1082,21 +1114,53 @@ def install_runtime(core,settings):
         if image_event and image_event.get_extra('_hosted_lease') is not None and not delivery_current(image_event):
             raise asyncio.CancelledError('stale_model_image_request')
         if capture:image_event.set_extra('_hosted_summary_materials',snapshots(projected,work.scope,signatures))
+        internal_identity=image_event.get_extra('_hosted_internal_work') if image_event else None
+        internal=bool(owned and work and work.source=='autonomous' and isinstance(internal_identity,dict) and internal_identity.get('id')==work.event_id)
+        if (capture or internal) and isinstance(projected,list):
+            from readonly_journal import ReadonlyJournal
+            key=('autonomous',work.event_id) if internal else work.scope
+            journal=owned.model_journals.pop(key,None)
+            if journal is None:journal=ReadonlyJournal()
+            owned.model_journals[key]=journal
+            # The one active Work is temporary and must not evict a chat's
+            # warm prefix. Its journal is released by invoke's finally.
+            chat_keys=[k for k in owned.model_journals if isinstance(k,str)]
+            for old_key in chat_keys[:-8]:owned.model_journals.pop(old_key)
+            epoch=owned.reflection.epoch()
+            stamp=(id(self),setting(image_event).get('generation'),setting(image_event).get('revision'),epoch,
+                   hashlib.sha256(model_json({k:payload.get(k) for k in ('model','tools','tool_choice','reasoning_effort')}).encode()).hexdigest())
+            group_turn=(work.scope,str(work.event_id),str(work.subject)) if capture and image_event.get_extra('_hosted_group_round_history') and work.scope.startswith('group:') else None
+            prepared=journal.prepare(projected,stamp,group_turn=group_turn)
+            if prepared:
+                journal_reason=prepared.reason or 'append'
+                projected=prepared.wire
+                model_journal_pending.set((owned,key,journal,prepared,epoch))
+                from model_cache import record_diagnostic
+                record_diagnostic(image_event.get_extra('_hosted_lease'),{'kind':'context','phase':'inner_execution' if internal else 'foreground',
+                    'workId':work.event_id,'resetReason':prepared.reason or None,'resetDetail':prepared.detail or None,
+                    'baseChars':prepared.base_chars,**prepared.usage})
         if isinstance(projected,list):payload['messages']=projected;query=projected
         from model_cache import routing_key
         cache_key=routing_key(image_event,self,payload.get('model'))
         if cache_key and 'prompt_cache_key' not in payload:payload['prompt_cache_key']=cache_key
         limit=autonomy.decision_token_limit.get()
         if limit is not None:payload['max_tokens']=limit
+        from model_cache import observe_payload
+        observe_payload(payload,journal_reason)
         return payload,query
     ProviderOpenAIOfficial._prepare_chat_payload=prepare_chat_payload
     chat=ProviderOpenAIOfficial.text_chat;stream=ProviderOpenAIOfficial.text_chat_stream
     async def text_chat(self,*args,**kwargs):
         b=inject(chat,self,args,kwargs)
         started=time.time()
+        journal_token=model_journal_pending.set(None)
+        from model_cache import begin_attempt,finish_attempt,reset_attempt
+        attempt_token=begin_attempt(current_message_event.get(),self)
         try:
             response=await chat(*b.args,**b.kwargs)
+            finish_attempt('completed',response)
             e=current_message_event.get()
+            settle_journal(e,True)
             if e and current(e) and e.get_platform_id() in metrics:
                 m=metrics[e.get_platform_id()];m['successes']=m.get('successes',0)+1
                 raw=response.raw_completion
@@ -1109,26 +1173,51 @@ def install_runtime(core,settings):
             if isinstance(getattr(response,'completion_text',None),str):response.completion_text=clean_internal(response.completion_text)
             return response
         except Exception as error:
+            finish_attempt('failed',reason=type(error).__name__)
             e=current_message_event.get()
+            settle_journal(e,False)
             if e and current(e) and e.get_platform_id() in metrics:
                 metrics[e.get_platform_id()]['failures']+=1
                 metrics[e.get_platform_id()]['lastFailure']={'time':time.time(),'type':type(error).__name__}
                 e.set_extra('_hosted_model_error',True)
             raise
+        except asyncio.CancelledError:
+            finish_attempt('canceled',reason='cancelled')
+            settle_journal(current_message_event.get(),False)
+            raise
+        finally:
+            model_journal_pending.reset(journal_token)
+            reset_attempt(attempt_token)
     async def text_stream(self,*args,**kwargs):
         b=inject(stream,self,args,kwargs)
+        journal_token=model_journal_pending.set(None)
+        from model_cache import begin_attempt,finish_attempt,reset_attempt
+        attempt_token=begin_attempt(current_message_event.get(),self)
+        last_response=None
         try:
             async for response in stream(*b.args,**b.kwargs):
+                from model_cache import first_response
+                first_response()
+                last_response=response
                 event=current_message_event.get()
                 if event and event.get_extra('_hosted_lease') is not None and not delivery_current(event):return
                 yield response
+            finish_attempt('completed',last_response)
+            settle_journal(current_message_event.get(),True)
         except Exception as error:
+            finish_attempt('failed',reason=type(error).__name__)
             e=current_message_event.get()
             if e and current(e) and e.get_platform_id() in metrics:
                 metrics[e.get_platform_id()]['failures']+=1
                 metrics[e.get_platform_id()]['lastFailure']={'time':time.time(),'type':type(error).__name__}
                 e.set_extra('_hosted_model_error',True)
             raise
+        finally:
+            finish_attempt('canceled',reason='stream_not_exhausted')
+            # A consumer can close the generator without exhausting it.
+            settle_journal(current_message_event.get(),False)
+            model_journal_pending.reset(journal_token)
+            reset_attempt(attempt_token)
     # Pinned upstream otherwise retries some failures up to ten times. Hosted
     # mode fails the request once; the next user message may retry deliberately.
     async def no_retry(self,error,*args,**kwargs):raise error
@@ -1138,12 +1227,18 @@ def install_runtime(core,settings):
     ProviderOpenAIOfficial.text_chat_stream=bind_provider(text_stream,settings,provider_for)
     async def guarded_execute(self,event):
         lease=setting(event)
+        admitted=store(event.get_platform_id(),lease) if lease is not None and current(event) else None
+        if admitted is not None:
+            admitted.ingress+=1;care.stamp(admitted.root)
         try:return await execute(self,event)
         except asyncio.CancelledError:
             bot_pipeline.stop(event,'cancelled');raise
         except Exception as error:
             bot_pipeline.stop(event,type(error).__name__,'error');raise
         finally:
+            if admitted is not None:
+                admitted.ingress-=1
+                if stores.get(event.get_platform_id()) is admitted:care.stamp(admitted.root)
             st=stores.get(event.get_platform_id())
             events=[event];selected=event.get_extra('_hosted_pipeline_selected_event')
             if selected is not None and selected is not event:events.append(selected)
@@ -1167,6 +1262,8 @@ def install_runtime(core,settings):
         if st:care.stamp(st.root);st.close()
         metrics.pop(id,None)
     def close():
+        if core._hosted_runtime_binding['closed']:return
+        core._hosted_runtime_binding['closed']=True
         brain.close()
         care.close();care_timer.cancel()
         timer.cancel()
@@ -1182,4 +1279,9 @@ def install_runtime(core,settings):
             # transient atmosphere after removing it from learned hints.
             st.ambient.scopes.pop(data.get('scope',''),None)
         return result
-    return {'manage':manage,'stores':stores,'metrics':metrics,'release':release,'close':close,'autonomous':brain.handle,'drain':brain.drain}
+    runtime={'manage':manage,'stores':stores,'metrics':metrics,'release':release,'close':close,'autonomous':brain.handle,'drain':brain.drain,'activity':lambda:care.status(core)}
+    from model_cache import loaded_build
+    runtime['build']=loaded_build()
+    print('FISHBOT_RUNTIME_BUILD '+model_json(runtime['build']),flush=True)
+    core._hosted_runtime_binding={'settings':settings,'runtime':runtime,'closed':False}
+    return runtime

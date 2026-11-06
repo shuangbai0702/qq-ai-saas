@@ -76,7 +76,7 @@ def reflect_interest(db,topic,operation,reason,action,evidence,now):
     result={'topic':topic,'operation':operation,'changed':abs(value-heat)>1e-9,'heat':round(value,3),'reason':reason,'evidence':sources,'scope':'self','meaning':'自主关注方向的选择，不代表已掌握主题知识或发生了线下经历'}
     with db:
         if value>0:
-            db.execute("INSERT OR REPLACE INTO companion_interests VALUES('self',?,?,?,?,?,'autonomous_choice')",(topic,value,(row[1] if row else 0)+int(increment>0),now if increment>0 or operation!='explore' else row[2],action))
+            db.execute("INSERT OR REPLACE INTO companion_interests VALUES('self',?,?,?,?,?,'autonomous_choice')",(topic,value,(row[1] if row else 0)+int(operation=='explore' and increment>0),now if increment>0 or operation!='explore' else row[2],action))
         else:db.execute("DELETE FROM companion_interests WHERE scope='self' AND topic=? AND source='autonomous_choice'",(topic,))
         db.execute('INSERT INTO companion_reflections VALUES(?,?,?,?,?)',(action,topic,fingerprint,json.dumps(result,ensure_ascii=False),now))
         db.execute('DELETE FROM companion_reflections WHERE rowid NOT IN (SELECT rowid FROM companion_reflections ORDER BY at DESC,rowid DESC LIMIT 512)')

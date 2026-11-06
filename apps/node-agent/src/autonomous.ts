@@ -231,6 +231,10 @@ export class AutonomyCoordinator {
    if(!settled&&(usage.modelCalls>=config.cycleModelCalls||usage.tokens>=tokenBudget))reason='budget_exhausted';
    // A bounded computation slice yields; only a committed model choice sleeps.
    if(!settled&&['budget_exhausted','external_action_budget'].includes(reason))sleep=15;
+   // A short computation yield cannot replenish a partial daily reservation.
+   // Retain genuine events/config wakes, but do not poll an unchanged rejected
+   // request every fifteen seconds or inflate usage for an unissued request.
+   if(!settled&&reason==='request_token_budget'&&usage.modelCalls===0&&config.dailyTokenBudget>0&&tokenBudget<config.cycleTokenBudget)reason='daily_request_token_budget';
   }catch(error){
    // Unknown model work was charged at its IPC boundary. A rejected decision
    // with returned usage must retain the known cost, not invent a full bill.

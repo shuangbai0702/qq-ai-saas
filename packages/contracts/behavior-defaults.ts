@@ -1,4 +1,5 @@
 // Canonical defaults v2. Explicit false, zero, empty lists and saved overrides win.
+import memoryDefaults from './memory-defaults.json' with {type:'json'};
 export const behaviorDefaultsVersion=2;
 export const behaviorDefaults={
  qqFavoriteSaveEnabled:true,
@@ -40,7 +41,7 @@ export const behaviorDefaults={
  memorySemantic:true,
  embeddingModel:'',
  dailyEmbeddingLimit:100,
- summaryRounds:30,
+ summaryRounds:memoryDefaults.summaryRounds,
  qqProfile:true,
  qzone:true,
  qzoneVisibility:'friends' as const,

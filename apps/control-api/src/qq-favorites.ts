@@ -1,3 +1,4 @@
+import {withFavoriteIndex} from '../../../packages/shared/qq-favorite-index.js';
 import type {FastifyInstance} from 'fastify';import {readFile,writeFile,mkdir,rename,rm,readdir,lstat} from 'node:fs/promises';import path from 'node:path';import {createHash,randomUUID} from 'node:crypto';import {execFile} from 'node:child_process';import {z} from 'zod';
 import type {FavoriteAnnotation} from './qq-favorite-semantics.js';
 type Bot={id:string;protocol:string;qq_uin?:string;generation:number;desired_state:string;health?:any};
@@ -6,28 +7,15 @@ type Index={account:string;enabled:boolean;syncedAt?:string;items:Item[];failed?
 const invalid=(message:string,statusCode=400)=>Object.assign(new Error(message),{statusCode});
 const hash=(raw:string)=>createHash('sha256').update(raw).digest('hex');
 const safeFile=(file:string)=>/^qqf_[a-f0-9]{16}\.(gif|png)$/.test(file);
-export async function downloadFavorite(url:string,signal:AbortSignal){
- const u=new URL(url),host=u.hostname.toLowerCase();if(u.protocol!=='https:'||u.username||u.password||(u.port&&u.port!=='443')||!['qpic.cn','qq.com'].some(domain=>host===domain||host.endsWith('.'+domain)))throw invalid('收藏图片来源不受支持');
- const response=await fetch(u,{signal:AbortSignal.any([signal,AbortSignal.timeout(15000)]),redirect:'error'});if(!response.ok||!response.body||Number(response.headers.get('content-length')||0)>8388608)throw invalid('收藏图片暂时不可用');
- const blocks:Uint8Array[]=[];let length=0;try{for await(const block of response.body){length+=block.length;if(length>8388608)throw invalid('收藏图片超过8MiB');blocks.push(block)}}catch(e){await response.body.cancel().catch(()=>{});throw e}return Buffer.concat(blocks);
-}
-async function nativeCall(root:string,bot:Bot,action:string,params:unknown,signal:AbortSignal){
- if(bot.protocol!=='napcat')throw invalid('当前协议端尚不支持QQ收藏同步',409);
- const m=JSON.parse(await readFile(path.join(root,'bots',bot.id,'napcat-platform.json'),'utf8'));if(m.botId!==bot.id||m.management.host!=='127.0.0.1'||!Number.isInteger(m.management.port))throw invalid('协议实例尚未就绪',409);
- const response=await fetch(`http://127.0.0.1:${m.management.port+1}/${action}`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+m.reverseWs.token},body:JSON.stringify(params),signal:AbortSignal.any([signal,AbortSignal.timeout(12000)])});
- const result:any=await response.json();if(!response.ok||result.status!=='ok'||result.retcode!==0)throw invalid('QQ收藏接口暂时不可用，请确认QQ在线',409);return result.data;
-}
-async function normalize(input:string,destination:string,signal:AbortSignal){
- const python=path.resolve(process.env.ASTRBOT_PYTHON||`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`);
- return new Promise<{suffix:string;mime:string;animated:boolean}>((resolve,reject)=>execFile(python,[path.resolve('adapters/astrbot/favorite_media.py'),input,destination],{signal,timeout:15000,maxBuffer:8192,windowsHide:true,env:{PATH:process.env.PATH,SystemRoot:process.env.SystemRoot,TEMP:process.env.TEMP,TMP:process.env.TMP,PYTHONIOENCODING:'utf-8'}},(error,out)=>{if(error)return reject(invalid('收藏图片格式或尺寸不受支持'));try{resolve(JSON.parse(out))}catch{reject(invalid('收藏图片处理失败'))}}));
-}
+export {downloadFavorite} from '../../../packages/shared/qq-favorite-media.js';
+import {downloadFavorite,nativeCall,normalize} from '../../../packages/shared/qq-favorite-media.js';
 type Dependencies={call?:typeof nativeCall;download?:typeof downloadFavorite;normalize?:typeof normalize;caption?:(bot:Bot,file:string,signal:AbortSignal)=>Promise<FavoriteAnnotation>};
 export function registerQQFavorites(app:FastifyInstance,root:string,owned:(req:any,id:string)=>Promise<Bot>,deps:Dependencies={}){
  const tasks=new Map<string,{controller:AbortController;promise:Promise<void>}>(),locks=new Map<string,Promise<unknown>>();let closing=false;
  const dir=(id:string)=>path.join(root,'bots',id,'qq-favorites');const indexFile=(id:string)=>path.join(dir(id),'index.json');
  async function atomic(file:string,data:unknown){await mkdir(path.dirname(file),{recursive:true});const temp=file+'.'+randomUUID()+'.tmp';try{await writeFile(temp,JSON.stringify(data),{flag:'wx',mode:0o600});for(let attempt=0;;attempt++){try{await rename(temp,file);break}catch(e:any){if(process.platform!=='win32'||!['EPERM','EACCES','EBUSY'].includes(e.code)||attempt>=4)throw e;await new Promise(r=>setTimeout(r,25*(attempt+1)))}}}finally{await rm(temp,{force:true})}}
  async function read(id:string){try{return await readFile(indexFile(id),'utf8')}catch(e:any){if(e.code==='ENOENT')return JSON.stringify({account:'',enabled:false,items:[]});throw e}}
- async function locked<T>(id:string,run:()=>Promise<T>){const before=locks.get(id)||Promise.resolve(),task=before.catch(()=>{}).then(run);locks.set(id,task);try{return await task}finally{if(locks.get(id)===task)locks.delete(id)}}
+ async function locked<T>(id:string,run:()=>Promise<T>){const before=locks.get(id)||Promise.resolve(),task=before.catch(()=>{}).then(()=>withFavoriteIndex(root,id,run));locks.set(id,task);try{return await task}finally{if(locks.get(id)===task)locks.delete(id)}}
  function account(bot:Bot){return String(bot.qq_uin||'')}
  async function active(req:any,initial:Bot,signal:AbortSignal){signal.throwIfAborted();const b=await owned(req,initial.id);if(b.generation!==initial.generation||account(b)!==account(initial)||b.desired_state==='deleting')throw invalid('QQ账号或实例已切换，请重新同步',409);return b}
  async function state(id:string){try{const s=JSON.parse(await readFile(path.join(dir(id),'sync.json'),'utf8'));return s.syncing&&!tasks.has(id)?{...s,syncing:false,error:'上次同步已中断，请重新同步'}:s}catch(e:any){if(e.code==='ENOENT')return{syncing:false};throw e}}

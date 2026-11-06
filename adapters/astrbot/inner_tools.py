@@ -27,6 +27,8 @@ def features(settings,event,db,scope,current,*,identity=None,evidence=None,memor
         if 'hosted_quote_reply' in names:
             data['quote_reply']=quote_reply.catalog(db,event,settings) if hasattr(event,'get_self_id') else []
         if 'hosted_qq_favorites' in names:data['qq_favorites']=qq_favorite_tools.context(event,db)
+        if names & {'hosted_qq_signature','hosted_qq_publish','hosted_qq_avatar','hosted_qq_nickname','hosted_qq_status'}:
+            data['qq_profile_limits']=qq_actions.limit_context(db,cfg)
         event.set_extra('_hosted_tool_context',data)
     return [structured(tool) for tool in result]
 
