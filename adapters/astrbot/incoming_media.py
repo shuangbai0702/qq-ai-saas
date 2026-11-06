@@ -83,12 +83,26 @@ async def attach_recent(event,db,lease,current):
     """
     import time
     import quote_reply
-    from astrbot.core.message.components import Image
-    if event.get_extra('_hosted_initiative',False) or not event.get_message_str().strip() or any(isinstance(c,Image) for c in event.get_messages()):return None
+    from astrbot.core.message.components import Image,At
+    parts=event.get_messages()
+    called=any(isinstance(c,At) and str(c.qq)==str(event.get_self_id()) for c in parts)
+    if event.get_extra('_hosted_initiative',False) or (not event.get_message_str().strip() and not called) or any(isinstance(c,Image) for c in parts):return None
     now=time.time()
-    candidates=[r for r in quote_reply.media_catalog(db,event,lease) if r['sender_id']==str(event.get_sender_id()) and 0<=now-r['at']<=45]
+    candidates=[r for r in quote_reply.media_catalog(db,event,lease) if r['sender_id']==str(event.get_sender_id()) and 0<=now-r['at']<=300]
     if not candidates:return None
     source=candidates[0]
+    if now-source['at']>45:
+        # A bare @ can be a delayed nudge for an unanswered picture, but is not
+        # permission to attach an arbitrary old picture to unrelated new text.
+        if not called or event.get_message_str().strip():return None
+        scope=quote_reply.delivery_scope(event)
+        latest=db.execute('SELECT message FROM pipeline_quote_sources WHERE scope=? AND sender=? AND self_id=? AND generation=? AND message<>? ORDER BY at DESC,rowid DESC LIMIT 1',
+                          (scope,str(event.get_sender_id()),str(event.get_self_id()),lease.get('generation',0),str(event.message_obj.message_id))).fetchone()
+        if not latest or latest[0]!=source['message_id']:return None
+        # Do not revive an image already acknowledged by a confirmed reply.
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pipeline_events'").fetchone():return None
+        if db.execute('SELECT 1 FROM pipeline_events WHERE scope=? AND subject=? AND at>=? AND confirmed>0 LIMIT 1',
+                      (scope,str(event.get_sender_id()),source['at'])).fetchone():return None
     try:
         data=await quote_reply.resolve_media(db,event,lease,source['handle'],current)
         url=data.get('url')

@@ -1,3 +1,4 @@
+import {FavoriteMaintenance} from './favorite-maintenance.js';
 import {BotConfigSchema} from '../../../packages/contracts/index.js';
 import {acquireLease} from '../../../packages/database/lease.js';
 import {observeOffline,evictionDue,offlineGrace} from './offline-policy.js';
@@ -12,6 +13,7 @@ export class NodeAgent {
  private releaseLease?:(()=>Promise<void>);
  autonomy:AutonomyCoordinator;
  bilibili:BilibiliExecutor;
+ favorites:FavoriteMaintenance;
  recovery=new Map<string,{attempts:number;next:number;healthySince:number}>();
  offlineGrace:{offline:number;fault:number;login:number;startup?:number}={offline:offlineGrace(process.env.FISHBOT_OFFLINE_GRACE_SECONDS,300),fault:offlineGrace(process.env.FISHBOT_PROTOCOL_FAULT_GRACE_SECONDS,300),login:offlineGrace(process.env.FISHBOT_LOGIN_IDLE_GRACE_SECONDS,180),startup:offlineGrace(process.env.FISHBOT_STARTUP_GRACE_SECONDS,120)};
  constructor(public db:Sql,public root:string,public key:Buffer){
@@ -20,6 +22,7 @@ export class NodeAgent {
    this.protocols={mock:new MockProtocolAdapter(this.host),napcat:new NapCatAdapter(this.host,path.join(root,'napcat')),euler:new EulerAdapter(this.host,path.resolve(process.env.EULER_SOURCE||'references/euler'),path.resolve(process.env.EULER_PYTHON||`references/euler/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`))};
    this.autonomy=new AutonomyCoordinator(db,runtimeClient(db));
    this.bilibili=new BilibiliExecutor(db,root,key);
+   this.favorites=new FavoriteMaintenance(db,root,key);
  }
  async context(bot:any):Promise<RuntimeContext>{const [instance]=await this.db.query('SELECT * FROM instances WHERE bot_id=$1',[bot.id]);const [revision]=await this.db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[bot.id,bot.revision]);const [binding]=await this.db.query('SELECT qq_uin FROM qq_bindings WHERE bot_id=$1',[bot.id]);const [secret]=await this.db.query('SELECT ciphertext FROM secrets WHERE bot_id=$1 AND tenant_id=$2',[bot.id,bot.tenant_id]);return{botId:bot.id,tenantId:bot.tenant_id,root:path.join(this.root,'bots',bot.id),generation:bot.generation,revision:bot.revision,aiPort:instance.ai_port,protocolPort:instance.protocol_port,token:instance.token,config:BotConfigSchema.parse(revision.config),apiKey:secret?decrypt(this.key,`${bot.tenant_id}:${bot.id}`,secret.ciphertext):'',expectedUin:binding?.qq_uin||bot.expected_uin||'',runtimeMode:bot.runtime_mode,groupId:bot.group_id}}
  aiFor(bot:any){return bot.runtime_mode==='shared'?this.shared:this.ai}
@@ -29,7 +32,7 @@ export class NodeAgent {
    await this.bilibili.recover();
    this.timer=setInterval(()=>void this.tick().catch(e=>console.error('agent tick:',redact(String(e)))),500);this.timer.unref();await this.tick();this.autonomy.start();}catch(error){if(this.timer)clearInterval(this.timer);await rm(path.join(this.root,'agent.lock'),{force:true});await this.releaseLease?.();this.releaseLease=undefined;throw error}
  }
- async shutdown(){if(this.closed)return;this.closed=true;if(this.timer)clearInterval(this.timer);await this.bilibili.stop();await this.autonomy.stop();while(this.busy)await new Promise(r=>setTimeout(r,20));let failure:unknown;
+ async shutdown(){if(this.closed)return;this.closed=true;if(this.timer)clearInterval(this.timer);await this.favorites?.stop();await this.bilibili.stop();await this.autonomy.stop();while(this.busy)await new Promise(r=>setTimeout(r,20));let failure:unknown;
   try{for(const bot of await this.db.query('SELECT * FROM bots WHERE deleted_at IS NULL')){await this.aiFor(bot).stop(bot.id).catch(e=>{failure??=e});await this.protocols[bot.protocol].stop(bot.id).catch(e=>{failure??=e})}}catch(e){failure??=e}
   finally{try{
    // Database failure must not leave a shared group or QQ child alive. These
@@ -40,6 +43,7 @@ export class NodeAgent {
  }
  async tick(){if(this.busy||this.closed)return;this.busy=true;try{
    this.bilibili.tick();
+   this.favorites?.tick();
    const [command]=await this.db.query("SELECT * FROM commands WHERE status='pending' ORDER BY created_at LIMIT 1");
    if(command)await this.execute(command);
    const sessions=await this.db.query("SELECT s.*,b.protocol,b.expected_uin,b.tenant_id FROM login_sessions s JOIN bots b ON b.id=s.bot_id WHERE s.state NOT IN ('online','expired','canceled','failed') AND b.deleted_at IS NULL");

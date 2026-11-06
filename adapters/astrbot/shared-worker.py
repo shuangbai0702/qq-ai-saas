@@ -151,7 +151,7 @@ async def main():
         if request.method!='GET' and request.headers.get('X-Group-Generation')!=str(manifest['generation']):raise web.HTTPConflict()
         return await handler(request)
     async def health(request):
-        return web.json_response({'ready':True,'pid':os.getpid(),'generation':manifest['generation'],'capacity':manifest['capacity'],'members':{id:{'generation':m['generation'],'revision':m['revision'],'events':m['events'],'modelConfigured':m['modelConfigured']} for id,m in members.items()},'metrics':behavior['metrics'],'memberErrors':errors,'startedAt':started})
+        return web.json_response({'ready':True,'pid':os.getpid(),'generation':manifest['generation'],'capacity':manifest['capacity'],'members':{id:{'generation':m['generation'],'revision':m['revision'],'events':m['events'],'modelConfigured':m['modelConfigured']} for id,m in members.items()},'metrics':behavior['metrics'],'memberErrors':errors,'startedAt':started,'activity':behavior['activity']()})
     async def put(request):
         id=request.match_info['id']
         try:

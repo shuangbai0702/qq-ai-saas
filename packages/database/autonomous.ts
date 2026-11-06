@@ -1,12 +1,13 @@
 import {createHash,randomUUID} from 'node:crypto';
 import type {Sql} from './index.js';
 import {ExecutionMemory} from './execution-memory.js';
+import {runtimeOnlineSql} from '../shared/runtime-status.js';
 import {AutonomyConfigSchema,defaultAutonomyConfig,TaskHandoffSchema,type AutonomyConfig,type DecisionEnvelope} from '../contracts/autonomous.js';
 
 const daySql="to_char(now() AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD')";
 // Match the existing 90-second health lifetime at every durable work boundary.
 // A missing timestamp or a far-future report is not evidence of an online QQ.
-const onlineSql="b.deleted_at IS NULL AND b.desired_state='running' AND b.health->'protocol'->>'online'='true' AND (b.health->>'sampledAt')::timestamptz BETWEEN now()-interval '90 seconds' AND now()+interval '5 seconds'";
+const onlineSql=runtimeOnlineSql();
 export class AutonomyConflict extends Error {}
 export class AutonomyRepository {
  constructor(public db:Sql){}
@@ -153,11 +154,7 @@ export class AutonomyRepository {
    const tokenLimit=config.dailyTokenBudget===0?config.cycleTokenBudget:Math.min(config.cycleTokenBudget,config.dailyTokenBudget-balance.used_tokens-balance.reserved_tokens);
    const [usage]=tokenLimit>=4000?await tx.query(`UPDATE autonomy_daily_usage SET reserved_tokens=reserved_tokens+$3 WHERE bot_id=$1 AND tenant_id=$2 AND day=${daySql} AND ($4=0 OR used_tokens+reserved_tokens+$3<=$4) RETURNING day`,[s.bot_id,s.tenant_id,tokenLimit,config.dailyTokenBudget]):[];
    if(!usage){
-    await tx.query("UPDATE autonomy_wakes SET due_at=(date_trunc('day',now() AT TIME ZONE 'Asia/Shanghai')+interval '1 day') AT TIME ZONE 'Asia/Shanghai' WHERE bot_id=$1 AND tenant_id=$2 AND due_at<=now()",[s.bot_id,s.tenant_id]);
-    // A crashed cycle may have consumed its last wake. Persist the next day
-    // boundary even then; budget exhaustion must not make it sleep forever.
-    await tx.query("INSERT INTO autonomy_wakes(bot_id,tenant_id,dedupe_key,epoch,due_at,reason,scope) VALUES($1,$2,'budget-reset:',$3,(date_trunc('day',now() AT TIME ZONE 'Asia/Shanghai')+interval '1 day') AT TIME ZONE 'Asia/Shanghai','budget-reset','') ON CONFLICT(bot_id,dedupe_key) DO UPDATE SET epoch=excluded.epoch,due_at=excluded.due_at",[s.bot_id,s.tenant_id,s.epoch]);
-    await tx.query("UPDATE autonomy_settings SET state='budget_wait',last_error='今日自主模型预算已预留或用完',next_wake_at=(SELECT min(due_at) FROM autonomy_wakes WHERE bot_id=$1) WHERE bot_id=$1 AND tenant_id=$2",[s.bot_id,s.tenant_id]);return null;
+    await this.waitForDailyBudget(tx,s,'今日自主模型预算已预留或用完');return null;
    }
    const id=randomUUID();
    const wakes=await tx.query('DELETE FROM autonomy_wakes WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND due_at<=now() RETURNING reason,scope',[s.bot_id,s.tenant_id,s.epoch]);
@@ -238,13 +235,22 @@ export class AutonomyRepository {
  async otherDue(claim:any){
   const rows=await this.db.query(`SELECT 1 FROM autonomy_settings s JOIN bots b ON b.id=s.bot_id AND b.tenant_id=s.tenant_id WHERE s.bot_id<>$1 AND s.config->>'mode'='active' AND s.runtime_epoch=s.epoch AND ${onlineSql} AND (s.lease_until IS NULL OR s.lease_until<now()) AND EXISTS(SELECT 1 FROM autonomy_wakes w WHERE w.bot_id=s.bot_id AND w.tenant_id=s.tenant_id AND w.epoch=s.epoch AND w.due_at<=now()) LIMIT 1`,[claim.bot_id]);return rows.length>0;
  }
+ private async waitForDailyBudget(tx:Sql,bot:any,message:string){
+  await tx.query("UPDATE autonomy_wakes SET due_at=(date_trunc('day',now() AT TIME ZONE 'Asia/Shanghai')+interval '1 day') AT TIME ZONE 'Asia/Shanghai' WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND due_at<=now()",[bot.bot_id,bot.tenant_id,bot.epoch]);
+  // A crash or a request rejected before dispatch may have consumed its wake.
+  await tx.query("INSERT INTO autonomy_wakes(bot_id,tenant_id,dedupe_key,epoch,due_at,reason,scope) VALUES($1,$2,'budget-reset:',$3,(date_trunc('day',now() AT TIME ZONE 'Asia/Shanghai')+interval '1 day') AT TIME ZONE 'Asia/Shanghai','budget-reset','') ON CONFLICT(bot_id,dedupe_key) DO UPDATE SET epoch=excluded.epoch,due_at=excluded.due_at",[bot.bot_id,bot.tenant_id,bot.epoch]);
+  await tx.query("UPDATE autonomy_settings SET state='budget_wait',last_error=$4,next_wake_at=(SELECT min(due_at) FROM autonomy_wakes WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3) WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3",[bot.bot_id,bot.tenant_id,bot.epoch,message]);
+ }
  async finish(claim:any,usage:{tokens:number;modelCalls:number;toolCalls:number;externalActions:number},reason:string,sleepSeconds:number){
   await this.db.transaction(async tx=>{
    const done=await tx.query('UPDATE autonomy_cycles SET state=$2,usage=$3,reason=$4,finished_at=now() WHERE id=$1 AND bot_id=$5 AND tenant_id=$6 AND finished_at IS NULL RETURNING id',[claim.cycleId,reason==='sleep'?'completed':'ended',JSON.stringify(usage),reason,claim.bot_id,claim.tenant_id]);
    if(!done.length)return;
    await tx.query('UPDATE autonomy_daily_usage SET reserved_tokens=GREATEST(0,reserved_tokens-$3),used_tokens=used_tokens+$4,model_calls=model_calls+$5,tool_calls=tool_calls+$6,external_actions=external_actions+$7 WHERE bot_id=$1 AND tenant_id=$2 AND day=$8',[claim.bot_id,claim.tenant_id,claim.tokenLimit??claim.config.cycleTokenBudget,Math.max(0,usage.tokens),usage.modelCalls,usage.toolCalls,usage.externalActions,claim.day]);
    const rows=await tx.query("UPDATE autonomy_settings SET lease_owner=NULL,lease_until=NULL,state=$5,last_error=$6,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND lease_owner=$4 RETURNING epoch",[claim.bot_id,claim.tenant_id,claim.epoch,claim.owner,reason==='sleep'?'sleeping':reason==='waiting_receipt'?'waiting_receipt':'backoff',reason==='sleep'?null:reason]);
-   if(rows.length)await this.wake(claim.tenant_id,claim.bot_id,claim.epoch,'autonomous-time',sleepSeconds,'',tx);
+   if(rows.length){
+    if(reason==='daily_request_token_budget')await this.waitForDailyBudget(tx,claim,'剩余今日自主预算不足以容纳当前请求；等待预算恢复或新事件/配置');
+    else await this.wake(claim.tenant_id,claim.bot_id,claim.epoch,'autonomous-time',sleepSeconds,'',tx);
+   }
   });
  }
 }

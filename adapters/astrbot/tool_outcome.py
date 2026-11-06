@@ -1,7 +1,8 @@
 """Common projection of existing tool receipts; never infer writes from prose."""
 import json
 
-STATES={'confirmed','rejected','partial','unknown'}
+STATES={'confirmed','rejected','partial','unknown','not_applicable'}
+EXECUTIONS={'completed','failed','canceled','pending'}
 
 def project(value,*,write=False,evidence=None):
     try:data=json.loads(value) if isinstance(value,str) else value
@@ -9,11 +10,13 @@ def project(value,*,write=False,evidence=None):
     if isinstance(data,dict):
         receipt=data.get('receipt')
         status=receipt.get('status') if isinstance(receipt,dict) else data.get('status')
-        if status in ('blocked','unavailable','invalid_favorite','disabled_favorite'):
+        if status in ('blocked','unavailable','invalid_favorite','disabled_favorite','not_sent','invalid_reference'):
             status='rejected'
         if status in STATES:
-            return {**data,'receipt':{**(receipt if isinstance(receipt,dict) else {}),'status':status},'evidence':data.get('evidence',evidence or [])}
-    return {'receipt':{'status':'unknown' if write else 'confirmed'},'data':data if data is not None else value,'evidence':evidence or [],'meaning':'Only explicit receipts prove external writes; read completion does not verify source claims.'}
+            execution=data.get('execution')
+            if execution not in EXECUTIONS:execution='failed' if status in ('rejected','unknown') else 'completed'
+            return {**data,'execution':execution,'receipt':{**(receipt if isinstance(receipt,dict) else {}),'status':status},'evidence':data.get('evidence',evidence or [])}
+    return {'execution':'failed' if write else 'completed','receipt':{'status':'unknown' if write else 'not_applicable'},'data':data if data is not None else value,'evidence':evidence or [],'meaning':'Only explicit receipts prove external writes; read completion does not verify source claims.'}
 
 
 def structured(tool):
@@ -33,7 +36,7 @@ def structured(tool):
             try:value=await tool.call(context,**kwargs)
             except Exception as error:
                 # A thrown transport error cannot prove a write was rejected.
-                return json.dumps({'receipt':{'status':'unknown' if write else 'rejected'},
+                return json.dumps({'execution':'failed','receipt':{'status':'unknown' if write else 'rejected'},
                                    'code':'tool_exception','error_type':type(error).__name__,
                                    'evidence':[],'meaning':'执行未完成；未知写入先核对原账本与平台状态，不得盲目重发。'},ensure_ascii=False)
             return json.dumps(project(value,write=write),ensure_ascii=False)
