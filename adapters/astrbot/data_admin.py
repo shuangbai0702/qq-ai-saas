@@ -12,11 +12,20 @@ import time
 
 def initialize_controls(db):
     db.executescript('''
-    CREATE TABLE IF NOT EXISTS memory_blocks(scope TEXT,subject TEXT,name TEXT,PRIMARY KEY(scope,subject,name));
+    CREATE TABLE IF NOT EXISTS memory_blocks(scope TEXT,subject TEXT,name TEXT,block_all INTEGER DEFAULT 0,rejected_values TEXT,revision INTEGER DEFAULT 0,PRIMARY KEY(scope,subject,name));
     CREATE TABLE IF NOT EXISTS social_pattern_blocks(scope TEXT,expression TEXT,PRIMARY KEY(scope,expression));
     CREATE TABLE IF NOT EXISTS social_control(id INTEGER PRIMARY KEY CHECK(id=1),epoch INTEGER NOT NULL);
     INSERT OR IGNORE INTO social_control VALUES(1,0);
     ''')
+    # Additive migration: legacy rows were whole-name forgets, so they become
+    # block_all=1; correction rows written later keep block_all=0 with only
+    # their recorded rejected values hidden.
+    columns={row[1] for row in db.execute('PRAGMA table_info(memory_blocks)')}
+    if 'block_all' not in columns:
+        db.execute('ALTER TABLE memory_blocks ADD COLUMN block_all INTEGER DEFAULT 0')
+        db.execute('UPDATE memory_blocks SET block_all=1')
+    if 'rejected_values' not in columns:db.execute('ALTER TABLE memory_blocks ADD COLUMN rejected_values TEXT')
+    if 'revision' not in columns:db.execute('ALTER TABLE memory_blocks ADD COLUMN revision INTEGER DEFAULT 0')
 
 
 def run(file, data, connection=None):
@@ -75,7 +84,9 @@ def run(file, data, connection=None):
                 conditions=[];summary_args=[]
                 if scope:conditions.append('scope=?');summary_args.append(scope)
                 if query:conditions.append('instr(text,?)>0');summary_args.append(query)
-                summaries=[dict(r) for r in listed('summaries','SELECT id,scope,text,updated FROM memory_summaries'+(' WHERE '+' AND '.join(conditions) if conditions else '')+' ORDER BY id DESC LIMIT 100',summary_args)]
+                summary_columns={r[1] for r in db.execute('PRAGMA table_info(memory_summaries)')}
+                summary_fields='id,scope,text,updated'+(',schema_version' if 'schema_version' in summary_columns else '')+(',coalesce(json_array_length(claims),0) AS claim_count' if 'claims' in summary_columns else '')
+                summaries=[dict(r) for r in listed('summaries','SELECT '+summary_fields+' FROM memory_summaries'+(' WHERE '+' AND '.join(conditions) if conditions else '')+' ORDER BY id DESC LIMIT 100',summary_args)]
             decisions=[dict(r) for r in listed('decisions','SELECT * FROM autonomy_decisions'+pattern_where+' ORDER BY at DESC LIMIT 50',pattern_args,50)] if 'autonomy_decisions' in tables else []
             pending=[dict(r) for r in listed('pending','SELECT scope,subject,event,question,answer,at FROM memory_pending'+(' WHERE '+' AND '.join(clauses) if clauses else '')+' ORDER BY at DESC LIMIT 100',([scope] if scope else [])+([subject] if subject else []))] if 'memory_pending' in tables else []
             core=db.execute('SELECT text,updated FROM memory_core_notes WHERE slot=1').fetchone() if 'memory_core_notes' in tables else None
@@ -95,11 +106,14 @@ def run(file, data, connection=None):
             version=db.execute('SELECT max(version)+1 FROM facts WHERE '+where+' AND name=?',args+(data['name'],)).fetchone()[0]
             db.execute('UPDATE facts SET active=0 WHERE '+where+' AND name=?',args+(data['name'],))
             if action == 'forget_fact':
-                db.execute('INSERT OR IGNORE INTO memory_blocks VALUES(?,?,?)', key)
+                db.execute("INSERT INTO memory_blocks(scope,subject,name,block_all,rejected_values,revision) VALUES(?,?,?,1,'[]',0) ON CONFLICT(scope,subject,name) DO UPDATE SET block_all=1", key)
             else:
                 db.execute('INSERT INTO facts VALUES(?,?,?,?,?,?,?,1)', (*key, data['value'], 'platform-edit', time.time(), version))
                 db.execute('DELETE FROM facts WHERE '+where+' AND name=? AND version<?',args+(data['name'],max(1,version-9)))
-                db.execute('DELETE FROM memory_blocks WHERE '+where+' AND name=?',args+(data['name'],))
+                # Authenticated platform edit: lift this value's block only;
+                # other correction/forget records of the field stay recorded.
+                from memory_scope import release_value
+                release_value(db,scope,data['subject'],data['name'],data['value'])
                 if 'fact_metadata' in tables:
                     db.execute("INSERT INTO fact_metadata(scope,subject,name,kind,origin,importance) VALUES(?,?,?,'stable','explicit',.8) ON CONFLICT(scope,subject,name) DO UPDATE SET origin='explicit'",key)
         elif action == 'forget_summary':

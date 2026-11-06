@@ -25,10 +25,13 @@ async def run():
  sent=[];payloads=[];after_send=None
  async def transport(self,message):
   sent.append((self.get_platform_id(),message));payloads.append(await AiocqhttpMessageEvent._parse_onebot_json(message))
+  st=runtime['stores'][self.get_platform_id()];work=self.get_extra('_hosted_pipeline')
+  st.pipeline.sending(work);st.pipeline.confirmed(work)
   if after_send:after_send()
  async def no_model(self,event):raise AssertionError('unmentioned collection must not call model')
  AiocqhttpMessageEvent.send=transport;PipelineScheduler.execute=no_model
  async def fetch(url,max_bytes=1048576):return (root/'templates/reactions/laugh.png').read_bytes()
+ original_download=sticker_collection._download
  sticker_collection._download=fetch
  settings={name:{'botId':name,'generation':1,'root':str(Path(tmp.name)/name),'config':{'trigger':'mention','behavior':{'qqFaces':False,'naturalConversation':False,'followupSeconds':0,'stickerCollect':True,'stickerGroups':['12345'],'memeEnabled':True,'memeProbability':1,'galleryEnabled':True,'dailyMemeLimit':20,'memeCooldownSeconds':20}}} for name in ['a','b']}
  runtime=install_runtime(SimpleNamespace(event_bus=SimpleNamespace(stopped_platforms=set())),settings)
@@ -53,15 +56,23 @@ async def run():
  parsed=await adapter._convert_handle_message_event(quoted)
  assert isinstance(parsed.message[0],Reply) and any(isinstance(c,Image) for c in parsed.message[0].chain)
  print('PASS incoming custom mface and url-only images, native quoted image conversion, raw identity and invalid URL boundaries')
- def event(id,group='12345',text='群友发表情'):
+ event_seq=123
+ def event(id,group='12345',text='群友发表情',admit=True):
+  nonlocal event_seq
+  event_seq+=1
   raw=Event.from_payload({'post_type':'message','message_type':'group','sub_type':'normal','self_id':90000,'user_id':123456,'group_id':int(group),'message_id':123,'message':[{'type':'image','data':{'sub_type':1,'url':'https://gchat.qpic.cn/fixture'}}]})
   msg=AstrBotMessage();msg.type=MessageType.GROUP_MESSAGE;msg.self_id='90000';msg.session_id=group;msg.message_id='123';msg.group=Group(group_id=group);msg.sender=MessageMember('123456','群友');msg.message=[Plain(text)];msg.message_str=text;msg.raw_message=raw
-  e=AiocqhttpMessageEvent(text,msg,PlatformMetadata('aiocqhttp','fixture',id),group,bot=None);e.set_extra('_hosted_lease',settings[id]);e.set_extra('_hosted_generation',1);return e
+  msg.message_id=str(event_seq);raw['message_id']=event_seq
+  e=AiocqhttpMessageEvent(text,msg,PlatformMetadata('aiocqhttp','fixture',id),group,bot=None);e.set_extra('_hosted_lease',settings[id]);e.set_extra('_hosted_generation',1)
+  # The real group send path requires an admitted Work, even with stubbed I/O.
+  if admit:
+   runtime['manage'](id,{'action':'list'});runtime['stores'][id].pipeline.bind(e,settings[id])
+  return e
  try:
   await AiocqhttpMessageEvent.send(event('a',text='你好'),MessageChain(chain=[Plain('正常文字[QQ_FACE:14]'),Face(id=4)]))
   assert ''.join(x.text for x in sent[-1][1].chain if isinstance(x,Plain))=='正常文字'
   assert not any(isinstance(x,Face) for x in sent[-1][1].chain),'disabled QQ faces leaked into an ordinary reply'
-  e=event('a');await PipelineScheduler.execute(None,e);await runtime['stores']['a'].social.stickers.task
+  e=event('a',admit=False);await PipelineScheduler.execute(None,e);await runtime['stores']['a'].social.stickers.task
   items=runtime['manage']('a',{'action':'list_stickers'})['items'];assert len(items)==1 and items[0]['status']=='pending'
   assert runtime['manage']('b',{'action':'list_stickers'})['items']==[]
   item=items[0];runtime['manage']('a',{'action':'review_sticker','id':item['id'],'status':'approved','meaning':'轻松玩笑','expectedVersion':1})
@@ -94,7 +105,7 @@ async def run():
   assert ''.join(c.text for c in sent[-1][1].chain if isinstance(c,Plain))=='回应'
   favorites=Path(settings['b']['root'])/'qq-favorites';(favorites/'images').mkdir(parents=True)
   fid='qqf_0123456789abcdef';(favorites/'images'/(fid+'.gif')).write_bytes((root/'templates/meme-packs/blue-fat-fish'/pack['items'][0]['file']).read_bytes())
-  (favorites/'index.json').write_text(json.dumps({'account':'90000','enabled':True,'items':[{'id':fid,'file':fid+'.gif','meaning':'开心时亲近','enabled':True}]}))
+  (favorites/'index.json').write_text(json.dumps({'account':'90000','enabled':True,'items':[{'id':fid,'file':fid+'.gif','meaning':'开心时亲近','enabled':True,'manual':True}]}))
   await AiocqhttpMessageEvent.send(event('b','77777',text='发个收藏表情'),MessageChain(chain=[Plain('[MEME:'+fid+']')]))
   assert sent[-1][0]=='b' and any(isinstance(x,Image) for x in sent[-1][1].chain)
   await AiocqhttpMessageEvent.send(event('a','88888',text='发个收藏表情'),MessageChain(chain=[Plain('检查[MEME:'+fid+']')]))
@@ -178,5 +189,5 @@ async def run():
   assert 'b' not in runtime['stores'],'partial send recreated a released store'
   print('PASS mixed image bubbles: three sends, image once last, quote/mention once first, image-only, split toggle and stale trailing-send fence')
   print('PASS native unmentioned sticker capture, scoped approval, peer isolation and separate gallery image send')
- finally:runtime['close']()
+ finally:sticker_collection._download=original_download;runtime['close']()
 asyncio.run(run());tmp.cleanup()

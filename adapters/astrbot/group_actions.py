@@ -146,6 +146,7 @@ async def send(event,cfg,db,group,text,mention,current,on_sent,include_prepared_
         # The same prepared attachment cannot leak into the private completion
         # or get resent after a lost group response.
         event.set_extra('_hosted_tool_sticker',None);event.set_extra('_hosted_meme_sent',True)
+    confirmed_receipt=None
     try:
         result=await asyncio.wait_for(event.bot.send_group_msg(group_id=int(group),message=wire),15)
         from bot_pipeline import message_receipt
@@ -153,18 +154,21 @@ async def send(event,cfg,db,group,text,mention,current,on_sent,include_prepared_
         if isinstance(receipt,bool) or not isinstance(receipt,(int,str)) or not str(receipt).lstrip('-').isdigit() or int(receipt)==0:
             db.execute("UPDATE group_message_attempts SET state='unknown' WHERE event=?",(key,));db.commit()
             return 'QQ未返回有效消息编号，发送结果未确认；不会自动重试，请先查看群实际结果。'
+        confirmed_receipt=str(receipt)
         db.execute("UPDATE group_message_attempts SET state='confirmed',receipt=? WHERE event=?",(str(receipt),key));db.commit()
         if not current():return json.dumps({'status':'confirmed','message_id':str(receipt),'scope':'group:'+group,'state_committed':False,'meaning':'QQ已确认原群消息发送；配置已变化，不向新会话回写或继续发送，请勿重复发送。'},ensure_ascii=False)
         if prepared:social.image_sent('group:'+group,prepared['id'])
         records=list(event.get_extra('_hosted_tool_results') or []);records.append({'tool':'hosted_qq_group_send','status':'returned','scope':'group:'+group,'receipt':str(receipt),'image':bool(prepared),'at':int(time.time()*1000)});event.set_extra('_hosted_tool_results',records[-8:])
         try:on_sent('group:'+group,text,mention)
-        except Exception:return json.dumps({'status':'partial','message_id':str(receipt),'scope':'group:'+group,'protocol_status':'confirmed','state_committed':False,'meaning':'QQ已确认群消息发送成功；会话状态更新未完成，请勿重复发送。'},ensure_ascii=False)
+        except Exception:return json.dumps({'status':'partial','execution':'failed','receipt':{'status':'confirmed','message_id':str(receipt)},'message_id':str(receipt),'scope':'group:'+group,'protocol_status':'confirmed','state_committed':False,'meaning':'QQ已确认群消息发送成功；会话状态更新未完成，请勿重复发送。'},ensure_ascii=False)
         return json.dumps({'status':'confirmed','message_id':str(receipt),'scope':'group:'+group,'image':bool(prepared),'meaning':'QQ已返回消息编号，已向指定群发送'+('并真实艾特所选成员。' if mention else '。')},ensure_ascii=False)
     except PreDispatchRejected as error:
         db.execute("UPDATE group_message_attempts SET state='not_sent' WHERE event=?",(key,));db.commit()
         return json.dumps({'status':'not_sent','reason':str(error),'meaning':'发送前会话或配置已变化，未向QQ提交；不会把未发送当作成功。'},ensure_ascii=False)
     except asyncio.CancelledError:raise
-    except Exception:return 'QQ未确认群消息成功，结果可能已提交；不会自动重试，请先查看群实际结果。'
+    except Exception:
+        if confirmed_receipt:return json.dumps({'execution':'failed','receipt':{'status':'confirmed','message_id':confirmed_receipt},'state_committed':False,'scope':'group:'+group,'meaning':'QQ已确认原消息；本地提交失败，不得再次发送。'},ensure_ascii=False)
+        return 'QQ未确认群消息成功，结果可能已提交；不会自动重试，请先查看群实际结果。'
 
 
 def tools(event,cfg,db,current,on_sent,social=None,review=None,effect_current=None):

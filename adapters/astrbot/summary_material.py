@@ -2,6 +2,8 @@
 
 Only protocol-bound user envelopes can identify a turn. Original native history
 is retained; covered whole turns are removed from model requests, never from DB.
+Summaries add a bounded structured claims layer (schema_version=2) derived from
+trusted events, materials and recorded corrections; v1 rows are read as-is.
 """
 import asyncio,hashlib,json,re
 from context_protocol import SOURCE,source,digest,reply_digest,image_notice,model_json,supported_block
@@ -193,3 +195,186 @@ async def enrich(db,scope,events,provider,is_current,metrics):
             if key not in batch or key in seen or not isinstance(value,str) or not value.strip():raise ValueError('invalid_summary_image_evidence')
             seen.add(key);observations[key]=value.strip()[:400]
     return materials,observations
+
+
+# D4 claim layer: per-claim attribution, delivery roles and a protected set
+# that survives merges and gates history release. Claims are derived
+# deterministically from trusted payload/material/memory_blocks rows; the
+# model never supplies claim identity, speaker, delivery or visibility.
+CLAIM_KINDS=('human_statement','bot_statement','confirmed_action','interpretation','correction','agreement')
+CLAIM_TEXT=240
+PROTECTED_CLAIM_TEXT=400
+MAX_CLAIMS=96
+# One bounded per-summary budget; sized so a full 35-turn batch (about 70
+# claims) fits with headroom. Actual growth is re-measured in stage S3.
+MAX_CLAIMS_BYTES=32*1024
+CORE_CLAIMS_BYTES=4*1024
+# Same protected vocabulary as the rolling quota (memory_reflection), plus
+# retraction wording; protected claims are never squeezed out by merges.
+PROTECTED_PATTERNS=('约定','纠正','承诺','答应','未解决','还在等','不叫','应该叫','改口','道歉','撤回')
+PLACEHOLDER_TEXT='[图片或引用消息，原始观测素材随本轮保存]'
+
+
+def claim_identity(scope,event,kind,text):
+    return hashlib.sha256('\x00'.join((scope,str(event),kind,text[:64])).encode()).hexdigest()[:16]
+
+
+def valid_claim(claim):
+    """Shape gate for stored and inherited claims; unreadable data is dropped,
+    never trusted. Speaker roles are resolved facts, never model privileges."""
+    return (isinstance(claim,dict) and isinstance(claim.get('id'),str) and 8<=len(claim['id'])<=64
+        and isinstance(claim.get('text'),str) and 0<len(claim['text'])<=PROTECTED_CLAIM_TEXT
+        and claim.get('kind') in CLAIM_KINDS
+        and isinstance(claim.get('speaker'),dict) and claim['speaker'].get('role') in ('human','bot')
+        and isinstance(claim.get('sourceRefs'),list) and claim['sourceRefs']
+        and all(isinstance(ref,dict) and isinstance(ref.get('event'),str) and ref.get('role') in ('user','bot','native','tool','image') for ref in claim['sourceRefs'])
+        and isinstance(claim.get('visibility'),str) and claim['visibility'])
+
+
+def protected_claim(claim):
+    """The protected set: corrections/retractions, agreements, open topics."""
+    return bool(claim.get('protected')) or claim.get('kind')=='correction' or claim.get('status') in ('open','retracted') or any(w in str(claim.get('text','')) for w in PROTECTED_PATTERNS)
+
+
+def claim_ref(scope,event,role,signature=''):
+    return {'scope':scope,'event':str(event),'role':role,'digest':str(signature or '')}
+
+
+def batch_corrections(db,scope,events):
+    """Verified correction records whose evidence event is in this batch.
+    Claims and memory_blocks.rejected_values reference each other by value
+    hash and event (D3/D4.9); whole-name forget rows contribute nothing."""
+    if not events or not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_blocks'").fetchone():return []
+    from memory_scope import person_filter
+    where,args=person_filter(scope,scope[8:],'b') if isinstance(scope,str) and scope.startswith('private:') else ('b.scope=?',(scope,))
+    wanted={str(event) for event in events};result=[]
+    for row_scope,subject,name,raw in db.execute("SELECT b.scope,b.subject,b.name,b.rejected_values FROM memory_blocks b WHERE "+where+" AND b.block_all=0",args):
+        try:entries=json.loads(raw) if raw else []
+        except (ValueError,TypeError):entries=[]
+        for entry in entries if isinstance(entries,list) else []:
+            event=str(entry.get('event','')) if isinstance(entry,dict) else ''
+            if event in wanted:result.append({'scope':row_scope,'subject':str(subject),'name':name,'event':event,'v':str(entry.get('v','')),'quote':str(entry.get('quote','') or ''),'at':entry.get('at')})
+    return result
+
+
+def derive_claims(scope,payload,materials,corrections,data=None):
+    """One claim per role-bearing turn plus verified corrections and open
+    topics. Speakers come from the trusted payload/block rows, delivery from
+    the confirmed reply. Native wording stays a bot_statement marked observed:
+    it is never a human statement and never a second delivery (D4.1/D4.2)."""
+    rows={str(row.get('event')):row for row in payload or [] if isinstance(row,dict) and row.get('event') is not None}
+    stored={str(key):value for key,value in (materials or {}).items() if isinstance(value,dict)}
+    corrected={item['event']:item for item in corrections or []}
+    claims=[]
+    for event,row in rows.items():
+        material_row=stored.get(event) or {};signature=material_row.get('digest','')
+        user_text=str(row.get('user','') or '').strip()
+        if user_text and user_text!=PLACEHOLDER_TEXT:
+            record=corrected.get(event)
+            kind='correction' if record else ('agreement' if any(w in user_text for w in PROTECTED_PATTERNS) else 'human_statement')
+            claim={'id':claim_identity(scope,event,kind,user_text),'text':user_text,
+                'kind':kind,'speaker':{'role':'human','id':record['subject'] if record else str(row.get('sender_id',''))},
+                'about':record['name'] if record else '','sourceRefs':[claim_ref(record['scope'] if record else scope,event,'user',signature)],
+                'occurredAt':row.get('at'),'status':'applied' if record else 'active','visibility':record['scope'] if record else scope}
+            if record:claim['protected']=True;claim['value']=record['v']
+            elif protected_claim(claim):claim['protected']=True
+            if not protected_claim(claim):claim['text']=user_text[:CLAIM_TEXT]
+            claims.append(claim)
+        bot_text=str(row.get('bot','') or '').strip();native=material_row.get('native_reply')
+        if bot_text or isinstance(native,str) and native.strip():
+            text=bot_text or native.strip()
+            claim={'id':claim_identity(scope,event,'bot_statement',text),'text':text,'kind':'bot_statement',
+                'speaker':{'role':'bot'},'about':'','sourceRefs':[claim_ref(scope,event,'bot',signature)],
+                'occurredAt':row.get('at'),'status':'confirmed' if bot_text else 'observed','visibility':scope,
+                'delivery':'confirmed' if bot_text else 'observed'}
+            if bot_text and isinstance(native,str) and native.strip() and native.strip()!=bot_text:claim['nativeRefs']=[claim_ref(scope,event,'native',signature)]
+            if protected_claim(claim):claim['protected']=True
+            else:claim['text']=text[:CLAIM_TEXT]
+            claims.append(claim)
+    motives=(data or {}).get('motives') if isinstance(data,dict) else None
+    for item in motives if isinstance(motives,list) else []:
+        if not isinstance(item,dict) or item.get('status')!='open':continue
+        topic,quote=item.get('topic'),item.get('quote');row=rows.get(str(item.get('event','')))
+        if not isinstance(topic,str) or not 2<=len(topic)<=50 or not isinstance(quote,str) or not row:continue
+        for role in ('user','bot'):
+            text=str(row.get(role,'') or '')
+            if quote in text and topic in quote:
+                claims.append({'id':claim_identity(scope,row['event'],'interpretation',quote),'text':quote[:PROTECTED_CLAIM_TEXT],
+                    'kind':'interpretation','speaker':{'role':'human' if role=='user' else 'bot'},'about':topic,
+                    'sourceRefs':[claim_ref(scope,row['event'],role,(stored.get(str(row['event'])) or {}).get('digest',''))],
+                    'occurredAt':row.get('at'),'status':'open','visibility':scope,'protected':True})
+                break
+    return claims
+
+
+def fit_claims(claims,budget=None,max_claims=None):
+    """Protected claims are kept first inside one bounded per-summary budget
+    so merges cannot grow without limit; dropped protected ids are reported
+    so their source rounds can be held back instead of released."""
+    budget=MAX_CLAIMS_BYTES if budget is None else budget
+    max_claims=MAX_CLAIMS if max_claims is None else max_claims
+    kept=[];used=2;dropped=set()
+    # Oversized protected evidence cannot become "retained" by silently
+    # clipping the very agreement/correction that justified its protection.
+    for claim in claims:
+        if isinstance(claim,dict) and protected_claim(claim) and not valid_claim(claim):dropped.add(claim.get('id'))
+    for claim in sorted((item for item in claims if valid_claim(item)),key=lambda item:(not protected_claim(item),-(item.get('occurredAt') or 0))):
+        claim=dict(claim);limit=PROTECTED_CLAIM_TEXT if protected_claim(claim) else CLAIM_TEXT
+        if len(claim['text'])>limit:claim['text']=claim['text'][:limit]
+        size=len(json.dumps(claim,ensure_ascii=False,separators=(',',':')).encode())+(1 if kept else 0)
+        if len(kept)>=max_claims or used+size>budget:
+            if protected_claim(claim):dropped.add(claim['id'])
+            continue
+        kept.append(claim);used+=size
+    return kept,dropped
+
+
+def inherit_claims(rows):
+    """Collect merge-source claims by value and record the traceable parent
+    chain (summary id + claim id), never a bare participation note."""
+    merged={}
+    for identifier,raw in rows:
+        try:claims=json.loads(raw) if raw else []
+        except (ValueError,TypeError):claims=[]
+        if not isinstance(claims,list):continue
+        for claim in claims:
+            if not valid_claim(claim):continue
+            parents=[p for p in (claim.get('parents') or []) if isinstance(p,dict) and 'summary' in p]+[{'summary':identifier,'claim':claim['id']}]
+            known=merged.get(claim['id'])
+            if known:
+                known['parents']=(known.get('parents') or [])+[p for p in parents if p not in (known.get('parents') or [])]
+                known['parents']=known['parents'][-6:]
+            else:merged[claim['id']]={**claim,'parents':parents[-6:]}
+    return list(merged.values())
+
+
+def uncarried_events(claims,kept_ids):
+    """Events whose protected claims the new summary did not retain; their
+    material and rounds stay until a version proves them (D4.5)."""
+    ids={claim.get('id') if isinstance(claim,dict) else claim for claim in kept_ids};events=set()
+    for claim in claims:
+        if not protected_claim(claim) or claim.get('id') in ids:continue
+        events.update(str(ref.get('event')) for ref in claim.get('sourceRefs',[]) if isinstance(ref,dict) and ref.get('event'))
+    return events
+
+
+def uncarried_sources(rows,kept):
+    """Merge sources whose protected claims the merge cannot carry; they stay
+    unmerged and the conflict is reported instead of silently dropping them."""
+    ids={claim.get('id') for claim in kept};result=[]
+    for identifier,raw in rows:
+        try:claims=json.loads(raw) if raw else []
+        except (ValueError,TypeError):claims=[]
+        if any(isinstance(claim,dict) and valid_claim(claim) and protected_claim(claim) and claim.get('id') not in ids for claim in claims):result.append(identifier)
+    return result
+
+
+def summary_claims(db,identifier):
+    """Read one summary's claims; v1 rows (schema_version=1, NULL claims) have
+    none and are never back-filled with invented claims (D4.8)."""
+    if type(identifier) is not int or identifier<=0:return []
+    row=db.execute('SELECT schema_version,claims FROM memory_summaries WHERE id=?',(identifier,)).fetchone()
+    if not row or row[0]!=2 or not row[1]:return []
+    try:claims=json.loads(row[1])
+    except (ValueError,TypeError):return []
+    return [claim for claim in claims if valid_claim(claim)] if isinstance(claims,list) else []

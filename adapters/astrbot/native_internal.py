@@ -117,6 +117,9 @@ async def run(provider,control,prompt,system,tools=(),handlers=None,context=None
             from tool_outcome import project
             outcome=project(parsed if isinstance(parsed,dict) else value,write=bool(getattr(tool,'hosted_effect',False)))
             item['receipt']=outcome['receipt']
+            item['execution']=outcome['execution']
+            if isinstance(outcome.get('actionId'),str):item['actionId']=outcome['actionId'][:128]
+            if control.trace.get('workId'):item['workId']=control.trace['workId']
             item['evidence']=outcome.get('evidence',[])
             if unavailable:
                 item.update(code=str(parsed.get('code') or 'unavailable')[:80],scope=str(parsed.get('scope') or 'tool')[:40])

@@ -1,33 +1,21 @@
+import {withFavoriteIndex} from '../../../packages/shared/qq-favorite-index.js';
 import type {FastifyInstance} from 'fastify';import {readFile,writeFile,mkdir,rename,rm,readdir,lstat} from 'node:fs/promises';import path from 'node:path';import {createHash,randomUUID} from 'node:crypto';import {execFile} from 'node:child_process';import {z} from 'zod';
 import type {FavoriteAnnotation} from './qq-favorite-semantics.js';
 type Bot={id:string;protocol:string;qq_uin?:string;generation:number;desired_state:string;health?:any};
-type Item={id:string;file:string;mime:string;meaning:string;avoid:string;enabled:boolean;animated:boolean;manual?:boolean;semantic?:FavoriteAnnotation;semanticStatus?:'ready'|'uncertain'|'pending'|'failed'};
+type Item={id:string;file:string;mime:string;meaning:string;avoid:string;enabled:boolean;animated:boolean;manual?:boolean;semantic?:FavoriteAnnotation;semanticStatus?:'ready'|'uncertain'|'pending'|'failed'|'raw_text';rawText?:string;rawSource?:string;semanticAttempts?:number;semanticFailures?:number;semanticRetryAt?:number;contentHash?:string;lastVisionError?:string;semanticWaitReason?:string;semanticWaitMs?:number;queuedAt?:number};
 type Index={account:string;enabled:boolean;syncedAt?:string;items:Item[];failed?:number;limitReached?:boolean};
 const invalid=(message:string,statusCode=400)=>Object.assign(new Error(message),{statusCode});
 const hash=(raw:string)=>createHash('sha256').update(raw).digest('hex');
 const safeFile=(file:string)=>/^qqf_[a-f0-9]{16}\.(gif|png)$/.test(file);
-export async function downloadFavorite(url:string,signal:AbortSignal){
- const u=new URL(url),host=u.hostname.toLowerCase();if(u.protocol!=='https:'||u.username||u.password||(u.port&&u.port!=='443')||!['qpic.cn','qq.com'].some(domain=>host===domain||host.endsWith('.'+domain)))throw invalid('收藏图片来源不受支持');
- const response=await fetch(u,{signal:AbortSignal.any([signal,AbortSignal.timeout(15000)]),redirect:'error'});if(!response.ok||!response.body||Number(response.headers.get('content-length')||0)>8388608)throw invalid('收藏图片暂时不可用');
- const blocks:Uint8Array[]=[];let length=0;try{for await(const block of response.body){length+=block.length;if(length>8388608)throw invalid('收藏图片超过8MiB');blocks.push(block)}}catch(e){await response.body.cancel().catch(()=>{});throw e}return Buffer.concat(blocks);
-}
-async function nativeCall(root:string,bot:Bot,action:string,params:unknown,signal:AbortSignal){
- if(bot.protocol!=='napcat')throw invalid('当前协议端尚不支持QQ收藏同步',409);
- const m=JSON.parse(await readFile(path.join(root,'bots',bot.id,'napcat-platform.json'),'utf8'));if(m.botId!==bot.id||m.management.host!=='127.0.0.1'||!Number.isInteger(m.management.port))throw invalid('协议实例尚未就绪',409);
- const response=await fetch(`http://127.0.0.1:${m.management.port+1}/${action}`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+m.reverseWs.token},body:JSON.stringify(params),signal:AbortSignal.any([signal,AbortSignal.timeout(12000)])});
- const result:any=await response.json();if(!response.ok||result.status!=='ok'||result.retcode!==0)throw invalid('QQ收藏接口暂时不可用，请确认QQ在线',409);return result.data;
-}
-async function normalize(input:string,destination:string,signal:AbortSignal){
- const python=path.resolve(process.env.ASTRBOT_PYTHON||`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`);
- return new Promise<{suffix:string;mime:string;animated:boolean}>((resolve,reject)=>execFile(python,[path.resolve('adapters/astrbot/favorite_media.py'),input,destination],{signal,timeout:15000,maxBuffer:8192,windowsHide:true,env:{PATH:process.env.PATH,SystemRoot:process.env.SystemRoot,TEMP:process.env.TEMP,TMP:process.env.TMP,PYTHONIOENCODING:'utf-8'}},(error,out)=>{if(error)return reject(invalid('收藏图片格式或尺寸不受支持'));try{resolve(JSON.parse(out))}catch{reject(invalid('收藏图片处理失败'))}}));
-}
+export {downloadFavorite} from '../../../packages/shared/qq-favorite-media.js';
+import {downloadFavorite,nativeCall,normalize} from '../../../packages/shared/qq-favorite-media.js';
 type Dependencies={call?:typeof nativeCall;download?:typeof downloadFavorite;normalize?:typeof normalize;caption?:(bot:Bot,file:string,signal:AbortSignal)=>Promise<FavoriteAnnotation>};
 export function registerQQFavorites(app:FastifyInstance,root:string,owned:(req:any,id:string)=>Promise<Bot>,deps:Dependencies={}){
  const tasks=new Map<string,{controller:AbortController;promise:Promise<void>}>(),locks=new Map<string,Promise<unknown>>();let closing=false;
  const dir=(id:string)=>path.join(root,'bots',id,'qq-favorites');const indexFile=(id:string)=>path.join(dir(id),'index.json');
  async function atomic(file:string,data:unknown){await mkdir(path.dirname(file),{recursive:true});const temp=file+'.'+randomUUID()+'.tmp';try{await writeFile(temp,JSON.stringify(data),{flag:'wx',mode:0o600});for(let attempt=0;;attempt++){try{await rename(temp,file);break}catch(e:any){if(process.platform!=='win32'||!['EPERM','EACCES','EBUSY'].includes(e.code)||attempt>=4)throw e;await new Promise(r=>setTimeout(r,25*(attempt+1)))}}}finally{await rm(temp,{force:true})}}
  async function read(id:string){try{return await readFile(indexFile(id),'utf8')}catch(e:any){if(e.code==='ENOENT')return JSON.stringify({account:'',enabled:false,items:[]});throw e}}
- async function locked<T>(id:string,run:()=>Promise<T>){const before=locks.get(id)||Promise.resolve(),task=before.catch(()=>{}).then(run);locks.set(id,task);try{return await task}finally{if(locks.get(id)===task)locks.delete(id)}}
+ async function locked<T>(id:string,run:()=>Promise<T>){const before=locks.get(id)||Promise.resolve(),task=before.catch(()=>{}).then(()=>withFavoriteIndex(root,id,run));locks.set(id,task);try{return await task}finally{if(locks.get(id)===task)locks.delete(id)}}
  function account(bot:Bot){return String(bot.qq_uin||'')}
  async function active(req:any,initial:Bot,signal:AbortSignal){signal.throwIfAborted();const b=await owned(req,initial.id);if(b.generation!==initial.generation||account(b)!==account(initial)||b.desired_state==='deleting')throw invalid('QQ账号或实例已切换，请重新同步',409);return b}
  async function state(id:string){try{const s=JSON.parse(await readFile(path.join(dir(id),'sync.json'),'utf8'));return s.syncing&&!tasks.has(id)?{...s,syncing:false,error:'上次同步已中断，请重新同步'}:s}catch(e:any){if(e.code==='ENOENT')return{syncing:false};throw e}}
@@ -46,19 +34,21 @@ export function registerQQFavorites(app:FastifyInstance,root:string,owned:(req:a
     try{let cached=false;let item:Item;if(existing&&safeFile(existing.file))try{const stat=await lstat(path.join(dir(bot.id),'images',existing.file));cached=stat.isFile()&&!stat.isSymbolicLink()&&stat.size<=1048576}catch{}if(cached){item={...existing!}}else{
      const bytes=await download(String(source.url||''),signal),input=path.join(stage,id+'.input');await writeFile(input,bytes,{mode:0o600});const output=await convert(input,path.join(stage,id),signal);await rm(input,{force:true});
      const meaning=String(source.modifyWord||source.desc||source.ocrWord||'').replace(/[\x00-\x1f\x7f]/g,' ').trim().slice(0,100);
-     staged.add(id);item={id,file:id+output.suffix,mime:output.mime,animated:output.animated,meaning,avoid:'',enabled:!!meaning};}
+     staged.add(id);item={id,file:id+output.suffix,mime:output.mime,animated:output.animated,rawText:meaning,rawSource:meaning?'qq_text':'',meaning:'',avoid:'',enabled:false,semanticStatus:'raw_text',semanticAttempts:0,semanticFailures:0};}
      // Bounded work per import, not a daily quota. Re-sync continues remaining
      // missing descriptions using cached images without another QQ download.
-     if(!item.meaning&&!item.manual&&!item.semantic&&deps.caption){
-      item.semanticStatus='pending';
-      if(annotationAttempts<8){
+     if(item.meaning&&!item.manual&&!item.semantic){item.rawText=item.rawText||item.meaning;item.rawSource=item.rawSource||'legacy_text';item.meaning='';item.avoid='';item.enabled=false;item.semanticStatus='raw_text'}
+     if(!item.meaning&&!item.manual&&item.semantic?.confidence!=='clear'&&deps.caption){
+      if(annotationAttempts<8&&Number(item.semanticAttempts||0)<3&&Number(item.semanticFailures||0)<5&&Number(item.semanticRetryAt||0)<=Date.now()){
+       item.semanticStatus='pending';
        annotationAttempts++;
        try{
         const semantic=await deps.caption(bot,path.join(cached?path.join(dir(bot.id),'images'):stage,item.file),signal);
         await active(req,bot,signal);item.semantic=semantic;
         item.semanticStatus=semantic.confidence==='clear'?'ready':'uncertain';
         if(semantic.confidence==='clear'){item.meaning=semantic.meaning;item.avoid=semantic.avoid;item.enabled=true}
-       }catch(e){if(signal.aborted)throw e;item.semanticStatus='failed'}
+        else{item.semanticAttempts=Number(item.semanticAttempts||0)+1;item.semanticRetryAt=Date.now()+60000*2**item.semanticAttempts}
+       }catch(e){if(signal.aborted)throw e;const message=String((e as Error)?.message||e);if(/pressure|chat_busy/.test(message)){item.semanticWaitReason=/chat_busy/.test(message)?'chat_busy':'pressure';item.semanticRetryAt=Date.now()+60000}else{item.semanticStatus='failed';item.semanticFailures=Number(item.semanticFailures||0)+1;item.semanticRetryAt=Date.now()+Math.min(86400000,60000*2**item.semanticFailures)}}
       }
      }
      items.push(item);
@@ -71,7 +61,7 @@ export function registerQQFavorites(app:FastifyInstance,root:string,owned:(req:a
      const override=overrides.get(item.id),initial=old.get(item.id);
      // Preserve edits made while annotation was in flight, but do not replace
      // a new generated meaning with its unchanged empty pre-import snapshot.
-     if(override&&(!initial||['meaning','avoid','enabled','manual'].some(k=>(override as any)[k]!==(initial as any)[k])))Object.assign(item,{meaning:override.meaning,avoid:override.avoid,enabled:override.enabled,manual:true,semantic:undefined,semanticStatus:undefined});
+     if(override&&(!initial||JSON.stringify(override)!==JSON.stringify(initial))){for(const key of Object.keys(item))if(!(key in override))delete (item as any)[key];Object.assign(item,override);staged.delete(item.id)}
      if(staged.has(item.id))await rename(path.join(stage,item.file),path.join(dir(bot.id),'images',item.file));
     }
     await active(req,bot,signal);await atomic(indexFile(bot.id),{account:account(bot),enabled:current.account===account(bot)?current.enabled:false,items,syncedAt:new Date().toISOString(),failed,limitReached:list.length>=200});

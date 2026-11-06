@@ -59,6 +59,35 @@ def model_cooldown(data):
     return count,reason
 
 
+def failure_class(error):
+    """Coarse decision-failure class for metrics (D7.1).
+
+    Authentication, rate limiting, cancellation and timeouts are kept apart so
+    a broken account is never reported as ordinary idleness. This is evidence
+    only; it changes no retry or gate behavior.
+    """
+    if isinstance(error,asyncio.CancelledError):return 'canceled'
+    if isinstance(error,asyncio.TimeoutError):return 'timeout'
+    text=str(error)
+    lowered=text.lower()
+    if '401' in text or '403' in text or 'unauthorized' in lowered or 'forbidden' in lowered:return 'auth'
+    if '429' in text or 'rate limit' in lowered:return 'rate_limit'
+    return type(error).__name__
+
+
+def send_capacity(db,cfg,now=None):
+    """Transparent hourly send-capacity snapshot behind reserve_send (D7.1).
+
+    Counts exactly what has_capacity counts; a false result means
+    hourly_budget_exhausted, not an empty candidate set.
+    """
+    now=time.time() if now is None else now
+    limit=(cfg.get('behavior') or {}).get('hourlyInterjectionLimit',20)
+    used=db.execute("SELECT count(*) FROM autonomy_sends WHERE at>? AND state!='released'",(now-3600,)).fetchone()[0]
+    used+=db.execute('SELECT count(*) FROM group_interjections WHERE at>?',(now-3600,)).fetchone()[0]
+    return {'available':used<limit,'reason':'ok' if used<limit else 'hourly_budget_exhausted','used':int(used),'limit':limit}
+
+
 def record_decision(db,cfg,scope,event,data,reply,now,kind):
     """Write within the caller's transaction after its current-lease check."""
     count,reason=model_cooldown(data);count=0 if reply else count
@@ -279,7 +308,7 @@ class GroupPresence:
         except Exception as error:
             if live():
                 metrics['groupDecisionFailures'] = metrics.get('groupDecisionFailures', 0)+1
-                metrics['lastGroupDecision'] = {'at': now, 'reply': False, 'source': 'error', 'reason': type(error).__name__, 'group': scope[6:]}
+                metrics['lastGroupDecision'] = {'at': now, 'reply': False, 'source': 'error', 'reason': failure_class(error), 'group': scope[6:]}
             return None
         finally:
             decision_token_limit.reset(limit_token)

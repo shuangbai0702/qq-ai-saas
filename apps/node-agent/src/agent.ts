@@ -1,8 +1,37 @@
+import {FavoriteMaintenance} from './favorite-maintenance.js';
 import {BotConfigSchema} from '../../../packages/contracts/index.js';
 import {acquireLease} from '../../../packages/database/lease.js';
 import {observeOffline,evictionDue,offlineGrace} from './offline-policy.js';
-import path from 'node:path';import {mkdir,appendFile,readFile,writeFile,rm,open,stat,readdir} from 'node:fs/promises';import {randomBytes,randomUUID} from 'node:crypto';
+import path from 'node:path';import {mkdir,appendFile,readFile,writeFile,rm,open,stat,readdir,rename} from 'node:fs/promises';import {randomBytes,randomUUID} from 'node:crypto';
 import type {Sql} from '../../../packages/database/index.js';import {decrypt,redact} from '../../../packages/shared/security.js';import {terminalLogin,type RuntimeContext,type ProtocolAdapter,type LoginSnapshot} from '../../../packages/contracts/index.js';
+
+/** Single serialized heartbeat writer for one Agent process.
+ * Overlapping tick writes queue on one chain; every snapshot carries a
+ * monotonic sequence plus the pid/processStart identity the supervisor
+ * verifies. A heartbeat left behind by a replaced process can never roll the
+ * file back: an identity mismatch wins only with a strictly newer startedAt,
+ * and each write uses a unique temp file cleaned up by its own writer. */
+export class HeartbeatWriter{
+ private sequence=0;private chain:Promise<void>=Promise.resolve();private stopped=false;
+ constructor(private file:string,private identity:{pid:number;processStart?:string;startedAt:string},private deps:{rename:typeof rename}={rename}){}
+ write(payload:Record<string,unknown>={}){
+  const task=this.chain.catch(()=>{}).then(()=>this.writeOnce(payload));
+  this.chain=task;return task;
+ }
+ private owns(current:any){return Boolean(current)&&Number(current.pid)===this.identity.pid&&String(current.startedAt||'')===this.identity.startedAt}
+ private async writeOnce(payload:Record<string,unknown>){
+  if(this.stopped)return;
+  let current:any=null;try{current=JSON.parse(await readFile(this.file,'utf8'))}catch(e:any){if(e.code!=='ENOENT')throw e}
+  if(current&&!this.owns(current)&&String(current.startedAt||'')>=this.identity.startedAt)return;
+  this.sequence=Math.max(this.sequence,Number(current?.sequence||0))+1;
+  const snapshot={...this.identity,...payload,sequence:this.sequence,at:Date.now()};
+  const temp=`${this.file}.${this.identity.pid}.${randomUUID()}.tmp`;
+  let renamed=false;
+  try{await writeFile(temp,JSON.stringify(snapshot),{flag:'wx',mode:0o600});await this.deps.rename(temp,this.file);renamed=true}
+  finally{if(!renamed)await rm(temp,{force:true})}
+ }
+ async stop(){this.stopped=true;await this.chain.catch(()=>{})}
+}
 import {SharedAstrBotAdapter} from '../../../adapters/astrbot/shared.js';
 import {AutonomyCoordinator,runtimeClient} from './autonomous.js';
 import {BilibiliExecutor} from './bilibili/executor.js';
@@ -12,6 +41,7 @@ export class NodeAgent {
  private releaseLease?:(()=>Promise<void>);
  autonomy:AutonomyCoordinator;
  bilibili:BilibiliExecutor;
+ favorites:FavoriteMaintenance;
  recovery=new Map<string,{attempts:number;next:number;healthySince:number}>();
  offlineGrace:{offline:number;fault:number;login:number;startup?:number}={offline:offlineGrace(process.env.FISHBOT_OFFLINE_GRACE_SECONDS,300),fault:offlineGrace(process.env.FISHBOT_PROTOCOL_FAULT_GRACE_SECONDS,300),login:offlineGrace(process.env.FISHBOT_LOGIN_IDLE_GRACE_SECONDS,180),startup:offlineGrace(process.env.FISHBOT_STARTUP_GRACE_SECONDS,120)};
  constructor(public db:Sql,public root:string,public key:Buffer){
@@ -20,8 +50,9 @@ export class NodeAgent {
    this.protocols={mock:new MockProtocolAdapter(this.host),napcat:new NapCatAdapter(this.host,path.join(root,'napcat')),euler:new EulerAdapter(this.host,path.resolve(process.env.EULER_SOURCE||'references/euler'),path.resolve(process.env.EULER_PYTHON||`references/euler/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`))};
    this.autonomy=new AutonomyCoordinator(db,runtimeClient(db));
    this.bilibili=new BilibiliExecutor(db,root,key);
+   this.favorites=new FavoriteMaintenance(db,root,key);
  }
- async context(bot:any):Promise<RuntimeContext>{const [instance]=await this.db.query('SELECT * FROM instances WHERE bot_id=$1',[bot.id]);const [revision]=await this.db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[bot.id,bot.revision]);const [binding]=await this.db.query('SELECT qq_uin FROM qq_bindings WHERE bot_id=$1',[bot.id]);const [secret]=await this.db.query('SELECT ciphertext FROM secrets WHERE bot_id=$1 AND tenant_id=$2',[bot.id,bot.tenant_id]);return{botId:bot.id,tenantId:bot.tenant_id,root:path.join(this.root,'bots',bot.id),generation:bot.generation,revision:bot.revision,aiPort:instance.ai_port,protocolPort:instance.protocol_port,token:instance.token,config:BotConfigSchema.parse(revision.config),apiKey:secret?decrypt(this.key,`${bot.tenant_id}:${bot.id}`,secret.ciphertext):'',expectedUin:binding?.qq_uin||bot.expected_uin||'',runtimeMode:bot.runtime_mode,groupId:bot.group_id}}
+ async context(bot:any):Promise<RuntimeContext>{const [instance]=await this.db.query('SELECT * FROM instances WHERE bot_id=$1',[bot.id]);const [revision]=await this.db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[bot.id,bot.revision]);const [binding]=await this.db.query('SELECT qq_uin FROM qq_bindings WHERE bot_id=$1',[bot.id]);const [secret]=await this.db.query('SELECT ciphertext FROM secrets WHERE bot_id=$1 AND tenant_id=$2',[bot.id,bot.tenant_id]);const [permit]=await this.db.query("SELECT id::text AS id FROM audit_events WHERE bot_id=$1 AND event='config.saved' AND detail->>'revision'=$2 AND detail->>'source'='authenticated_web_config' AND detail->>'actorId' IS NOT NULL ORDER BY id DESC LIMIT 1",[bot.id,String(bot.revision)]);return{botId:bot.id,tenantId:bot.tenant_id,root:path.join(this.root,'bots',bot.id),generation:bot.generation,revision:bot.revision,systemChangePermitId:permit?.id,aiPort:instance.ai_port,protocolPort:instance.protocol_port,token:instance.token,config:BotConfigSchema.parse(revision.config),apiKey:secret?decrypt(this.key,`${bot.tenant_id}:${bot.id}`,secret.ciphertext):'',expectedUin:binding?.qq_uin||bot.expected_uin||'',runtimeMode:bot.runtime_mode,groupId:bot.group_id}}
  aiFor(bot:any){return bot.runtime_mode==='shared'?this.shared:this.ai}
  async log(bot:any,text:string){const root=path.join(this.root,'bots',bot.id);await mkdir(root,{recursive:true});const file=path.join(root,'runtime.log');try{if((await stat(file)).size>2*1024*1024)await writeFile(file,'[platform] log rotated\n')}catch{};await appendFile(file,`[platform ${new Date().toISOString()}] ${redact(text)}\n`)}
  async begin():Promise<void>{await mkdir(this.root,{recursive:true});this.releaseLease=await acquireLease(this.root,'agent');try{await writeFile(path.join(this.root,'agent.lock'),String(process.pid));
@@ -29,7 +60,7 @@ export class NodeAgent {
    await this.bilibili.recover();
    this.timer=setInterval(()=>void this.tick().catch(e=>console.error('agent tick:',redact(String(e)))),500);this.timer.unref();await this.tick();this.autonomy.start();}catch(error){if(this.timer)clearInterval(this.timer);await rm(path.join(this.root,'agent.lock'),{force:true});await this.releaseLease?.();this.releaseLease=undefined;throw error}
  }
- async shutdown(){if(this.closed)return;this.closed=true;if(this.timer)clearInterval(this.timer);await this.bilibili.stop();await this.autonomy.stop();while(this.busy)await new Promise(r=>setTimeout(r,20));let failure:unknown;
+ async shutdown(){if(this.closed)return;this.closed=true;if(this.timer)clearInterval(this.timer);await this.favorites?.stop();await this.bilibili.stop();await this.autonomy.stop();while(this.busy)await new Promise(r=>setTimeout(r,20));let failure:unknown;
   try{for(const bot of await this.db.query('SELECT * FROM bots WHERE deleted_at IS NULL')){await this.aiFor(bot).stop(bot.id).catch(e=>{failure??=e});await this.protocols[bot.protocol].stop(bot.id).catch(e=>{failure??=e})}}catch(e){failure??=e}
   finally{try{
    // Database failure must not leave a shared group or QQ child alive. These
@@ -40,6 +71,7 @@ export class NodeAgent {
  }
  async tick(){if(this.busy||this.closed)return;this.busy=true;try{
    this.bilibili.tick();
+   this.favorites?.tick();
    const [command]=await this.db.query("SELECT * FROM commands WHERE status='pending' ORDER BY created_at LIMIT 1");
    if(command)await this.execute(command);
    const sessions=await this.db.query("SELECT s.*,b.protocol,b.expected_uin,b.tenant_id FROM login_sessions s JOIN bots b ON b.id=s.bot_id WHERE s.state NOT IN ('online','expired','canceled','failed') AND b.deleted_at IS NULL");

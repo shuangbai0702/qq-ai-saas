@@ -3,10 +3,10 @@ import path from 'node:path';
 import os from 'node:os';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {readFile,writeFile,rename,rm} from 'node:fs/promises';
+import {readFile,rm} from 'node:fs/promises';
 import {openDatabase, configuredDatabaseUrl} from '../../../packages/database/index.js';
 import {loadKey} from '../../../packages/shared/security.js';
-import {NodeAgent} from './agent.js';
+import {NodeAgent,HeartbeatWriter} from './agent.js';
 
 const databaseUrl = await configuredDatabaseUrl();
 if (!databaseUrl) throw new Error('独立Agent需要PostgreSQL；PGlite仅支持嵌入式单进程模式');
@@ -41,7 +41,12 @@ const heartbeatFile=path.join(root,'agent-heartbeat.json');
 const startedAt=new Date().toISOString();
 const processStart=process.platform==='linux'?(await readFile('/proc/self/stat','utf8')).slice((await readFile('/proc/self/stat','utf8')).lastIndexOf(')')+1).trim().split(/\s+/)[19]:undefined;
 const originalTick=agent.tick.bind(agent);
-agent.tick=async()=>{const busy=agent.busy;await originalTick();if(!busy&&!agent.closed){const temp=heartbeatFile+'.tmp';await writeFile(temp,JSON.stringify({pid:process.pid,processStart,startedAt,at:Date.now()}));await rename(temp,heartbeatFile)}};
+// One serialized heartbeat writer per process: overlapping ticks queue on a
+// single chain, sequence numbers stay monotonic, temp files are unique per
+// write and cleaned by their own writer, and a heartbeat left by a replaced
+// process can never roll the freshness record back.
+const heartbeat=new HeartbeatWriter(heartbeatFile,{pid:process.pid,processStart,startedAt});
+agent.tick=async()=>{const busy=agent.busy;await originalTick();if(!busy&&!agent.closed)await heartbeat.write()};
 try {
   await agent.begin();
 } catch (error) {
@@ -54,7 +59,7 @@ let closing: Promise<void> | undefined;
 function shutdown() {
   return closing ??= (async () => {
     clearInterval(keepAlive);
-    try { await agent.shutdown(); } finally { try{await rm(heartbeatFile,{force:true})}finally{await db.close()} }
+    try { await agent.shutdown(); } finally { try{await heartbeat.stop();await rm(heartbeatFile,{force:true})}finally{await db.close()} }
   })();
 }
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {

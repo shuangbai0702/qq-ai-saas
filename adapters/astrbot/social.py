@@ -178,11 +178,13 @@ class SocialStore:
 
     def expression_sent(self,scope,text,now=None,request=''):
         now=time.time() if now is None else now
-        learn_use=not re.search('复述|引用|翻译|假装|扮演|按我说|说一句|提示词',request)
+        # Use and recognition are separate ledgers (D6.6): the bot using its own
+        # expression records frequency only. Automatic weight gain would treat
+        # self-use as a positive user evaluation; a real evaluation must come
+        # from actual user feedback evidence (the effects flow).
         for expression, in self.db.execute('SELECT DISTINCT expression FROM social_patterns LIMIT 200'):
             if expression in text:
                 self.db.execute('INSERT OR REPLACE INTO expression_usage VALUES(?,?,?)',(scope,expression,now))
-                if learn_use:reinforce_expression(self.db,scope,expression,'use',str(int(now//EXPRESSION_USE_INTERVAL)),now)
         self.db.execute('DELETE FROM expression_usage WHERE at<?',(now-86400,));self.db.commit()
 
     def catalog(self, scope='', gallery=False, packs=None, favorite_account=None):

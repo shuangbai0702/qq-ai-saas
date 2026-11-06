@@ -6,7 +6,7 @@ The index is disposable; primary records and their versions remain authoritative
 """
 import json
 from hosted_memory import tokens, ALIASES
-from memory_scope import fact_rows,fact_item,summary_rows,summary_item
+from memory_scope import fact_rows,fact_item,summary_rows,summary_item,memory_audience
 
 
 class MemorySearch:
@@ -34,7 +34,7 @@ class MemorySearch:
         kind = 'summary' if summaries else 'fact'
         person = '' if summaries else subject
         if summaries:
-            rows=summary_rows(self.db,scope,subject)
+            rows=[r for r in summary_rows(self.db,scope,subject) if memory_audience({'scope':scope,'subject':subject},{'source_scope':r[4]})]
             docs=[(str(r[0]),str(r[3]),r[1],r[4]) for r in rows]
         else:
             rows=fact_rows(self.db,scope,subject)
@@ -60,5 +60,5 @@ class MemorySearch:
         by_key={(r[4] if summaries else r[10],str(r[0])):r for r in rows}
         selected=[by_key[tuple(r)] for r in hits if tuple(r) in by_key]
         if summaries:
-            return [summary_item(r,'scoped_bm25') for r in selected]
+            return [summary_item(r,'scoped_bm25',db=self.db) for r in selected]
         return [fact_item(r,subject,'scoped_bm25') for r in selected]

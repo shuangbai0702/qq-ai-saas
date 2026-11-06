@@ -72,7 +72,13 @@ class BehaviorTests(unittest.TestCase):
  def test_legacy_random_never_bypasses_semantic_entry(self):
   # Legacy probability cannot wake a cold group at either hour.
   c={'trigger':'mention','behavior':{'randomReplyProbability':0.2}};self.assertFalse(self.s.eligible(c,'g','123',False,'a',now=16*3600,rng=lambda:0));self.assertFalse(self.s.eligible(c,'g','123',False,'a',now=24*3600,rng=lambda:0))
- def test_silence_marker(self):self.assertEqual(clean_text('不要发[NO_REPLY]隐藏'),[])
+ def test_silence_marker(self):
+  # Deployed marker contract is exact-match only: a standalone [NO_REPLY]
+  # silences the reply; prose that merely mentions the marker must reach the
+  # user so normal replies are never silenced by an embedded word.
+  self.assertEqual(clean_text('[NO_REPLY]'),[])
+  self.assertEqual(clean_text('  [NO_REPLY]  '),[])
+  self.assertEqual(clean_text('不要发[NO_REPLY]隐藏'),[('text','不要发[NO_REPLY]隐藏')])
  def test_faces_and_length(self):self.assertEqual(clean_text('[QQ_FACE:14]你好[QQ_FACE:4]'),[('face',14),('text','你好')]);self.assertEqual(sum(len(v) for k,v in clean_text('a'*1000,80) if k=='text'),80)
  def test_internal_not_sent(self):self.assertEqual(clean_text('<think>secret</think>鱼鱼[INTERNAL:debug]'),[('text','鱼鱼')])
 if __name__=='__main__':unittest.main(verbosity=2)

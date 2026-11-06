@@ -36,7 +36,7 @@ def self_report(text):
     return None
 
 from data_admin import initialize_controls
-from memory_scope import person_filter,fact_rows,fact_item,shared_person
+from memory_scope import person_filter,fact_rows,fact_item,shared_person,blocked_facts,record_correction,release_value,value_hash
 
 class ScopedMemory:
     def __init__(self,db):
@@ -65,9 +65,14 @@ class ScopedMemory:
 
     def remember(self,scope,subject,name,value,event,now,origin='explicit',kind='stable'):
         where,args=person_filter(scope,subject)
-        if origin=='self_report' and self.db.execute('SELECT 1 FROM memory_blocks WHERE '+where+' AND name=?',args+(name,)).fetchone():return '已遗忘的资料不会自动重新保存'
+        # Every automatic origin obeys the same block judgment: whole-name
+        # forgets refuse the field, correction records refuse their exact old
+        # values. Explicit records may restore only the value they name.
+        if origin!='explicit':
+            hard,rejected,blocked_values=blocked_facts(self.db,scope,subject)
+            if name in hard:return '已遗忘的资料不会自动重新保存'
+            if value_hash(value) in blocked_values:return '已纠正的旧值不会自动重新保存'
         if event and self.db.execute('SELECT 1 FROM facts WHERE scope=? AND subject=? AND name=? AND event=?',(scope,subject,name,str(event))).fetchone():return '重复消息未再次更新记忆'
-        if origin=='explicit':self.db.execute('DELETE FROM memory_blocks WHERE '+where+' AND name=?',args+(name,))
         current=next((r for r in fact_rows(self.db,scope,subject) if r[0]==name),None)
         # Natural chat cannot silently overwrite a deliberately recorded fact.
         if origin=='self_report' and current and current[7]=='explicit':return '已有明确记忆，自动资料未覆盖；可用更正记忆更新'
@@ -87,6 +92,8 @@ class ScopedMemory:
         version=self.db.execute('SELECT coalesce(max(version),0)+1 FROM facts WHERE '+where+' AND name=?',args+(name,)).fetchone()[0]
         self.db.execute('UPDATE facts SET active=0 WHERE '+where+' AND name=?',args+(name,))
         self.db.execute('INSERT INTO facts VALUES(?,?,?,?,?,?,?,1)',(scope,subject,name,value,str(event),now,version))
+        # A rejected write (quota, duplicate, etc.) must not lift a forget block.
+        if origin=='explicit':release_value(self.db,scope,subject,name,value)
         self.db.execute('DELETE FROM facts WHERE '+where+' AND name=? AND version<?',args+(name,max(1,version-9)))
         importance=1.0 if name in ('称呼','生日') else 0.8 if kind=='stable' else 0.5
         self.db.execute('INSERT INTO fact_metadata(scope,subject,name,kind,origin,importance) VALUES(?,?,?,?,?,?) ON CONFLICT(scope,subject,name) DO UPDATE SET kind=excluded.kind,origin=excluded.origin,importance=excluded.importance,last_recalled=0,recalls=0',(scope,subject,name,kind,origin,importance))
@@ -99,19 +106,50 @@ class ScopedMemory:
             if m[1]=='更正记忆':
                 from memory_reflection import invalidate
                 invalidate(self.db,scope,subject)
+                # Record what this explicit correction replaced so a later
+                # asynchronous extraction cannot quietly write the old value.
+                previous=next((r for r in fact_rows(self.db,scope,subject) if r[0]==m[2].strip()),None)
+            else:previous=None
             status=self.remember(scope,subject,m[2].strip(),m[3].strip(),event,now,kind='event' if m[1]=='记住事件' else 'stable')
+            if previous is not None and previous[1]!=m[3].strip() and '成功保存' in status:
+                record_correction(self.db,scope,subject,m[2].strip(),previous[1],event,quote=text,now=now)
         else:
             forget=re.fullmatch(r'忘记[：:]\s*(.{1,40})',text)
             if forget:
                 from memory_reflection import invalidate
                 invalidate(self.db,scope,subject)
-                self.db.execute('INSERT OR IGNORE INTO memory_blocks VALUES(?,?,?)',(scope,subject,forget[1].strip()))
+                self.db.execute("INSERT INTO memory_blocks(scope,subject,name,block_all,rejected_values,revision) VALUES(?,?,?,1,'[]',0) ON CONFLICT(scope,subject,name) DO UPDATE SET block_all=1",(scope,subject,forget[1].strip()))
                 where,args=person_filter(scope,subject)
                 self.db.execute('UPDATE facts SET active=0 WHERE '+where+' AND name=?',args+(forget[1].strip(),));status='该事实已标记遗忘'
             elif auto_capture:
                 report=self_report(text)
                 if report:status=self.remember(scope,subject,*report,event,now,origin='self_report')
         return status
+
+    def correct(self,scope,subject,name,old_value,new_value,event,quote,now):
+        """Apply one evidence-checked correction inside the caller's transaction.
+
+        The previous version is retired, an optional replacement is written,
+        and the correction evidence plus revision commit together. Ordinary
+        corrections never trigger the hard-forget epoch; a value whose hash is
+        already rejected cannot be reintroduced by a late extraction.
+        """
+        where,args=person_filter(scope,subject)
+        row=self.db.execute('SELECT value FROM facts WHERE '+where+' AND name=? AND active=1 ORDER BY version DESC LIMIT 1',args+(name,)).fetchone()
+        if not row or row[0]!=old_value:return '未找到与纠正匹配的当前资料'
+        if event and self.db.execute('SELECT 1 FROM facts WHERE scope=? AND subject=? AND name=? AND event=?',(scope,subject,name,str(event))).fetchone():return '重复消息未再次更新记忆'
+        if new_value:
+            hard,rejected,blocked_values=blocked_facts(self.db,scope,subject)
+            if name in hard or value_hash(new_value) in blocked_values:return '该资料已被本人遗忘或纠正，不能再次写入'
+        self.db.execute('UPDATE facts SET active=0 WHERE '+where+' AND name=? AND active=1',args+(name,))
+        if new_value:
+            version=self.db.execute('SELECT coalesce(max(version),0)+1 FROM facts WHERE '+where+' AND name=?',args+(name,)).fetchone()[0]
+            self.db.execute('INSERT INTO facts VALUES(?,?,?,?,?,?,?,1)',(scope,subject,name,new_value,str(event),now,version))
+            self.db.execute('DELETE FROM facts WHERE '+where+' AND name=? AND version<?',args+(name,max(1,version-9)))
+            importance=1.0 if name in ('称呼','生日') else 0.8
+            self.db.execute("INSERT INTO fact_metadata(scope,subject,name,kind,origin,importance) VALUES(?,?,?,'stable','explicit',?) ON CONFLICT(scope,subject,name) DO UPDATE SET origin='explicit',importance=excluded.importance,last_recalled=0,recalls=0",(scope,subject,name,importance))
+        record_correction(self.db,scope,subject,name,old_value,event,quote,now)
+        return '已按本人证据纠正资料'
 
     def recall(self,scope,subject,query,now,limit=8,budget=1600):
         rows=fact_rows(self.db,scope,subject)

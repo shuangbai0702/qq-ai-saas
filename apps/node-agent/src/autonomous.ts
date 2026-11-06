@@ -4,11 +4,32 @@ import {AutonomyRepository,AutonomyConflict} from '../../../packages/database/au
 import {AutonomyConfigSchema,DecisionEnvelopeSchema,decisionJsonSchema,OrientationSchema,orientationJsonSchema,type InternalWork} from '../../../packages/contracts/autonomous.js';
 import {runtimeStatus} from '../../../packages/shared/runtime-status.js';
 
-type Usage={tokens:number;modelCalls:number;toolCalls:number;externalActions:number;conservative?:boolean};
+/** Usage reconciliation classes. A charge records where its numbers came
+ * from: an actual reported usage, an estimate the inner runtime returned, or
+ * an unknown request whose reserved ceiling was applied instead of zero.
+ * Repeated results for the same request never charge twice. */
+export type UsageCharge={requestId:string;kind:string;source:'actual'|'estimated'|'unknown';tokens:number;modelCalls:number;toolCalls:number;externalActions:number;reported:{tokens:boolean;modelCalls:boolean;toolCalls:boolean}};
+type Usage={tokens:number;modelCalls:number;toolCalls:number;externalActions:number;conservative?:boolean;charges?:UsageCharge[]};
 type RuntimeCall=(bot:any,operation:string,body:unknown,timeoutMs?:number)=>Promise<any>;
 const emptyUsage=():Usage=>({tokens:0,modelCalls:0,toolCalls:0,externalActions:0});
 function online(bot:any){return bot.desired_state==='running'&&runtimeStatus(bot).online}
 function cycleTokens(claim:any):number{return claim.tokenLimit??claim.config.cycleTokenBudget}
+
+export type FaultClass='auth'|'rate_limit'|'protocol'|'network'|'contract'|'identity'|'decision'|'unknown';
+/** Deterministic failure classes stay separated so one broken account never
+ * reads as model idleness and isolation can key on provider/model/config. */
+export function classifyFault(error:unknown):{reason:string;faultClass:FaultClass}{
+ const issues=(error as any)?.issues;
+ if(Array.isArray(issues))return{reason:'decision_contract:'+issues.slice(0,4).map((issue:any)=>issue.path.join('.')+':'+issue.code).join(','),faultClass:'decision'};
+ if(error instanceof AutonomyConflict)return{reason:'decision_conflict',faultClass:'decision'};
+ const message=String((error as any)?.message||error);
+ const ipc=/^autonomous_ipc_(\d{3})$/.exec(message);
+ if(ipc){const status=Number(ipc[1]);return{reason:message,faultClass:status===401||status===403?'auth':status===429?'rate_limit':'protocol'}}
+ if(message==='missing_model_usage'||message==='invalid_model_usage')return{reason:message,faultClass:'contract'};
+ if(message==='runtime_identity_changed')return{reason:message,faultClass:'identity'};
+ if(/TimeoutError|AbortError/i.test(String((error as any)?.name||''))||/timeout|fetch failed|ECONN|ENOTFOUND|EAI_AGAIN|socket hang up|network/i.test(message))return{reason:'runtime_network_failed',faultClass:'network'};
+ return{reason:'runtime_or_decision_failed',faultClass:'unknown'};
+}
 
 /** A spoken sentence is task content, not an authoritative transport result.
  * Project old and current records consistently without rewriting the ledger.
@@ -30,7 +51,10 @@ export class AutonomyCoordinator {
  private policyCursor=0;
  private policySerial=0;
  private events=new Map<string,number>();private sampled=new Map<string,number>();
- constructor(public db:Sql,private call:RuntimeCall){this.repo=new AutonomyRepository(db)}
+ // Optional bounded isolation for persistent deterministic faults. Undefined
+ // by default: the existing 30-second error backoff stays the only behavior.
+ readonly isolation?:{consecutiveLimit:number;cooldownSeconds:number};
+ constructor(public db:Sql,private call:RuntimeCall,isolation?:{consecutiveLimit:number;cooldownSeconds:number}){this.repo=new AutonomyRepository(db);this.isolation=isolation}
  start(){if(this.timer||this.closed)return;this.timer=setInterval(()=>void this.tick().catch(()=>{}),5000);this.timer.unref();this.heartbeatTimer=setInterval(()=>void this.heartbeat(),4000);this.heartbeatTimer.unref();void this.tick().catch(()=>{})}
  async heartbeat(){
   if(this.closed||this.heartbeatTask||!this.active)return;
@@ -42,7 +66,10 @@ export class AutonomyCoordinator {
  private async policy(bot:any,cycleId='',actionId=''){
   const issuedAt=this.policySerial=Math.max(Date.now(),this.policySerial+1);
   const experience=await this.repo.experience(bot.tenant_id,bot.bot_id);
-  return{tenantId:bot.tenant_id,botId:bot.bot_id,epoch:bot.epoch,generation:bot.generation,revision:bot.revision,config:AutonomyConfigSchema.parse(bot.config),observedThrough:Number(bot.observation?.at||0),latestFeedback:bot.observation?.latestFeedback||(bot.observation?.phase==='foreground_result'?bot.observation:undefined),experience,issuedAt,until:Date.now()+14000,cycleId,actionId};
+  const outerRebaselinePermitId=await this.repo.outerRebaselinePermit(bot.bot_id,bot.tenant_id,bot.revision).catch(()=>null);
+  return{tenantId:bot.tenant_id,botId:bot.bot_id,epoch:bot.epoch,generation:bot.generation,revision:bot.revision,config:AutonomyConfigSchema.parse(bot.config),observedThrough:Number(bot.observation?.at||0),latestFeedback:bot.observation?.latestFeedback||(bot.observation?.phase==='foreground_result'?bot.observation:undefined),experience,issuedAt,until:Date.now()+14000,cycleId,actionId,
+   ...(bot.context_checkpoint?{contextCheckpoint:bot.context_checkpoint}:{}),
+   ...(outerRebaselinePermitId?{outerRebaselinePermitId}:{})};
  }
  private async freshSnapshot(bot:any){
   const snapshot=await this.call(bot,'snapshot',{},3000);
@@ -114,22 +141,42 @@ export class AutonomyCoordinator {
   const c=active.claim;return{id,tenantId:c.tenant_id,botId:c.bot_id,epoch:c.epoch,generation:c.generation,revision:c.revision,cycleId:c.cycleId,principal:'autonomous-service',feedbackVersion:active.feedbackVersion||0,expiresAt:deadline,
    budget:{modelCalls:Math.max(0,c.config.cycleModelCalls-usage.modelCalls-reserveModelCalls),toolCalls:Math.max(0,c.config.cycleToolCalls-usage.toolCalls),tokens:Math.max(0,cycleTokens(c)-usage.tokens),seconds:c.config.cycleSeconds,externalActions:Math.max(0,c.config.cycleExternalActions-usage.externalActions)}};
  }
- private charge(usage:Usage,result:any){
-  if(!result.usage)throw new Error('missing_model_usage');
-  for(const name of ['tokens','modelCalls','toolCalls'] as const){const value=result.usage[name];if(!Number.isSafeInteger(value)||value<0)throw new Error('invalid_model_usage');usage[name]+=value}
+ private charge(usage:Usage,requestId:string,kind:string,result:any){
+  // Idempotent per request: a repeated result (retry racing a receipt, a
+  // re-delivered feedback) must not bill the same consumption twice.
+  if(usage.charges?.some(c=>c.requestId===requestId&&c.kind===kind))return;
+  const record=(source:UsageCharge['source'],values:Omit<UsageCharge,'requestId'|'kind'|'source'>)=>{
+   usage.charges=[...(usage.charges||[]),{requestId,kind,source,...values}].slice(-64)};
+  const raw=result?.usage;
+  const reported=(name:string)=>Boolean(raw&&Number.isSafeInteger(raw[name])&&raw[name]>=0);
+  if(!raw){
+   record('unknown',{tokens:0,modelCalls:0,toolCalls:0,externalActions:0,reported:{tokens:false,modelCalls:false,toolCalls:false}});
+   throw new Error('missing_model_usage');
+  }
+  for(const name of ['tokens','modelCalls','toolCalls'] as const){const value=raw[name];if(!Number.isSafeInteger(value)||value<0)throw new Error('invalid_model_usage')}
   const effects=(result.effects||[]).filter((e:any)=>e.status==='confirmed'||e.status==='unknown');
   // Versioned results preserve historical physical accounting. A new chat
   // action owns its OutputPlan; every bubble still has a separate receipt.
-  usage.externalActions+=result.actionUnitVersion===2?new Set(effects.map((e:any)=>e.logicalActionId||e.id)).size:effects.length;
-  if(result.usage.estimated)usage.conservative=true;
+  const externalActions=result.actionUnitVersion===2?new Set(effects.map((e:any)=>e.logicalActionId||e.id)).size:effects.length;
+  for(const name of ['tokens','modelCalls','toolCalls'] as const)usage[name]+=raw[name];
+  usage.externalActions+=externalActions;
+  const source:UsageCharge['source']=raw.estimated?'estimated':'actual';
+  if(source==='estimated')usage.conservative=true;
+  record(source,{tokens:raw.tokens,modelCalls:raw.modelCalls,toolCalls:raw.toolCalls,externalActions,reported:{tokens:reported('tokens'),modelCalls:reported('modelCalls'),toolCalls:reported('toolCalls')}});
  }
- private async think(claim:any,body:unknown,timeout:number,usage:Usage){
-  try{const result=await this.call(claim,'think',body,timeout);this.charge(usage,result);return result}
-  catch(error){usage.tokens=Math.max(usage.tokens,cycleTokens(claim));usage.conservative=true;throw error}
+ private reserveUnknown(usage:Usage,requestId:string,kind:string,ceiling:number){
+  const applied=Math.max(0,ceiling-usage.tokens);
+  usage.tokens=Math.max(usage.tokens,ceiling);usage.conservative=true;
+  usage.charges=[...(usage.charges||[]),{requestId,kind,source:'unknown' as const,tokens:applied,modelCalls:0,toolCalls:0,externalActions:0,reported:{tokens:false,modelCalls:false,toolCalls:false}}].slice(-64);
+ }
+ private async think(claim:any,body:any,timeout:number,usage:Usage){
+  const requestId=String(body?.work?.id||'');
+  try{const result=await this.call(claim,'think',body,timeout);this.charge(usage,requestId,'think',result);return result}
+  catch(error){this.reserveUnknown(usage,requestId,'think',cycleTokens(claim));throw error}
  }
  private async cycle(active:{claim:any;actionId?:string;feedbackVersion?:number}){
   const c=active.claim,config=c.config,tokenBudget=cycleTokens(c),usage=emptyUsage();let deadline=this.deadline(c,usage);
-  let feedback:any=null,feedbackActionId:string|undefined,orientation:any=null,reason='cycle_interrupted',sleep=15,orientationRepairs=0,decisionRepairs=0,settled=false;
+  let feedback:any=null,feedbackActionId:string|undefined,orientation:any=null,reason='cycle_interrupted',sleep=15,orientationRepairs=0,decisionRepairs=0,settled=false,faultContext:any=undefined;
   // With an explicitly minimal two-call budget, perform one task and let the
   // next durable cycle reassess its recorded result rather than starve work.
   const reserveModelCalls=config.cycleModelCalls>=3?1:0;
@@ -208,7 +255,9 @@ export class AutonomyCoordinator {
     active.actionId=action.id;await this.call(c,'policy',await this.policy(c,c.cycleId,action.id),2000);
     // Source comes from the durable accepted goal, never the model action.
     const source=committed.source;
-    const task={...action,sourceScope:source?.scope,outerDecision:{at:committed.decidedAt,reason:parsed.reason.slice(0,600),cycleId:c.cycleId},...(action.kind==='message'&&source&&source.handoffId===action.goalId&&source.scope===action.target?{requestSource:source}:{})};
+    // D1: evidenceSources describe where cited content came from; they never
+    // widen the requestSource same-scope delivery rule.
+    const task={...action,sourceScope:source?.scope,outerDecision:{at:committed.decidedAt,reason:parsed.reason.slice(0,600),cycleId:c.cycleId},...(action.kind==='message'&&source&&source.handoffId===action.goalId&&source.scope===action.target?{requestSource:source}:{}),...(committed.evidenceSources?.length?{evidenceSources:committed.evidenceSources}:{})};
     // Keep one request for the outer to assess the actual result. An inner
     // tool loop must not consume the entire shared decision allowance.
     deadline=this.deadline(c,usage);
@@ -219,7 +268,7 @@ export class AutonomyCoordinator {
      feedback=receipt?.result||{status:'unknown',summary:'执行连接中断，未得到完整结果；不得重复投递',effects:receipt?.effects||[],evidence:[],unfinished:[action.objective]};
      if(!feedback.usage)feedback.usage={tokens:Math.max(0,tokenBudget-usage.tokens),modelCalls:Math.max(0,config.cycleModelCalls-usage.modelCalls),toolCalls:0,estimated:true};
     }
-    this.charge(usage,feedback);await this.repo.feedback(c,action.id,feedback);
+    this.charge(usage,action.id,'execute',feedback);await this.repo.feedback(c,action.id,feedback);
     // Every meaningful task returns here. The next model decision sees actual
     // feedback, not an eagerly queued list of tasks. Uncertain effects stop
     // this cycle and remain blocked until they have authoritative resolution.
@@ -231,16 +280,26 @@ export class AutonomyCoordinator {
    if(!settled&&(usage.modelCalls>=config.cycleModelCalls||usage.tokens>=tokenBudget))reason='budget_exhausted';
    // A bounded computation slice yields; only a committed model choice sleeps.
    if(!settled&&['budget_exhausted','external_action_budget'].includes(reason))sleep=15;
+   // A short computation yield cannot replenish a partial daily reservation.
+   // Retain genuine events/config wakes, but do not poll an unchanged rejected
+   // request every fifteen seconds or inflate usage for an unissued request.
+   if(!settled&&reason==='request_token_budget'&&usage.modelCalls===0&&config.dailyTokenBudget>0&&tokenBudget<config.cycleTokenBudget)reason='daily_request_token_budget';
   }catch(error){
    // Unknown model work was charged at its IPC boundary. A rejected decision
    // with returned usage must retain the known cost, not invent a full bill.
-   const issues=(error as any)?.issues;
-   reason=Array.isArray(issues)?'decision_contract:'+issues.slice(0,4).map((issue:any)=>issue.path.join('.')+':'+issue.code).join(','):
-    error instanceof AutonomyConflict?'decision_conflict':String((error as any)?.message||'runtime_or_decision_failed').match(/^autonomous_ipc_\d{3}$|^missing_model_usage$|^invalid_model_usage$|^runtime_identity_changed$/)?.[0]||'runtime_or_decision_failed';
+   const fault=classifyFault(error);
+   reason=fault.reason;
    // A failed request is an explicit error backoff, never a model rest choice.
    sleep=30;
+   faultContext={class:fault.faultClass,configRevision:c.revision,epoch:c.epoch,generation:c.generation,at:Date.now()};
+   // Optional bounded isolation for persistent deterministic faults. Without
+   // the option the existing short error backoff stays exactly as it was.
+   if(this.isolation&&['auth','protocol','contract'].includes(fault.faultClass)){
+    const consecutive=await this.repo.consecutiveFaults(c.tenant_id,c.bot_id,fault.faultClass);
+    if(consecutive>=this.isolation.consecutiveLimit){sleep=this.isolation.cooldownSeconds;faultContext.isolated=true;faultContext.consecutive=consecutive}
+   }
   }finally{
-   await this.repo.finish(c,usage,reason,sleep);
+   await this.repo.finish(c,usage,reason,sleep,faultContext);
    // Withdraw the short effect permit before releasing the global slot. A
    // failed withdrawal still expires after at most fourteen seconds.
    const [latest]=await this.db.query('SELECT s.*,b.generation,b.revision FROM autonomy_settings s JOIN bots b ON b.id=s.bot_id WHERE s.bot_id=$1 AND s.tenant_id=$2',[c.bot_id,c.tenant_id]);
