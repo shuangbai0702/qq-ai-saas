@@ -18,7 +18,8 @@ class CoreNoteTests(unittest.IsolatedAsyncioTestCase):
   data={'core_note':{'text':text,'events':['e'] if events is None else events}}
   with self.db:return self.ref.update_core_note(data,self.ref.core_note() if prior is None else prior,payload,[],self.scope)
  def rounds(self):
-  for i in range(30):self.ref.record(self.scope,'12345678',str(i),'请叫我小林','好的',time.time())
+  from memory_reflection import DEFAULT_SUMMARY_ROUNDS
+  for i in range(DEFAULT_SUMMARY_ROUNDS):self.ref.record(self.scope,'12345678',str(i),'请叫我小林','好的',time.time())
  async def drain(self):
   for _ in range(12):
    task=self.ref.task
@@ -69,7 +70,7 @@ class CoreNoteTests(unittest.IsolatedAsyncioTestCase):
  async def test_failed_or_late_reflection_cannot_update_region(self):
   self.patch('原背景');self.rounds();entered=asyncio.Event();release=asyncio.Event()
   async def chat(**kw):entered.set();await release.wait();return NS(completion_text=json.dumps({'summary':'旧摘要','core_note':{'text':'迟到内容','events':['0']}}))
-  self.ref.maybe_start(self.scope,{'memory':True,'memorySummary':True},NS(text_chat=chat),lambda:True,{},self.var);await entered.wait()
+  self.ref.maybe_start(self.scope,{'memory':True,'memorySummary':True},NS(text_chat=chat),lambda:True,{},self.var);await asyncio.wait_for(entered.wait(),5)
   with self.db:invalidate(self.db,self.scope,'12345678')
   release.set();await self.drain();self.assertEqual(self.ref.core_note()['text'],'');self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],0)
  def test_forget_summary_also_clears_derived_text(self):

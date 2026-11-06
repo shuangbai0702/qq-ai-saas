@@ -77,6 +77,8 @@ def invalidate(db,scope,subject=''):
         db.execute('DELETE FROM memory_pending WHERE '+where,args)
     if 'memory_vectors' in tables:db.execute('DELETE FROM memory_vectors WHERE summary_id NOT IN (SELECT id FROM memory_summaries)')
     db.execute('UPDATE memory_reflection_control SET epoch=epoch+1 WHERE id=1')
+    if 'memory_reconstruction_checkpoints' in tables:
+        db.execute("UPDATE memory_reconstruction_checkpoints SET state='invalidated',request_id=NULL WHERE state IN ('available','reserved')")
 
 
 class Reflection:
@@ -84,6 +86,7 @@ class Reflection:
         self.db=db;self.closed=False;self.task=None;self.memory=None;self.binding=None
         db.execute('CREATE TABLE IF NOT EXISTS memory_core_notes(slot INTEGER PRIMARY KEY CHECK(slot=1),text TEXT NOT NULL,scopes TEXT NOT NULL,people TEXT NOT NULL,sources TEXT NOT NULL,updated REAL NOT NULL)')
         db.executescript('''CREATE TABLE IF NOT EXISTS memory_rounds(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT,subject TEXT,event TEXT,question TEXT,answer TEXT,at REAL,UNIQUE(scope,event));
+        CREATE TABLE IF NOT EXISTS memory_reconstruction_checkpoints(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,through_round_id INTEGER NOT NULL,round_count INTEGER NOT NULL,epoch INTEGER NOT NULL,state TEXT NOT NULL DEFAULT 'available',request_id TEXT,created REAL NOT NULL,summary_id INTEGER,UNIQUE(scope,through_round_id));
         CREATE TABLE IF NOT EXISTS memory_summaries(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT,text TEXT,sources TEXT,updated REAL);
         CREATE TABLE IF NOT EXISTS memory_reflection_budget(day INTEGER PRIMARY KEY,count INTEGER);
         CREATE TABLE IF NOT EXISTS memory_summary_levels(id INTEGER PRIMARY KEY,kind TEXT NOT NULL);
@@ -102,6 +105,12 @@ class Reflection:
         END;
         CREATE TABLE IF NOT EXISTS memory_embedding_budget(day INTEGER PRIMARY KEY,count INTEGER);''')
         db.execute('CREATE TABLE IF NOT EXISTS memory_reflection_retry(scope TEXT PRIMARY KEY,attempts INTEGER,next_at REAL)')
+        checkpoint_columns={row[1] for row in db.execute('PRAGMA table_info(memory_reconstruction_checkpoints)')}
+        if 'summary_id' not in checkpoint_columns:db.execute('ALTER TABLE memory_reconstruction_checkpoints ADD COLUMN summary_id INTEGER')
+        db.execute('''CREATE TABLE IF NOT EXISTS memory_web_context_permits(
+          permit_id TEXT NOT NULL,scope TEXT NOT NULL,revision TEXT NOT NULL,epoch INTEGER NOT NULL,
+          state TEXT NOT NULL CHECK(state IN ('available','reserved','consumed','invalidated')),
+          request_id TEXT,created REAL NOT NULL,PRIMARY KEY(permit_id,scope))''')
         db.executescript('''CREATE TABLE IF NOT EXISTS memory_pending(scope TEXT,subject TEXT,event TEXT,question TEXT,answer TEXT,at REAL,PRIMARY KEY(scope,event));
         CREATE INDEX IF NOT EXISTS memory_pending_subject_at ON memory_pending(subject,at);
         CREATE INDEX IF NOT EXISTS memory_pending_scope_at ON memory_pending(scope,at);''')
@@ -127,6 +136,94 @@ class Reflection:
         db.execute('DELETE FROM memory_vectors WHERE summary_id NOT IN (SELECT id FROM memory_summaries)');db.commit()
         self.embedding_lock=asyncio.Lock()
     def epoch(self):return self.db.execute('SELECT epoch FROM memory_reflection_control WHERE id=1').fetchone()[0]
+    def context_dependency(self,summary_ids,scope=None):
+        """Hash the selected summary content and coverage, excluding row IDs/timestamps."""
+        ids=sorted({value for value in summary_ids or [] if type(value) is int and value>0})
+        summaries=[];coverage=[]
+        if ids:
+            marks=','.join('?' for _ in ids)
+            rows=self.db.execute('''SELECT s.id,s.scope,s.text,s.sources,coalesce(l.kind,'small')
+              FROM memory_summaries s LEFT JOIN memory_summary_levels l ON l.id=s.id
+              WHERE s.id IN ('''+marks+''') ORDER BY s.scope,s.text,s.sources''',ids).fetchall()
+            by_id={}
+            for identifier,scope,text,sources,level in rows:
+                origins=[row[0] for row in self.db.execute('SELECT scope FROM memory_summary_origins WHERE summary_id=? ORDER BY scope',(identifier,))] or [scope]
+                material={'scope':scope,'text':text,'sources':sources,'level':level,'origins':origins}
+                digest=hashlib.sha256(model_json(material).encode()).hexdigest();by_id[identifier]=digest;summaries.append(material)
+            coverage_rows=self.db.execute('SELECT scope,event,subject,digest,summary_id FROM memory_summary_coverage WHERE summary_id IN ('+marks+') ORDER BY scope,event,subject,digest',ids).fetchall()
+            coverage=[{'scope':scope,'event':event,'subject':subject,'digest':digest,'summary':by_id.get(identifier,'missing')}
+                      for scope,event,subject,digest,identifier in coverage_rows]
+        value={'epoch':self.epoch(),'summaries':summaries,'coverage':coverage}
+        if scope is not None:
+            # A completed foreground summary can add a new row while the old
+            # selected summaries still exist. Fence that scope's checkpoint,
+            # without invalidating requests in unrelated conversations.
+            progress=self.db.execute('SELECT summary_watermark FROM memory_reflection_progress WHERE scope=?',(scope,)).fetchone()
+            value['summaryCheckpoint']=progress[0] if progress else 0
+        return hashlib.sha256(model_json(value).encode()).hexdigest()
+    def reserve_context_reconstruction(self,scope,request_id,summary_ids=None,web_proof=None,logical_scope=None):
+        """Reserve one checkpoint tied to a currently visible summary, or one trusted web save."""
+        scopes={scope} if isinstance(scope,str) else set(scope) if isinstance(scope,(list,tuple,set)) else set()
+        scopes={value for value in scopes if isinstance(value,str) and value}
+        if not scopes or not isinstance(request_id,str) or not request_id:return None
+        ids=sorted({value for value in summary_ids or [] if type(value) is int and value>0})
+        epoch=self.epoch();self.db.execute('BEGIN IMMEDIATE')
+        try:
+            self.db.execute("UPDATE memory_reconstruction_checkpoints SET state='invalidated',request_id=NULL WHERE state='available' AND NOT EXISTS (SELECT 1 FROM memory_summaries s WHERE s.id=memory_reconstruction_checkpoints.summary_id)")
+            row=None
+            if ids:
+                scope_marks=','.join('?' for _ in scopes);id_marks=','.join('?' for _ in ids)
+                row=self.db.execute(f"SELECT c.id,c.scope,c.epoch,c.summary_id FROM memory_reconstruction_checkpoints c JOIN memory_summaries s ON s.id=c.summary_id WHERE c.scope IN ({scope_marks}) AND c.summary_id IN ({id_marks}) AND c.round_count=35 AND c.state='available' ORDER BY c.created DESC,c.id DESC LIMIT 1",(*sorted(scopes),*ids)).fetchone()
+            if row:
+                if row[2]!=epoch:
+                    self.db.execute("UPDATE memory_reconstruction_checkpoints SET state='invalidated',request_id=NULL WHERE id=? AND state='available'",(row[0],))
+                    row=None
+                else:
+                    changed=self.db.execute("UPDATE memory_reconstruction_checkpoints SET state='reserved',request_id=? WHERE id=? AND state='available' AND epoch=?",(request_id,row[0],epoch)).rowcount
+                    if changed==1:
+                        self.db.commit();return {'kind':'summary_checkpoint','id':row[0],'scope':row[1],'summaryId':row[3],'epoch':epoch,'requestId':request_id}
+                    row=None
+            if isinstance(web_proof,dict):
+                permit=str(web_proof.get('permitId') or '');revision=str(web_proof.get('revision') or '')
+                context_scope=str(web_proof.get('contextScope') or '')
+                expected_scope=logical_scope if isinstance(logical_scope,str) and logical_scope else (scope if isinstance(scope,str) else None)
+                if permit and revision and context_scope and context_scope==expected_scope:
+                    existing=self.db.execute('SELECT revision,epoch,state,request_id FROM memory_web_context_permits WHERE permit_id=? AND scope=?',(permit,context_scope)).fetchone()
+                    if existing and existing[0]!=revision:raise ValueError('web_context_permit_revision_mismatch')
+                    if existing and existing[2]=='invalidated' and existing[1]==epoch:
+                        self.db.commit();return None
+                    self.db.execute("INSERT OR IGNORE INTO memory_web_context_permits VALUES(?,?,?,?, 'available',NULL,?)",(permit,context_scope,revision,epoch,time.time()))
+                    changed=self.db.execute("UPDATE memory_web_context_permits SET state='reserved',request_id=? WHERE permit_id=? AND scope=? AND state='available' AND revision=? AND epoch=?",(request_id,permit,context_scope,revision,epoch)).rowcount
+                    if changed==1:
+                        self.db.commit();return {'kind':'web_config','permitId':permit,'scope':context_scope,'revision':revision,'epoch':epoch,'requestId':request_id}
+            self.db.commit();return None
+        except BaseException:
+            self.db.rollback();raise
+    def settle_context_reconstruction(self,permit,success):
+        if not isinstance(permit,dict) or not permit.get('requestId'):return False
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            if permit.get('kind')=='web_config':
+                row=self.db.execute('SELECT revision,epoch,state,request_id FROM memory_web_context_permits WHERE permit_id=? AND scope=?',(permit.get('permitId'),permit.get('scope'))).fetchone()
+                if not row or row[0]!=permit.get('revision') or row[1]!=permit.get('epoch') or row[2]!='reserved' or row[3]!=permit.get('requestId'):
+                    self.db.rollback();return False
+                if row[1]!=self.epoch():state='invalidated';request=None
+                elif success:state='consumed';request=None
+                else:state='available';request=None
+                self.db.execute('UPDATE memory_web_context_permits SET state=?,request_id=? WHERE permit_id=? AND scope=?',(state,request,permit['permitId'],permit['scope']))
+                self.db.commit();return True
+            row=self.db.execute("SELECT scope,epoch,state,request_id FROM memory_reconstruction_checkpoints WHERE id=?",(permit['id'],)).fetchone()
+            if not row or row[0]!=permit.get('scope') or row[1]!=permit.get('epoch') or row[2]!='reserved' or row[3]!=permit.get('requestId'):
+                self.db.rollback();return False
+            if self.epoch()!=permit['epoch']:
+                self.db.execute("UPDATE memory_reconstruction_checkpoints SET state='invalidated',request_id=NULL WHERE id=?",(permit['id'],))
+            elif success:
+                self.db.execute("UPDATE memory_reconstruction_checkpoints SET state='consumed',request_id=NULL WHERE id=?",(permit['id'],))
+            else:
+                self.db.execute("UPDATE memory_reconstruction_checkpoints SET state='available',request_id=NULL WHERE id=?",(permit['id'],))
+            self.db.commit();return True
+        except BaseException:
+            self.db.rollback();raise
     def prune_pending(self,now=None):
         now=time.time() if now is None else now
         self.db.execute('DELETE FROM memory_pending WHERE at<?',(now-7*86400,))
@@ -320,7 +417,7 @@ class Reflection:
         configured=cfg.get('summaryRounds',DEFAULT_SUMMARY_ROUNDS)
         summary_rounds=max(30,min(200,configured if configured>=30 else DEFAULT_SUMMARY_ROUNDS))
         insight_enabled=self.memory is not None and cfg.get('naturalConversation',True)
-        now=time.time();scope=None;job=None;rows=[];big_rows=[]
+        now=time.time();scope=None;job=None;rows=[];big_rows=[];summary_from=None
         # Mandatory rollup runs before the next ordinary reflection. Legacy
         # summaries migrate in bounded batches without deleting unseen records.
         counts=self.db.execute("SELECT sum(coalesce(l.kind,'small')='small'),sum(l.kind='big') FROM memory_summaries s LEFT JOIN memory_summary_levels l ON s.id=l.id").fetchone()
@@ -335,7 +432,7 @@ class Reflection:
                 progress=self.db.execute('SELECT summary_watermark,insight_watermark FROM memory_reflection_progress WHERE scope=?',(candidate,)).fetchone() or (0,0)
                 batch=self.db.execute('SELECT id,subject,event,question,answer,at FROM memory_rounds WHERE scope=? AND id>? ORDER BY id LIMIT ?',(candidate,progress[0],summary_rounds)).fetchall()
                 if len(batch)>=summary_rounds:
-                    scope=candidate;job='summary';rows=batch;break
+                    scope=candidate;job='summary';rows=batch;summary_from=progress[0];break
         if not scope:return False
         attempt_row=self.db.execute('SELECT attempts FROM memory_reflection_retry WHERE scope=?',(scope,)).fetchone()
         attempts=(attempt_row[0] if attempt_row else 0)+1
@@ -394,6 +491,10 @@ class Reflection:
                 with self.db:
                     self.db.execute('BEGIN IMMEDIATE')
                     if self.closed or not is_current() or self.epoch()!=epoch:return
+                    if job=='summary':
+                        progress_now=self.db.execute('SELECT summary_watermark,insight_watermark FROM memory_reflection_progress WHERE scope=?',(scope,)).fetchone() or (0,0)
+                        live_rows=self.db.execute('SELECT id,subject,event,question,answer,at FROM memory_rounds WHERE scope=? AND id>? ORDER BY id LIMIT ?',(scope,summary_from,summary_rounds)).fetchall()
+                        if progress_now[0]!=summary_from or live_rows!=rows:raise RuntimeError('summary_checkpoint_stale')
                     metrics['coreNoteUpdates']=metrics.get('coreNoteUpdates',0)+self.update_core_note(data,core_before,payload,big_rows,scope)
                     if job=='big':
                         ids=[r[0] for r in big_rows];marks=','.join('?' for _ in ids)
@@ -431,6 +532,15 @@ class Reflection:
                         progress=self.db.execute('SELECT summary_watermark,insight_watermark FROM memory_reflection_progress WHERE scope=?',(scope,)).fetchone()
                         floor=min(progress) if insight_enabled else progress[0]
                         self.db.execute('DELETE FROM memory_rounds WHERE scope=? AND id<=?',(scope,floor))
+                        # A reconstruction permit is minted only by the exact
+                        # successful summary transaction for 35 completed
+                        # business rounds. Big-summary merges and partial
+                        # batches never issue one.
+                        if (summary_rounds==35 and len(rows)==35 and
+                            all(isinstance(r[1],str) and r[1] and isinstance(r[2],str) and r[2] and
+                                isinstance(r[3],str) and r[3].strip() and isinstance(r[4],str) and r[4].strip() and
+                                isinstance(r[5],(int,float)) for r in rows)):
+                            self.db.execute('INSERT OR IGNORE INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,created,summary_id) VALUES(?,?,35,?,\'available\',?,?)',(scope,rows[-1][0],epoch,time.time(),identifier))
                     self.db.execute('DELETE FROM memory_reflection_retry WHERE scope=?',(scope,))
                 # Drain only immediately due persisted work, never a per-bot timer.
                 asyncio.get_running_loop().call_soon(self.retry)

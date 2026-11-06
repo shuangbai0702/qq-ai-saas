@@ -16,6 +16,9 @@ _decision=ContextVar('fishbot_decision_cache_scope',default=None)
 _attempt=ContextVar('fishbot_model_attempt',default=None)
 _shapes=OrderedDict()
 _wire_shapes=OrderedDict()
+_system_contracts={}
+
+class AppendOnlyWireViolation(RuntimeError):pass
 
 
 def loaded_build():
@@ -58,7 +61,8 @@ def record_diagnostic(lease, record):
              'attemptId','status','reason','durationMs','firstResponseMs','toolsSha','routingSha','messagesSha',
              'messageCount','prefixMessages','firstDifference','inputChars','prefixChars','unsharedChars','costStatus','journalReason',
              'parametersSha','wireIndex','resetDetail','historyChars','baseChars','wireChars','textChars','plainTextChars',
-             'mediaChars','imageCount','toolsChars','toolCount','wireBytes','diagnosticDetail')
+             'mediaChars','imageCount','toolsChars','toolCount','wireBytes','diagnosticDetail','systemContractStatus',
+             'contentChars','reasoningChars','reasoningReported','finishReason','responseIdShape','appendOnlyStatus')
     row={key:value for key,value in record.items() if key in allowed and (value is None or type(value) in (str,int,float,bool))}
     if any(isinstance(value,str) and len(value)>256 for value in row.values()):return False
     row.update(at=time.time(),pid=os.getpid(),botId=lease['botId'],generation=lease.get('generation'),revision=lease.get('revision'))
@@ -73,14 +77,41 @@ def record_diagnostic(lease, record):
         return False  # Observability never changes a model request's result.
 
 
+def response_shape(raw):
+    """Where the visible reply came from: content, a separate reasoning field, or neither.
+
+    A leaked analysis is only attributable when the two channels are measured
+    apart; lengths and the finish reason are enough, so no text is retained.
+    """
+    def read(value,key):return value.get(key) if isinstance(value,dict) else getattr(value,key,None)
+    try:
+        choices=read(raw,'choices')
+        choice=choices[0] if isinstance(choices,(list,tuple)) and choices else None
+        message=read(choice,'message')
+    except (IndexError,TypeError,AttributeError):
+        return {}
+    content=read(message,'content');reasoning=read(message,'reasoning_content')
+    if reasoning is None:reasoning=read(message,'reasoning')
+    finish=read(choice,'finish_reason')
+    # An explicit empty reasoning field is still a provider statement; absent is not.
+    reported=isinstance(reasoning,str)
+    return {'contentChars':len(content) if isinstance(content,str) else None,
+            'reasoningChars':len(reasoning) if reported else None,'reasoningReported':reported,
+            'finishReason':finish if isinstance(finish,str) and len(finish)<=32 else None}
+
 def usage_evidence(response):
     """Missing upstream cache usage is unknown, not the SDK's default zero."""
     def read(value,key):return value.get(key) if isinstance(value,dict) else getattr(value,key,None)
     raw=getattr(response,'raw_completion',None);usage=read(raw,'usage');details=read(usage,'prompt_tokens_details')
     number=lambda value:value if type(value) is int and value>=0 else None
-    return {'responseId':read(raw,'id'),'inputTokens':number(read(usage,'prompt_tokens')),
+    identifier=read(raw,'id')
+    return {'responseId':identifier,'inputTokens':number(read(usage,'prompt_tokens')),
             'cachedTokens':number(read(details,'cached_tokens')),'outputTokens':number(read(usage,'completion_tokens')),
-            'cacheUsageReported':number(read(details,'cached_tokens')) is not None}
+            'cacheUsageReported':number(read(details,'cached_tokens')) is not None,
+            # A response-id prefix is a shape, never a vendor or route claim.
+            # It is recorded so a correlation with cache reuse stays auditable.
+            'responseIdShape':'gen-prefixed' if isinstance(identifier,str) and identifier.startswith('gen-') else 'other',
+            **response_shape(raw)}
 
 def message_shape(messages,previous=()):
     """Bounded hashes only; never retain message bodies or credentials."""
@@ -98,12 +129,64 @@ def message_shape(messages,previous=()):
                   'inputChars':total,'prefixChars':shared,'unsharedChars':total-shared,
                   'messagesSha':hashlib.sha256(json.dumps(shape).encode()).hexdigest()[:24]}
 
-def begin_attempt(event,provider):
-    decision=_decision.get();lease=event.get_extra('_hosted_lease') if event else decision[4] if decision and decision[0] is provider else None
+def current_lease(event,provider):
+    lease=event.get_extra('_hosted_lease') if event else None
+    if isinstance(lease,dict):return lease
+    decision=_decision.get()
+    if decision and decision[0] is provider and isinstance(decision[4],dict):return decision[4]
+    binding=_system_contracts.get(id(provider))
+    return binding[1] if binding and binding[0] is provider else None
+
+def is_foreground_event(event):
+    if not event or event.get_extra('_hosted_internal_work'):return False
+    work=event.get_extra('_hosted_pipeline')
+    return getattr(work,'source',None) in ('message','deferred_group')
+
+
+def bind_system_contract(provider,contract,lease):
+    if provider is not None and contract is not None and isinstance(lease,dict):_system_contracts[id(provider)]=(provider,contract,lease)
+
+
+def unbind_system_contract(provider):
+    if provider is not None:
+        binding=_system_contracts.get(id(provider))
+        if binding and binding[0] is provider:_system_contracts.pop(id(provider),None)
+
+
+def begin_attempt(event,provider,system_contract=None,system_permit_id=None):
+    decision=_decision.get();lease=current_lease(event,provider)
+    binding=_system_contracts.get(id(provider))
+    foreground=is_foreground_event(event)
+    if system_contract is None and foreground and binding and binding[0] is provider:
+        system_contract=binding[1]
+        if system_permit_id is None and isinstance(binding[2],dict):system_permit_id=binding[2].get('systemChangePermitId')
     work=event.get_extra('_hosted_pipeline') if event else None
     phase=('inner_execution' if event.get_extra('_hosted_internal_work') else 'foreground') if event else (decision[6] if len(decision)>6 and decision[6] else decision[3].split(':',1)[-1]) if decision else 'data_task'
-    value={'lease':lease,'provider':provider,'started':time.monotonic(),'phase':phase,'attemptId':str(uuid.uuid4()),'workId':getattr(work,'event_id',None) or (decision[5] if decision and len(decision)>5 else None),'scope':getattr(work,'scope',phase),'ended':False}
+    value={'lease':lease,'provider':provider,'started':time.monotonic(),'phase':phase,'attemptId':str(uuid.uuid4()),'workId':getattr(work,'event_id',None) or (decision[5] if decision and len(decision)>5 else None),'scope':getattr(work,'scope',phase),'ended':False,
+           'systemContract':system_contract,'systemPermitId':system_permit_id,'systemReservation':None}
     return _attempt.set(value)
+
+def expect_append_only_messages(messages):
+    """Bind the current candidate wire prefix to the final HTTP request check."""
+    value=_attempt.get()
+    if not value:return False
+    if not isinstance(messages,list):raise AppendOnlyWireViolation('append_only_candidate_shape')
+    serialized=[];size=0
+    try:
+        for message in messages:
+            row=json.dumps(message,ensure_ascii=False,separators=(',',':'),default=str)
+            size+=len(row.encode('utf-8'))
+            if size>4*1024*1024:raise AppendOnlyWireViolation('append_only_candidate_limit')
+            serialized.append(row)
+    except (TypeError,ValueError) as error:
+        raise AppendOnlyWireViolation('append_only_candidate_serialize') from error
+    value['appendOnlyExpected']=tuple(serialized)
+    return True
+
+def _append_only_failure(value,lease,reason):
+    record_diagnostic(lease,{'kind':'wire_request','attemptId':value.get('attemptId'),'phase':value.get('phase'),
+        'workId':value.get('workId'),'wireIndex':value.get('wireIndex'),'appendOnlyStatus':'blocked','diagnosticDetail':reason})
+    raise AppendOnlyWireViolation(reason)
 
 def observe_payload(payload,journal_reason=None):
     try:
@@ -135,26 +218,62 @@ def observe_wire_request(request):
         value=_attempt.get()
         if not value:return
         lease=value.get('lease')
-        if not isinstance(lease,dict):return
+        if not isinstance(lease,dict):lease=None
+        expected=value.get('appendOnlyExpected')
+        if expected is not None:value['appendOnlyValidationStarted']=True
         raw=request.content
         value['wireIndex']=value.get('wireIndex',0)+1
         if len(raw)>4*1024*1024:
             record_diagnostic(lease,{'kind':'wire_request','attemptId':value['attemptId'],'phase':value['phase'],
                 'workId':value['workId'],'wireIndex':value['wireIndex'],'wireBytes':len(raw),'diagnosticDetail':'wire_body_limit'})
+            if expected is not None:_append_only_failure(value,lease,'append_only_wire_limit')
             return
-        payload=json.loads(raw)
-        if not isinstance(payload,dict) or not isinstance(payload.get('messages'),list):return
-        key=(lease.get('tenantId'),lease.get('botId'),value['scope'],value['phase'])
-        shape,fields=message_shape(payload['messages'],_wire_shapes.pop(key,()))
-        _wire_shapes[key]=shape
-        while len(_wire_shapes)>32:_wire_shapes.popitem(last=False)
-        sha=lambda v:hashlib.sha256(json.dumps(v,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()[:24]
-        fields.update(toolsSha=sha(payload.get('tools')),routingSha=hashlib.sha256(str(payload.get('prompt_cache_key','')).encode()).hexdigest()[:24],
-                      parametersSha=sha({k:v for k,v in payload.items() if k not in ('messages','tools','prompt_cache_key')}),
-                      journalReason=value.get('journalReason'),wireIndex=value['wireIndex'],wireBytes=len(raw),
-                      toolCount=len(payload.get('tools') or []),toolsChars=len(json.dumps(payload.get('tools'),ensure_ascii=False,separators=(',',':'))))
-        record_diagnostic(lease,{'kind':'wire_request','attemptId':value['attemptId'],'phase':value['phase'],'workId':value['workId'],**fields})
+        try:payload=json.loads(raw)
+        except (UnicodeDecodeError,ValueError,TypeError):
+            if expected is not None:_append_only_failure(value,lease,'append_only_wire_unreadable')
+            return
+        if not isinstance(payload,dict) or not isinstance(payload.get('messages'),list):
+            if expected is not None:_append_only_failure(value,lease,'append_only_wire_messages_missing')
+            return
+        if expected is not None:
+            try:
+                actual=tuple(json.dumps(message,ensure_ascii=False,separators=(',',':'),default=str) for message in payload['messages'][:len(expected)])
+            except (TypeError,ValueError):_append_only_failure(value,lease,'append_only_wire_serialize')
+            if len(payload['messages'])<len(expected) or actual!=expected:
+                _append_only_failure(value,lease,'append_only_wire_prefix_mismatch')
+            value['appendOnlyValidationStarted']=False
+            record_diagnostic(lease,{'kind':'wire_request','attemptId':value['attemptId'],'phase':value['phase'],
+                'workId':value['workId'],'wireIndex':value['wireIndex'],'appendOnlyStatus':'verified'})
+        contract=value.get('systemContract')
+        if contract is not None:
+            value['systemValidationStarted']=True
+            try:
+                reservation=contract.reserve(payload['messages'],value.get('systemPermitId'),value['attemptId'],time.time())
+                value['systemReservation']=reservation
+                value['systemValidationStarted']=False
+                record_diagnostic(lease,{'kind':'wire_request','attemptId':value['attemptId'],'phase':value['phase'],
+                    'workId':value['workId'],'systemSha':reservation.get('systemSha'),'systemContractStatus':'authorized' if reservation.get('changed') else 'stable'})
+            except Exception as error:
+                from system_contract import SystemContractViolation
+                if not isinstance(error,SystemContractViolation):raise
+                record_diagnostic(lease,{'kind':'wire_request','attemptId':value['attemptId'],'phase':value['phase'],
+                    'workId':value['workId'],'systemSha':__import__('system_contract').system_vector_sha(payload['messages']),
+                    'systemContractStatus':'blocked'})
+                raise
+        if isinstance(lease,dict):
+            key=(lease.get('tenantId'),lease.get('botId'),value['scope'],value['phase'])
+            shape,fields=message_shape(payload['messages'],_wire_shapes.pop(key,()))
+            _wire_shapes[key]=shape
+            while len(_wire_shapes)>32:_wire_shapes.popitem(last=False)
+            sha=lambda v:hashlib.sha256(json.dumps(v,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()[:24]
+            fields.update(toolsSha=sha(payload.get('tools')),routingSha=hashlib.sha256(str(payload.get('prompt_cache_key','')).encode()).hexdigest()[:24],
+                          parametersSha=sha({k:v for k,v in payload.items() if k not in ('messages','tools','prompt_cache_key')}),
+                          journalReason=value.get('journalReason'),wireIndex=value['wireIndex'],wireBytes=len(raw),
+                          toolCount=len(payload.get('tools') or []),toolsChars=len(json.dumps(payload.get('tools'),ensure_ascii=False,separators=(',',':'))))
+            record_diagnostic(lease,{'kind':'wire_request','attemptId':value['attemptId'],'phase':value['phase'],'workId':value['workId'],**fields})
     except Exception:
+        value=_attempt.get()
+        if value and (value.get('systemValidationStarted') or value.get('appendOnlyValidationStarted')):raise
         return
 
 
@@ -162,6 +281,9 @@ def finish_attempt(status,response=None,reason=None):
     value=_attempt.get()
     if not value or value['ended']:return
     value['ended']=True
+    contract=value.get('systemContract')
+    if contract is not None and value.get('systemReservation') is not None:
+        contract.settle(value['systemReservation'],status=='completed',time.time())
     record_diagnostic(value.get('lease'),{'kind':'request_result','attemptId':value['attemptId'],'phase':value['phase'],'workId':value['workId'],
         'status':status,'reason':reason,'durationMs':round((time.monotonic()-value['started'])*1000),'firstResponseMs':value.get('firstResponseMs'),'costStatus':'unknown',
         **(usage_evidence(response) if response is not None else {})})

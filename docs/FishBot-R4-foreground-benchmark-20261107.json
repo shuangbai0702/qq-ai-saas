@@ -1,0 +1,517 @@
+{
+  "evidence": "Synthetic 35-turn transport trajectory using invariant policy bytes from one real capture. This is not a complete real 35-turn business replay, quality evaluation, upstream cache measurement or token bill.",
+  "capturedForegroundRequests": 17,
+  "policyChars": 5958,
+  "policySha256": "ef8aa1bb97f2b506532e847198b5242c303d9fdb97c36184d9fd68abb4026d5d",
+  "baselineChars": 6881,
+  "reductionChars": 219776,
+  "reductionPercent": 90.83,
+  "tokens": null,
+  "actualModelRequests": 0,
+  "results": {
+    "fullPolicy": {
+      "rounds": [
+        {
+          "turn": 1,
+          "wireChars": 6881,
+          "textChars": 6881,
+          "addedChars": 6881,
+          "prefixVerified": false
+        },
+        {
+          "turn": 2,
+          "wireChars": 13791,
+          "textChars": 13791,
+          "addedChars": 6910,
+          "prefixVerified": true
+        },
+        {
+          "turn": 3,
+          "wireChars": 20701,
+          "textChars": 20701,
+          "addedChars": 6910,
+          "prefixVerified": true
+        },
+        {
+          "turn": 4,
+          "wireChars": 27611,
+          "textChars": 27611,
+          "addedChars": 6910,
+          "prefixVerified": true
+        },
+        {
+          "turn": 5,
+          "wireChars": 34521,
+          "textChars": 34521,
+          "addedChars": 6910,
+          "prefixVerified": true
+        },
+        {
+          "turn": 6,
+          "wireChars": 41431,
+          "textChars": 41431,
+          "addedChars": 6910,
+          "prefixVerified": true
+        },
+        {
+          "turn": 7,
+          "wireChars": 48341,
+          "textChars": 48341,
+          "addedChars": 6910,
+          "prefixVerified": true
+        },
+        {
+          "turn": 8,
+          "wireChars": 55251,
+          "textChars": 55251,
+          "addedChars": 6910,
+          "prefixVerified": true
+        },
+        {
+          "turn": 9,
+          "wireChars": 62161,
+          "textChars": 62161,
+          "addedChars": 6910,
+          "prefixVerified": true
+        },
+        {
+          "turn": 10,
+          "wireChars": 69071,
+          "textChars": 69071,
+          "addedChars": 6910,
+          "prefixVerified": true
+        },
+        {
+          "turn": 11,
+          "wireChars": 75986,
+          "textChars": 75986,
+          "addedChars": 6915,
+          "prefixVerified": true
+        },
+        {
+          "turn": 12,
+          "wireChars": 82902,
+          "textChars": 82902,
+          "addedChars": 6916,
+          "prefixVerified": true
+        },
+        {
+          "turn": 13,
+          "wireChars": 89818,
+          "textChars": 89818,
+          "addedChars": 6916,
+          "prefixVerified": true
+        },
+        {
+          "turn": 14,
+          "wireChars": 96734,
+          "textChars": 96734,
+          "addedChars": 6916,
+          "prefixVerified": true
+        },
+        {
+          "turn": 15,
+          "wireChars": 103650,
+          "textChars": 103650,
+          "addedChars": 6916,
+          "prefixVerified": true
+        },
+        {
+          "turn": 16,
+          "wireChars": 110566,
+          "textChars": 110566,
+          "addedChars": 6916,
+          "prefixVerified": true
+        },
+        {
+          "turn": 17,
+          "wireChars": 117482,
+          "textChars": 117482,
+          "addedChars": 6916,
+          "prefixVerified": true
+        },
+        {
+          "turn": 18,
+          "wireChars": 124398,
+          "textChars": 124398,
+          "addedChars": 6916,
+          "prefixVerified": true
+        },
+        {
+          "turn": 19,
+          "wireChars": 131314,
+          "textChars": 131314,
+          "addedChars": 6916,
+          "prefixVerified": true
+        },
+        {
+          "turn": 20,
+          "wireChars": 138230,
+          "textChars": 138230,
+          "addedChars": 6916,
+          "prefixVerified": true
+        },
+        {
+          "turn": 21,
+          "wireChars": 145146,
+          "textChars": 145146,
+          "addedChars": 6916,
+          "prefixVerified": true
+        },
+        {
+          "turn": 22,
+          "wireChars": 152062,
+          "textChars": 152062,
+          "addedChars": 6916,
+          "prefixVerified": true
+        },
+        {
+          "turn": 23,
+          "wireChars": 158978,
+          "textChars": 158978,
+          "addedChars": 6916,
+          "prefixVerified": true
+        },
+        {
+          "turn": 24,
+          "wireChars": 165894,
+          "textChars": 165894,
+          "addedChars": 6916,
+          "prefixVerified": true
+        },
+        {
+          "turn": 25,
+          "wireChars": 172810,
+          "textChars": 172810,
+          "addedChars": 6916,
+          "prefixVerified": true
+        },
+        {
+          "turn": 26,
+          "wireChars": 179726,
+          "textChars": 179726,
+          "addedChars": 6916,
+          "prefixVerified": true
+        },
+        {
+          "turn": 27,
+          "wireChars": 186642,
+          "textChars": 186642,
+          "addedChars": 6916,
+          "prefixVerified": true
+        },
+        {
+          "turn": 28,
+          "wireChars": 193558,
+          "textChars": 193558,
+          "addedChars": 6916,
+          "prefixVerified": true
+        },
+        {
+          "turn": 29,
+          "wireChars": 200474,
+          "textChars": 200474,
+          "addedChars": 6916,
+          "prefixVerified": true
+        },
+        {
+          "turn": 30,
+          "wireChars": 207390,
+          "textChars": 207390,
+          "addedChars": 6916,
+          "prefixVerified": true
+        },
+        {
+          "turn": 31,
+          "wireChars": 214306,
+          "textChars": 214306,
+          "addedChars": 6916,
+          "prefixVerified": true
+        },
+        {
+          "turn": 32,
+          "wireChars": 221222,
+          "textChars": 221222,
+          "addedChars": 6916,
+          "prefixVerified": true
+        },
+        {
+          "turn": 33,
+          "wireChars": 228138,
+          "textChars": 228138,
+          "addedChars": 6916,
+          "prefixVerified": true
+        },
+        {
+          "turn": 34,
+          "wireChars": 235054,
+          "textChars": 235054,
+          "addedChars": 6916,
+          "prefixVerified": true
+        },
+        {
+          "turn": 35,
+          "wireChars": 241970,
+          "textChars": 241970,
+          "addedChars": 6916,
+          "prefixVerified": true
+        }
+      ],
+      "cpuAndWallMs": 150.3,
+      "pythonPeakBytes": 772420,
+      "maximumWireChars": 241970
+    },
+    "compact": {
+      "rounds": [
+        {
+          "turn": 1,
+          "wireChars": 6881,
+          "textChars": 6881,
+          "addedChars": 6881,
+          "prefixVerified": false
+        },
+        {
+          "turn": 2,
+          "wireChars": 7327,
+          "textChars": 7327,
+          "addedChars": 446,
+          "prefixVerified": true
+        },
+        {
+          "turn": 3,
+          "wireChars": 7773,
+          "textChars": 7773,
+          "addedChars": 446,
+          "prefixVerified": true
+        },
+        {
+          "turn": 4,
+          "wireChars": 8219,
+          "textChars": 8219,
+          "addedChars": 446,
+          "prefixVerified": true
+        },
+        {
+          "turn": 5,
+          "wireChars": 8665,
+          "textChars": 8665,
+          "addedChars": 446,
+          "prefixVerified": true
+        },
+        {
+          "turn": 6,
+          "wireChars": 9111,
+          "textChars": 9111,
+          "addedChars": 446,
+          "prefixVerified": true
+        },
+        {
+          "turn": 7,
+          "wireChars": 9557,
+          "textChars": 9557,
+          "addedChars": 446,
+          "prefixVerified": true
+        },
+        {
+          "turn": 8,
+          "wireChars": 10003,
+          "textChars": 10003,
+          "addedChars": 446,
+          "prefixVerified": true
+        },
+        {
+          "turn": 9,
+          "wireChars": 10449,
+          "textChars": 10449,
+          "addedChars": 446,
+          "prefixVerified": true
+        },
+        {
+          "turn": 10,
+          "wireChars": 10895,
+          "textChars": 10895,
+          "addedChars": 446,
+          "prefixVerified": true
+        },
+        {
+          "turn": 11,
+          "wireChars": 11346,
+          "textChars": 11346,
+          "addedChars": 451,
+          "prefixVerified": true
+        },
+        {
+          "turn": 12,
+          "wireChars": 11798,
+          "textChars": 11798,
+          "addedChars": 452,
+          "prefixVerified": true
+        },
+        {
+          "turn": 13,
+          "wireChars": 12250,
+          "textChars": 12250,
+          "addedChars": 452,
+          "prefixVerified": true
+        },
+        {
+          "turn": 14,
+          "wireChars": 12702,
+          "textChars": 12702,
+          "addedChars": 452,
+          "prefixVerified": true
+        },
+        {
+          "turn": 15,
+          "wireChars": 13154,
+          "textChars": 13154,
+          "addedChars": 452,
+          "prefixVerified": true
+        },
+        {
+          "turn": 16,
+          "wireChars": 13606,
+          "textChars": 13606,
+          "addedChars": 452,
+          "prefixVerified": true
+        },
+        {
+          "turn": 17,
+          "wireChars": 14058,
+          "textChars": 14058,
+          "addedChars": 452,
+          "prefixVerified": true
+        },
+        {
+          "turn": 18,
+          "wireChars": 14510,
+          "textChars": 14510,
+          "addedChars": 452,
+          "prefixVerified": true
+        },
+        {
+          "turn": 19,
+          "wireChars": 14962,
+          "textChars": 14962,
+          "addedChars": 452,
+          "prefixVerified": true
+        },
+        {
+          "turn": 20,
+          "wireChars": 15414,
+          "textChars": 15414,
+          "addedChars": 452,
+          "prefixVerified": true
+        },
+        {
+          "turn": 21,
+          "wireChars": 15866,
+          "textChars": 15866,
+          "addedChars": 452,
+          "prefixVerified": true
+        },
+        {
+          "turn": 22,
+          "wireChars": 16318,
+          "textChars": 16318,
+          "addedChars": 452,
+          "prefixVerified": true
+        },
+        {
+          "turn": 23,
+          "wireChars": 16770,
+          "textChars": 16770,
+          "addedChars": 452,
+          "prefixVerified": true
+        },
+        {
+          "turn": 24,
+          "wireChars": 17222,
+          "textChars": 17222,
+          "addedChars": 452,
+          "prefixVerified": true
+        },
+        {
+          "turn": 25,
+          "wireChars": 17674,
+          "textChars": 17674,
+          "addedChars": 452,
+          "prefixVerified": true
+        },
+        {
+          "turn": 26,
+          "wireChars": 18126,
+          "textChars": 18126,
+          "addedChars": 452,
+          "prefixVerified": true
+        },
+        {
+          "turn": 27,
+          "wireChars": 18578,
+          "textChars": 18578,
+          "addedChars": 452,
+          "prefixVerified": true
+        },
+        {
+          "turn": 28,
+          "wireChars": 19030,
+          "textChars": 19030,
+          "addedChars": 452,
+          "prefixVerified": true
+        },
+        {
+          "turn": 29,
+          "wireChars": 19482,
+          "textChars": 19482,
+          "addedChars": 452,
+          "prefixVerified": true
+        },
+        {
+          "turn": 30,
+          "wireChars": 19934,
+          "textChars": 19934,
+          "addedChars": 452,
+          "prefixVerified": true
+        },
+        {
+          "turn": 31,
+          "wireChars": 20386,
+          "textChars": 20386,
+          "addedChars": 452,
+          "prefixVerified": true
+        },
+        {
+          "turn": 32,
+          "wireChars": 20838,
+          "textChars": 20838,
+          "addedChars": 452,
+          "prefixVerified": true
+        },
+        {
+          "turn": 33,
+          "wireChars": 21290,
+          "textChars": 21290,
+          "addedChars": 452,
+          "prefixVerified": true
+        },
+        {
+          "turn": 34,
+          "wireChars": 21742,
+          "textChars": 21742,
+          "addedChars": 452,
+          "prefixVerified": true
+        },
+        {
+          "turn": 35,
+          "wireChars": 22194,
+          "textChars": 22194,
+          "addedChars": 452,
+          "prefixVerified": true
+        }
+      ],
+      "cpuAndWallMs": 131.78,
+      "pythonPeakBytes": 306628,
+      "maximumWireChars": 22194
+    }
+  }
+}

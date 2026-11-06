@@ -11,7 +11,7 @@ from slim_bootstrap import install
 install()
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
 from astrbot.api.event import MessageChain
-from astrbot.core.message.components import Plain
+from astrbot.core.message.components import Plain,Image,Record
 from astrbot.core.platform.astr_message_event import current_message_event
 from behavior import install_runtime
 
@@ -45,7 +45,7 @@ async def run():
    entered.clear();release.clear()
    old={'root':temp.name,'botId':'bot-A','generation':1,'config':{}}
    settings['qq']=old;extras={'_hosted_generation':1,'_hosted_lease':old}
-   event=SimpleNamespace(get_platform_id=lambda:'qq',get_self_id=lambda:'90000',get_extra=lambda key,default=None:extras.get(key,default))
+   event=SimpleNamespace(get_platform_id=lambda:'qq',get_self_id=lambda:'90000',get_extra=lambda key,default=None:extras.get(key,default),set_extra=lambda key,value:extras.update({key:value}))
    settings.pop('qq')
    if replacement:settings['qq']={**old,**replacement}
    await AiocqhttpMessageEvent.send(event,MessageChain(chain=[Plain('必须丢弃的旧回复')]))
@@ -119,6 +119,31 @@ async def run():
   st.pipeline.finish(work,runtime['metrics'].setdefault('qq',{}))
   assert work.confirmed==1 and work.status=='error' and work.reason=='model_error'
   assert st.db.execute("SELECT count(*) FROM memory_pending WHERE event='model-error-fixture'").fetchone()[0]==0
+  # Exercise the installed send path, including OutputPlan and actual receipt
+  # counters. No network, media upload or model request is involved.
+  cases=[('normal',[Plain('正常中英文 reply')],None),
+         ('planning',[Plain('**Planning**\nThe update is ready.')],None),
+         ('marker',[Plain('[NO_REPLY]')],'model_no_reply_marker'),
+         ('empty',[],'empty_visible_text'),
+         ('reasoning',[],'reasoning_only_reply'),
+         ('image',[Image.fromBytes(b'fixture image bytes')],None),
+         ('voice',[Record.fromBase64('YQ==')],None),
+         ('marker-image',[Plain('[NO_REPLY]'),Image.fromBytes(b'fixture image bytes')],None)]
+  for name,chain,silent in cases:
+   extra={'_hosted_lease':lease,'_hosted_generation':1,'_partial_fixture':True,'_hosted_reply_withheld':name=='reasoning'}
+   event=SimpleNamespace(message_obj=SimpleNamespace(message_id='output-'+name),get_platform_id=lambda:'qq',get_self_id=lambda:'90000',get_group_id=lambda:'',get_sender_id=lambda:'12345678',get_message_str=lambda:'真实输入',get_extra=lambda k,d=None:extra.get(k,d),set_extra=lambda k,v:extra.update({k:v}))
+   work=st.pipeline.bind(event,lease)
+   await AiocqhttpMessageEvent.send(event,MessageChain(chain=chain))
+   st.pipeline.finish(work,runtime['metrics'].setdefault('qq',{}))
+   if silent:
+    assert work.confirmed==0 and work.reason==silent and work.status=='silent',(name,work)
+   else:
+    assert work.confirmed_messages==work.planned_messages==1,(name,work)
+    saved=st.db.execute('SELECT answer FROM memory_rounds WHERE event=?',('output-'+name,)).fetchone()
+    assert saved is not None,(name,'confirmed business round was lost')
+    if name=='planning':assert saved[0]=='**Planning**\nThe update is ready.'
+    if name in ('image','voice','marker-image'):assert '平台已确认发送非文本消息' in saved[0]
+  print('PASS actual output path: exact silence, normal Planning prose, image/voice receipts and completed-round counting')
   print('PASS model failure with delivered sanitized notice remains error and preserves actual receipt')
   print('PASS protocol send late completion after stop and replacement; no store resurrection')
  finally:runtime['close']()

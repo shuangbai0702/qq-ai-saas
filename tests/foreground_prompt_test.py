@@ -47,15 +47,18 @@ async def main():
             try:await ProviderOpenAIOfficial.text_chat(NS(),prompt=event.get_message_str(),system_prompt='original persona',contexts=[])
             finally:current_message_event.reset(token)
             system=requests[-1]['system']
+            from context_transport import EVENT_CONTEXT_CURRENT
+            current_packet=next(json.loads(m['content'].split('\n',1)[1]) for m in requests[-1]['contexts'] if isinstance(m.get('content'),str) and m['content'].startswith(EVENT_CONTEXT_CURRENT+'\n'))
+            policy=current_packet['policy']
             from bot_pipeline import EXECUTION_DISCLOSURE_POLICY
-            assert system.count(EXECUTION_DISCLOSURE_POLICY)==1,'outward disclosure policy missing or duplicated'
-            assert ('[后台任务登记]' in system)==active,('handoff prompt missing',meme,active)
+            assert (system+policy).count(EXECUTION_DISCLOSURE_POLICY)==1,'outward disclosure policy missing or duplicated'
+            assert ('[后台任务登记]' in policy)==active,('handoff prompt missing',meme,active)
             if active:
-                assert '本轮即时任务由内层直接使用当前已授权工具完成' in system
-                assert '不先自行执行后补登记' not in system
-                assert '以下规则适用于本轮决定参与交流之后' in system
-            assert ('目的会话的发送回执' in system)==active,'foreground may claim a cross-conversation action without its receipt'
-            assert ('[本轮图片表达规则，以此为准]' in system)==meme
+                assert '本轮即时任务由内层直接使用当前已授权工具完成' in policy
+                assert '不先自行执行后补登记' not in policy
+                assert '以下规则适用于本轮决定参与交流之后' in policy
+            assert ('目的会话的发送回执' in policy)==active,'foreground may claim a cross-conversation action without its receipt'
+            assert ('[本轮图片表达规则，以此为准]' in policy)==meme
             assert 'original persona' in system
             event.set_extra('_hosted_context',json.dumps({'conversation_candidate':True}))
             token=current_message_event.set(event)
@@ -65,9 +68,12 @@ async def main():
             current_context=requests[-1]['contexts'][-1]
             from context_protocol import READONLY_CURRENT
             assert current_context['role']=='user' and current_context['content'].startswith(READONLY_CURRENT)
-            assert marker in candidate_system and '本轮不产生发送或其他外部写入' in candidate_system
-            assert marker not in current_context['content'],'participation restrictions must stay system authority'
-            if active:assert '[后台任务登记]' in candidate_system
+            assert candidate_system==system,'An event participation change must not rewrite System'
+            candidate_packet=next(json.loads(m['content'].split('\n',1)[1]) for m in requests[-1]['contexts'] if isinstance(m.get('content'),str) and m['content'].startswith(EVENT_CONTEXT_CURRENT+'\n'))
+            assert marker in candidate_packet['currentGuidance'] and '本轮不产生发送或其他外部写入' in candidate_packet['currentGuidance']
+            assert marker not in current_context['content'],'event rules must not be mixed into historical memory'
+            assert '后端' in candidate_system and '重新授权' in candidate_system
+            if active:assert '[后台任务登记]' in candidate_packet['policy']
         # Exercise the actual patched native reset, not just the pure limiter.
         from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
         from astrbot.core.agent.run_context import ContextWrapper
@@ -102,8 +108,10 @@ async def main():
             event.set_extra('_hosted_lease',settings[id]);event.set_extra('_hosted_generation',1)
             await PipelineScheduler.execute(NS(),event)
             request=pipeline_requests[-1]
-            assert json.loads(request.prompt)=={'event':'mention','text':'','sender_id':'12345678','self_id':'90000000'}
-            assert '空艾特事件' in request.system_prompt and request.conversation.cid=='existing-session'
+            facts=json.loads(request.prompt)
+            assert '空艾特事件' in facts.pop('meaning')
+            assert facts=={'event':'mention','text':'','sender_id':'12345678','self_id':'90000000'}
+            assert request.system_prompt==settings[id]['config'].get('systemPrompt','') and request.conversation.cid=='existing-session'
             assert event.get_message_str()=='' and event.get_messages()==[msg.message[0]],'input facts were mutated'
             assert request.prompt.find('你友好地询问')==-1
         print('PASS empty mention uses common pipeline, actual event facts and bound history in both modes')
