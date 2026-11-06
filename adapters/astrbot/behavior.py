@@ -1210,7 +1210,7 @@ def install_runtime(core,settings):
                 prepared=journal.prepare(projected,stamp,group_turn=group_turn,
                                          reconstruction_authority=owned.reflection,reconstruction_scope=work.scope,
                                          reconstruction_web_proof=web_proof,reconstruction_context_scope=work.scope,
-                                         retirement=dependency,strict=foreground,compact_policy=foreground)
+                                         retirement=dependency,strict=foreground,compact_policy=foreground,guarded=foreground)
             except BaseException:
                 if foreground and journal.last is None:owned.model_journals.pop(key,None)
                 raise

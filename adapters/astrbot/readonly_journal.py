@@ -85,6 +85,28 @@ def confirmed_group_extension(old,base,state,turn):
             return base[index:]
     return None
 
+def confirmed_native_window_extension(old, base):
+    """Retain wire in full when the SDK presents a shorter native window.
+
+    Only an exact tail/prefix overlap containing a sourced event is evidence.
+    Repeated prose, replaced media, tools, or a changed System cannot prove it.
+    This adapts the SDK view; it never truncates the committed wire.
+    """
+    if not old:return None
+    head=0
+    while head<len(old.base) and old.base[head].get('role')=='system':head+=1
+    if base[:head]!=old.base[:head] or any(m.get('role')=='system' for m in base[head:]):return None
+    prior=old.base[head:];current=base[head:]
+    for size in range(min(len(prior),len(current)),0,-1):
+        overlap=prior[-size:]
+        if overlap!=current[:size]:continue
+        origins=[source(m) for m in overlap if m.get('role')=='user']
+        if not any(isinstance(o,dict) and o.get('scope') and o.get('event_id') is not None for o in origins):continue
+        # The next item must start a new real event or preserve ToolLoop
+        # adjacency through the exact overlapping assistant/tool messages.
+        return current[size:]
+    return None
+
 class ReadonlyJournal:
     def __init__(self,db=None,scope_key=None):
         self.serial=0;self.last=None;self.db=db;self.scope_key=self._scope_key(scope_key)
@@ -136,6 +158,14 @@ class ReadonlyJournal:
             self.last=Prepared(0,None,value['base'],value['wire'],value['state'],value['turns'],value['at'],'restored',group_turn,value['base_chars'],value['detail'],value['usage'],authority,value['retirement'])
             return
         overflow=self.db.execute('SELECT overflow FROM fishbot_readonly_journal_meta WHERE id=1').fetchone()[0]
+        # An operator-enrolled legacy scope can establish exactly one new
+        # baseline. Enrollment is explicit deployment work, never a restart
+        # fallback and never inferred from an old summary or request body.
+        tables={r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        cutover=None
+        if 'fishbot_readonly_cutover' in tables:
+            cutover=self.db.execute("SELECT state FROM fishbot_readonly_cutover WHERE scope=?",(self.scope_key,)).fetchone()
+        if not overflow and cutover and cutover[0]=='available':return
         if overflow or self._scope_has_completed_history():self.recovery_error='journal_snapshot_missing'
 
     def _scope_has_completed_history(self):
@@ -180,6 +210,9 @@ class ReadonlyJournal:
         try:
             self.db.execute("INSERT INTO fishbot_readonly_journals(scope,version,state,payload,sha,updated) VALUES(?,1,?,?,?,?) ON CONFLICT(scope) DO UPDATE SET version=1,state=excluded.state,payload=excluded.payload,sha=excluded.sha,updated=excluded.updated",
                             (self.scope_key,state,payload,sha,time.time()))
+            tables={r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if 'fishbot_readonly_cutover' in tables:
+                self.db.execute("UPDATE fishbot_readonly_cutover SET state='consumed' WHERE scope=? AND state='available'",(self.scope_key,))
             self.db.commit();return True
         except BaseException:self.db.rollback();raise
 
@@ -189,7 +222,7 @@ class ReadonlyJournal:
                                                         web_proof=web_proof,logical_scope=logical_scope)
 
     def prepare(self,messages,stamp,now=None,group_turn=None,reconstruction_authority=None,reconstruction_scope=None,
-                reconstruction_web_proof=None,reconstruction_context_scope=None,retirement=None,strict=False,compact_policy=False):
+                reconstruction_web_proof=None,reconstruction_context_scope=None,retirement=None,strict=False,compact_policy=False,guarded=True):
         from context_transport import READONLY_FIELDS,EVENT_CONTEXT_CURRENT
         now=time.time() if now is None else now
         found=[];malformed=False
@@ -244,6 +277,7 @@ class ReadonlyJournal:
                    and not authority_contract_changed)
         suffix=base[len(old.base):] if valid and len(base)>=len(old.base) and base[:len(old.base)]==old.base else None
         if valid and suffix is None:suffix=confirmed_group_extension(old,base,state,group_turn)
+        if valid and suffix is None and strict:suffix=confirmed_native_window_extension(old,base)
         reuse=suffix is not None
         reason='' if reuse else ('initial' if old is None and not self.recovery_error else
             'journal_recovery_unavailable' if self.recovery_error else 'journal_retired' if self.retired_reason else
@@ -251,7 +285,7 @@ class ReadonlyJournal:
             'authority_contract_changed' if authority_contract_changed else 'native_prefix_changed')
         reconstruction_permit=None
         needs_reconstruction=bool(self.recovery_error or self.retired_reason or (old and (not reuse or summary_changed or retirement_changed or authority_contract_changed)))
-        if needs_reconstruction:
+        if needs_reconstruction and guarded:
             request_id=str(uuid.uuid4())
             reconstruction_permit=self._reservation(reconstruction_authority,reconstruction_scope,request_id,summary_ids,
                                                     reconstruction_web_proof,reconstruction_context_scope)
@@ -279,16 +313,16 @@ class ReadonlyJournal:
         usage=history_usage(wire);base_chars=old.base_chars if reuse else usage['textChars']
         detail=history_boundary(usage['textChars'],base_chars,usage['wireChars'])
         if detail:
-            if not reconstruction_permit:
+            if not reconstruction_permit and guarded:
                 request_id=str(uuid.uuid4())
                 reconstruction_permit=self._reservation(reconstruction_authority,reconstruction_scope,request_id,summary_ids,
                                                         reconstruction_web_proof,reconstruction_context_scope)
-            if reconstruction_permit is None:
+            if reconstruction_permit is None and guarded:
                 raise ContextCapacityExceeded('The append-only request journal reached its configured capacity before an authorized 35-round reconstruction checkpoint.')
             wire=copy.deepcopy(messages);reason='history_size_boundary';reuse=False
             usage=history_usage(wire);base_chars=usage['textChars'];detail=history_boundary(usage['textChars'],base_chars,usage['wireChars'])
             if detail:
-                reconstruction_authority.settle_context_reconstruction(reconstruction_permit,False)
+                if reconstruction_permit:reconstruction_authority.settle_context_reconstruction(reconstruction_permit,False)
                 raise ContextCapacityExceeded('The current complete request exceeds the configured bounded context capacity.')
         self.serial+=1
         turns=old.turns+sum(m.get('role')=='user' for m in suffix) if reuse else 1

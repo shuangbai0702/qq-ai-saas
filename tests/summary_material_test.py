@@ -116,6 +116,19 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(before,self.store.reflection.context_dependency([],SCOPE))
         self.assertEqual(unrelated,self.store.reflection.context_dependency([],'private:87654321'))
 
+    def test_foreign_summary_never_selects_its_scope_for_the_request_checkpoint(self):
+        foreign='group:55555'
+        identifier=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated) VALUES(?,?,?,?)',(foreign,'跨会话有来源记忆','[]',1)).lastrowid
+        self.db.commit()
+        with_scope=self.store.reflection.context_dependency([identifier],SCOPE)
+        without_scope=self.store.reflection.context_dependency([identifier])
+        self.db.execute('INSERT INTO memory_reflection_progress(scope,summary_watermark,insight_watermark) VALUES(?,35,35)',(foreign,));self.db.commit()
+        self.assertEqual(with_scope,self.store.reflection.context_dependency([identifier],SCOPE))
+        self.assertEqual(without_scope,self.store.reflection.context_dependency([identifier]))
+        self.db.execute('INSERT INTO memory_reflection_progress(scope,summary_watermark,insight_watermark) VALUES(?,35,35)',(SCOPE,));self.db.commit()
+        self.assertNotEqual(with_scope,self.store.reflection.context_dependency([identifier],SCOPE))
+        self.assertEqual(without_scope,self.store.reflection.context_dependency([identifier]))
+
     async def test_web_save_permit_is_trusted_scope_bound_and_single_use(self):
         proof={'permitId':'audit-123','revision':19,'contextScope':'private:12345678'}
         permit=self.store.reflection.reserve_context_reconstruction('private:12345678','first',[],proof)

@@ -266,4 +266,57 @@ class GroupRoundContinuity(unittest.TestCase):
             self.assertEqual(second.reason,'')
         finally:db.close()
 
+class LegacyCutoverTests(unittest.TestCase):
+    setUp=PersistentJournalTests.setUp
+    tearDown=PersistentJournalTests.tearDown
+    def legacy(self):
+        self.db.execute('CREATE TABLE memory_rounds(scope TEXT)')
+        self.db.execute('INSERT INTO memory_rounds VALUES(?)',(self.scope,));self.db.commit()
+    def test_cutover_consumed_only_with_first_persisted_commit(self):
+        from journal_cutover import enroll_legacy_scopes
+        self.legacy();release='a'*40
+        self.assertEqual(enroll_legacy_scopes(self.db,release),1)
+        journal=ReadonlyJournal(self.db,self.scope)
+        first=journal.prepare(self.base+[packet(self.state)],'new-version')
+        journal.abort_candidate(first)
+        self.assertEqual(self.db.execute('SELECT state FROM fishbot_readonly_cutover').fetchone()[0],'available')
+        second=journal.prepare(self.base+[packet(self.state)],'new-version')
+        self.assertTrue(journal.commit(second))
+        self.assertEqual(self.db.execute('SELECT state FROM fishbot_readonly_cutover').fetchone()[0],'consumed')
+        self.assertEqual(ReadonlyJournal(self.db,self.scope).last.wire,second.wire)
+        self.db.execute('DELETE FROM fishbot_readonly_journals');self.db.commit()
+        self.assertEqual(ReadonlyJournal(self.db,self.scope).recovery_error,'journal_snapshot_missing')
+        self.assertEqual(enroll_legacy_scopes(self.db,release),0)
+        with self.assertRaises(ValueError):enroll_legacy_scopes(self.db,'b'*40)
+    def test_cutover_cannot_be_inferred_or_added_to_existing_guarded_runtime(self):
+        from journal_cutover import enroll_legacy_scopes
+        self.legacy()
+        self.assertEqual(ReadonlyJournal(self.db,self.scope).recovery_error,'journal_snapshot_missing')
+        with self.assertRaises(ValueError):enroll_legacy_scopes(self.db,'a'*40)
+
+class NativeWindowTests(unittest.TestCase):
+    def test_excluded_internal_work_does_not_acquire_frontend_reconstruction_guard(self):
+        journal=ReadonlyJournal()
+        first=journal.prepare([{'role':'system','content':'old'},packet({})],'one',guarded=False)
+        self.assertTrue(journal.commit(first))
+        second=journal.prepare([{'role':'system','content':'changed internal'},packet({})],'two',guarded=False)
+        self.assertEqual(second.reason,'native_prefix_changed');self.assertTrue(journal.commit(second))
+    def test_35_rounds_with_30_round_sdk_window_preserve_every_wire_message(self):
+        journal=ReadonlyJournal();native=[];previous=[]
+        for i in range(35):
+            if i:native.append({'role':'assistant','content':'confirmed reply '+str(i-1)})
+            native.append({'role':'user','content':SOURCE+model_json({'scope':'private:12345','event_id':str(i),'sender_id':'12345'})+'\nquestion '+str(i)})
+            window=native[max(0,len(native)-59):]
+            candidate=journal.prepare([{'role':'system','content':'fixed'}]+window+[event_packet(str(i)),packet({'recent_messages':[]})],'same',strict=True,compact_policy=True)
+            self.assertEqual(candidate.wire[:len(previous)],previous)
+            self.assertTrue(journal.commit(candidate));previous=copy.deepcopy(candidate.wire)
+        self.assertEqual(sum(m.get('role')=='system' for m in previous),1)
+        self.assertEqual(sum('question ' in str(m.get('content')) for m in previous),35)
+    def test_unsourced_or_changed_overlap_cannot_authorize_reconstruction(self):
+        journal=ReadonlyJournal()
+        native=[{'role':'system','content':'fixed'},{'role':'user','content':'same words'}]
+        first=journal.prepare(native+[packet({})],'same');journal.commit(first)
+        with self.assertRaises(ContextReconstructionDenied):
+            journal.prepare([native[0],{'role':'user','content':'changed'},native[-1],packet({})],'same')
+
 if __name__=='__main__':unittest.main()
