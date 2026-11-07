@@ -55,6 +55,11 @@ class Agreements(unittest.TestCase):
         before=self.store.reflection.context_dependency([],self.scope)
         row=self.propose();self.accept(row)
         self.assertEqual(before,self.store.reflection.context_dependency([],self.scope))
+    def test_unknown_action_cannot_fall_through_to_fulfilled(self):
+        row=self.accept(self.propose())
+        _,error=agreements.apply_update(self.db,'unsupported',row['topic'],'12345678',['12345678'],self.scope,'source',expected_revision=2)
+        self.assertEqual(error,'invalid_action')
+        self.assertEqual(self.db.execute('SELECT status FROM memory_agreements').fetchone()[0],'accepted')
     def test_receipt_and_fulfillment_commit_atomically(self):
         row=self.accept(self.propose())
         handoff=self.store.pipeline.propose_handoff(self.work,self.identity,{'objective':'提醒','delaySeconds':0,'agreement':{'id':row['id'],'revision':2}})
