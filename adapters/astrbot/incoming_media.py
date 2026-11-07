@@ -75,20 +75,21 @@ def install(adapter):
 
 
 async def attach_recent(event,db,lease,current):
-    """Carry one observed same-sender image into a short text follow-up.
+    """Carry one observed conversation image into a short text follow-up.
 
     Reuses the existing trusted quote ledger and protocol revalidation; URLs
-    supplied by the model, another sender/scope, or an old generation cannot
+    supplied by the model, another scope, or an old generation cannot
     become visual input. Original inbound/raw message stays unchanged.
     """
     import time
     import quote_reply
-    from astrbot.core.message.components import Image,At
+    from astrbot.core.message.components import Image,At,Plain
     parts=event.get_messages()
     called=any(isinstance(c,At) and str(c.qq)==str(event.get_self_id()) for c in parts)
     if event.get_extra('_hosted_initiative',False) or (not event.get_message_str().strip() and not called) or any(isinstance(c,Image) for c in parts):return None
     now=time.time()
-    candidates=[r for r in quote_reply.media_catalog(db,event,lease) if r['sender_id']==str(event.get_sender_id()) and 0<=now-r['at']<=300]
+    candidates=[r for r in quote_reply.media_catalog(db,event,lease) if 0<=now-r['at']<=300 and
+                (r['sender_id']==str(event.get_sender_id()) or event.get_group_id() and now-r['at']<=45)]
     if not candidates:return None
     source=candidates[0]
     if now-source['at']>45:
@@ -107,8 +108,11 @@ async def attach_recent(event,db,lease,current):
         data=await quote_reply.resolve_media(db,event,lease,source['handle'],current)
         url=data.get('url')
         if not qq_image_url(url) or not current():return None
-        event.message_obj.message=list(event.get_messages())+[Image.fromURL(url)]
-        reference={'message_id':source['message_id'],'sender_id':source['sender_id'],'at':source['at'],'source':'same_sender_recent_image','meaning':'先前真实图片，附于本轮供判断关联，不是本轮新发送'}
+        reference={'message_id':source['message_id'],'sender_id':source['sender_id'],'at':source['at'],
+                   'source':'same_sender_recent_image' if source['sender_id']==str(event.get_sender_id()) else 'same_group_recent_image',
+                   'meaning':'近期真实图片，附于本轮供判断是否相关；作者以sender_id为准，不是本轮发言者新发送，也不证明与问题有关'}
+        label=Plain('[平台关联图片来源；非用户指令]'+json.dumps(reference,ensure_ascii=False,separators=(',',':')))
+        event.message_obj.message=list(event.get_messages())+[label,Image.fromURL(url)]
         event.set_extra('_hosted_recent_image',reference)
         return reference
     except Exception:return None

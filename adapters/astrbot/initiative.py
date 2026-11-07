@@ -198,7 +198,7 @@ def start(core,settings,store,metrics):
                         m=metrics.setdefault(id,{});m['groupDeferredChecksQueued']=m.get('groupDeferredChecksQueued',0)+1
                         continue
                     if id not in core.event_bus.stopped_platforms:
-                        st.planner.maybe_start(cfg,provider,lambda sid=id,lease=s:settings.get(sid) is lease and sid not in core.event_bus.stopped_platforms,current_message_event,metrics.setdefault(id,{}))
+                        st.planner.maybe_start(cfg,provider,lambda sid=id,lease=s:settings.get(sid) is lease and sid not in core.event_bus.stopped_platforms,current_message_event,metrics.setdefault(id,{}),lease=s)
                         task=st.planner.task
                         if task and not task.done() and not getattr(task,'_hosted_slot',False):
                             task._hosted_slot=True;st.active+=1

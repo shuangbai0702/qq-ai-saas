@@ -156,7 +156,9 @@ class ClaimTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.db.execute("SELECT count(*) FROM memory_rounds WHERE event='7'").fetchone()[0],1)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],1)
         self.assertNotIn('7',material.coverage(self.db,SCOPE),'unretained protected evidence cannot authorize native history omission')
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints').fetchone()[0],0,'incomplete protection cannot authorize rebuilding')
+        self.assertEqual(self.db.execute("SELECT count(*) FROM memory_reconstruction_checkpoints WHERE state IN ('available','reserved','consumed')").fetchone()[0],0,'incomplete protection cannot authorize rebuilding')
+        self.assertEqual(self.db.execute("SELECT count(*) FROM memory_reconstruction_checkpoints WHERE state='pending_coverage'").fetchone()[0],1)
+        self.assertIsNone(self.store.reflection.reserve_context_reconstruction(SCOPE,'held-claim-request',[]))
 
     async def test_big_merge_reports_conflict_instead_of_dropping_protected(self):
         identifiers=[]

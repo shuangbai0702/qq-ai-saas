@@ -78,3 +78,54 @@ def supported_block(messages):
             if role=='user' and part.get('type')=='image_url' and isinstance(part.get('image_url'),dict) and isinstance(part['image_url'].get('url'),str):continue
             return False
     return True
+
+
+TOOL_ARGUMENT_CHARS=4000
+TOOL_RESULT_CHARS=8000
+
+
+def tool_round_block(messages):
+    """Bounded evidence for one complete tool round-trip this system produced.
+
+    Shape: assistant(tool_calls) → tool results, every declared call answered
+    exactly once with string arguments and string results. Returns the ordered
+    evidence list (possibly empty for a block without tool traffic), or None
+    when the block contains tool traffic whose shape cannot be proven
+    complete. Unknown tool shapes stay excluded; they are never upgraded.
+    """
+    tools=[];open_calls={}
+    has_traffic=False
+    for message in messages:
+        if not isinstance(message,dict):return None if has_traffic else []
+        role=message.get('role')
+        if role=='assistant' and message.get('tool_calls'):
+            has_traffic=True
+            for call in message['tool_calls'] or ():
+                if not isinstance(call,dict):return None
+                function=call.get('function')
+                identifier=call.get('id');name=function.get('name') if isinstance(function,dict) else None
+                arguments=function.get('arguments') if isinstance(function,dict) else None
+                if not isinstance(identifier,str) or not identifier or not isinstance(name,str) or not name:return None
+                if isinstance(arguments,(dict,list)):arguments=model_json(arguments)
+                if not isinstance(arguments,str):return None
+                if identifier in open_calls or any(t['id']==identifier for t in tools):return None
+                open_calls[identifier]=True
+                tools.append({'id':identifier,'name':name,'arguments':arguments,'result':None})
+        elif role=='tool':
+            has_traffic=True
+            identifier=message.get('tool_call_id')
+            if not isinstance(identifier,str) or identifier not in open_calls:return None
+            entry=next(t for t in tools if t['id']==identifier)
+            if entry['result'] is not None:return None
+            content=message.get('content')
+            if not isinstance(content,str):return None
+            entry['result']=content
+    if any(t['result'] is None for t in tools):return None
+    return tools
+
+
+def tools_digest(tools):
+    """Ordered content digest binding a coverage proof to the exact tool
+    round-trip; empty string for a block without tools."""
+    if not tools:return ''
+    return hashlib.sha256(model_json(tools).encode()).hexdigest()

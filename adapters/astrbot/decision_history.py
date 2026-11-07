@@ -47,10 +47,10 @@ def history_usage(messages):
                     if isinstance(url,str) and url.startswith('data:image/') and ';base64,' in url:media+=len(url)
     return {'wireChars':wire,'textChars':wire-media,'plainTextChars':text,'mediaChars':media,'imageCount':images}
 
-def history_boundary(chars,base_chars,wire_chars=0):
+def history_boundary(chars,base_chars,wire_chars=0,*,growth_limit=True):
     if wire_chars>MAX_RETAINED_WIRE_CHARS:return 'wire_size_limit'
     if chars>MAX_RETAINED_TEXT_CHARS:return 'text_size_limit'
-    if chars-base_chars>MAX_ADDED_CHARS:return 'added_text_limit'
+    if growth_limit and chars-base_chars>MAX_ADDED_CHARS:return 'added_text_limit'
     return ''
 
 def changes(before,after,path=()):

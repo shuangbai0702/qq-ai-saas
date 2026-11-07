@@ -6,7 +6,7 @@ Summaries add a bounded structured claims layer (schema_version=2) derived from
 trusted events, materials and recorded corrections; v1 rows are read as-is.
 """
 import asyncio,hashlib,json,re
-from context_protocol import SOURCE,source,digest,reply_digest,image_notice,model_json,supported_block
+from context_protocol import SOURCE,source,digest,reply_digest,image_notice,model_json,supported_block,tool_round_block,tools_digest,TOOL_ARGUMENT_CHARS,TOOL_RESULT_CHARS
 MAX_TEXT=64000
 MAX_IMAGES_BYTES=4*1024*1024
 MAX_STORE_BYTES=24*1024*1024
@@ -22,15 +22,21 @@ def project_history(messages,covered,scope,current_event):
             origin=source(message);proof=covered.get(str(origin['event_id'])) if origin else None
             dropping=bool(origin and proof and i!=latest and str(origin['event_id'])!=str(current_event) and origin['scope']==scope and str(origin['sender_id'])==proof['subject'] and digest(message)==proof['digest'])
             # A user-material proof does not cover arbitrary intermediate tool
-            # output. Keep the entire block unless that evidence is covered too.
+            # output. Keep the entire block unless that evidence is covered too;
+            # a tool round retires only against its full bound v2 evidence.
             end=next((j for j in range(i+1,len(messages)) if isinstance(messages[j],dict) and messages[j].get('role')=='user'),len(messages))
-            if not supported_block(messages[i:end]) or not proof or proof.get('reply_digest')!=reply_digest(messages[i:end]):dropping=False
+            block=messages[i:end]
+            if not proof or proof.get('reply_digest')!=reply_digest(block):dropping=False
+            elif not supported_block(block):
+                tools=tool_round_block(block)
+                if not tools or proof.get('tools_digest')!=tools_digest(tools):dropping=False
         if not dropping or isinstance(message,dict) and message.get('role') in ('system','developer'):result.append(message)
     return result
 
 
 def snapshots(messages,scope,signatures=None):
-    """Capture model-observed material, including quoted text and bounded images."""
+    """Capture model-observed material, including quoted text, bounded images
+    and this system's own complete tool round-trips (version 2)."""
     result=[]
     for index,message in enumerate(messages if isinstance(messages,list) else []):
         origin=source(message)
@@ -51,10 +57,19 @@ def snapshots(messages,scope,signatures=None):
             else:complete=False
         text='\n'.join(text)
         if len(text)>MAX_TEXT:complete=False;text=text[:MAX_TEXT]
+        end=next((j for j in range(index+1,len(messages)) if isinstance(messages[j],dict) and messages[j].get('role')=='user'),len(messages))
+        block=messages[index+1:end]
+        # One bounded material version for the tool round-trips this system
+        # itself produces (assistant tool_calls paired with tool results).
+        # Unknown shapes stay incomplete; oversized evidence stays incomplete.
+        tools=tool_round_block(block)
+        if tools and (sum(len(t['arguments'])+len(t['result']) for t in tools)>MAX_TEXT or any(len(t['arguments'])>TOOL_ARGUMENT_CHARS or len(t['result'])>TOOL_RESULT_CHARS for t in tools)):
+            complete=False
+        elif tools is None and any(isinstance(m,dict) and (m.get('tool_calls') or m.get('role')=='tool') for m in block):
+            complete=False
         replies=[];observed_reply=False
-        for following in messages[index+1:]:
-            if not isinstance(following,dict):complete=False;continue
-            if following.get('role')=='user':break
+        for following in block:
+            if tools is not None and (following.get('role')=='tool' or following.get('tool_calls')):continue
             if not supported_block([following]):complete=False
             if following.get('role')!='assistant':continue
             observed_reply=True
@@ -64,7 +79,9 @@ def snapshots(messages,scope,signatures=None):
             elif value is not None:complete=False
         reply='\n'.join(replies)
         if len(reply)>MAX_TEXT:complete=False;reply=reply[:MAX_TEXT]
-        result.append({'version':1,'event':str(origin['event_id']),'subject':str(origin['sender_id']),'scope':scope,'text':text,'reply':reply,'native_reply':reply if observed_reply else None,'images':images,'complete':complete,'digest':(signatures or {}).get(str(origin['event_id']),digest(message))})
+        item={'version':2 if tools else 1,'event':str(origin['event_id']),'subject':str(origin['sender_id']),'scope':scope,'text':text,'reply':reply,'native_reply':reply if observed_reply else None,'images':images,'complete':complete,'digest':(signatures or {}).get(str(origin['event_id']),digest(message))}
+        if tools:item['tools']=tools
+        result.append(item)
     return result
 
 
@@ -90,14 +107,30 @@ def initialize(db):
 
 
 def valid_material(item,scope):
-    """Version 0 is the existing deployed shape; unknown versions cannot retire history."""
-    if not isinstance(item,dict) or type(item.get('version',0)) is not int or item.get('version',0) not in (0,1) or item.get('scope')!=scope:return False
-    if set(item)-{'version','event','subject','scope','text','reply','native_reply','images','complete','digest'}:return False
+    """Version 0/1 is the existing deployed shape; version 2 adds this
+    system's own complete tool round-trip. Unknown versions cannot retire
+    history."""
+    version=item.get('version',0) if isinstance(item,dict) else None
+    if not isinstance(item,dict) or type(version) is not int or version not in (0,1,2) or item.get('scope')!=scope:return False
+    allowed={'version','event','subject','scope','text','reply','native_reply','images','complete','digest'}
+    if version>=2:allowed=allowed|{'tools'}
+    if set(item)-allowed:return False
     if type(item.get('complete')) is not bool or not isinstance(item.get('digest'),str) or not re.fullmatch(r'[0-9a-f]{64}',item['digest']):return False
     if not isinstance(item.get('text'),str) or len(item['text'])>MAX_TEXT or not isinstance(item.get('reply',''),str) or len(item.get('reply',''))>MAX_TEXT:return False
     if item.get('native_reply') is not None and (not isinstance(item['native_reply'],str) or len(item['native_reply'])>MAX_TEXT):return False
     origin=source({'role':'user','content':item['text']})
     if not origin or item.get('event')!=str(origin['event_id']) or item.get('subject')!=str(origin['sender_id']) or origin['scope']!=scope:return False
+    if version>=2:
+        tools=item.get('tools')
+        # Version 2 exists only to prove a complete tool round-trip; an empty
+        # or malformed tools field stays version 1.
+        if not isinstance(tools,list) or not tools:return False
+        for tool in tools:
+            if not isinstance(tool,dict) or set(tool)!={'id','name','arguments','result'}:return False
+            if not all(isinstance(tool[k],str) for k in ('id','name','arguments','result')):return False
+            if not tool['id'] or not tool['name'] or len(tool['id'])>256 or len(tool['name'])>128:return False
+            if len(tool['arguments'])>TOOL_ARGUMENT_CHARS or len(tool['result'])>TOOL_RESULT_CHARS:return False
+        if sum(len(t['arguments'])+len(t['result']) for t in tools)>MAX_TEXT:return False
     images=item.get('images')
     return isinstance(images,list) and all(isinstance(value,str) and value.startswith('data:image/') for value in images) and sum(len(value) for value in images)<=MAX_IMAGES_BYTES
 
@@ -120,16 +153,27 @@ def remember(db,scope,materials):
             # completeness the store could not retain earlier (dropped media);
             # it never downgrades an already complete prior proof.
             fill_complete=(not prior.get('complete')) and bool(item.get('complete'))
-            if not fill_reply and not fill_native and not fill_complete:continue
-            item={**prior,**({'reply':item['reply']} if fill_reply else {}),
-                  **({'native_reply':item['native_reply']} if fill_native else {}),
-                  **({'images':item['images']} if fill_complete and item.get('images') else {})}
-            if fill_complete:item['complete']=True
-            elif fill_native:item['complete']=prior['complete'] and item['complete']
+            if item.get('version',1)>=2 and prior.get('version',0)<2 and fill_complete:
+                # A version-2 capture carries the complete tool round-trip the
+                # prior partial capture could not express; adopt it wholesale
+                # for the same digest-verified event. Completeness never
+                # downgrades and the wire is never touched by this repair.
+                item={**item,'reply':prior.get('reply','') or item.get('reply','')}
+            elif not fill_reply and not fill_native and not fill_complete:continue
+            else:
+                item={**prior,**({'reply':item['reply']} if fill_reply else {}),
+                      **({'native_reply':item['native_reply']} if fill_native else {}),
+                      **({'images':item['images']} if fill_complete and item.get('images') else {})}
+                if fill_complete:item['complete']=True
+                elif fill_native:item['complete']=prior['complete'] and item['complete']
         item=dict(item)
         item['text']=re.sub(r'(?i)\bsk-[A-Za-z0-9_-]{12,}|Bearer\s+\S+','[凭据已移除]',item.get('text',''))
         item['reply']=re.sub(r'(?i)\bsk-[A-Za-z0-9_-]{12,}|Bearer\s+\S+','[凭据已移除]',item.get('reply',''))
         if isinstance(item.get('native_reply'),str):item['native_reply']=re.sub(r'(?i)\bsk-[A-Za-z0-9_-]{12,}|Bearer\s+\S+','[凭据已移除]',item['native_reply'])
+        if isinstance(item.get('tools'),list):
+            item['tools']=[{**tool,'arguments':re.sub(r'(?i)\bsk-[A-Za-z0-9_-]{12,}|Bearer\s+\S+','[凭据已移除]',tool['arguments']),
+                            'result':re.sub(r'(?i)\bsk-[A-Za-z0-9_-]{12,}|Bearer\s+\S+','[凭据已移除]',tool['result'])}
+                           for tool in item['tools'] if isinstance(tool,dict)]
         available=used-(len(previous[0].encode()) if previous else 0)
         encoded=json.dumps(item,ensure_ascii=False,separators=(',',':'))
         if available+len(encoded.encode())>MAX_STORE_BYTES:
@@ -154,7 +198,13 @@ def coverage(db,scope,events=None):
         # The existing digest column carries a versioned proof. No SQLite
         # migration and no unverified upgrade of legacy user-only coverage.
         match=re.fullmatch(r'v1:([0-9a-f]{64}):([0-9a-f]{64})',signature) if isinstance(signature,str) else None
-        result[event]={'subject':subject,'digest':match[1] if match else signature,'reply_digest':match[2] if match else None}
+        match2=re.fullmatch(r'v2:([0-9a-f]{64}):([0-9a-f]{64}):([0-9a-f]{64})',signature) if isinstance(signature,str) else None
+        if match2:
+            result[event]={'subject':subject,'digest':match2[1],'reply_digest':match2[2],'tools_digest':match2[3]}
+        elif match:
+            result[event]={'subject':subject,'digest':match[1],'reply_digest':match[2]}
+        else:
+            result[event]={'subject':subject,'digest':signature}
     return result
 
 
@@ -162,6 +212,10 @@ def coverage_digest(material):
     if not valid_material(material,material.get('scope')) or not material['complete']:raise ValueError('incomplete_summary_proof')
     reply=material.get('native_reply')
     if reply is None:reply=material.get('reply','')
+    if material.get('version',1)>=2 and material.get('tools'):
+        # The tool round-trip is bound into the proof: a coverage row can only
+        # retire the exact block whose tool calls and results were summarized.
+        return 'v2:'+material['digest']+':'+hashlib.sha256(reply.encode()).hexdigest()+':'+tools_digest(material['tools'])
     return 'v1:'+material['digest']+':'+hashlib.sha256(reply.encode()).hexdigest()
 
 
@@ -386,16 +440,19 @@ def claim_view(claim):
 
 
 def settle_commitments(db,scope,claims,previous):
-    """Retire only an offered agreement with a later, same-speaker source.
-    The existing summary model identifies the relation; code checks ownership
-    and evidence identity. No new classifier, table or permanent state."""
+    """Retire only an offered agreement or open topic with a later,
+    same-speaker source. The existing summary model identifies the relation;
+    code checks ownership and evidence identity. No new classifier, table or
+    permanent state."""
     offered={claim['id']:claim for claim in previous}
     changes={}
     for claim in claims:
         if claim.get('kind')!='agreement' or claim.get('stage') not in ('accepted','executed','canceled'):continue
         for identifier in claim.get('supersedes',[]):
             old=offered.get(identifier)
-            if not old or old.get('kind')!='agreement' or not protected_claim(old):continue
+            # Open interpretations (unresolved topics) retire exactly like
+            # agreements: same scope, same speaker role, later real evidence.
+            if not old or old.get('kind') not in ('agreement','interpretation') or not protected_claim(old):continue
             if old.get('visibility')!=scope or claim.get('visibility')!=scope or old.get('speaker')!=claim.get('speaker'):continue
             if not isinstance(old.get('occurredAt'),(int,float)) or not isinstance(claim.get('occurredAt'),(int,float)) or claim['occurredAt']<=old['occurredAt']:continue
             changes[identifier]=claim['id']

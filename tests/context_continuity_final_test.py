@@ -88,6 +88,24 @@ def readonly_state(wire):
     return state
 
 class PersistenceGuardTests(unittest.TestCase):
+    def test_foreground_uses_absolute_capacity_without_rebuilding_at_cache_growth_limit(self):
+        from decision_history import MAX_ADDED_CHARS,MAX_RETAINED_TEXT_CHARS,MAX_RETAINED_WIRE_CHARS
+        from readonly_journal import ContextCapacityExceeded
+        h=ReadonlyJournal();base=[{'role':'system','content':'unchanged'}, {'role':'user','content':'first'}]
+        first=h.prepare(base+[packet({'state':{'facts':[]}})],1,guarded=True)
+        self.assertTrue(h.commit(first))
+        incoming=base+[{'role':'assistant','content':'real reply'},{'role':'user','content':'x'*(MAX_ADDED_CHARS+1000)},packet({'state':{'facts':[]}})]
+        second=h.prepare(incoming,1,guarded=True)
+        self.assertEqual(second.wire[:len(first.wire)],first.wire)
+        self.assertIsNone(second.reconstruction_permit);self.assertTrue(h.commit(second))
+        before=copy.deepcopy(h.last.wire)
+        with self.assertRaises(ContextCapacityExceeded):
+            h.prepare(incoming[:-1]+[{'role':'assistant','content':'ok'},{'role':'user','content':'y'*MAX_RETAINED_TEXT_CHARS},incoming[-1]],1,guarded=True)
+        self.assertEqual(h.last.wire,before)
+        with self.assertRaises(ContextCapacityExceeded):
+            ReadonlyJournal().prepare([{'role':'user','content':[{'type':'image_url','image_url':{'url':'data:image/png;base64,'+'A'*MAX_RETAINED_WIRE_CHARS}}]},packet({'state':{'facts':[]}})],1,guarded=True)
+
+
     def test_capacity_failure_keeps_last_valid_snapshot(self):
         tmp=tempfile.TemporaryDirectory();db=sqlite3.connect(Path(tmp.name)/'behavior.sqlite')
         db.execute('CREATE TABLE memory_rounds(scope TEXT,event TEXT)')
@@ -175,6 +193,10 @@ class PendingCoverageTests(unittest.IsolatedAsyncioTestCase):
         for _ in range(8):await asyncio.sleep(0)
 
     async def test_completed_35_rounds_with_hold_wait_as_pending_then_promote(self):
+        # An older genuinely unavailable source must register a waiting
+        # checkpoint, never erase the proof of 35 new completed rounds.
+        self.db.execute('INSERT INTO memory_hold_rounds VALUES(?,?,NULL,?,?)',(SCOPE,'older-lost-source','lost',time.time()))
+        self.db.commit()
         async def summarize(**kw):return NS(completion_text=json.dumps({'summary':'35轮真实摘要，其中一个话题未完成','motives':[{'event':'held-0','topic':'未完成的约定话题','quote':'明天继续聊这个约定','status':'open'}]}))
         for index in range(35):self.store.reflection.record(SCOPE,'12345678',f'held-{index}',f'真实问题{index}',f'已确认回复{index}')
         self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=summarize),lambda:True,{},self.var))
@@ -186,7 +208,7 @@ class PendingCoverageTests(unittest.IsolatedAsyncioTestCase):
             row=self.db.execute('SELECT state,pending_events,round_count FROM memory_reconstruction_checkpoints WHERE scope=?',(SCOPE,)).fetchone()
         self.assertIsNotNone(row,'35 completed rounds must always mint their checkpoint row')
         self.assertEqual(row[2],35)
-        self.assertIn(row[0],('available','pending_coverage'))
+        self.assertEqual(row[0],'pending_coverage')
         if row[0]=='pending_coverage':
             pending=json.loads(row[1])
             self.assertTrue(pending)
@@ -194,11 +216,17 @@ class PendingCoverageTests(unittest.IsolatedAsyncioTestCase):
             stamp_before=self.store.reflection.reconstruction_stamp(SCOPE)
             self.assertIsNone(self.store.reflection.reserve_context_reconstruction(SCOPE,'waiter',[]))
             # A later batch carries complete coverage for the held events.
-            identifier=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated,schema_version) VALUES(?,?,?,?,2)',(SCOPE,'补齐覆盖的真实后续摘要','[]',time.time(),2)).lastrowid
+            identifier=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated,schema_version) VALUES(?,?,?,?,2)',(SCOPE,'补齐覆盖的真实后续摘要','[]',time.time())).lastrowid
             for event in pending:
                 self.db.execute('INSERT INTO memory_summary_coverage(scope,event,subject,digest,summary_id) VALUES(?,?,?,?,?)',(SCOPE,str(event),'12345678','v1:'+'0'*64+':'+'0'*64,identifier))
             self.db.execute("DELETE FROM memory_hold_rounds WHERE scope=?",(SCOPE,))
             self.db.commit()
+            # Even when the stored waiting list is bounded, an additional
+            # unresolved hold in this checkpoint's range still blocks minting.
+            self.db.execute('INSERT INTO memory_hold_rounds VALUES(?,?,1,?,?)',(SCOPE,'unlisted-held-event','lost',time.time()));self.db.commit()
+            self.store.reflection._promote_pending_checkpoints(SCOPE);self.db.commit()
+            self.assertEqual(self.db.execute('SELECT state FROM memory_reconstruction_checkpoints WHERE scope=?',(SCOPE,)).fetchone()[0],'pending_coverage')
+            self.db.execute('DELETE FROM memory_hold_rounds WHERE scope=? AND event=?',(SCOPE,'unlisted-held-event'));self.db.commit()
             self.store.reflection._promote_pending_checkpoints(SCOPE);self.db.commit()
             state=self.db.execute('SELECT state FROM memory_reconstruction_checkpoints WHERE scope=?',(SCOPE,)).fetchone()[0]
             self.assertEqual(state,'available')

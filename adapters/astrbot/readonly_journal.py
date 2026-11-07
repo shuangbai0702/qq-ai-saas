@@ -7,7 +7,7 @@ summary coverage remain authoritative.
 import copy,hashlib,json,time,uuid
 from dataclasses import dataclass
 from context_protocol import READONLY_CURRENT,model_json,source
-from decision_history import changes,apply_changes,summaries,history_usage,history_boundary,MAX_RETAINED_WIRE_CHARS,MAX_RETAINED_TEXT_CHARS,MAX_ADDED_CHARS
+from decision_history import changes,apply_changes,summaries,history_usage,history_boundary,MAX_RETAINED_WIRE_CHARS,MAX_RETAINED_TEXT_CHARS
 
 MAX_PERSISTED_JOURNAL_BYTES=16*1024*1024
 MAX_PERSISTED_JOURNALS=64
@@ -160,6 +160,9 @@ def confirmed_native_window_extension(old, base):
         if not same_native_prefix(overlap,current[:size]):continue
         origins=[source(m) for m in overlap if m.get('role')=='user']
         if not any(isinstance(o,dict) and o.get('scope') and o.get('event_id') is not None for o in origins):continue
+        # A shorter match must not replay a known event later in the tail.
+        known={(o['scope'],str(o['event_id'])) for m in prior if (o:=source(m))}
+        if any((o['scope'],str(o['event_id'])) in known for m in current[size:] if (o:=source(m))):continue
         # The next item must start a new real event or preserve ToolLoop
         # adjacency through the exact overlapping assistant/tool messages.
         return current[size:]
@@ -195,6 +198,9 @@ class ReadonlyJournal:
     def __init__(self,db=None,scope_key=None):
         self.serial=0;self.last=None;self.db=db;self.scope_key=self._scope_key(scope_key)
         self.recovery_error=None;self.retired_reason='';self._last_refusal_reason=''
+        # Serial of the candidate currently persisted as the pre-submission
+        # snapshot (A package). None when nothing is staged.
+        self._staged=None
         if db is not None:self._load()
 
     @staticmethod
@@ -263,7 +269,7 @@ class ReadonlyJournal:
         except (TypeError,ValueError):return False
         return False
 
-    def _persist(self,prepared,state='ready',settle_permit=False):
+    def _persist(self,prepared,state='ready',settle_permit=False,tombstone=True,settle_cutover=True):
         if self.db is None or self.scope_key is None:return True
         value={'scope':self.scope_key,'base':prepared.base,'wire':prepared.wire,'state':prepared.state,'turns':prepared.turns,'at':prepared.at,
                'group_turn':prepared.group_turn,'base_chars':prepared.base_chars,'detail':prepared.detail,'usage':prepared.usage,
@@ -282,18 +288,26 @@ class ReadonlyJournal:
         if not allowed:
             self.db.execute('BEGIN IMMEDIATE')
             try:
-                if existing is None and count>=MAX_JOURNAL_TOMBSTONES:
-                    self.db.execute('UPDATE fishbot_readonly_journal_meta SET overflow=1 WHERE id=1')
-                elif existing is not None and existing[0]:
-                    # The existing row is the only recoverable committed prefix
-                    # for this scope. A capacity refusal must never overwrite
-                    # that last valid snapshot with an unavailable tombstone;
-                    # the in-memory candidate stays uncommitted instead.
-                    pass
+                if not tombstone:
+                    # Staging must never manufacture an unavailable tombstone;
+                    # the previous committed row (if any) stays exactly as is.
+                    self.db.rollback()
                 else:
-                    self.db.execute("INSERT INTO fishbot_readonly_journals(scope,version,state,payload,sha,updated) VALUES(?,1,'unavailable',NULL,NULL,?) ON CONFLICT(scope) DO UPDATE SET version=1,state='unavailable',payload=NULL,sha=NULL,updated=excluded.updated",(self.scope_key,time.time()))
-                self.db.commit()
-            except BaseException:self.db.rollback();raise
+                    if existing is None and count>=MAX_JOURNAL_TOMBSTONES:
+                        self.db.execute('UPDATE fishbot_readonly_journal_meta SET overflow=1 WHERE id=1')
+                    elif existing is not None and existing[0]:
+                        # The existing row is the only recoverable committed prefix
+                        # for this scope. A capacity refusal must never overwrite
+                        # that last valid snapshot with an unavailable tombstone;
+                        # the in-memory candidate stays uncommitted instead.
+                        pass
+                    else:
+                        self.db.execute("INSERT INTO fishbot_readonly_journals(scope,version,state,payload,sha,updated) VALUES(?,1,'unavailable',NULL,NULL,?) ON CONFLICT(scope) DO UPDATE SET version=1,state='unavailable',payload=NULL,sha=NULL,updated=excluded.updated",(self.scope_key,time.time()))
+                    self.db.commit()
+            except BaseException:
+                try:self.db.rollback()
+                except Exception:pass
+                raise
             self.recovery_error='journal_storage_capacity';return False
         sha=hashlib.sha256(encoded).hexdigest()
         self.db.execute('BEGIN IMMEDIATE')
@@ -301,12 +315,30 @@ class ReadonlyJournal:
             self.db.execute("INSERT INTO fishbot_readonly_journals(scope,version,state,payload,sha,updated) VALUES(?,1,?,?,?,?) ON CONFLICT(scope) DO UPDATE SET version=1,state=excluded.state,payload=excluded.payload,sha=excluded.sha,updated=excluded.updated",
                             (self.scope_key,state,payload,sha,time.time()))
             tables={r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            if 'fishbot_readonly_cutover' in tables:
+            if settle_cutover and 'fishbot_readonly_cutover' in tables:
                 self.db.execute("UPDATE fishbot_readonly_cutover SET state='consumed' WHERE scope=? AND state='available'",(self.scope_key,))
             if settle_permit and not self._settle(prepared,True,in_transaction=True):
                 self.db.rollback();return False
             self.db.commit();return True
         except BaseException:self.db.rollback();raise
+
+    def stage_candidate(self,prepared):
+        """Persist the exact outgoing candidate before any HTTP submission.
+
+        Once a request may leave the process, the next request must never fall
+        back to a prefix without this candidate's tail (A package). Staging is
+        best effort: a storage refusal keeps the previous committed row
+        untouched, changes no guard state and never fails the request; the
+        settle-time retain path still covers non-crash outcomes then. Staging
+        never consumes the reconstruction permit or a cutover enrollment.
+        """
+        if self.db is None or self.scope_key is None:return True
+        if prepared.serial!=self.serial or self._staged==prepared.serial:return self._staged==prepared.serial
+        saved=(self.recovery_error,self.retired_reason)
+        ok=self._persist(prepared,'ready',settle_permit=False,tombstone=False,settle_cutover=False)
+        self.recovery_error,self.retired_reason=saved
+        if ok:self._staged=prepared.serial
+        return ok
 
     def _reservation(self,authority,scope,request_id,summary_ids,web_proof,logical_scope):
         if authority is None or scope is None:return None
@@ -322,7 +354,7 @@ class ReadonlyJournal:
                 'recoveryError':self.recovery_error or '','refusal':self._last_refusal_reason,
                 'view':getattr(self,'_last_view_evidence',{}),'baseChars':old.base_chars,
                 'textChars':usage['textChars'],'wireChars':usage['wireChars'],'turns':old.turns,
-                'addedTextHeadroom':max(0,MAX_ADDED_CHARS-(usage['textChars']-old.base_chars)),
+                'addedTextHeadroom':max(0,MAX_RETAINED_TEXT_CHARS-usage['textChars']),
                 'textHeadroom':max(0,MAX_RETAINED_TEXT_CHARS-usage['textChars']),
                 'wireHeadroom':max(0,MAX_RETAINED_WIRE_CHARS-usage['wireChars'])}
 
@@ -410,7 +442,15 @@ class ReadonlyJournal:
             # Use the honest full native view when coverage has projected out
             # earlier blocks. SDK turn limits and pending System changes may
             # happen together; neither authorizes rewriting committed wire.
-            suffix=confirmed_native_window_extension(old,raw_base)
+            suffix=confirmed_native_window_extension(old,base)
+            if suffix is not None and raw_base is not base:
+                # Coverage may remove older SDK blocks before the overlap.
+                # It must never hide any uncommitted message after that anchor:
+                # the full native suffix, including its last committed item,
+                # must agree exactly before we append on unchanged old.wire.
+                anchored=[old.base[-1]]+list(suffix)
+                if not same_native_prefix(raw_base[-len(anchored):],anchored):suffix=None
+            if suffix is None:suffix=confirmed_native_window_extension(old,raw_base)
             if suffix is not None:retirement_deferred='native_window_overlap'
         if valid and suffix is None and strict:
             # The honest full native view owns the fallback when provided: a
@@ -487,7 +527,9 @@ class ReadonlyJournal:
             if operations:wire.append({'role':'user','content':READONLY_CURRENT+'\n'+model_json({'readonlyChanges':operations})})
         else:wire=copy.deepcopy(messages)
         usage=history_usage(wire);base_chars=old.base_chars if reuse else usage['textChars']
-        detail=history_boundary(usage['textChars'],base_chars,usage['wireChars'])
+        # A foreground journal cannot rebuild at a cache-growth threshold.
+        # Existing absolute text/wire limits still require a real permit.
+        detail=history_boundary(usage['textChars'],base_chars,usage['wireChars'],growth_limit=False)
         if detail:
             if not reconstruction_permit and guarded:
                 from system_contract import request_identity
@@ -497,7 +539,7 @@ class ReadonlyJournal:
             if reconstruction_permit is None and guarded:
                 raise ContextCapacityExceeded('The append-only request journal reached its configured capacity before an authorized 35-round reconstruction checkpoint.')
             wire=copy.deepcopy(messages);reason='history_size_boundary';reuse=False
-            usage=history_usage(wire);base_chars=usage['textChars'];detail=history_boundary(usage['textChars'],base_chars,usage['wireChars'])
+            usage=history_usage(wire);base_chars=usage['textChars'];detail=history_boundary(usage['textChars'],base_chars,usage['wireChars'],growth_limit=False)
             if detail:
                 if reconstruction_permit:reconstruction_authority.settle_context_reconstruction(reconstruction_permit,False)
                 raise ContextCapacityExceeded('The current complete request exceeds the configured bounded context capacity.')
@@ -513,15 +555,36 @@ class ReadonlyJournal:
         if prepared.serial!=self.serial:
             self._settle(prepared,False);return False
         usage=history_usage(prepared.wire)
-        if history_boundary(usage['textChars'],prepared.base_chars,usage['wireChars']):
+        if history_boundary(usage['textChars'],prepared.base_chars,usage['wireChars'],growth_limit=False):
             if prepared.reconstruction_permit:self._settle(prepared,False)
             return False
         atomic=bool(prepared.reconstruction_permit and self.db is not None and getattr(prepared.reconstruction_authority,'db',None) is self.db)
         if prepared.reconstruction_permit and not atomic and not self._settle(prepared,True):return False
         if not self._persist(prepared,'ready',settle_permit=atomic):
             if atomic:self._settle(prepared,False)
-            self.last=prepared;self.retired_reason='persistence_unavailable';return False
-        self.last=prepared;self.retired_reason='';self.recovery_error=None;return True
+            self.last=prepared;self.retired_reason='persistence_unavailable';self._staged=None;return False
+        self.last=prepared;self.retired_reason='';self.recovery_error=None;self._staged=None;return True
+
+    def retain_submitted(self,prepared,stage):
+        """Keep the candidate whose submission reached (or may have reached)
+        the provider as the new committed baseline.
+
+        A typed failure after ``request_not_sent`` must never shrink the
+        committed prefix back below a wire that was possibly received (A
+        package). Retaining implies no business round, no delivery receipt and
+        no license credit; the reconstruction permit, if any, is consumed
+        rather than returned to available, because the licensed request may
+        have been received and reusing it on another baseline is forbidden.
+        """
+        if prepared.serial!=self.serial:return False
+        atomic=bool(prepared.reconstruction_permit and self.db is not None and getattr(prepared.reconstruction_authority,'db',None) is self.db)
+        if prepared.reconstruction_permit and not atomic and not self._settle(prepared,True):return False
+        if not self._persist(prepared,'ready',settle_permit=atomic):
+            if atomic:self._settle(prepared,True)
+            # Persistence failed: keep the candidate in memory so the next
+            # request still extends the possibly-received wire, and say so.
+            self.last=prepared;self.retired_reason='persistence_unavailable';self._staged=None;return False
+        self.last=prepared;self.retired_reason='';self.recovery_error=None;self._staged=None;return True
 
     def _settle(self,prepared,success,in_transaction=False):
         if not prepared.reconstruction_permit:return True
@@ -536,13 +599,26 @@ class ReadonlyJournal:
 
     def abort_candidate(self,prepared):
         settled=self._settle(prepared,False)
-        if prepared.serial!=self.serial:return False
+        if prepared.serial!=self.serial:
+            # The staged row (if any) belongs to a newer candidate; never
+            # restore an older snapshot over it.
+            return False
+        # A provably unsent candidate may have been staged before submission;
+        # restore the previously committed snapshot so an unsent request
+        # leaves no trace in the persisted journal.
+        if self._staged==prepared.serial:
+            self._staged=None
+            if self.db is not None and self.scope_key is not None and self.last is not None:
+                saved=(self.recovery_error,self.retired_reason)
+                self._persist(self.last,'ready',settle_permit=False,tombstone=False,settle_cutover=False)
+                self.recovery_error,self.retired_reason=saved
         self.serial+=1
         return settled
 
     def retire_committed(self,prepared,reason='invalidated'):
         self._settle(prepared,False)
         if prepared.serial!=self.serial:return False
+        self._staged=None
         self.serial+=1;self.retired_reason=reason
         if self.last is not None:self._persist(self.last,'retired')
         return True

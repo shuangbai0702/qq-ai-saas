@@ -110,6 +110,10 @@ def invalidate(db,scope,subject=''):
 class Reflection:
     def __init__(self,db):
         self.db=db;self.closed=False;self.task=None;self.memory=None;self.binding=None
+        # Optional journal re-capture hook (installed by the behavior runtime):
+        # read-only repair of held rounds' material completeness from the
+        # committed journal wire. Never fabricates evidence; digest-bound.
+        self.recapture=None;self._recapture_at={}
         db.execute('CREATE TABLE IF NOT EXISTS memory_core_notes(slot INTEGER PRIMARY KEY CHECK(slot=1),text TEXT NOT NULL,scopes TEXT NOT NULL,people TEXT NOT NULL,sources TEXT NOT NULL,updated REAL NOT NULL)')
         db.executescript('''CREATE TABLE IF NOT EXISTS memory_rounds(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT,subject TEXT,event TEXT,question TEXT,answer TEXT,at REAL,UNIQUE(scope,event));
         CREATE TABLE IF NOT EXISTS memory_reconstruction_checkpoints(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,through_round_id INTEGER NOT NULL,round_count INTEGER NOT NULL,epoch INTEGER NOT NULL,state TEXT NOT NULL DEFAULT 'available',request_id TEXT,created REAL NOT NULL,summary_id INTEGER,UNIQUE(scope,through_round_id));
@@ -479,7 +483,7 @@ class Reflection:
             protected=next((r for r in smalls[3:] if r[4]==scope and protected_row(r)),None)
             if protected:selected=selected[:2]+[protected]
         return [{**summary_item(r[:5],'rolling_background',db=self.db),'level':r[5],
-                 'source_scopes':[x[0] for x in self.db.execute('SELECT scope FROM memory_summary_origins WHERE summary_id=? ORDER BY scope',(r[0],))] or [r[4]]} for r in bigs[-1:]+selected]
+                 'source_scopes':[x[0] for x in self.db.execute('SELECT scope FROM memory_summary_origins WHERE summary_id=? ORDER BY scope',(r[0],))] or [r[4]]} for r in bigs[:1]+selected]
 
     def group_context(self,scope):
         if not scope.startswith('group:'):return []
@@ -624,22 +628,84 @@ class Reflection:
         runs inside the caller's summary transaction and never revives a
         consumed or invalidated checkpoint.
         """
-        rows=self.db.execute("SELECT id,pending_events FROM memory_reconstruction_checkpoints WHERE scope=? AND state='pending_coverage'",(scope,)).fetchall()
+        rows=self.db.execute("SELECT id,pending_events,through_round_id FROM memory_reconstruction_checkpoints WHERE scope=? AND state='pending_coverage'",(scope,)).fetchall()
         if not rows:return
         covered={row[0] for row in self.db.execute('SELECT event FROM memory_summary_coverage WHERE scope=?',(scope,))}
-        for identifier,raw in rows:
+        for identifier,raw,through in rows:
             try:pending=json.loads(raw) if raw else []
             except (ValueError,TypeError):continue
             if not isinstance(pending,list) or not pending:continue
             if any(str(event) not in covered for event in pending):continue
+            if self.db.execute('SELECT 1 FROM memory_hold_rounds WHERE scope=? AND (round_id IS NULL OR round_id<=?)',(scope,through)).fetchone():continue
             self.db.execute("UPDATE memory_reconstruction_checkpoints SET state='available' WHERE id=? AND state='pending_coverage'",(identifier,))
+
+    def health_snapshot(self,scope,summary_rounds=DEFAULT_SUMMARY_ROUNDS):
+        """Bounded, content-free per-scope reflection health (B package).
+
+        Reported through the existing per-bot metrics channel. Descriptive
+        only: a quiet chat scope with few rounds is healthy, not failing.
+        """
+        progress=self.db.execute('SELECT summary_watermark FROM memory_reflection_progress WHERE scope=?',(scope,)).fetchone()
+        watermark=progress[0] if progress else 0
+        new_complete=self.db.execute('SELECT count(*) FROM memory_rounds WHERE scope=? AND id>?',(scope,watermark)).fetchone()[0]
+        holds={}
+        for reason,count in self.db.execute('SELECT reason,count(*) FROM memory_hold_rounds WHERE scope=? GROUP BY reason',(scope,)):
+            holds[str(reason)]=count
+        oldest=None
+        row=self.db.execute("SELECT min(created) FROM memory_hold_rounds WHERE scope=? AND reason<>'lost'",(scope,)).fetchone()
+        if row and row[0]:oldest=max(0,round(time.time()-row[0]))
+        states={}
+        for state,count in self.db.execute('SELECT state,count(*) FROM memory_reconstruction_checkpoints WHERE scope=? GROUP BY state',(scope,)):
+            states[str(state)]=count
+        return {'newCompleteRounds':new_complete,'summaryRounds':summary_rounds,'holds':holds,
+                'oldestHoldAgeSeconds':oldest,'checkpoints':states,'watermark':watermark}
+
+    def hold_recovery_ready(self,scope,held,now,metrics):
+        """True when held evidence is recoverable now without new 35 rounds.
+
+        Material completeness is repaired read-only from the committed journal
+        wire at most every ten minutes per scope. A material whose contract
+        stays unsupported never reaches the model: the hold remains, with a
+        bounded counter instead of repeated paid extraction (B package).
+        """
+        covered={row[0] for row in self.db.execute('SELECT c.event FROM memory_summary_coverage c JOIN memory_summaries s ON s.id=c.summary_id WHERE c.scope=?',(scope,))}
+        recoverable={str(row[0]) for row in self.db.execute("SELECT event FROM memory_hold_rounds WHERE scope=? AND reason='uncovered'",(scope,))}
+        wanted=[r for r in held if str(r[2]) in recoverable and str(r[2]) not in covered]
+        if not wanted:return False
+        def coverage_possible(event):
+            row=self.db.execute('SELECT material FROM memory_round_material WHERE scope=? AND event=?',(scope,str(event))).fetchone()
+            if not row:return False
+            try:item=json.loads(row[0])
+            except (ValueError,TypeError):return False
+            from summary_material import valid_material
+            if not valid_material(item,scope) or item.get('complete') is not True:return False
+            # Same condition the summary commit uses to write coverage: a
+            # native-only reply without a confirmed delivery never covers, so
+            # re-summarizing it would just repeat a doomed paid request.
+            return bool(item.get('reply')) or item.get('native_reply') is None
+        missing=[str(r[2]) for r in wanted if not coverage_possible(r[2])]
+        if missing and self.recapture is not None and now-self._recapture_at.get(scope,0)>=600:
+            self._recapture_at[scope]=now
+            try:self.recapture(scope,missing)
+            except Exception:pass
+            missing=[event for event in missing if not coverage_possible(event)]
+        if missing:
+            metrics['summaryHoldUnsupported']=metrics.get('summaryHoldUnsupported',0)+len(missing)
+            return False
+        return True
 
     def retry(self):
         if not self.binding:return False
         cfg,provider,is_current,metrics,event_var=self.binding
         if self.closed or cfg.get('memory') is False or not cfg.get('memorySummary') or not callable(getattr(provider,'text_chat',None)) or not is_current() or self.task and not self.task.done():return False
+        # The summary contract is converged to exactly 35 completed business
+        # rounds (B package): the batch window and the mint gate are one
+        # contract. A stored non-35 configuration is normalized here and
+        # counted instead of silently producing batches that can never mint.
         configured=cfg.get('summaryRounds',DEFAULT_SUMMARY_ROUNDS)
-        summary_rounds=max(30,min(200,configured if configured>=30 else DEFAULT_SUMMARY_ROUNDS))
+        summary_rounds=DEFAULT_SUMMARY_ROUNDS
+        if configured!=DEFAULT_SUMMARY_ROUNDS:
+            metrics['summaryRoundsIncompatible']=metrics.get('summaryRoundsIncompatible',0)+1
         insight_enabled=self.memory is not None and cfg.get('naturalConversation',True)
         now=time.time();scope=None;job=None;rows=[];big_rows=[];summary_from=None;merge_scope=None
         # Mandatory rollup runs before the next ordinary reflection, one
@@ -658,10 +724,17 @@ class Reflection:
                 batch=self.db.execute('SELECT id,subject,event,question,answer,at FROM memory_rounds WHERE scope=? AND id>? ORDER BY id LIMIT ?',(candidate,progress[0],summary_rounds)).fetchall()
                 if len(batch)>=summary_rounds:
                     scope=candidate;job='summary';rows=held+batch;summary_from=progress[0];break
+                # Hold recovery without waiting for new rounds (B package):
+                # held evidence that is provably recoverable may be re-summarized
+                # on its own; the watermark, round accounting and mint gate stay
+                # untouched, so no license or business round is earned here.
+                if held and self.hold_recovery_ready(candidate,held,now,metrics):
+                    scope=candidate;job='hold_recovery';rows=held;summary_from=progress[0];break
         if not scope:
             # Persist lost-state discovery even when no new batch is due;
             # leave no open write transaction for the next foreground request.
             self.db.commit();return False
+        metrics['memoryHealth']={scope:self.health_snapshot(scope,summary_rounds)}
         attempt_row=self.db.execute('SELECT attempts FROM memory_reflection_retry WHERE scope=?',(scope,)).fetchone()
         attempts=(attempt_row[0] if attempt_row else 0)+1
         self.db.execute('INSERT OR REPLACE INTO memory_reflection_retry VALUES(?,?,?)',(scope,attempts,now+min(1800,60*2**min(5,attempts-1))));self.db.commit()
@@ -700,7 +773,7 @@ class Reflection:
                         payload=[];before=None
                     else:
                         payload=[{'sender_id':r[1],'event':r[2],'user':r[3],'bot':r[4],'at':r[5],'source':message_provenance.get(self.db,scope,r[2])} for r in rows]
-                        if job=='summary':
+                        if job!='big':
                             pending=self.db.execute('''SELECT p.subject,p.event,p.question,p.answer,p.at
                                 FROM memory_pending p WHERE p.scope=? AND p.at<=?
                                 AND (? NOT LIKE 'group:%' OR EXISTS (
@@ -719,7 +792,11 @@ class Reflection:
                         prior_claims=[];prior_ids=set()
                         for item in self.rolling(scope):
                             for claim in summary_claims(self.db,item['id']):
-                                if claim.get('kind')=='agreement' and protected_claim(claim) and claim['id'] not in prior_ids:
+                                # Open interpretations (unresolved topics) join
+                                # agreements as offered protected evidence so a
+                                # later same-speaker resolution can retire them
+                                # with real proof (D package).
+                                if claim.get('kind') in ('agreement','interpretation') and protected_claim(claim) and claim['id'] not in prior_ids:
                                     prior_claims.append(claim);prior_ids.add(claim['id'])
                         prior_view={'protected_claims':prior_claims};bound_claim_views([prior_view])
                         prompt['previous_commitments']=prior_view.get('protected_claims',[])
@@ -733,15 +810,15 @@ class Reflection:
                             before=snapshot(self.db,scope,{r['sender_id'] for r in payload})
                             system+=' 本次同时生成最多800字符摘要与有证据的其他整理字段。'
                         else:system=SYSTEM.replace('600','800')+' 输出JSON：{"summary":"摘要","evidence":[{"event":"本批真实事件ID","who":"user或bot","quote":"该说话人12-40字必要原话片段"}],"commitments":[{"event":"本批事件ID","topic":"主题","quote":"该说话人必要原话","who":"user或bot","stage":"proposed或accepted或unknown或executed或canceled"}]}。evidence按未来价值做语义选择：只收明确影响后续判断的事实、变化、纠错、关系与约定相关原话，普通寒暄、客套、情绪问候和无需长期记住的交流一律省略，宁缺毋滥，本批没有有价值证据就省略该字段；quote必须是该说话人原文的逐字片段，不转述不拼接。commitments按语义保留真正重要且仍有效的约定和待办，不按关键词判断；提议、接受、未知、完成和取消必须区分，状态须有原文支持。'
-                        system+=' previous_commitments是此前有来源的未完约定；若本批同一说话人有更晚原话明确接受、完成或取消同一事项，在对应commitments条目可附supersedes:[此前真实claim的id]。没有明确关系或来源不一致则省略，不猜匹配。重要状态变化须写入summary，旧约定不能继续描述成当前有效。'
+                        system+=' previous_commitments是此前有来源的未完约定与未解决话题（含agreement和interpretation）；若本批同一说话人有更晚原话明确接受、完成、取消该约定，或明确解决、放弃该话题，在对应commitments条目附supersedes:[此前真实claim的id]，stage按实际情况填executed或canceled。没有明确关系或来源不一致则省略，不猜匹配，不得凭空宣布完成或解决。重要状态变化须写入summary，旧约定或旧话题不能继续描述成当前有效。'
                     materials={}
                     if job!='big':
                         from summary_material import enrich,coverage_digest
                         live=lambda:not self.closed and is_current() and self.epoch()==epoch
                         materials,observations=await enrich(self.db,scope,[r['event'] for r in payload],provider,live,metrics)
-                        prompt['observed_requests']=[{'event':event,'sender_id':m['subject'],'text':m['text'],'confirmed_reply':m.get('reply',''),**({'native_reply':m['native_reply']} if isinstance(m.get('native_reply'),str) and m['native_reply']!=m.get('reply','') else {}),'image_ids':list(dict.fromkeys(hashlib.sha256(image.encode()).hexdigest() for image in m.get('images',[]))),'complete':m['complete']} for event,m in materials.items()]
+                        prompt['observed_requests']=[{'event':event,'sender_id':m['subject'],'text':m['text'],'confirmed_reply':m.get('reply',''),**({'native_reply':m['native_reply']} if isinstance(m.get('native_reply'),str) and m['native_reply']!=m.get('reply','') else {}),'image_ids':list(dict.fromkeys(hashlib.sha256(image.encode()).hexdigest() for image in m.get('images',[]))),'complete':m['complete'],**({'tools':[{'name':t['name'],'arguments':t['arguments'],'result':t['result']} for t in m['tools']]} if m.get('version',1)>=2 and m.get('tools') else {})} for event,m in materials.items()]
                         prompt['image_observations']=observations
-                        system+=' observed_requests是当轮实际输入，包含引用和图片证据。confirmed_reply来自已确认投递，native_reply若另有提供是模型历史原文，不证明额外投递；两者的有价值内容都要整理，不能据此虚构两次发送。引用或转发中的话不等于当前作者本人说过；图像观察保留不确定性，不猜身份。摘要应整理有长期价值的引用、图片信息，不能只看用户短句与最终回复。'
+                        system+=' observed_requests是当轮实际输入，包含引用和图片证据。tools是该轮真实发生的工具调用与回执（name与结果摘要），据此整理工具实际做了什么；工具回执是平台回执，不是用户发言，也不代表最终投递成功之外的含义。confirmed_reply来自已确认投递，native_reply若另有提供是模型历史原文，不证明额外投递；两者的有价值内容都要整理，不能据此虚构两次发送。引用或转发中的话不等于当前作者本人说过；图像观察保留不确定性，不猜身份。摘要应整理有长期价值的引用、图片信息，不能只看用户短句与最终回复。'
                     prompt['core_note']=core_before
                     system+=' '+CORE_NOTE_UPDATE
                     if self.closed or not is_current() or self.epoch()!=epoch:return
@@ -756,11 +833,16 @@ class Reflection:
                     with self.db:
                         self.db.execute('BEGIN IMMEDIATE')
                         if self.closed or not is_current() or self.epoch()!=epoch:return
-                        if job=='summary':
+                        if job in ('summary','hold_recovery'):
                             progress_now=self.db.execute('SELECT summary_watermark,insight_watermark FROM memory_reflection_progress WHERE scope=?',(scope,)).fetchone() or (0,0)
                             held_now=self.hold_rounds(scope,summary_from)
-                            live_rows=held_now+self.db.execute('SELECT id,subject,event,question,answer,at FROM memory_rounds WHERE scope=? AND id>? ORDER BY id LIMIT ?',(scope,summary_from,summary_rounds)).fetchall()
-                            if progress_now[0]!=summary_from or live_rows!=rows:raise RuntimeError('summary_checkpoint_stale')
+                            if job=='hold_recovery':
+                                # Only the held rows are in play; a concurrent new
+                                # batch elsewhere must not fail this recovery.
+                                if progress_now[0]!=summary_from or held_now!=rows:raise RuntimeError('summary_checkpoint_stale')
+                            else:
+                                live_rows=held_now+self.db.execute('SELECT id,subject,event,question,answer,at FROM memory_rounds WHERE scope=? AND id>? ORDER BY id LIMIT ?',(scope,summary_from,summary_rounds)).fetchall()
+                                if progress_now[0]!=summary_from or live_rows!=rows:raise RuntimeError('summary_checkpoint_stale')
                         if job=='big':
                             ids=[r[0] for r in big_rows];marks=','.join('?' for _ in ids)
                             # Every abandon path raises (never returns): nothing
@@ -829,8 +911,14 @@ class Reflection:
                             self.db.executemany('DELETE FROM memory_pending WHERE scope=? AND event=? AND subject=? AND question=? AND answer=?',[(scope,r['event'],r['sender_id'],r['user'],r['bot']) for r in payload if r['event'] not in holds])
                             self.db.executemany("DELETE FROM memory_round_material WHERE scope=? AND event=? AND json_extract(material,'$.digest')=?",[(scope,event,m['digest']) for event,m in materials.items() if event not in holds])
                             if holds:metrics['summaryReleaseHolds']=metrics.get('summaryReleaseHolds',0)+len(holds)
-                            metrics['summariesSaved']=metrics.get('summariesSaved',0)+1
-                            self.db.execute('UPDATE memory_reflection_progress SET summary_watermark=?,insight_watermark=? WHERE scope=?',(rows[-1][0],rows[-1][0],scope))
+                            if job=='hold_recovery':
+                                # A recovery re-read earns no watermark movement,
+                                # no round accounting and no mint: it only repairs
+                                # coverage for rounds the watermark already passed.
+                                metrics['holdRecoverySummaries']=metrics.get('holdRecoverySummaries',0)+1
+                            else:
+                                metrics['summariesSaved']=metrics.get('summariesSaved',0)+1
+                                self.db.execute('UPDATE memory_reflection_progress SET summary_watermark=?,insight_watermark=? WHERE scope=?',(rows[-1][0],rows[-1][0],scope))
                             progress=self.db.execute('SELECT summary_watermark,insight_watermark FROM memory_reflection_progress WHERE scope=?',(scope,)).fetchone()
                             floor=min(progress) if insight_enabled else progress[0]
                             # Unresolved evidence stays registered so later batches
@@ -858,8 +946,7 @@ class Reflection:
                             if (summary_rounds==35 and len(new_rows)==35 and
                                 all(isinstance(r[1],str) and r[1] and isinstance(r[2],str) and r[2] and
                                     isinstance(r[3],str) and r[3].strip() and isinstance(r[4],str) and r[4].strip() and
-                                    isinstance(r[5],(int,float)) for r in new_rows) and
-                                not self.db.execute('SELECT 1 FROM memory_hold_rounds WHERE scope=? AND (round_id IS NULL OR round_id<=?)',(scope,rows[-1][0])).fetchone()):
+                                    isinstance(r[5],(int,float)) for r in new_rows)):
                                 # The exact 35 completed business rounds earn exactly
                                 # one license. With unresolved coverage inside the
                                 # range the batch keeps its identity as
@@ -869,13 +956,22 @@ class Reflection:
                                 # only after every waited event has a complete
                                 # coverage proof. Evidence that is truly lost stays
                                 # pending honestly instead of being forged complete.
-                                pending=list(dict.fromkeys([str(event) for event in holds]))[:64]
+                                waiting=[str(r[0]) for r in self.db.execute('SELECT event FROM memory_hold_rounds WHERE scope=? AND (round_id IS NULL OR round_id<=?) ORDER BY event',(scope,rows[-1][0]))]
+                                pending=list(dict.fromkeys(waiting+[str(event) for event in holds]))[:64]
                                 state='available' if not pending else 'pending_coverage'
                                 self.db.execute('INSERT OR IGNORE INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,created,summary_id,pending_events) VALUES(?,?,35,?,?,?,?,?)',
                                                 (scope,rows[-1][0],epoch,state,time.time(),identifier,json.dumps(pending,ensure_ascii=False) if pending else None))
+                            elif new_rows and job=='summary':
+                                # Bounded mint-skip accounting: the batch did not
+                                # reach the exact 35-round contract. Never widened
+                                # into a license; visible via metrics.
+                                metrics['summaryMintSkipped']=metrics.get('summaryMintSkipped',0)+1
                             self._promote_pending_checkpoints(scope)
-                        self.db.execute('DELETE FROM memory_reflection_retry WHERE scope=?',(scope,))
-                    adopted('merge_committed' if job=='big' else 'summary_committed')
+                        if job=='hold_recovery' and holds:
+                            self.db.execute('UPDATE memory_reflection_retry SET next_at=? WHERE scope=?',(time.time()+600,scope))
+                        else:
+                            self.db.execute('DELETE FROM memory_reflection_retry WHERE scope=?',(scope,))
+                    adopted('merge_committed' if job=='big' else 'hold_recovery_committed' if job=='hold_recovery' else 'summary_committed')
                     # Drain only immediately due persisted work, never a per-bot timer.
                     asyncio.get_running_loop().call_soon(self.retry)
                 except asyncio.CancelledError:raise

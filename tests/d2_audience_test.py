@@ -107,8 +107,12 @@ class Audience(unittest.IsolatedAsyncioTestCase):
   self.assertTrue(ref.core_note('self')['legacy_unverified'])
   self.assertEqual(ref.core_note()['text'],'旧版未拆分背景','update path and admin views still read the stored row')
  def test_person_level_group_events_still_reach_the_person(self):
+  """The regex self-report auto-writer is retired (D package): semantic facts
+  come from the summary extractor. The same extractor's write path must still
+  reach the person across their group and private conversations."""
   store=self.store
   store.observe('group:55555',STRANGER,'我喜欢喝红茶','g1',now=self.now,auto_capture=True)
+  store.memory.remember('group:55555',STRANGER,'饮料偏好','红茶','g1',self.now,origin='self_report')
   facts=store.observe('private:'+STRANGER,STRANGER,'我爱喝什么','g2',now=self.now+1,auto_capture=True)['facts']
   self.assertEqual(facts[0]['value'],'红茶');self.assertEqual(facts[0]['source_scope'],'group:55555')
 

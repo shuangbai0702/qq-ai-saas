@@ -178,7 +178,13 @@ def annotate_speaker(request,work,owner_id,provenance=None):
     Do not change the protocol event, the stored original text, or service work.
     """
     if not isinstance(work,Work) or work.source not in ('message','deferred_group') or getattr(request,'_fishbot_speaker_source',None)==work.event_id:return
-    source={'sender_id':work.subject,'owner_id':str(owner_id) or None,'owner':bool(owner_id and work.subject==str(owner_id)),'scope':work.scope,'event_id':work.event_id}
+    owner=bool(owner_id and work.subject==str(owner_id))
+    source={'sender_id':work.subject,'owner_id':str(owner_id) or None,'owner':owner,'scope':work.scope,'event_id':work.event_id}
+    # A bounded attention tag on a REAL owner's brand-new inbound message only:
+    # it hints priority, grants no permission and never back-fills committed
+    # wire (F package). Quotes, relays and internal contacts cannot carry it:
+    # they are not new owner-authored works.
+    if owner:source['attention']='[important]'
     if provenance:
         source.update({k:provenance[k] for k in ('sender_name','mentions','reply_to') if k in provenance})
     request.prompt='[QQ消息来源]'+json.dumps(source,ensure_ascii=False,separators=(',',':'))+'\n'+(request.prompt or '')

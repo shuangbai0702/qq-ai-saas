@@ -53,7 +53,7 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         self.var=contextvars.ContextVar('summary_test',default=None)
     def tearDown(self):self.store.close();self.tmp.cleanup()
     def add(self,image=False,start=0):
-        for i in range(start,start+30):
+        for i in range(start,start+35):
             msg=message(str(i),image=image)
             self.store.reflection.record(SCOPE,'12345678',str(i),'看这个','已回复',materials=material.snapshots([msg],SCOPE))
     async def drain(self):
@@ -63,23 +63,23 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
             if self.store.reflection.task is task:break
     def start(self,chat):
-        return self.store.reflection.maybe_start(SCOPE,{'memory':True,'memorySummary':True,'summaryRounds':30},NS(text_chat=chat),lambda:True,{},self.var)
+        return self.store.reflection.maybe_start(SCOPE,{'memory':True,'memorySummary':True,'summaryRounds':35},NS(text_chat=chat),lambda:True,{},self.var)
     async def test_success_coverage_persists_rollup_and_forget(self):
         prompts=[]
         async def chat(**kw):
             prompts.append(json.loads(kw['prompt']));return NS(completion_text='长期背景：12345678喜欢红茶' if '最多1500' in kw['system_prompt'] else json.dumps({'summary':'引用中其他人喜欢红茶，不是12345678。'}))
-        for start in (0,30,60):
+        for start in (0,35,70):
             self.add(start=start)
             if start==0:self.start(chat)
             else:self.store.reflection.retry()
             await self.drain()
-        self.assertEqual(len(material.coverage(self.db,SCOPE)),90)
-        self.assertEqual(set(material.coverage(self.db,SCOPE,['0','89','unknown'])),{'0','89'})
+        self.assertEqual(len(material.coverage(self.db,SCOPE)),105)
+        self.assertEqual(set(material.coverage(self.db,SCOPE,['0','104','unknown'])),{'0','104'})
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],0)
         self.assertIn('其他人',prompts[0]['observed_requests'][0]['text'])
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1)
         self.store.close();self.store=BehaviorStore(Path(self.tmp.name)/'behavior.sqlite');self.db=self.store.db
-        self.assertEqual(len(material.coverage(self.db,SCOPE)),90)
+        self.assertEqual(len(material.coverage(self.db,SCOPE)),105)
         from memory_reflection import invalidate
         invalidate(self.db,SCOPE,'12345678');self.db.commit()
         self.assertEqual(material.coverage(self.db,SCOPE),{})
@@ -142,8 +142,10 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_30_round_and_failed_summary_never_mint_reconstruction_permit(self):
         async def summarize(**kw):return NS(completion_text=json.dumps({'summary':'ordinary summary'}))
+        # The converged contract: a 30-round batch is not even scheduled, and
+        # it certainly never mints (B package).
         for index in range(30):self.store.reflection.record(SCOPE,'12345678',f'ordinary-{index}',f'真问题{index}',f'已确认{index}')
-        self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':30,'naturalConversation':False},NS(text_chat=summarize),lambda:True,{},self.var))
+        self.assertFalse(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':30,'naturalConversation':False},NS(text_chat=summarize),lambda:True,{},self.var))
         await self.drain()
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints').fetchone()[0],0)
         for index in range(35):self.store.reflection.record(SCOPE,'12345678',f'failed-{index}',f'问题{index}',f'回复{index}')
@@ -156,7 +158,7 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         async def chat(**kw):raise RuntimeError('vision failed')
         self.start(chat);await self.drain()
         self.assertEqual(material.coverage(self.db,SCOPE),{})
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],30)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
     async def test_recovered_private_material_joins_next_ordinary_summary(self):
         self.add(start=100)
         old=material.snapshots([message('old')],SCOPE)[0]
@@ -167,7 +169,7 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         self.start(chat);await self.drain()
         self.assertIn('old',{r['event'] for r in prompts[0]['turns']})
         self.assertIn('old',{r['event'] for r in prompts[0]['observed_requests']})
-        self.assertEqual(len(material.coverage(self.db,SCOPE)),31)
+        self.assertEqual(len(material.coverage(self.db,SCOPE)),36)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],0)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],0)
     async def test_deduplicated_vision_and_late_epoch(self):
@@ -178,8 +180,8 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
             return NS(completion_text=json.dumps({'summary':'图中有红茶，引用来自其他人。'}))
         self.start(chat);await self.drain()
         self.assertEqual(len(calls),2);self.assertEqual(len(calls[0]['images']),1)
-        self.assertEqual(len(material.coverage(self.db,SCOPE)),30)
-        self.add(image=True,start=30)
+        self.assertEqual(len(material.coverage(self.db,SCOPE)),35)
+        self.add(image=True,start=35)
         entered=asyncio.Event();release=asyncio.Event()
         async def delayed(**kw):entered.set();await release.wait();return await chat(**kw)
         self.store.reflection.binding=None;self.start(delayed)
@@ -213,7 +215,7 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         current=False
         await self.drain()
         self.assertEqual(calls,[]);self.assertEqual(material.coverage(self.db,SCOPE),{})
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],30)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
 
     async def test_material_contract_rejects_wrong_scope_shape_and_future_version(self):
         self.add();item=json.loads(self.db.execute('SELECT material FROM memory_round_material LIMIT 1').fetchone()[0])
@@ -226,7 +228,7 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         async def chat(**kw):calls.append(kw);return NS(completion_text='must not be called')
         self.start(chat);await self.drain()
         self.assertEqual(calls,[]);self.assertEqual(material.coverage(self.db,SCOPE),{})
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],30)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
 
     async def test_native_view_and_confirmed_delivery_are_distinct_and_both_covered(self):
         old=message('native-difference')
