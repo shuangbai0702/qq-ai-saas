@@ -595,9 +595,7 @@ class AutonomousRuntime:
             self.metrics[id]['researchResultsLedgered']+=1
         feedback['task']={'kind':kind,'target':target,'objective':action['objective'][:400],'sourceScope':action.get('sourceScope') or (action.get('requestSource') or {}).get('scope'),'outerDecision':action.get('outerDecision')}
         feedback['finishedAt']=int(time.time()*1000)
-        st.pipeline.finish_internal(work,feedback);st.pipeline.finish(work,self.metrics.setdefault(id,{}))
-        import agreement_state
-        agreement_state.settle_task(st.db,action.get('goalId'),feedback);st.db.commit()
+        st.pipeline.finish_internal(work,feedback,action.get('goalId'));st.pipeline.finish(work,self.metrics.setdefault(id,{}))
         return feedback
 
     async def handle(self,id,operation,data):
