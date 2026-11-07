@@ -353,4 +353,64 @@ class UncommittedWindowHeadTests(unittest.TestCase):
         raw3[2]={'role':'user','content':SOURCE+json.dumps({'scope':SCOPE,'sender_id':'12345678','event_id':'2'},ensure_ascii=False)+'\n被改写的历史'}
         self.assertIsNone(journal_module.uncommitted_window_head_extension(self.j.last,raw3,self.db))
 
+class WindowReloadExtensionTests(unittest.TestCase):
+    """Live 2026-11-08 00:3x deadlock shape: the reloaded SDK window keeps
+    turns older than a rebuilt baseline, and the baseline ends with a staged
+    turn the restart killed before submission. Every prefix overlap failed
+    for two hours; the baseline itself still appears verbatim in the window."""
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.db=sqlite3.connect(Path(self.tmp.name)/'behavior.sqlite')
+        self.db.execute("CREATE TABLE IF NOT EXISTS pipeline_events(scope TEXT,subject TEXT,event TEXT,at REAL,source TEXT,stage TEXT,status TEXT,reason TEXT,attempted INTEGER,confirmed INTEGER,PRIMARY KEY(scope,subject,event))")
+        self.j=ReadonlyJournal(self.db,SCOPE);self.first=prepare_first(self.j)
+        # Second committed round: the base ends with a completed turn.
+        second=base_messages()+[{'role':'assistant','content':'第二轮真实回复'},sourced('5','第三轮问题'),event_packet({'sender_id':'12345678'}),packet({'state':{'facts':[]}})]
+        p=self.j.prepare(second,('t','b',1),now=2,strict=True,guarded=True)
+        self.assertTrue(self.j.commit(p))
+        # Delivery ledger for the committed turns.
+        for delivered in ('1','2','5'):
+            self.db.execute("INSERT OR REPLACE INTO pipeline_events VALUES(?,?,?,?,?,?,?,?,?,?)",(SCOPE,'12345678',delivered,time.time(),'message','commit','sent','',1,1))
+        # A staged turn the restart killed before submission: PE interrupted.
+        self.db.execute("INSERT OR REPLACE INTO pipeline_events VALUES(?,?,?,?,?,?,?,?,?,?)",(SCOPE,'12345678','6',time.time(),'message','ingress','interrupted','runtime_restarted',0,0));self.db.commit()
+        third=base_messages()+[{'role':'assistant','content':'第二轮真实回复'},sourced('5','第三轮问题'),sourced('6','被重启打断的轮次'),event_packet({'sender_id':'12345678'}),packet({'state':{'facts':[]}})]
+        p3=self.j.prepare(third,('t','b',1),now=3,strict=True,guarded=True)
+        self.assertTrue(self.j.commit(p3))
+        self.phantom_base=len(p3.base);self.committed=p3
+
+    def tearDown(self):
+        self.j.db.close();self.tmp.cleanup()
+
+    def committed_window(self,extra_head=True,new_event='7'):
+        # The reloaded SDK window: two turns older than the rebuilt baseline,
+        # then the committed baseline WITHOUT the never-submitted phantom,
+        # then the genuinely new user turn.
+        window=[]
+        if extra_head:
+            window+=[sourced('old-1','重建前就被退休的旧消息'),{'role':'assistant','content':'旧回复'}]
+        window+=base_messages()[1:]+[{'role':'assistant','content':'第二轮真实回复'},sourced('5','第三轮问题'),sourced(new_event,'第四轮新消息')]
+        return window
+
+    def test_reloaded_window_with_staged_phantom_is_adopted(self):
+        window=self.committed_window()
+        incoming=window+[event_packet({'sender_id':'12345678'}),packet({'state':{'facts':[]}})]
+        p=self.j.prepare(incoming,('t','b',1),now=4,strict=True,guarded=True,unprojected=copy.deepcopy(incoming))
+        self.assertEqual(p.retirement_deferred,'window_reload_extension')
+        self.assertEqual(p.wire[:len(self.committed.wire)],self.committed.wire,'committed wire stays byte-exact, phantom included')
+        self.assertTrue(self.j.commit(p))
+        self.assertIn('7',[str(journal_module.source(m)['event_id']) for m in p.wire if journal_module.source(m)],'the new turn is appended once')
+        self.assertNotIn('old-1',[str(journal_module.source(m)['event_id']) for m in p.wire if journal_module.source(m)],'the retired head stays outside the journal')
+        # The next request continues the ordinary overlap path.
+        follow=base_messages()[1:]+[{'role':'assistant','content':'第二轮真实回复'},sourced('5','第三轮问题'),sourced('7','第四轮新消息'),{'role':'assistant','content':'第四轮回复'},sourced('8','第五轮'),event_packet({'sender_id':'12345678'}),packet({'state':{'facts':[]}})]
+        p2=self.j.prepare(follow,('t','b',1),now=5,strict=True,guarded=True)
+        self.assertEqual(p2.wire[:len(p.wire)],p.wire)
+        self.assertTrue(self.j.commit(p2))
+
+    def test_window_head_with_known_events_is_never_adopted(self):
+        # A head that contains a known event means a reorder, not a reload.
+        window=self.committed_window()
+        reordered=[sourced('5','第三轮问题')]+window
+        incoming=reordered+[event_packet({'sender_id':'12345678'}),packet({'state':{'facts':[]}})]
+        with self.assertRaises(Exception) as caught:
+            self.j.prepare(incoming,('t','b',1),now=4,strict=True,guarded=True,unprojected=copy.deepcopy(incoming))
+        self.assertIn(type(caught.exception).__name__,('ContextReconstructionDenied','ContextPrefixViolation'))
+
 if __name__=='__main__':unittest.main()

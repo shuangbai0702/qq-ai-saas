@@ -235,6 +235,57 @@ def uncommitted_window_head_extension(old,raw_base,db=None):
     if not same_native_prefix(prior[-len(rest):],rest):return None
     return head
 
+def window_reload_extension(old,raw_base,db=None):
+    """Match a native window that reloaded OLDER history in front of the
+    committed baseline, and/or omits trailing turns the journal staged but
+    never submitted.
+
+    Two restart shapes defeat every prefix overlap even though the journal is
+    authoritative and nothing was rewritten: the SDK store keeps turns older
+    than a rebuilt baseline (a licensed rebuild legitimately retired them),
+    and a staged candidate killed mid-flight leaves its never-submitted user
+    turn inside the baseline while the reloaded window never saw it. The
+    committed prefix must appear contiguously inside the window (the head
+    before it may not contain any known event, so no reorder is blessed),
+    trailing never-submitted staged turns may be absent, and only genuine
+    new tail messages after the baseline are appended. No license, round
+    count or retirement is implied.
+    """
+    if not old or not isinstance(raw_base,list):return None
+    prior=old.base[system_head(old.base):]
+    current=raw_base[system_head(raw_base):]
+    if not current or not prior or len(current)<len(prior):return None
+    known={str(source(m)['event_id']) for m in old.base if (s:=source(m))}
+    keep=len(prior)
+    while keep>0:
+        m=prior[keep-1]
+        if not (isinstance(m,dict) and m.get('role')=='user'):break
+        o=source(m)
+        if not o:break
+        row=None
+        if db is not None:
+            try:row=db.execute("SELECT status,confirmed FROM pipeline_events WHERE scope=? AND event=?",(str(o.get('scope')),str(o['event_id']))).fetchone()
+            except Exception:return None
+        if row and row[0] in ('sent','partial') and row[1]:break
+        if any(isinstance(x,dict) and x.get('role')=='assistant' for x in prior[keep:]):break
+        keep-=1
+    if keep<=0:return None
+    target=prior[:keep]
+    for start in range(0,len(current)-len(target)+1):
+        head=current[:start]
+        if any(isinstance(m,dict) and (o:=source(m)) and str(o['event_id']) in known for m in head):continue
+        if not same_native_prefix(target,current[start:start+len(target)]):continue
+        tail=current[start+len(target):]
+        if not tail or not any(isinstance(m,dict) and source(m) for m in tail):continue
+        users=[j for j,m in enumerate(tail) if isinstance(m,dict) and m.get('role')=='user']
+        ok=True
+        for idx,j in enumerate(users):
+            end=users[idx+1] if idx+1<len(users) else len(tail)
+            if end<len(tail) and not any(isinstance(m,dict) and m.get('role')=='assistant' for m in tail[j:end]):ok=False;break
+        if not ok:continue
+        return tail
+    return None
+
 class ReadonlyJournal:
     def __init__(self,db=None,scope_key=None):
         self.serial=0;self.last=None;self.db=db;self.scope_key=self._scope_key(scope_key)
@@ -508,6 +559,12 @@ class ReadonlyJournal:
             # scope forever; adopt them once as appended real history.
             suffix=uncommitted_window_head_extension(old,raw_base,self.db)
             if suffix is not None:retirement_deferred='uncommitted_window_head'
+        if valid and suffix is None and strict:
+            # A reloaded SDK window keeps turns older than a rebuilt baseline
+            # and may omit never-submitted staged turns; the baseline itself
+            # still appears verbatim inside it.
+            suffix=window_reload_extension(old,raw_base,self.db)
+            if suffix is not None:retirement_deferred='window_reload_extension'
         # Content-free evidence distinguishes a failed native overlap from
         # retirement/authority fencing; summary changes alone are not a cause.
         origins={str(o['event_id']) for m in (old.base if old else []) if (o:=source(m))}
