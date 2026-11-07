@@ -1,0 +1,35 @@
+{
+  "baseCommit": "089419f2bc8a90459da7310b3766406cfb223641",
+  "uncommittedOverlay": true,
+  "files": {
+    "adapters/astrbot/behavior.py": "b774200c48d8789c33f8a0e5853ba59d5dfe53688d02250aca1414ceff172c5e",
+    "adapters/astrbot/context_protocol.py": "909ddbc1da4b545e4b2a15615a4c07f1fa01eadf1ec89631bbf115b5505d6624",
+    "adapters/astrbot/context_transport.py": "7f1d632c36e5566214f825c24e318acafe29f7e29f3209dc11e855200bb21cec",
+    "adapters/astrbot/headless.py": "c346f3fcb13d60bdbf1f998f8636d339c412df0fa1ba9dce57df188d74b7adfb",
+    "adapters/astrbot/index.ts": "baf39e3ecc02ae483b4591cf2e649b3504ed6865bdb725c83b48467ba07e6e8f",
+    "adapters/astrbot/journal_cutover.py": "29ea5ffdd0dc4bdfb0918273b23442544de543cb0b42be4b56869d2c39815d41",
+    "adapters/astrbot/memory_reflection.py": "810a9599227b0b0be5a0b7577a8d0344c14c7eae840fb34ef59f0b0d541d0555",
+    "adapters/astrbot/model_cache.py": "006a7e3b7a45aca6c090e3994b9cf0125830ad99375612513633509eb10d1a32",
+    "adapters/astrbot/output_clean.py": "bfd9964335d3583997bd0f441629758a91d9c1d59acd5a1150b805fe4b5e40da",
+    "adapters/astrbot/readonly_journal.py": "d7aeba53d409e1bfa80542b09575a4c5d0057c9daa70bdd50ea1b8e59face851",
+    "adapters/astrbot/shared-worker.py": "b6ddd337805324109e56bc57f39bae4138f18a3e56400c660aebda99842b67c6",
+    "adapters/astrbot/shared.ts": "ffa54ba6a7fff81edc873f790dc484dea349d221d680b6fdb10c87974beb7adb",
+    "adapters/astrbot/system_contract.py": "70ae842676889a94ab0425dd4df693ac2909fc8694f722f65c204f7c2c77a2fc",
+    "apps/control-api/src/app.ts": "5d8cb69eb6d5281bae145e2c6b0d7fd66c46a4d9f2f7d31d435628bd9abf9049",
+    "apps/node-agent/src/agent.ts": "1c43ff332d8360f2343c704ed0db3c83b1c08ddd3c4d62dc8d4140a648a210ec",
+    "apps/node-agent/src/maintenance.ts": "a257ef9297afac2f6924a173246d8629bca1ccf61a169d94885d9f012366be32",
+    "dist-server/adapters/astrbot/index.js": "bc6a6927ffe74feb37c714e7e8aca85626a828f554f4a0aae8e6e2bd65182be3",
+    "dist-server/adapters/astrbot/shared.js": "d9b0b7d67cc326c4b3aa98c917713db98c07e41e30596353cf17b1da87e60aaa",
+    "dist-server/apps/control-api/src/app.js": "435a22c8478dcbc249fc45e2d6bce57fa8bdfac785e9f5266f52d7aebe1f1e65",
+    "dist-server/apps/node-agent/src/agent.js": "82073339456f758ae14175d3c287db2677c6bdee87d9e02855a1d095841ffe6f",
+    "dist-server/apps/node-agent/src/r4-foreground-maintenance.js": "6ecc9953f0ea8242227107de7f3c8f796c306a122c7770e6b2d2ce8f97c19fc1",
+    "dist-server/packages/contracts/index.js": "7356bd9c5009f1287001a4a625fa7c01b4fe4dcc6f590fee7d594bbdcf260414",
+    "packages/contracts/index.ts": "7c6fad69d388119f4f6b10c5e296d313a57da41ab8a8ea8f24f9b2ad2a4d48a3"
+  },
+  "releases": [
+    "f3c830e73eb4bc957b6c8385037d96b0628787fc04fe7e80db1464d31d7c8c07",
+    "68e8ac61723e17471167f631fe2075f0886c68a8d3c4204db232daf987708dae"
+  ],
+  "verifiedAtLocal": "2026-11-07T01:56:23.076139",
+  "gitPushedAfterUserDeferral": false
+}

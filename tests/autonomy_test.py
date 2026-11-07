@@ -1,6 +1,8 @@
 import asyncio
 import contextvars
 import copy
+from datetime import datetime,timezone
+import time
 import json
 from pathlib import Path
 import sys
@@ -12,6 +14,7 @@ from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
 import autonomy
 import initiative
+import companion_state
 from behavior import BehaviorStore
 
 
@@ -299,6 +302,79 @@ class AutonomyTest(unittest.IsolatedAsyncioTestCase):
             self.cfg['behavior'].update(dailyProactiveLimit=daily,hourlyInterjectionLimit=hourly)
             self.store.planner.maybe_start(self.cfg,self.provider,lambda:True,self.event,self.metrics,now=self.now+3600)
             self.assertIsNone(self.store.planner.task);self.assertEqual(self.provider.calls,[])
+
+
+
+
+class SweepReasonTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.path=Path(self.tmp.name)/'behavior.sqlite';self.store=BehaviorStore(self.path);self.db=self.store.db
+        self.now=100000
+        self.cfg={'proactive':True,'systemPrompt':'有自己的看法','behavior':{'enabled':True,'quietStart':0,'quietEnd':0,'dailyProactiveLimit':3,'hourlyInterjectionLimit':20,'ownerContactEnabled':False,'proactiveTargets':['group:12345']}}
+        self.db.execute('CREATE TABLE IF NOT EXISTS deliveries(scope TEXT,day TEXT,count INTEGER,last_sent REAL,PRIMARY KEY(scope,day))')
+    def tearDown(self):self.store.close();self.tmp.cleanup()
+    def test_budget_exhaustion_is_encoded_separately_from_empty_candidates(self):
+        day=datetime.fromtimestamp(self.now+8*3600,timezone.utc).date().isoformat()
+        self.db.execute('INSERT INTO deliveries VALUES(?,?,3,?)',('group:12345',day,self.now-300));self.db.commit()
+        report=initiative.sweep_reason(self.db,self.cfg,self.now+3600)
+        self.assertEqual(report['reason'],'budget_exhausted')
+        self.assertEqual(report['budget'],{'used':3,'limit':3})
+        self.assertEqual(report['owner'],'not_considered_daily_budget_exhausted','the owner path must be transparent about why it was not considered')
+        self.assertEqual(initiative.candidates(self.db,self.cfg,self.now+3600),[])
+    def test_empty_candidates_without_budget_stays_no_candidates(self):
+        self.db.execute('INSERT INTO deliveries VALUES(?,?,0,?)',('group:12345',datetime.fromtimestamp(self.now+8*3600,timezone.utc).date().isoformat(),self.now-300));self.db.commit()
+        report=initiative.sweep_reason(self.db,self.cfg,self.now+3600)
+        self.assertEqual(report['reason'],'no_candidates')
+        self.assertEqual(report['budget'],{'used':0,'limit':3})
+        self.assertEqual(report['owner'],'not_due')
+    def test_quiet_and_disabled_are_distinct_reasons(self):
+        self.cfg['behavior']['quietStart']=0;self.cfg['behavior']['quietEnd']=23
+        self.assertEqual(initiative.sweep_reason(self.db,self.cfg,self.now)['reason'],'quiet_hours')
+        self.cfg['behavior']['quietStart']=0;self.cfg['behavior']['quietEnd']=0
+        self.cfg['behavior']['enabled']=False
+        self.assertEqual(initiative.sweep_reason(self.db,self.cfg,self.now)['reason'],'disabled')
+    def test_hourly_capacity_reason_is_transparent(self):
+        cfg=copy.deepcopy(self.cfg);cfg['behavior']['hourlyInterjectionLimit']=1
+        self.assertTrue(autonomy.send_capacity(self.db,cfg,self.now)['available'])
+        self.assertTrue(autonomy.reserve_send(self.db,'group:12345','one',cfg,self.now))
+        capacity=autonomy.send_capacity(self.db,cfg,self.now)
+        self.assertFalse(capacity['available'])
+        self.assertEqual(capacity['reason'],'hourly_budget_exhausted')
+        self.assertEqual((capacity['used'],capacity['limit']),(1,1))
+
+
+class FeedbackNeutralityTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.path=Path(self.tmp.name)/'behavior.sqlite';self.store=BehaviorStore(self.path);self.db=self.store.db
+        self.now=time.time();self.cfg={'proactive':True,'systemPrompt':'喜欢喝茶。','behavior':{'selfDevelopment':True,'quietStart':0,'quietEnd':0,'proactiveIntervalSeconds':60,'silenceSeconds':60,'proactiveChance':1}}
+    def tearDown(self):self.store.close();self.tmp.cleanup()
+    def test_interrogation_of_a_reply_only_records_a_neutral_signal(self):
+        self.db.execute("INSERT OR IGNORE INTO dialogue_feedback VALUES('group:12345','evt1','12345',?, '好的，我知道了','observing')",(self.now-10,))
+        self.db.commit()
+        self.store.participation.incoming('group:12345','12345','你到底在说什么？看清楚再回',now=self.now,directed=True)
+        state=self.db.execute("SELECT state FROM dialogue_feedback WHERE event='evt1'").fetchone()[0]
+        self.assertEqual(state,'replied','mechanical directed windows must not manufacture engagement')
+        self.assertEqual(self.store.participation.entry_factor('group:12345'),1,'interrogation never lowers future entry')
+    def test_bot_proposal_motives_are_never_user_agreements(self):
+        companion_state.outgoing(self.db,self.cfg,'group:12345','12345','下次我们一起聊聊茶叶烘焙。','bot1',self.now)
+        row=self.db.execute("SELECT topic,evidence FROM companion_motives WHERE scope='group:12345'").fetchone()
+        self.assertEqual(row[0],'茶叶烘焙')
+        evidence=companion_state.motive_evidence(row[1])[0]
+        self.assertEqual(evidence['author'],'bot_proposal')
+        self.assertEqual(evidence['acceptance'],'none')
+        ctx=companion_state.context(self.db,self.cfg,'group:12345',self.now)
+        motive=ctx['unfinished_topics'][0]
+        self.assertEqual(motive['author'],'bot_proposal')
+        self.assertEqual(motive['acceptance'],'none')
+    def test_legacy_unknown_motives_are_kept_unknown_and_not_upgraded(self):
+        self.db.execute("INSERT OR IGNORE INTO companion_motives VALUES('group:12345','12345','旧话题',?,?,'open','evt-legacy')",(self.now+1800,self.now+7*86400));self.db.commit()
+        ctx=companion_state.context(self.db,self.cfg,'group:12345',self.now)
+        motive=next(m for m in ctx['unfinished_topics'] if m['topic']=='旧话题')
+        self.assertEqual(motive['author'],'unknown','legacy bare-event rows are never guessed into a trusted author')
+        self.assertEqual(motive['acceptance'],'none')
+    def test_model_plan_motive_keeps_model_author(self):
+        evidence=companion_state.motive_record('model_plan:123','model_plan')
+        self.assertEqual(companion_state.motive_evidence(evidence)[0]['author'],'model_plan')
 
 
 if __name__=='__main__':unittest.main()

@@ -1,0 +1,241 @@
+{
+ "date": "2026-11-07",
+ "baseline": {
+  "manifest": "docs/FishBot-R4-production-manifest-20261107.json",
+  "verified": "23/23 files byte-identical to live production (read-only SSH check)"
+ },
+ "guardrails": {
+  "committedWireImmutable": true,
+  "guidanceSystemPersonaBytesUnchanged": true,
+  "foregroundOuterPermitsIndependent": true,
+  "productDefaultsUnchanged": true,
+  "noGitCommitOrPush": true,
+  "noRealQqOrModelTraffic": true,
+  "productionDeployment": "executed 2026-11-07 after explicit user authorization; 130-file backup + rollback manifest retained",
+  "productionWrites": "limited to additive migration 011 + deployment overlay; no business data touched"
+ },
+ "items": {
+  "H0-version-freeze": {
+   "status": "PASS",
+   "evidence": [
+    "23/23 manifest hash match",
+    "baseline-pre-restore backup exists"
+   ]
+  },
+  "H1-fixtures-permissions-inbound": {
+   "status": "PASS",
+   "evidence": [
+    "tests/foreground_prompt_test.py 21-burst seals one batch (PASS 21-message burst...)"
+   ],
+   "pending": [
+    "21-burst E2E model-visibility leg (scheduler stub limit)"
+   ],
+   "arbitration": {
+    "sticker_native_test": {
+     "verdict": "pre-existing failure, not this remediation",
+     "evidence": [
+      "fails identically with production-baseline behavior.py swapped in",
+      "fails under both system python and vendored venv",
+      "outside release 215-test scope"
+     ]
+    },
+    "fish_followup_sdk_test": {
+     "verdict": "pre-existing failure, not this remediation",
+     "evidence": [
+      "fails identically with production-baseline behavior.py swapped in"
+     ]
+    },
+    "autonomy-runtime.test.ts": {
+     "verdict": "un-arbitrated integration test",
+     "evidence": [
+      "not part of the release 13-test Node scope (candidate-node-final.log tests 13 pass 13)",
+      "fails at second owner-timer delivery; subagent bisect shows independent of its hunks",
+      "needs dedicated quiet-room arbitration"
+     ]
+    }
+   }
+  },
+  "H2-readonly-delta": {
+   "status": "PASS",
+   "evidence": [
+    "tests/decision_history_test.py 13/13",
+    ".local/h2-replay-20261107/*"
+   ],
+   "metrics": {
+    "realWindows": {
+     "windows": 19,
+     "sumMaxWire": {
+      "old": 6444444,
+      "new": 6424000
+     },
+     "prefixEqualityAsserted": true,
+     "allPassed": true
+    },
+    "controlledTrajectory": {
+     "turns": 35,
+     "readonlyDeltaChars": {
+      "old": 88812,
+      "new": 37858,
+      "reductionPercent": 57.4
+     },
+     "finalWireChars": 56407,
+     "prefixEqualityAndRestoreAsserted": true
+    }
+   }
+  },
+  "H3-outer-35-cycles": {
+   "status": "CODE_DONE_DEPLOY_BLOCKED",
+   "evidence": [
+    "tests/outer_journal_test.py 10/10",
+    "tests/autonomous-coordinator.test.ts 48/48",
+    "migrations/011 registered and applied (schema ready)"
+   ],
+   "blocked": [
+    "capacity gate FAILED on calibrated replay: added_text_limit hit at cycle 19-29 before 35-cycle checkpoint (structural: 256K added budget vs ~15-24K per-cycle growth); blocked cycles cannot count -> deadlock risk",
+    "release gate per plan: H3 must not ship until real-material 35-cycle replay passes",
+    "production keeps incumbent AppendHistory semantics; persistent transport code retained behind gate (.local/h3-replay-20261107/)"
+   ],
+   "required_next": [
+    "record-reference redesign of per-cycle realtime fields in outer view",
+    "real outer captures replay"
+   ]
+  },
+  "H4-cost-fault-heartbeat": {
+   "status": "PASS",
+   "evidence": [
+    "tests/heartbeat.test.ts 4/4",
+    "coordinator usage-reconciliation + classifyFault tests green",
+    "isolation default undefined"
+   ]
+  },
+  "D1-evidence-refs": {
+   "status": "PASS",
+   "evidence": [
+    "tests/d1-evidence.test.ts 4/4"
+   ]
+  },
+  "D2-audience": {
+   "status": "PASS",
+   "evidence": [
+    "tests/d2_audience_test.py 8/8",
+    "rolling audience filter + latest-3 + protected",
+    "core_note/search/memory_search gated"
+   ]
+  },
+  "D3-correction": {
+   "status": "PASS",
+   "evidence": [
+    "tests/d3_correction_test.py 11/11",
+    "value-level blocks with revision fences",
+    "legacy migration additive"
+   ]
+  },
+  "D4-summary-fidelity": {
+   "status": "PASS",
+   "evidence": [
+    "tests/d4_claims_test.py 9/9",
+    "claims v2 with protected coverage gates",
+    "big merge conflict backoff (never drops protected)"
+   ]
+  },
+  "deployment-20261107": {
+   "status": "DONE",
+   "evidence": [
+    "tar sha256 14892392bfc76dfae9224b03f44d8e0dbf358a048a6df7e5e496dd317825a26c",
+    "130 files backed up + backup-manifest.json",
+    "migration 011 applied to fishbot_cutover_20261031c (columns+index verified)",
+    "API container restarted healthy",
+    "2 AI workers replaced at idle boundary (agent 1915835 + QQ processes untouched)",
+    "journals ready/unchanged after reload"
+   ]
+  },
+  "D5-lossless-views": {
+   "status": "PASS",
+   "pending": [
+    "P1-2 request-level action-id dedup across experience projections"
+   ],
+   "evidence": [
+    "tests/context_transport_test.py 31/31",
+    "tests/experience_context_test.py green (attribution whole)",
+    "owner private briefing bounded (unfinished/unknown protected)"
+   ]
+  },
+  "D6-naturalness": {
+   "status": "PASS",
+   "pending": [
+    "vocabulary/System-byte items queued for legal System permit (by design)"
+   ],
+   "evidence": [
+    "engaged->replied neutralization",
+    "motive author/acceptance ledger",
+    "expression use-only accounting",
+    "model_error idempotent notification"
+   ]
+  },
+  "D7-proactive-budget": {
+   "status": "PASS",
+   "evidence": [
+    "budget_exhausted/no_candidates/quiet_hours/disabled reason codes",
+    "owner quota NOT enabled (policy option)",
+    "no planning skip path"
+   ]
+  },
+  "D8-favorites": {
+   "status": "PASS",
+   "evidence": [
+    "tests/favorite-maintenance.test.ts 10/10",
+    "prepare idempotent (already_prepared/already_sent)",
+    "raw_text never auto-enabled incl. control-api sync import",
+    "queue diagnostics read-only"
+   ]
+  },
+  "D9-legacy-dry-run": {
+   "status": "PASS",
+   "evidence": [
+    "scripts/d9_legacy_migration_dryrun.py read-only fixture test PASS",
+    "zero production DB writes"
+   ],
+   "blocked": [
+    "production migration execution requires separate authorization"
+   ]
+  },
+  "joint-acceptance": {
+   "status": "PARTIAL",
+   "evidence": [
+    "Windows full discovery 771 tests: 0 real failures (7 script-style loaders by design)",
+    "Node core 68/68 + deployment-affected suites green after fixes",
+    "real-material 19-window replay all pass",
+    "autonomous_pipeline_test EXIT=0 (37 stages)"
+   ],
+   "pending": [
+    "final post-merge full run (after subagent wave2)",
+    "Linux sandbox run (separate authorization)",
+    "quiet-room reruns: sticker_native/autonomy-runtime/pipeline_boundaries/fish_followup_sdk"
+   ]
+  },
+  "commit-2cff48e-verification": {
+   "status": "DONE",
+   "evidence": [
+    "commit 2cff48e pushed to origin/main (98 files, includes all D1-D9/H fixes plus review hardening)",
+    "192 runtime files vs commit tree: 0 normalized differences",
+    "dist-server: 69/69 match",
+    "journals ready: 7356b371 grew 394629->693580 bytes under natural traffic post-deploy (no capacity/reconstruction anomalies)",
+    "source-commit tree intentionally untouched (172 local changes preserved)"
+   ]
+  }
+ },
+ "pendingAuthorization": [
+  "production deployment incl. PG migration 011",
+  "production data migration (D9 execute)",
+  "git commit/push",
+  "Linux sandbox validation run",
+  "policy choices: owner quota / private NO_REPLY switch / isolation thresholds"
+ ],
+ "notWorthFixing": [
+  "split-message mechanics",
+  "receipt wording in summaries",
+  "embedding/vector service for favorites",
+  "raising dailyProactiveLimit",
+  "send-layer word filters"
+ ]
+}

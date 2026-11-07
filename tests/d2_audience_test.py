@@ -54,11 +54,15 @@ class Audience(unittest.IsolatedAsyncioTestCase):
  def test_protected_material_survives_small_quota(self):
   protected=self.summary('与陌生人还有未解决的约定','private:'+STRANGER)
   newer=[self.summary('闲聊'+str(i),'private:'+STRANGER) for i in range(4)]
+  # Protection comes from evidence-backed model selection, never prose keywords.
+  from summary_material import derive_claims
+  claims=derive_claims('private:'+STRANGER,[{'event':'e1','sender_id':STRANGER,'user':'周六八点见','bot':'好','at':1}],{},[],{'commitments':[{'event':'e1','topic':'见面','quote':'周六八点见','who':'user','stage':'accepted'}]})
+  self.db.execute('UPDATE memory_summaries SET schema_version=2,claims=? WHERE id=?',(json.dumps(claims),protected));self.db.commit()
   rolling=[item['id'] for item in self.store.reflection.rolling('private:'+STRANGER)]
   self.assertIn(protected,rolling);self.assertEqual(len(rolling),3);self.assertIn(newer[-1],rolling)
   recent_protected=self.summary('新的纠正已确认','private:'+STRANGER)
   rolling=[item['id'] for item in self.store.reflection.rolling('private:'+STRANGER)]
-  self.assertIn(recent_protected,rolling);self.assertIn(newer[-1],rolling);self.assertEqual(len(rolling),3)
+  self.assertIn(recent_protected,rolling);self.assertIn(protected,rolling);self.assertEqual(len(rolling),3)
  def test_recall_and_search_exclude_self_summary_for_non_owner(self):
   big=self.summary('合并背景含主人私聊内容','self','big',origins=['private:'+OWNER,'group:55555'])
   good=self.summary('平江路夜景','group:55555',people=[STRANGER])

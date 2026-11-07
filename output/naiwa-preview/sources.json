@@ -1,0 +1,589 @@
+{
+  "repository": "https://github.com/fisher-byte/NaiwaHub",
+  "commit": "44683114cb14893043060b51165c07fe4659a907",
+  "selected": [
+    {
+      "stableID": "dot-naiwa-0252",
+      "slug": "dot-naiwa-0252",
+      "file": "originals/nai-wa/dot-naiwa-0252.gif",
+      "fileRole": "original",
+      "title": {
+        "en": "Naiwa can’t hold it in",
+        "zh": "奶蛙绷不住了"
+      },
+      "description": {
+        "en": "Naiwa can’t hold it in. From the animated reaction collection.",
+        "zh": "奶蛙绷不住了。来自奶蛙动态表情收录。"
+      },
+      "type": "gif",
+      "format": "gif",
+      "sourceDeclaredFormat": "gif",
+      "sourceFormatMismatch": false,
+      "mood": {
+        "id": "cute",
+        "en": "Cute",
+        "zh": "可爱"
+      },
+      "tags": {
+        "en": [
+          "animated moment"
+        ],
+        "zh": [
+          "动态瞬间"
+        ]
+      },
+      "series": {
+        "id": "nai-wa",
+        "label": {
+          "en": "Naiwa",
+          "zh": "奶蛙"
+        }
+      },
+      "storyline": [],
+      "sourceURLs": [
+        "https://github.com/musemantic/NaiLoong/blob/e55570fa0311d6437997124347da2b5df9a4329b/assets/memes/naiwa_0096.gif",
+        "https://nai-hub.com/data/naiwa/animated.json",
+        "https://nai-hub.com/index.html",
+        "https://raw.githubusercontent.com/musemantic/NaiLoong/e55570fa0311d6437997124347da2b5df9a4329b/assets/memes/naiwa_0096.gif"
+      ],
+      "sourceLabels": [
+        "dot"
+      ],
+      "collectionBatch": "dot-2026-10-31",
+      "creator": null,
+      "rights": {
+        "status": "unknown",
+        "license": null,
+        "attributionURL": "https://github.com/musemantic/NaiLoong/blob/e55570fa0311d6437997124347da2b5df9a4329b/assets/memes/naiwa_0096.gif"
+      },
+      "rightsUnknown": true,
+      "sourceLicenseClaims": [
+        "unknown",
+        "原图授权及角色/IP 权利未确认；来源代码许可证不自动适用于图片。"
+      ],
+      "missingCompanionNotice": false,
+      "isDerivative": false,
+      "watermarkPolicy": "preserved-byte-for-byte",
+      "width": 240,
+      "height": 240,
+      "frames": 66,
+      "bytes": 551109,
+      "sha256": "04b3d536de2bb533df1a83941690515b3f0ade308f98b0a0b02fdb29b3a23653",
+      "collectedAt": "2026-10-31",
+      "actualFrames": 66,
+      "downloadURL": "https://raw.githubusercontent.com/fisher-byte/NaiwaHub/44683114cb14893043060b51165c07fe4659a907/originals/nai-wa/dot-naiwa-0252.gif"
+    },
+    {
+      "stableID": "dot-naiwa-0255",
+      "slug": "dot-naiwa-0255",
+      "file": "originals/nai-wa/dot-naiwa-0255.gif",
+      "fileRole": "original",
+      "title": {
+        "en": "Doing homework and rubbing that tummy",
+        "zh": "奶蛙写作业摸肚子"
+      },
+      "description": {
+        "en": "Doing homework and rubbing that tummy. From the animated reaction collection.",
+        "zh": "奶蛙写作业摸肚子。来自奶蛙动态表情收录。"
+      },
+      "type": "gif",
+      "format": "gif",
+      "sourceDeclaredFormat": "gif",
+      "sourceFormatMismatch": false,
+      "mood": {
+        "id": "cute",
+        "en": "Cute",
+        "zh": "可爱"
+      },
+      "tags": {
+        "en": [
+          "animated moment"
+        ],
+        "zh": [
+          "动态瞬间"
+        ]
+      },
+      "series": {
+        "id": "nai-wa",
+        "label": {
+          "en": "Naiwa",
+          "zh": "奶蛙"
+        }
+      },
+      "storyline": [],
+      "sourceURLs": [
+        "https://github.com/Musemantic/NaiLoong/blob/8b5ba9fc738254dd52ffa08106c87c44ad54df1c/assets/memes/naiwa_0001.gif",
+        "https://nai-hub.com/data/naiwa/animated.json",
+        "https://nai-hub.com/index.html",
+        "https://raw.githubusercontent.com/Musemantic/NaiLoong/8b5ba9fc738254dd52ffa08106c87c44ad54df1c/assets/memes/naiwa_0001.gif"
+      ],
+      "sourceLabels": [
+        "dot"
+      ],
+      "collectionBatch": "dot-2026-10-31",
+      "creator": null,
+      "rights": {
+        "status": "unknown",
+        "license": null,
+        "attributionURL": "https://github.com/Musemantic/NaiLoong/blob/8b5ba9fc738254dd52ffa08106c87c44ad54df1c/assets/memes/naiwa_0001.gif"
+      },
+      "rightsUnknown": true,
+      "sourceLicenseClaims": [
+        "unknown",
+        "原图授权及角色/IP 权利未确认；来源代码许可证不自动适用于图片。"
+      ],
+      "missingCompanionNotice": false,
+      "isDerivative": false,
+      "watermarkPolicy": "preserved-byte-for-byte",
+      "width": 240,
+      "height": 242,
+      "frames": 15,
+      "bytes": 259214,
+      "sha256": "09401aa47144726b8e84807ee9245e30a4da383b15316c48fce5b4d77b8fd87c",
+      "collectedAt": "2026-10-31",
+      "actualFrames": 15,
+      "downloadURL": "https://raw.githubusercontent.com/fisher-byte/NaiwaHub/44683114cb14893043060b51165c07fe4659a907/originals/nai-wa/dot-naiwa-0255.gif"
+    },
+    {
+      "stableID": "dot-naiwa-0261",
+      "slug": "dot-naiwa-0261",
+      "file": "originals/nai-wa/dot-naiwa-0261.gif",
+      "fileRole": "original",
+      "title": {
+        "en": "Pouring iced tea",
+        "zh": "奶蛙倒冰红茶喝"
+      },
+      "description": {
+        "en": "Pouring iced tea. From the animated reaction collection.",
+        "zh": "奶蛙倒冰红茶喝。来自奶蛙动态表情收录。"
+      },
+      "type": "gif",
+      "format": "gif",
+      "sourceDeclaredFormat": "gif",
+      "sourceFormatMismatch": false,
+      "mood": {
+        "id": "cute",
+        "en": "Cute",
+        "zh": "可爱"
+      },
+      "tags": {
+        "en": [
+          "animated moment"
+        ],
+        "zh": [
+          "动态瞬间"
+        ]
+      },
+      "series": {
+        "id": "nai-wa",
+        "label": {
+          "en": "Naiwa",
+          "zh": "奶蛙"
+        }
+      },
+      "storyline": [],
+      "sourceURLs": [
+        "https://github.com/GeorgeNaNN/nailong-memes/blob/ea5703e70ddbdc666de6be25c8a8f905a2203863/gif/C818B7AB164236821ADFEF7D49517AE5.gif",
+        "https://github.com/WencueCryforme/NaiWa-Universe/blob/b717bc9980922b649815f4626c2f2b7949172d70/dist/meme/%E5%A5%B6%E8%9B%99%E7%9A%84%E6%97%A5%E5%B8%B8%E7%94%9F%E6%B4%BB/%E5%A5%B6%E8%9B%99%E5%93%81%E9%89%B4%E5%86%B0%E7%BA%A2%E8%8C%B6.gif",
+        "https://github.com/musemantic/NaiLoong/blob/e55570fa0311d6437997124347da2b5df9a4329b/assets/memes/naiwa_0094.gif",
+        "https://nai-hub.com/data/naiwa/animated.json",
+        "https://nai-hub.com/index.html",
+        "https://raw.githubusercontent.com/GeorgeNaNN/nailong-memes/ea5703e70ddbdc666de6be25c8a8f905a2203863/gif/C818B7AB164236821ADFEF7D49517AE5.gif",
+        "https://raw.githubusercontent.com/WencueCryforme/NaiWa-Universe/b717bc9980922b649815f4626c2f2b7949172d70/dist/meme/%E5%A5%B6%E8%9B%99%E7%9A%84%E6%97%A5%E5%B8%B8%E7%94%9F%E6%B4%BB/%E5%A5%B6%E8%9B%99%E5%93%81%E9%89%B4%E5%86%B0%E7%BA%A2%E8%8C%B6.gif",
+        "https://raw.githubusercontent.com/musemantic/NaiLoong/e55570fa0311d6437997124347da2b5df9a4329b/assets/memes/naiwa_0094.gif"
+      ],
+      "sourceLabels": [
+        "dot",
+        "github"
+      ],
+      "collectionBatch": "dot-2026-10-31",
+      "creator": null,
+      "rights": {
+        "status": "unknown",
+        "license": null,
+        "attributionURL": "https://github.com/GeorgeNaNN/nailong-memes/blob/ea5703e70ddbdc666de6be25c8a8f905a2203863/gif/C818B7AB164236821ADFEF7D49517AE5.gif"
+      },
+      "rightsUnknown": true,
+      "sourceLicenseClaims": [
+        "MIT (repository; image rights unverified)",
+        "unknown",
+        "原图授权及角色/IP 权利未确认；来源代码许可证不自动适用于图片。"
+      ],
+      "missingCompanionNotice": false,
+      "isDerivative": false,
+      "watermarkPolicy": "preserved-byte-for-byte",
+      "width": 240,
+      "height": 240,
+      "frames": 50,
+      "bytes": 519825,
+      "sha256": "1ccaf10a20d3bcec28ac3c2070ba1927907149050597452cad6fec9ea3d4e2ae",
+      "collectedAt": "2026-10-31",
+      "actualFrames": 50,
+      "downloadURL": "https://raw.githubusercontent.com/fisher-byte/NaiwaHub/44683114cb14893043060b51165c07fe4659a907/originals/nai-wa/dot-naiwa-0261.gif"
+    },
+    {
+      "stableID": "dot-naiwa-0289",
+      "slug": "dot-naiwa-0289",
+      "file": "originals/nai-wa/dot-naiwa-0289.gif",
+      "fileRole": "original",
+      "title": {
+        "en": "Contemplating life in the rain",
+        "zh": "奶蛙在雨中思考人生"
+      },
+      "description": {
+        "en": "Contemplating life in the rain. From the animated reaction collection.",
+        "zh": "奶蛙在雨中思考人生。来自奶蛙动态表情收录。"
+      },
+      "type": "gif",
+      "format": "gif",
+      "sourceDeclaredFormat": "gif",
+      "sourceFormatMismatch": false,
+      "mood": {
+        "id": "cute",
+        "en": "Cute",
+        "zh": "可爱"
+      },
+      "tags": {
+        "en": [
+          "animated moment"
+        ],
+        "zh": [
+          "动态瞬间"
+        ]
+      },
+      "series": {
+        "id": "nai-wa",
+        "label": {
+          "en": "Naiwa",
+          "zh": "奶蛙"
+        }
+      },
+      "storyline": [],
+      "sourceURLs": [
+        "https://github.com/musemantic/NaiLoong/blob/ab974a47c2a5e731a22ff9f5a7f23f60e62c3fd9/assets/memes/naiwa_0050.gif",
+        "https://nai-hub.com/data/naiwa/animated.json",
+        "https://nai-hub.com/index.html",
+        "https://raw.githubusercontent.com/musemantic/NaiLoong/ab974a47c2a5e731a22ff9f5a7f23f60e62c3fd9/assets/memes/naiwa_0050.gif"
+      ],
+      "sourceLabels": [
+        "dot"
+      ],
+      "collectionBatch": "dot-2026-10-31",
+      "creator": null,
+      "rights": {
+        "status": "unknown",
+        "license": null,
+        "attributionURL": "https://github.com/musemantic/NaiLoong/blob/ab974a47c2a5e731a22ff9f5a7f23f60e62c3fd9/assets/memes/naiwa_0050.gif"
+      },
+      "rightsUnknown": true,
+      "sourceLicenseClaims": [
+        "unknown",
+        "原图授权及角色/IP 权利未确认；来源代码许可证不自动适用于图片。"
+      ],
+      "missingCompanionNotice": false,
+      "isDerivative": false,
+      "watermarkPolicy": "preserved-byte-for-byte",
+      "width": 451,
+      "height": 300,
+      "frames": 18,
+      "bytes": 1176865,
+      "sha256": "ac79a91dab24c43dcb6f473a7e015d69cbe7f0dc413a198fe5972fff31e8f65d",
+      "collectedAt": "2026-10-31",
+      "actualFrames": 18,
+      "downloadURL": "https://raw.githubusercontent.com/fisher-byte/NaiwaHub/44683114cb14893043060b51165c07fe4659a907/originals/nai-wa/dot-naiwa-0289.gif"
+    },
+    {
+      "stableID": "dot-naiwa-0288",
+      "slug": "dot-naiwa-0288",
+      "file": "originals/nai-wa/dot-naiwa-0288.gif",
+      "fileRole": "original",
+      "title": {
+        "en": "Naiwa standing, wobbling, and smiling",
+        "zh": "奶蛙站立抖动微笑"
+      },
+      "description": {
+        "en": "Naiwa standing, wobbling, and smiling. From the animated reaction collection.",
+        "zh": "奶蛙站立抖动微笑。来自奶蛙动态表情收录。"
+      },
+      "type": "gif",
+      "format": "gif",
+      "sourceDeclaredFormat": "gif",
+      "sourceFormatMismatch": false,
+      "mood": {
+        "id": "happy",
+        "en": "Happy",
+        "zh": "开心"
+      },
+      "tags": {
+        "en": [
+          "animated moment",
+          "laugh"
+        ],
+        "zh": [
+          "动态瞬间",
+          "笑"
+        ]
+      },
+      "series": {
+        "id": "nai-wa",
+        "label": {
+          "en": "Naiwa",
+          "zh": "奶蛙"
+        }
+      },
+      "storyline": [],
+      "sourceURLs": [
+        "https://github.com/WencueCryforme/NaiWa-Universe/blob/b717bc9980922b649815f4626c2f2b7949172d70/dist/meme/%E5%A5%B6%E8%9B%99%E7%9A%84%E5%AF%B9%E7%A7%B0%E7%94%9F%E6%B4%BB/%E5%AF%B9%E7%A7%B0%E5%A5%B6%E8%9B%99%E7%94%A9%E8%82%A9.gif",
+        "https://github.com/musemantic/NaiLoong/blob/ab974a47c2a5e731a22ff9f5a7f23f60e62c3fd9/assets/memes/naiwa_0019.gif",
+        "https://nai-hub.com/data/naiwa/animated.json",
+        "https://nai-hub.com/index.html",
+        "https://raw.githubusercontent.com/WencueCryforme/NaiWa-Universe/b717bc9980922b649815f4626c2f2b7949172d70/dist/meme/%E5%A5%B6%E8%9B%99%E7%9A%84%E5%AF%B9%E7%A7%B0%E7%94%9F%E6%B4%BB/%E5%AF%B9%E7%A7%B0%E5%A5%B6%E8%9B%99%E7%94%A9%E8%82%A9.gif",
+        "https://raw.githubusercontent.com/musemantic/NaiLoong/ab974a47c2a5e731a22ff9f5a7f23f60e62c3fd9/assets/memes/naiwa_0019.gif"
+      ],
+      "sourceLabels": [
+        "dot",
+        "github"
+      ],
+      "collectionBatch": "dot-2026-10-31",
+      "creator": null,
+      "rights": {
+        "status": "unknown",
+        "license": null,
+        "attributionURL": "https://github.com/musemantic/NaiLoong/blob/ab974a47c2a5e731a22ff9f5a7f23f60e62c3fd9/assets/memes/naiwa_0019.gif"
+      },
+      "rightsUnknown": true,
+      "sourceLicenseClaims": [
+        "unknown",
+        "原图授权及角色/IP 权利未确认；来源代码许可证不自动适用于图片。"
+      ],
+      "missingCompanionNotice": false,
+      "isDerivative": false,
+      "watermarkPolicy": "preserved-byte-for-byte",
+      "width": 304,
+      "height": 300,
+      "frames": 37,
+      "bytes": 635810,
+      "sha256": "a2efdaa2d8f2ba7f4f29d8112e9341ba1ffd284991ace4dbc472c45d95e8239c",
+      "collectedAt": "2026-10-31",
+      "actualFrames": 37,
+      "downloadURL": "https://raw.githubusercontent.com/fisher-byte/NaiwaHub/44683114cb14893043060b51165c07fe4659a907/originals/nai-wa/dot-naiwa-0288.gif"
+    },
+    {
+      "stableID": "dot-naiwa-0277",
+      "slug": "dot-naiwa-0277",
+      "file": "originals/nai-wa/dot-naiwa-0277.gif",
+      "fileRole": "original",
+      "title": {
+        "en": "Smashes the alarm and goes back to sleep",
+        "zh": "奶蛙拍碎闹钟继续睡觉"
+      },
+      "description": {
+        "en": "Smashes the alarm and goes back to sleep. From the animated reaction collection.",
+        "zh": "奶蛙拍碎闹钟继续睡觉。来自奶蛙动态表情收录。"
+      },
+      "type": "gif",
+      "format": "gif",
+      "sourceDeclaredFormat": "gif",
+      "sourceFormatMismatch": false,
+      "mood": {
+        "id": "chill",
+        "en": "Chill",
+        "zh": "放松"
+      },
+      "tags": {
+        "en": [
+          "animated moment",
+          "sleep"
+        ],
+        "zh": [
+          "动态瞬间",
+          "睡"
+        ]
+      },
+      "series": {
+        "id": "nai-wa",
+        "label": {
+          "en": "Naiwa",
+          "zh": "奶蛙"
+        }
+      },
+      "storyline": [],
+      "sourceURLs": [
+        "https://github.com/musemantic/NaiLoong/blob/a7b1122cbccbb16e5f47e3f49742cad3d59bd161/assets/memes/naiwa_0157.gif",
+        "https://nai-hub.com/data/naiwa/animated.json",
+        "https://nai-hub.com/index.html",
+        "https://raw.githubusercontent.com/musemantic/NaiLoong/a7b1122cbccbb16e5f47e3f49742cad3d59bd161/assets/memes/naiwa_0157.gif"
+      ],
+      "sourceLabels": [
+        "dot"
+      ],
+      "collectionBatch": "dot-2026-10-31",
+      "creator": null,
+      "rights": {
+        "status": "unknown",
+        "license": null,
+        "attributionURL": "https://github.com/musemantic/NaiLoong/blob/a7b1122cbccbb16e5f47e3f49742cad3d59bd161/assets/memes/naiwa_0157.gif"
+      },
+      "rightsUnknown": true,
+      "sourceLicenseClaims": [
+        "unknown",
+        "原图授权及角色/IP 权利未确认；来源代码许可证不自动适用于图片。"
+      ],
+      "missingCompanionNotice": false,
+      "isDerivative": false,
+      "watermarkPolicy": "preserved-byte-for-byte",
+      "width": 240,
+      "height": 240,
+      "frames": 121,
+      "bytes": 1210062,
+      "sha256": "58a27b04a4e4ef8e3d395478b12478d8419577e06fadc507cdd9710448161eca",
+      "collectedAt": "2026-10-31",
+      "actualFrames": 121,
+      "downloadURL": "https://raw.githubusercontent.com/fisher-byte/NaiwaHub/44683114cb14893043060b51165c07fe4659a907/originals/nai-wa/dot-naiwa-0277.gif"
+    },
+    {
+      "stableID": "dot-naiwa-0306",
+      "slug": "dot-naiwa-0306",
+      "file": "originals/nai-wa/dot-naiwa-0306.gif",
+      "fileRole": "original",
+      "title": {
+        "en": "Naiwa slips on the stairs while looking at the phone",
+        "zh": "奶蛙看手机下楼滑倒"
+      },
+      "description": {
+        "en": "Naiwa slips on the stairs while looking at the phone. From the animated reaction collection.",
+        "zh": "奶蛙看手机下楼滑倒。来自奶蛙动态表情收录。"
+      },
+      "type": "gif",
+      "format": "gif",
+      "sourceDeclaredFormat": "gif",
+      "sourceFormatMismatch": false,
+      "mood": {
+        "id": "cute",
+        "en": "Cute",
+        "zh": "可爱"
+      },
+      "tags": {
+        "en": [
+          "animated moment"
+        ],
+        "zh": [
+          "动态瞬间"
+        ]
+      },
+      "series": {
+        "id": "nai-wa",
+        "label": {
+          "en": "Naiwa",
+          "zh": "奶蛙"
+        }
+      },
+      "storyline": [],
+      "sourceURLs": [
+        "https://github.com/musemantic/NaiLoong/blob/7b3510220121bd0034b97f0005bd78b7b27c9303/assets/memes/naiwa_0014.gif",
+        "https://nai-hub.com/data/naiwa/animated.json",
+        "https://nai-hub.com/index.html",
+        "https://raw.githubusercontent.com/musemantic/NaiLoong/7b3510220121bd0034b97f0005bd78b7b27c9303/assets/memes/naiwa_0014.gif"
+      ],
+      "sourceLabels": [
+        "dot"
+      ],
+      "collectionBatch": "dot-2026-10-31",
+      "creator": null,
+      "rights": {
+        "status": "unknown",
+        "license": null,
+        "attributionURL": "https://github.com/musemantic/NaiLoong/blob/7b3510220121bd0034b97f0005bd78b7b27c9303/assets/memes/naiwa_0014.gif"
+      },
+      "rightsUnknown": true,
+      "sourceLicenseClaims": [
+        "unknown",
+        "原图授权及角色/IP 权利未确认；来源代码许可证不自动适用于图片。"
+      ],
+      "missingCompanionNotice": false,
+      "isDerivative": false,
+      "watermarkPolicy": "preserved-byte-for-byte",
+      "width": 240,
+      "height": 292,
+      "frames": 118,
+      "bytes": 935501,
+      "sha256": "d1c41a6084598b3a3e87f0fa03dd660bfd4a957ad815643f475697d96bfd1721",
+      "collectedAt": "2026-10-31",
+      "actualFrames": 118,
+      "downloadURL": "https://raw.githubusercontent.com/fisher-byte/NaiwaHub/44683114cb14893043060b51165c07fe4659a907/originals/nai-wa/dot-naiwa-0306.gif"
+    },
+    {
+      "stableID": "dot-naiwa-0314",
+      "slug": "dot-naiwa-0314",
+      "file": "originals/nai-wa/dot-naiwa-0314.gif",
+      "fileRole": "original",
+      "title": {
+        "en": "Naiwa goes from holding it in to laughing out loud",
+        "zh": "奶蛙从绷住到狂笑"
+      },
+      "description": {
+        "en": "Naiwa goes from holding it in to laughing out loud. From the animated reaction collection.",
+        "zh": "奶蛙从绷住到狂笑。来自奶蛙动态表情收录。"
+      },
+      "type": "gif",
+      "format": "gif",
+      "sourceDeclaredFormat": "gif",
+      "sourceFormatMismatch": false,
+      "mood": {
+        "id": "happy",
+        "en": "Happy",
+        "zh": "开心"
+      },
+      "tags": {
+        "en": [
+          "animated moment",
+          "laugh"
+        ],
+        "zh": [
+          "动态瞬间",
+          "笑"
+        ]
+      },
+      "series": {
+        "id": "nai-wa",
+        "label": {
+          "en": "Naiwa",
+          "zh": "奶蛙"
+        }
+      },
+      "storyline": [],
+      "sourceURLs": [
+        "https://github.com/musemantic/NaiLoong/blob/7f4b87fbb04b7cb8494b626f51a0808754dcf38e/assets/memes/naiwa_0074.gif",
+        "https://nai-hub.com/data/naiwa/animated.json",
+        "https://nai-hub.com/index.html",
+        "https://raw.githubusercontent.com/musemantic/NaiLoong/7f4b87fbb04b7cb8494b626f51a0808754dcf38e/assets/memes/naiwa_0074.gif"
+      ],
+      "sourceLabels": [
+        "dot"
+      ],
+      "collectionBatch": "dot-2026-10-31",
+      "creator": null,
+      "rights": {
+        "status": "unknown",
+        "license": null,
+        "attributionURL": "https://github.com/musemantic/NaiLoong/blob/7f4b87fbb04b7cb8494b626f51a0808754dcf38e/assets/memes/naiwa_0074.gif"
+      },
+      "rightsUnknown": true,
+      "sourceLicenseClaims": [
+        "unknown",
+        "原图授权及角色/IP 权利未确认；来源代码许可证不自动适用于图片。"
+      ],
+      "missingCompanionNotice": false,
+      "isDerivative": false,
+      "watermarkPolicy": "preserved-byte-for-byte",
+      "width": 380,
+      "height": 300,
+      "frames": 32,
+      "bytes": 873027,
+      "sha256": "e97ec2818de49eeb4582a1c52a24293fda761a880584764c42562c799153bae6",
+      "collectedAt": "2026-10-31",
+      "actualFrames": 32,
+      "downloadURL": "https://raw.githubusercontent.com/fisher-byte/NaiwaHub/44683114cb14893043060b51165c07fe4659a907/originals/nai-wa/dot-naiwa-0314.gif"
+    }
+  ]
+}

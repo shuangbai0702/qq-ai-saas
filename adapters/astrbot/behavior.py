@@ -1293,7 +1293,7 @@ def install_runtime(core,settings):
             except BaseException as error:
                 if foreground and journal.last is None:owned.model_journals.pop(key,None)
                 from model_cache import record_diagnostic
-                evidence=model_json(owned.reflection and journal.refusal_evidence() or {})[:240]
+                evidence=model_json(owned.reflection and journal.refusal_evidence() or {})[:1024]
                 record_diagnostic(image_event.get_extra('_hosted_lease'),{'kind':'context','phase':'foreground',
                     'workId':work.event_id,'resetReason':'journal_prepare_refused','resetDetail':type(error).__name__,
                     'diagnosticDetail':evidence})

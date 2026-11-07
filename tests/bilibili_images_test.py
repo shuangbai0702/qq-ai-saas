@@ -43,7 +43,7 @@ async def main():
             assert data['status']=='prepared' and prepared.content[1].type=='image'
             assert base64.b64decode(prepared.content[1].data)==db.execute('SELECT png FROM bili_image_assets WHERE handle=?',(handle,)).fetchone()[0]
             qqtool=next(t for t in qq_actions.tools(event,settings['config'],db,lambda:current,settings) if t.name=='hosted_qq_avatar')
-            assert '确认操作成功' in await qqtool.call(context,image_handle=handle)
+            assert '已确认该操作' in await qqtool.call(context,image_handle=handle)
             assert len(calls)==1 and calls[0]['file'].startswith('base64://')
             assert '不会重复执行' in await qqtool.call(context,image_handle=handle) and len(calls)==1
             foreign=images.tools(settings,event,other,lambda:True,extras['_hosted_internal_work'])[0]

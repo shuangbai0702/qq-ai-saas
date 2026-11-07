@@ -17,8 +17,33 @@
     "implemented": ["A", "B", "C", "D", "E", "F", "G(复用验证)"],
     "localTested": ["A", "B", "C", "D", "E", "F", "G(复用回归)"],
     "modelVerified": [],
-    "deployed": [],
+    "deployed": ["代码层: 49c0568(17:50)与热修ff23667(18:13)均已部署生产"],
     "sessionRestored": []
+  },
+  "hotfix_ff23667": {
+    "incident": "部署重启后小双白私聊scope再触发ContextReconstructionDenied; 新中性通知按设计发出(D包生效); A包诊断首次实战命中(排除容量, addedTextHeadroom=96693, request_not_sent)",
+    "rootCause": "既有设计缺陷与本次修改无关: worker重启丢失内存态SDK原生会话(data_v4.db为0字节), 原生视图与81条已提交base零重叠, 所有后缀机制无法证明; 12:41重启当时靠web许可救援(该通道已被B包关闭)",
+    "fix": "fresh_event_extension: 零重叠fresh视图下, 尾部首元素为未提交的协议来源user事件且全尾无已知事件时, 追加该尾部; 任一已知事件仍需合法许可; 拒绝诊断携带内部reason",
+    "verification": "真实生产快照离线复现: PREPARE OK, fresh_native_window, 前缀134条逐字节不变, 仅追加新轮次; Python全套797项零回归",
+    "deployed": "18:13内容级替换, pythonSources 61/61, 容器healthy无traceback",
+    "pending": "该scope下一条自然消息的恢复确认(交接待办第一优先)"
+  },
+  "deployment": {
+    "authorized": true,
+    "commit": "49c0568",
+    "builtAt": "2026-11-07T09:46:51Z",
+    "server": "huaweicloud-production(110.41.11.66)",
+    "steps": {
+      "precheck": "4容器healthy; 真实库fishbot_cutover_20261031c迁移001-011齐全; 磁盘余量5.8G; 无新PG迁移需求",
+      "backup": "/opt/fishbot-backup-20261107-pre49c0568/: 代码tar 84.9M + PG pg_dump -Fc 3.6M + 16个behavior.sqlite在线备份38.1M(含WAL合并,完整性校验通过)",
+      "contentSwap": "bind-mount inode约束下的内容级替换; 部署后与候选逐字节一致(dist-server 141/141, adapters .py 61/61)",
+      "restart": "docker restart api+agent; 容器healthy; agent心跳新鲜; 无recover-命令",
+      "fingerprint": "两个AI运行时FISHBOT_RUNTIME_BUILD三项sourceMatchesLoaded:true; 容器内确认retirement_deferred/pending_coverage/新通知文案已加载",
+      "protocol": "4个QQ协议bot(693475e2/7356b371/99ba4892/d18ad07d) ai ready+protocol online全true"
+    },
+    "scope": "dist-server(含d0006fb TS修复) + adapters/astrbot全量; web前端/packages/templates/scripts未变更; 生产数据库零写操作",
+    "rollback": "备份tar内容级回灌+容器重启; 已消费许可与已确认发送不受影响",
+    "pendingVerification": "自然流量下的首个35轮检查点与guard分型(15-30分钟观测窗口)"
   },
   "packages": {
     "A_baseline_diagnostics": {
@@ -117,7 +142,7 @@
     },
     "typescript": {
       "memoryRelated": "19/19 pass",
-      "fullSuite": "见报告第9节; memory-runtime集成在HEAD基线同样失败(预存环境问题)",
+      "fullSuite": "293 pass / 15 fail — 已核实为本地环境/预存类: api.test.ts(2个,含PG schema)与memory-runtime在干净HEAD同样复现失败; 其余13个native SDK集成测试(同一worker拉起基础设施)逐项stash基线核验列入交接待办",
       "updated": ["memory-runtime.test.ts(新通知合同)", "autonomous_pipeline_test.py(研究/Facts新合同)", "d4_claims_test.py", "p1_commitments_test.py", "readonly_journal_test.py", "context_crash_test.py(重写)"],
       "assertionPolicy": "仅按新合同更新,未删除有效验证,未降低断言"
     },
