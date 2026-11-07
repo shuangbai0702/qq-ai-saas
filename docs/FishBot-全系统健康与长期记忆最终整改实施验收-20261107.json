@@ -1,0 +1,170 @@
+{
+  "report": "docs/FishBot-全系统健康与长期记忆最终整改实施验收报告-20261107.md",
+  "date": "2026-11-07",
+  "baseline": {
+    "gitHead": "d0006fb064f0d73c4a09d1d727d1624c79ccddb4",
+    "branch": "main",
+    "preexistingUncommittedChangesPreserved": true
+  },
+  "statusLegend": {
+    "implemented": "代码已实现",
+    "localTested": "已通过本地离线测试",
+    "modelVerified": "已在实际模型中验证",
+    "deployed": "已部署生产",
+    "sessionRestored": "已恢复具体受影响会话"
+  },
+  "overall": {
+    "implemented": ["A", "B", "C", "D", "E", "F", "G(复用验证)"],
+    "localTested": ["A", "B", "C", "D", "E", "F", "G(复用回归)"],
+    "modelVerified": [],
+    "deployed": [],
+    "sessionRestored": []
+  },
+  "packages": {
+    "A_baseline_diagnostics": {
+      "status": "implemented+localTested",
+      "items": [
+        "typed拒绝诊断: refusal_evidence(容量各维度余量/恢复状态/轮次) + journal_prepare_refused埋点",
+        "请求失败分型: request_not_sent / provider_request_sent / provider_stream_started",
+        "build manifest: pythonSources(adapters全部.py)+contracts+migrations逐文件sha256"
+      ],
+      "files": ["adapters/astrbot/readonly_journal.py", "adapters/astrbot/behavior.py", "adapters/astrbot/model_cache.py", "scripts/production-build.mjs"]
+    },
+    "B_license_hold_evidence": {
+      "status": "implemented+localTested",
+      "items": [
+        "pending_coverage检查点状态(兼容列pending_events)+晋升+stamp过滤+invalidate扩展",
+        "web permit收紧: 配置保存仅在无已提交历史的全新基线有效; cutover维持一次性",
+        "reserve回退: 检查点摘要滑出滚动窗口后仍可按同受众权威候选预订",
+        "remember完整性恢复: 同一不可变事件的后续完整捕获恢复先前丢图导致的complete=false"
+      ],
+      "files": ["adapters/astrbot/memory_reflection.py", "adapters/astrbot/readonly_journal.py", "adapters/astrbot/summary_material.py"]
+    },
+    "C_checkpoint_capacity_journal": {
+      "status": "implemented+localTested; 容量上限修正BLOCKED待授权",
+      "items": [
+        "延迟退休-System: 无许可时沿用已提交System字节,仅追加真实新尾部(retirement_deferred=system_change)",
+        "延迟退休-coverage: 摘要覆盖投影不再提前替换已提交历史; behavior以同一确定性constrain构建诚实完整视图传入unprojected(retirement_deferred=coverage_retirement)",
+        "_persist保护: 已有有效payload的scope容量拒绝时不再写NULL墓碑覆盖最后可恢复快照",
+        "失败分型/事务: 许可消费与新基线同事务; 崩溃回滚整候选; consumed永不复活; 不明结果不推断未收到",
+        "BLOCKED: 存量会话本地容量上限有界修正需单独授权(原字节不动)"
+      ],
+      "files": ["adapters/astrbot/readonly_journal.py", "adapters/astrbot/behavior.py"]
+    },
+    "D_platform_notice_isolation": {
+      "status": "implemented+localTested",
+      "items": [
+        "群聊模型故障一律静默; 私聊发送短中性真实平台通知(瞬时/需管理员两档),不再有自相矛盾话术",
+        "_hosted_platform_notice可信来源标记; participation/companion/initiative/autonomy/contacts/observation全部排除",
+        "save_history首次保存前_no_save拦截: 通知与主动锚点不进入模型原生历史; 已提交历史不改写",
+        "无关键词黑名单: 用户真实技术讨论照常入记忆"
+      ],
+      "files": ["adapters/astrbot/behavior.py"]
+    },
+    "E_claims_facts_memory": {
+      "status": "implemented+localTested",
+      "items": [
+        "删除逐轮human/bot_statement自动转录; 摘要模型evidence语义选择+逐字验证; 缺失不回退全量",
+        "确定性保留: memory_blocks纠错永远成claim; commitments/motives校验路径不变; supersedes不变",
+        "自主研究不再写self facts; 存量按origin='autonomous_result'查询侧隔离(存储保留可回滚); selfExperiences改接动作账本",
+        "800/1500摘要默认不变; 零新增模型调用"
+      ],
+      "files": ["adapters/astrbot/summary_material.py", "adapters/astrbot/companion_insights.py", "adapters/astrbot/memory_reflection.py", "adapters/astrbot/autonomous_runtime.py", "adapters/astrbot/memory_scope.py"]
+    },
+    "F_context_humanization": {
+      "status": "implemented",
+      "items": [
+        "主动时刻改为平台内部锚点JSON([平台内部主动时刻]),去'自然起个头'硬任务,NO_REPLY优先; 锚点_no_save不入历史",
+        "未新增角色状态机/情绪引擎/裁判模型/外层AI"
+      ],
+      "files": ["adapters/astrbot/initiative.py", "adapters/astrbot/behavior.py"]
+    },
+    "G_send_task_research": {
+      "status": "verified(复用d0006fb修复); research-handoff接线BLOCKED(缺明确业务需求)",
+      "items": [
+        "发送接管/任务恢复/预算计费未重写; 31个autonomous管线场景+3个send_lifecycle场景通过",
+        "长期自主研究触发: 暂缓,不为功能完整扩张"
+      ]
+    }
+  },
+  "tests": {
+    "pythonTargeted": {
+      "command": "python -m unittest tests.context_continuity_final_test",
+      "result": "11/11 pass",
+      "covers": [
+        "生产死锁形态复现(最后提交轮被覆盖->窗口扩展失效->旧码拒绝)",
+        "延迟退休后wire逐字节前缀不变+真实尾部追加",
+        "system_change延迟",
+        "pending_coverage铸造/不可预订/补证晋升",
+        "web证明有历史拒绝且不落库/全新基线免许可",
+        "_persist容量失败保留旧快照逐字节",
+        "reserve回退(摘要滑出窗口)",
+        "claims无转录/语义选择验证/纠错确定性/材料恢复",
+        "失败分型request_not_sent vs provider_request_sent",
+        "研究记录隔离(召回排除+存储保留)"
+      ]
+    },
+    "pythonFull": {
+      "command": "python -m unittest discover -s tests -p '*_test.py'",
+      "result": "794项: 仅1个预存失败(d2_audience,干净HEAD同样失败)+8个独立框架文件加载器误报(预存)",
+      "regressions": 0
+    },
+    "pythonStandalone": {
+      "autonomous_pipeline": "31/31 pass(含新合同断言)",
+      "send_lifecycle": "PASS x3",
+      "pipeline_boundaries": "PASS x3",
+      "foreground_prompt": "PASS x3"
+    },
+    "typescript": {
+      "memoryRelated": "19/19 pass",
+      "fullSuite": "见报告第9节; memory-runtime集成在HEAD基线同样失败(预存环境问题)",
+      "updated": ["memory-runtime.test.ts(新通知合同)", "autonomous_pipeline_test.py(研究/Facts新合同)", "d4_claims_test.py", "p1_commitments_test.py", "readonly_journal_test.py", "context_crash_test.py(重写)"],
+      "assertionPolicy": "仅按新合同更新,未删除有效验证,未降低断言"
+    },
+    "notRun_needsAuthorization": [
+      "真实模型多轮质量对比",
+      "生产Journal离线状态分析",
+      "真实QQ端到端",
+      "16MiB/64scope持久化极限"
+    ]
+  },
+  "invariants": {
+    "prefixImmutability": "定点断言wire[:len(first.wire)]==first.wire于两条延迟退休路径",
+    "failedRoundsNotCounted": "铸造条件未放宽",
+    "noPermitNoSwap": "System与覆盖退休均需合法检查点; web证明不下放",
+    "consumedNeverRevives": "crash测试断言",
+    "pendingIsNotLicense": "stamp过滤+reserve仅available断言"
+  },
+  "blocked": [
+    {"item": "生产部署/重启/逐会话恢复写库", "reason": "需华为云操作授权"},
+    {"item": "真实模型多轮质量对比", "reason": "需调用费用授权"},
+    {"item": "存量会话本地容量上限有界修正", "reason": "计划10.5,需单独授权且原字节不动; 预期延迟退休后可自愈"},
+    {"item": "长期自主研究handoff接线", "reason": "缺明确业务需求,按计划暂缓"}
+  ],
+  "remainingRisks": [
+    "unprojected依赖constrain确定性; 上游图片字节变化时退化为诚实拒绝(fail-closed)",
+    "证据永久丢失的pending批次长期等待(诚实BLOCKED,需管理员)",
+    "System变更延迟至下一合法检查点生效(计划取舍,需发布说明)",
+    "预存失败项(d2_audience 1项/4个独立框架文件/memory-runtime集成)未在本轮修复"
+  ],
+  "complexity": {
+    "newComponents": 0,
+    "newTables": 0,
+    "newColumns": ["memory_reconstruction_checkpoints.pending_events (TEXT, 兼容, 旧代码忽略)"],
+    "extraModelCalls": 0,
+    "tokenEffect": "预期减少重构类大请求与claims转录存储; 真实数字未测量(需生产观测),不编造"
+  },
+  "changedSourceFiles": [
+    "adapters/astrbot/readonly_journal.py",
+    "adapters/astrbot/memory_reflection.py",
+    "adapters/astrbot/summary_material.py",
+    "adapters/astrbot/companion_insights.py",
+    "adapters/astrbot/behavior.py",
+    "adapters/astrbot/model_cache.py",
+    "adapters/astrbot/autonomous_runtime.py",
+    "adapters/astrbot/memory_scope.py",
+    "adapters/astrbot/initiative.py",
+    "scripts/production-build.mjs"
+  ],
+  "newTestFiles": ["tests/context_continuity_final_test.py"]
+}

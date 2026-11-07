@@ -288,8 +288,17 @@ def finish_attempt(status,response=None,reason=None):
     contract=value.get('systemContract')
     if contract is not None and value.get('systemReservation') is not None:
         contract.settle(value['systemReservation'],status=='completed',time.time())
+    # Typed request-outcome evidence: a local rejection before the HTTP body
+    # was handed over is NOT the same state as "the provider received a
+    # request but the outcome is unknown". Unknown is never read as
+    # "the model never saw this request".
+    detail=None
+    if status!='completed':
+        detail=('provider_stream_started' if value.get('firstResponseMs') is not None else
+                'provider_request_sent') if value.get('wireIndex') else 'request_not_sent'
     record_diagnostic(value.get('lease'),{'kind':'request_result','attemptId':value['attemptId'],'phase':value['phase'],'workId':value['workId'],
         'status':status,'reason':reason,'durationMs':round((time.monotonic()-value['started'])*1000),'firstResponseMs':value.get('firstResponseMs'),'costStatus':'unknown',
+        'diagnosticDetail':detail,
         **(usage_evidence(response) if response is not None else {})})
 
 def first_response():

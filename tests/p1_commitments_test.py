@@ -47,10 +47,9 @@ class DeriveTests(unittest.TestCase):
     def test_keyword_chatter_stays_ordinary_material(self):
         payload=turns(('6','今天学习承诺协议的定义','挺好的'))
         claims=self.derive(payload,{})
-        hit=[c for c in claims if '承诺' in c['text']]
-        self.assertTrue(hit,'the statement is still carried')
-        for claim in hit:
-            self.assertFalse(material.protected_claim(claim),'a keyword mention is not a recorded protection judgment')
+        self.assertEqual([c for c in claims if '承诺' in c['text']],[],
+            'unselected keyword chatter is not transcribed, hence never protected')
+        self.assertTrue(all(not material.protected_claim(c) for c in claims))
         kept,dropped=material.fit_claims(claims)
         self.assertEqual(dropped,set())
 

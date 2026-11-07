@@ -546,6 +546,20 @@ def install_runtime(core,settings):
         if event.get_extra('_hosted_lease') is not None:
             st=stores.get(event.get_platform_id());epoch=event.get_extra('_hosted_memory_epoch')
             if not current(event) or epoch is not None and (st is None or st.reflection.epoch()!=epoch):return
+        # First-save interception, never a rewrite of committed turns: a
+        # platform failure notice is status, not a persona turn, and a
+        # proactive anchor is an internal platform event, never the
+        # recipient's own words. Neither becomes model conversation history.
+        # Only messages after the final user turn of this request qualify, so
+        # an already committed turn can never be dropped from the save.
+        if isinstance(all_messages,list) and all_messages:
+            last_user=max((i for i,m in enumerate(all_messages) if getattr(m,'role',None)=='user'),default=-1)
+            if event.get_extra('_hosted_platform_notice',False):
+                for message in all_messages[last_user+1:]:
+                    if getattr(message,'role',None)=='assistant':message._no_save=True
+            elif event.get_extra('_hosted_initiative',False) and not event.get_extra('_hosted_model_error',False):
+                for message in all_messages[last_user+1:]:
+                    if getattr(message,'role',None)=='user' and isinstance(getattr(message,'content',None),str) and message.content.startswith(initiative.PROACTIVE_ANCHOR):message._no_save=True
         replacement=event.get_extra('_hosted_freshness_history')
         if replacement is not None:
             updated=group_freshness.history_override(all_messages,replacement,event.get_extra('_hosted_freshness_history_original'))
@@ -813,7 +827,17 @@ def install_runtime(core,settings):
             # AstrBot's native error reply can contain raw upstream exception
             # text. Keep typed failure telemetry, never forward it to QQ.
             guard_error=self.get_extra('_hosted_context_guard_error')
-            text='本轮上下文完整性校验未通过，未发送回复。' if guard_error else '我这边刚才没连上，稍后再跟我说一声。'
+            if str(self.get_group_id() or ''):
+                # A passive or proactive group failure stays silent: a platform
+                # fault is never published to a group in the persona's voice.
+                self.set_extra('_hosted_platform_notice',True)
+                bot_pipeline.stop(self,'model_error','error')
+                return
+            # One short, neutral, true private notice. It is a platform status
+            # message, not a persona turn: marked as such, excluded from every
+            # experience write, and never saved into model conversation history.
+            text='这条消息暂时没有处理成功，需要管理员检查后才能恢复，稍后再试。' if guard_error else '这条消息暂时没有处理成功，稍后可以再试。'
+            self.set_extra('_hosted_platform_notice',True)
             message=copy.copy(message);message.chain=[Plain(text)]
             bot_pipeline.stop(self,'model_error','error')
         if all(isinstance(x,Plain) for x in message.chain) and is_no_reply_marker(''.join(x.text for x in message.chain if isinstance(x,Plain))):
@@ -1001,15 +1025,19 @@ def install_runtime(core,settings):
                     confirmed_text.append(''.join(x.text for x in outgoing.chain if isinstance(x,Plain)))
                     if self.get_extra('_hosted_freshness_history') is not None:self.set_extra('_hosted_freshness_history','\n'.join(confirmed_text))
                     received_at=time.time();who='' if self.get_extra('_hosted_initiative',False) else str(self.get_sender_id())
-                    autonomy.note_interaction(active_store.db,s['config'],scope,who,received_at)
-                    if admitted and decision:
-                        self.set_extra('_hosted_group_decision',{**decision,'version':active_store.presence.snapshot(scope)[2]})
-                    if group:autonomy.note_reply(active_store.db,scope,who,received_at)
-                    initiative.outgoing(active_store.db,scope,'\n'.join(confirmed_text),received_at)
+                    # A platform notice is not a persona interaction: it never
+                    # touches interaction clocks, replies, initiative output or
+                    # any conversation-experience store.
+                    if not self.get_extra('_hosted_platform_notice',False):
+                        autonomy.note_interaction(active_store.db,s['config'],scope,who,received_at)
+                        if admitted and decision:
+                            self.set_extra('_hosted_group_decision',{**decision,'version':active_store.presence.snapshot(scope)[2]})
+                        if group:autonomy.note_reply(active_store.db,scope,who,received_at)
+                        initiative.outgoing(active_store.db,scope,'\n'.join(confirmed_text),received_at)
                     self.set_extra('_hosted_final_text','\n'.join(confirmed_text))
                     if rhythm.get('memory',True) and not self.get_extra('_hosted_initiative',False) and not self.get_extra('_hosted_model_error',False):
                         active_store.reflection.confirmed_prefix(scope,str(self.get_sender_id()),getattr(self.message_obj,'message_id',''),'\n'.join(confirmed_text),self.get_extra('_hosted_memory_epoch',-1))
-                    if rhythm.get('memory',True) and active_store.reflection.epoch()==self.get_extra('_hosted_memory_epoch',-1):
+                    if rhythm.get('memory',True) and not self.get_extra('_hosted_platform_notice',False) and active_store.reflection.epoch()==self.get_extra('_hosted_memory_epoch',-1):
                         active_store.participation.confirmed(scope,'\n'.join(confirmed_text),received_at,who,getattr(self.message_obj,'message_id',''),{'sender_id':str(self.get_self_id()),'message_ids':(self.get_extra('_hosted_protocol_receipts_by_scope') or {}).get(scope,[]),'receipt':'confirmed','complete':work.confirmed_messages>=work.planned_messages})
             if not self.get_extra('_hosted_initiative',False):
                 started=self.get_extra('_hosted_received_at')
@@ -1029,10 +1057,12 @@ def install_runtime(core,settings):
         active_store=store(id,s)
         bot_pipeline.stage(self,'commit')
         if rhythm.get('styleLearning'):social.expression_sent(scope,text,request=self.get_message_str())
-        if not work or not work.confirmed:
-            autonomy.note_interaction(active_store.db,s['config'],scope,'' if self.get_extra('_hosted_initiative',False) else str(self.get_sender_id()),time.time())
-            if group:autonomy.note_reply(active_store.db,scope,'' if self.get_extra('_hosted_initiative',False) else str(self.get_sender_id()),time.time())
-        if group:active_store.participation.outgoing(scope,text,subject='' if self.get_extra('_hosted_initiative',False) else str(self.get_sender_id()),request='' if self.get_extra('_hosted_initiative',False) else self.get_message_str(),event=getattr(self.message_obj,'message_id',''),persist=rhythm.get('memory',True) and active_store.reflection.epoch()==self.get_extra('_hosted_memory_epoch',-1))
+        notice=bool(self.get_extra('_hosted_platform_notice',False)) or bool(self.get_extra('_hosted_model_error',False))
+        if not notice:
+            if not work or not work.confirmed:
+                autonomy.note_interaction(active_store.db,s['config'],scope,'' if self.get_extra('_hosted_initiative',False) else str(self.get_sender_id()),time.time())
+                if group:autonomy.note_reply(active_store.db,scope,'' if self.get_extra('_hosted_initiative',False) else str(self.get_sender_id()),time.time())
+            if group:active_store.participation.outgoing(scope,text,subject='' if self.get_extra('_hosted_initiative',False) else str(self.get_sender_id()),request='' if self.get_extra('_hosted_initiative',False) else self.get_message_str(),event=getattr(self.message_obj,'message_id',''),persist=rhythm.get('memory',True) and active_store.reflection.epoch()==self.get_extra('_hosted_memory_epoch',-1))
         if not self.get_extra('_hosted_initiative',False) and not self.get_extra('_hosted_model_error',False):
             # Successful replies establish a real interaction, including a
             # member who joined naturally without @. Do not count silent turns.
@@ -1040,11 +1070,14 @@ def install_runtime(core,settings):
             if group:
                 active_store.db.execute('UPDATE companion_members SET directed=?,unanswered=0 WHERE scope=? AND subject=?',(time.time(),scope,str(self.get_sender_id())))
                 active_store.db.execute('UPDATE contacts SET unanswered=0 WHERE scope=?',(scope,));active_store.db.commit()
-        companion_state.outgoing(active_store.db,s['config'],scope,str(self.get_sender_id()),text,getattr(self.message_obj,'message_id',''),time.time(),internal=self.get_extra('_hosted_initiative',False),request=self.get_message_str())
-        if contact:
-            m=metrics.setdefault(id,{});m['autonomousGroupSent']=m.get('autonomousGroupSent',0)+1
-            active_store.db.execute("UPDATE companion_motives SET status='contacted' WHERE scope=? AND subject=? AND status='open'",(scope,contact));active_store.db.commit()
-        initiative.outgoing(active_store.db,scope,text,time.time());metrics.setdefault(id,{}).setdefault('replies',0);metrics[id]['replies']+=1
+        if not notice:
+            companion_state.outgoing(active_store.db,s['config'],scope,str(self.get_sender_id()),text,getattr(self.message_obj,'message_id',''),time.time(),internal=self.get_extra('_hosted_initiative',False),request=self.get_message_str())
+            if contact:
+                m=metrics.setdefault(id,{});m['autonomousGroupSent']=m.get('autonomousGroupSent',0)+1
+                active_store.db.execute("UPDATE companion_motives SET status='contacted' WHERE scope=? AND subject=? AND status='open'",(scope,contact));active_store.db.commit()
+            initiative.outgoing(active_store.db,scope,text,time.time());metrics.setdefault(id,{}).setdefault('replies',0);metrics[id]['replies']+=1
+        else:
+            m=metrics.setdefault(id,{});m['platformNotices']=m.get('platformNotices',0)+1
         complete_receipts=bool(work and work.planned_messages>0 and work.confirmed_messages==work.planned_messages)
         if complete_receipts and rhythm.get('memory',True) and self.get_extra('_hosted_memory_epoch',active_store.reflection.epoch())==active_store.reflection.epoch() and not self.get_extra('_hosted_initiative',False) and not self.get_extra('_hosted_model_error',False):
             # Media-only replies are completed business rounds too. Preserve
@@ -1180,7 +1213,7 @@ def install_runtime(core,settings):
         record_diagnostic(event.get_extra('_hosted_lease'),{'kind':'context_result','phase':'inner_execution' if event.get_extra('_hosted_internal_work') else 'foreground',
             'status':('commit' if retained else 'not_retained') if success and valid and material_current else 'abort' if valid and material_current else 'retire',
             'reason':None if retained else 'candidate_or_size_boundary' if success and valid and material_current else 'request_failed' if valid and material_current else 'summary_changed_during_request' if valid else 'authority_changed',
-            'resetDetail':prepared.detail,**(prepared.usage or {})})
+            'resetDetail':prepared.detail,'diagnosticDetail':getattr(journal,'recovery_error',None) or prepared.retirement_deferred or None,**(prepared.usage or {})})
     async def prepare_chat_payload(self,*args,**kwargs):
         payload,query=await prepare(self,*args,**kwargs)
         journal_reason=None
@@ -1199,14 +1232,24 @@ def install_runtime(core,settings):
             from readonly_journal import ContextRecoveryUnavailable
             raise ContextRecoveryUnavailable('A foreground request has no bot-owned append-only journal.')
         memory_capture=bool(foreground and (setting(image_event)['config'].get('behavior') or {}).get('memory',True))
-        signatures={}
+        signatures={};native_view=None
         if memory_capture:
+            native_view=projected
             signatures={str(origin['event_id']):digest(m) for m in projected if (origin:=source(m)) and origin['scope']==work.scope}
             before_count=len(projected)
             projected=project_history(projected,coverage(owned.db,work.scope,signatures),work.scope,work.event_id)
             stats=metrics.setdefault(image_event.get_platform_id(),{})
             stats['summaryHistoryMessagesOmitted']=stats.get('summaryHistoryMessagesOmitted',0)+before_count-len(projected)
         projected=await constrain_messages(projected)
+        # When this projection dropped covered blocks, the journal also needs
+        # the constrained full native view: the honest pre-retirement image of
+        # the same source. It is built by the same deterministic per-message
+        # constrain over the same input, so continuing on the committed prefix
+        # without a license stays byte-faithful (retirement defers to the
+        # next legal checkpoint instead of replacing committed history).
+        unprojected_for_journal=None
+        if memory_capture and native_view is not None and len(native_view)>len(projected):
+            unprojected_for_journal=await constrain_messages(native_view)
         fence=image_event.get_extra('_hosted_context_fence') if foreground else None
         if fence:
             owner,context_epoch,ids,scope,dependency=fence
@@ -1244,10 +1287,16 @@ def install_runtime(core,settings):
                                          reconstruction_web_proof=web_proof,reconstruction_context_scope=work.scope,
                                          retirement=owned.reflection.reconstruction_stamp(work.scope) if foreground else dependency,
                                          strict=foreground,compact_policy=foreground,guarded=foreground,
-                                         retained_validator=(lambda wire:retained_context_visible(owned.db,wire,work.scope,str((lease['config'].get('behavior') or {}).get('ownerUin') or ''))) if foreground else None)
+                                         retained_validator=(lambda wire:retained_context_visible(owned.db,wire,work.scope,str((lease['config'].get('behavior') or {}).get('ownerUin') or ''))) if foreground else None,
+                                         unprojected=unprojected_for_journal)
                 if prepared:prepared.validation_dependency=dependency
-            except BaseException:
+            except BaseException as error:
                 if foreground and journal.last is None:owned.model_journals.pop(key,None)
+                from model_cache import record_diagnostic
+                evidence=model_json(owned.reflection and journal.refusal_evidence() or {})[:240]
+                record_diagnostic(image_event.get_extra('_hosted_lease'),{'kind':'context','phase':'foreground',
+                    'workId':work.event_id,'resetReason':'journal_prepare_refused','resetDetail':type(error).__name__,
+                    'diagnosticDetail':evidence})
                 raise
             if prepared:
                 journal_reason=prepared.reason or 'append'
@@ -1259,6 +1308,7 @@ def install_runtime(core,settings):
                 from model_cache import record_diagnostic
                 record_diagnostic(image_event.get_extra('_hosted_lease'),{'kind':'context','phase':'inner_execution' if internal else 'foreground',
                     'workId':work.event_id,'resetReason':prepared.reason or None,'resetDetail':prepared.detail or None,
+                    'diagnosticDetail':prepared.retirement_deferred or None,
                     'baseChars':prepared.base_chars,
                     'layoutVersion':1,'journalScopeKind':'foreground' if foreground else 'inner_work',
                     'committedPrefixMessages':len(prepared.base),

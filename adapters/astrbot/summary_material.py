@@ -116,8 +116,16 @@ def remember(db,scope,materials):
             if prior.get('digest')!=item.get('digest'):continue
             fill_reply=not prior.get('reply') and item.get('reply')
             fill_native=prior.get('native_reply') is None and item.get('native_reply') is not None
-            if not fill_reply and not fill_native:continue
-            item={**prior,**({'reply':item['reply']} if fill_reply else {}),**({'native_reply':item['native_reply'],'complete':prior['complete'] and item['complete']} if fill_native else {})}
+            # A later complete capture of the same immutable event may restore
+            # completeness the store could not retain earlier (dropped media);
+            # it never downgrades an already complete prior proof.
+            fill_complete=(not prior.get('complete')) and bool(item.get('complete'))
+            if not fill_reply and not fill_native and not fill_complete:continue
+            item={**prior,**({'reply':item['reply']} if fill_reply else {}),
+                  **({'native_reply':item['native_reply']} if fill_native else {}),
+                  **({'images':item['images']} if fill_complete and item.get('images') else {})}
+            if fill_complete:item['complete']=True
+            elif fill_native:item['complete']=prior['complete'] and item['complete']
         item=dict(item)
         item['text']=re.sub(r'(?i)\bsk-[A-Za-z0-9_-]{12,}|Bearer\s+\S+','[凭据已移除]',item.get('text',''))
         item['reply']=re.sub(r'(?i)\bsk-[A-Za-z0-9_-]{12,}|Bearer\s+\S+','[凭据已移除]',item.get('reply',''))
@@ -262,9 +270,13 @@ def batch_corrections(db,scope,events):
 
 
 def derive_claims(scope,payload,materials,corrections,data=None):
-    """One claim per role-bearing turn plus verified corrections and open
-    topics. Speakers come from the trusted payload/block rows, delivery from
-    the confirmed reply. Native wording stays a bot_statement marked observed:
+    """Semantically selected evidence, deterministic corrections and open
+    topics. The summary model chooses the statements with real future value
+    (facts, changes, relations, agreements) as verbatim quotes; code only
+    verifies speaker, scope, event and evidence identity. Ordinary chatter is
+    covered by the summary prose and is never transcribed claim-per-turn.
+    Speakers come from the trusted payload/block rows; delivery from the
+    confirmed reply. Native wording stays a bot_statement marked observed:
     it is never a human statement and never a second delivery (D4.1/D4.2)."""
     rows={str(row.get('event')):row for row in payload or [] if isinstance(row,dict) and row.get('event') is not None}
     stored={str(key):value for key,value in (materials or {}).items() if isinstance(value,dict)}
@@ -276,33 +288,50 @@ def derive_claims(scope,payload,materials,corrections,data=None):
             # 800-character display row. Native-only replies prove no delivery.
             if role=='user':return observed['text'].split('\n',1)[-1]
             if observed.get('reply'):return observed['reply']
+            if isinstance(observed.get('native_reply'),str) and observed['native_reply'].strip():return observed['native_reply']
         return str(row.get(role,'') or '')
     claims=[]
-    for event,row in rows.items():
-        material_row=stored.get(event) or {};signature=material_row.get('digest','')
+    # Deterministic corrections: a verified memory_blocks record always yields
+    # its claim, never depending on model selection.
+    for event,record in corrected.items():
+        row=rows.get(str(event))
+        if not row:continue
         user_text=str(row.get('user','') or '').strip()
-        if user_text and user_text!=PLACEHOLDER_TEXT:
-            record=corrected.get(event)
-            kind='correction' if record else 'human_statement'
-            claim={'id':claim_identity(scope,event,kind,user_text),'text':user_text,
-                'kind':kind,'speaker':{'role':'human','id':record['subject'] if record else str(row.get('sender_id',''))},
-                'about':record['name'] if record else '','sourceRefs':[claim_ref(record['scope'] if record else scope,event,'user',signature)],
-                'occurredAt':row.get('at'),'status':'applied' if record else 'active','visibility':record['scope'] if record else scope}
-            if record:claim['protected']=True;claim['value']=record['v']
-            elif protected_claim(claim):claim['protected']=True
-            if not protected_claim(claim):claim['text']=user_text[:CLAIM_TEXT]
-            claims.append(claim)
-        bot_text=str(row.get('bot','') or '').strip();native=material_row.get('native_reply')
-        if bot_text or isinstance(native,str) and native.strip():
-            text=bot_text or native.strip()
-            claim={'id':claim_identity(scope,event,'bot_statement',text),'text':text,'kind':'bot_statement',
-                'speaker':{'role':'bot'},'about':'','sourceRefs':[claim_ref(scope,event,'bot',signature)],
-                'occurredAt':row.get('at'),'status':'confirmed' if bot_text else 'observed','visibility':scope,
-                'delivery':'confirmed' if bot_text else 'observed'}
-            if bot_text and isinstance(native,str) and native.strip() and native.strip()!=bot_text:claim['nativeRefs']=[claim_ref(scope,event,'native',signature)]
-            if protected_claim(claim):claim['protected']=True
-            else:claim['text']=text[:CLAIM_TEXT]
-            claims.append(claim)
+        if not user_text or user_text==PLACEHOLDER_TEXT:continue
+        signature=(stored.get(str(event)) or {}).get('digest','')
+        claims.append({'id':claim_identity(scope,event,'correction',user_text),'text':user_text,
+            'kind':'correction','speaker':{'role':'human','id':record['subject']},'about':record['name'],
+            'sourceRefs':[claim_ref(record['scope'],event,'user',signature)],
+            'occurredAt':row.get('at'),'status':'applied','visibility':record['scope'],'protected':True,'value':record['v']})
+    # Model-selected evidence for this batch: each entry must quote one
+    # speaker's own text verbatim; invalid or unattributable entries are
+    # dropped. A missing/empty selection is honest: low-value batches keep
+    # only their deterministic claims instead of a fallback transcription.
+    selected=(data or {}).get('evidence') if isinstance(data,dict) else None
+    for item in selected if isinstance(selected,list) else []:
+        if not isinstance(item,dict):continue
+        event=str(item.get('event',''));row=rows.get(event)
+        who=item.get('who');role='user' if who=='user' else 'bot' if who=='bot' else None
+        quote=item.get('quote')
+        if row is None or role is None or not isinstance(quote,str) or len(quote.strip())<2:continue
+        if role=='user' and event in corrected:continue  # covered deterministically above
+        text=evidence_text(event,row,role)
+        if quote not in text:continue
+        quote=quote.strip()
+        material_row=stored.get(event) or {};signature=material_row.get('digest','')
+        if role=='user':
+            claims.append({'id':claim_identity(scope,event,'human_statement',quote),'text':quote[:CLAIM_TEXT],
+                'kind':'human_statement','speaker':{'role':'human','id':str(row.get('sender_id',''))},'about':'',
+                'sourceRefs':[claim_ref(scope,event,'user',signature)],'occurredAt':row.get('at'),
+                'status':'active','visibility':scope})
+        else:
+            confirmed_reply=material_row.get('reply','') if valid_material(material_row,scope) else ''
+            delivered=bool(confirmed_reply) and quote in confirmed_reply
+            claims.append({'id':claim_identity(scope,event,'bot_statement',quote),'text':quote[:CLAIM_TEXT],
+                'kind':'bot_statement','speaker':{'role':'bot'},'about':'',
+                'sourceRefs':[claim_ref(scope,event,'bot',signature)],'occurredAt':row.get('at'),
+                'status':'confirmed' if delivered else 'observed','visibility':scope,
+                'delivery':'confirmed' if delivered else 'observed'})
     motives=(data or {}).get('motives') if isinstance(data,dict) else None
     for item in motives if isinstance(motives,list) else []:
         if not isinstance(item,dict) or item.get('status')!='open':continue

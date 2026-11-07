@@ -461,21 +461,23 @@ async def main():
         assert evidence_limits([{'source':'new_undeclared_source'}])==['证据源能力范围未经声明，不应推断已验证其内容。']
         assert calls==[] and 'social' not in research_context[0] and research_context[0]['identity']['sender_id']=='0'
         assert 'state' in research_context[0] and 'companion' in research_context[0]
-        remembered=st.memory.recall('self','0','inspect actual persisted companion context',time.time())
-        assert any(x['origin']=='autonomous_result' and 'research_result_summary_not_verified_facts' in x['value'] for x in remembered),remembered
-        assert json.loads(remembered[0]['value'])['evidenceLimits']==result['evidenceLimits']
+        # Research outcomes stay in the authoritative action ledger and
+        # execution-memory recall; they never become persona self facts.
+        assert not st.memory.recall('self','0','inspect actual persisted companion context',time.time()),'research task results must not be written into self facts'
         assert not st.memory.recall('private:12345678','12345678','inspect actual persisted companion context',time.time()),'private self research leaked into a human profile'
+        assert st.db.execute("SELECT count(*) FROM facts WHERE scope='self' AND subject='0'").fetchone()[0]==0
         again=await brain.handle('qq','execute',{'work':w,'action':{'kind':'research','objective':'inspect the actual persisted companion context'}})
         assert len(research_requests)==2 and again['status']=='completed'
-        assert st.db.execute("SELECT count(*) FROM facts WHERE scope='self' AND subject='0'").fetchone()[0]==1,'duplicate action created a second experience'
-        # Turning memory off is authoritative even for successful research.
+        assert st.db.execute("SELECT count(*) FROM facts WHERE scope='self' AND subject='0'").fetchone()[0]==0,'duplicate action created no experience either'
+        # Turning memory off is still authoritative for the ledger snapshot.
         settings['qq']['config']['behavior']['memory']=False
         p={**p,'actionId':str(uuid.uuid4())};w={**w,'id':p['actionId']};brain.install('qq',p)
         research_requests.clear()
         result=await brain.handle('qq','execute',{'work':w,'action':{'kind':'research','objective':'inspect another context with memory disabled'}})
-        assert result['status']=='completed' and st.db.execute("SELECT count(*) FROM facts WHERE scope='self' AND subject='0'").fetchone()[0]==1,'disabled memory stored a new experience'
+        assert result['status']=='completed' and st.db.execute("SELECT count(*) FROM facts WHERE scope='self' AND subject='0'").fetchone()[0]==0,'no experience row in any memory mode'
         settings['qq']['config']['behavior']['memory']=True
-        assert brain.snapshot('qq')['selfExperiences'][0]['origin']=='autonomous_result'
+        self_experience=brain.snapshot('qq')['selfExperiences'][0]
+        assert self_experience['kind']=='research' and 'origin' not in self_experience or self_experience.get('origin')=='autonomous_result',self_experience
         mode='research_late';barrier=asyncio.Event();release=asyncio.Event();research_requests.clear()
         p={**p,'actionId':str(uuid.uuid4()),'until':time.time()*1000+14000};w={**w,'id':p['actionId']};brain.install('qq',p)
         task=asyncio.create_task(brain.handle('qq','execute',{'work':w,'action':{'kind':'research','objective':'read while the user resets memory'}}))
@@ -483,7 +485,7 @@ async def main():
         st.db.execute('UPDATE memory_reflection_control SET epoch=epoch+1 WHERE id=1');st.db.commit()
         release.set();result=await asyncio.wait_for(task,5)
         assert result['status']=='canceled' and result['stopReason']=='internal_work_stale' and len(research_requests)==1,result
-        assert st.db.execute("SELECT count(*) FROM facts WHERE scope='self' AND subject='0'").fetchone()[0]==1,'late research restored memory after a reset'
+        assert st.db.execute("SELECT count(*) FROM facts WHERE scope='self' AND subject='0'").fetchone()[0]==0,'late research wrote nothing after a reset'
         print('PIPELINE read-only research uses shared identity/memory, actual tool evidence and no QQ send passed')
 
         calls.clear();mode='memory_late';barrier=asyncio.Event();release=asyncio.Event();p,w,st=setup('memory-reply-reset')

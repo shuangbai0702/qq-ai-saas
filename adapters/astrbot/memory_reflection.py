@@ -87,7 +87,7 @@ def invalidate(db,scope,subject=''):
     if 'memory_vectors' in tables:db.execute('DELETE FROM memory_vectors WHERE summary_id NOT IN (SELECT id FROM memory_summaries)')
     db.execute('UPDATE memory_reflection_control SET epoch=epoch+1 WHERE id=1')
     if 'memory_reconstruction_checkpoints' in tables:
-        db.execute("UPDATE memory_reconstruction_checkpoints SET state='invalidated',request_id=NULL WHERE state IN ('available','reserved')")
+        db.execute("UPDATE memory_reconstruction_checkpoints SET state='invalidated',request_id=NULL,pending_events=NULL WHERE state IN ('available','reserved','pending_coverage')")
 
 
 class Reflection:
@@ -120,6 +120,10 @@ class Reflection:
         db.execute('CREATE TABLE IF NOT EXISTS memory_hold_rounds(scope TEXT,event TEXT,round_id INTEGER,reason TEXT,created REAL,PRIMARY KEY(scope,event))')
         checkpoint_columns={row[1] for row in db.execute('PRAGMA table_info(memory_reconstruction_checkpoints)')}
         if 'summary_id' not in checkpoint_columns:db.execute('ALTER TABLE memory_reconstruction_checkpoints ADD COLUMN summary_id INTEGER')
+        # Bounded pending-coverage proof: the exact events a real 35-round
+        # batch completed but could not yet prove covered. Old code ignores
+        # the column; 'pending_coverage' state is never an available license.
+        if 'pending_events' not in checkpoint_columns:db.execute('ALTER TABLE memory_reconstruction_checkpoints ADD COLUMN pending_events TEXT')
         # D4: structured claims ride the existing tables. Existing rows keep
         # schema_version=1 with no claims; they are never back-filled.
         for table in ('memory_summaries','memory_core_notes'):
@@ -160,9 +164,11 @@ class Reflection:
 
         Query-selected summaries can vary without being a new checkpoint.
         Their content/provenance is separately fenced across each await.
+        A pending-coverage registration is not a completed checkpoint: it
+        must never retire wire or imply an available license.
         """
         epoch=self.epoch()
-        row=self.db.execute('SELECT coalesce(max(through_round_id),0) FROM memory_reconstruction_checkpoints WHERE scope=? AND epoch=?',(scope,epoch)).fetchone()
+        row=self.db.execute("SELECT coalesce(max(through_round_id),0) FROM memory_reconstruction_checkpoints WHERE scope=? AND epoch=? AND state IN ('available','reserved','consumed')",(scope,epoch)).fetchone()
         return hashlib.sha256(model_json([epoch,scope,row[0]]).encode()).hexdigest()
     def corrections_stamp(self,scope):
         """Correction revisions this scope's assembled material depends on.
@@ -218,6 +224,13 @@ class Reflection:
             if ids:
                 scope_marks=','.join('?' for _ in scopes);id_marks=','.join('?' for _ in ids)
                 row=self.db.execute(f"SELECT c.id,c.scope,c.epoch,c.summary_id FROM memory_reconstruction_checkpoints c JOIN memory_summaries s ON s.id=c.summary_id WHERE c.scope IN ({scope_marks}) AND c.summary_id IN ({id_marks}) AND c.round_count=35 AND c.state='available' ORDER BY c.created DESC,c.id DESC LIMIT 1",(*sorted(scopes),*ids)).fetchone()
+            if row is None:
+                # A valid checkpoint may have aged out of the request's rolling
+                # summary window. Its own stored summary row is the validity
+                # proof, so reserve it from the same audience's authoritative
+                # candidates — never a guessed id and never a wider scope.
+                scope_marks=','.join('?' for _ in scopes)
+                row=self.db.execute(f"SELECT c.id,c.scope,c.epoch,c.summary_id FROM memory_reconstruction_checkpoints c JOIN memory_summaries s ON s.id=c.summary_id WHERE c.scope IN ({scope_marks}) AND c.round_count=35 AND c.state='available' AND c.epoch=? ORDER BY c.created DESC,c.id DESC LIMIT 1",(*sorted(scopes),epoch)).fetchone()
             if row:
                 if row[2]!=epoch:
                     self.db.execute("UPDATE memory_reconstruction_checkpoints SET state='invalidated',request_id=NULL WHERE id=? AND state='available'",(row[0],))
@@ -586,6 +599,24 @@ class Reflection:
             AND EXISTS (SELECT 1 FROM memory_hold_rounds h WHERE h.scope=r.scope AND h.event=r.event AND h.reason<>'lost')
             ORDER BY r.id LIMIT 8''',(scope,watermark)).fetchall()
 
+    def _promote_pending_checkpoints(self,scope):
+        """Promote a pending-coverage checkpoint only on complete proof.
+
+        Every event the batch waited for must now carry a complete coverage
+        proof in this scope. Promotion is the actual mint of the license; it
+        runs inside the caller's summary transaction and never revives a
+        consumed or invalidated checkpoint.
+        """
+        rows=self.db.execute("SELECT id,pending_events FROM memory_reconstruction_checkpoints WHERE scope=? AND state='pending_coverage'",(scope,)).fetchall()
+        if not rows:return
+        covered={row[0] for row in self.db.execute('SELECT event FROM memory_summary_coverage WHERE scope=?',(scope,))}
+        for identifier,raw in rows:
+            try:pending=json.loads(raw) if raw else []
+            except (ValueError,TypeError):continue
+            if not isinstance(pending,list) or not pending:continue
+            if any(str(event) not in covered for event in pending):continue
+            self.db.execute("UPDATE memory_reconstruction_checkpoints SET state='available' WHERE id=? AND state='pending_coverage'",(identifier,))
+
     def retry(self):
         if not self.binding:return False
         cfg,provider,is_current,metrics,event_var=self.binding
@@ -683,7 +714,7 @@ class Reflection:
                         from companion_insights import SYSTEM as system,snapshot
                         before=snapshot(self.db,scope,{r['sender_id'] for r in payload})
                         system+=' 本次同时生成最多800字符摘要与有证据的其他整理字段。'
-                    else:system=SYSTEM.replace('600','800')+' 输出JSON：{"summary":"摘要","commitments":[{"event":"本批事件ID","topic":"主题","quote":"该说话人必要原话","who":"user或bot","stage":"proposed或accepted或unknown或executed或canceled"}]}。按语义保留真正重要且仍有效的约定和待办，不按关键词判断；提议、接受、未知、完成和取消必须区分，状态须有原文支持。'
+                    else:system=SYSTEM.replace('600','800')+' 输出JSON：{"summary":"摘要","evidence":[{"event":"本批真实事件ID","who":"user或bot","quote":"该说话人12-40字必要原话片段"}],"commitments":[{"event":"本批事件ID","topic":"主题","quote":"该说话人必要原话","who":"user或bot","stage":"proposed或accepted或unknown或executed或canceled"}]}。evidence按未来价值做语义选择：只收明确影响后续判断的事实、变化、纠错、关系与约定相关原话，普通寒暄、客套、情绪问候和无需长期记住的交流一律省略，宁缺毋滥，本批没有有价值证据就省略该字段；quote必须是该说话人原文的逐字片段，不转述不拼接。commitments按语义保留真正重要且仍有效的约定和待办，不按关键词判断；提议、接受、未知、完成和取消必须区分，状态须有原文支持。'
                     system+=' previous_commitments是此前有来源的未完约定；若本批同一说话人有更晚原话明确接受、完成或取消同一事项，在对应commitments条目可附supersedes:[此前真实claim的id]。没有明确关系或来源不一致则省略，不猜匹配。重要状态变化须写入summary，旧约定不能继续描述成当前有效。'
                 materials={}
                 if job!='big':
@@ -744,6 +775,9 @@ class Reflection:
                         self.db.execute("UPDATE memory_reconstruction_checkpoints SET state='invalidated',request_id=NULL WHERE state IN ('available','reserved') AND summary_id IN ("+marks+')',ids)
                         self.db.execute('DELETE FROM memory_vectors WHERE summary_id IN ('+marks+')',ids)
                         self.db.execute('DELETE FROM memory_summaries WHERE id IN ('+marks+')',ids)
+                        # Merge coverage carry can complete a pending batch's
+                        # proof inside the merge product's own audience.
+                        self._promote_pending_checkpoints(merge_scope)
                         metrics['bigSummariesSaved']=metrics.get('bigSummariesSaved',0)+1
                     else:
                         self.db.execute('INSERT OR IGNORE INTO memory_reflection_progress(scope) VALUES(?)',(scope,))
@@ -803,12 +837,25 @@ class Reflection:
                         # and scopes with an unresolved hold inside the
                         # reconstruction range never issue one.
                         new_rows=[r for r in rows if r[0]>summary_from]
-                        if (not holds and summary_rounds==35 and len(new_rows)==35 and
+                        if (summary_rounds==35 and len(new_rows)==35 and
                             all(isinstance(r[1],str) and r[1] and isinstance(r[2],str) and r[2] and
                                 isinstance(r[3],str) and r[3].strip() and isinstance(r[4],str) and r[4].strip() and
                                 isinstance(r[5],(int,float)) for r in new_rows) and
                             not self.db.execute('SELECT 1 FROM memory_hold_rounds WHERE scope=? AND (round_id IS NULL OR round_id<=?)',(scope,rows[-1][0])).fetchone()):
-                            self.db.execute('INSERT OR IGNORE INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,created,summary_id) VALUES(?,?,35,?,\'available\',?,?)',(scope,rows[-1][0],epoch,time.time(),identifier))
+                            # The exact 35 completed business rounds earn exactly
+                            # one license. With unresolved coverage inside the
+                            # range the batch keeps its identity as
+                            # pending_coverage — a real, bounded waiting state
+                            # that is never an available permit and never
+                            # retires wire; promotion below mints the license
+                            # only after every waited event has a complete
+                            # coverage proof. Evidence that is truly lost stays
+                            # pending honestly instead of being forged complete.
+                            pending=list(dict.fromkeys([str(event) for event in holds]))[:64]
+                            state='available' if not pending else 'pending_coverage'
+                            self.db.execute('INSERT OR IGNORE INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,created,summary_id,pending_events) VALUES(?,?,35,?,?,?,?,?)',
+                                            (scope,rows[-1][0],epoch,state,time.time(),identifier,json.dumps(pending,ensure_ascii=False) if pending else None))
+                        self._promote_pending_checkpoints(scope)
                     self.db.execute('DELETE FROM memory_reflection_retry WHERE scope=?',(scope,))
                 # Drain only immediately due persisted work, never a per-bot timer.
                 asyncio.get_running_loop().call_soon(self.retry)

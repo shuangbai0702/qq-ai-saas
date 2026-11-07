@@ -19,5 +19,14 @@ for(const file of await readdir('packages/database/migrations'))if(file.endsWith
 const vite=spawnSync(process.execPath,['node_modules/vite/bin/vite.js','build','--config','apps/web/vite.config.ts'],{stdio:'inherit',windowsHide:true});
 if(vite.status!==0)process.exit(vite.status||1);
 const pkg=JSON.parse(await readFile('package.json','utf8'));
-const sourceHashes={};for(const file of entries)sourceHashes[file]=createHash('sha256').update(await readFile(file)).digest('hex');
-await writeFile('dist-server/build.json',JSON.stringify({builtAt:new Date().toISOString(),node:process.version,version:pkg.version,entry:'apps/control-api/src/main.js',sourceHashes,note:'Compiled ESM: no tsx or resident Vite. Keep source Python launchers and references alongside this output.'},null,2));
+const sha=file=>createHash('sha256').update(file).digest('hex');
+const sourceHashes={};for(const file of entries)sourceHashes[file]=sha(await readFile(file));
+// The behavior layer runs as Python source next to the compiled ESM. A
+// release manifest that omits it cannot detect old source with new bundles.
+const pythonSources={};const contracts={};const migrations={};
+for(const file of await readdir('adapters/astrbot'))if(file.endsWith('.py'))pythonSources['adapters/astrbot/'+file]=sha(await readFile('adapters/astrbot/'+file));
+for(const file of await readdir('packages/contracts'))if(file.endsWith('.json'))contracts['packages/contracts/'+file]=sha(await readFile('packages/contracts/'+file));
+await mkdir('dist-server/packages/contracts',{recursive:true});
+for(const name of Object.keys(contracts))await copyFile(name,path.join('dist-server',name));
+for(const file of await readdir('packages/database/migrations'))if(file.endsWith('.sql'))migrations['packages/database/migrations/'+file]=sha(await readFile('packages/database/migrations/'+file));
+await writeFile('dist-server/build.json',JSON.stringify({builtAt:new Date().toISOString(),node:process.version,version:pkg.version,entry:'apps/control-api/src/main.js',sourceHashes,pythonSources,contracts,migrations,note:'Compiled ESM: no tsx or resident Vite. Keep source Python launchers and references alongside this output.'},null,2));
