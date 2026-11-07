@@ -327,23 +327,53 @@ def install_runtime(core,settings):
                 autonomy.decision_token_limit.reset(limit);current_message_event.reset(token)
         # One retry handles a burst arriving during review. Continuous chatter
         # cannot create an unbounded model loop or bless an unseen revision.
-        for _ in range(2):
-            began=time.monotonic()
-            fallback=work.scope==scope and work.source in ('message','deferred_group') and bool(re.fullmatch(r'-?\d+',work.event_id)) and int(work.event_id)!=0
-            timeout=float(getattr(provider,'provider_config',{}).get('timeout',60) or 60)
-            decision=await st.freshness.check(scope,cursor,work.started,work.event_id,draft,confirmed,call,lambda:delivery_current(event) and stores.get(event.get_platform_id()) is st,timeout=max(0,timeout-event.get_extra('_hosted_freshness_elapsed',0)),fallback=fallback)
-            if decision.get('checked'):event.set_extra('_hosted_freshness_elapsed',event.get_extra('_hosted_freshness_elapsed',0)+time.monotonic()-began)
-            if decision['action']!='retry':break
-        if decision['action']=='retry':decision={**decision,'action':'drop','reason':'group_changed_during_review'}
+        # The whole check shares one auxiliary disposition record: keep,
+        # replace and drop are applied decisions (adoption of the judgment,
+        # not proof of a send); an exhausted retry is honestly not adopted.
+        from model_cache import auxiliary_scope,adopted,discarded
+        with auxiliary_scope(provider,'group_freshness',work.event_id,scope):
+            for _ in range(2):
+                began=time.monotonic()
+                fallback=work.scope==scope and work.source in ('message','deferred_group') and bool(re.fullmatch(r'-?\d+',work.event_id)) and int(work.event_id)!=0
+                timeout=float(getattr(provider,'provider_config',{}).get('timeout',60) or 60)
+                decision=await st.freshness.check(scope,cursor,work.started,work.event_id,draft,confirmed,call,lambda:delivery_current(event) and stores.get(event.get_platform_id()) is st,timeout=max(0,timeout-event.get_extra('_hosted_freshness_elapsed',0)),fallback=fallback)
+                if decision.get('checked'):event.set_extra('_hosted_freshness_elapsed',event.get_extra('_hosted_freshness_elapsed',0)+time.monotonic()-began)
+                if decision['action']!='retry':break
+            if decision['action']=='retry':decision={**decision,'action':'drop','reason':'group_changed_during_review'}
+            if decision['action'] in ('keep','replace','drop'):adopted('freshness_'+decision['action'])
+            else:discarded('freshness_'+str(decision.get('action','unknown')))
         if decision['action']!='drop':
             cursors[scope]=decision['cursor'];event.set_extra('_hosted_freshness_cursors',cursors)
         metrics.setdefault(event.get_platform_id(),{})['lastGroupFreshness']={'scope':scope,'at':time.time(),**{k:decision[k] for k in ('action','reason','checked') if k in decision}}
         return decision
+    def journal_recapture(st):
+        """Read-only repair of held rounds' material completeness from the
+        committed journal wire (B package). Same immutable event only: the
+        snapshot is digest-bound, and remember() never downgrades a complete
+        prior proof. Never fabricates evidence for events the journal lacks."""
+        from context_protocol import source,digest
+        from readonly_journal import ReadonlyJournal
+        def capture(scope,events):
+            wanted={str(event) for event in events}
+            journal=st.model_journals.get(scope)
+            if journal is None or journal.last is None or journal.recovery_error or journal.retired_reason:
+                journal=ReadonlyJournal(st.db,scope)
+            if journal.last is None or journal.recovery_error or journal.retired_reason:return
+            messages=journal.last.wire
+            signatures={}
+            for message in messages:
+                origin=source(message)
+                if origin and str(origin['event_id']) in wanted:signatures[str(origin['event_id'])]=digest(message)
+            if not signatures:return
+            from summary_material import snapshots,remember
+            remember(st.db,scope,snapshots(messages,scope,signatures))
+        return capture
     def store(id,s):
         if id not in stores:
             stores[id]=BehaviorStore(Path(s['root'])/'behavior.sqlite')
         provider=provider_for(id)
         stores[id].reflection.binding=({**(s['config'].get('behavior') or {}),'_persona':s['config'].get('systemPrompt','')},provider,lambda:settings.get(id) is s and id not in core.event_bus.stopped_platforms,metrics.setdefault(id,{}),current_message_event)
+        stores[id].reflection.recapture=journal_recapture(stores[id])
         if provider is not None:
             from model_cache import bind_system_contract
             bind_system_contract(provider,stores[id].system_contract,s)
@@ -620,7 +650,8 @@ def install_runtime(core,settings):
         if not internal and not deferred and subject!=str(event.get_self_id()) and (cfg.get('behavior') or {}).get('styleLearning'):
             st.social.observe(scope,subject,incoming,getattr(event.message_obj,'message_id',''))
             provider=provider_for(id)
-            maybe_learn(st.social,scope,cfg.get('behavior') or {},provider,lambda:settings.get(id) is s,metrics.setdefault(id,{}),current_message_event)
+            if not autonomy.auth_paused(s,'style_learning'):
+                maybe_learn(st.social,scope,cfg.get('behavior') or {},provider,lambda:settings.get(id) is s,metrics.setdefault(id,{}),current_message_event,lease=s)
             care.track(st,st.social.task)
         state=st.observe(scope,subject,incoming if not internal and not deferred else '',getattr(event.message_obj,'message_id',''),auto_capture=not internal and not deferred and (cfg.get('behavior') or {}).get('memoryAutoCapture',False),memory_enabled=(cfg.get('behavior') or {}).get('memory',True),directed=not internal and not deferred and (early_directed or incoming.startswith('/')))
         if companion_state.enabled(cfg):
@@ -697,13 +728,15 @@ def install_runtime(core,settings):
             if st.active>=1:return
             if not st.presence.ready(scope,cfg,event_id,provider,lambda:current(event),decision_at):
                 bot_pipeline.stop(event,'group_waiting','waiting');return
+            if autonomy.auth_paused(s,'group_presence'):
+                bot_pipeline.stop(event,'auth_backoff','silent');return
             messages=st.ambient.context(scope,now)
             if deferred and not messages and (cfg.get('behavior') or {}).get('memory',True):
                 messages=[{'sender_id':r[0],'text':r[1]} for r in reversed(st.db.execute('SELECT subject,question FROM memory_pending WHERE scope=? AND at<=? ORDER BY at DESC LIMIT 12',(scope,now)).fetchall())]
             if not messages or messages[-1].get('sender_id')!=subject or messages[-1].get('text')!=incoming[:180]:messages.append({'sender_id':subject,'text':incoming})
             st.active+=1;care.stamp(s['root'])
             try:
-                semantic=await st.presence.evaluate(scope,cfg,event_id,provider,messages,companion_state.context(st.db,cfg,scope,now,event.get_message_str()),st.participation.context(scope,cfg=cfg.get('behavior') or {}),lambda:current(event),metrics.setdefault(id,{}),current_message_event,now=decision_at,addressing={'self_id':str(event.get_self_id()),'mentions_other':any(isinstance(c,At) and str(c.qq)!=str(event.get_self_id()) for c in event.get_messages()),'replies_to_other':any(isinstance(c,Reply) and str(c.sender_id) not in ('','0',str(event.get_self_id())) for c in event.get_messages())})
+                semantic=await st.presence.evaluate(scope,cfg,event_id,provider,messages,companion_state.context(st.db,cfg,scope,now,event.get_message_str()),st.participation.context(scope,cfg=cfg.get('behavior') or {}),lambda:current(event),metrics.setdefault(id,{}),current_message_event,now=decision_at,lease=s,addressing={'self_id':str(event.get_self_id()),'mentions_other':any(isinstance(c,At) and str(c.qq)!=str(event.get_self_id()) for c in event.get_messages()),'replies_to_other':any(isinstance(c,Reply) and str(c.sender_id) not in ('','0',str(event.get_self_id())) for c in event.get_messages())})
             finally:st.active-=1;st.slot_changed.set();care.stamp(s['root'])
             if not semantic or not semantic[0].reply or not st.presence.current(scope,cfg,semantic[1],semantic[2],lambda:current(event)):
                 bot_pipeline.stop(event,'group_model_silent_or_stale','silent');return
@@ -762,7 +795,7 @@ def install_runtime(core,settings):
             event.set_extra('_hosted_memory_epoch',st.reflection.epoch())
             b=cfg.get('behavior') or {}
             dialogue=shared['dialogue']
-            assembly.contribute('conversation',{'dialogue':dialogue,'conversation_candidate':bool(group and not mentioned and not command),
+            assembly.contribute('conversation',{'dialogue':dialogue,'conversation_candidate':bool(group and not command),
                 'participation_entry':{'explicitly_addressed':bool(not group or mentioned),'same_partner_followup':continuing,'group_followup_window':contextual,'reply_required_by_window':False},
                 'reply_to':[{'sender_id':str(c.sender_id),'text':str(getattr(c,'message_str','') or '')[:200]} for c in event.get_messages() if isinstance(c,Reply)][:1]})
             if b.get('memory',True) and b.get('memorySemantic',True) and not b.get('embeddingModel','').strip():
@@ -801,7 +834,7 @@ def install_runtime(core,settings):
                 conversation=await manager.get_conversation(event.unified_msg_origin,cid)
                 if conversation is None:raise RuntimeError('empty mention conversation unavailable')
                 if not current(event):return
-                event.set_extra('provider_request',ProviderRequest(conversation=conversation,prompt=json.dumps({'event':'mention','text':'','sender_id':subject,'self_id':str(event.get_self_id()),'meaning':'本轮是协议确认的空艾特事件，没有用户正文。结合当前对话自然回应，不假设对方提出了任务。'},ensure_ascii=False),system_prompt=s['config'].get('systemPrompt','')))
+                event.set_extra('provider_request',ProviderRequest(conversation=conversation,prompt=json.dumps({'event':'mention','text':'','sender_id':subject,'self_id':str(event.get_self_id()),'meaning':'本轮是协议确认的空艾特事件，没有用户正文。结合当前对话自行决定是否回应；没有值得回应的内容就只输出[NO_REPLY]，不假设对方提出了任务。'},ensure_ascii=False),system_prompt=s['config'].get('systemPrompt','')))
             bot_pipeline.stage(event,'model_tools')
             if group:
                 event.set_extra('_hosted_freshness_cursors',{scope:st.freshness.cursor(scope)})
@@ -1086,10 +1119,35 @@ def install_runtime(core,settings):
             if not answer.strip():
                 kinds=list(dict.fromkeys(type(c).__name__ for outgoing in plan.messages for c in outgoing.chain if isinstance(c,(Image,Record,Face))))
                 if kinds:answer='[平台已确认发送非文本消息：'+','.join(kinds)+']'
-            active_store.reflection.record(scope,str(self.get_sender_id()),getattr(self.message_obj,'message_id',''),self.get_message_str(),answer,context_through=self.get_extra('_hosted_context_at'),context_messages=self.get_extra('_hosted_group_round_messages'),materials=self.get_extra('_hosted_summary_materials'))
+            # A media-only inbound message has no visible text. The confirmed
+            # pipeline receipts already prove the round happened, so the round
+            # is recorded with an honest placeholder instead of being silently
+            # dropped when the per-request material snapshot missed it (the
+            # 2026-11-07 burst lost ~90 such rounds on one worker). The kind
+            # comes from the actual message components, never a guess.
+            question=self.get_message_str()
+            if not question.strip() and not any(isinstance(m,dict) and m.get('event')==str(getattr(self.message_obj,'message_id','')) for m in self.get_extra('_hosted_summary_materials') or []):
+                components=list(self.get_messages())
+                if any(isinstance(c,Record) for c in components):question='[语音消息，本轮无可见文字]'
+                elif any(isinstance(c,Image) for c in components):question='[图片或表情消息，本轮无可见文字]'
+                else:question='[媒体消息，本轮无可见文字]'
+            active_store.reflection.record(scope,str(self.get_sender_id()),getattr(self.message_obj,'message_id',''),question,answer,context_through=self.get_extra('_hosted_context_at'),context_messages=self.get_extra('_hosted_group_round_messages'),materials=self.get_extra('_hosted_summary_materials'))
             provider=provider_for(id)
             active_store.reflection.maybe_start(scope,{**rhythm,'_persona':s['config'].get('systemPrompt','')},provider,lambda:settings.get(id) is s and id not in core.event_bus.stopped_platforms,metrics[id],current_message_event)
             care.track(active_store,active_store.reflection.task)
+        else:
+            # Bounded, content-free attribution when a confirmed round is not
+            # recorded as a business round: a recording gap must be visible
+            # and attributable, not discovered by a later memory audit.
+            skipped=('model_error' if self.get_extra('_hosted_model_error',False) else
+                     'initiative' if self.get_extra('_hosted_initiative',False) else
+                     'memory_disabled' if not rhythm.get('memory',True) else
+                     'epoch_changed' if self.get_extra('_hosted_memory_epoch',active_store.reflection.epoch())!=active_store.reflection.epoch() else
+                     'incomplete_receipts')
+            m=metrics.setdefault(id,{});m['memoryRecordSkipped']=m.get('memoryRecordSkipped',0)+1
+            from model_cache import record_diagnostic
+            record_diagnostic(s,{'kind':'memory_record','phase':'foreground','workId':getattr(work,'event_id',None),
+                'status':'skipped','reason':skipped,'scopeHash':hashlib.sha256(scope.encode()).hexdigest()[:16]})
         return result
     def inject(original,self,args,kwargs):
         from inner_tools import request_context
@@ -1181,16 +1239,23 @@ def install_runtime(core,settings):
         model_journal_pending.set(None)
         owned,key,journal,prepared,epoch=pending
         from readonly_journal import visible_summary_ids
-        retained=False
+        from model_cache import submission_stage
+        # Typed submission evidence: a candidate whose request reached (or may
+        # have reached) the provider must be retained, never silently dropped
+        # back to a prefix without its tail (A package).
+        stage=None if success else submission_stage()
+        submitted_unknown=bool(stage and stage!='request_not_sent')
+        retained=False;settled_state='abort'
         if event.get_extra('_hosted_internal_work'):
             # Existing inner-Work lifecycle remains outside the foreground R4
             # scope; keep its prior settlement behavior unchanged.
             valid=(current(event) and delivery_current(event) and stores.get(event.get_platform_id()) is owned
                    and owned.model_journals.get(key) is journal and owned.reflection.epoch()==epoch)
             material_current=owned.reflection.context_dependency(visible_summary_ids(prepared.state))==prepared.retirement
-            if success and valid and material_current:retained=journal.commit(prepared)
+            if success and valid and material_current:retained=journal.commit(prepared);settled_state='commit'
+            elif valid and material_current and submitted_unknown:retained=journal.retain_submitted(prepared,stage);settled_state='submitted_unknown_retained'
             elif valid and material_current:journal.abort_candidate(prepared)
-            else:journal.retire_committed(prepared,'authority_changed')
+            else:journal.retire_committed(prepared,'authority_changed');settled_state='retire'
         else:
             same_owner=(stores.get(event.get_platform_id()) is owned and owned.model_journals.get(key) is journal)
             latest=journal.serial==prepared.serial
@@ -1200,20 +1265,29 @@ def install_runtime(core,settings):
                 material_current=owned.reflection.context_dependency(visible_summary_ids(prepared.state),key)==prepared.validation_dependency
             elif not owned.reflection.closed:
                 # Release only this stale candidate's permit. The replacement
-                # store and its committed prefix remain untouched.
-                journal.abort_candidate(prepared)
-            if same_owner and latest and not material_current:
-                # A real forget/summary dependency change invalidates the old
-                # wire view. A stale event lease or failed request does not.
-                if owned.reflection.epoch()!=epoch:journal.retire_committed(prepared,'memory_state_changed')
+                # store and its committed prefix remain untouched; a staged
+                # candidate row survives for the replacement store to load.
+                if submitted_unknown:retained=journal.retain_submitted(prepared,stage);settled_state='submitted_unknown_retained'
                 else:journal.abort_candidate(prepared)
-            elif same_owner and latest and success and valid:retained=journal.commit(prepared)
-            elif same_owner and latest:journal.abort_candidate(prepared)
+            if same_owner and latest:
+                if owned.reflection.epoch()!=epoch:
+                    # A real forget invalidates the old wire view wholesale.
+                    journal.retire_committed(prepared,'memory_state_changed');settled_state='retire'
+                elif submitted_unknown:
+                    # A possibly-received request keeps its tail even when the
+                    # summary dependency moved during the request.
+                    retained=journal.retain_submitted(prepared,stage);settled_state='submitted_unknown_retained'
+                elif not material_current:
+                    # A summary dependency change invalidates the old wire
+                    # view. A stale event lease or failed request does not.
+                    journal.abort_candidate(prepared)
+                elif success and valid:retained=journal.commit(prepared);settled_state='commit'
+                else:journal.abort_candidate(prepared)
         from model_cache import record_diagnostic
         record_diagnostic(event.get_extra('_hosted_lease'),{'kind':'context_result','phase':'inner_execution' if event.get_extra('_hosted_internal_work') else 'foreground',
-            'status':('commit' if retained else 'not_retained') if success and valid and material_current else 'abort' if valid and material_current else 'retire',
-            'reason':None if retained else 'candidate_or_size_boundary' if success and valid and material_current else 'request_failed' if valid and material_current else 'summary_changed_during_request' if valid else 'authority_changed',
-            'resetDetail':prepared.detail,'diagnosticDetail':getattr(journal,'recovery_error',None) or prepared.retirement_deferred or None,**(prepared.usage or {})})
+            'status':settled_state if retained else ('not_retained' if success else settled_state),
+            'reason':None if retained and success else 'request_submitted_unknown' if retained else 'candidate_or_size_boundary' if success and valid and material_current else 'request_failed' if valid and material_current else 'summary_changed_during_request' if valid else 'authority_changed',
+            'resetDetail':prepared.detail,'diagnosticDetail':(getattr(journal,'recovery_error',None) or prepared.retirement_deferred or stage or None),**(prepared.usage or {})})
     async def prepare_chat_payload(self,*args,**kwargs):
         payload,query=await prepare(self,*args,**kwargs)
         journal_reason=None
@@ -1305,6 +1379,14 @@ def install_runtime(core,settings):
                 if foreground:
                     from model_cache import expect_append_only_messages
                     expect_append_only_messages(projected)
+                # Persist the exact outgoing candidate before any HTTP
+                # submission so a crash or unknown submission can never fall
+                # back to a prefix without this tail (A package). Best effort:
+                # a storage refusal is recorded and never fails the request.
+                if not journal.stage_candidate(prepared):
+                    from model_cache import record_diagnostic
+                    record_diagnostic(image_event.get_extra('_hosted_lease'),{'kind':'context','phase':'inner_execution' if internal else 'foreground',
+                        'workId':work.event_id,'resetReason':'candidate_stage_failed','resetDetail':journal.recovery_error or 'stage_refused'})
                 from model_cache import record_diagnostic
                 record_diagnostic(image_event.get_extra('_hosted_lease'),{'kind':'context','phase':'inner_execution' if internal else 'foreground',
                     'workId':work.event_id,'resetReason':prepared.reason or None,'resetDetail':prepared.detail or None,
@@ -1361,11 +1443,10 @@ def install_runtime(core,settings):
         except Exception as error:
             finish_attempt('failed',reason=type(error).__name__)
             if type(error).__name__ in ('ImportError','ModuleNotFoundError','AttributeError'):
-                try:
-                    import traceback as _traceback
-                    with open('/tmp/request-errors.log','a') as _error_log:
-                        _error_log.write(time.strftime('%m-%d %H:%M:%S')+' '+repr(error)[:200]+'\n'+_traceback.format_exc()[-1800:]+'\n')
-                except OSError:pass
+                # Bounded raise-site evidence only; the old raw cross-bot
+                # /tmp/request-errors.log is retired (E package).
+                from model_cache import record_error_site
+                record_error_site(error)
             e=current_message_event.get()
             settle_journal(e,False)
             if e and current(e) and e.get_platform_id() in metrics:
@@ -1414,11 +1495,10 @@ def install_runtime(core,settings):
         except Exception as error:
             finish_attempt('failed',reason=type(error).__name__)
             if type(error).__name__ in ('ImportError','ModuleNotFoundError','AttributeError'):
-                try:
-                    import traceback as _traceback
-                    with open('/tmp/request-errors.log','a') as _error_log:
-                        _error_log.write(time.strftime('%m-%d %H:%M:%S')+' '+repr(error)[:200]+'\n'+_traceback.format_exc()[-1800:]+'\n')
-                except OSError:pass
+                # Bounded raise-site evidence only; the old raw cross-bot
+                # /tmp/request-errors.log is retired (E package).
+                from model_cache import record_error_site
+                record_error_site(error)
             e=current_message_event.get()
             if e and current(e) and e.get_platform_id() in metrics:
                 metric=metrics[e.get_platform_id()];metric['failures']=metric.get('failures',0)+1

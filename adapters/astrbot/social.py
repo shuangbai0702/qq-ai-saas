@@ -356,8 +356,12 @@ class SocialStore:
         if self.task:self.task.cancel()
 
 
-def maybe_learn(st, scope, cfg, provider, is_current, metrics, event_var):
+def maybe_learn(st, scope, cfg, provider, is_current, metrics, event_var, lease=None):
     if not cfg.get('styleLearning') or st.closed or provider is None or (st.task and not st.task.done()):return
+    import autonomy
+    # Per-bot auth backoff: a broken credential must not re-buy doomed
+    # learning requests on every sweep (C package).
+    if autonomy.auth_paused(lease,'style_learning'):return
     batch = st.learning_batch(scope)
     if not batch:return
     attempt=st.reserve_learning(scope,batch)
@@ -376,6 +380,7 @@ def maybe_learn(st, scope, cfg, provider, is_current, metrics, event_var):
             except asyncio.CancelledError:raise
             except Exception as error:
                 discarded(type(error).__name__)
+                if autonomy.failure_class(error)=='auth':autonomy.note_auth_failure(lease,'style_learning')
                 metrics['learningFailures']=metrics.get('learningFailures',0)+1
             finally:event_var.reset(token)
     st.task=asyncio.create_task(run())

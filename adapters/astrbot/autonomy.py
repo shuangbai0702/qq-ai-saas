@@ -76,6 +76,26 @@ def failure_class(error):
     return type(error).__name__
 
 
+# Bounded in-process backoff for auxiliary decisions after an authentication
+# failure. Keyed by (generation, botId, phase): a configuration apply changes
+# the generation and resumes immediately; other bots are never affected, so
+# there is deliberately no cross-bot circuit breaker (C package).
+_auth_failures={}
+
+
+def auth_paused(lease,phase,seconds=900):
+    if not isinstance(lease,dict) or not lease.get('botId'):return False
+    key=(lease.get('generation'),lease.get('botId'),phase)
+    return time.time()-_auth_failures.get(key,0)<seconds
+
+
+def note_auth_failure(lease,phase):
+    if not isinstance(lease,dict) or not lease.get('botId'):return
+    key=(lease.get('generation'),lease.get('botId'),phase)
+    _auth_failures[key]=time.time()
+    while len(_auth_failures)>512:_auth_failures.pop(next(iter(_auth_failures)))
+
+
 def send_capacity(db,cfg,now=None):
     """Transparent hourly send-capacity snapshot behind reserve_send (D7.1).
 
@@ -258,7 +278,7 @@ class GroupPresence:
         row=self.snapshot(scope);interval=cooldown_base(cfg,scope,'group')
         return bool(row[3]!=str(event_id) and (not max(row[:2]) or now-max(row[:2])>=interval) and not group_muted(self.db,scope,now) and has_capacity(self.db,cfg,now))
 
-    async def evaluate(self, scope, cfg, event_id, provider, messages, companion, dialogue, live, metrics, event_var, now=None, addressing=None):
+    async def evaluate(self, scope, cfg, event_id, provider, messages, companion, dialogue, live, metrics, event_var, now=None, addressing=None, lease=None):
         from initiative import quiet
         now = time.time() if now is None else now
         b = cfg.get('behavior') or {}
@@ -287,9 +307,9 @@ class GroupPresence:
                    'allow_side_comment': b.get('groupParticipationOtherConversations', False), 'messages': list(reversed(recent)),
                    'attention': dialogue if b.get('attentionEnabled', True) else {}, 'companion': companion,'platform_addressing':addressing or {}}
         with auxiliary_scope(provider,'group_presence',event_id,scope):
-            started = time.monotonic(); token = event_var.set(None); limit_token = decision_token_limit.set(192)
+            started = time.monotonic(); token = event_var.set(None); limit_token = decision_token_limit.set(256)
             try:
-                result = await asyncio.wait_for(provider.text_chat(prompt=json.dumps(payload, ensure_ascii=False), system_prompt=GROUP_SYSTEM+COOLDOWN_SYSTEM, contexts=[], func_tool=None, max_tokens=192, request_max_retries=1), b.get('groupDecisionTimeoutSeconds', 10))
+                result = await asyncio.wait_for(provider.text_chat(prompt=json.dumps(payload, ensure_ascii=False), system_prompt=GROUP_SYSTEM+COOLDOWN_SYSTEM, contexts=[], func_tool=None, max_tokens=256, request_max_retries=1), b.get('groupDecisionTimeoutSeconds', 10))
                 data=parse_object(result.completion_text);model_cooldown(data)
                 # Protocol addressing is supplied above as evidence. Semantic target
                 # belongs to this decision model; it does not change trusted QQ IDs.
@@ -311,6 +331,7 @@ class GroupPresence:
                 raise
             except Exception as error:
                 discarded(type(error).__name__)
+                if failure_class(error)=='auth':note_auth_failure(lease,'group_presence')
                 if live():
                     metrics['groupDecisionFailures'] = metrics.get('groupDecisionFailures', 0)+1
                     metrics['lastGroupDecision'] = {'at': now, 'reply': False, 'source': 'error', 'reason': failure_class(error), 'group': scope[6:]}

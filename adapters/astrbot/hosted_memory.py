@@ -121,9 +121,9 @@ class ScopedMemory:
                 self.db.execute("INSERT INTO memory_blocks(scope,subject,name,block_all,rejected_values,revision) VALUES(?,?,?,1,'[]',0) ON CONFLICT(scope,subject,name) DO UPDATE SET block_all=1",(scope,subject,forget[1].strip()))
                 where,args=person_filter(scope,subject)
                 self.db.execute('UPDATE facts SET active=0 WHERE '+where+' AND name=?',args+(forget[1].strip(),));status='该事实已标记遗忘'
-            elif auto_capture:
-                report=self_report(text)
-                if report:status=self.remember(scope,subject,*report,event,now,origin='self_report')
+            # Automatic regex self-report extraction is retired (D package): the
+            # summary model's evidence/claims pipeline is the semantic writer.
+            # Explicit 记住/忘记/更正 commands remain the operator interface.
         return status
 
     def correct(self,scope,subject,name,old_value,new_value,event,quote,now):

@@ -29,16 +29,19 @@ class Planner:
         if self.closed:return None
         row=self.db.execute('SELECT due,topic,allowed FROM companion_plans WHERE scope=? AND anchor=?',(scope,anchor)).fetchone()
         return {'due':row[0],'topic':row[1],'allowed':bool(row[2])} if row else None
-    def maybe_start(self,cfg,provider,current,event_var,metrics,now=None):
+    def maybe_start(self,cfg,provider,current,event_var,metrics,now=None,lease=None):
         b=cfg.get('behavior') or {};now=time.time() if now is None else now
         if self.closed or not current() or b.get('enabled',True) is False or not cfg.get('proactive') or not provider:return
+        # A broken credential must not turn every planning sweep into another
+        # doomed request; per-bot backoff resumes on the next config apply (C).
+        if autonomy.auth_paused(lease,'companion_plan'):return
         # Quiet hours block actions, not the local clock established on enable.
         autonomy.owner_state(self.db,cfg,now)
         if quiet(cfg,now) or self.task and not self.task.done():return
         if b.get('dailyProactiveLimit',10)<=0 or b.get('hourlyInterjectionLimit',20)<=0:return
         owner=autonomy.owner_check_candidate(self.db,cfg,now)
         if owner:
-            self.start_owner(cfg,provider,current,event_var,metrics,owner,now)
+            self.start_owner(cfg,provider,current,event_var,metrics,owner,now,lease=lease)
             return
         if not b.get('proactiveModelSchedule'):return
         send_day=datetime.fromtimestamp(now,timezone(timedelta(hours=8))).date().isoformat()
@@ -66,7 +69,7 @@ class Planner:
         subject=member['subject'] if member else candidate[8]
         async def run():
             with auxiliary_scope(provider,'companion_plan',None,scope):
-                token=event_var.set(None)
+                token=event_var.set(None);limit_token=autonomy.decision_token_limit.set(192)
                 try:
                     metrics['planRequests']=metrics.get('planRequests',0)+1
                     recent=[{'sender_id':r[0],'text':r[1][:180],'at':r[2]} for r in self.db.execute('SELECT subject,question,at FROM memory_pending WHERE scope=? ORDER BY at DESC LIMIT 8',(scope,))] if b.get('memory',True) else []
@@ -105,15 +108,16 @@ class Planner:
                 except asyncio.CancelledError:raise
                 except Exception as error:
                     discarded(type(error).__name__)
+                    if autonomy.failure_class(error)=='auth':autonomy.note_auth_failure(lease,'companion_plan')
                     if not self.closed and current():
                         # Invalid/failed plans pause this anchor rather than retry every sweep.
                         row=self.db.execute('SELECT last_user,last_bot,last_attempt FROM contacts WHERE scope=?',(scope,)).fetchone()
                         if row and max(row)==anchor:
                             self.db.execute('INSERT OR REPLACE INTO companion_plans VALUES(?,?,?,?,?)',(scope,anchor,time.time()+autonomy.cooldown_base(cfg,scope,'plan'),'',0));self.db.commit()
                     metrics['planFailures']=metrics.get('planFailures',0)+1
-                finally:event_var.reset(token)
+                finally:autonomy.decision_token_limit.reset(limit_token);event_var.reset(token)
         self.task=asyncio.create_task(run())
-    def start_owner(self,cfg,provider,current,event_var,metrics,candidate,now):
+    def start_owner(self,cfg,provider,current,event_var,metrics,candidate,now,lease=None):
         (owner,scope,contact,state),day=candidate
         b=cfg.get('behavior') or {}
         with self.db:
@@ -124,7 +128,7 @@ class Planner:
             self.db.execute('DELETE FROM autonomy_owner_budget WHERE day<?',((datetime.fromtimestamp(now,timezone(timedelta(hours=8)))-timedelta(days=7)).date().isoformat(),))
         async def run():
             with auxiliary_scope(provider,'owner_contact',None,scope):
-                token=event_var.set(None);limit_token=autonomy.decision_token_limit.set(192)
+                token=event_var.set(None);limit_token=autonomy.decision_token_limit.set(256)
                 started=time.monotonic()
                 def result_record(status):
                     if self.closed or not current():return
@@ -142,7 +146,7 @@ class Planner:
                     # Background owner checks are not time-sensitive group admission.
                     # Allow the configured chat provider to finish; real conversation
                     # or configuration changes still invalidate the result below.
-                    result=await asyncio.wait_for(provider.text_chat(**decision_request({'owner_id':owner,'persona':str(cfg.get('systemPrompt') or '')[:4000],'companion':companion_state.context(self.db,cfg,scope,now),'owner_memory':memory,'conversation_timing':timing,'cooldown_base_seconds':autonomy.cooldown_base(cfg,scope,'owner'),'last_user_text':contact[7][:500],'last_bot_text':contact[8][:500],'current_time':datetime.fromtimestamp(now,timezone(timedelta(hours=8))).isoformat()},autonomy.OWNER_SYSTEM+autonomy.COOLDOWN_SYSTEM),contexts=[],func_tool=None,max_tokens=192,request_max_retries=1),60)
+                    result=await asyncio.wait_for(provider.text_chat(**decision_request({'owner_id':owner,'persona':str(cfg.get('systemPrompt') or '')[:4000],'companion':companion_state.context(self.db,cfg,scope,now),'owner_memory':memory,'conversation_timing':timing,'cooldown_base_seconds':autonomy.cooldown_base(cfg,scope,'owner'),'last_user_text':contact[7][:500],'last_bot_text':contact[8][:500],'current_time':datetime.fromtimestamp(now,timezone(timedelta(hours=8))).isoformat()},autonomy.OWNER_SYSTEM+autonomy.COOLDOWN_SYSTEM),contexts=[],func_tool=None,max_tokens=256,request_max_retries=1),60)
                     if self.closed or not current():return
                     metrics['lastOwnerUsage']={'at':time.time(),**usage_evidence(result)}
                     latest=autonomy.owner_state(self.db,cfg,time.time())
@@ -163,6 +167,7 @@ class Planner:
                 except asyncio.CancelledError:raise
                 except Exception as error:
                     discarded(type(error).__name__)
+                    if autonomy.failure_class(error)=='auth':autonomy.note_auth_failure(lease,'owner_contact')
                     if not self.closed and current():
                         metrics['ownerDecisionFailures']=metrics.get('ownerDecisionFailures',0)+1
                         metrics['lastOwnerDecision']={'at':now,'contact':False,'reason':type(error).__name__}

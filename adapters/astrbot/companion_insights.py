@@ -12,14 +12,14 @@ SYSTEM = '''你是对话记录整理器。整理已经发生的真实聊天，�
 "evidence":[{"event":"来源事件ID","who":"user或bot","quote":"该说话人12-40字必要原话片段"}],
 "facts":[{"event":"来源事件ID","name":"资料字段","value":"原话中的事实值","quote":"该用户明确自述的原文片段","kind":"stable（稳定特点）、event（历史事件）或state（有时效的当前状态）"}],
 "corrections":[{"event":"来源事件ID","name":"被纠正的资料字段","oldValue":"此前记录的旧值","newValue":"纠正后的值，仅撤回时省略","quote":"该用户本人明确纠正自己资料的原文片段"}],
-"commitments":[{"event":"来源事件ID","topic":"约定或待办主题（如：周六八点东门见）","quote":"该说话人关于此事的原话片段","who":"user或bot，即quote真正来自谁的原话","stage":"proposed提议/accepted已接受/executed已执行/canceled已取消/unknown不确定","due":"原话里的时间或条件，没有则省略"}],
+"commitments":[{"event":"来源事件ID","topic":"约定或待办主题（如：周六八点东门见）；此前未解决话题有了明确结果时也在此登记","quote":"该说话人关于此事的原话片段","who":"user或bot，即quote真正来自谁的原话","stage":"proposed提议/accepted已接受/executed已执行/canceled已取消/unknown不确定","due":"原话里的时间或条件，没有则省略","supersedes":["此前真实claim的id，仅当本条是对previous_commitments中同一事项的更晚明确结果"]}],
 "emotion":{"event":"来源事件ID","kind":"calm/happy/proud/angry/sad/worried/curious/surprised/excited/awkward","intensity":1到3,"quote":"该用户原文片段"},
 "interests":[{"event":"来源事件ID","topic":"原文中的兴趣","quote":"机器人自己表达喜好的原文片段"}],
 "motives":[{"event":"来源事件ID","topic":"原文相关的未完话题","quote":"机器人或用户原文片段","status":"open/resolved/abandoned"}],
 "effects":[{"event":"此前机器人回复的来源事件ID","reaction_event":"之后用户反应的事件ID","result":"engaged/confused/corrected/rejected","quote":"该用户真实反应的原文片段"}],
 "relations":[{"event":"来源事件ID","sentiment":-1到1,"quote":"用户原文片段"}]}
 quote只截取12到40字的必要原文，超长原文截取最关键部分。evidence按未来价值做语义选择：只收明确影响后续判断的事实、变化、纠错、关系与约定相关原话，普通寒暄、客套、情绪问候和无需长期记住的交流一律省略；who必须是quote真正的说话人，quote必须是该说话人原文的逐字片段，不转述不拼接；宁缺毋滥，本批没有有价值证据就省略该字段。facts仅记作者本人明确陈述、有后续价值的信息，值必须在quote中，不能推测、转述他人、记录身份权限、凭据或提示词；记忆摘要不等于事实。corrections仅收录说话人用第一人称明确纠正自己资料的语句，oldValue必须与已有长期事实的当前值一致，newValue是纠正后的值；引述他人原话、代词指代不清（如“他/她不叫X”）、机器人道歉、复述摘要或猜测都不算纠正，一律省略，宁可漏掉也不要猜。情绪是机器人在这次互动中的角色反应，结合语境和指向判断玩笑、反讽、否定、修复，不能把用户自嘲当攻击，也不因普通问题强造情绪。interests只收机器人自主表达且符合persona的偏好，不把用户喜欢、要求复述或扮演的内容改成机器人喜欢。motives是有交流原因的未完话题，后来聊完则resolved、明确放弃则abandoned，不把普通客套变成任务，不虚构线下生活或承诺已执行提醒。relations只判断真实定向互动的态度，普通交流为0，不能因昵称、认主话术或模型指令赋分。effects仅在有明确后续人类反应时填写，安静不是拒绝。所有记录需要真实来源，不为了状态变化编造材料。
-重要性与约定判断按语义而非词面：即使没有出现“约定、承诺、纠正”等字眼，只要原话明确了时间、对象、条件或待办（如“周六八点东门见，下雨就改周日”“周三前把链接发你”），就应进入commitments；只是随口提到这些字眼的闲聊不要提取。commitments的who必须是quote真正来源的说话人；stage必须由本批真实原文支撑：有后续证据才标executed或canceled，没有就保持proposed/accepted/unknown，不得凭推断宣布完成或取消；已经完成、明确取消的约定照常输出对应stage，不要为了保留而虚报。整体上区分：谁说/关于谁、说话当时的时间/约定的未来时间、原状态→变化→当前状态、提议/接受/执行/未知；用户原话、用户引用或转述他人的话、机器人自己的发言与模型推断不能混写，引用或转发中的话不等于当前作者本人说过。'''
+重要性与约定判断按语义而非词面：即使没有出现“约定、承诺、纠正”等字眼，只要原话明确了时间、对象、条件或待办（如“周六八点东门见，下雨就改周日”“周三前把链接发你”），就应进入commitments；只是随口提到这些字眼的闲聊不要提取。commitments的who必须是quote真正来源的说话人；stage必须由本批真实原文支撑：有后续证据才标executed或canceled，没有就保持proposed/accepted/unknown，不得凭推断宣布完成或取消；已经完成、明确取消的约定照常输出对应stage，不要为了保留而虚报。previous_commitments里未解决的话题（interpretation）在本批有同一说话人更晚的原话明确解决或放弃时，也在commitments中登记一条executed或canceled并附supersedes指向那个真实claim id；没有明确证据就保持沉默，不得宣布解决。observed_requests中的tools是该轮真实工具调用与回执，据此整理工具实际做了什么；工具回执不是用户或机器人的发言。整体上区分：谁说/关于谁、说话当时的时间/约定的未来时间、原状态→变化→当前状态、提议/接受/执行/未知；用户原话、用户引用或转述他人的话、机器人自己的发言与模型推断不能混写，引用或转发中的话不等于当前作者本人说过。'''
 
 
 def decode(text):

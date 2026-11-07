@@ -46,7 +46,9 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.store.reflection.retry(),'8 held + 27 new is not 35 new rounds')
         await self.drain()
         self.assertEqual(len(self.calls),1)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints').fetchone()[0],0)
+        # A held batch keeps at most its pending-coverage identity; it never
+        # becomes a usable license and old rounds never earn a new one.
+        self.assertEqual(self.db.execute("SELECT count(*) FROM memory_reconstruction_checkpoints WHERE state IN ('available','reserved','consumed')").fetchone()[0],0)
 
     async def test_cleanup_preserves_holds_outside_retry_window(self):
         self.rounds()

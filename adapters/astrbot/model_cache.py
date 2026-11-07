@@ -64,7 +64,11 @@ def record_diagnostic(lease, record):
              'parametersSha','wireIndex','resetDetail','historyChars','baseChars','wireChars','textChars','plainTextChars',
              'mediaChars','imageCount','toolsChars','toolCount','wireBytes','diagnosticDetail','systemContractStatus',
              'contentChars','reasoningChars','reasoningReported','finishReason','responseIdShape','appendOnlyStatus',
-             'model','httpStatus','outputLimit','adoption','wireCount','scopeHash')
+             'model','httpStatus','outputLimit','adoption','wireCount','scopeHash',
+             # Bounded journal-candidate evidence written by the foreground
+             # boundary; without these entries the fields were silently dropped
+             # and "observed" coverage was overstated (E package audit).
+             'layoutVersion','journalScopeKind','committedPrefixMessages','committedPrefixSha','permitKind','candidateAppendChars')
     row={key:value for key,value in record.items() if key in allowed and (value is None or type(value) in (str,int,float,bool))}
     # A long diagnostic must not erase the request's identity and outcome.
     # These fields contain only program metadata; never serialize exceptions.
@@ -373,6 +377,10 @@ def finish_attempt(status,response=None,reason=None):
         detail=('provider_stream_started' if value.get('firstResponseMs') is not None else
                 'provider_response_received' if value.get('headersReceived') else
                 'request_submission_unknown' if value.get('transportStarted') else 'request_not_sent')
+    # The settle boundary (behavior.settle_journal) needs the same typed
+    # submission stage: a candidate whose request may have been received must
+    # never fall back to a prefix without its tail (A package).
+    value['submissionStage']=detail
     record_diagnostic(value.get('lease'),{'kind':'request_result','attemptId':value['attemptId'],'phase':value['phase'],'workId':value['workId'],
         'status':status,'reason':reason,'durationMs':round((time.monotonic()-value['started'])*1000),'firstResponseMs':value.get('firstResponseMs'),'costStatus':'unknown',
         'diagnosticDetail':detail,'model':value.get('model'),'wireCount':value.get('wireIndex',0),
@@ -381,6 +389,32 @@ def finish_attempt(status,response=None,reason=None):
 def first_response():
     value=_attempt.get()
     if value and 'firstResponseMs' not in value:value['firstResponseMs']=round((time.monotonic()-value['started'])*1000)
+
+def submission_stage():
+    """Typed submission stage of the current (usually already finished) attempt."""
+    value=_attempt.get()
+    return value.get('submissionStage') if value else None
+
+def record_error_site(error):
+    """Bounded, content-free raise-site evidence for import/attribute failures.
+
+    Replaces the old cross-bot raw /tmp/request-errors.log: module basename,
+    line, symbol and attempt identity only; never the exception text, its
+    arguments or a traceback body (E package).
+    """
+    value=_attempt.get()
+    if not value or not value.get('ended'):return
+    frame=None
+    try:
+        import traceback as _traceback
+        frames=_traceback.extract_tb(error.__traceback__)
+        frame=frames[-1] if frames else None
+    except Exception:frame=None
+    module=str(frame.filename or '').replace('\\','/').rsplit('/',1)[-1] if frame else None
+    record_diagnostic(value.get('lease'),{'kind':'request_error','attemptId':value['attemptId'],'phase':value['phase'],
+        'workId':value.get('workId'),'reason':type(error).__name__,
+        'diagnosticDetail':json.dumps({'module':module,'line':frame.lineno if frame else None,
+                                       'symbol':frame.name if frame else None},ensure_ascii=False)})
 
 def reset_attempt(token):_attempt.reset(token)
 

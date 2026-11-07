@@ -22,9 +22,15 @@ async def run():
  async def get_msg(**kw):return raw
  follow=Event(message='56');follow.bot=NS(get_msg=get_msg)
  result=await incoming_media.attach_recent(follow,db,lease,lambda:True);assert result['message_id']=='55';assert isinstance(follow.get_messages()[-1],Image);assert follow.message_obj.raw_message=={}
- for event,settings in [(Event(sender='456'),lease),(Event(group='666'),lease),(Event(),{**lease,'generation':8})]:
+ other=Event(sender='456');other.bot=NS(get_msg=get_msg)
+ result=await incoming_media.attach_recent(other,db,lease,lambda:True)
+ assert result['sender_id']=='123' and result['source']=='same_group_recent_image'
+ assert isinstance(other.get_messages()[-2],Plain) and '"sender_id":"123"' in other.get_messages()[-2].text
+ assert other.get_sender_id()=='456' and other.message_obj.raw_message=={}
+ for event,settings in [(Event(group='666'),lease),(Event(group=''),lease),(Event(),{**lease,'generation':8})]:
   event.bot=NS(get_msg=get_msg);assert await incoming_media.attach_recent(event,db,settings,lambda:True) is None
  late=Event();late.bot=NS(get_msg=get_msg);assert await incoming_media.attach_recent(late,db,lease,lambda:False) is None
  db.execute('UPDATE pipeline_quote_sources SET at=?',(time.time()-46,));assert await incoming_media.attach_recent(Event(),db,lease,lambda:True) is None
+ expired=Event(sender='456');expired.bot=NS(get_msg=get_msg);assert await incoming_media.attach_recent(expired,db,lease,lambda:True) is None
  print('PASS recent image source, sender, scope, generation, late cancellation and expiry')
 asyncio.run(run())

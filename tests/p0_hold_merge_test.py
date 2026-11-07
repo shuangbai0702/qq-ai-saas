@@ -81,7 +81,7 @@ class P0HoldMergeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hold[0],self.db.execute('SELECT id FROM memory_rounds WHERE event=?',('0',)).fetchone()[0])
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material WHERE event=?',('0',)).fetchone()[0],1,'raw material is kept')
         self.assertIsNotNone(self.db.execute('SELECT 1 FROM memory_pending WHERE scope=? AND event=?',(SCOPE,'0')).fetchone(),'pending evidence is kept')
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints').fetchone()[0],0,'no permit while the hold is open')
+        self.assertEqual(self.db.execute("SELECT count(*) FROM memory_reconstruction_checkpoints WHERE state='available'").fetchone()[0],0,'no permit while the hold is open')
         self.assertEqual(metrics.get('summaryReleaseHolds'),1)
         watermark=self.db.execute('SELECT summary_watermark FROM memory_reflection_progress WHERE scope=?',(SCOPE,)).fetchone()[0]
         self.rounds(start=35)
@@ -112,13 +112,13 @@ class P0HoldMergeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.calls),1,'the batch itself still completes')
         self.assertEqual(self.db.execute('SELECT reason FROM memory_hold_rounds WHERE scope=? AND event=?',(SCOPE,'ghost')).fetchone()[0],'lost')
         self.assertEqual(metrics.get('summaryHoldUnrecoverable'),1)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints').fetchone()[0],0)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM memory_reconstruction_checkpoints WHERE state='available'").fetchone()[0],0)
         self.store.reflection.retry();await self.drain()
         self.assertEqual(len(self.calls),1,'a lost round never re-enters a batch or retries the model')
         self.db.execute('DELETE FROM memory_hold_rounds WHERE scope=? AND event=?',(SCOPE,'ghost'));self.db.commit()
         for i in range(35):self.store.reflection.record(SCOPE,PERSON,'more-%d'%i,'问题%d'%i,'回复%d'%i,self.now+200+i)
         self.store.reflection.retry();await self.drain()
-        row=self.db.execute('SELECT state FROM memory_reconstruction_checkpoints WHERE scope=?',(SCOPE,)).fetchone()
+        row=self.db.execute("SELECT state FROM memory_reconstruction_checkpoints WHERE scope=? AND state='available'",(SCOPE,)).fetchone()
         self.assertIsNotNone(row);self.assertEqual(row[0],'available','minting resumes once no hold blocks the range')
 
     async def test_checkpoint_permits_survive_single_scope_merge(self):
