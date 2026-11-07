@@ -277,12 +277,10 @@ def window_reload_extension(old,raw_base,db=None):
         if not same_native_prefix(target,current[start:start+len(target)]):continue
         tail=current[start+len(target):]
         if not tail or not any(isinstance(m,dict) and source(m) for m in tail):continue
-        users=[j for j,m in enumerate(tail) if isinstance(m,dict) and m.get('role')=='user']
-        ok=True
-        for idx,j in enumerate(users):
-            end=users[idx+1] if idx+1<len(users) else len(tail)
-            if end<len(tail) and not any(isinstance(m,dict) and m.get('role')=='assistant' for m in tail[j:end]):ok=False;break
-        if not ok:continue
+        # Tail turns are real platform-sourced inbound history the model has
+        # not answered yet (refused rounds leave their user turn in the SDK
+        # conversation): appending them finally lets the model see them. A
+        # turn without any sourced user is still refused.
         return tail
     return None
 
