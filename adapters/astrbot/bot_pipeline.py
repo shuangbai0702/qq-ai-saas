@@ -377,9 +377,13 @@ class BotPipeline:
                 result.update(status='partial',stopReason='receipts_settled_reassessment_required',summary='此前不明的对外操作已获得真实回执；任务完整性需要重新评估，已确认操作不可重复。')
         return {'status':result['status'] if result else row[0],'result':result,'effects':effects}
 
-    def finish_internal(self,work,result):
+    def finish_internal(self,work,result,handoff_id=None):
         result['actionUnitVersion']=2
-        self.db.execute('UPDATE pipeline_actions SET state=?,result=? WHERE id=?',(result['status'],json.dumps(result,ensure_ascii=False),work.event_id));self.db.commit()
+        with self.db:
+            self.db.execute('UPDATE pipeline_actions SET state=?,result=? WHERE id=?',(result['status'],json.dumps(result,ensure_ascii=False),work.event_id))
+            if handoff_id:
+                import agreement_state
+                agreement_state.settle_task(self.db,handoff_id,result)
 
     def bind(self,event,lease):
         group=str(event.get_group_id() or '');subject=str(event.get_sender_id());self_id=str(event.get_self_id())

@@ -1,5 +1,5 @@
 """Production defect contracts: offline, no provider or protocol calls."""
-import asyncio,json,sys,tempfile,time,unittest
+import asyncio,json,sys,tempfile,time,unittest,sqlite3
 from pathlib import Path
 from types import SimpleNamespace as NS
 ROOT=Path(__file__).resolve().parents[1]
@@ -55,6 +55,19 @@ class Agreements(unittest.TestCase):
         before=self.store.reflection.context_dependency([],self.scope)
         row=self.propose();self.accept(row)
         self.assertEqual(before,self.store.reflection.context_dependency([],self.scope))
+    def test_receipt_and_fulfillment_commit_atomically(self):
+        row=self.accept(self.propose())
+        handoff=self.store.pipeline.propose_handoff(self.work,self.identity,{'objective':'提醒','delaySeconds':0,'agreement':{'id':row['id'],'revision':2}})
+        self.db.execute("INSERT INTO pipeline_actions VALUES('action','fp',1,?,0,'working',NULL,?)",(self.scope,time.time()))
+        self.db.execute("CREATE TRIGGER fail_fulfilled BEFORE UPDATE OF status ON memory_agreements WHEN new.status='fulfilled' BEGIN SELECT RAISE(ABORT,'injected failure'); END");self.db.commit()
+        work=NS(event_id='action');result={'status':'completed','effects':[{'status':'confirmed'}],'unfinished':[]}
+        with self.assertRaises(sqlite3.IntegrityError):self.store.pipeline.finish_internal(work,result,handoff['requestId'])
+        self.assertEqual(self.db.execute('SELECT state FROM pipeline_actions').fetchone()[0],'working')
+        self.assertEqual(self.db.execute('SELECT status FROM memory_agreements').fetchone()[0],'accepted')
+        self.db.execute('DROP TRIGGER fail_fulfilled');self.db.commit()
+        self.store.pipeline.finish_internal(work,result,handoff['requestId'])
+        self.assertEqual(self.db.execute('SELECT state FROM pipeline_actions').fetchone()[0],'completed')
+        self.assertEqual(self.db.execute('SELECT status FROM memory_agreements').fetchone()[0],'fulfilled')
     def test_ddl_does_not_commit_caller_transaction(self):
         self.db.execute('CREATE TABLE sentinel(value TEXT)');self.db.commit()
         self.db.execute("INSERT INTO sentinel VALUES('uncommitted')")
