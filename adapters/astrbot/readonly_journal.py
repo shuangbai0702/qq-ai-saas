@@ -356,6 +356,9 @@ class ReadonlyJournal:
         if 'fishbot_readonly_cutover' in tables:
             cutover=self.db.execute("SELECT state FROM fishbot_readonly_cutover WHERE scope=?",(self.scope_key,)).fetchone()
         if not overflow and cutover and cutover[0]=='available':return
+        # A separately authorized operator closure is a NEW logical session,
+        # never a 35-round reconstruction or reuse of an old enrollment.
+        if not overflow and 'fishbot_operator_session_archives' in tables and self.db.execute("SELECT 1 FROM fishbot_operator_session_archives WHERE scope=? AND new_session_state='available'",(self.scope_key,)).fetchone():return
         if overflow or self._scope_has_completed_history():self.recovery_error='journal_snapshot_missing'
 
     def _scope_has_completed_history(self):
@@ -420,6 +423,10 @@ class ReadonlyJournal:
             tables={r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if settle_cutover and 'fishbot_readonly_cutover' in tables:
                 self.db.execute("UPDATE fishbot_readonly_cutover SET state='consumed' WHERE scope=? AND state='available'",(self.scope_key,))
+            if 'fishbot_operator_session_archives' in tables:
+                # The first durable stage uses this explicit session grant.
+                # A crash/unknown response cannot offer it to another baseline.
+                self.db.execute("UPDATE fishbot_operator_session_archives SET new_session_state='consumed' WHERE scope=? AND new_session_state='available'",(self.scope_key,))
             if settle_permit and not self._settle(prepared,True,in_transaction=True):
                 self.db.rollback();return False
             if consume_permit and not prepared.reconstruction_authority.settle_context_reconstruction(prepared.reconstruction_permit,True,in_transaction=True):

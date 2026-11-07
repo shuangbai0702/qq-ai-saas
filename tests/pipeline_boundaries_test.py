@@ -144,6 +144,17 @@ async def run():
    assert rows==[('released',)],'combined silent turn leaked the selected event reservation: '+repr(rows)
    assert st.active==0
   finally:release.set();core.provider_manager.inst_map.clear()
+ async def only_terminal_sent_work_earns_one_round():
+  event,extra,st,work=fresh(group='',message='effective-round-finalization',memory=True)
+  work.planned_messages=work.confirmed_messages=1
+  work.confirmed_reply_parts=['实际已确认的完整回复']
+  for status in ('received','partial','unknown','error','silent','blocked'):
+   work.status=status;runtime['settle_work_round'](st,event,work,settings['qq'])
+   assert st.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0]==0,status+' minted a round'
+  work.status='sent'
+  runtime['settle_work_round'](st,event,work,settings['qq'])
+  runtime['settle_work_round'](st,event,work,settings['qq'])
+  assert st.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0]==1,'terminal reply did not settle exactly once'
  async def stale_native_history_cannot_commit_after_forget_or_rebind():
   from astrbot.core.pipeline.process_stage.method.agent_sub_stages.internal import InternalAgentSubStage
   from astrbot.core.agent.message import Message
@@ -169,6 +180,7 @@ async def run():
   await check('context assembly always returns its active slot',context_failure_releases_activity)
   await check('memory reset fences old output and preserves dispatched receipts',reset_fences_old_context_output)
   await check('combined silent work refunds the selected reservation',combined_silent_work_refunds_selected_reservation)
+  await check('only a terminal sent Work earns one effective round',only_terminal_sent_work_earns_one_round)
   await check('native history commits only to the current lease and memory epoch',stale_native_history_cannot_commit_after_forget_or_rebind)
  finally:runtime['close']()
  if failures:raise AssertionError('\n'.join(failures))
