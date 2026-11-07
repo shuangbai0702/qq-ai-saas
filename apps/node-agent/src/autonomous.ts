@@ -72,7 +72,7 @@ export class AutonomyCoordinator {
   return{tenantId:bot.tenant_id,botId:bot.bot_id,epoch:bot.epoch,generation:bot.generation,revision:bot.revision,config:AutonomyConfigSchema.parse(bot.config),observedThrough:Number(bot.observation?.at||0),latestFeedback:bot.observation?.latestFeedback||(bot.observation?.phase==='foreground_result'?bot.observation:undefined),experience,issuedAt,until:Date.now()+14000,cycleId,actionId};
  }
  private async freshSnapshot(bot:any){
-  const snapshot=await this.call(bot,'snapshot',{},3000);
+  const snapshot=await this.call(bot,'snapshot',{ledgerOnly:true},3000);
   for(const request of (Array.isArray(snapshot.pendingHandoffs)?snapshot.pendingHandoffs:[]).slice(0,16)){
    const receipt=await this.repo.acceptHandoff(bot,request);
    await this.call(bot,'handoff_ack',{epoch:bot.epoch,id:request.id,receipt},2000);
@@ -214,13 +214,17 @@ export class AutonomyCoordinator {
     // D1: the dereferenced goal source describes where the task came from; it
     // never widens the requestSource same-scope delivery rule.
     deadline=this.deadline(c,usage);
-    const task={id:action.id,kind:action.kind,target:action.target,goalId:goal.id,objective:action.objective,sourceScope:goal.source?.scope,outerDecision:{at:new Date().toISOString(),reason:'handoff_due',cycleId:c.cycleId},requestSource:goal.source,...(prepared.evidenceSources?.length?{evidenceSources:prepared.evidenceSources}:{})};
+    const task={id:action.id,kind:action.kind,target:action.target,goalId:goal.id,objective:action.objective,sourceScope:prepared.source?.scope,outerDecision:{at:new Date().toISOString(),reason:'handoff_due',cycleId:c.cycleId},requestSource:prepared.source,...(prepared.evidenceSources?.length?{evidenceSources:prepared.evidenceSources}:{})};
     try{feedback=await this.call(c,'execute',{work:this.work(active,usage,action.id,deadline),action:task,feedback},Math.max(1000,deadline-Date.now()+2000))}
     catch{
      await this.call(c,'cancel',{},2000).catch(()=>{});
      const receipt=await this.call(c,'receipt',{id:action.id},2000).catch(()=>null);
      feedback=receipt?.result||{status:'unknown',summary:'执行连接中断，未得到完整结果；不得重复投递',effects:receipt?.effects||[],evidence:[],unfinished:[action.objective]};
-     if(!feedback.usage)feedback.usage={tokens:Math.max(0,tokenBudget-usage.tokens),modelCalls:Math.max(0,config.cycleModelCalls-usage.modelCalls),toolCalls:0,estimated:true};
+    }
+    if(!feedback.usage||['tokens','modelCalls','toolCalls'].some(name=>!Number.isSafeInteger(feedback.usage[name])||feedback.usage[name]<0)){
+     const reported=feedback.usage||{};
+     const known=(name:string,fallback:number)=>Number.isSafeInteger(reported[name])&&reported[name]>=0?reported[name]:Math.max(0,fallback);
+     feedback.usage={tokens:known('tokens',tokenBudget-usage.tokens),modelCalls:known('modelCalls',config.cycleModelCalls-usage.modelCalls),toolCalls:known('toolCalls',config.cycleToolCalls-usage.toolCalls),estimated:true};
     }
     this.charge(usage,action.id,'execute',feedback);await this.repo.feedback(c,action.id,feedback);
     // The settled result decides the goal's ledger state immediately: a

@@ -42,7 +42,10 @@ export class AutonomyRepository {
    await tx.query('DELETE FROM autonomy_wakes WHERE bot_id=$1 AND tenant_id=$2',[botId,tenantId]);
    await tx.query("UPDATE autonomy_actions SET status='canceled',finished_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND status='planned'",[botId,tenantId]);
    await tx.query("UPDATE autonomy_goals SET status=$3,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND status=$4",[botId,tenantId,config.mode==='active'?'active':'paused_mode',config.mode==='active'?'paused_mode':'active']);
-   if(config.mode==='active')await this.wake(tenantId,botId,epoch,'mode-enabled',0,'',tx);
+   if(config.mode==='active'){
+    await this.rearmHandoffs(tenantId,botId,epoch,tx);
+    await this.wake(tenantId,botId,epoch,'mode-enabled',0,'',tx);
+   }
    if(audit)await tx.query("INSERT INTO audit_events(tenant_id,event,bot_id,detail) VALUES($1,'admin.autonomous.paused',$2,$3)",[tenantId,botId,JSON.stringify({actorId:audit.actorId,reason:audit.reason,previousEpoch:s.epoch,epoch})]);
    return{epoch,config,state:config.mode==='active'?'ready':'disabled',pendingRuntime:true};
   });
@@ -52,6 +55,10 @@ export class AutonomyRepository {
   const dedupe=reason+':'+scope;
   await tx.query("INSERT INTO autonomy_wakes(bot_id,tenant_id,dedupe_key,epoch,due_at,reason,scope) SELECT bot_id,tenant_id,$4,epoch,now()+($5*interval '1 second'),$6,$7 FROM autonomy_settings WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND config->>'mode'='active' ON CONFLICT(bot_id,dedupe_key) DO UPDATE SET epoch=excluded.epoch,due_at=LEAST(autonomy_wakes.due_at,excluded.due_at),reason=excluded.reason",[botId,tenantId,epoch,dedupe,Math.max(0,seconds),reason,scope]);
   await tx.query('UPDATE autonomy_settings SET next_wake_at=(SELECT min(due_at) FROM autonomy_wakes WHERE bot_id=$1),updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3',[botId,tenantId,epoch]);
+ }
+ async rearmHandoffs(tenantId:string,botId:string,epoch:number,tx=this.db){
+  const goals=await tx.query("SELECT id,source FROM autonomy_goals WHERE bot_id=$1 AND tenant_id=$2 AND status='active' AND source->>'handoffId'=id::text",[botId,tenantId]);
+  for(const goal of goals)await this.wake(tenantId,botId,epoch,'handoff-due',Math.max(0,(Number(goal.source?.notBefore||0)-Date.now())/1000),goal.id,tx);
  }
  async policies(){return this.db.query("SELECT s.*,b.generation,b.revision,b.desired_state,b.health,b.runtime_mode,b.group_id FROM autonomy_settings s JOIN bots b ON b.id=s.bot_id AND b.tenant_id=s.tenant_id WHERE b.deleted_at IS NULL AND (s.config->>'mode'='active' OR s.runtime_epoch<>s.epoch OR EXISTS(SELECT 1 FROM autonomy_cycles c WHERE c.bot_id=s.bot_id AND c.tenant_id=s.tenant_id AND c.decision ? 'expectedGoalRevision') OR EXISTS(SELECT 1 FROM autonomy_actions a WHERE a.bot_id=s.bot_id AND a.tenant_id=s.tenant_id AND (a.status='unknown' OR a.status='partial' AND a.result->'effects' @> '[{\"status\":\"unknown\"}]'::jsonb))) ORDER BY s.bot_id")}
  async acceptHandoff(bot:any,value:unknown){
@@ -167,6 +174,9 @@ export class AutonomyRepository {
    if(!s||s.epoch!==claim.epoch||s.lease_owner!==claim.owner||!s.lease_valid)throw new AutonomyConflict('自主工作已失效');
    const [bot]=await tx.query(`SELECT b.generation,b.revision,(${onlineSql}) AS online FROM bots b WHERE b.id=$1 AND b.tenant_id=$2 FOR UPDATE`,[claim.bot_id,claim.tenant_id]);
    if(!bot||bot.generation!==claim.generation||bot.revision!==claim.revision||!bot.online)throw new AutonomyConflict('机器人配置或运行状态已变化');
+   const [persisted]=await tx.query("SELECT * FROM autonomy_goals WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND status='active' FOR UPDATE",[goal.id,claim.bot_id,claim.tenant_id]);
+   if(!persisted)throw new AutonomyConflict('交接目标已取消或暂停');
+   goal=persisted;
    const source=goal.source||{};
    if(source.handoffId!==goal.id)throw new AutonomyConflict('目标不是交接来源，无法直接派发');
    if(Number(source.notBefore||0)>Date.now())throw new AutonomyConflict('尚未到该任务最早执行时间');
@@ -178,11 +188,11 @@ export class AutonomyRepository {
    // canonical digest. It attributes content; it never grants sending.
    const eventId=String(source.eventId||'').slice(0,100),scope=String(source.scope||'').slice(0,100),senderId=String(source.senderId||'').slice(0,20),at=Math.max(0,Number(source.notBefore)||0);
    const evidenceSources=eventId?[{ref:'event:'+eventId,scope,eventId,senderId,at,kind:'goal_source',digest:createHash('sha256').update(JSON.stringify({scope,eventId,senderId,at,text:''})).digest('hex')}]:undefined;
-   const action={id:randomUUID(),...ActionIntentSchema.parse({kind:'message',goalId:goal.id,target:scope,objective:String(goal.success_condition||goal.title||'').slice(0,1000)})};
+   const action={id:randomUUID(),...ActionIntentSchema.parse({kind:'message',goalId:goal.id,target:scope,objective:String(goal.progress||goal.success_condition||goal.title||'').slice(0,1000)})};
    await tx.query("UPDATE autonomy_settings SET state='acting',updated_at=now() WHERE bot_id=$1 AND tenant_id=$2",[s.bot_id,s.tenant_id]);
    await tx.query("UPDATE autonomy_cycles SET decision=COALESCE(decision,'{}'::jsonb)||$2::jsonb||jsonb_build_object('decidedAt',now()),usage=$3,state='acting' WHERE id=$1 AND bot_id=$4 AND tenant_id=$5",[claim.cycleId,JSON.stringify({expectedGoalRevision:s.goal_revision,goalChanges:[],action:{goalId:action.goalId,kind:action.kind,target:action.target,objective:action.objective},summary:'',reason:'handoff_due',...(evidenceSources?{evidenceSources}:{}),wait:{kind:'event',seconds:0,scope:goal.id}}),JSON.stringify(usage),s.bot_id,s.tenant_id]);
    await tx.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,goal_id,status,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'planned',now()+($10*interval '1 second'))",[action.id,claim.cycleId,s.bot_id,s.tenant_id,s.epoch,action.kind,action.target,action.objective,action.goalId||null,claim.config.cycleSeconds]);
-   return{action,evidenceSources};
+   return{action,evidenceSources,source};
   });
  }
  async completeGoal(claim:any,goalId:string,summary:string){
@@ -194,7 +204,7 @@ export class AutonomyRepository {
   return rows.length===1;
  }
  async markExecuting(claim:any,id:string){
-  return(await this.db.query("UPDATE autonomy_actions a SET status='executing' WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND cycle_id=$4 AND status='planned' AND expires_at>now() AND EXISTS(SELECT 1 FROM autonomy_settings s WHERE s.bot_id=a.bot_id AND s.tenant_id=a.tenant_id AND s.epoch=a.epoch AND s.lease_owner=$5 AND s.lease_until>now()) AND NOT EXISTS(SELECT 1 FROM autonomy_actions old WHERE old.bot_id=a.bot_id AND old.tenant_id=a.tenant_id AND old.id<>a.id AND old.kind=a.kind AND old.target=a.target AND old.kind<>'research' AND (old.status='unknown' OR old.status='partial' AND old.result->'effects' @> '[{\"status\":\"unknown\"}]'::jsonb)) RETURNING id",[id,claim.bot_id,claim.tenant_id,claim.cycleId,claim.owner])).length===1;
+  return(await this.db.query("UPDATE autonomy_actions a SET status='executing' WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND cycle_id=$4 AND status='planned' AND expires_at>now() AND EXISTS(SELECT 1 FROM autonomy_goals g WHERE g.id=a.goal_id AND g.bot_id=a.bot_id AND g.tenant_id=a.tenant_id AND g.status='active' AND g.source->>'handoffId'=g.id::text) AND EXISTS(SELECT 1 FROM autonomy_settings s WHERE s.bot_id=a.bot_id AND s.tenant_id=a.tenant_id AND s.epoch=a.epoch AND s.lease_owner=$5 AND s.lease_until>now()) AND NOT EXISTS(SELECT 1 FROM autonomy_actions old WHERE old.bot_id=a.bot_id AND old.tenant_id=a.tenant_id AND old.id<>a.id AND old.kind=a.kind AND old.target=a.target AND old.kind<>'research' AND (old.status='unknown' OR old.status='partial' AND old.result->'effects' @> '[{\"status\":\"unknown\"}]'::jsonb)) RETURNING id",[id,claim.bot_id,claim.tenant_id,claim.cycleId,claim.owner])).length===1;
  }
  async cancelPlanned(claim:any,id:string,reason:string){await this.db.query("UPDATE autonomy_actions SET status='canceled',result=$5,finished_at=now() WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND cycle_id=$4 AND status='planned'",[id,claim.bot_id,claim.tenant_id,claim.cycleId,JSON.stringify({status:'canceled',summary:reason,effects:[],evidence:[],unfinished:[]})])}
  async feedback(claim:any,id:string,result:any){

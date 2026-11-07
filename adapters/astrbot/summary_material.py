@@ -209,14 +209,12 @@ MAX_CLAIMS=96
 # claims) fits with headroom. Actual growth is re-measured in stage S3.
 MAX_CLAIMS_BYTES=32*1024
 CORE_CLAIMS_BYTES=4*1024
-# Same protected vocabulary as the rolling quota (memory_reflection), plus
-# retraction wording; protected claims are never squeezed out by merges.
-PROTECTED_PATTERNS=('约定','纠正','承诺','答应','未解决','还在等','不叫','应该叫','改口','道歉','撤回')
+# Protection is a recorded semantic judgment, never a vocabulary match.
 PLACEHOLDER_TEXT='[图片或引用消息，原始观测素材随本轮保存]'
 
 
 def claim_identity(scope,event,kind,text):
-    return hashlib.sha256('\x00'.join((scope,str(event),kind,text[:64])).encode()).hexdigest()[:16]
+    return hashlib.sha256('\x00'.join((scope,str(event),kind,text)).encode()).hexdigest()[:16]
 
 
 def valid_claim(claim):
@@ -271,13 +269,21 @@ def derive_claims(scope,payload,materials,corrections,data=None):
     rows={str(row.get('event')):row for row in payload or [] if isinstance(row,dict) and row.get('event') is not None}
     stored={str(key):value for key,value in (materials or {}).items() if isinstance(value,dict)}
     corrected={item['event']:item for item in corrections or []}
+    def evidence_text(event,row,role):
+        observed=stored.get(str(event)) or {}
+        if valid_material(observed,scope) and observed.get('subject')==str(row.get('sender_id','')) and observed.get('event')==str(event):
+            # Full trusted observation can contain important text beyond the
+            # 800-character display row. Native-only replies prove no delivery.
+            if role=='user':return observed['text'].split('\n',1)[-1]
+            if observed.get('reply'):return observed['reply']
+        return str(row.get(role,'') or '')
     claims=[]
     for event,row in rows.items():
         material_row=stored.get(event) or {};signature=material_row.get('digest','')
         user_text=str(row.get('user','') or '').strip()
         if user_text and user_text!=PLACEHOLDER_TEXT:
             record=corrected.get(event)
-            kind='correction' if record else ('agreement' if any(w in user_text for w in PROTECTED_PATTERNS) else 'human_statement')
+            kind='correction' if record else 'human_statement'
             claim={'id':claim_identity(scope,event,kind,user_text),'text':user_text,
                 'kind':kind,'speaker':{'role':'human','id':record['subject'] if record else str(row.get('sender_id',''))},
                 'about':record['name'] if record else '','sourceRefs':[claim_ref(record['scope'] if record else scope,event,'user',signature)],
@@ -302,11 +308,13 @@ def derive_claims(scope,payload,materials,corrections,data=None):
         if not isinstance(item,dict) or item.get('status')!='open':continue
         topic,quote=item.get('topic'),item.get('quote');row=rows.get(str(item.get('event','')))
         if not isinstance(topic,str) or not 2<=len(topic)<=50 or not isinstance(quote,str) or not row:continue
-        for role in ('user','bot'):
-            text=str(row.get(role,'') or '')
+        roles=[role for role in ('user','bot') if quote and quote in evidence_text(row['event'],row,role)]
+        if len(roles)!=1:continue
+        for role in roles:
+            text=evidence_text(row['event'],row,role)
             if quote in text and topic in quote:
-                claims.append({'id':claim_identity(scope,row['event'],'interpretation',quote),'text':quote[:PROTECTED_CLAIM_TEXT],
-                    'kind':'interpretation','speaker':{'role':'human' if role=='user' else 'bot'},'about':topic,
+                claims.append({'id':claim_identity(scope,row['event'],'interpretation:'+role,quote),'text':quote,
+                    'kind':'interpretation','speaker':({'role':'human','id':str(row.get('sender_id',''))} if role=='user' else {'role':'bot'}),'about':topic,
                     'sourceRefs':[claim_ref(scope,row['event'],role,(stored.get(str(row['event'])) or {}).get('digest',''))],
                     'occurredAt':row.get('at'),'status':'open','visibility':scope,'protected':True})
                 break
@@ -314,7 +322,7 @@ def derive_claims(scope,payload,materials,corrections,data=None):
     # be verbatim in the declared speaker's own text, so attribution and
     # evidence stay deterministic. Only open stages stay protected; executed
     # or canceled ones are history and age out naturally.
-    stages={'proposed':'open','accepted':'open','unknown':'open','executed':'done','canceled':'canceled'}
+    stages={'proposed':'proposed','accepted':'open','unknown':'unknown','executed':'done','canceled':'canceled'}
     commitments=(data or {}).get('commitments') if isinstance(data,dict) else None
     for item in commitments if isinstance(commitments,list) else []:
         if not isinstance(item,dict):continue
@@ -324,16 +332,79 @@ def derive_claims(scope,payload,materials,corrections,data=None):
         role='user' if item.get('who')=='user' else 'bot' if item.get('who')=='bot' else None
         if role is None:continue
         row=rows.get(str(item.get('event','')))
-        if not row or quote not in str(row.get(role,'') or ''):continue
+        if not row or quote not in evidence_text(row['event'],row,role):continue
         status=stages[stage]
-        claim={'id':claim_identity(scope,row['event'],'agreement',quote),'text':quote.strip()[:PROTECTED_CLAIM_TEXT],
+        claim={'id':claim_identity(scope,row['event'],'agreement:'+role,quote),'text':quote.strip(),
             'kind':'agreement','speaker':{'role':'human' if role=='user' else 'bot','id':str(row.get('sender_id','')) if role=='user' else ''},
             'about':topic,'sourceRefs':[claim_ref(scope,row['event'],role,(stored.get(str(row['event'])) or {}).get('digest',''))],
-            'occurredAt':row.get('at'),'status':status,'visibility':scope}
-        if status=='open':claim['protected']=True
+            'occurredAt':row.get('at'),'status':status,'stage':stage,'visibility':scope}
+        if isinstance(item.get('due'),str) and item['due'] in quote:claim['due']=item['due']
+        if isinstance(item.get('supersedes'),list):claim['supersedes']=[value for value in item['supersedes'][:8] if isinstance(value,str)]
+        if status in ('open','proposed','unknown'):claim['protected']=True
         else:claim['text']=claim['text'][:CLAIM_TEXT]
         claims.append(claim)
     return claims
+
+
+def claim_view(claim):
+    """Compact model view; full provenance and parent chains stay at rest."""
+    view={key:claim[key] for key in ('id','text','kind','speaker','about','occurredAt','status','visibility','stage','due') if key in claim}
+    view['sourceRefs']=[{key:ref[key] for key in ('scope','event','role') if key in ref} for ref in claim.get('sourceRefs',[]) if isinstance(ref,dict)]
+    return view
+
+
+def settle_commitments(db,scope,claims,previous):
+    """Retire only an offered agreement with a later, same-speaker source.
+    The existing summary model identifies the relation; code checks ownership
+    and evidence identity. No new classifier, table or permanent state."""
+    offered={claim['id']:claim for claim in previous}
+    changes={}
+    for claim in claims:
+        if claim.get('kind')!='agreement' or claim.get('stage') not in ('accepted','executed','canceled'):continue
+        for identifier in claim.get('supersedes',[]):
+            old=offered.get(identifier)
+            if not old or old.get('kind')!='agreement' or not protected_claim(old):continue
+            if old.get('visibility')!=scope or claim.get('visibility')!=scope or old.get('speaker')!=claim.get('speaker'):continue
+            if not isinstance(old.get('occurredAt'),(int,float)) or not isinstance(claim.get('occurredAt'),(int,float)) or claim['occurredAt']<=old['occurredAt']:continue
+            changes[identifier]=claim['id']
+    if not changes:return
+    for table,key in (('memory_summaries','id'),('memory_core_notes','slot')):
+        for identifier,raw in db.execute('SELECT '+key+',claims FROM '+table+' WHERE claims IS NOT NULL').fetchall():
+            try:stored=json.loads(raw)
+            except (ValueError,TypeError):continue
+            if not isinstance(stored,list):continue
+            changed=False
+            for old in stored:
+                if not isinstance(old,dict) or old.get('id') not in changes:continue
+                # Concurrent revisions cannot be overwritten by a model that
+                # saw the old version. Parent chains may differ after a merge.
+                expected=offered[old['id']]
+                if claim_view(old)!=claim_view(expected):continue
+                old.update(status='superseded',protected=False,supersededBy=changes[old['id']]);changed=True
+            if changed:db.execute('UPDATE '+table+' SET claims=? WHERE '+key+'=?',(json.dumps(stored,ensure_ascii=False,separators=(',',':')),identifier))
+
+
+def bound_claim_views(items,budget=1200,query=''):
+    """One measured evidence budget AFTER rolling, recall and core are joined.
+    Skip oversized entries without preventing smaller evidence from fitting.
+    Only the request view changes; stored claims and history are untouched."""
+    from hosted_memory import tokens
+    terms=tokens(query);candidates=[];seen=set();used=2
+    for item in items:
+        if not isinstance(item,dict):continue
+        claims=item.pop('protected_claims',None) or []
+        for claim in claims:
+            if not isinstance(claim,dict) or not claim.get('id'):continue
+            candidates.append((item,claim_view(claim)))
+    # Reuse lexical recall scoring only for choosing the bounded request view;
+    # this never determines importance, truth or storage protection.
+    candidates.sort(key=lambda pair:-len(terms & tokens(pair[1].get('text','')+' '+pair[1].get('about',''))))
+    for item,view in candidates:
+        if view['id'] in seen:continue
+        size=len(json.dumps(view,ensure_ascii=False,separators=(',',':')))+(1 if seen else 0)
+        if used+size>budget:continue
+        item.setdefault('protected_claims',[]).append(view);seen.add(view['id']);used+=size
+    return used
 
 
 def fit_claims(claims,budget=None,max_claims=None):

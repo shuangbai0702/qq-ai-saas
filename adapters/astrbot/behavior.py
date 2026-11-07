@@ -357,6 +357,7 @@ def install_runtime(core,settings):
         assembly.contribute('delivery',{'recipient':{'scope':scope,'owner':bool(subject and subject==str(b.get('ownerUin') or ''))},'task':event.get_extra('_hosted_autonomous_action')})
         assembly.contribute('companion',{'companion':companion_state.context(st.db,s['config'],scope,now,objective)})
         shared=bot_pipeline.conversation_context(st,b,scope,subject,objective,now)
+        bot_pipeline.finish_memory_view(st,shared,b,scope,objective)
         shared['execution_experience']=event.get_extra('_hosted_execution_memory',{'status':'not_loaded'})
         assembly.contribute('memory',{'execution_memory_guidance':execution_memory.GUIDANCE})
         assembly.contribute('memory',{key:shared[key] for key in ('persona_core_note','state','recent_messages','recent_cross_session_messages','conversation_timeline','autonomous_experience','execution_experience','group_round_history')})
@@ -769,22 +770,7 @@ def install_runtime(core,settings):
                 if not current(event):return
                 assembly.contribute('social',{'social':social_context})
             assembly.contribute('memory',{'execution_memory_guidance':execution_memory.GUIDANCE})
-            if b.get('memory',True) and b.get('memorySummary',True):
-                rolling=st.reflection.rolling(scope,owner=str(b.get('ownerUin','') or ''))
-                local_ids={x['id'] for x in rolling}
-                state['conversation_summaries']=rolling+[x for x in state.get('conversation_summaries',[]) if x['id'] not in local_ids and x.get('source_scope')!=scope]
-                # One bounded copy per claim id in the request: the always-visible
-                # core note carries its inherited claims once; the same claim
-                # inherited by a visible summary is not repeated next to it.
-                seen_claims={c.get('id') for c in ((shared.get('persona_core_note') or {}).get('protected_claims') or []) if isinstance(c,dict)}
-                for item in state['conversation_summaries']:
-                    claims=item.get('protected_claims')
-                    if not claims:continue
-                    kept=[c for c in claims if isinstance(c,dict) and c.get('id') not in seen_claims]
-                    seen_claims.update(c['id'] for c in kept)
-                    if len(kept)!=len(claims):
-                        if kept:item['protected_claims']=kept
-                        else:item.pop('protected_claims',None)
+            bot_pipeline.finish_memory_view(st,shared,b,scope,event.get_message_str())
             event.set_extra('_hosted_group_round_history',bool(shared.get('group_round_history')))
             if scope.startswith('group:'):
                 history=shared.get('group_round_history') or []
@@ -838,6 +824,11 @@ def install_runtime(core,settings):
             return
         id=self.get_platform_id();group=str(self.get_group_id() or '');scope='group:'+group if group else 'private:'+str(self.get_sender_id())
         if self.get_extra('_hosted_internal_work'):scope=self.get_extra('_hosted_pipeline').scope
+        import group_actions
+        if group_actions.owns_reply(store(id,s).db,self,scope):
+            self.set_extra('_hosted_final_reply_suppressed',True)
+            self.set_extra('_hosted_freshness_history_original','')
+            return
         social=store(id,s).social
         raw=normalize_image_markers(clean_internal(''.join(x.text for x in message.chain if isinstance(x,Plain))))
         voice_catalog=reply_voice.load(s) if not self.get_extra('_hosted_internal_work') and not self.get_extra('_hosted_model_error',False) else None

@@ -1,0 +1,233 @@
+{
+  "date": "2026-11-07",
+  "baselineCommit": "234252b8f50fe4c9a5f99e3cb7b3e23966508394",
+  "kind": "local repair verification plus read-only production sample",
+  "testEvidence": [
+    {
+      "localLog": ".local/final-review-20261107/python-final.log",
+      "logSha256": "9a0404c6450f57ba5dc23ee3408d37322d8483914fe5853f6ad8dcd7336e07f7",
+      "commandOrEntry": "references/astrbot/.venv/Scripts/python.exe -X utf8 -B -m unittest tests.final_review_test tests.p0_hold_merge_test tests.p1_commitments_test tests.p1_semantic_recall_test tests.d4_claims_test tests.readonly_journal_test tests.system_contract_test tests.summary_material_test tests.context_crash_test tests.context_transport_test tests.context_protocol_test tests.code_review_regressions_test tests.d9_dryrun_test tests.natural_conversation_test tests.experience_context_test",
+      "result": "165 passed; 22.909 seconds"
+    },
+    {
+      "localLog": ".local/final-review-20261107/node-final.log",
+      "logSha256": "01ec0872e4d605d54a72cf78c6536d59ab97c9e7254928580e03cc5e92fd438f",
+      "commandOrEntry": "node --import tsx --test --test-concurrency=1 tests/autonomous-coordinator.test.ts tests/final-review.test.ts",
+      "result": "24 existing + 4 new at that revision passed; 57.139 seconds"
+    },
+    {
+      "localLog": ".local/final-review-20261107/node-usage-final.log",
+      "logSha256": "c739a98934270851a5a6d5f31793405954054c37aedada3ad0a057fd08e5c29d",
+      "commandOrEntry": "node --import tsx --test --test-concurrency=1 tests/final-review.test.ts",
+      "result": "6 passed after expanding usage cases; overlaps previous run; 13.162 seconds"
+    },
+    {
+      "localLog": ".local/final-review-20261107/pipeline-final.log",
+      "logSha256": "17e4c2413be2698e9b625cea7599b34e8c495958c75c11e7101247237ebac287",
+      "commandOrEntry": "references/astrbot/.venv/Scripts/python.exe -X utf8 -B tests/autonomous_pipeline_test.py",
+      "result": "SDK fixture exited 0; no live QQ/model traffic"
+    },
+    {
+      "localLog": ".local/final-review-20261107/typecheck-final.log",
+      "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "commandOrEntry": "node node_modules/typescript/bin/tsc --noEmit",
+      "result": "exit 0"
+    },
+    {
+      "localLog": ".local/final-review-20261107/build-final.log",
+      "logSha256": "7de51eee98b107e202a19bceadc0cb7adc4861ba6b6eb32f8eba45cab618d777",
+      "commandOrEntry": "node scripts/production-build.mjs",
+      "result": "exit 0; pre-existing local Web edits included; not a deployable clean candidate"
+    },
+    {
+      "localLog": ".local/final-review-20261107/regressions-before-final.log",
+      "logSha256": "bb783b03581d693101a300aaf5e49d306190d3ab89702dc3d704e31c5b15b6c0",
+      "commandOrEntry": "FISHBOT_REVIEW_BASE=.local/final-review-20261107/candidate; Python final_review_test at then-current 13 probes",
+      "result": "baseline: 9 behavioral failures + 4 missing-new-helper errors"
+    },
+    {
+      "localLog": ".local/final-review-20261107/node-before.log",
+      "logSha256": "f966d69a379d82aa066f321bbcaa28f72d968a8da8ac5ff1c7e9b48e174b3114",
+      "commandOrEntry": "FISHBOT_REVIEW_BASE=.local/final-review-20261107/candidate; node final-review.test.ts at then-current 4 probes",
+      "result": "baseline: 4 failures"
+    },
+    {
+      "localLog": ".local/final-review-20261107/pipeline-before.log",
+      "logSha256": "90a50808015c284dab43d68858b59b03c98a40ec1df1a7a66a8ebd3d9beab4e2",
+      "commandOrEntry": "FISHBOT_REVIEW_BASE=.local/final-review-20261107/candidate; Python autonomous_pipeline_test.py",
+      "result": "baseline: deterministic duplicate same-group send reproduced"
+    }
+  ],
+  "reviewFileSha256NormalizedLF": {
+    "adapters/astrbot/autonomous_runtime.py": "e977ac1e6600ecec3d207f150f062a906d2dd25f36e1c1f6a2e71d65efaf8c3c",
+    "adapters/astrbot/behavior.py": "6b0c8a6bf3e625261d53f2fd326d8fdce5cecc134566069ba72e78486435f6b9",
+    "adapters/astrbot/bot_pipeline.py": "ab50a884299bb715f016b13250ca915c8267f0f3806f0a262c474a0e7700c798",
+    "adapters/astrbot/group_actions.py": "0ff79e5b85cf229a08fe7cf405b9809f3f4a2290c955a5673a3da3a824e282ef",
+    "adapters/astrbot/memory_reflection.py": "975a4751135c3c1c4cb21dcc639571decd5f565404bdd76d097718e092654ae6",
+    "adapters/astrbot/semantic_context.py": "99d73019146820d602d490b252a8eafab0a0392e9ccfbedfa354b5977859ad9f",
+    "adapters/astrbot/summary_material.py": "06dcf89a1744e7bb26e128bd94d8a13d18607a57772ce80b027da0479249e9d6",
+    "apps/control-api/src/autonomous.ts": "64f1c0a9626328107e45cb4bbab221e8a81973240109fb0ef80ae54179c786be",
+    "apps/node-agent/src/autonomous.ts": "c386413545d285426f84311e440049c3405a3d55faa7db6ff5f87962c7cc56cf",
+    "packages/database/autonomous.ts": "1ffa5f8444e9a2e31be04b5d87009ae05e35db3cfbbca102e7ad68be4eb973e1",
+    "tests/autonomous_pipeline_test.py": "ca5a3c4032451fe11a0846e1eb043ab39146f52021b017bc6a992908d5ba38cb",
+    "tests/d4_claims_test.py": "126ee397cc29684e1931727dfdccb7fb0f670a9d2afeebdd81af75c544a03a93",
+    "tests/p0_hold_merge_test.py": "3cb67d62364f38ca6a37c037a6bb1c10116017d1ff02d2a4a0d523ded62e9dfd",
+    "tests/p1_commitments_test.py": "b3096b8358df0c00ce6a035217f0f5ca1611ee24ed6f62113836844a11cc220a",
+    "tests/final_review_test.py": "57327cf0cd9207580b2abf2a0e43192d907aa38b1a0ecdd878d47628309a8a27",
+    "tests/final-review.test.ts": "bba3b3d9d5964c0e6447df9ba5ba226f08b6de339867ff9a97d490c7dd4097ec"
+  },
+  "production": {
+    "readOnly": true,
+    "deployedThisReview": false,
+    "restartedThisReview": false,
+    "databaseWritten": false,
+    "databaseChecks": [
+      {
+        "database": "fishbot_cutover_20261031c",
+        "check": "migration_registry",
+        "value": "BEGIN\n001\n002\n003\n004\n005\n006\n007\n008\n009\n010\n011\nCOMMIT"
+      },
+      {
+        "database": "fishbot_cutover_20261031c",
+        "check": "schema_011_columns",
+        "value": "BEGIN\nautonomy_cycles|cycle_seq\nautonomy_settings|context_checkpoint\nautonomy_settings|context_cycle_seq\nCOMMIT"
+      },
+      {
+        "database": "fishbot_cutover_20261031c",
+        "check": "schema_011_index",
+        "value": "BEGIN\nautonomy_cycles_seq_idx\nCOMMIT"
+      },
+      {
+        "database": "fishbot_cutover_20261031c",
+        "check": "legacy_planning_recent",
+        "value": "BEGIN\nforeground_work_busy|2\nno_due_work|7\nCOMMIT"
+      }
+    ],
+    "containers": [
+      {
+        "name": "fishbot-production-api",
+        "pid": 3688435,
+        "started": "2026-11-07T04:41:34.788392378Z",
+        "health": "healthy"
+      },
+      {
+        "name": "fishbot-production-agent",
+        "pid": 3688977,
+        "started": "2026-11-07T04:41:51.679340219Z",
+        "health": "healthy"
+      },
+      {
+        "name": "fishbot-production-gate",
+        "pid": 3151661,
+        "started": "2026-10-31T04:20:39.017686857Z",
+        "health": null
+      },
+      {
+        "name": "fishbot-production-pg",
+        "pid": 819917,
+        "started": "2026-11-02T14:37:30.254986814Z",
+        "health": "healthy"
+      }
+    ],
+    "adapterSyntaxParsed": 13,
+    "adapterComparison": {
+      "autonomous_runtime.py": {
+        "equals_baseline": true,
+        "equals_review": false
+      },
+      "behavior.py": {
+        "equals_baseline": true,
+        "equals_review": false
+      },
+      "bot_pipeline.py": {
+        "equals_baseline": true,
+        "equals_review": false
+      },
+      "group_actions.py": {
+        "equals_baseline": true,
+        "equals_review": false
+      },
+      "memory_reflection.py": {
+        "equals_baseline": true,
+        "equals_review": false
+      },
+      "summary_material.py": {
+        "equals_baseline": true,
+        "equals_review": false
+      },
+      "semantic_context.py": {
+        "equals_baseline": true,
+        "equals_review": false
+      },
+      "hosted_memory.py": {
+        "equals_baseline": true,
+        "equals_review": true
+      },
+      "memory_scope.py": {
+        "equals_baseline": true,
+        "equals_review": true
+      },
+      "qq_favorite_tools.py": {
+        "equals_baseline": true,
+        "equals_review": true
+      },
+      "qq_favorites.py": {
+        "equals_baseline": true,
+        "equals_review": true
+      },
+      "readonly_journal.py": {
+        "equals_baseline": true,
+        "equals_review": true
+      },
+      "system_contract.py": {
+        "equals_baseline": true,
+        "equals_review": true
+      }
+    },
+    "legacyFilesPresent": [],
+    "buildTimestamp": "2026-11-07T02:30:17.460Z",
+    "sourceVsArtifactChecks": {
+      "apps/node-agent/src/autonomous.ts": {
+        "recordedSourceHash": "ee1d658992bf7133e40c8578c211906203d2d4db7c19bde55231e975731178c1",
+        "sourceHash": "cec7388292f4701b8cc2290df380d00cb5e8d39db73425182e5ed5ebca83d0be",
+        "jsHash": "ff7033475ae0ee2e0cc33bd474c2d8e2576c0a9edd0ce512cf3aae8cc0d3403c",
+        "jsMtime": 1794024923.604983,
+        "equalsSourceBaselineNormalized": false,
+        "retiredPlannerSymbolsPresent": true,
+        "equalsCompiledBaseline": true
+      },
+      "packages/database/autonomous.ts": {
+        "recordedSourceHash": "3d7c06cb9574e560ac47d0a2c64f72d9caae47b8c6c807bd5e51c9cade36a2bd",
+        "sourceHash": "3d7c06cb9574e560ac47d0a2c64f72d9caae47b8c6c807bd5e51c9cade36a2bd",
+        "jsHash": "0e5ac6b59186d3d316d040848a9c19e4bbde62117cb7bfa2beb2b62ac0ec76be",
+        "jsMtime": 1794024929.1869862,
+        "equalsSourceBaselineNormalized": true,
+        "retiredPlannerSymbolsPresent": false,
+        "equalsCompiledBaseline": true
+      },
+      "apps/control-api/src/autonomous.ts": {
+        "recordedSourceHash": "dac15c648d8b742ecc6f29706a844261731edbcbc5f0a22fdfc54e9765ac4be3",
+        "sourceHash": "268f611762515444ad2ecc98b8bf90736b63eb4a87ab91a05b83ab667fe810da",
+        "jsHash": "e481035c4d8c6a3eb5a472572cee26bdede097f45a2c2803d3b47966a6e5a423",
+        "jsMtime": 1794024918.21898,
+        "equalsSourceBaselineNormalized": true,
+        "retiredPlannerSymbolsPresent": false,
+        "equalsCompiledBaseline": true
+      }
+    },
+    "criticalUnclosed": "Production node-agent autonomous.ts contains retired outer planner while compiled JS matches the single-inner baseline; deployment tree is inconsistent. Current repairs are not deployed.",
+    "attestationLimit": "File hashes, AST and process metadata do not prove every loaded Python code object matches disk."
+  },
+  "limitations": [
+    "No real-model answer quality comparison across small and two big compressions.",
+    "No full production fault injection or D9 migration.",
+    "No delegated long-running spontaneous research dispatcher restored.",
+    "Lost source evidence remains fail-closed; capacity deadlock is not mathematically excluded.",
+    "Test groups overlap; do not sum their totals as distinct cases."
+  ],
+  "scope": [
+    "No production deployment, restart, database write or real QQ/model traffic.",
+    "No new schema, memory store, outer AI planner or additional classification model call.",
+    "Unrelated existing Web/tests/docs changes excluded from review commit."
+  ]
+}
