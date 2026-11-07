@@ -35,7 +35,19 @@ class MemorySearch:
         person = '' if summaries else subject
         if summaries:
             rows=[r for r in summary_rows(self.db,scope,subject) if memory_audience({'scope':scope,'subject':subject},{'source_scope':r[4]})]
-            docs=[(str(r[0]),str(r[3]),r[1],r[4]) for r in rows]
+            # Claim-only evidence must be findable: index the claims text next
+            # to the prose. A claim-bearing row re-indexes once via the ':c'
+            # revision suffix; a claims-only revision invalidates its old row.
+            claim_map={}
+            identifiers=[str(r[0]) for r in rows]
+            if identifiers:
+                marks=','.join('?' for _ in identifiers)
+                for identifier,raw in self.db.execute('SELECT id,claims FROM memory_summaries WHERE id IN ('+marks+') AND claims IS NOT NULL',identifiers):
+                    try:claims=json.loads(raw) if raw else []
+                    except (ValueError,TypeError):claims=[]
+                    if isinstance(claims,list) and claims:
+                        claim_map[identifier]=' '.join(str(claim.get('text',''))+' '+str(claim.get('about','')) for claim in claims if isinstance(claim,dict) and claim.get('text'))
+            docs=[(str(r[0]),str(r[3])+(':c' if r[0] in claim_map else ''),r[1]+' '+claim_map.get(r[0],''),r[4]) for r in rows]
         else:
             rows=fact_rows(self.db,scope,subject)
             docs=[(r[0],str(r[3]),r[0]+' '+r[1],r[10]) for r in rows]

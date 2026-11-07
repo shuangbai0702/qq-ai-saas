@@ -71,7 +71,9 @@ class ReviewMemory(unittest.TestCase):
   self.assertNotEqual(dependency,self.store.reflection.context_dependency([identifier],SCOPE))
  def test_long_protected_claim_not_falsely_marked_retained(self):
   text='约定：'+('必要条件不能丢；'*80)+'仅限明天本人确认后执行'
-  claims=material.derive_claims(SCOPE,[{'event':'old','sender_id':PERSON,'user':text,'bot':'','at':1}],{},[])
+  claim={'id':material.claim_identity(SCOPE,'old','agreement',text),'text':text,'kind':'agreement','speaker':{'role':'human','id':PERSON},'about':'','sourceRefs':[material.claim_ref(SCOPE,'old','user','a'*64)],'occurredAt':1,'status':'open','visibility':SCOPE,'protected':True}
+  self.assertFalse(material.valid_claim(claim),'oversized protected evidence cannot pass the shape gate')
+  claims=[claim]
   kept,dropped=material.fit_claims(claims)
   self.assertIn(claims[0]['id'],dropped)
   self.assertEqual(material.uncarried_events(claims,{c['id'] for c in kept}),{'old'})
@@ -108,40 +110,6 @@ class ReviewMemory(unittest.TestCase):
    data={'state':{'conversation_summaries':[{'source_scope':origin,'summary':'本人约定','recall_reason':'scoped_bm25'}]}}
    wire=[{'role':'user','content':READONLY_CURRENT+'\n'+json.dumps(data)}]
    self.assertTrue(retained_context_visible(self.db,wire,'group:66666'))
-
-class ReviewOuter(unittest.TestCase):
- def fixture(self):
-  from outer_journal import PersistentOuterHistory
-  from decision_context import decision_view
-  db=sqlite3.connect(':memory:');self.addCleanup(db.close)
-  key=json.dumps(['tenant','bot',1]);h=PersistentOuterHistory(db,key)
-  prompt=json.dumps(decision_view({'environment':{'now':1},'goals':[]}));scope=('tenant','bot',1)
-  h.commit(h.prepare('fixed',prompt,scope,retirement='epoch1'),'{}')
-  return h,db,key,prompt,scope
- def test_binding_change_cannot_bootstrap_without_permit(self):
-  from outer_journal import OuterJournalDenied
-  h,db,key,prompt,scope=self.fixture();old=json.dumps(h.history)
-  with self.assertRaises(OuterJournalDenied):h.prepare('fixed',prompt,('tenant','bot',2),retirement='epoch1')
-  self.assertEqual(json.dumps(h.history),old)
- def test_restart_preserves_actual_binding_and_appends(self):
-  from outer_journal import PersistentOuterHistory
-  h,db,key,prompt,scope=self.fixture();restored=PersistentOuterHistory(db,key)
-  self.assertEqual(restored.prepare('fixed',prompt,scope,retirement='epoch1').reset_reason,'')
- def test_outer_checkpoint_cannot_change_system_and_web_proof_is_consumed(self):
-  from outer_journal import OuterJournalDenied
-  from tests.outer_journal_test import checkpoint
-  h,db,key,prompt,scope=self.fixture()
-  with self.assertRaises(OuterJournalDenied):h.prepare('changed',prompt,scope,retirement='epoch1',permit=checkpoint(key))
-  p=h.prepare('changed',prompt,scope,retirement='epoch1',permit=checkpoint(key),web_permit='web-change')
-  self.assertTrue(h.commit(p,'{}'))
-  with self.assertRaises(OuterJournalDenied):h.prepare('changed-again',prompt,scope,retirement='epoch1',permit=checkpoint(key),web_permit='web-change')
- def test_web_permit_abort_does_not_consume_and_late_commit_not_clear_new_permit(self):
-  h,db,key,prompt,scope=self.fixture()
-  a=h.prepare('fixed',prompt,scope,retirement='epoch2',web_permit='web-save')
-  h.abort_candidate(a)
-  b=h.prepare('fixed',prompt,scope,retirement='epoch2',web_permit='web-save')
-  self.assertFalse(h.commit(a,'{}'));self.assertTrue(h.commit(b,'{}'))
-  self.assertEqual(db.execute('SELECT count(*) FROM fishbot_outer_rebaselines').fetchone()[0],1)
 
 class ReviewSystem(unittest.TestCase):
  def test_conflicting_system_transitions_cannot_both_be_sent(self):

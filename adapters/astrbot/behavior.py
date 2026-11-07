@@ -773,6 +773,18 @@ def install_runtime(core,settings):
                 rolling=st.reflection.rolling(scope,owner=str(b.get('ownerUin','') or ''))
                 local_ids={x['id'] for x in rolling}
                 state['conversation_summaries']=rolling+[x for x in state.get('conversation_summaries',[]) if x['id'] not in local_ids and x.get('source_scope')!=scope]
+                # One bounded copy per claim id in the request: the always-visible
+                # core note carries its inherited claims once; the same claim
+                # inherited by a visible summary is not repeated next to it.
+                seen_claims={c.get('id') for c in ((shared.get('persona_core_note') or {}).get('protected_claims') or []) if isinstance(c,dict)}
+                for item in state['conversation_summaries']:
+                    claims=item.get('protected_claims')
+                    if not claims:continue
+                    kept=[c for c in claims if isinstance(c,dict) and c.get('id') not in seen_claims]
+                    seen_claims.update(c['id'] for c in kept)
+                    if len(kept)!=len(claims):
+                        if kept:item['protected_claims']=kept
+                        else:item.pop('protected_claims',None)
             event.set_extra('_hosted_group_round_history',bool(shared.get('group_round_history')))
             if scope.startswith('group:'):
                 history=shared.get('group_round_history') or []
@@ -1307,6 +1319,12 @@ def install_runtime(core,settings):
             return response
         except Exception as error:
             finish_attempt('failed',reason=type(error).__name__)
+            if type(error).__name__ in ('ImportError','ModuleNotFoundError','AttributeError'):
+                try:
+                    import traceback as _traceback
+                    with open('/tmp/request-errors.log','a') as _error_log:
+                        _error_log.write(time.strftime('%m-%d %H:%M:%S')+' '+repr(error)[:200]+'\n'+_traceback.format_exc()[-1800:]+'\n')
+                except OSError:pass
             e=current_message_event.get()
             settle_journal(e,False)
             if e and current(e) and e.get_platform_id() in metrics:
@@ -1354,6 +1372,12 @@ def install_runtime(core,settings):
             settle_journal(current_message_event.get(),True)
         except Exception as error:
             finish_attempt('failed',reason=type(error).__name__)
+            if type(error).__name__ in ('ImportError','ModuleNotFoundError','AttributeError'):
+                try:
+                    import traceback as _traceback
+                    with open('/tmp/request-errors.log','a') as _error_log:
+                        _error_log.write(time.strftime('%m-%d %H:%M:%S')+' '+repr(error)[:200]+'\n'+_traceback.format_exc()[-1800:]+'\n')
+                except OSError:pass
             e=current_message_event.get()
             if e and current(e) and e.get_platform_id() in metrics:
                 metric=metrics[e.get_platform_id()];metric['failures']=metric.get('failures',0)+1

@@ -1,0 +1,160 @@
+{
+ "date": "2026-11-07",
+ "baseline": {"git_head": "2cff48e", "workspace": "C:\\code\\fish\\qq-ai-saas", "arbitration_worktree": "C:\\code\\fish\\baseline-check (clean HEAD)"},
+ "guardrails": {
+  "committedWireImmutable": "verified: 5/5 production journals ready, prefix sha256 byte-identical pre/post restart (journal_prefix_check VIOLATIONS 0)",
+  "qqSessionsPreserved": "4 napcat runners respawned from persisted sessions, all 4 desired_state=running bots observed_state=online",
+  "productDefaultsUnchanged": "800/1500/300 char caps, summaryRounds=35, schema gates untouched",
+  "noTestWeakening": "no test deleted except files of the removed outer feature; stale assertions aligned to documented contracts with intent preserved (see report 7.1)",
+  "noProductionDataDrop": "no table/column/data dropped; 011 columns already present, index+registration completed"
+ },
+ "items": {
+  "P0-1-hold-cross-batch-closure": {
+   "status": "PASS",
+   "implementer": "subagent A",
+   "files": ["adapters/astrbot/memory_reflection.py"],
+   "evidence": [
+    "memory_hold_rounds(scope,event,round_id,reason,created) registry; holds re-enter next batch (oldest<=8, fill-to-35); watermark strictly forward",
+    "permit minting blocked while any unresolved hold with round_id<=through_round_id or reason='lost'",
+    "cleanup exemptions in record() 1000-cap, prune_pending TTL/cap, incoming() group window; group pending query hold EXISTS",
+    "lost holds: summaryHoldUnrecoverable metric, never re-enter, honest block; invalidate() clears registry on deliberate forget",
+    "tests/p0_hold_merge_test.py: 7 tests incl. 35->70 rejoin, material/pending preservation, no-permit-while-open, recovery after carry, cleanup exemptions"
+   ]
+  },
+  "P0-2-audience-merge-checkpoints": {
+   "status": "PASS",
+   "implementer": "subagent A",
+   "files": ["adapters/astrbot/memory_reflection.py"],
+   "evidence": [
+    "merge_group(): per-scope smalls(<=3 oldest)+single-origin bigs; identical-origin bigs merge together; mixed-origin bigs never merge with conversation smalls",
+    "checkpoint migration in same transaction: summary_id moved to product, epoch/state/request/round_count preserved; consumed never revived; uncarryable invalidated",
+    "merge_sources computed BEFORE model call; uncarried -> summaryProtectedConflicts + backoff, zero model calls",
+    "update_core_note after feasibility checks; abandon paths raise (rollback), never commit partial state",
+    "tests: group A/B isolation, same-scope recall restored, 3x35 checkpoint usable once, 0 calls on conflict, core_note byte-identical on abandon"
+   ]
+  },
+  "P1-1-semantic-importance": {
+   "status": "PASS",
+   "implementer": "main agent",
+   "files": ["adapters/astrbot/companion_insights.py", "adapters/astrbot/summary_material.py"],
+   "evidence": [
+    "SYSTEM prompt: mechanical 2-per-class quota removed (shared ~12-item value budget, third important fact explicitly kept)",
+    "commitments field: {event,topic,quote,who,stage,due}, stage in proposed/accepted/executed/canceled/unknown",
+    "derive_claims: quote must be verbatim in declared speaker's own text; open->protected, executed->done, canceled->canceled (age out)",
+    "protected_claim() no longer keyword-scans text; protection only from explicit flag/kind='correction'/status open|retracted; stored v2 claims keep flags",
+    "keyword hit now only labels kind='agreement', no auto-protection",
+    "tests/p1_commitments_test.py 6/6: keywordless agreement protected, keyword chatter ordinary, cancel/execute downgrade, forged attribution rejected, third fact kept"
+   ]
+  },
+  "P1-2-claims-recall-merge": {
+   "status": "PASS",
+   "implementer": "main agent",
+   "files": ["adapters/astrbot/memory_search.py", "adapters/astrbot/semantic_context.py", "adapters/astrbot/behavior.py", "adapters/astrbot/memory_reflection.py"],
+   "evidence": [
+    "FTS summary index includes claims text+about (':c' revision bump re-indexes claim-bearing rows; claim-only revision invalidates old row)",
+    "1200-char recall budget counts attached protected_claims JSON; per-item fit with truncation",
+    "claim-id dedup across matched/rolling and core_note/summaries (behavior.py + semantic_context.py)",
+    "big merge prompt carries protected_evidence (<=48 items/~8k chars, open/applied first) + system rule to preserve open/applied facts",
+    "rolling protected slot recognizes claim-level protection, not only prose keywords",
+    "tests/p1_semantic_recall_test.py 3/3 + p1_commitments big-merge evidence test"
+   ]
+  },
+  "P1-3-single-inner-architecture": {
+   "status": "PASS",
+   "implementer": "subagent B",
+   "files": ["apps/node-agent/src/autonomous.ts", "packages/database/autonomous.ts", "packages/contracts/autonomous.ts", "adapters/astrbot/autonomous_runtime.py", "apps/web/src/proactive-controls.tsx", "README.md"],
+   "deleted": ["adapters/astrbot/decision_context.py", "adapters/astrbot/decision_wire.py", "adapters/astrbot/outer_journal.py", "tests/outer_journal_test.py", "tests/decision_context_test.py", "tests/decision_wire_test.py"],
+   "evidence": [
+    "orientation/planning model loop, outer decision histories (AppendHistory outer use), sleep/fatigue regulation, H3 recordEffectiveCycle/contextCheckpoint/outerRebaselinePermit all removed; zero think calls asserted in coordinator tests",
+    "event-driven cycle: due wakes -> dueHandoffs -> planHandoff (single-active guard, ActionIntentSchema, goal_source evidenceSources) -> execute IPC -> feedback settle -> idempotent finish; terminal states leave no polling wake",
+    "task ledger preserved: pipeline_handoffs -> autonomy_goals + autonomy_wakes (handoff-received/handoff-due) -> due execute -> request_reply (handoffId==goalId) -> receipts -> acknowledge",
+    "owns()=False restores legacy initiative sweep as the single proactive entry in both modes",
+    "foreground propose_background_task wording updated (ledger registration, pending != guaranteed scheduling); no outer-management phrasing",
+    "存量: no data dropped; handoff-origin goals stay executable; model-origin goals dormant but retained",
+    "tests: coordinator 24, lifecycle 16, d1-evidence 4 (schema strictness kept, no model refs possible), autonomy/api/maintenance/runtime 9, autonomy_test+execution_memory+memory_pipeline_audit+decision_history+readonly_journal 91 OK, autonomous_pipeline 30 stages EXIT=0, foreground_prompt EXIT=0"
+   ]
+  },
+  "misc-closeouts": {
+   "status": "PASS",
+   "evidence": [
+    "D9: scripts/d9_legacy_migration_dryrun.py rebuilt (read-only URI, cross-scope facts/blocks/pending, mixed-origin summaries, legacy core notes) + tests/d9_dryrun_test.py (driver-level write refusal); production migration execution still BLOCKED pending per-item human authorization",
+    "usage observability: existing FISHBOT_MODEL_USAGE (phase=foreground) + model_cache request_result diagnostics confirmed and reused; outer planning/orientation usage disappears with P1-3",
+    "pre-existing failures fixed in place: natural_conversation (D4 ordering contract), plugin_alignment x2 (D2 audience + receipt wording), expression_sharing (decay contract); 68/68 green",
+    "web dead orientation render branch removed"
+   ]
+  },
+  "pre-existing-failures-arbitrated": {
+   "status": "DOCUMENTED",
+   "clean_head_full_discover": "751 tests: 8 failures + 9 errors, all pre-existing (7 script-style loaders by design; decision_context/wire tests deleted with feature; natural_conversation/plugin_alignment/expression_sharing aligned this round)",
+   "node_baseline": "coordinator/autonomy/d1/lifecycle/group-runtime 66/66 on clean HEAD",
+   "known_remaining": [
+    "tests/autonomy-runtime.test.ts owner-timer second delivery (fails identically on clean baseline)",
+    "tests/shared-product.test.ts / shared-native (historical arbitration: fails with production-baseline sources too)",
+    "script-style loaders (autonomous_pipeline/foreground_prompt/pipeline_boundaries/reasoning_effort/self_interest/send_lifecycle/shared_boundary/fish_followup_sdk) run standalone by design"
+   ]
+  }
+ },
+ "integration": {
+  "python_full_discover": "732 tests, 0 real failures, 1 skipped, 7 script-style loader errors by design",
+  "node": "tsc --noEmit 0 errors; outer suites 49/49; memory suites green except documented pre-existing",
+  "build": "production-build.mjs EXIT=0 (tsc+esbuild+vite)"
+ },
+ "deployment": {
+  "authorization": "explicit user authorization (deploy after done; server in ps.txt)",
+  "method": "overlay onto /opt/fishbot-pg-cutover-20261031/app-final-b; per-file sha256 verified",
+  "files": {"python": 14, "dist": 241, "packages_ts_source": 2, "other": 1, "deleted": 3, "note": "python=7 planned overlay + 7 stale-file repairs discovered during post-deploy verification"},
+  "backup": {
+   "local": "C:\\tools\\fishdeploy\\backup\\ + backup-manifest.json (251 entries)",
+   "remote": "/opt/fishbot-pg-cutover-20261031/control-final-c/deploy-final-20261107/backup-before/ (248 files)",
+   "rollback": "reverse-restore backup files then docker restart api+agent (QQ sessions auto-recover, proven)"
+  },
+  "incidents": [
+   {
+    "issue": "API+agent crash-loop after overlay: 'Database schema is not current'",
+    "root_cause": "production DB schema_migrations had 001-010 only; migration 011 columns had been added manually earlier but the index and the schema_migrations row were missing (historical report claim '011 applied' was inaccurate)",
+    "fix": "CREATE INDEX IF NOT EXISTS autonomy_cycles_seq_idx + INSERT schema_migrations('011') as migrationowner; no data changed",
+    "status": "RESOLVED; API healthy, agent healthy"
+   },
+   {
+    "issue": "post-deploy intermittent foreground ImportError (3-76ms failures at 10:58/11:41), fallback messages delivered to users, 51 model_request_unconfirmed cycles in 2h",
+    "root_cause": "7 production adapter files were stuck at the R4-era version (bot_pipeline/hosted_memory/memory_scope/qq_favorite_tools/qq_favorites/readonly_journal/system_contract) — the 2cff48e code-review fixes for them were committed but never deployed; the overlay's new behavior.py imports symbols (e.g. memory_scope.retained_context_visible) that only exist in the new versions",
+    "diagnosis": "worker logging disabled (logging.disable(CRITICAL)); used temporary file instrumentation on the exception path + copy-database reproduction + full-file fingerprint diff (61 server files vs local, 7 mismatched)",
+    "fix": "deployed the 7 HEAD versions (sha256-verified, the exact set validated by 732 local tests); restarted; foreground requests completed post-fix; real proactive message delivered at 12:48; journals prefix-identical throughout",
+    "status": "RESOLVED; stale originals archived server-side (backup-before/adapters/astrbot/) and locally (__stale__*.py)",
+    "note": "temporary ImportError/AttributeError file instrumentation remains in behavior.py except-paths (/tmp/request-errors.log); remove during next maintenance window"
+   }
+  ],
+  "verification": [
+    "docker ps: api healthy, agent healthy, gate/pg up",
+    "4/4 desired_state=running bots observed_state=online (693475e2/7356b371/99ba4892/d18ad07d); others offline/stopped as before",
+    "journal_prefix_check: 5 journals ready->ready, VIOLATIONS 0 (byte-prefix identity)",
+    "apply commands consumed (4 completed); restart commands completed"
+   ]
+ },
+ "post_deploy": {
+  "proactive_interval": {
+   "request": "set everyone's proactive interval to 30 minutes; do NOT enable proactive for bots without it",
+   "result": "10 proactive=true bots -> behavior.proactiveIntervalSeconds=1800 via full config-PUT-equivalent path (new revision + apply command + audit_events); 2 proactive=false bots untouched at 3600/disabled",
+   "audit": "audit_events 'config.saved' rows with source=deployment-final-20261107"
+  },
+  "scheduled_check": "automation '部署后1小时生产上下文与安全复查' created (one-shot, +60min): containers/bots, journal prefix, hold registry, autonomy reason distribution (no orientation/planning), prompt-leak scan (leak_scan.py), error/wire-violation scan, interval re-check; fixes critical issues first then reports",
+  "hourly_check_results": {
+   "containers_bots": "4/4 healthy; 4 running bots online throughout",
+   "journal_prefix": "5/5 ready, VIOLATIONS 0, re-verified after each restart including readonly_journal upgrade",
+   "memory_quality": "memory_hold_rounds empty on all bots (no stuck/lost holds); no summary retry backoff; summaries grew normally pre-deploy",
+   "autonomy": "zero orientation/planning cycle reasons; no_due_work/sleep/handoff_blocked only; handoffs all accepted, no pending backlog; legacy proactive sweep live (owner_contact/scheduled_contact seen; real proactive DM delivered 12:48 post-fix)",
+   "leak_scan": "16 databases scanned twice, 0 findings",
+   "errors": "agent wire violations 0; pipeline_actions unknown 0; disk 85% used (5.8G free) — watch item",
+   "config": "10 bots at 1800s confirmed; 2 non-proactive bots untouched"
+  }
+ },
+ "pending_authorization": [
+  "D9 production data migration execution (per-item human review)",
+  "real-model quality A/B (cost/external environment)",
+  "git commit/push of the working tree"
+ ],
+ "notWorthFixing": [
+  "fatigue settings UI fields retained (schema-compatible config, no consumer after outer removal; removal is a larger UI change with no behavioral gain)",
+  "legacy decision_history.py function-level imports of decision_context (unreachable after runtime removal; shared module untouched by design)"
+ ]
+}

@@ -31,37 +31,14 @@ export const TaskHandoffSchema=z.object({
  at:z.number().int().positive(),objective:z.string().min(1).max(1000),delaySeconds:z.number().int().min(0).max(604800),
 }).strict();
 
-const goalFields={title:z.string().max(160).optional(),reason:z.string().max(500),progress:z.string().max(1200).optional(),successCondition:z.string().max(500).optional(),sourceEventId:z.string().min(1).max(100).describe('对话衍生目标关联本轮recentForeground.eventId，主人身份由平台核实；模型自发目标省略，已有来源不能改写').optional()};
-export const GoalChangeSchema=z.discriminatedUnion('operation',[
- z.object({...goalFields,operation:z.literal('create'),title:z.string().min(1).max(160),id:z.never().optional()}).strict(),
- z.object({...goalFields,operation:z.enum(['update','pause','resume','complete','abandon']),id:z.string().uuid()}).strict(),
-]);
+// The coordinator constructs one action per due handoff goal; every action,
+// whatever produced it, must satisfy this same contract. evidenceRefs stay
+// reserved: the platform attaches verified evidenceSources itself, and no
+// planning model exists that could cite unverified refs.
 export const ActionIntentSchema=z.object({goalId:z.string().uuid().optional(),kind:z.enum(['research','message','profile_signature','qzone_publish']),target:z.string().regex(/^(?:|private:[0-9]{5,20}|group:[0-9]{4,20})$/).describe('message 必须原样选择本轮 contacts[].scope，保留 private: 或 group: 前缀；其他任务留空。').default(''),objective:z.string().min(1).max(1000),
  evidenceRefs:z.array(z.string().min(1).max(120)).max(8).optional().describe('可选；最多8项，每项引用本轮已提供记录的稳定ref（如本轮recentForeground的eventId）。引用只说明内容归属，不授予任何跨会话发送或许可；伪造、过期或本轮未提供的引用会被整体拒绝。省略表示无引用。')}).strict().superRefine((value,ctx)=>{
  if(value.kind==='message'&&!value.target)ctx.addIssue({code:'custom',path:['target'],message:'聊天动作必须提供本轮允许的完整会话 scope'});
 });
-export const DecisionEnvelopeSchema=z.object({
- expectedGoalRevision:z.number().int().nonnegative(),
- goalChanges:z.array(GoalChangeSchema).max(4),
- action:ActionIntentSchema.nullable(),
- summary:z.string().max(1600),
- reason:z.string().max(500),
- wait:z.object({kind:z.enum(['time','event','after_result']),seconds:z.number().int().min(0).max(604800),scope:z.string().max(100).default('')}).strict(),
-}).strict();
-export type DecisionEnvelope=z.infer<typeof DecisionEnvelopeSchema>;
-// The model receives the same input contract that the coordinator validates.
-// Descriptive examples alone previously hid required nullable/number fields.
-export const decisionJsonSchema=z.toJSONSchema(DecisionEnvelopeSchema,{io:'input'});
-
-// A fresh model-generated intention, independent of the previous sleep summary.
-// It selects no recipient and grants no permission or executable action.
-export const OrientationSchema=z.object({
- disposition:z.enum(['engage','rest','wait']),
- motive:z.string().min(1).max(500),
- desiredOutcome:z.string().max(500),
- reason:z.string().min(1).max(500),
-}).strict();
-export const orientationJsonSchema=z.toJSONSchema(OrientationSchema,{io:'input'});
 
 export interface InternalWork {
  id:string;tenantId:string;botId:string;epoch:number;generation:number;revision:number;

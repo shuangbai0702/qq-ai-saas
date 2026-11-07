@@ -1,7 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import type {Sql} from '../../../packages/database/index.js';
 import {AutonomyRepository,AutonomyConflict} from '../../../packages/database/autonomous.js';
-import {AutonomyConfigSchema,DecisionEnvelopeSchema,decisionJsonSchema,OrientationSchema,orientationJsonSchema,type InternalWork} from '../../../packages/contracts/autonomous.js';
+import {AutonomyConfigSchema,type InternalWork} from '../../../packages/contracts/autonomous.js';
 import {runtimeStatus} from '../../../packages/shared/runtime-status.js';
 
 /** Usage reconciliation classes. A charge records where its numbers came
@@ -44,7 +44,10 @@ export function taskResultFacts(kind:string,result:any,limit=350){
  return{summary:summary.slice(0,limit),response,reason,stopReason:String(result.stopReason||'').slice(0,120),effects,contextScope:result.contextScope};
 }
 
-/** One shared scheduler. PostgreSQL owns clocks and work; Python owns execution. */
+/** One shared scheduler. PostgreSQL owns clocks and work; Python owns execution.
+ * There is no outer planning loop: every wake is event-driven (an accepted
+ * handoff due, or an event/config wake), and due handoff goals are dispatched
+ * straight to the inner runtime with their durable accepted source. */
 export class AutonomyCoordinator {
  readonly repo:AutonomyRepository;readonly owner='autonomy-'+randomUUID();
  timer?:NodeJS.Timeout;heartbeatTimer?:NodeJS.Timeout;heartbeatTask?:Promise<void>;closed=false;busy=false;active?:{claim:any;actionId?:string;feedbackVersion?:number;task:Promise<void>};
@@ -66,10 +69,7 @@ export class AutonomyCoordinator {
  private async policy(bot:any,cycleId='',actionId=''){
   const issuedAt=this.policySerial=Math.max(Date.now(),this.policySerial+1);
   const experience=await this.repo.experience(bot.tenant_id,bot.bot_id);
-  const outerRebaselinePermitId=await this.repo.outerRebaselinePermit(bot.bot_id,bot.tenant_id,bot.revision).catch(()=>null);
-  return{tenantId:bot.tenant_id,botId:bot.bot_id,epoch:bot.epoch,generation:bot.generation,revision:bot.revision,config:AutonomyConfigSchema.parse(bot.config),observedThrough:Number(bot.observation?.at||0),latestFeedback:bot.observation?.latestFeedback||(bot.observation?.phase==='foreground_result'?bot.observation:undefined),experience,issuedAt,until:Date.now()+14000,cycleId,actionId,
-   ...(bot.context_checkpoint?{contextCheckpoint:bot.context_checkpoint}:{}),
-   ...(outerRebaselinePermitId?{outerRebaselinePermitId}:{})};
+  return{tenantId:bot.tenant_id,botId:bot.bot_id,epoch:bot.epoch,generation:bot.generation,revision:bot.revision,config:AutonomyConfigSchema.parse(bot.config),observedThrough:Number(bot.observation?.at||0),latestFeedback:bot.observation?.latestFeedback||(bot.observation?.phase==='foreground_result'?bot.observation:undefined),experience,issuedAt,until:Date.now()+14000,cycleId,actionId};
  }
  private async freshSnapshot(bot:any){
   const snapshot=await this.call(bot,'snapshot',{},3000);
@@ -127,6 +127,8 @@ export class AutonomyCoordinator {
    const active={claim,actionId:undefined as string|undefined,task:Promise.resolve()};this.active=active;
    active.task=this.cycle(active).catch(async()=>{
     // Unreturned model usage is deliberately charged at the reserved ceiling.
+    // Due handoff work keeps a wake so a later cycle can rediscover it.
+    await this.repo.wake(claim.tenant_id,claim.bot_id,claim.epoch,'handoff-due',30,'').catch(()=>{});
     await this.repo.finish(claim,{tokens:cycleTokens(claim),modelCalls:claim.config.cycleModelCalls,toolCalls:0,externalActions:0},'runtime_unavailable',30).catch(()=>{});
    }).finally(()=>{if(this.active===active)this.active=undefined});
   }finally{this.busy=false}
@@ -137,9 +139,9 @@ export class AutonomyCoordinator {
   const steps=Math.max(1,claim.config.cycleModelCalls-usage.modelCalls+claim.config.cycleToolCalls-usage.toolCalls+1);
   return Date.now()+claim.config.cycleSeconds*1000*steps;
  }
- private work(active:{claim:any;feedbackVersion?:number},usage:Usage,id:string,deadline:number,reserveModelCalls=0):InternalWork{
+ private work(active:{claim:any;feedbackVersion?:number},usage:Usage,id:string,deadline:number):InternalWork{
   const c=active.claim;return{id,tenantId:c.tenant_id,botId:c.bot_id,epoch:c.epoch,generation:c.generation,revision:c.revision,cycleId:c.cycleId,principal:'autonomous-service',feedbackVersion:active.feedbackVersion||0,expiresAt:deadline,
-   budget:{modelCalls:Math.max(0,c.config.cycleModelCalls-usage.modelCalls-reserveModelCalls),toolCalls:Math.max(0,c.config.cycleToolCalls-usage.toolCalls),tokens:Math.max(0,cycleTokens(c)-usage.tokens),seconds:c.config.cycleSeconds,externalActions:Math.max(0,c.config.cycleExternalActions-usage.externalActions)}};
+   budget:{modelCalls:Math.max(0,c.config.cycleModelCalls-usage.modelCalls),toolCalls:Math.max(0,c.config.cycleToolCalls-usage.toolCalls),tokens:Math.max(0,cycleTokens(c)-usage.tokens),seconds:c.config.cycleSeconds,externalActions:Math.max(0,c.config.cycleExternalActions-usage.externalActions)}};
  }
  private charge(usage:Usage,requestId:string,kind:string,result:any){
   // Idempotent per request: a repeated result (retry racing a receipt, a
@@ -164,104 +166,56 @@ export class AutonomyCoordinator {
   if(source==='estimated')usage.conservative=true;
   record(source,{tokens:raw.tokens,modelCalls:raw.modelCalls,toolCalls:raw.toolCalls,externalActions,reported:{tokens:reported('tokens'),modelCalls:reported('modelCalls'),toolCalls:reported('toolCalls')}});
  }
- private reserveUnknown(usage:Usage,requestId:string,kind:string,ceiling:number){
-  const applied=Math.max(0,ceiling-usage.tokens);
-  usage.tokens=Math.max(usage.tokens,ceiling);usage.conservative=true;
-  usage.charges=[...(usage.charges||[]),{requestId,kind,source:'unknown' as const,tokens:applied,modelCalls:0,toolCalls:0,externalActions:0,reported:{tokens:false,modelCalls:false,toolCalls:false}}].slice(-64);
- }
- private async think(claim:any,body:any,timeout:number,usage:Usage){
-  const requestId=String(body?.work?.id||'');
-  try{const result=await this.call(claim,'think',body,timeout);this.charge(usage,requestId,'think',result);return result}
-  catch(error){this.reserveUnknown(usage,requestId,'think',cycleTokens(claim));throw error}
- }
+ /** One wake = one bounded slice of event-driven work. No orientation or
+  * planning model call exists: the single durable work item is an accepted
+  * handoff goal whose notBefore has passed. The action is built from the
+  * goal's own accepted source (never model output), executed through the
+  * existing work/policy/execute IPC with budget and usage accounting, and
+  * the settled result determines the goal's terminal ledger state. */
  private async cycle(active:{claim:any;actionId?:string;feedbackVersion?:number}){
   const c=active.claim,config=c.config,tokenBudget=cycleTokens(c),usage=emptyUsage();let deadline=this.deadline(c,usage);
-  let feedback:any=null,feedbackActionId:string|undefined,orientation:any=null,reason='cycle_interrupted',sleep=15,orientationRepairs=0,decisionRepairs=0,settled=false,faultContext:any=undefined;
-  // With an explicitly minimal two-call budget, perform one task and let the
-  // next durable cycle reassess its recorded result rather than starve work.
-  const reserveModelCalls=config.cycleModelCalls>=3?1:0;
+  let reason='no_due_work',sleep=0,feedback:any=null,faultContext:any=undefined;
   try{
-   while(!this.closed&&usage.modelCalls<config.cycleModelCalls&&usage.tokens<tokenBudget){
+   while(!this.closed){
     if(!await this.repo.renew(c)){reason='ownership_changed';break}
     deadline=this.deadline(c,usage);
-    if(active.actionId)feedbackActionId=active.actionId;
     active.actionId=undefined;await this.call(c,'policy',await this.policy(c,c.cycleId),2000);
     const fresh=await this.freshSnapshot(c);
     if(fresh.foregroundBusy){reason='foreground_work_busy';sleep=15;break}
     active.feedbackVersion=Number(fresh.feedbackVersion||0);
-    const view=await this.repo.view(c.tenant_id,c.bot_id);
-    c.observation=view.settings.observation;
-    const latestResult=view.actions.filter(a=>a.result&&(a.status!=='canceled'||a.result.usage||(a.result.effects||[]).length)).sort((a,b)=>new Date(b.finished_at||b.created_at).getTime()-new Date(a.finished_at||a.created_at).getTime())[0];
-    if(latestResult){feedback=latestResult.result;feedbackActionId=latestResult.id;}
-    const relevant=[...view.goals.filter(g=>['active','paused','paused_user','paused_mode'].includes(g.status)),...view.goals.filter(g=>['completed','abandoned'].includes(g.status)).slice(0,3)];
-    const goals=relevant.map(g=>({id:g.id,status:g.status,title:g.title,origin:g.origin,commitment:['owner_request','contact_request'].includes(g.origin)?'delegated':'self_directed',source:g.source,progress:g.progress.slice(0,400),reason:g.reason.slice(0,160),successCondition:g.success_condition.slice(0,200)}));
-    // The current result is already in feedback. Repeating it in recentActions
-    // inflated every reassessment and could exhaust a default cycle before
-    // the outer model could choose sleep after a successful task.
-    const recentActions=view.actions.filter(a=>a.id!==feedbackActionId).slice(0,4).map(a=>({id:a.id,epoch:a.epoch,goalId:a.goal_id,sourceEventId:view.goals.find(g=>g.id===a.goal_id)?.source?.eventId,at:a.finished_at||a.created_at,kind:a.kind,target:a.target,objective:a.objective.slice(0,250),status:a.status,result:taskResultFacts(a.kind,a.result)}));
-    const feedbackAction=view.actions.find(a=>a.id===feedbackActionId),feedbackKind=feedbackAction?.kind||'research';
-    const resultSnapshot=feedback?{status:feedback.status,task:feedbackAction?{actionId:feedbackAction.id,goalId:feedbackAction.goal_id,kind:feedbackAction.kind,target:feedbackAction.target,objective:feedbackAction.objective.slice(0,500),finishedAt:feedbackAction.finished_at,epoch:feedbackAction.epoch}:undefined,...taskResultFacts(feedbackKind,feedback,900),evidence:(feedback.evidence||[]).slice(0,6),evidenceLimits:(feedback.evidenceLimits||[]).slice(0,6),unfinished:(feedback.unfinished||[]).slice(0,6),toolResults:(feedback.toolResults||[]).slice(-16),checkpoints:(feedback.checkpoints||[]).slice(-4),shadow:feedback.shadow}:null;
-    const cycleStarted=view.cycles.find(cycle=>cycle.id===c.cycleId)?.started_at;
-    const activity=config.fatigueEnabled?{...await this.repo.activity(c.tenant_id,c.bot_id,config.fatigueWindowMinutes,config),currentCycleSeconds:cycleStarted?Math.max(0,Math.floor((Date.now()-new Date(cycleStarted).getTime())/1000)):null}:undefined;
-    const input={decisionSchema:decisionJsonSchema,goalRevision:view.settings.goal_revision,goals,summary:view.settings.summary,feedback:resultSnapshot,recentActions,wakes:c.wakes,recentForeground:view.settings.observation.latestFeedback||view.settings.observation,bilibiliCompletion:view.settings.observation.bilibiliCompletion,...(activity?{autonomousActivity:activity}:{})};
-    // Repeated rest reopens intention formation, not the QQ send gate.
-    // Energy and idle activation inform the model; neither gates this review.
-    if(!orientation&&activity&&usage.modelCalls+3<=config.cycleModelCalls&&(activity.regulation.recentRestDecisions===2||feedback&&['blocked','partial'].includes(feedback.status))){
-     const body={phase:'orientation',decisionSchema:orientationJsonSchema,goals:goals.filter(g=>g.status==='active'),recentForeground:input.recentForeground,feedback:resultSnapshot,recentActivity:recentActions,autonomousActivity:activity};
-     let result=await this.think(c,{...body,work:this.work(active,usage,randomUUID(),deadline)},Math.max(1000,deadline-Date.now()+2000),usage);
-     let checked=OrientationSchema.safeParse(result.decision);
-     if((result.reason==='invalid_decision_json'||result.status==='completed'&&!checked.success)&&orientationRepairs<1&&usage.modelCalls<config.cycleModelCalls&&Date.now()<deadline){
-      orientationRepairs++;result=await this.think(c,{...body,validationErrors:checked.success?[]:checked.error.issues.map(issue=>({path:issue.path.join('.'),code:issue.code,message:issue.message.slice(0,400)})).slice(0,8),repair:true,work:this.work(active,usage,randomUUID(),deadline)},Math.max(1000,deadline-Date.now()+2000),usage);checked=OrientationSchema.safeParse(result.decision);
+    const goal=(await this.repo.dueHandoffs(c))[0];
+    if(!goal)break;
+    if((usage.modelCalls>0||usage.tokens>0)&&await this.repo.otherDue(c)){reason='fair_yield';sleep=1;break}
+    const prior=await this.repo.goalAction(c,goal.id);
+    if(prior){
+     const effects=Array.isArray(prior.result?.effects)?prior.result.effects:[];
+     const unsettled=prior.status==='unknown'||prior.status==='partial'&&effects.some((effect:any)=>effect.status==='unknown');
+     if(unsettled){
+      // A real dispatch is awaiting its authoritative receipt. The tick loop
+      // keeps checking it; this cycle only re-arms a bounded retry.
+      if(Number(prior.result?.receiptCheck?.attempts||0)>=10||prior.actions>=4){await this.repo.abandonGoal(c,goal.id);reason='handoff_blocked';continue}
+      reason='waiting_receipt';sleep=300;break;
      }
-     if(result.status!=='completed'){reason=result.reason||result.status;break}
-     if(!checked.success)throw checked.error;
-     const current=await this.freshSnapshot(c);
-     if(current.foregroundBusy||Number(current.feedbackVersion||0)!==active.feedbackVersion){reason='foreground_feedback_changed';sleep=15;break}
-     orientation={...checked.data,at:Date.now(),regulation:activity.regulation};
-     await this.repo.recordOrientation(c,orientation,usage);
+     if(prior.status==='completed'||prior.status==='partial'){
+      await this.repo.completeGoal(c,goal.id,taskResultFacts('message',prior.result)?.summary||prior.result?.summary||'');
+      reason='handoff_executed';continue;
+     }
+     if(prior.status==='blocked'||prior.actions>=4){
+      await this.repo.abandonGoal(c,goal.id);reason='handoff_blocked';continue;
+     }
+     // A settled cancellation never dispatched its effect; one bounded retry.
     }
-    if(usage.modelCalls>=config.cycleModelCalls||usage.tokens>=tokenBudget){reason='budget_exhausted';break}
-    if(orientation)Object.assign(input,{orientation,summary:''});
-    const currentSchema=DecisionEnvelopeSchema.superRefine((value,ctx)=>{
-     if(value.expectedGoalRevision!==view.settings.goal_revision)ctx.addIssue({code:'custom',path:['expectedGoalRevision'],message:'必须等于本轮真实目标版本'});
-     if(!value.action?.goalId)return;
-     const goal=goals.find(g=>g.id===value.action!.goalId),change=value.goalChanges.find(g=>g.id===value.action!.goalId);
-     const status=change?({resume:'active',update:goal?.status,pause:'paused',complete:'completed',abandon:'abandoned'} as Record<string,string|undefined>)[change.operation]:goal?.status;
-     if(status!=='active')ctx.addIssue({code:'custom',path:['action','goalId'],message:'只能使用已有且本轮仍活跃的真实目标ID；创建时省略ID'});
-    });
-    let decision=await this.think(c,{...input,work:this.work(active,usage,randomUUID(),deadline)},Math.max(1000,deadline-Date.now()+2000),usage);
-    let checked=currentSchema.safeParse(decision.decision);
-    if((decision.reason==='invalid_decision_json'||decision.status==='completed'&&!checked.success)&&decisionRepairs<1&&usage.modelCalls<config.cycleModelCalls&&Date.now()<deadline){
-     decisionRepairs++;
-     const validationErrors=checked.success?[]:checked.error.issues.map(issue=>({path:issue.path.join('.'),code:issue.code,message:issue.message.slice(0,400)})).slice(0,8);
-     decision=await this.think(c,{...input,validationErrors,repair:true,work:this.work(active,usage,randomUUID(),deadline)},Math.max(1000,deadline-Date.now()+2000),usage);
-     checked=currentSchema.safeParse(decision.decision);
-    }
-    if(decision.status!=='completed'){reason=decision.reason||decision.status;break}
-    if(!checked.success)throw checked.error;
-    const latest=await this.freshSnapshot(c);
-    if(latest.foregroundBusy||Number(latest.feedbackVersion||0)!==active.feedbackVersion){reason='foreground_feedback_changed';sleep=15;break}
-    const parsed=checked.data;
-    const committed=await this.repo.commitDecision(c,parsed,usage);
-    if(!committed.action){
-     settled=true;reason='sleep';
-     sleep=Math.max(config.minSleepSeconds,Math.min(config.maxSleepSeconds,parsed.wait.seconds||config.minSleepSeconds));
-     break;
-    }
-    const action=committed.action;
-    if(usage.modelCalls+reserveModelCalls>=config.cycleModelCalls||usage.tokens>=tokenBudget){await this.repo.cancelPlanned(c,action.id,'周期预算不足，保留目标到下次重新评估');reason='budget_exhausted';break}
-    if(action.kind!=='research'&&usage.externalActions>=config.cycleExternalActions){await this.repo.cancelPlanned(c,action.id,'本周期对外动作预算已用完');reason='external_action_budget';break}
+    if(usage.modelCalls>=config.cycleModelCalls||usage.tokens>=tokenBudget){reason='budget_exhausted';sleep=15;break}
+    const prepared=await this.repo.planHandoff(c,goal,usage);
+    const action=prepared.action;
     if(!await this.repo.markExecuting(c,action.id)){await this.repo.cancelPlanned(c,action.id,'身份已变化，或该对象有未确认的历史动作');reason='action_invalidated';break}
     active.actionId=action.id;await this.call(c,'policy',await this.policy(c,c.cycleId,action.id),2000);
-    // Source comes from the durable accepted goal, never the model action.
-    const source=committed.source;
-    // D1: evidenceSources describe where cited content came from; they never
-    // widen the requestSource same-scope delivery rule.
-    const task={...action,sourceScope:source?.scope,outerDecision:{at:committed.decidedAt,reason:parsed.reason.slice(0,600),cycleId:c.cycleId},...(action.kind==='message'&&source&&source.handoffId===action.goalId&&source.scope===action.target?{requestSource:source}:{}),...(committed.evidenceSources?.length?{evidenceSources:committed.evidenceSources}:{})};
-    // Keep one request for the outer to assess the actual result. An inner
-    // tool loop must not consume the entire shared decision allowance.
+    // Source comes from the durable accepted goal, never from a model action.
+    // D1: the dereferenced goal source describes where the task came from; it
+    // never widens the requestSource same-scope delivery rule.
     deadline=this.deadline(c,usage);
-    try{feedback=await this.call(c,'execute',{work:this.work(active,usage,action.id,deadline,reserveModelCalls),action:task,feedback},Math.max(1000,deadline-Date.now()+2000))}
+    const task={id:action.id,kind:action.kind,target:action.target,goalId:goal.id,objective:action.objective,sourceScope:goal.source?.scope,outerDecision:{at:new Date().toISOString(),reason:'handoff_due',cycleId:c.cycleId},requestSource:goal.source,...(prepared.evidenceSources?.length?{evidenceSources:prepared.evidenceSources}:{})};
+    try{feedback=await this.call(c,'execute',{work:this.work(active,usage,action.id,deadline),action:task,feedback},Math.max(1000,deadline-Date.now()+2000))}
     catch{
      await this.call(c,'cancel',{},2000).catch(()=>{});
      const receipt=await this.call(c,'receipt',{id:action.id},2000).catch(()=>null);
@@ -269,21 +223,15 @@ export class AutonomyCoordinator {
      if(!feedback.usage)feedback.usage={tokens:Math.max(0,tokenBudget-usage.tokens),modelCalls:Math.max(0,config.cycleModelCalls-usage.modelCalls),toolCalls:0,estimated:true};
     }
     this.charge(usage,action.id,'execute',feedback);await this.repo.feedback(c,action.id,feedback);
-    // Every meaningful task returns here. The next model decision sees actual
-    // feedback, not an eagerly queued list of tasks. Uncertain effects stop
-    // this cycle and remain blocked until they have authoritative resolution.
-    if(feedback.status==='unknown'||feedback.status==='partial'&&(feedback.effects||[]).some((effect:any)=>effect.status!=='confirmed')){reason='waiting_receipt';break}
+    // The settled result decides the goal's ledger state immediately: a
+    // delivered reply completes the accepted handoff, a final refusal frees
+    // its slot, an uncertain effect waits for its authoritative receipt.
+    if(feedback.status==='completed'){await this.repo.completeGoal(c,goal.id,taskResultFacts('message',feedback)?.summary||feedback.summary||'');reason='handoff_executed';continue}
+    if(feedback.status==='blocked'){await this.repo.abandonGoal(c,goal.id);reason='handoff_blocked';continue}
     if(feedback.status==='canceled'){reason='foreground_or_mode_changed';sleep=15;break}
-    if(['blocked','partial','budget_exhausted'].includes(feedback.status))orientation=null;
-    if(await this.repo.otherDue(c)){reason='fair_yield';sleep=1;break}
+    reason='waiting_receipt';sleep=300;break;
    }
-   if(!settled&&(usage.modelCalls>=config.cycleModelCalls||usage.tokens>=tokenBudget))reason='budget_exhausted';
-   // A bounded computation slice yields; only a committed model choice sleeps.
-   if(!settled&&['budget_exhausted','external_action_budget'].includes(reason))sleep=15;
-   // A short computation yield cannot replenish a partial daily reservation.
-   // Retain genuine events/config wakes, but do not poll an unchanged rejected
-   // request every fifteen seconds or inflate usage for an unissued request.
-   if(!settled&&reason==='request_token_budget'&&usage.modelCalls===0&&config.dailyTokenBudget>0&&tokenBudget<config.cycleTokenBudget)reason='daily_request_token_budget';
+   if(usage.modelCalls>=config.cycleModelCalls||usage.tokens>=tokenBudget){reason='budget_exhausted';sleep=15}
   }catch(error){
    // Unknown model work was charged at its IPC boundary. A rejected decision
    // with returned usage must retain the known cost, not invent a full bill.
@@ -299,6 +247,10 @@ export class AutonomyCoordinator {
     if(consecutive>=this.isolation.consecutiveLimit){sleep=this.isolation.cooldownSeconds;faultContext.isolated=true;faultContext.consecutive=consecutive}
    }
   }finally{
+   // Due work that did not reach a terminal ledger state must keep its wake:
+   // no autonomous-time poll exists to rediscover it. Terminal states own no
+   // further wake; the next accepted handoff or event writes the next one.
+   if(!['no_due_work','handoff_executed','handoff_blocked'].includes(reason))await this.repo.wake(c.tenant_id,c.bot_id,c.epoch,'handoff-due',Math.max(0,sleep),'').catch(()=>{});
    await this.repo.finish(c,usage,reason,sleep,faultContext);
    // Withdraw the short effect permit before releasing the global slot. A
    // failed withdrawal still expires after at most fourteen seconds.

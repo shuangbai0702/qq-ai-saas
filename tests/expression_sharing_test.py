@@ -15,7 +15,12 @@ class SharingTests(unittest.TestCase):
  def test_scope_blocks_and_expiry_still_apply(self):
   for scope in ['group:10000','group:20000']:
    self.a.db.execute('INSERT INTO social_pattern_blocks VALUES(?,?)',(scope,'有节目效果'));self.a.db.commit();self.assertFalse(self.hints('group:20000'));self.a.db.execute('DELETE FROM social_pattern_blocks');self.a.db.commit()
-  self.a.db.execute('UPDATE social_patterns SET updated=?',(time.time()-31*86400,));self.a.db.commit();self.assertFalse(self.hints('group:20000'))
+  self.a.db.execute('UPDATE social_patterns SET updated=?',(time.time()-31*86400,));self.a.db.commit()
+  # Decay contract: stale hints do not hard-expire, but a reinforced fresh
+  # expression in the same situation outranks them.
+  self.a.db.execute("INSERT INTO social_patterns VALUES('group:20000','这波配合满分','开玩笑','[]',2,?)",(time.time(),));self.a.db.commit()
+  hints=self.hints('group:20000')
+  self.assertEqual(hints[0]['expression'],'这波配合满分');self.assertEqual(hints[-1]['expression'],'有节目效果')
  def test_botwide_includes_other_groups_but_never_private_or_other_bots(self):
   cfg={'styleLearning':True,'expressionSharing':'bot'}
   self.assertTrue(self.hints('group:30000',cfg));self.assertFalse(self.hints('private:10000',cfg));self.assertFalse(self.hints('group:30000',cfg,store=self.b))

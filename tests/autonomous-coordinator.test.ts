@@ -14,28 +14,49 @@ async function fixture(count=1){
  return db;
 }
 const usage={modelCalls:1,toolCalls:0,tokens:400};
+/** One accepted handoff goal: the only durable work item the coordinator
+ * dispatches. goalId doubles as the handoff id, exactly as acceptHandoff writes. */
+async function handoffGoal(db:any,goalId:string,bot='bot-0',opts:{scope?:string;owner?:boolean;notBeforeOffsetMs?:number;objective?:string}={}){
+ const notBefore=Date.now()+(opts.notBeforeOffsetMs??-1000);
+ await db.query("INSERT INTO autonomy_goals(id,bot_id,tenant_id,origin,status,title,reason,progress,success_condition,source) VALUES($1,$2,'tenant',$3,'active',$4,'real chat submitted through the authorized foreground tool','',$5,$6)",
+  [goalId,bot,opts.owner?'owner_request':'contact_request',opts.objective||'deliver the accepted task result',opts.objective||'deliver the accepted task result',
+   JSON.stringify({eventId:'handoff-event',scope:opts.scope||'private:12345678',senderId:'12345678',owner:opts.owner===true,handoffId:goalId,notBefore})]);
+}
 
-test('a newly committed delegated goal delivers its trusted source to the inner in the same cycle',async()=>{
- const db=await fixture();let decisions=0,executions=0;
+test('a due handoff goal is dispatched to the inner with its trusted source and settles the goal',async()=>{
+ const db=await fixture();let executions=0,thinkCalls=0;
+ const goalId='b1786cd0-91c4-40ec-8e42-75d80ae70a9d';
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
-  if(op==='think'){decisions++;return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,
-   goalChanges:decisions===1?[{operation:'create',title:'actual group request',reason:'delegation',sourceEventId:'real-source'}]:[],
-   action:decisions===1?{kind:'research',objective:'read for the source group'}:null,summary:'actual progress',reason:'delegated request',wait:{kind:decisions===1?'after_result':'time',seconds:decisions===1?0:600}}}}
-  if(op==='execute'){executions++;assert.equal(body.action.sourceScope,'group:963105233');return{status:'completed',summary:'actual read',effects:[],evidence:[],unfinished:[],usage}}
+  if(op==='think'){thinkCalls++;return{status:'completed',usage}}
+  if(op==='execute'){executions++;
+   assert.equal(body.action.kind,'message');assert.equal(body.action.goalId,goalId);
+   assert.equal(body.action.target,'private:12345678');
+   assert.equal(body.action.requestSource.handoffId,goalId,'the accepted goal source is the only requestSource');
+   assert.equal(body.action.requestSource.eventId,'handoff-event');
+   assert.equal(body.action.sourceScope,'private:12345678');
+   assert.equal(body.action.evidenceSources[0].ref,'event:handoff-event');
+   assert.match(body.action.evidenceSources[0].digest,/^[0-9a-f]{64}$/);
+   return{status:'completed',summary:'actual fixture reply delivered',effects:[{id:body.work.id+':0',status:'confirmed',receipt:'fixture-result-ack'}],evidence:[],unfinished:[],usage}}
   throw Error(op);
  });
  try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});
-  await coordinator.repo.event({tenant_id:'tenant',bot_id:'bot-0',epoch:2},Date.now(),{scope:'group:963105233',senderId:'12345678',owner:true,eventId:'real-source',directed:true,phase:'foreground_result',result:{status:'sent'}},15);
-  await coordinator.tick();await coordinator.active?.task;assert.equal(executions,1);
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',rollout:'live'});
+  await handoffGoal(db,goalId);
+  await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
+  await coordinator.tick();await coordinator.active?.task;
+  assert.equal(executions,1);assert.equal(thinkCalls,0,'no orientation or planning model call exists');
+  const view=await coordinator.repo.view('tenant','bot-0');
+  assert.equal(view.goals[0].status,'completed');assert.equal(view.actions[0].status,'completed');
+  assert.equal(view.cycles[0].reason,'handoff_executed');assert.equal(view.actions.length,1,'one action per goal, no planning call');
  }finally{await coordinator.stop();await db.close()}
 });
 
 test('a slow member policy cannot block the active lease heartbeat',async()=>{
- const db=await fixture(2);let releaseModel!:()=>void,releaseSlow!:()=>void,enteredSlow!:()=>void;
- const modelGate=new Promise<void>(resolve=>releaseModel=resolve),slowGate=new Promise<void>(resolve=>releaseSlow=resolve),slowEntered=new Promise<void>(resolve=>enteredSlow=resolve);
+ const db=await fixture(2);let releaseSlow!:()=>void,enteredSlow!:()=>void,executions=0;
+ const slowGate=new Promise<void>(resolve=>releaseSlow=resolve),slowEntered=new Promise<void>(resolve=>enteredSlow=resolve);
  let slow=false,activePolicies=0;
+ const goalId='0e5d3a9e-6f0e-4a35-9f7b-1c2d3e4f5a6b';
  const coordinator=new AutonomyCoordinator(db,async(bot,op,body:any)=>{
   if(op==='policy'){
    if(bot.bot_id==='bot-0')activePolicies++;
@@ -43,30 +64,34 @@ test('a slow member policy cannot block the active lease heartbeat',async()=>{
    return{};
   }
   if(op==='snapshot'||op==='cancel')return{};
-  await modelGate;return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:null,summary:'rest',reason:'model choice',wait:{kind:'time',seconds:600}}};
+  if(op==='execute'){executions++;assert.equal(body.action.goalId,goalId);return{status:'completed',summary:'actual result',effects:[],evidence:[],unfinished:[],usage}}
+  throw Error(op);
  });
  try{
   for(let n=0;n<2;n++)await coordinator.repo.configure('tenant','bot-'+n,1,{mode:'active'});
+  await handoffGoal(db,goalId);await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
   await coordinator.tick();assert.ok(coordinator.active);slow=true;
-  const blockedTick=coordinator.tick();await slowEntered;
+  const blockedTick=coordinator.tick();await enteredSlow;
   const before=activePolicies;await coordinator.heartbeat();assert.ok(activePolicies>before,'renew active owner while peer IPC remains unresolved');
-  releaseSlow();await blockedTick;releaseModel();await coordinator.active?.task;
- }finally{releaseSlow();releaseModel();await coordinator.stop();await db.close()}
+  releaseSlow();await blockedTick;await coordinator.active?.task;assert.equal(executions,1);
+ }finally{releaseSlow();await coordinator.stop();await db.close()}
 });
 
-test('shared experience survives coordinator replacement, labels decisions and failures, and isolates members',async()=>{
- const db=await fixture(2);let count=0;
+test('shared experience survives coordinator replacement, labels handoff results and isolates members',async()=>{
+ const db=await fixture(2);const goalId='1c9a1bd2-2a4b-4a35-9f7b-1c2d3e4f5a6c';
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
-  if(op==='execute')return{status:'blocked',summary:'actual public service limit',toolResults:[{tool:'bilibili_search',status:'unavailable',detail:'cooldown'}],effects:[],evidence:[],unfinished:['read actual source'],usage};
-  count++;return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:count===1?{kind:'research',objective:'inspect a public topic'}:null,summary:'retained actual failure',reason:count===1?'own interest':'choose rest after actual failure',wait:{kind:count===1?'after_result':'time',seconds:count===1?0:600}}};
+  if(op==='execute')return{status:'blocked',summary:'actual public service limit',toolResults:[{tool:'bilibili_search',status:'unavailable',detail:'cooldown'}],effects:[],evidence:[],unfinished:['deliver the accepted result'],usage};
+  throw Error(op);
  });
  try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',fatigueEnabled:false});await coordinator.tick();await coordinator.active?.task;
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await coordinator.repo.applied('tenant','bot-0',2);
+  await handoffGoal(db,goalId);await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
+  await coordinator.tick();await coordinator.active?.task;
   const replacement=new AutonomyCoordinator(db,async()=>({}));
   const history=await replacement.repo.experience('tenant','bot-0');
   assert.equal(history.actions[0].status,'blocked');assert.equal(history.actions[0].toolResults[0].tool,'bilibili_search');assert.equal(history.actions[0].effects.length,0);
-  assert.ok(history.actions[0].assignedAt&&history.actions[0].finishedAt);assert.ok(history.decisions[0].at);assert.equal(history.decisions[0].action,null);
+  assert.ok(history.actions[0].assignedAt&&history.actions[0].finishedAt);
   assert.deepEqual((await replacement.repo.experience('tenant','bot-1')).actions,[]);
   assert.deepEqual((await replacement.repo.experience('different-tenant','bot-0')).decisions,[]);
   const view=await coordinator.repo.view('tenant','bot-0');await coordinator.repo.configure('tenant','bot-0',view.settings.epoch,{mode:'passive'});
@@ -75,27 +100,47 @@ test('shared experience survives coordinator replacement, labels decisions and f
  }finally{await coordinator.stop();await db.close()}
 });
 
-test('four receipt-bearing bubbles consume one versioned logical chat action and return to outer',async()=>{
- const db=await fixture();let plans=0;
+test('four receipt-bearing bubbles consume one versioned logical chat action and settle the goal',async()=>{
+ const db=await fixture();const goalId='2c9a1bd2-2a4b-4a35-9f7b-1c2d3e4f5a6c';
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
   if(op==='execute')return{status:'completed',actionUnitVersion:2,summary:'four bubbles actually confirmed by fixture protocol',effects:Array.from({length:4},(_,n)=>({id:body.work.id+':'+n,logicalActionId:body.work.id+':message:private:12345678',method:'send_private_msg',target:'private:12345678',status:'confirmed',receipt:'real-fixture-'+n})),evidence:[],unfinished:[],usage};
-  plans++;return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:plans===1?{kind:'message',target:'private:12345678',objective:'one conversational action'}:null,summary:'reassessed receipts',reason:'own choice',wait:{kind:plans===1?'after_result':'time',seconds:plans===1?0:300}}};
+  throw Error(op);
  });
- try{await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',cycleExternalActions:1});await coordinator.tick();await coordinator.active?.task;const view=await coordinator.repo.view('tenant','bot-0');assert.equal(view.usage.external_actions,1);assert.equal(view.actions[0].result.effects.length,4);assert.equal(new Set(view.actions[0].result.effects.map((e:any)=>e.receipt)).size,4);assert.equal(plans,2)}finally{await coordinator.stop();await db.close()}
+ try{
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',cycleExternalActions:1});
+  await handoffGoal(db,goalId);await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
+  await coordinator.tick();await coordinator.active?.task;
+  const view=await coordinator.repo.view('tenant','bot-0');
+  assert.equal(view.usage.external_actions,1);assert.equal(view.actions.length,1);
+  assert.equal(view.actions[0].result.effects.length,4);assert.equal(new Set(view.actions[0].result.effects.map((e:any)=>e.receipt)).size,4);
+  assert.equal(view.goals[0].status,'completed');assert.equal(view.cycles[0].reason,'handoff_executed');
+ }finally{await coordinator.stop();await db.close()}
 });
 
-test('a completed task yields to another due member without losing its own durable result',async()=>{
- const db=await fixture(2),executions:string[]=[];
+test('a completed handoff yields the next local dispatch to another due member without losing its own result',async()=>{
+ const db=await fixture(2),executions:string[]=[];const goals=['3c9a1bd2-2a4b-4a35-9f7b-1c2d3e4f5a6c','4c9a1bd2-2a4b-4a35-9f7b-1c2d3e4f5a6c','5fc9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c'];
  const coordinator=new AutonomyCoordinator(db,async(bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
-  if(op==='execute'){executions.push(bot.bot_id);return{status:'completed',summary:'actual result '+bot.bot_id,effects:[],evidence:[],unfinished:[],usage}}
-  return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:{kind:'research',objective:'one meaningful task'},summary:'working',reason:'independent interest',wait:{kind:'after_result',seconds:0}}};
+  if(op==='execute'){executions.push(bot.bot_id+':'+body.action.goalId);return{status:'completed',summary:'actual result',effects:[],evidence:[],unfinished:[],usage}}
+  throw Error(op);
  });
  try{
   for(let n=0;n<2;n++)await coordinator.repo.configure('tenant','bot-'+n,1,{mode:'active'});
-  await coordinator.tick();await coordinator.active?.task;assert.equal(executions.length,1);const first=executions[0];assert.equal((await coordinator.repo.view('tenant',first)).cycles[0].reason,'fair_yield');
-  await coordinator.tick();await coordinator.active?.task;assert.notEqual(executions[1],first);assert.equal((await coordinator.repo.view('tenant',first)).actions[0].result.summary,'actual result '+first);
+  await handoffGoal(db,goals[0],'bot-0');await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goals[0]);
+  await handoffGoal(db,goals[1],'bot-0');await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goals[1]);
+  await handoffGoal(db,goals[2],'bot-1');await coordinator.repo.wake('tenant','bot-1',2,'handoff-due',0,goals[2]);
+  await coordinator.tick();await coordinator.active?.task;
+  assert.equal(executions.length,1);assert.equal(executions[0],'bot-0:'+goals[0]);
+  const view=await coordinator.repo.view('tenant','bot-0');
+  assert.equal(view.goals.find((g:any)=>g.id===goals[0]).status,'completed','yielding never loses the settled result');
+  assert.equal(view.cycles[0].reason,'fair_yield','a second due member shortens the local backlog wait');
+  assert.ok(new Date(view.settings.next_wake_at).getTime()<=Date.now()+2000,'yielded local work keeps an immediate wake');
+  await coordinator.tick();await coordinator.active?.task;
+  assert.equal(executions.length,2);assert.equal(executions[1],'bot-1:'+goals[2],'the other due member goes first after the yield');
+  await new Promise(resolve=>setTimeout(resolve,1100));
+  await coordinator.tick();await coordinator.active?.task;
+  assert.equal(executions.length,3);assert.equal(executions[2],'bot-0:'+goals[1]);
  }finally{await coordinator.stop();await db.close()}
 });
 
@@ -104,265 +149,35 @@ test('an absent stopped read-only task closes unknown without replaying an exter
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
   if(op==='receipt')return{exists:false,active:false,effects:[]};
-  if(op==='execute'){executed++;return{status:'unknown',summary:'read interrupted',effects:[],evidence:[],unfinished:['read'],usage}}
-  return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:{kind:'research',objective:'read public facts'},summary:'read',reason:'interest',wait:{kind:'after_result',seconds:0}}};
+  if(op==='execute')executed++;
+  throw Error(op);
  });
  try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await coordinator.tick();await coordinator.active?.task;await coordinator.repo.configure('tenant','bot-0',2,{mode:'passive'});(coordinator as any).sampled.clear();await coordinator.tick();const view=await coordinator.repo.view('tenant','bot-0');assert.equal(executed,1);assert.equal(view.actions[0].status,'blocked');assert.equal(view.actions[0].result.stopReason,'read_execution_interrupted');assert.equal(view.usage.external_actions,0);
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});
+  await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget,started_at,finished_at) VALUES('closed-cycle','bot-0','tenant',2,0,0,'old','ended','{}',now(),now())");
+  await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at,result,created_at,finished_at) VALUES('stale-read','closed-cycle','bot-0','tenant',2,'research','','read public facts','unknown',now()+interval '1 hour',$1,now(),now())",[JSON.stringify({status:'unknown',summary:'read interrupted',effects:[],usage})]);
+  await coordinator.repo.configure('tenant','bot-0',2,{mode:'passive'});(coordinator as any).sampled.clear();await coordinator.tick();
+  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(executed,0);assert.equal(view.actions[0].status,'blocked');assert.equal(view.actions[0].result.stopReason,'read_execution_interrupted');assert.equal(view.usage?.external_actions??0,0);
  }finally{await coordinator.stop();await db.close()}
 });
 
-for(const changedWhileThinking of [false,true])test('fresh inner feedback is loaded before thinking and fences a later change: '+changedWhileThinking,async()=>{
- const db=await fixture();const at=Date.now()-1000;let snapshots=0,executions=0;
- const feedback=(version:number)=>({at:at+version,phase:'foreground_result',eventId:'reply-'+version,scope:'private:12345678',senderId:'12345678',directed:true,result:{status:'sent',response:'actual feedback '+version}});
+test('foreground feedback advances the version fence; a canceled dispatch keeps its retry wake',async()=>{
+ const db=await fixture();const goalId='5c9a1bd2-2a4b-4a35-9f7b-1c2d3e4f5a6c';const at=Date.now()-1000;
+ let snapshots=0,executions=0,latestVersion=0;
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy')return{};
-  if(op==='snapshot'){
-   snapshots++;const version=snapshots===1?1:snapshots>=3&&changedWhileThinking?3:2;
-   return{feedbackVersion:at+version,foregroundFeedback:feedback(version),event:{at:at+10,eventId:'ambient',scope:'group:12345678',senderId:'23456789',directed:false,text:'unrelated traffic'}};
-  }
-  if(op==='execute'){executions++;return{status:'completed',summary:'fixture send',effects:[{id:'one',status:'confirmed',receipt:'actual-fixture'}],evidence:[],unfinished:[],usage}}
-  assert.equal(op,'think');assert.equal(body.recentForeground.result.response,'actual feedback 2');assert.equal(body.work.feedbackVersion,at+2);
-  return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:changedWhileThinking?{kind:'message',target:'private:12345678',objective:'do not dispatch stale choice'}:null,summary:'latest input only',reason:'own choice',wait:{kind:'time',seconds:600}}};
+  if(op==='snapshot'){snapshots++;latestVersion=at+snapshots;return{feedbackVersion:latestVersion,foregroundFeedback:{at:latestVersion,phase:'foreground_result',eventId:'reply-'+snapshots,scope:'private:12345678',senderId:'12345678',directed:true,result:{status:'sent'}}}}
+  if(op==='execute'){executions++;assert.equal(body.work.feedbackVersion,latestVersion,'work carries the version the cycle actually observed');return{status:'canceled',summary:'foreground invalidated work before side effects',effects:[],evidence:[],unfinished:[],usage:{tokens:0,modelCalls:0,toolCalls:0}}}
+  throw Error(op);
  });
  try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await coordinator.tick();await coordinator.active?.task;
-  const v=await coordinator.repo.view('tenant','bot-0');assert.equal(executions,0);
-  assert.equal(v.settings.observation.eventId,'ambient');assert.equal(v.settings.observation.latestFeedback.result.response,'actual feedback '+(changedWhileThinking?3:2));
-  assert.equal(v.cycles[0].reason,changedWhileThinking?'foreground_feedback_changed':'sleep');assert.equal(v.actions.length,0);
- }finally{await coordinator.stop();await db.close()}
-});
-
-test('autonomous activity facts preserve idle time, isolation and the choice to continue',async()=>{
- const db=await fixture(2);let decisions=0,executions=0;
- const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
-  if(op==='policy'||op==='snapshot')return{};
-  if(op==='execute'){executions++;return{status:'completed',summary:'actual fixture read',evidence:[{source:'fixture',reference:'read'}],effects:[],unfinished:[],usage}}
-  assert.equal(op,'think');decisions++;
-  assert.equal(body.autonomousActivity.attemptedTasks,executions);
-  assert.equal(body.autonomousActivity.idleSinceLastTaskSeconds===null,executions===0);
-  assert.ok(body.autonomousActivity.currentCycleSeconds>=0);
-  // Recording prior effort must not stop a new model-selected task.
-  return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:decisions<3?{kind:'research',objective:'continue a chosen topic'}:null,summary:'self-directed',reason:'own choice',wait:{kind:decisions<3?'after_result':'time',seconds:decisions<3?0:600}}};
- });
- try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await coordinator.tick();await coordinator.active?.task;
-  assert.equal(executions,2);assert.equal(decisions,3);
-  await db.query("UPDATE autonomy_actions SET created_at=now()-interval '121 minutes',finished_at=now()-interval '120 minutes' WHERE bot_id='bot-0'");
-  const activity=await coordinator.repo.activity('tenant','bot-0',60);
-  assert.equal(activity.attemptedTasks,0);assert.equal(activity.recentTaskElapsedSeconds,0);assert.ok(activity.idleSinceLastTaskSeconds!>=7199);
-  assert.equal((await coordinator.repo.activity('tenant','bot-1',60)).lastTaskFinishedAt,null);
-  assert.equal((await coordinator.repo.activity('another-tenant','bot-0',60)).lastTaskFinishedAt,null);
-  // A planning-only cycle does not manufacture activity or erase idle time.
-  const next=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
-   if(op==='policy'||op==='snapshot')return{};
-   assert.equal(op,'think');assert.ok(body.autonomousActivity.idleSinceLastTaskSeconds>=7199);
-   return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:null,summary:'rest',reason:'no action chosen',wait:{kind:'time',seconds:600}}};
-  });
-  await coordinator.stop();await next.repo.wake('tenant','bot-0',2,'fixture-recheck',0);await next.tick();await next.active?.task;await next.stop();
-  assert.ok((await next.repo.activity('tenant','bot-0',60)).idleSinceLastTaskSeconds!>=7199);
- }finally{await coordinator.stop();await db.close()}
-});
-
-async function idleHistory(db:any){
- for(let n=0;n<2;n++)await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget,reason,decision,started_at,finished_at) VALUES($1,'bot-0','tenant',2,0,0,'old-owner','sleeping','{}','sleep',$2,now()-interval '12 hours'+($3*interval '1 minute'),now()-interval '20 minutes'+($3*interval '1 minute'))",['old-idle-'+n,JSON.stringify({action:null,summary:'nothing new; rest'}),n]);
-}
-
-test('intention and planning each repair their own contract once with actual diagnostic messages',async()=>{
- const db=await fixture();let orientations=0,plans=0;
- const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
-  if(op==='policy'||op==='snapshot')return{};
-  assert.equal(op,'think');
-  if(body.phase==='orientation'){
-   orientations++;assert.ok(Array.isArray(body.recentActivity));
-   if(orientations===2){assert.equal(body.repair,true);assert.ok(body.validationErrors.some((e:any)=>e.path==='disposition'&&e.message));}
-   return{status:'completed',usage,decision:{disposition:orientations===1?'invalid':'rest',motive:'consider current situation',desiredOutcome:'',reason:'own choice'}};
-  }
-  plans++;
-  if(plans===2){assert.equal(body.repair,true);assert.ok(body.validationErrors.some((e:any)=>e.path==='action.goalId'&&e.message));}
-  return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:plans===1?{kind:'research',goalId:'e4b9b7a1-8c32-4d56-a789-0123456789ab',objective:'invalid absent goal'}:null,summary:'considered',reason:'own choice',wait:{kind:'time',seconds:300}}};
- });
- try{await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await idleHistory(db);await coordinator.tick();await coordinator.active?.task;const view=await coordinator.repo.view('tenant','bot-0');assert.equal(orientations,2);assert.equal(plans,2);assert.equal(view.cycles[0].reason,'sleep');assert.equal(view.cycles[0].usage.modelCalls,4);assert.equal(view.actions.length,0);}
- finally{await coordinator.stop();await db.close()}
-});
-
-test('a newer undispatched cancellation cannot hide the latest actual task feedback after recreation',async()=>{
- const db=await fixture();let decisions=0;
- const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
-  if(op==='policy'||op==='snapshot')return{};
-  assert.equal(op,'think');decisions++;
-  assert.equal(body.feedback.task.actionId,'actual-finished');assert.equal(body.feedback.summary,'actual returned result');assert.equal(body.feedback.checkpoints[0].query,'actual public query');
-  if(body.phase==='orientation'){assert.equal(body.recentActivity[0].status,'canceled');return{status:'completed',usage,decision:{disposition:'rest',motive:'consider real result',desiredOutcome:'',reason:'own choice'}};}
-  return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:null,summary:'reviewed actual result',reason:'own choice',wait:{kind:'time',seconds:300}}};
- });
- try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await idleHistory(db);
-  for(const [id,status,result,age] of [['actual-finished','completed',{summary:'actual returned result',usage,effects:[],checkpoints:[{tool:'bilibili_search',query:'actual public query'}]},60],['canceled-undispatched','canceled',{summary:'not dispatched',effects:[]},10]] as const){
-   await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at,result,created_at,finished_at) VALUES($1,'old-idle-0','bot-0','tenant',2,'research','','actual task',$2,now()+interval '1 hour',$3,now()-($4*interval '1 second'),now()-($4*interval '1 second'))",[id,status,JSON.stringify(result),age]);
-  }
-  await coordinator.tick();await coordinator.active?.task;const view=await coordinator.repo.view('tenant','bot-0');assert.equal(decisions,2);assert.equal(view.cycles[0].reason,'sleep');assert.equal(view.actions.length,2);
- }finally{await coordinator.stop();await db.close()}
-});
-
-test('real effort recovers over time while inactivity accumulates, independent of idle planning and restart',async()=>{
- const db=await fixture(2),coordinator=new AutonomyCoordinator(db,async()=>({}));
- try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await idleHistory(db);
-  await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at,result,created_at,finished_at) VALUES('real-effort','old-idle-0','bot-0','tenant',2,'research','','read real evidence','completed',now()+interval '1 hour',$1,now()-interval '120 seconds',now())",[JSON.stringify({usage,effects:[]})]);
-  const warm=await coordinator.repo.activity('tenant','bot-0',60);assert.ok(warm.regulation.fatigue>0.09);assert.ok(warm.regulation.initiativePressure<0.01);
-  await db.query("UPDATE autonomy_actions SET created_at=now()-interval '32 minutes',finished_at=now()-interval '30 minutes' WHERE id='real-effort'");
-  const recovered=await coordinator.repo.activity('tenant','bot-0',60);assert.ok(recovered.regulation.fatigue<warm.regulation.fatigue*0.55);assert.ok(recovered.regulation.idleActivation>=0.49);
-  await db.query("UPDATE autonomy_actions SET created_at=now()-interval '12 hours'-interval '120 seconds',finished_at=now()-interval '12 hours' WHERE id='real-effort'");
-  const rested=await coordinator.repo.activity('tenant','bot-0',60);assert.ok(rested.regulation.fatigue<0.000001);assert.ok(rested.regulation.initiativePressure>0.99);assert.equal(rested.regulation.recentRestDecisions,2);
-  const reopened=new AutonomyCoordinator(db,async()=>({}));assert.ok((await reopened.repo.activity('tenant','bot-0',60)).regulation.initiativePressure>0.99);await reopened.stop();
-  assert.equal((await coordinator.repo.activity('tenant','bot-1',60)).regulation.initiativePressure,0);assert.equal((await coordinator.repo.activity('other-tenant','bot-0',60)).regulation.fatigue,0);
- }finally{await coordinator.stop();await db.close()}
-});
-
-for(const rest of [false,true])test('recovered idle robot forms a fresh model intention before planning; freedom to rest: '+rest,async()=>{
- const db=await fixture();let orientations=0,plans=0,executions=0;
- const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
-  if(op==='policy'||op==='snapshot')return{};
-  if(op==='execute'){executions++;return{status:'completed',summary:'actual isolated tool result',evidence:[{source:'fixture',reference:'read'}],effects:[],unfinished:[],usage}}
-  assert.equal(op,'think');
-  if(body.phase==='orientation'){
-   orientations++;assert.ok(body.autonomousActivity.regulation.initiativePressure>0.99);assert.equal(body.summary,undefined);assert.equal(body.recentActions,undefined);
-   return{status:'completed',usage,decision:{disposition:rest?'rest':'engage',motive:'new model-selected interest',desiredOutcome:rest?'':'learn a new fact',reason:'considered energy and current interests'}};
-  }
-  plans++;assert.equal(body.orientation.motive,'new model-selected interest');assert.equal(body.summary,'');
-  if(plans===2)assert.equal(body.feedback.summary,'actual isolated tool result');
-  return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:!rest&&plans===1?{kind:'research',objective:'model chooses its specific investigation'}:null,summary:'new state',reason:'own decision',wait:{kind:!rest&&plans===1?'after_result':'time',seconds:!rest&&plans===1?0:600}}};
- });
- try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await idleHistory(db);await coordinator.tick();await coordinator.active?.task;
-  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(orientations,1);assert.equal(executions,rest?0:1);assert.equal(view.cycles[0].orientation.motive,'new model-selected interest');assert.equal(view.cycles[0].usage.modelCalls,rest?2:4);assert.equal(view.cycles[0].reason,'sleep');assert.equal(view.actions.length,rest?0:1);
- }finally{await coordinator.stop();await db.close()}
-});
-
-test('recent failed work cannot postpone intention review behind an activation threshold',async()=>{
- const db=await fixture();let orientations=0,plans=0;
- const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
-  if(op==='policy'||op==='snapshot')return{};
-  assert.equal(op,'think');
-  if(body.phase==='orientation'){
-   orientations++;assert.ok(body.autonomousActivity.regulation.initiativePressure>0.9,'failed work must retain accumulated inactivity');assert.ok(body.autonomousActivity.regulation.availableEnergy>0.9);
-   return{status:'completed',usage,decision:{disposition:'rest',motive:'model reviews other opportunities after tool failure',desiredOutcome:'',reason:'chooses rest freely'}};
-  }
-  plans++;assert.ok(body.orientation);assert.equal(body.summary,'');
-  return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:null,summary:'reviewed current options',reason:'model still chooses rest',wait:{kind:'time',seconds:600}}};
- });
- try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await idleHistory(db);
-  await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at,result,created_at,finished_at) VALUES('recent-failure','old-idle-0','bot-0','tenant',2,'research','','unavailable tool','blocked',now()+interval '1 hour',$1,now()-interval '5 seconds',now())",[JSON.stringify({usage,effects:[]})]);
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});
+  await handoffGoal(db,goalId);await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
   await coordinator.tick();await coordinator.active?.task;
-  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(orientations,1);assert.equal(plans,1);assert.equal(view.cycles[0].reason,'sleep');assert.equal(view.cycles[0].orientation.disposition,'rest');assert.equal(view.actions.length,1);
- }finally{await coordinator.stop();await db.close()}
-});
-
-for(const innerStatus of ['completed','budget_exhausted'])test('inner model allowance leaves the outer a real result assessment: '+innerStatus,async()=>{
- const db=await fixture();let plans=0,executions=0;
- const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
-  if(op==='policy'||op==='snapshot')return{};
-  if(op==='execute'){
-   executions++;assert.equal(body.work.budget.modelCalls,4);
-   return{status:innerStatus,summary:'actual tool result after consuming the inner allowance',effects:[],evidence:[],unfinished:[],usage:{tokens:1600,modelCalls:body.work.budget.modelCalls,toolCalls:2}};
-  }
-  assert.equal(op,'think');assert.equal(body.phase,undefined);plans++;
-  if(plans===2){assert.equal(body.work.budget.modelCalls,1);assert.equal(body.feedback.status,innerStatus);assert.equal(body.feedback.summary,'actual tool result after consuming the inner allowance')}
-  return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:plans===1?{kind:'research',objective:'bounded inner task'}:null,summary:'outer assessed actual result',reason:'real reassessment',wait:{kind:plans===1?'after_result':'time',seconds:plans===1?0:300}}};
- });
- try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',cycleModelCalls:6});await coordinator.tick();await coordinator.active?.task;
-  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(plans,2);assert.equal(executions,1);assert.equal(view.settings.summary,'outer assessed actual result');assert.equal(view.cycles[0].usage.modelCalls,6);assert.equal(view.cycles[0].reason,'sleep');
- }finally{await coordinator.stop();await db.close()}
-});
-
-test('a blocked task reopens intention before the next plan without waiting for two rests',async()=>{
- const db=await fixture();let plans=0,orientations=0;
- const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
-  if(op==='policy'||op==='snapshot')return{};
-  if(op==='execute')return{status:'blocked',summary:'one tool temporarily unavailable',effects:[],evidence:[],unfinished:['first task'],usage};
-  assert.equal(op,'think');
-  if(body.phase==='orientation'){
-   orientations++;assert.equal(body.feedback.status,'blocked');assert.equal(body.feedback.summary,'one tool temporarily unavailable');assert.equal(body.summary,undefined);
-   return{status:'completed',usage,decision:{disposition:'rest',motive:'assess own options beyond the blocked task',desiredOutcome:'',reason:'free decision'}};
-  }
-  plans++;if(plans===2){assert.equal(body.orientation.motive,'assess own options beyond the blocked task');assert.equal(body.feedback.status,'blocked');assert.equal(body.summary,'')}
-  return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:plans===1?{kind:'research',objective:'first task'}:null,summary:'considered alternatives',reason:'model choice',wait:{kind:plans===1?'after_result':'time',seconds:plans===1?0:300}}};
- });
- try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await coordinator.tick();await coordinator.active?.task;
-  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(orientations,1);assert.equal(plans,2);assert.equal(view.cycles[0].orientation.disposition,'rest');assert.equal(view.cycles[0].reason,'sleep');
- }finally{await coordinator.stop();await db.close()}
-});
-
-test('a blocked task can yield to a different model-selected task and feed both results back',async()=>{
- const db=await fixture();let plans=0,executions=0,orientations=0;
- const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
-  if(op==='policy'||op==='snapshot')return{};
-  if(op==='execute'){
-   executions++;assert.equal(body.action.objective,executions===1?'temporarily blocked direction':'different available direction');
-   assert.ok(body.work.budget.modelCalls>=1);
-   return{status:executions===1?'blocked':'completed',summary:executions===1?'one dependency unavailable':'different task returned actual facts',effects:[],evidence:[],unfinished:executions===1?['first task']:[],usage};
-  }
-  assert.equal(op,'think');
-  if(body.phase==='orientation'){
-   orientations++;assert.equal(body.feedback.status,'blocked');
-   return{status:'completed',usage,decision:{disposition:'engage',motive:'model chooses another worthwhile direction',desiredOutcome:'learn something independently',reason:'first dependency is only locally unavailable'}};
-  }
-  plans++;if(plans===2)assert.equal(body.feedback.status,'blocked');if(plans===3)assert.equal(body.feedback.summary,'different task returned actual facts');
-  return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:plans<3?{kind:'research',objective:plans===1?'temporarily blocked direction':'different available direction'}:null,summary:'new task assessed',reason:'own choice after actual result',wait:{kind:plans<3?'after_result':'time',seconds:plans<3?0:300}}};
- });
- try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await coordinator.tick();await coordinator.active?.task;
-  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(orientations,1);assert.equal(plans,3);assert.equal(executions,2);assert.equal(view.actions.length,2);assert.deepEqual(view.actions.map(a=>a.status).sort(),['blocked','completed']);assert.equal(view.cycles[0].usage.modelCalls,6);assert.equal(view.cycles[0].reason,'sleep');
- }finally{await coordinator.stop();await db.close()}
-});
-
-test('an explicit two-request limit still executes work and resumes from its durable result',async()=>{
- const db=await fixture();let plans=0,executions=0;
- const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
-  if(op==='policy'||op==='snapshot')return{};
-  if(op==='execute'){executions++;assert.equal(body.work.budget.modelCalls,1);return{status:'completed',summary:'minimal-budget actual result',effects:[],evidence:[{source:'fixture_read',reference:'durable-result'}],toolResults:[{tool:'actual_read',status:'returned'}],checkpoints:[{tool:'actual_read',source:'fixture_read',value:'actual checkpoint'}],unfinished:[],usage}}
-  assert.equal(op,'think');plans++;
-  if(plans===2){assert.equal(body.feedback.summary,'minimal-budget actual result');assert.equal(body.feedback.status,'completed');assert.deepEqual(body.feedback.evidence,[{source:'fixture_read',reference:'durable-result'}]);assert.equal(body.feedback.toolResults[0].tool,'actual_read');assert.equal(body.feedback.task.kind,'research');assert.equal(body.feedback.task.objective,'minimal-budget task');assert.ok(body.feedback.task.actionId);assert.ok(body.feedback.task.finishedAt);assert.equal(body.feedback.checkpoints[0].value,'actual checkpoint');assert.deepEqual(body.recentActions,[])}
-  return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:plans===1?{kind:'research',objective:'minimal-budget task'}:null,summary:'actual result reviewed',reason:'own next choice',wait:{kind:plans===1?'after_result':'time',seconds:plans===1?0:300}}};
- });
- try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',cycleModelCalls:2});await coordinator.tick();await coordinator.active?.task;
-  let view=await coordinator.repo.view('tenant','bot-0');assert.equal(executions,1);assert.equal(view.cycles[0].reason,'budget_exhausted');assert.equal(view.actions[0].status,'completed');assert.ok(new Date(view.settings.next_wake_at).getTime()-Date.now()<=16000,'budget exhaustion yields promptly instead of ordinary sleep');
-  await coordinator.repo.wake('tenant','bot-0',view.settings.epoch,'fixture-next-cycle',0);await coordinator.tick();await coordinator.active?.task;
-  view=await coordinator.repo.view('tenant','bot-0');assert.equal(plans,2);assert.equal(executions,1);assert.equal(view.cycles[0].reason,'sleep');
- }finally{await coordinator.stop();await db.close()}
-});
-
-test('switching to passive during intention formation prevents subsequent planning or action',async()=>{
- const db=await fixture();let planning=0;
- const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
-  if(op==='policy'||op==='snapshot')return{};
-  assert.equal(op,'think');assert.equal(body.phase,'orientation');planning++;
-  await coordinator.repo.configure('tenant','bot-0',2,{mode:'passive'});
-  return{status:'completed',usage,decision:{disposition:'engage',motive:'late intention',desiredOutcome:'must not execute',reason:'late result'}};
- });
- try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await idleHistory(db);await coordinator.tick();await coordinator.active?.task;
-  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(planning,1);assert.equal(view.actions.length,0);assert.equal(view.settings.config.mode,'passive');assert.equal(view.cycles[0].orientation,null);assert.equal(view.cycles[0].usage.modelCalls,1);
- }finally{await coordinator.stop();await db.close()}
-});
-
-test('a partial day reservation bounds internal work while policy keeps its configured ceiling',async()=>{
- const db=await fixture();let calls=0;
- const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
-  if(op==='policy'){assert.equal(body.config.cycleTokenBudget,6000);return{}};
-  if(op==='snapshot')return{};
-  assert.equal(op,'think');calls++;assert.equal(body.work.budget.tokens,5000);
-  return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:null,summary:'resting',reason:'no task',wait:{kind:'time',seconds:1800}}};
- });
- try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',cycleTokenBudget:6000,dailyTokenBudget:10000});
-  await db.query("INSERT INTO autonomy_daily_usage(bot_id,tenant_id,day,used_tokens) VALUES('bot-0','tenant',(now() AT TIME ZONE 'Asia/Shanghai')::date,5000)");
-  await coordinator.tick();await coordinator.active?.task;
-  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(calls,1);assert.equal(view.usage.used_tokens,5400);assert.equal(view.usage.reserved_tokens,0);assert.equal(view.settings.config.cycleTokenBudget,6000);
+  const view=await coordinator.repo.view('tenant','bot-0');
+  assert.equal(executions,1);assert.equal(view.actions[0].status,'canceled');assert.equal(view.goals[0].status,'active','a canceled dispatch is not a terminal result');
+  assert.equal(view.cycles[0].reason,'foreground_or_mode_changed');
+  const delay=new Date(view.settings.next_wake_at).getTime()-Date.now();assert.ok(delay>0&&delay<=16000,'foreground interruption must not strand the accepted handoff');
  }finally{await coordinator.stop();await db.close()}
 });
 
@@ -380,14 +195,13 @@ test('a failed observation commit remains eligible for the next bounded sample',
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'){acknowledgements.push(body.observedThrough);return{}};
   if(op==='snapshot')return{event};
-  assert.equal(op,'think');
-  return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:null,summary:'resting',reason:'no task',wait:{kind:'time',seconds:1800}}};
+  throw Error(op);
  });
  const persist=coordinator.repo.event.bind(coordinator.repo);
  coordinator.repo.event=async(...args)=>{attempts++;if(outage)throw new Error('controlled database outage');return persist(...args)};
  try{
   await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});
-  await coordinator.tick();await coordinator.active?.task;
+  await coordinator.tick();
   assert.equal((await coordinator.repo.view('tenant','bot-0')).settings.last_event_at,null);
   assert.ok(acknowledgements.every(at=>at===0),'failed PG commit was acknowledged');
   const failedAttempts=attempts;outage=false;
@@ -402,88 +216,78 @@ test('a failed observation commit remains eligible for the next bounded sample',
  }finally{await coordinator.stop();await db.close()}
 });
 
-test('outer consumes actual inner feedback, changes its goal and durably sleeps',async()=>{
- const db=await fixture();let decisions=0,executions=0;
- const coordinator=new AutonomyCoordinator(db,async(bot,op,body:any)=>{
-  if(op==='policy')return {epoch:bot.epoch};if(op==='snapshot')return {};
-  if(op==='think'){
-   decisions++;
-   assert.ok(body.decisionSchema.required.includes('action'));
-   assert.ok(body.decisionSchema.properties.wait.required.includes('seconds'));
-   if(decisions===2){assert.deepEqual(body.feedback.evidenceLimits,['read receipt only, not verification of external facts']);assert.equal(body.feedback.summary,'verified fixture receipt');assert.equal(body.work.budget.modelCalls,21);assert.equal(body.goals[0].status,'active');assert.deepEqual(body.recentActions,[],'current feedback was repeated in action history')}
-   return {status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:decisions===1?[{operation:'create',title:'independently chosen topic',reason:'interest'}]:[{operation:'complete',id:body.goals[0].id,reason:'actual inner evidence',progress:'checked receipt'}],action:decisions===1?{kind:'research',objective:'inspect actual context'}:null,summary:decisions===1?'exploring':'completed and resting',reason:'feedback-driven',wait:{kind:decisions===1?'after_result':'time',seconds:decisions===1?0:1800}}};
-  }
-  if(op==='execute'){executions++;return{status:'completed',summary:'verified fixture receipt',evidence:[{source:'fixture',reference:'checked'}],evidenceLimits:['read receipt only, not verification of external facts'],effects:[],unfinished:[],usage:{...usage,modelCalls:2,toolCalls:1,tokens:1200}}}
-  throw new Error(op);
+test('accepted task result flows back, completes the goal and leaves no polling wake',async()=>{
+ const db=await fixture();const goalId='6c9a1bd2-2a4b-4a35-9f7b-1c2d3e4f5a6c';
+ const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
+  if(op==='policy'||op==='snapshot')return{};
+  if(op==='execute')return{status:'completed',summary:'verified fixture receipt',evidence:[{source:'fixture',reference:'checked'}],effects:[{id:body.work.id+':0',status:'confirmed',receipt:'actual-ack'}],unfinished:[],usage:{...usage,modelCalls:2,toolCalls:1,tokens:1200}};
+  throw Error(op);
  });
  try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await coordinator.tick();await coordinator.active?.task;
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});
+  await handoffGoal(db,goalId,'bot-0',{owner:true});await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
+  await coordinator.tick();await coordinator.active?.task;
   const view=await coordinator.repo.view('tenant','bot-0');
-  assert.equal(decisions,2);assert.equal(executions,1);assert.equal(view.goals[0].status,'completed');assert.equal(view.settings.state,'sleeping');assert.equal(view.usage.used_tokens,2000);assert.equal(view.usage.reserved_tokens,0);assert.equal(coordinator.active,undefined);
-  assert.ok(new Date(view.settings.next_wake_at).getTime()>Date.now()+1700000);
-  // A new supervisor and event wake load the durable state, no in-memory goal
-  // cache or per-bot timer survives from the previous cycle.
+  assert.equal(view.goals[0].status,'completed');assert.equal(view.settings.state,'sleeping');
+  assert.equal(view.usage.used_tokens,1200);assert.equal(view.usage.reserved_tokens,0);assert.equal(coordinator.active,undefined);
+  assert.equal(view.cycles[0].reason,'handoff_executed');
+  assert.equal(await db.query('SELECT count(*)::int AS n FROM autonomy_wakes WHERE bot_id=$1',['bot-0']).then((r:any)=>r[0].n),0,'event-driven design arms no polling wake after terminal work');
+  // A new supervisor reads durable state only; the completed goal is not re-run.
   const next=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
    if(op==='policy'||op==='snapshot')return{};
-   assert.equal(op,'think');assert.equal(body.goals[0].status,'completed');assert.equal(body.summary,'completed and resting');return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:null,summary:'restored',reason:'already done',wait:{kind:'event',seconds:3600}}};
+   if(op==='execute')throw Error('completed goal must not be re-executed');
+   throw Error(op);
   });
-  await next.repo.wake('tenant','bot-0',2,'actual-event',0);await next.tick();await next.active?.task;await next.stop();
+  await next.repo.wake('tenant','bot-0',2,'actual-event',0);await next.tick();await next.active?.task;assert.equal(next.active,undefined);await next.stop();
  }finally{await coordinator.stop();await db.close()}
 });
 
-test('new goal IDs are assigned by PostgreSQL; one format repair links the action and never invents a full token bill',async()=>{
- const db=await fixture();let decisions=0,executions=0;
- const fake='e4b9b7a1-8c32-4d56-a789-0123456789ab';
+test('a blocked refusal abandons the accepted handoff; receipts still settle through the tick loop',async()=>{
+ const db=await fixture();const goalId='7c9a1bd2-2a4b-4a35-9f7b-1c2d3e4f5a6c';let actionId='';
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
-  if(op==='think'){
-   decisions++;
-   if(decisions===2){assert.equal(body.repair,true);assert.ok(body.validationErrors.some((issue:any)=>issue.path==='goalChanges.0.id'));}
-   return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:decisions<3?[{operation:'create',...(decisions===1?{id:fake}:{}),title:'model chosen',reason:'interest'}]:[],action:decisions<3?{kind:'research',...(decisions===1?{goalId:fake}:{}),objective:'actual read'}:null,summary:'progress',reason:'chosen',wait:{kind:decisions<3?'after_result':'time',seconds:decisions<3?0:1800}}};
-  }
-  if(op==='execute'){executions++;assert.notEqual(body.action.goalId,fake);assert.ok(body.action.goalId);return{status:'completed',summary:'actual read',evidence:[{source:'fixture',reference:'read'}],effects:[],unfinished:[],usage};}
-  throw new Error(op);
+  if(op==='execute'){actionId=body.work.id;return{status:'blocked',summary:'原请求回复许可无效或已使用；不能降级为主动发送重试',effects:[],evidence:[],unfinished:[],usage:{tokens:0,modelCalls:0,toolCalls:0}}}
+  if(op==='receipt')return{result:{status:'completed',summary:'late authoritative receipt',effects:[{id:actionId+':0',status:'confirmed',receipt:'late-real-id'}],evidence:[],unfinished:[]}};
+  throw Error(op);
  });
- try{await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await coordinator.tick();await coordinator.active?.task;const view=await coordinator.repo.view('tenant','bot-0');assert.equal(decisions,3);assert.equal(executions,1);assert.equal(view.goals.length,1);const[stored]=await db.query('SELECT goal_id FROM autonomy_actions WHERE id=$1',[view.actions[0].id]);assert.equal(stored.goal_id,view.goals[0].id);assert.equal(view.usage.used_tokens,1600);}
- finally{await coordinator.stop();await db.close()}
+ try{
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});
+  await handoffGoal(db,goalId);await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
+  await coordinator.tick();await coordinator.active?.task;
+  let view=await coordinator.repo.view('tenant','bot-0');
+  assert.equal(view.goals[0].status,'abandoned','a final refusal frees the accepted-goal slot');assert.equal(view.cycles[0].reason,'handoff_blocked');
+  // The receipt-settlement path remains for any action left uncertain.
+  await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget,started_at,finished_at) VALUES('closed-cycle','bot-0','tenant',2,0,0,'old','ended','{}',now(),now())");
+  await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at,result,created_at,finished_at) VALUES('later-unknown','closed-cycle','bot-0','tenant',2,'message','private:12345678','contact','unknown',now()+interval '1 hour',$1,now(),now())",[JSON.stringify({status:'unknown',summary:'protocol response lost',effects:[{id:'later-unknown:0',status:'unknown'}],usage})]);
+  (coordinator as any).sampled.clear();await coordinator.tick();
+  view=await coordinator.repo.view('tenant','bot-0');
+  assert.equal(view.actions.find((a:any)=>a.id==='later-unknown').status,'completed');assert.equal(view.actions.find((a:any)=>a.id==='later-unknown').result.effects[0].receipt,'late-real-id');
+ }finally{await coordinator.stop();await db.close()}
 });
 
-test('partial read-only research returns actual evidence to the outer instead of waiting for a nonexistent send receipt',async()=>{
- const db=await fixture();let decisions=0,orientations=0;
+test('an uncertain effect is recorded once and never re-dispatched by a later wake',async()=>{
+ const db=await fixture();const goalId='8c9a1bd2-2a4b-4a35-9f7b-1c2d3e4f5a6c';let executions=0;
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
-  if(op==='think'){
-   if(body.phase==='orientation'){orientations++;assert.equal(body.feedback.status,'partial');assert.deepEqual(body.feedback.evidence,[{source:'fixture_read',reference:'actual'}]);return{status:'completed',usage,decision:{disposition:'rest',motive:'review alternatives',desiredOutcome:'',reason:'partial facts considered'}}}
-   decisions++;
-   if(decisions===2)assert.equal(body.feedback.status,'partial');
-   return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:decisions===1?{kind:'research',objective:'read partial context'}:null,summary:'known partial result',reason:'choose again from actual feedback',wait:{kind:decisions===1?'after_result':'time',seconds:decisions===1?0:1800}}};
-  }
-  if(op==='execute')return{status:'partial',summary:'only part is available',evidence:[{source:'fixture_read',reference:'actual'}],effects:[],unfinished:['remote source unavailable'],usage};
-  throw new Error(op);
- });
- try{await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await coordinator.tick();await coordinator.active?.task;const view=await coordinator.repo.view('tenant','bot-0');assert.equal(decisions,2);assert.equal(orientations,1);assert.equal(view.cycles[0].reason,'sleep');assert.equal(view.actions[0].status,'partial');}
- finally{await coordinator.stop();await db.close()}
-});
-
-test('unknown effect is recorded once and cannot be reissued by a later decision',async()=>{
- const db=await fixture();let executions=0;
- const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
-  if(op==='policy'||op==='snapshot')return{};
-  if(op==='think')return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:{kind:'message',target:'private:12345678',objective:'chosen greeting'},summary:'contact',reason:'actual interest',wait:{kind:'after_result',seconds:0}}};
-  if(op==='execute'){executions++;return{status:'unknown',summary:'unconfirmed actual effect',effects:[{id:body.work.id+':0',status:'unknown'}],evidence:[],unfinished:['verify'],usage}};
-  throw new Error(op);
+  if(op==='execute'){executions++;return{status:'unknown',summary:'unconfirmed actual effect',effects:[{id:body.work.id+':0',status:'unknown'}],evidence:[],unfinished:['verify'],usage}}
+  throw Error(op);
  });
  try{
   await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',rollout:'live'});
+  await handoffGoal(db,goalId);await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
   await coordinator.tick();await coordinator.active?.task;
   await coordinator.repo.wake('tenant','bot-0',2,'later',0);await coordinator.tick();await coordinator.active?.task;
-  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(executions,1);assert.ok(view.actions.some(a=>a.status==='unknown'));assert.ok(view.actions.some(a=>a.status==='canceled'));assert.equal(view.usage.external_actions,1);
+  const view=await coordinator.repo.view('tenant','bot-0');
+  assert.equal(executions,1,'the reply permit is single-use; the goal waits for its receipt');assert.equal(view.actions.length,1);
+  assert.equal(view.actions[0].status,'unknown');assert.equal(view.cycles[0].reason,'waiting_receipt');
+  assert.equal(view.usage.external_actions,1);
+  const delay=(new Date(view.settings.next_wake_at).getTime()-Date.now())/1000;assert.ok(delay>250&&delay<=310,'bounded retry wake re-arms the unsettled receipt');
  }finally{await coordinator.stop();await db.close()}
 });
 
 test('one hundred sleeping robots have no active work or per-bot timers; offline wake never starts QQ',async()=>{
  const db=await fixture(100);let modelCalls=0;
- const coordinator=new AutonomyCoordinator(db,async(_bot,op)=>{if(op==='think'||op==='execute')modelCalls++;return {}});
+ const coordinator=new AutonomyCoordinator(db,async(_bot,op)=>{if(op==='execute')modelCalls++;return {}});
  try{
   for(let n=0;n<100;n++){
    await coordinator.repo.configure('tenant','bot-'+n,1,{mode:'active'});
@@ -496,24 +300,23 @@ test('one hundred sleeping robots have no active work or per-bot timers; offline
 });
 
 test('passive mode settles old receipts without a model call, new wake or repeat effect',async()=>{
- const db=await fixture();let actionId='',receiptCalls=0,executions=0,settled=false;
+ const db=await fixture();let receiptCalls=0,executions=0,settled=false;
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
-  if(op==='think')return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:{kind:'message',target:'private:12345678',objective:'one greeting'},summary:'contact',reason:'selected',wait:{kind:'after_result',seconds:0}}};
-  if(op==='execute'){executions++;actionId=body.work.id;return{status:'unknown',summary:'protocol response lost',effects:[{id:actionId+':0',status:'unknown'}],evidence:[],unfinished:['verify'],usage}};
-  if(op==='receipt'){receiptCalls++;assert.equal(body.id,actionId);return settled?{result:{status:'completed',summary:'late authoritative receipt',effects:[{id:actionId+':0',status:'confirmed',receipt:'late-real-id'}],evidence:[],unfinished:[],usage}}:{result:{status:'unknown',effects:[{id:actionId+':0',status:'unknown'}]}}}
-  throw new Error(op);
+  if(op==='receipt'){receiptCalls++;return settled?{result:{status:'completed',summary:'late authoritative receipt',effects:[{id:'kept-unknown:0',status:'confirmed',receipt:'late-real-id'}],evidence:[],unfinished:[]}}:{result:{status:'unknown',effects:[{id:'kept-unknown:0',status:'unknown'}]}}}
+  if(op==='execute')executions++;
+  throw Error(op);
  });
  try{
   await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',rollout:'live'});
-  await coordinator.tick();await coordinator.active?.task;assert.equal(executions,1);
+  await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget,started_at,finished_at) VALUES('closed-cycle','bot-0','tenant',2,0,0,'old','ended','{}',now(),now())");
+  await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at,result,created_at,finished_at) VALUES('kept-unknown','closed-cycle','bot-0','tenant',2,'message','private:12345678','one greeting','unknown',now()+interval '1 hour',$1,now(),now())",[JSON.stringify({status:'unknown',summary:'protocol response lost',effects:[{id:'kept-unknown:0',status:'unknown'}],usage})]);
   await coordinator.repo.configure('tenant','bot-0',2,{mode:'passive'});
-  (coordinator as any).sampled.clear();await coordinator.tick();assert.equal(receiptCalls,1);assert.equal(coordinator.active,undefined);
+  (coordinator as any).sampled.clear();await coordinator.tick();assert.equal(receiptCalls,1);assert.equal(coordinator.active,undefined);assert.equal(executions,0);
   assert.equal((await coordinator.repo.policies()).length,1,'pending old receipt disappeared once passive policy was applied');
-  settled=true;(coordinator as any).sampled.clear();await coordinator.tick();assert.equal(receiptCalls,1,'receipt checks must honor the persisted backoff');
-  await db.query("UPDATE autonomy_actions SET result=jsonb_set(result,'{receiptCheck,nextAt}','0') WHERE id=$1",[actionId]);(coordinator as any).sampled.clear();await coordinator.tick();
-  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(view.actions[0].status,'completed');assert.equal(view.actions[0].result.effects[0].receipt,'late-real-id');assert.equal(view.settings.config.mode,'passive');assert.equal(view.settings.runtime_epoch,3);assert.equal(executions,1);assert.equal(receiptCalls,2);
-  const policies=await coordinator.repo.policies();assert.equal(policies.length,1,'durable history remains readable in passive mode');assert.equal(policies[0].config.mode,'passive');assert.equal((await db.query('SELECT * FROM autonomy_wakes')).length,0);assert.equal((await db.query('SELECT * FROM commands')).length,0);
+  settled=true;await db.query("UPDATE autonomy_actions SET result=jsonb_set(result,'{receiptCheck,nextAt}','0') WHERE id='kept-unknown'");(coordinator as any).sampled.clear();await coordinator.tick();
+  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(view.actions[0].status,'completed');assert.equal(view.actions[0].result.effects[0].receipt,'late-real-id');assert.equal(view.settings.config.mode,'passive');assert.equal(view.settings.runtime_epoch,3);assert.equal(executions,0);assert.equal(receiptCalls,2);
+  const policies=await coordinator.repo.policies();assert.equal(policies.length,0,'fully settled passive work needs no policy install');assert.equal((await db.query('SELECT * FROM autonomy_wakes')).length,0);assert.equal((await db.query('SELECT * FROM commands')).length,0);
  }finally{await coordinator.stop();await db.close()}
 });
 
@@ -532,139 +335,174 @@ test('known partial read results cannot starve uncertain external receipts',asyn
  }finally{await coordinator.stop();await db.close()}
 });
 
-test('health expiring during a model await rejects the late decision and grants no external work',async()=>{
- const db=await fixture();let entered!:()=>void,release!:()=>void,calls=0;
- const atModel=new Promise<void>(r=>entered=r),resume=new Promise<void>(r=>release=r);
+test('expired health never claims a cycle; recovery re-arms and dispatches the due handoff',async()=>{
+ const db=await fixture();const goalId='9c9a1bd2-2a4b-4a35-9f7b-1c2d3e4f5a6c';let executions=0;
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
-  assert.equal(op,'think');calls++;entered();await resume;
-  return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:{kind:'message',target:'private:12345678',objective:'late intent must not dispatch'},summary:'late model result',reason:'test boundary',wait:{kind:'after_result',seconds:0}}};
+  if(op==='execute'){executions++;assert.equal(body.action.goalId,goalId);return{status:'completed',summary:'delivered after recovery',effects:[],evidence:[],unfinished:[],usage}}
+  throw Error(op);
  });
  try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',rollout:'live'});await coordinator.tick();await atModel;
-  await db.query("UPDATE bots SET health=$1 WHERE id='bot-0'",[JSON.stringify({sampledAt:new Date(Date.now()-120000).toISOString(),protocol:{online:true}})]);release();await coordinator.active?.task;
-  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(view.actions.length,0);assert.equal(view.cycles[0].reason,'decision_conflict');assert.equal(view.usage.used_tokens,400);
-  await coordinator.tick();assert.equal(calls,1);assert.equal((await coordinator.repo.view('tenant','bot-0')).settings.state,'suspended_offline');assert.equal((await db.query('SELECT * FROM commands')).length,0);
- }finally{release();await coordinator.stop();await db.close()}
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',rollout:'live'});
+  await handoffGoal(db,goalId);await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
+  await db.query("UPDATE bots SET health=$1 WHERE id='bot-0'",[JSON.stringify({sampledAt:new Date(Date.now()-120000).toISOString(),protocol:{online:true}})]);
+  await coordinator.tick();assert.equal(executions,0);assert.equal(coordinator.active,undefined,'stale health grants no claim and no external work');
+  assert.equal((await coordinator.repo.view('tenant','bot-0')).settings.state,'suspended_offline');assert.equal((await db.query('SELECT * FROM commands')).length,0);
+  await db.query("UPDATE bots SET health=$1 WHERE id='bot-0'",[JSON.stringify({sampledAt:new Date().toISOString(),protocol:{online:true}})]);
+  await coordinator.repo.suspendOffline();
+  await coordinator.tick();
+  const resumed=coordinator.active as {task:Promise<void>}|undefined;await resumed?.task;
+  assert.equal(executions,1,'the online-resumed wake rediscovered the due handoff');
+  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(view.goals[0].status,'completed');
+ }finally{await coordinator.stop();await db.close()}
 });
-
 
 test('a durable task notification bypasses only the bounded observation sampling delay',async()=>{
  const db=await fixture();let pending=false,samples=0;
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy')return{pendingHandoffs:pending};
   if(op==='snapshot'){samples++;return{}}
-  assert.equal(op,'think');return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:null,summary:'resting',reason:'no task',wait:{kind:'time',seconds:1800}}};
+  throw Error(op);
  });
  try{
   await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});
-  await coordinator.tick();await coordinator.active?.task;assert.equal(samples,3,'cycle requires a bounded sample plus fresh pre/post decision feedback');
-  await coordinator.tick();assert.equal(samples,3,'ordinary polling lost its sampling bound');
-  pending=true;await coordinator.tick();assert.equal(samples,4,'accepted task waited for the ambient observation timer');
+  await coordinator.tick();await coordinator.active?.task;assert.equal(samples,2,'the accepted-wake cycle performs one bounded sample');
+  await coordinator.tick();assert.equal(samples,2,'ordinary polling lost its sampling bound');
+  pending=true;await coordinator.tick();assert.equal(samples,3,'accepted task waited for the ambient observation timer');
  }finally{await coordinator.stop();await db.close()}
 });
-
-test('outer owns accepted task, inner executes then returns a source-bound result for reassessment',async()=>{
- const db=await fixture();let decisions=0;const executed:any[]=[];
- const id='b1786cd0-91c4-40ec-8e42-75d80ae70a9d',source={handoffId:id,eventId:'real-request',scope:'private:12345678',senderId:'12345678',owner:true};
- const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
-  if(op==='policy'||op==='snapshot')return{};
-  if(op==='execute'){executed.push(body.action);return{status:'completed',usage,summary:'actual fixture result',effects:body.action.kind==='message'?[{id:body.work.id+':0',status:'confirmed',receipt:'fixture-result-ack'}]:[],evidence:[{source:'fixture',reference:'actual-read'}],contextScope:body.action.kind==='research'?'self':source.scope}}
-  assert.equal(op,'think');decisions++;
-  if(decisions===2)assert.equal(body.feedback.summary,'actual fixture result');
-  if(decisions===3)assert.equal(body.feedback.effects[0].receipt,'fixture-result-ack');
-  return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:decisions===3?[{operation:'complete',id,reason:'actual result delivered'}]:[],action:decisions<3?{kind:decisions===1?'research':'message',goalId:id,target:decisions===1?'':source.scope,objective:decisions===1?'perform the accepted task':'return its real result'}:null,summary:'feedback-driven',reason:'task then reassess',wait:{kind:decisions<3?'after_result':'time',seconds:decisions<3?0:1800}}};
- });
- try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',rollout:'live'});
-  await db.query("INSERT INTO autonomy_goals(id,bot_id,tenant_id,origin,status,title,reason,progress,success_condition,source) VALUES($1,'bot-0','tenant','owner_request','active','real task','accepted fixture','','verified result delivered',$2)",[id,JSON.stringify(source)]);
-  await coordinator.tick();await coordinator.active?.task;
-  assert.equal(decisions,3);assert.equal(executed.length,2);assert.equal(executed[0].requestSource,undefined);
-  assert.deepEqual(executed[1].requestSource,source);assert.equal(executed[1].goalId,id);
-  assert.equal((await coordinator.repo.view('tenant','bot-0')).goals[0].status,'completed');
- }finally{await coordinator.stop();await db.close()}
-});
-
 
 test('unlimited daily policy keeps actual accounting and bounded cycles after prior daily use',async()=>{
- const db=await fixture();let requests=0;
+ const db=await fixture();const goalId='adc9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c';let requests=0;
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
-  assert.equal(op,'think');requests++;assert.equal(body.work.budget.tokens,500000);assert.equal(_bot.config.minSleepSeconds,300);
-  return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:null,summary:'resting',reason:'nothing useful now',wait:{kind:'time',seconds:600}}};
+  if(op==='execute'){requests++;assert.equal(body.work.budget.tokens,500000);return{status:'completed',summary:'actual result',effects:[],evidence:[],unfinished:[],usage}}
+  throw Error(op);
  });
  try{
   await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',dailyTokenBudget:0});
   await db.query("INSERT INTO autonomy_daily_usage(bot_id,tenant_id,day,used_tokens) VALUES('bot-0','tenant',(now() AT TIME ZONE 'Asia/Shanghai')::date,250000)");
+  await handoffGoal(db,goalId);await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
   await coordinator.tick();await coordinator.active?.task;
   const v=await coordinator.repo.view('tenant','bot-0');assert.equal(requests,1);assert.equal(v.settings.state,'sleeping');assert.equal(v.usage.used_tokens,250400);assert.equal(v.usage.reserved_tokens,0);assert.equal(v.settings.config.cycleTokenBudget,500000);
  }finally{await coordinator.stop();await db.close()}
 });
 
-
-test('a failed attempt consumes effort but does not reset time without actual progress',async()=>{
- const db=await fixture(),coordinator=new AutonomyCoordinator(db,async()=>({}));try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await idleHistory(db);
-  await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at,result,created_at,finished_at) VALUES('old-progress','old-idle-0','bot-0','tenant',2,'research','','actual result','completed',now(),$1,now()-interval '42 minutes',now()-interval '40 minutes'),('failed-retry','old-idle-0','bot-0','tenant',2,'research','','unavailable service','blocked',now(),$1,now()-interval '60 seconds',now())",[JSON.stringify({usage,effects:[]})]);
-  const info=await coordinator.repo.activity('tenant','bot-0',60);
-  assert.ok(info.lastTaskFinishedAt);assert.ok(info.lastProgressAt);assert.ok(info.idleSinceProgressSeconds!>=2399);assert.ok(info.idleSinceLastTaskSeconds!<5);assert.ok(info.regulation.idleActivation>0.59);assert.ok(info.regulation.fatigue>0);
+test('a partial day reservation bounds the dispatched work while policy keeps its configured ceiling',async()=>{
+ const db=await fixture();const goalId='bdc9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c';let calls=0;
+ const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
+  if(op==='policy'){assert.equal(body.config.cycleTokenBudget,6000);return{}};
+  if(op==='snapshot')return{};
+  if(op==='execute'){calls++;assert.equal(body.work.budget.tokens,5000);return{status:'completed',summary:'actual result',effects:[],evidence:[],unfinished:[],usage}}
+  throw Error(op);
+ });
+ try{
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',cycleTokenBudget:6000,dailyTokenBudget:10000});
+  await db.query("INSERT INTO autonomy_daily_usage(bot_id,tenant_id,day,used_tokens) VALUES('bot-0','tenant',(now() AT TIME ZONE 'Asia/Shanghai')::date,5000)");
+  await handoffGoal(db,goalId);await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
+  await coordinator.tick();await coordinator.active?.task;
+  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(calls,1);assert.equal(view.usage.used_tokens,5400);assert.equal(view.usage.reserved_tokens,0);assert.equal(view.settings.config.cycleTokenBudget,6000);
  }finally{await coordinator.stop();await db.close()}
 });
 
-
-test('a canceled inner task yields briefly and resumes evaluation instead of a full idle sleep',async()=>{
- const db=await fixture();let executions=0;const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
-  if(op==='policy'||op==='snapshot')return{};
-  if(op==='execute'){executions++;return{status:'canceled',summary:'foreground invalidated work before side effects',effects:[],evidence:[],unfinished:['continue later'],usage:{modelCalls:0,toolCalls:0,tokens:0}}}
-  return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:{kind:'research',objective:'real task'},summary:'continue',reason:'work selected',wait:{kind:'after_result',seconds:0}}};
+test('a failed request uses an error backoff rather than a silent idle interval, and keeps its wake',async()=>{
+ const db=await fixture();const goalId='cdc9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c';let cycles=0;
+ const coordinator=new AutonomyCoordinator(db,async(_bot,op)=>{
+  if(op==='policy')return{};
+  if(op==='snapshot'){cycles++;if(cycles>1)throw new Error('test provider request failed');return{}}
+  throw Error(op);
  });try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await coordinator.tick();await coordinator.active?.task;
-  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(executions,1);assert.equal(view.cycles[0].reason,'foreground_or_mode_changed');assert.equal(view.actions[0].status,'canceled');
-  const delay=new Date(view.settings.next_wake_at).getTime()-Date.now();assert.ok(delay>0&&delay<=16000,'foreground interruption must not turn into a 5-minute idle sleep');
- }finally{await coordinator.stop();await db.close()}
-});
-
-for(const reason of ['request_token_budget','model_call_budget','tool_call_budget','time_budget'])test('outer preflight yield does not inherit the ordinary idle interval: '+reason,async()=>{
- const db=await fixture();const coordinator=new AutonomyCoordinator(db,async(_bot,op)=>{
-  if(op==='policy'||op==='snapshot')return{};
-  assert.equal(op,'think');return{status:'budget_exhausted',reason,usage:{modelCalls:0,toolCalls:0,tokens:0}};
- });try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',minSleepSeconds:7200});await coordinator.tick();await coordinator.active?.task;
-  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(view.cycles[0].reason,reason);assert.equal(view.settings.state,'backoff');assert.equal(view.actions.length,0);
-  const delay=new Date(view.settings.next_wake_at).getTime()-Date.now();assert.ok(delay>0&&delay<=16000,'uncommitted decisions must yield rather than sleep for two hours');
- }finally{await coordinator.stop();await db.close()}
-});
-
-test('failed outer request uses an error backoff rather than a model rest interval',async()=>{
- const db=await fixture();const coordinator=new AutonomyCoordinator(db,async(_bot,op)=>{
-  if(op==='policy'||op==='snapshot')return{};
-  throw new Error('test provider request failed');
- });try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',minSleepSeconds:7200});await coordinator.tick();await coordinator.active?.task;
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',minSleepSeconds:7200});
+  await handoffGoal(db,goalId);await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
+  await coordinator.tick();await coordinator.active?.task;
   const view=await coordinator.repo.view('tenant','bot-0');assert.equal(view.cycles[0].reason,'runtime_or_decision_failed');assert.equal(view.settings.state,'backoff');
-  const delay=new Date(view.settings.next_wake_at).getTime()-Date.now();assert.ok(delay>16000&&delay<=31000);
+  const delay=new Date(view.settings.next_wake_at).getTime()-Date.now();assert.ok(delay>16000&&delay<=31000,'due handoff work is retried after the error backoff');
  }finally{await coordinator.stop();await db.close()}
 });
 
-test('a completed task can exceed the configured inactivity interval and still return to the outer',async()=>{
- const db=await fixture();let elapsed=0,decisions=0;const realNow=Date.now;
+test('bounded work identity covers its remaining steps and the goal settles after late completion',async()=>{
+ const db=await fixture();const goalId='ddc9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c';let elapsed=0;const realNow=Date.now;
  const coordinator:AutonomyCoordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
   assert.equal(body.work.budget.seconds,30);assert.ok(body.work.expiresAt>Date.now()+30000,'work identity must cover its remaining bounded steps');
-  if(op==='execute'){
-   // The independent Agent health sampler continues while work advances.
-   elapsed=20000;
-   await db.query("UPDATE bots SET health=$1 WHERE id='bot-0'",[JSON.stringify({sampledAt:new Date(Date.now()).toISOString(),protocol:{online:true}})]);
-   assert.equal(await coordinator.repo.renew(coordinator.active!.claim),true);
-   elapsed=31000;
-   await db.query("UPDATE bots SET health=$1 WHERE id='bot-0'",[JSON.stringify({sampledAt:new Date(Date.now()).toISOString(),protocol:{online:true}})]);
-   return{status:'completed',summary:'actual task completed after ongoing steps',effects:[],evidence:[],unfinished:[],usage};
-  }
-  decisions++;if(decisions===2)assert.equal(body.feedback.summary,'actual task completed after ongoing steps');
-  return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],action:decisions===1?{kind:'research',objective:'ongoing useful work'}:null,summary:'observed result',reason:'own choice',wait:{kind:decisions===1?'after_result':'time',seconds:decisions===1?0:600}}};
+  elapsed=20000;
+  await db.query("UPDATE bots SET health=$1 WHERE id='bot-0'",[JSON.stringify({sampledAt:new Date(Date.now()).toISOString(),protocol:{online:true}})]);
+  assert.equal(await coordinator.repo.renew(coordinator.active!.claim),true);
+  elapsed=31000;
+  await db.query("UPDATE bots SET health=$1 WHERE id='bot-0'",[JSON.stringify({sampledAt:new Date(Date.now()).toISOString(),protocol:{online:true}})]);
+  return{status:'completed',summary:'actual task completed after ongoing steps',effects:[],evidence:[],unfinished:[],usage};
  });try{
   await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',cycleSeconds:30});Date.now=()=>realNow()+elapsed;
+  await handoffGoal(db,goalId);await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
   await coordinator.tick();await coordinator.active?.task;
-  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(decisions,2,JSON.stringify({cycle:view.cycles[0],action:view.actions[0]}));assert.equal(view.cycles[0].reason,'sleep');assert.equal(view.actions[0].status,'completed');
+  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(view.actions[0].status,'completed');assert.equal(view.goals[0].status,'completed');assert.equal(view.cycles[0].reason,'handoff_executed');
  }finally{Date.now=realNow;await coordinator.stop();await db.close()}
+});
+
+test('a handoff accepted with a delay stays dormant until its due wake, then executes after restart',async()=>{
+ const db=await fixture();const goalId='edc9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c';let executions=0;
+ const first=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
+  if(op==='policy'||op==='snapshot')return{};
+  if(op==='execute'){executions++;return{status:'completed',summary:'delivered after restart',effects:[],evidence:[],unfinished:[],usage}}
+  throw Error(op);
+ });
+ try{
+  await first.repo.configure('tenant','bot-0',1,{mode:'active'});
+  await handoffGoal(db,goalId,'bot-0',{notBeforeOffsetMs:3600000});
+  await first.repo.wake('tenant','bot-0',2,'handoff-due',3600,goalId);
+  await first.tick();await first.active?.task;assert.equal(first.active,undefined,'not-yet-due handoff never keeps a cycle');assert.equal(executions,0);
+  await first.stop();
+  // Restart: durable state only. Pull the deadline due and let a fresh
+  // coordinator process it; no in-memory timer survived.
+  await db.query("UPDATE autonomy_wakes SET due_at=now() WHERE bot_id='bot-0' AND reason='handoff-due'");
+  await db.query("UPDATE autonomy_goals SET source=jsonb_set(source,'{notBefore}',to_jsonb((extract(epoch from now())*1000)::bigint)) WHERE id=$1",[goalId]);
+  const second=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
+   if(op==='policy'||op==='snapshot')return{};
+   if(op==='execute'){executions++;assert.equal(body.action.goalId,goalId);assert.ok(body.action.requestSource.handoffId===goalId);return{status:'completed',summary:'delivered after restart',effects:[],evidence:[],unfinished:[],usage}}
+   throw Error(op);
+  });
+  await second.tick();await second.active?.task;
+  assert.equal(executions,1);
+  const view=await second.repo.view('tenant','bot-0');assert.equal(view.goals[0].status,'completed');assert.equal(view.cycles[0].reason,'handoff_executed');
+  await second.stop();
+ }finally{await db.close()}
+});
+
+test('a repeated wake never repeats the executed reply',async()=>{
+ const db=await fixture();const goalId='fdc9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c';let executions=0;
+ const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
+  if(op==='policy'||op==='snapshot')return{};
+  if(op==='execute'){executions++;return{status:'completed',summary:'single delivery',effects:[{id:body.work.id+':0',status:'confirmed',receipt:'once'}],evidence:[],unfinished:[],usage}}
+  throw Error(op);
+ });
+ try{
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});
+  await handoffGoal(db,goalId);await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
+  await coordinator.tick();await coordinator.active?.task;
+  // A duplicate of the original wake (lost-ack redelivery) must be a no-op.
+  await coordinator.repo.wake('tenant','bot-0',2,'handoff-received',0,'');
+  await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
+  await coordinator.tick();
+  const recheck=coordinator.active as {task:Promise<void>}|undefined;await recheck?.task;assert.equal(coordinator.active,undefined,'completed goal produces no second cycle');
+  await coordinator.tick();const again=coordinator.active as {task:Promise<void>}|undefined;await again?.task;assert.equal(executions,1);
+  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(view.actions.length,1);assert.equal(view.goals[0].status,'completed');
+ }finally{await coordinator.stop();await db.close()}
+});
+
+test('two due handoffs execute in one event chain without re-executing the first',async()=>{
+ const db=await fixture();const goals=['0ec9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c','1ec9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c'];const executed:string[]=[];
+ const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
+  if(op==='policy'||op==='snapshot')return{};
+  if(op==='execute'){executed.push(body.action.goalId);return{status:'completed',summary:'delivered',effects:[],evidence:[],unfinished:[],usage}}
+  throw Error(op);
+ });
+ try{
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});
+  for(const id of goals){await handoffGoal(db,id);await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,id)}
+  await coordinator.tick();await coordinator.active?.task;
+  assert.deepEqual(executed.sort(),goals,'both due handoffs ran in bounded succession');
+  const view=await coordinator.repo.view('tenant','bot-0');
+  assert.equal(view.actions.length,2);assert.equal(view.goals.every((g:any)=>g.status==='completed'),true);
+  assert.equal((await db.query("SELECT count(*)::int AS n FROM autonomy_wakes WHERE bot_id='bot-0'"))[0].n,0,'no polling wake survives settled work');
+ }finally{await coordinator.stop();await db.close()}
 });
