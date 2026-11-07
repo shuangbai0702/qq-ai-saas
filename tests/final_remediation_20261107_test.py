@@ -300,4 +300,57 @@ class HoldRecoveryTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
         self.assertEqual(len(self.calls),calls_before)
 
+class UncommittedWindowHeadTests(unittest.TestCase):
+    """A successful round aborted by a mid-request dependency change leaves an
+    uncommitted completed round in the SDK window; without adoption the scope
+    deadlocks forever (live 2026-11-08 00:3x evidence on one private scope)."""
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.db=sqlite3.connect(Path(self.tmp.name)/'behavior.sqlite')
+        self.db.execute("CREATE TABLE IF NOT EXISTS pipeline_events(scope TEXT,subject TEXT,event TEXT,at REAL,source TEXT,stage TEXT,status TEXT,reason TEXT,attempted INTEGER,confirmed INTEGER,PRIMARY KEY(scope,subject,event))")
+        self.j=ReadonlyJournal(self.db,SCOPE);self.first=prepare_first(self.j)
+
+    def tearDown(self):
+        self.j.db.close();self.tmp.cleanup()
+
+    def window(self,event='9',reply='未提交轮的真实回复',sent=True,confirmed=1):
+        # The known tail must chain exactly onto the committed base's own tail
+        # (the base ends at user '2'; its reply belongs to a later window).
+        known_tail=[sourced('2','第二轮问题')]
+        head=[sourced(event,'第三轮新消息'),{'role':'assistant','content':reply}]
+        self.db.execute("INSERT OR REPLACE INTO pipeline_events VALUES(?,?,?,?,?,?,?,?,?,?)",(SCOPE,'12345678',event,time.time(),'message','commit','sent' if sent else 'failed','',confirmed,confirmed))
+        self.db.commit()
+        return head+known_tail
+
+    def test_delivered_uncommitted_round_is_adopted_once(self):
+        raw=self.window()
+        incoming=base_messages()+[event_packet({'sender_id':'12345678'}),packet({'state':{'facts':[]}})]
+        # The projected view carries only the new packets; the honest full
+        # native view is passed via unprojected, as production always does.
+        suffix=journal_module.uncommitted_window_head_extension(self.j.last,raw,self.db)
+        self.assertIsNotNone(suffix,'a delivery-proven completed round must be adoptable')
+        self.assertEqual(suffix,raw[:2])
+        # The stuck production shape: the SDK window trimmed the old base and
+        # now starts at the uncommitted round, so every prefix-overlap fails.
+        stuck=[raw[0],raw[1],raw[2]]+[event_packet({'sender_id':'12345678'}),packet({'state':{'facts':[]}})]
+        p=self.j.prepare(stuck,('t','b',1),now=3,strict=True,guarded=True,unprojected=copy.deepcopy(stuck))
+        self.assertEqual(p.retirement_deferred,'uncommitted_window_head')
+        self.assertEqual(p.wire[:len(self.first.wire)],self.first.wire,'committed prefix stays byte-exact')
+        self.assertTrue(self.j.commit(p))
+        self.assertIn('未提交轮的真实回复',[m.get('content') for m in p.wire if isinstance(m.get('content'),str)])
+        # After adoption the round is known; a second adoption is impossible.
+        self.assertIsNone(journal_module.uncommitted_window_head_extension(self.j.last,raw,self.db))
+
+    def test_unsent_or_incomplete_heads_are_never_adopted(self):
+        # A failed (never delivered) event must not be adopted.
+        raw=self.window(sent=False)
+        self.assertIsNone(journal_module.uncommitted_window_head_extension(self.j.last,raw,self.db))
+        # An unanswered user turn (refused request) cannot prove completion.
+        raw2=[sourced('8','被拒绝的请求')]
+        self.db.execute("INSERT OR REPLACE INTO pipeline_events VALUES(?,?,?,?,?,?,?,?,?,?)",(SCOPE,'12345678','8',time.time(),'message','admission','blocked','',0,0));self.db.commit()
+        self.assertIsNone(journal_module.uncommitted_window_head_extension(self.j.last,raw2,self.db))
+        # A head whose remainder does not chain onto the committed tail fails.
+        raw3=self.window(event='7')
+        raw3[2]={'role':'user','content':SOURCE+json.dumps({'scope':SCOPE,'sender_id':'12345678','event_id':'2'},ensure_ascii=False)+'\n被改写的历史'}
+        self.assertIsNone(journal_module.uncommitted_window_head_extension(self.j.last,raw3,self.db))
+
 if __name__=='__main__':unittest.main()

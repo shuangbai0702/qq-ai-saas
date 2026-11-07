@@ -194,6 +194,47 @@ def fresh_event_extension(old_base,new_messages):
         if later and str(later['event_id']) in known:return None
     return tail
 
+def uncommitted_window_head_extension(old,raw_base,db=None):
+    """Adopt provably delivered rounds the committed journal never kept.
+
+    A successful round whose journal candidate was aborted (for example by a
+    summary dependency that changed mid-request) leaves its user turn and
+    reply in the SDK conversation but nothing in the journal. Every later
+    request then fails the native-window overlap forever and the scope
+    deadlocks, because refused rounds can never earn the license a rebuild
+    needs. When the window head consists of complete sourced rounds absent
+    from the base and the per-event delivery ledger proves they were really
+    sent and confirmed, they are appended once as real history; the first
+    known event must still chain the rest of the window exactly onto the
+    committed tail. The committed prefix stays byte-exact and no license,
+    round count or retirement is implied.
+    """
+    if not old or not isinstance(raw_base,list) or db is None:return None
+    known={str(source(m)['event_id']) for m in old.base if (s:=source(m))}
+    tail=raw_base[system_head(raw_base):]
+    try:tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    except Exception:return None
+    if 'pipeline_events' not in tables:return None
+    head=[];taken=0
+    while taken<len(tail):
+        message=tail[taken]
+        if not isinstance(message,dict) or message.get('role')!='user':break
+        origin=source(message)
+        if not origin or str(origin['event_id']) in known:break
+        end=next((j for j in range(taken+1,len(tail)) if isinstance(tail[j],dict) and tail[j].get('role')=='user'),len(tail))
+        block=tail[taken:end]
+        if not any(isinstance(m,dict) and m.get('role')=='assistant' and not m.get('tool_calls') for m in block):break
+        row=db.execute("SELECT status,confirmed FROM pipeline_events WHERE scope=? AND event=?",(str(origin.get('scope')),str(origin['event_id']))).fetchone()
+        if not row or row[0] not in ('sent','partial') or not row[1]:break
+        head.extend(block);taken=end
+    if not head:return None
+    rest=tail[taken:]
+    if not rest:return head
+    prior=old.base[system_head(old.base):]
+    if len(rest)>len(prior):return None
+    if not same_native_prefix(prior[-len(rest):],rest):return None
+    return head
+
 class ReadonlyJournal:
     def __init__(self,db=None,scope_key=None):
         self.serial=0;self.last=None;self.db=db;self.scope_key=self._scope_key(scope_key)
@@ -461,6 +502,12 @@ class ReadonlyJournal:
             # passing that decorated view makes its first user unsourced.
             suffix=fresh_event_extension(old.base,raw_base)
             if suffix is not None:retirement_deferred='fresh_native_window'
+        if valid and suffix is None and strict:
+            # Complete, delivery-proven rounds the journal never kept (an
+            # aborted success) sit at the window head and would deadlock the
+            # scope forever; adopt them once as appended real history.
+            suffix=uncommitted_window_head_extension(old,raw_base,self.db)
+            if suffix is not None:retirement_deferred='uncommitted_window_head'
         # Content-free evidence distinguishes a failed native overlap from
         # retirement/authority fencing; summary changes alone are not a cause.
         origins={str(o['event_id']) for m in (old.base if old else []) if (o:=source(m))}

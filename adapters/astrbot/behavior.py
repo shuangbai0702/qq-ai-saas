@@ -1252,7 +1252,7 @@ def install_runtime(core,settings):
             valid=(current(event) and delivery_current(event) and stores.get(event.get_platform_id()) is owned
                    and owned.model_journals.get(key) is journal and owned.reflection.epoch()==epoch)
             material_current=owned.reflection.context_dependency(visible_summary_ids(prepared.state))==prepared.retirement
-            if success and valid and material_current:retained=journal.commit(prepared);settled_state='commit'
+            if success and valid:retained=journal.commit(prepared);settled_state='commit'
             elif valid and material_current and submitted_unknown:retained=journal.retain_submitted(prepared,stage);settled_state='submitted_unknown_retained'
             elif valid and material_current:journal.abort_candidate(prepared)
             else:journal.retire_committed(prepared,'authority_changed');settled_state='retire'
@@ -1277,11 +1277,16 @@ def install_runtime(core,settings):
                     # A possibly-received request keeps its tail even when the
                     # summary dependency moved during the request.
                     retained=journal.retain_submitted(prepared,stage);settled_state='submitted_unknown_retained'
+                elif success and valid:
+                    # The round provably happened (user got a reply): commit it
+                    # even when the summary dependency moved mid-request. An
+                    # abort here leaves an uncommitted completed round in the
+                    # SDK conversation, which deadlocks every later request.
+                    retained=journal.commit(prepared);settled_state='commit'
                 elif not material_current:
-                    # A summary dependency change invalidates the old wire
-                    # view. A stale event lease or failed request does not.
+                    # A summary dependency change invalidates the failed
+                    # request's stale wire view. A stale event lease does not.
                     journal.abort_candidate(prepared)
-                elif success and valid:retained=journal.commit(prepared);settled_state='commit'
                 else:journal.abort_candidate(prepared)
         from model_cache import record_diagnostic
         record_diagnostic(event.get_extra('_hosted_lease'),{'kind':'context_result','phase':'inner_execution' if event.get_extra('_hosted_internal_work') else 'foreground',
