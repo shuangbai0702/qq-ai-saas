@@ -119,6 +119,7 @@ def apply_update(db,action,topic,speaker,participants,source_scope,source_event,
     initialize(db)
     if action not in ('propose','accept','revise','cancel','fulfill','expire'):return None,'invalid_action'
     if not isinstance(topic,str) or not 2<=len(topic.strip())<=MAX_TOPIC:return None,'invalid_topic'
+    if action not in ('propose','accept','revise','cancel','expire','fulfill'):return None,'invalid_action'
     topic=topic.strip()
     if not _valid_scope(source_scope) or not str(source_event):return None,'invalid_source'
     if not _participants_ok(participants):return None,'invalid_participants'
