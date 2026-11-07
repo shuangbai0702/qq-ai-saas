@@ -57,24 +57,23 @@ class DeferralTests(unittest.TestCase):
                  '2':{'subject':'12345678','digest':material.digest(self.base[3]),'reply_digest':material.reply_digest(native[3:5])}}
         # A summary completed: its coverage projection drops both covered
         # blocks, including the last committed turn. The remaining view cannot
-        # chain to the committed tail.
+        # chain to the committed tail. Production always passes the honest
+        # full native view in this shape, so the coverage deferral keeps the
+        # committed prefix byte-exact and defers retirement to the next
+        # licensed checkpoint; a true zero-overlap fresh window (no drops)
+        # takes the fresh-event fallback instead (FreshWindowTests).
         projected=material.project_history(native+[event_packet({'sender_id':'12345678'}),packet(self.state)],covered,SCOPE,'3')
         self.assertEqual([m.get('content') for m in projected[1:2]],[native[5]['content']],'projection keeps only the new turn')
         latest=copy.deepcopy(self.state);latest['state']['facts']=[{'source_scope':SCOPE,'value':'新事实'}]
-        incoming=projected[:-2]+[event_packet({'sender_id':'12345678'}),packet(latest)]
-        with self.assertRaises(ContextReconstructionDenied):
-            self.j.prepare(incoming,('t','b',1),now=2,strict=True,guarded=True)
-        self.assertIs(self.j.last,first)
-        # With the honest constrained full view the request continues on the
-        # committed prefix: covered blocks stay in the wire, the real new tail
-        # appends, and retirement defers to the next legal checkpoint.
         unprojected=native+[event_packet({'sender_id':'12345678'}),packet(latest)]
-        p=self.j.prepare(incoming,('t','b',1),now=3,strict=True,guarded=True,unprojected=copy.deepcopy(unprojected))
+        incoming=projected[:-2]+[event_packet({'sender_id':'12345678'}),packet(latest)]
+        p=self.j.prepare(incoming,('t','b',1),now=2,strict=True,guarded=True,unprojected=copy.deepcopy(unprojected))
         self.assertEqual(p.retirement_deferred,'coverage_retirement')
         self.assertEqual(p.wire[:len(first.wire)],first.wire,'committed prefix must stay byte-exact')
         self.assertEqual(readonly_state(p.wire),latest)
         self.assertTrue(self.j.commit(p))
-        # The deferred base keeps the committed system and the covered turns.
+        # The deferred base keeps the committed system and the covered turns,
+        # and the uncommitted real assistant reply is appended, never skipped.
         self.assertIn('第一轮真实回复',[m.get('content') for m in p.base])
         self.assertIn('第二轮真实回复',[m.get('content') for m in p.base])
 
@@ -268,6 +267,47 @@ class FailureTypingTests(unittest.TestCase):
         self.assertEqual(rows[-1]['diagnosticDetail'],'request_not_sent')
         rows=self.run_attempt(True)
         self.assertEqual(rows[-1]['diagnosticDetail'],'provider_request_sent')
+
+class FreshWindowTests(unittest.TestCase):
+    """Worker restarts can lose the in-memory SDK conversation: the presented
+    native view then has zero overlap with the committed base. The journal
+    stays authoritative and appends only provably new sourced events."""
+    def setUp(self):
+        self.db=sqlite3.connect(':memory:')
+        self.j=ReadonlyJournal(self.db,SCOPE)
+        self.base=[{'role':'system','content':'persona'},{'role':'system','content':'platform'},
+                   sourced('1'),{'role':'assistant','content':'真实回复'},sourced('2','第二条')]
+        self.state={'state':{'facts':[]},'recent_messages':[]}
+    def first(self):
+        p=self.j.prepare(self.base+[event_packet({'sender_id':'12345678'}),packet(self.state)],('t','b',1),now=1,strict=True,guarded=True)
+        self.assertTrue(self.j.commit(p));return p
+    def test_fresh_view_appends_only_new_sourced_events(self):
+        first=self.first()
+        fresh=[{'role':'system','content':'persona'},{'role':'system','content':'platform'},
+               sourced('9','重启后的全新一条消息')]
+        incoming=fresh+[event_packet({'sender_id':'12345678'}),packet(self.state)]
+        p=self.j.prepare(incoming,('t','b',1),now=2,strict=True,guarded=True)
+        self.assertIsNotNone(p)
+        self.assertEqual(p.retirement_deferred,'fresh_native_window')
+        self.assertEqual(p.wire[:len(first.wire)],first.wire,'committed prefix stays byte-exact')
+        self.assertEqual(p.wire[len(first.wire)],fresh[-1],'the first appended element is the real new turn')
+        self.assertTrue(self.j.commit(p))
+    def test_known_event_in_fresh_view_still_requires_license(self):
+        self.first()
+        # A replayed/already-committed event cannot be re-appended: the view
+        # partially overlaps history in an order that cannot be proven.
+        fresh=[{'role':'system','content':'persona'},{'role':'system','content':'platform'},sourced('1','真实回复')]
+        with self.assertRaises(ContextReconstructionDenied):
+            self.j.prepare(fresh+[event_packet({'sender_id':'12345678'}),packet(self.state)],('t','b',1),now=2,strict=True,guarded=True)
+        self.assertEqual(self.j._last_refusal_reason,'native_prefix_changed')
+        evidence=self.j.refusal_evidence()
+        self.assertEqual(evidence['refusal'],'native_prefix_changed')
+    def test_unsourced_fresh_tail_is_not_appended(self):
+        self.first()
+        fresh=[{'role':'system','content':'persona'},{'role':'system','content':'platform'},
+               {'role':'user','content':'没有来源标记的文本'}]
+        with self.assertRaises(ContextReconstructionDenied):
+            self.j.prepare(fresh+[event_packet({'sender_id':'12345678'}),packet(self.state)],('t','b',1),now=2,strict=True,guarded=True)
 
 class ResearchFactsIsolationTests(unittest.TestCase):
     def setUp(self):
