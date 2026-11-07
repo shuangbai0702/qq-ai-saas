@@ -24,72 +24,78 @@ test('D1 schema accepts at most eight evidence refs and nothing else',()=>{
  assert.equal(ActionIntentSchema.safeParse({kind:'research',objective:'read',sourceScope:'group:1'}).success,false,'the model cannot write authoritative source fields');
 });
 
-test('a valid evidenceRef is dereferenced, stored with evidenceSources and dispatched',async()=>{
+test('the accepted goal source is dereferenced once into evidenceSources and dispatched same-scope',async()=>{
  const db=await fixture();let executions=0;
+ const goalId='bf1086cd-91c4-40ec-8e42-75d80ae70a9d';
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
-  if(op==='think')return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,
-   goalChanges:[{operation:'create',title:'follow the group request',reason:'delegation',sourceEventId:'real-source'}],
-   action:{kind:'research',objective:'read for the source group',evidenceRefs:['event:real-source']},summary:'progress',reason:'cited request',wait:{kind:'after_result',seconds:0}}};
   if(op==='execute'){executions++;
    assert.equal(body.action.sourceScope,'group:963105233','requestSource same-scope rule unchanged');
    assert.equal(body.action.evidenceSources.length,1);
    const source=body.action.evidenceSources[0];
    assert.equal(source.ref,'event:real-source');assert.equal(source.scope,'group:963105233');
    assert.equal(source.eventId,'real-source');assert.equal(source.senderId,'12345678');
-   assert.equal(source.kind,'foreground_event');assert.match(source.digest,/^[0-9a-f]{64}$/);
+   assert.equal(source.kind,'goal_source');assert.match(source.digest,/^[0-9a-f]{64}$/);
+   assert.equal(body.action.requestSource.handoffId,goalId);
+   return{status:'completed',summary:'actual read',effects:[],evidence:[],unfinished:[],usage}}
+  throw Error(op);
+ });
+ try{
+  await coordinator.repo.configure('tenant','bot',1,{mode:'active',rollout:'live'});
+  await coordinator.repo.event({tenant_id:'tenant',bot_id:'bot',epoch:2},Date.now(),EVENT,15);
+  await db.query("INSERT INTO autonomy_goals(id,bot_id,tenant_id,origin,status,title,reason,progress,success_condition,source) VALUES($1,'bot','tenant','owner_request','active','follow the group request','accepted handoff','',$2,$3)",
+   [goalId,'read for the source group',JSON.stringify({eventId:'real-source',scope:'group:963105233',senderId:'12345678',owner:true,handoffId:goalId,notBefore:Date.now()-1000})]);
+  await coordinator.repo.wake('tenant','bot',2,'handoff-due',0,goalId);
+  await coordinator.tick();await coordinator.active?.task;assert.equal(executions,1);
+  const [cycle]=await db.query("SELECT decision FROM autonomy_cycles WHERE bot_id='bot' AND decision ? 'evidenceSources'");
+  assert.equal(cycle.decision.evidenceSources[0].eventId,'real-source');
+  const view=await coordinator.repo.view('tenant','bot');
+  assert.equal(view.goals[0].status,'completed');
+  assert.equal(view.actions[0].status,'completed');
+ }finally{await coordinator.stop();await db.close()}
+});
+
+test('no planning model exists, so the dispatch carries only the durable goal source and no invented refs',async()=>{
+ const db=await fixture();let executions=0,thinkCalls=0;
+ const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
+  if(op==='policy'||op==='snapshot')return{};
+  if(op==='think'){thinkCalls++;return{status:'completed',usage}}
+  if(op==='execute'){executions++;
+   assert.equal(body.action.evidenceRefs,undefined,'no model-supplied refs exist in the event-driven dispatch');
+   assert.equal(body.action.evidenceSources.length,1,'evidence comes only from the accepted goal source');
    return{status:'completed',summary:'actual read',effects:[],evidence:[],unfinished:[],usage}}
   throw Error(op);
  });
  try{
   await coordinator.repo.configure('tenant','bot',1,{mode:'active'});
   await coordinator.repo.event({tenant_id:'tenant',bot_id:'bot',epoch:2},Date.now(),EVENT,15);
-  await coordinator.tick();await coordinator.active?.task;assert.equal(executions,1);
-  const [cycle]=await db.query("SELECT decision FROM autonomy_cycles WHERE bot_id='bot' AND decision ? 'evidenceSources'");
-  assert.equal(cycle.decision.evidenceSources[0].eventId,'real-source');
-  const view=await coordinator.repo.view('tenant','bot');
-  assert.equal(view.goals[0].source.evidenceSources[0].ref,'event:real-source');
- }finally{await coordinator.stop();await db.close()}
-});
-
-test('a forged or expired evidenceRef rejects the whole decision without executing',async()=>{
- const db=await fixture();let executions=0;
- const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
-  if(op==='policy'||op==='snapshot')return{};
-  if(op==='think')return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],
-   action:{kind:'research',objective:'invent evidence',evidenceRefs:['event:forged-by-model']},summary:'x',reason:'r',wait:{kind:'time',seconds:60}}};
-  if(op==='execute')executions++;
-  throw Error(op);
- });
- try{
-  await coordinator.repo.configure('tenant','bot',1,{mode:'active'});
-  await coordinator.repo.event({tenant_id:'tenant',bot_id:'bot',epoch:2},Date.now(),EVENT,15);
+  await db.query("INSERT INTO autonomy_goals(id,bot_id,tenant_id,origin,status,title,reason,progress,success_condition,source) VALUES('bf2086cd-91c4-40ec-8e42-75d80ae70a9d','bot','tenant','owner_request','active','follow the group request','accepted handoff','','read for the source group',$1)",
+   [JSON.stringify({eventId:'real-source',scope:'group:963105233',senderId:'12345678',owner:true,handoffId:'bf2086cd-91c4-40ec-8e42-75d80ae70a9d',notBefore:Date.now()-1000})]);
+  await coordinator.repo.wake('tenant','bot',2,'handoff-due',0,'bf2086cd-91c4-40ec-8e42-75d80ae70a9d');
   await coordinator.tick();await coordinator.active?.task;
-  assert.equal(executions,0,'a forged reference never dispatches');
+  assert.equal(executions,1);assert.equal(thinkCalls,0);
   const actions=await db.query("SELECT id FROM autonomy_actions WHERE bot_id='bot'");
-  assert.deepEqual(actions,[],'no action row survives the rejected decision');
-  const [cycle]=await db.query("SELECT reason FROM autonomy_cycles WHERE bot_id='bot' ORDER BY started_at DESC LIMIT 1");
-  assert.equal(cycle.reason,'decision_conflict','the commit rolled back as an autonomy conflict');
+  assert.equal(actions.length,1,'exactly the platform-dispatched action exists');
  }finally{await coordinator.stop();await db.close()}
 });
 
-test('an expired provided event is rejected even when it was once real',async()=>{
+test('an accepted handoff past its seven-day reply window is refused and frees the goal',async()=>{
  const db=await fixture();let executions=0;
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
-  if(op==='think')return{status:'completed',usage,decision:{expectedGoalRevision:body.goalRevision,goalChanges:[],
-   action:{kind:'research',objective:'cite stale event',evidenceRefs:['event:old-event']},summary:'x',reason:'r',wait:{kind:'time',seconds:60}}};
-  if(op==='execute')executions++;
+  if(op==='execute'){executions++;return{status:'blocked',summary:'原请求回复许可无效或已使用；不能降级为主动发送重试',effects:[],evidence:[],unfinished:[],usage:{tokens:0,modelCalls:0,toolCalls:0}}}
   throw Error(op);
  });
  try{
-  await coordinator.repo.configure('tenant','bot',1,{mode:'active'});
+  await coordinator.repo.configure('tenant','bot',1,{mode:'active',rollout:'live'});
   await coordinator.repo.event({tenant_id:'tenant',bot_id:'bot',epoch:2},Date.now()-9*86400000,{...EVENT,eventId:'old-event'},15);
+  await db.query("INSERT INTO autonomy_goals(id,bot_id,tenant_id,origin,status,title,reason,progress,success_condition,source) VALUES('bf3086cd-91c4-40ec-8e42-75d80ae70a9d','bot','tenant','owner_request','active','cite stale event','accepted handoff','','read',$1)",
+   [JSON.stringify({eventId:'old-event',scope:'group:963105233',senderId:'12345678',owner:true,handoffId:'bf3086cd-91c4-40ec-8e42-75d80ae70a9d',notBefore:Date.now()-9*86400000})]);
+  await coordinator.repo.wake('tenant','bot',2,'handoff-due',0,'bf3086cd-91c4-40ec-8e42-75d80ae70a9d');
   await coordinator.tick();await coordinator.active?.task;
-  assert.equal(executions,0,'an event older than seven days is expired evidence');
-  const actions=await db.query("SELECT id FROM autonomy_actions WHERE bot_id='bot'");
-  assert.deepEqual(actions,[],'no action row survives the expired reference');
-  const [cycle]=await db.query("SELECT reason FROM autonomy_cycles WHERE bot_id='bot' ORDER BY started_at DESC LIMIT 1");
-  assert.equal(cycle.reason,'decision_conflict');
+  assert.equal(executions,1,'the inner runtime is the authority that refuses the expired window');
+  const view=await coordinator.repo.view('tenant','bot');
+  assert.equal(view.goals[0].status,'abandoned','the refused handoff frees its slot without a fake success');
+  assert.equal(view.actions[0].status,'blocked');assert.equal(view.cycles[0].reason,'handoff_blocked');
  }finally{await coordinator.stop();await db.close()}
 });

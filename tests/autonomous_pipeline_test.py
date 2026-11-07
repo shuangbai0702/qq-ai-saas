@@ -15,67 +15,14 @@ from astrbot.core.platform.platform_metadata import PlatformMetadata
 from astrbot.core.provider.entities import LLMResponse,TokenUsage
 from behavior import install_runtime
 from native_internal import WorkStopped
-from autonomous_runtime import evidence_limits,decision_environment,decision_clock,decision_contacts,decision_feedback,decision_request_view,decision_model_request,DELIBERATION_GUIDANCE
+from autonomous_runtime import evidence_limits
 
 
 async def main():
-    original={'work':{'budget':{'tokens':19}},'goalRevision':7,'environment':{'now':123,'contacts':[{'scope':'private:12345678'}],'identity':{'ownerId':'12345678'},'innerTools':[{'name':'read','available':False,'retryAfterSeconds':123}],'capabilityCatalog':[{'kind':'research'}],'futureField':{'value':'keep me'}},'futureTop':[3,1,2]}
-    original['environment']['wakePolicy']={'idleCheckSeconds':300,'quietHours':{'startHour':0,'endHour':6,'enabled':True,'activeNow':False}}
-    before=copy.deepcopy(original);projected=decision_request_view(original)
-    assert projected==original and original==before,'request ordering changed context values or mutated its authority'
-    assert list(projected)[0]=='environment' and list(projected['environment'])[:2]==['identity','innerTools']
-    changed=copy.deepcopy(original);changed['environment']['innerTools'][0].update(available=True,retryAfterSeconds=0)
-    assert decision_request_view(changed)['environment']['innerTools'][0]['available'] is True,'ordering cached old tool readiness'
-    assert decision_request_view({'environment':None,'unknown':True})=={'environment':None,'unknown':True}
-    system,live=decision_model_request(original,'actual persona and permissions')
-    definitions=json.loads(system.rsplit('\n',1)[1]);live=json.loads(live)
-    assert not set(definitions['environment']) & set(live['environment'])
-    restored={**live,'environment':{**definitions['environment'],**live['environment']}}
-    status=restored['environment'].pop('innerToolStatus')
-    restored['environment']['innerTools']=[{**tool,**state} for tool,state in zip(restored['environment']['innerTools'],status)]
-    restored['environment']['wakePolicy']['quietHours'].update(restored['environment'].pop('wakeStatus')['quietHours'])
-    assert restored==original and original==before,'decision split lost fresh data or mutated authority'
-    assert live['environment']['now']==123 and live['environment']['futureField']=={'value':'keep me'}
-    changed_system,_=decision_model_request(changed,'actual persona and permissions')
-    assert changed_system==system,'transient readiness invalidated the trusted prefix'
-    changed['environment']['wakePolicy']['quietHours']['activeNow']=True
-    assert decision_model_request(changed,'actual persona and permissions')[0]==system,'current quiet-hour status invalidated the configured prefix'
-    changed['environment']['innerTools'][0]['authorized']=False
-    assert decision_model_request(changed,'actual persona and permissions')[0]!=system,'permission change did not invalidate trusted prefix'
-    for field in ('availableTools','unavailableTools'):
-        changed=copy.deepcopy(original);changed['environment'][field]=['read']
-        assert decision_model_request(changed,'actual persona and permissions')[0]==system
-    for tool_patch in ({'parameters':{'type':'object'}},{'enabled':False},{'futurePermission':False}):
-        changed=copy.deepcopy(original);changed['environment']['innerTools'][0].update(tool_patch)
-        assert decision_model_request(changed,'actual persona and permissions')[0]!=system
-    collision=copy.deepcopy(original);collision['environment']['innerToolStatus']={'future':'preserve'}
-    collision_system,collision_live=decision_model_request(collision,'authority')
-    assert json.loads(collision_system.rsplit('\n',1)[1])['environment']['innerTools']==original['environment']['innerTools']
-    assert json.loads(collision_live)['environment']['innerToolStatus']=={'future':'preserve'}
-    assert decision_model_request({'unknown':True},'authority')==('authority','{"unknown":true}')
-    print('PIPELINE outer request ordering preserves current permissions, future fields, arrays and source object passed')
     # The fixture constructs Core directly. Production initializes this shared
     # SDK database before platform startup; do the same before concurrent sends.
     from astrbot.core import db_helper
     await db_helper.initialize();db_helper.inited=True
-    source={'scope':'private:12345678','lastUserAt':100,'lastReplyAt':120,'lastAttemptAt':0,'unanswered':0,'lastText':'private raw text','lastOutput':'private raw reply','mayInitiate':True}
-    translated=decision_contacts([source],200)[0]
-    assert translated['lastUserAt']==100000 and translated['lastReplyAt']==120000 and translated['lastAttemptAt'] is None
-    assert translated['idleSinceInteractionSeconds']==80 and translated['timestampUnit']=='unix_milliseconds'
-    assert translated['unanswered']==0 and 'lastText' not in translated and 'lastOutput' not in translated
-    assert source['lastUserAt']==100 and source['lastReplyAt']==120,'model time normalization mutated final admission clocks'
-    assert decision_contacts([{'scope':'group:12345678'}],200)[0]['idleSinceInteractionSeconds'] is None
-    assert decision_contacts([{'lastUserAt':300}],200)[0]['idleSinceInteractionSeconds'] is None
-    print('PIPELINE model contact clocks use milliseconds, unknown stays unknown and internal delivery clocks remain seconds passed')
-    historical={'status':'blocked','summary':'old cooldown','task':{'finishedAt':'2026-11-02T12:00:00Z'},'toolResults':[{'tool':'remote','status':'unavailable','retryAfterSeconds':900}]}
-    fresh=decision_feedback(historical,{'now':200000,'innerTools':[{'name':'remote','available':True}]})
-    assert fresh['readiness']['tools'][0]['availableNow'] is True and fresh['readiness']['tools'][0]['retryAfterSecondsNow']==0
-    assert fresh['toolResults'][0]['retryAfterSeconds']==900 and 'readiness' not in historical
-    blocked=decision_feedback(historical,{'now':200000,'innerTools':[{'name':'remote','available':False,'blockedScope':'tool','retryAfterSeconds':30}]})
-    assert blocked['readiness']['tools'][0]['availableNow'] is False and blocked['readiness']['tools'][0]['retryAfterSecondsNow']==30
-    unknown=decision_feedback(historical,{'now':200000,'innerTools':[]})
-    assert unknown['readiness']['tools']==[],'a missing tool was invented as available'
-    print('PIPELINE historical failures remain immutable while current readiness and retry clocks use actual tool state passed')
     bubbles=2;favorite_md5=''
     calls=[];barrier=asyncio.Event();release=asyncio.Event();mode='normal';research_requests=[];message_requests=[]
     class Provider:
@@ -106,12 +53,6 @@ async def main():
                 message_requests.append(kwargs)
                 if len(message_requests)==1:return LLMResponse(role='assistant',tools_call_name=['hosted_qq_avatar'],tools_call_args=[{'image_handle':avatar_handle}],tools_call_ids=['self-avatar'],usage=TokenUsage(input_other=50,output=10))
                 return LLMResponse(role='assistant',completion_text=json.dumps({'status':'completed','summary':'QQ avatar ACK verified','unfinished':[]}),usage=TokenUsage(input_other=50,output=10))
-            if mode=='orientation':
-                research_requests.append(kwargs)
-                return LLMResponse(role='assistant',completion_text=json.dumps({'disposition':'engage','motive':'own fresh intention','desiredOutcome':'learn something meaningful','reason':'recovered energy and accumulated activity inclination'}),usage=TokenUsage(input_other=50,output=10))
-            if mode=='think_provenance':
-                research_requests.append(kwargs)
-                return LLMResponse(role='assistant',completion_text=json.dumps({'expectedGoalRevision':0,'goalChanges':[],'action':None,'summary':'fixture only','reason':'check actual request provenance','wait':{'kind':'time','seconds':600,'scope':''}}),usage=TokenUsage(input_other=50,output=10))
             if mode in ('reflect','reflect_late'):
                 research_requests.append(kwargs)
                 if len(research_requests)==1:return LLMResponse(role='assistant',tools_call_name=['inspect_context'],tools_call_args=[{}],tools_call_ids=['actual-read'],usage=TokenUsage(input_other=50,output=10))
@@ -179,12 +120,7 @@ async def main():
         assert observed['private:12345678']['owner'] is True and observed['private:12345678']['lastReply']=='actual owner result link'
         assert observed['private:23456789']['owner'] is False and observed['private:23456789']['outcome']['eventId']=='friend-result'
         assert observed['private:23456789']['lastReply']=='search unavailable; no result'
-        foreground={**snapshot['event'],'at':int((now+1)*1000)}
-        compact=decision_environment(snapshot,foreground)
-        assert 'event' not in compact and [c['scope'] for c in compact['observedConversations']]==['private:12345678']
-        assert len(snapshot['observedConversations'])==2 and 'event' in snapshot,'model dedup mutated authoritative snapshot'
-        newer={**observed['private:23456789'],'lastReplyAt':foreground['at']+1}
-        assert newer in decision_environment({**snapshot,'observedConversations':[newer]},foreground)['observedConversations'],'newer reply was lost'
+        assert len(snapshot['observedConversations'])==2 and 'event' in snapshot,'observation slot mutated the authoritative snapshot'
         st.db.execute("UPDATE contacts SET last_user=? WHERE scope='private:23456789'",(now,));st.db.commit()
         latest={c['scope']:c for c in brain.observed_conversations('qq')}
         assert latest['private:23456789']['lastReply'] is None and latest['private:23456789']['outcome'] is None,'old reply masqueraded as the result of a new in-flight request'
@@ -233,7 +169,7 @@ async def main():
             result=await brain.handle('qq','execute',{'work':w,'action':{'kind':kind,'target':'','objective':'execute actual authorized self operation'}})
             assert result['status']=='completed' and len(result['effects'])==1 and result['effects'][0]['status']=='confirmed',result
             assert [c[0] for c in calls]==['get_login_info','get_login_info',method],calls
-            assert result['toolResults'][0]['detail']=='QQ接口已确认操作成功。',result
+            assert result['toolResults'][0]['detail']=='QQ协议已确认该操作回执。',result
             assert settings['qq']['expectedUin']=='','execution silently rewrote the durable identity binding'
         print('PIPELINE empty legacy expectedUin binds only the actual member protocol, self tools recheck and confirm once passed')
         mode='self_avatar';p,w,st=setup(mode);settings['qq']['config']['behavior'].update(qqProfile=True)
@@ -247,7 +183,7 @@ async def main():
         result=await brain.handle('qq','execute',{'work':w,'action':{'kind':'research','target':'','objective':'use authorized prepared image as QQ avatar'}})
         assert result['status']=='completed' and len(result['effects'])==1 and result['effects'][0]['status']=='confirmed',result
         assert [c[0] for c in calls]==['get_login_info','set_qq_avatar'],calls
-        assert calls[-1][1]['file'].startswith('base64://') and result['toolResults'][0]['detail']=='QQ接口已确认操作成功。'
+        assert calls[-1][1]['file'].startswith('base64://') and result['toolResults'][0]['detail']=='QQ协议已确认该操作回执。'
         again=await brain.handle('qq','execute',{'work':w,'action':{'kind':'research','target':'','objective':'use authorized prepared image as QQ avatar'}})
         assert [c[0] for c in calls].count('set_qq_avatar')==1 and again['status']=='completed'
         p,w,st=setup('self-avatar-shadow');settings['qq']['config']['behavior'].update(qqProfile=True);p['config']['rollout']='shadow'
@@ -363,107 +299,9 @@ async def main():
         assert brain.snapshot('qq')['feedbackVersion']>0 and not brain.valid('qq',w),'a genuine model result failed to invalidate stale planning'
         print('PIPELINE ambient admission stays observable without canceling work; actual silent model feedback still advances freshness passed')
 
-        mode='think_provenance';research_requests.clear();p,w,st=setup('outer-provenance');settings['qq']['config']['behavior']['bilibiliSearchEnabled']=True
-        observation={'eventId':'actual-private-reply','scope':'private:12345678','senderId':'12345678','owner':True,'result':{'status':'sent','protocolConfirmed':1,'messageIds':['real-receipt-marker'],'evidence':[{'source':'actual-tool-marker','reference':'actual-reference-marker'}],'toolResults':[{'tool':'actual-tool-marker','status':'returned'}],'response':'an unverified cross-conversation completion claim'}}
-        data={'work':w,'goalRevision':0,'goals':[],'summary':'unverified historical completion claim','recentForeground':observation,'feedback':{'status':'blocked','toolResults':[{'tool':'bilibili_search','status':'unavailable','retryAfterSeconds':900}]}}
-        result=await brain.think('qq',data);assert result['status']=='completed'
-        request=research_requests[-1];messages=[m.model_dump() if hasattr(m,'model_dump') else m for m in request['contexts']]
-        def message_text(message):
-            content=message['content']
-            return content if isinstance(content,str) else ''.join(part.get('text','') for part in content)
-        from decision_context import restore_append
-        payload=restore_append([{'role':m['role'],'content':message_text(m)} for m in messages])
-        assert 'summary' not in payload and payload['priorModelState']=={'summary':data['summary'],'executionEvidence':False}
-        assert payload['recentForeground']['eventId']=='actual-private-reply' and 'result' not in payload['recentForeground']
-        execution=payload['recentForeground']['execution']
-        assert execution['messageIds']==['real-receipt-marker'] and execution['toolResults'][0]['tool']=='actual-tool-marker'
-        assert execution['evidence'][0]['reference']=='actual-reference-marker' and 'response' not in execution
-        assert not any(key in payload['environment'] for key in ('contexts','observedConversations','selfExperiences','foregroundFeedback','event')),'duplicate notification/history payload'
-        assert payload['environment']['sharedContext']['memoryEnabled'] is False
-        assert all('lastText' not in contact and 'lastOutput' not in contact for contact in payload['environment']['contacts'])
-        assert payload['environment']['contacts'][0]['lastUserAt']>1000000000000
-        assert payload['environment']['contacts'][0]['lastReplyAt'] is None
-        assert payload['environment']['contacts'][0]['unanswered']==0
-        assert payload['environment']['contacts'][0]['idleSinceInteractionSeconds']>=7100
-        assert payload['conversationActivity']['lastReplyAt'] is None
-        assert payload['conversationActivity']['idleSinceLastReplySeconds'] is None
-        assert payload['feedback']['readiness']['tools'][0]['availableNow'] is True
-        assert payload['feedback']['readiness']['tools'][0]['retryAfterSecondsNow']==0
-        assert 'readiness' not in data['feedback']
-        assert payload['environment']['clock']['timezone']=='UTC+08:00'
-        assert payload['environment']['clock']['localDateTime'].endswith('+08:00')
-        definition_message=next(m for m in messages if m['role']=='system' and '[本轮环境配置片段]' in message_text(m))
-        current_definitions=json.loads(message_text(definition_message).rsplit('\n',1)[1])['environment']
-        assert not set(current_definitions) & set(payload['environment']),'decision fields duplicated across messages'
-        restored_tools=[{**tool,**state} for tool,state in zip(current_definitions['innerTools'],payload['environment']['innerToolStatus'])]
-        assert restored_tools==decision_request_view({'environment':brain.snapshot('qq')})['environment']['innerTools']
-        quiet=current_definitions['wakePolicy']['quietHours']
-        assert (quiet['startHour'],quiet['endHour'])==(0,0)
-        assert quiet['enabled'] is False and payload['environment']['wakeStatus']['quietHours']['activeNow'] is False
-        assert quiet['timezone']=='UTC+08:00' and quiet['scope']=='unsolicited_outbound_messages'
-        assert decision_clock(0)['localDateTime']=='1970-01-01T08:00:00+08:00'
-        assert 'replyDeliveryScope' not in observation['result'],'evidence labeling mutated the durable observation'
-        assert any(m['role']=='system' and '不能把自己曾声称做过的事当作事实' in message_text(m) for m in messages)
-        assert any(m['role']=='system' and DELIBERATION_GUIDANCE in message_text(m) for m in messages)
-        assert calls==[],'checking provenance sent an external message'
-        print('PIPELINE actual outer request distinguishes unverified model state and current-scope reply receipts from task execution passed')
-
-        # Request history is disposable transport. It cannot alter current
-        # memory or keep writing after cancellation / forgetting / lease loss.
-        from decision_context import restore_append
-        continuation=[]
-        async def decision_fixture(*args,**kwargs):
-            continuation.append((args,copy.deepcopy(kwargs)))
-            return {'status':'completed','text':'{"action":null}'}
-        brain.decision_histories.clear()
-        base={'mood':'happy','background':'stable actual input '*300}
-        with patch.object(brain,'invoke',decision_fixture):
-            await brain.invoke_decision('qq',data['work'],json.dumps(base),'current authority','planning')
-            current={**base,'mood':'calm'}
-            await brain.invoke_decision('qq',data['work'],json.dumps(current),'current authority','planning')
-            args,kwargs=continuation[-1]
-            assert any(m.get('role')=='assistant' and m.get('content')=='{"action":null}' for m in kwargs['contexts'])
-            assert restore_append(kwargs['contexts']+[{'role':'user','content':args[2]}])==current
-            assert 'current authority' in args[3] and data['work']['id']==args[1]['id']
-            await brain.invoke_decision('qq',data['work'],json.dumps(current),'changed current authority','planning')
-            args,kwargs=continuation[-1]
-            assert not any(m.get('role')=='assistant' for m in kwargs['contexts'])
-            assert restore_append(kwargs['contexts']+[{'role':'user','content':args[2]}])==current
-        async def canceled_fixture(*args,**kwargs):raise asyncio.CancelledError()
-        with patch.object(brain,'invoke',canceled_fixture):
-            try:await brain.invoke_decision('qq',data['work'],json.dumps(current),'changed current authority','planning')
-            except asyncio.CancelledError:pass
-            else:assert False,'cancellation swallowed'
-        assert brain.decision_histories[('qq','planning')].history==[]
-        brain.decision_histories.clear()
-        print('PIPELINE actual decision entrance preserves latest state, system authority, Work and cancellation ownership passed')
-
-
-        # Both layers read the same live compressed/pending memory, independent
-        # of the notification slot and contact-send cooldown.
-        settings['qq']['config']['behavior']['memory']=True
-        now=time.time();scope='private:12345678'
-        st.reflection.incoming(scope,'12345678','shared-pending','fresh shared conversation',now)
-        st.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated) VALUES(?,?,?,?)',(scope,'actual compressed conversation','["old-turn"]',now-60));st.db.commit()
-        before=brain.shared_context('qq');own=next(c for c in before['conversations'] if c['identity']['scope']==scope)
-        assert 'actual compressed conversation' in json.dumps(own) and 'fresh shared conversation' in json.dumps(own)
-        internal=brain.make_event('qq',w,scope,'','90000000')
-        inner=brain.prepare_context('qq',internal,scope,'')
-        assert inner['state']==own['state'] and inner['recent_cross_session_messages']==own['recent_cross_session_messages']
-        st.reflection.incoming(scope,'12345678','shared-newer','new without any outer notification',now)
-        research_requests.clear();await brain.think('qq',data)
-        contexts=[m.model_dump() if hasattr(m,'model_dump') else m for m in research_requests[-1]['contexts']]
-        current=restore_append([{'role':m['role'],'content':message_text(m)} for m in contexts])['environment']['sharedContext']
-        assert 'new without any outer notification' in json.dumps(current)
-        st.db.execute("DELETE FROM memory_pending WHERE event IN ('shared-pending','shared-newer')")
-        st.db.execute("UPDATE memory_summaries SET text='replacement compressed history' WHERE scope=?",(scope,));st.db.commit()
-        after=json.dumps(brain.shared_context('qq'))
-        assert 'replacement compressed history' in after and 'new without any outer notification' not in after and 'actual compressed conversation' not in after
-        p,w,other=setup('shared-isolated-member')
-        assert 'replacement compressed history' not in json.dumps(brain.shared_context('qq'))
-        assert calls==[],'shared context reading caused an external operation'
-        print('PIPELINE both layers share live summaries and pending conversation, no notification dependency, compaction replacement and member isolation passed')
-
+        # The durable experience ledger stays per member: install() feeds it,
+        # and each scope only ever sees its own sourced records.
+        p,w,other=setup('shared-isolated-member');settings['qq']['config']['behavior']['memory']=True
         history={'sampledAt':int(time.time()*1000),'decisions':[{'cycleId':'real-cycle','at':None,'reason':'historical time unknown','action':None,'wait':{'kind':'time','seconds':600}}],
                  'actions':[{'id':'self-search','kind':'research','target':'','sourceScope':None,'objective':'public research','status':'blocked','toolResults':[{'tool':'bilibili_search','status':'unavailable'}],'effects':[]},
                             {'id':'other-private','kind':'research','target':'','sourceScope':'private:23456789','objective':'confidential other request','status':'completed'}]}
@@ -497,26 +335,17 @@ async def main():
         assert experience_context(other,'private:12345678',settings['qq']['config']['behavior'])['actions'][0]['id']=='self-search'
         print('PIPELINE shared actual decisions/failures restore from policy, local receipts are immediate, private origins stay isolated, history does not cancel work passed')
 
-        from autonomous_runtime import json_object
-        mode='orientation';research_requests.clear();p,w,st=setup('orientation')
-        result=await brain.handle('qq','think',{'phase':'orientation','work':w,'decisionSchema':{'type':'object'},'goals':[],'autonomousActivity':{'regulation':{'fatigue':0,'initiativePressure':0.95}}})
-        assert result['status']=='completed' and result['decision']['disposition']=='engage' and result['usage']['modelCalls']==1
-        messages=[m.model_dump() if hasattr(m,'model_dump') else m for m in research_requests[-1]['contexts']]
-        payload=restore_append([{'role':m['role'],'content':message_text(m)} for m in messages])
-        assert payload['autonomousActivity']['regulation']['initiativePressure']==0.95
-        assert 'priorModelState' not in payload and 'summary' not in payload
-        assert all(k not in payload['environment'] for k in ('contexts','observedConversations','selfExperiences','foregroundFeedback'))
-        assert payload['environment']['clock']['timezone']=='UTC+08:00'
-        assert any(m['role']=='system' and DELIBERATION_GUIDANCE in message_text(m) for m in messages)
-        assert calls==[],'intention formation dispatched QQ or a tool'
-        print('PIPELINE model intention formation receives recovery state, no old sleep summary or chat memory and sends nothing passed')
-
         mode='normal';research_requests.clear()
         p,w,st=setup('foreground-handoff');extras={}
+        assert not brain.owns('qq'),'autonomous ownership must not suppress the legacy proactive sweep in any mode'
+        try:await brain.handle('qq','think',{'work':w})
+        except ValueError:pass
+        else:raise AssertionError('the outer planning think operation must be gone')
         incoming=NS(get_group_id=lambda:'',get_sender_id=lambda:'23456789',get_self_id=lambda:'90000000',get_extra=lambda key,default=None:extras.get(key,default),set_extra=lambda key,value:extras.__setitem__(key,value),message_obj=NS(message_id='handoff-event',timestamp=time.time()))
         incoming_work=st.pipeline.bind(incoming,settings['qq']);brain.observe('qq',incoming,True)
         propose=next(t for t in brain.foreground_tools('qq',incoming,lambda:True) if t.name=='propose_background_task')
-        assert 'pending表示等待后台审核' in brain.foreground_prompt('qq',incoming)
+        assert 'pending表示等待后台登记确认' in brain.foreground_prompt('qq',incoming)
+        assert '外层' not in brain.foreground_prompt('qq',incoming),'stale outer-layer wording must not return'
         brain.completed('qq',incoming,incoming_work)
         assert brain.events['qq']['result']['taskHandoff'] is None,'ordinary promise masqueraded as registered work'
         submitted=json.loads(await propose.call(None,'read my real state later',delay_seconds=300))
@@ -544,15 +373,15 @@ async def main():
         p={**p,'cycleId':str(uuid.uuid4()),'actionId':str(uuid.uuid4()),'until':time.time()*1000+14000};brain.install('qq',p)
         w={**w,'id':p['actionId'],'cycleId':p['cycleId'],'feedbackVersion':brain.snapshot('qq')['feedbackVersion'],'expiresAt':time.time()*1000+30000}
         assert brain.candidates('qq')==[]
-        assert brain.requested_contacts('qq',[{'id':submitted['requestId'],'status':'active','source':source}])[0]['replyGoalId']==submitted['requestId']
-        assert brain.requested_contacts('qq',[{'id':submitted['requestId'],'status':'completed','source':source}])==[]
+        granted=st.pipeline.request_reply(p,submitted['requestId'],source)
+        assert granted and granted['scope']=='private:23456789','accepted handoff lost its scoped reply permit'
         forged={**source,'senderId':'12345678'}
         assert st.pipeline.request_reply(w,submitted['requestId'],forged,w['id']) is None
         data={'work':w,'action':{'kind':'message','goalId':submitted['requestId'],'target':'private:23456789','objective':'deliver the actual requested result','requestSource':source}}
         reply=await brain.handle('qq','execute',data)
         assert reply['status']=='completed' and len(calls)==2,reply
         assert all(c[1]['user_id']==23456789 for c in calls)
-        assert brain.requested_contacts('qq',[{'id':submitted['requestId'],'status':'active','source':source}])==[]
+        assert st.pipeline.request_reply(p,submitted['requestId'],source) is None,'consumed reply permission still queries as grantable'
         assert (await brain.handle('qq','execute',data))['effects']==reply['effects'] and len(calls)==2
         p={**p,'actionId':str(uuid.uuid4()),'until':time.time()*1000+14000};brain.install('qq',p)
         repeated=await brain.handle('qq','execute',{**data,'work':{**w,'id':p['actionId']}})

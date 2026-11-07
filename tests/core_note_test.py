@@ -64,9 +64,11 @@ class CoreNoteTests(unittest.IsolatedAsyncioTestCase):
   self.ref.maybe_start(self.scope,cfg,NS(text_chat=chat),lambda:True,metrics,self.var);await self.drain()
   self.assertEqual(len(calls),1);self.assertEqual(metrics['coreNoteUpdates'],1);self.assertEqual(self.ref.core_note()['text'],'12345678希望称呼小林');self.assertEqual(cfg['_persona'],'固定角色不变')
  async def test_big_compression_can_update_same_region(self):
+  # Same-scope smalls form a legal merge group; cross-scope smalls are never
+  # merged together, so the fixture keeps one audience.
   ids=[]
-  for scope in [self.scope,'group:55555','group:66666']:
-   ident=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated) VALUES(?,?,?,?)',(scope,'长期背景','["event"]',time.time())).lastrowid;ids.append(ident);self.db.execute("INSERT INTO memory_summary_levels VALUES(?,'small')",(ident,));self.db.execute('INSERT INTO memory_summary_origins VALUES(?,?)',(ident,scope))
+  for index in range(3):
+   ident=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated) VALUES(?,?,?,?)',(self.scope,'长期背景','["event"]',time.time()+index)).lastrowid;ids.append(ident);self.db.execute("INSERT INTO memory_summary_levels VALUES(?,'small')",(ident,));self.db.execute('INSERT INTO memory_summary_origins VALUES(?,?)',(ident,self.scope))
   self.db.commit();calls=[]
   async def chat(**kw):calls.append(kw);return NS(completion_text=json.dumps({'summary':'合并后的大摘要','core_note':{'text':'一段核心背景','summaries':ids}}))
   self.ref.maybe_start(self.scope,{'memory':True,'memorySummary':True},NS(text_chat=chat),lambda:True,{},self.var);await self.drain()

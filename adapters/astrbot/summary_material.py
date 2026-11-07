@@ -232,8 +232,14 @@ def valid_claim(claim):
 
 
 def protected_claim(claim):
-    """The protected set: corrections/retractions, agreements, open topics."""
-    return bool(claim.get('protected')) or claim.get('kind')=='correction' or claim.get('status') in ('open','retracted') or any(w in str(claim.get('text','')) for w in PROTECTED_PATTERNS)
+    """The protected set: corrections/retractions, open agreements and topics.
+
+    Protection is a recorded judgment (flag/kind/status) carried by value, not
+    a fresh keyword scan: chatter that merely mentions 约定/承诺 is ordinary
+    material, while every stored v2 claim that deserved protection keeps its
+    explicit flag.
+    """
+    return bool(claim.get('protected')) or claim.get('kind')=='correction' or claim.get('status') in ('open','retracted')
 
 
 def claim_ref(scope,event,role,signature=''):
@@ -304,6 +310,29 @@ def derive_claims(scope,payload,materials,corrections,data=None):
                     'sourceRefs':[claim_ref(scope,row['event'],role,(stored.get(str(row['event'])) or {}).get('digest',''))],
                     'occurredAt':row.get('at'),'status':'open','visibility':scope,'protected':True})
                 break
+    # Model-declared agreements from the same summary request: the quote must
+    # be verbatim in the declared speaker's own text, so attribution and
+    # evidence stay deterministic. Only open stages stay protected; executed
+    # or canceled ones are history and age out naturally.
+    stages={'proposed':'open','accepted':'open','unknown':'open','executed':'done','canceled':'canceled'}
+    commitments=(data or {}).get('commitments') if isinstance(data,dict) else None
+    for item in commitments if isinstance(commitments,list) else []:
+        if not isinstance(item,dict):continue
+        topic,quote=item.get('topic'),item.get('quote');stage=item.get('stage')
+        if not isinstance(topic,str) or not 2<=len(topic)<=50 or not isinstance(quote,str) or not 2<=len(quote.strip()):continue
+        if stage not in stages:continue
+        role='user' if item.get('who')=='user' else 'bot' if item.get('who')=='bot' else None
+        if role is None:continue
+        row=rows.get(str(item.get('event','')))
+        if not row or quote not in str(row.get(role,'') or ''):continue
+        status=stages[stage]
+        claim={'id':claim_identity(scope,row['event'],'agreement',quote),'text':quote.strip()[:PROTECTED_CLAIM_TEXT],
+            'kind':'agreement','speaker':{'role':'human' if role=='user' else 'bot','id':str(row.get('sender_id','')) if role=='user' else ''},
+            'about':topic,'sourceRefs':[claim_ref(scope,row['event'],role,(stored.get(str(row['event'])) or {}).get('digest',''))],
+            'occurredAt':row.get('at'),'status':status,'visibility':scope}
+        if status=='open':claim['protected']=True
+        else:claim['text']=claim['text'][:CLAIM_TEXT]
+        claims.append(claim)
     return claims
 
 

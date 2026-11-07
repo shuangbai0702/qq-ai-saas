@@ -124,23 +124,31 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         for scope in scopes:
             identifier=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated) VALUES(?,?,?,?)',(scope,'来源'+scope,'[]',time.time())).lastrowid
             self.db.execute("INSERT INTO memory_summary_levels VALUES(?,'small')",(identifier,))
+        # Cross-scope smalls are never merged together; two legacy bigs with
+        # identical origins may merge with each other instead.
+        peers=[]
+        for text in ('旧全局合并A','旧全局合并B'):
+            identifier=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated,schema_version) VALUES(?,?,?,?,2)',('self',text,'[]',time.time())).lastrowid
+            for origin in scopes:self.db.execute('INSERT INTO memory_summary_origins VALUES(?,?)',(identifier,origin))
+            self.db.execute("INSERT INTO memory_summary_levels VALUES(?,'big')",(identifier,));peers.append(identifier)
         self.db.commit();prompts=[]
         async def chat(**kw):prompts.append(json.loads(kw['prompt']));return NS(completion_text='同一个机器人跨会话的持续背景')
         self.store.reflection.maybe_start(scopes[0],{'memorySummary':True},NS(text_chat=chat),lambda:True,{},self.var)
         await self.drain()
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],4)
         # D2: the merged background keeps every origin, but a multi-origin
         # merge is bot-shared material shown in self, not re-injected into
         # each conversation's request (the audited id=52 cross-scope leak).
-        for scope in scopes+['group:77777']:
-            self.assertEqual(self.store.reflection.rolling(scope),[])
+        for scope in scopes:
+            self.assertEqual([r['id'] for r in self.store.reflection.rolling(scope)],[self.db.execute('SELECT id FROM memory_summaries WHERE scope=?',(scope,)).fetchone()[0]])
+        self.assertEqual(self.store.reflection.rolling('group:77777'),[])
         shared=self.store.reflection.rolling('self')
         self.assertEqual(len(shared),1);self.assertEqual(set(shared[0]['source_scopes']),set(scopes))
         self.assertEqual({s for item in prompts[0]['summaries'] for s in item['source_scopes']},set(scopes))
         from memory_reflection import invalidate
         invalidate(self.db,scopes[1]);self.db.commit()
-        self.assertEqual(self.store.reflection.rolling(scopes[0]),[])
         self.assertEqual(self.store.reflection.rolling('self'),[])
+        self.assertEqual([r['id'] for r in self.store.reflection.rolling(scopes[0])],[self.db.execute('SELECT id FROM memory_summaries WHERE scope=?',(scopes[0],)).fetchone()[0]])
     def test_interest_relevance_decay_and_repetition(self):
         now=time.time();cfg={'behavior':{'selfDevelopment':True}}
         for i in range(3):companion_state.note_interest(self.db,self.scope,'红茶',now+i*DAY,'event'+str(i),'conversation_heat')

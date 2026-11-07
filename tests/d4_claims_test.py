@@ -146,9 +146,9 @@ class ClaimTests(unittest.IsolatedAsyncioTestCase):
     async def test_dropped_protected_claim_holds_its_round_and_material(self):
         self.rounds(special={7:('我们约定周末一起去平江路','好的')})
         metrics={}
-        async def chat(**kw):return NS(completion_text=json.dumps({'summary':'普通背景'}))
+        async def chat(**kw):return NS(completion_text=json.dumps({'summary':'普通背景','commitments':[{'event':'7','topic':'周末平江路','quote':'我们约定周末一起去平江路','who':'user','stage':'accepted'}]}))
         with patch.object(material,'MAX_CLAIMS_BYTES',2):
-            self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=chat),lambda:True,metrics,self.var)
+            self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':True},NS(text_chat=chat),lambda:True,metrics,self.var)
             await self.drain()
         self.assertEqual(metrics.get('summaryReleaseHolds'),1)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],1,'exactly the held round stays')
@@ -194,7 +194,10 @@ class ClaimTests(unittest.IsolatedAsyncioTestCase):
         batch=material.derive_claims(SCOPE,[{'event':'e1','sender_id':PERSON,'user':'我们约定明天爬山','bot':'好','at':1.0}],{},found)
         self.assertEqual(batch[0]['kind'],'correction');self.assertEqual(batch[0]['speaker']['id'],PERSON)
         agreement=material.derive_claims(SCOPE,[{'event':'e4','sender_id':PERSON,'user':'我们约定明天爬山','bot':'好','at':1.0}],{},[])
-        self.assertEqual((agreement[0]['kind'],agreement[0]['protected']),('agreement',True))
+        self.assertEqual(agreement[0]['kind'],'agreement');self.assertNotIn('protected',agreement[0],'a keyword mention is not a protection judgment')
+        staged=material.derive_claims(SCOPE,[{'event':'e4','sender_id':PERSON,'user':'我们约定明天爬山','bot':'好','at':1.0}],{},[],{'commitments':[{'event':'e4','topic':'明天爬山','quote':'我们约定明天爬山','who':'user','stage':'accepted'}]})
+        hit=[claim for claim in staged if claim.get('protected')]
+        self.assertEqual(len(hit),1);self.assertEqual(hit[0]['status'],'open');self.assertEqual(hit[0]['about'],'明天爬山')
         plain=material.derive_claims(SCOPE,[{'event':'e5','sender_id':PERSON,'user':'今天天气不错','bot':'嗯','at':1.0}],{},[])
         self.assertEqual((plain[0]['kind'],plain[1]['kind']),('human_statement','bot_statement'))
         self.assertNotIn('protected',plain[0])

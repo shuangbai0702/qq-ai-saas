@@ -21,7 +21,9 @@ class Plugins(unittest.IsolatedAsyncioTestCase):
   async def chat(**kw):calls.append(kw);return NS(completion_text='11111说今天喝了红茶。')
   metrics={};self.s.reflection.maybe_start('group:12345',{'memorySummary':True,'summaryRounds':30},NS(text_chat=chat),lambda:True,metrics,self.var);await self.s.reflection.task
   self.assertEqual(len(calls),1);self.assertEqual(calls[0]['contexts'],[]);self.assertIsNone(calls[0]['func_tool']);self.assertEqual(metrics['summariesSaved'],1)
-  self.assertIn('红茶',self.s.reflection.recall('group:12345','喝茶')[0]['summary']);self.assertEqual(self.s.reflection.recall('group:54321','喝茶')[0]['source_scope'],'group:12345')
+  self.assertIn('红茶',self.s.reflection.recall('group:12345','喝茶')[0]['summary'])
+  # D2 audience contract: another group without participation proof receives nothing.
+  self.assertEqual(self.s.reflection.recall('group:54321','喝茶'),[])
   self.s.close();self.s=BehaviorStore(Path(self.tmp.name)/'memory.db');self.assertEqual(len(self.s.reflection.recall('group:12345','之前')),1)
  async def test_stale_summary_and_deleted_source_never_commit(self):
   for reason in ['config','forget','close']:
@@ -49,10 +51,10 @@ class Plugins(unittest.IsolatedAsyncioTestCase):
   async def signature(**kw):calls.append(('signature',kw))
   async def publish(**kw):calls.append(('publish',kw))
   ev=self.event();ev.bot=NS(get_login_info=login,set_self_longnick=signature,send_qzone_msg=publish)
-  result=await qq_actions.execute(ev,cfg,self.s.db,'signature','摸鱼',lambda:True);self.assertIn('成功',result);self.assertEqual(calls,[('signature',{'longNick':'摸鱼'})])
+  result=await qq_actions.execute(ev,cfg,self.s.db,'signature','摸鱼',lambda:True);self.assertIn('确认',result);self.assertEqual(calls,[('signature',{'longNick':'摸鱼'})])
   await qq_actions.execute(ev,cfg,self.s.db,'signature','重复',lambda:True);self.assertEqual(len(calls),1)
   ev=self.event(text='帮我发条说说：今天开心',id='post1');ev.bot=NS(get_login_info=login,send_qzone_msg=publish)
-  self.assertIn('成功',await qq_actions.execute(ev,cfg,self.s.db,'publish','今天开心',lambda:True));self.assertEqual(calls[-1],('publish',{'content':'今天开心','ugc_right':64}))
+  self.assertIn('确认',await qq_actions.execute(ev,cfg,self.s.db,'publish','今天开心',lambda:True));self.assertEqual(calls[-1],('publish',{'content':'今天开心','ugc_right':64}))
   ev=self.event(text='把昵称改成小鱼',id='nick');self.assertEqual(qq_actions.allowed(ev,cfg),{'nickname','signature','view','publish'})
  async def test_qzone_common_request_and_only_current_author_grants_tools(self):
   from astrbot.core.message.components import Plain,At,Reply
