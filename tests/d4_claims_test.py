@@ -194,7 +194,7 @@ class ClaimTests(unittest.IsolatedAsyncioTestCase):
         batch=material.derive_claims(SCOPE,[{'event':'e1','sender_id':PERSON,'user':'我们约定明天爬山','bot':'好','at':1.0}],{},found)
         self.assertEqual(batch[0]['kind'],'correction');self.assertEqual(batch[0]['speaker']['id'],PERSON)
         agreement=material.derive_claims(SCOPE,[{'event':'e4','sender_id':PERSON,'user':'我们约定明天爬山','bot':'好','at':1.0}],{},[])
-        self.assertEqual(agreement[0]['kind'],'agreement');self.assertNotIn('protected',agreement[0],'a keyword mention is not a protection judgment')
+        self.assertEqual(agreement[0]['kind'],'human_statement');self.assertNotIn('protected',agreement[0],'a keyword mention is not a protection judgment')
         staged=material.derive_claims(SCOPE,[{'event':'e4','sender_id':PERSON,'user':'我们约定明天爬山','bot':'好','at':1.0}],{},[],{'commitments':[{'event':'e4','topic':'明天爬山','quote':'我们约定明天爬山','who':'user','stage':'accepted'}]})
         hit=[claim for claim in staged if claim.get('protected')]
         self.assertEqual(len(hit),1);self.assertEqual(hit[0]['status'],'open');self.assertEqual(hit[0]['about'],'明天爬山')

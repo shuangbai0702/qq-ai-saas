@@ -68,6 +68,17 @@ def conversation_context(store,cfg,scope,subject,query,now,state=None):
             'ambient_group_messages':[item for item in ambient if (item['sender_id'],item['text']) not in observed]}
 
 
+def finish_memory_view(store,shared,cfg,scope,query):
+    """Same rolling, matched evidence and budget for foreground and Work."""
+    if not cfg.get('memory',True) or not cfg.get('memorySummary',True):return
+    rolling=store.reflection.rolling(scope,owner=str(cfg.get('ownerUin') or ''))
+    local_ids={item['id'] for item in rolling}
+    state=shared['state']
+    state['conversation_summaries']=[item for item in state.get('conversation_summaries',[]) if item['id'] not in local_ids]+rolling
+    from summary_material import bound_claim_views
+    bound_claim_views([shared.get('persona_core_note')]+state['conversation_summaries'],query=query)
+
+
 def protocol_experience(store,scope,query='',limit=6):
     """Read existing QQ receipts, including passive tools; never assistant prose."""
     db=store.db;tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -249,7 +260,9 @@ class BotPipeline:
             at=int(time.time()*1000)
             value={**identity,'id':id,'eventId':work.event_id,'scope':work.scope,'senderId':work.subject,'at':at,**request}
             self.db.execute("INSERT INTO pipeline_handoffs VALUES(?,?,?,'pending',NULL,?)",(id,identity['epoch'],json.dumps(value,ensure_ascii=False),at/1000))
-            self.db.execute("DELETE FROM pipeline_handoffs WHERE state<>'pending' AND at<?",(time.time()-86400,))
+            # Accepted tasks may be scheduled seven days ahead. Retain their
+            # source through the due time plus the seven-day execution window.
+            self.db.execute("DELETE FROM pipeline_handoffs WHERE state<>'pending' AND at<?",(time.time()-14*86400,))
         return {'requestId':id,'state':'pending','receipt':None}
 
     def pending_handoffs(self,epoch):
@@ -273,13 +286,17 @@ class BotPipeline:
         if not isinstance(source,dict) or source.get('handoffId')!=goal_id:return None
         with self.db:
             row=self.db.execute("SELECT epoch,data,receipt FROM pipeline_handoffs WHERE id=? AND state='accepted'",(goal_id,)).fetchone()
-            if not row or row[0]!=identity.get('epoch'):return None
+            if not row:return None
             data=json.loads(row[1]);receipt=json.loads(row[2] or '{}')
             if receipt.get('goalId')!=goal_id:return None
-            if any(data.get(k)!=identity.get(k) for k in ('tenantId','botId','generation','revision','epoch')):return None
+            # A fresh authenticated Work grants CURRENT authority. Mode/goal
+            # edits advance epoch but do not revoke an accepted durable request;
+            # tenant, bot and QQ/config generations still cannot be crossed.
+            if any(data.get(k)!=identity.get(k) for k in ('tenantId','botId','generation','revision')):return None
             if any(data.get(k)!=source.get(k) for k in ('eventId','scope','senderId')):return None
             now=time.time()*1000
-            if not data['at']+data['delaySeconds']*1000<=now<=data['at']+604800000:return None
+            due=data['at']+data['delaySeconds']*1000
+            if not due<=now<=due+604800000:return None
             previous=receipt.get('replyActionId')
             if previous and previous!=action_id:
                 result=self.internal_result(previous)

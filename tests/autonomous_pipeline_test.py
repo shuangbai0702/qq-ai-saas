@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace as NS
 from unittest.mock import patch
 from contextlib import closing
-ROOT=Path(__file__).resolve().parents[1];sys.path[:0]=[str(ROOT/'references/astrbot'),str(ROOT/'adapters/astrbot')]
+ROOT=Path(os.environ.get('FISHBOT_REVIEW_BASE',Path(__file__).resolve().parents[1]));sys.path[:0]=[str(ROOT/'references/astrbot'),str(ROOT/'adapters/astrbot')]
 TEMP=tempfile.TemporaryDirectory();os.environ['ASTRBOT_ROOT']=TEMP.name
 import runtime_bootstrap
 runtime_bootstrap.initialize_runtime_bootstrap()
@@ -28,6 +28,10 @@ async def main():
     class Provider:
         provider_config={'id':'fixture','max_context_tokens':0}
         async def text_chat(self,**kwargs):
+            if mode in ('group_tool','group_tool_unknown'):
+                message_requests.append(kwargs)
+                if len(message_requests)==1:return LLMResponse(role='assistant',tools_call_name=['hosted_qq_group_send'],tools_call_args=[{'group_id':'34567890','text':'真实工具消息'}],tools_call_ids=['group-send'],usage=TokenUsage(input_other=50,output=10))
+                return LLMResponse(role='assistant',completion_text='群里已经发了，这是内部执行说明。',usage=TokenUsage(input_other=50,output=10))
             if mode in ('favorite','favorite_cooled'):
                 message_requests.append(kwargs)
                 if len(message_requests)==1:
@@ -71,6 +75,8 @@ async def main():
     async def protocol(action,**params):
         calls.append((action,params))
         if action=='get_msg':return {'message_id':params['message_id'],'sender':{'user_id':12345678}}
+        if action=='get_group_list':return [{'group_id':34567890,'group_name':'fixture'}]
+        if mode=='group_tool_unknown' and action=='send_group_msg':return {}
         if action=='fetch_custom_face_detail':return [{'md5':favorite_md5,'resId':'fixture-favorite','url':'https://qpic.cn/fixture.gif'}]
         if action=='get_login_info':return {'user_id':90000001 if mode=='self_signature_changed' and len(calls)>1 else 90000000}
         if mode in ('late','member_late','member_unknown_late') or mode=='member_second_late' and len(calls)==2:barrier.set();await release.wait()
@@ -163,6 +169,23 @@ async def main():
         brain.observe('qq',ambient,False);assert 'qq' not in brain.events and brain.candidates('qq')==[]
         print('PIPELINE active/passive shared whitelist, service intersection, disabled gate and 600-second wake policy passed')
 
+        for mode in ('group_tool','group_tool_unknown'):
+            p,w,st=setup(mode);calls.clear();message_requests.clear()
+            settings['qq']['config']['behavior'].update(groupParticipationEnabled=True,groupParticipationGroups=['34567890'])
+            p['config']['capabilities']=['participate_group'];w['capabilities']=['participate_group']
+            st.db.execute("INSERT INTO contacts(scope,subject,self_id,last_user,last_text) VALUES('group:34567890','23456789','90000000',?,'actual group context')",(time.time()-7200,));st.db.commit()
+            data={'work':w,'action':{'kind':'message','target':'group:34567890','objective':'send the requested group message'}}
+            result=await brain.execute('qq',data)
+            sent=[params for method,params in calls if method=='send_group_msg']
+            assert len(sent)==1,(result,calls)
+            assert sent[0]['message']==[{'type':'text','data':{'text':'真实工具消息'}}],sent
+            assert result['response']=='','internal final narration was recorded as a delivered reply'
+            assert result['status']==('completed' if mode=='group_tool' else 'unknown'),result
+            assert len(result['effects'])==1,result
+            count=len(calls);await brain.execute('qq',data);assert len(calls)==count,'replay repeated a tool or final send'
+        print('PIPELINE actual group tool confirmed/unknown owns same-target output; no final narration or replay delivery passed')
+        mode='normal'
+
         for mode,kind,method in [('self_signature','profile_signature','set_self_longnick'),('self_publish','qzone_publish','send_qzone_msg')]:
             p,w,st=setup(mode);settings['qq']['expectedUin']='';settings['qq']['config']['behavior'].update(qqProfile=True,autoSignature=True,qzone=True)
             calls.clear();message_requests.clear()
@@ -209,6 +232,9 @@ async def main():
 
         p,w,st=setup('actual-tool-catalog')
         initial=brain.snapshot('qq')
+        with patch.object(brain,'candidates',side_effect=AssertionError('ledger poll built retired planner context')):
+            ledger=await brain.handle('qq','snapshot',{'ledgerOnly':True})
+            assert set(ledger)=={'pendingHandoffs','foregroundFeedback','event','nextEventCheckSeconds'}
         assert 'bilibili_search' not in initial['availableTools']
         assert next(t for t in initial['innerTools'] if t['name']=='bilibili_search')['code']=='feature_disabled'
         p['config']['capabilities']=['research','contact_owner','profile_signature','qzone_publish'];w['capabilities']=list(p['config']['capabilities'])

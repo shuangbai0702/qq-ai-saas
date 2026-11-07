@@ -63,7 +63,10 @@ export function registerAutonomous(app:FastifyInstance,db:Sql,owned:(req:any,id:
    await tx.query('UPDATE autonomy_settings SET epoch=epoch+1,goal_revision=goal_revision+1,lease_owner=NULL,lease_until=NULL,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2',[bot.id,bot.tenant_id]);
    await tx.query("UPDATE autonomy_actions SET status='canceled',finished_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND status='planned'",[bot.id,bot.tenant_id]);
    await tx.query('DELETE FROM autonomy_wakes WHERE bot_id=$1 AND tenant_id=$2',[bot.id,bot.tenant_id]);
-   if(s.config.mode==='active')await repo.wake(bot.tenant_id,bot.id,s.epoch+1,'goal-edited',0,'',tx);
+   if(s.config.mode==='active'){
+    await repo.rearmHandoffs(bot.tenant_id,bot.id,s.epoch+1,tx);
+    await repo.wake(bot.tenant_id,bot.id,s.epoch+1,'goal-edited',0,'',tx);
+   }
    return{ok:true,pendingRuntime:true};
   });
  });

@@ -95,9 +95,9 @@ class P0HoldMergeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material WHERE event=?',('0',)).fetchone()[0],0)
         self.assertIn('0',material.coverage(self.db,SCOPE))
         advanced=self.db.execute('SELECT summary_watermark FROM memory_reflection_progress WHERE scope=?',(SCOPE,)).fetchone()[0]
-        self.assertEqual(advanced,top-1,'the watermark stays a forward scan position over new rounds')
+        self.assertEqual(advanced,top,'35 new rounds are consumed in addition to the held evidence')
         self.assertGreater(advanced,watermark)
-        self.assertEqual({r[0] for r in self.db.execute('SELECT event FROM memory_rounds')},{'69'})
+        self.assertEqual({r[0] for r in self.db.execute('SELECT event FROM memory_rounds')},set())
         permit=self.db.execute('SELECT state,summary_id FROM memory_reconstruction_checkpoints WHERE scope=?',(SCOPE,)).fetchone()
         self.assertIsNotNone(permit);self.assertEqual(permit[0],'available')
         self.assertIsNotNone(self.store.reflection.reserve_context_reconstruction(SCOPE,'p0-after-hold',[permit[1]]))

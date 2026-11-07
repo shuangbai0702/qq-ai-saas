@@ -95,6 +95,17 @@ async def read_context(event,cfg,db,group,current):
     except Exception:return '未读取：群或成员核实未通过，或协议超时；请确认具体群。'
 
 
+def attempt_key(event):
+    return str(event.get_group_id() or 'private')+':'+str(event.get_sender_id())+':'+str(getattr(event.message_obj,'message_id','') or '')
+
+
+def owns_reply(db,event,scope):
+    """An attempted tool delivery owns only its exact destination, including
+    uncertain ACKs. A provable pre-dispatch rejection leaves the reply free."""
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='group_message_attempts'").fetchone():return False
+    return bool(db.execute("SELECT 1 FROM group_message_attempts WHERE event=? AND scope=? AND state IN ('attempted','confirmed','unknown')",(attempt_key(event),scope)).fetchone())
+
+
 async def send(event,cfg,db,group,text,mention,current,on_sent,include_prepared_image=False,social=None,review=None):
     if not current() or not (owner_request(event,cfg) or service(event) and group in read_groups(event,cfg)):return '拒绝：当前工作没有该群的发送授权。'
     if service(event):
@@ -107,10 +118,9 @@ async def send(event,cfg,db,group,text,mention,current,on_sent,include_prepared_
     if (not text and not prepared) or mention and (not re.fullmatch(r'\d{5,20}',mention) or mention==str(event.get_self_id())):return '未发送：消息或艾特对象无效。'
     source_id=getattr(event.message_obj,'message_id',None)
     if isinstance(source_id,bool) or not isinstance(source_id,(int,str)) or not str(source_id).strip():return '未发送：缺少真实请求消息编号。'
-    event_id=str(source_id)
     # Private and group OneBot message IDs can collide; bind the author and
     # source session too, without ever accepting a caller-supplied bot/session.
-    key=str(event.get_group_id() or 'private')+':'+str(event.get_sender_id())+':'+event_id
+    key=attempt_key(event)
     initialize(db)
     if db.execute('SELECT 1 FROM group_message_attempts WHERE event=?',(key,)).fetchone():return '该请求已尝试群发信，不会重复发送；请以原回执为准。'
     try:

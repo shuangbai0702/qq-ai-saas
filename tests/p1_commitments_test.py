@@ -132,6 +132,9 @@ class BigMergeEvidenceTests(unittest.IsolatedAsyncioTestCase):
         evidence={item['id']:item for item in prompt.get('protected_evidence',[])}
         self.assertIn(open_claim['id'],evidence)
         self.assertEqual(evidence[open_claim['id']]['status'],'open')
+        self.assertEqual(evidence[open_claim['id']]['speaker'],{'role':'human','id':PERSON})
+        self.assertEqual(evidence[open_claim['id']]['sourceRefs'][0],{'scope':SCOPE,'event':'e1','role':'user'})
+        self.assertLessEqual(len(json.dumps(prompt['protected_evidence'],ensure_ascii=False,separators=(',',':'))),8000)
         self.assertIn(correction['id'],evidence)
         self.assertIn('protected_evidence',self.calls[0]['system_prompt'])
         merged=self.db.execute('SELECT scope,kind FROM memory_summaries s JOIN memory_summary_levels l ON l.id=s.id').fetchall()

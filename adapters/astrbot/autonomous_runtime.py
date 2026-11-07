@@ -248,8 +248,13 @@ class AutonomousRuntime:
             result.append({'scope':scope,'senderId':subject,'owner':bool(owner and subject==owner),'lastUserAt':int(user*1000),'lastInput':text[:180],'lastReplyAt':int(bot*1000) if bot else None,'lastReply':output[:400] if bot>=user else None,'outcome':outcome})
         return result
 
-    def snapshot(self,id):
-        s=self.settings[id];st=self.store(id,s);now=time.time();candidates=self.candidates(id)
+    def snapshot(self,id,ledger_only=False):
+        s=self.settings[id];st=self.store(id,s);now=time.time()
+        if ledger_only:
+            return {'pendingHandoffs':st.pipeline.pending_handoffs(self.policies[id]['epoch']),
+                    'foregroundFeedback':self.feedbacks.get(id),'event':self.events.get(id),
+                    'nextEventCheckSeconds':self.policies[id]['config'].get('minSleepSeconds',600)}
+        candidates=self.candidates(id)
         # The supervisor sees private context, but the eventual task receives
         # only its destination-scoped context. Group output never inherits a
         # different person's private facts as a second injected memory.
@@ -520,7 +525,7 @@ class AutonomousRuntime:
             effects=st.pipeline.internal_result(identity['id'])['effects']
             status='partial' if any(e['status']=='confirmed' for e in effects) else 'unknown' if effects else 'canceled'
             feedback={'status':status,'summary':'成员已卸载；原动作回执已保留，未派发部分已撤销。','stopReason':'member_unloaded','effects':effects,'evidence':result['evidence'],'unfinished':['核对原任务剩余部分；不得重复已经确认的操作。'] if effects else [action['objective']],'usage':result['usage'],'contextScope':scope,'toolResults':result.get('toolResults',[]),'checkpoints':result.get('checkpoints',[])}
-            if kind=='message':feedback['response']=result['text'][:1600]
+            if kind=='message':feedback['response']='' if event.get_extra('_hosted_final_reply_suppressed') else result['text'][:1600]
             st.pipeline.finish_internal(work,feedback)
             return feedback
         effects=st.pipeline.internal_result(identity['id'])['effects']
@@ -551,7 +556,7 @@ class AutonomousRuntime:
             summary='已有'+str(len(effects))+'项对外操作获得协议确认；后续计算已停止（'+(failure or result['reason'])+'）。不得重复执行已确认操作。'
             unfinished=['核对已有回执并决定后续步骤；已确认的对外操作不可重复执行。']
         feedback={'status':status,'summary':summary,'stopReason':failure or result['reason'],'evidence':result['evidence'],'evidenceLimits':evidence_limits(result['evidence']),'effects':effects,'unfinished':unfinished,'usage':result['usage'],'contextScope':scope,'toolResults':result.get('toolResults',[]),'checkpoints':result.get('checkpoints',[])}
-        if kind=='message':feedback['response']=result['text'][:1600]
+        if kind=='message':feedback['response']='' if event.get_extra('_hosted_final_reply_suppressed') else result['text'][:1600]
         if kind=='research' and status=='completed' and feedback['evidence'] and (s['config'].get('behavior') or {}).get('memory',True) and st.reflection.epoch()==memory_epoch:
             # Reuse the existing bounded, source-attributed event memory. This
             # is a private self experience, never a human profile fact or a
@@ -568,7 +573,7 @@ class AutonomousRuntime:
 
     async def handle(self,id,operation,data):
         if operation=='policy':return self.install(id,data)
-        if operation=='snapshot':return self.snapshot(id)
+        if operation=='snapshot':return self.snapshot(id,ledger_only=data.get('ledgerOnly') is True)
         if operation=='handoff_ack':
             p=self.policies.get(id)
             if not p or p['lease'] is not self.settings.get(id) or data.get('epoch')!=p['epoch'] or not self.permit_current(p):raise ValueError('stale_handoff_ack')
