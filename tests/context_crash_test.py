@@ -1,5 +1,13 @@
-"""Real process death between permit consumption and durable wire commit."""
-import json,sqlite3,subprocess,sys,tempfile,unittest
+"""Real process death between license consumption and durable wire commit.
+
+The only legitimate license is a real 35-round checkpoint. A web-config save
+never rewrites a committed prefix (its proof is refused outright), so the
+crash window is exercised through the checkpoint reserve inside the same
+persist transaction: process death rolls the whole candidate back, the last
+valid snapshot survives, a consumed license never revives, and the next
+legal reserve still works.
+"""
+import json,sqlite3,subprocess,sys,tempfile,time,unittest
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/'references/astrbot'),str(ROOT/'adapters/astrbot')]
@@ -19,12 +27,12 @@ class ContextCrashTests(unittest.TestCase):
 sys.path[:0]=[sys.argv[1]+'/references/astrbot',sys.argv[1]+'/adapters/astrbot']
 from memory_reflection import Reflection
 from readonly_journal import ReadonlyJournal
-from system_contract import request_identity
 db=sqlite3.connect(sys.argv[2]);authority=Reflection(db);scope='private:12345678'
 journal=ReadonlyJournal(db,scope);base=journal.last.base.copy();base[0]={'role':'system','content':'new'}
 from context_protocol import READONLY_CURRENT,model_json
-base.append({'role':'user','content':READONLY_CURRENT+'\\n'+model_json({'state':{'facts':['retained fact']}})})
-candidate=journal.prepare(base,'two',reconstruction_authority=authority,reconstruction_scope=scope,reconstruction_web_proof={'permitId':'fixture-trusted-save','revision':2,'contextScope':scope})
+base.append({'role':'user','content':READONLY_CURRENT+'\\n'+model_json({'state':{'facts':['retained fact'],'recent_messages':[]}})})
+stamp=authority.reconstruction_stamp(scope)
+candidate=journal.prepare(base,'two',retirement=stamp,reconstruction_authority=authority,reconstruction_scope=scope)
 original=authority.settle_context_reconstruction
 def fault(permit,success,**kw):
  result=original(permit,success,**kw)
@@ -33,14 +41,41 @@ def fault(permit,success,**kw):
 authority.settle_context_reconstruction=fault
 journal.commit(candidate)
 '''
+                # The same fixture also proves the tightened web entry: with
+                # committed history, a web save can never authorize a rebuild.
+                refuse='''import sys,sqlite3,os
+sys.path[:0]=[sys.argv[1]+'/references/astrbot',sys.argv[1]+'/adapters/astrbot']
+from memory_reflection import Reflection
+from readonly_journal import ReadonlyJournal,ContextReconstructionDenied
+db=sqlite3.connect(sys.argv[2]);authority=Reflection(db);scope='private:12345678'
+journal=ReadonlyJournal(db,scope);base=journal.last.base.copy();base[0]={'role':'system','content':'newer'}
+from context_protocol import READONLY_CURRENT,model_json
+base.append({'role':'user','content':READONLY_CURRENT+'\\n'+model_json({'state':{'facts':['retained fact'],'recent_messages':[]}})})
+try:
+ journal.prepare(base,'web',retirement='minted-checkpoint-stamp',reconstruction_authority=authority,reconstruction_scope=scope,
+                 reconstruction_web_proof={'permitId':'fixture-trusted-save','revision':2,'contextScope':scope},reconstruction_context_scope=scope)
+ os._exit(0)
+except ContextReconstructionDenied:os._exit(73)
+'''
+                refused=subprocess.run([sys.executable,'-c',refuse,str(ROOT),str(path)],capture_output=True,text=True,timeout=30)
+                self.assertEqual(refused.returncode,73,refused.stderr)
+                self.assertEqual(db.execute('SELECT count(*) FROM memory_web_context_permits').fetchone()[0],0,'a web-config proof never reaches the permit table over committed history')
+                # The legitimate pre-crash state: one real completed summary
+                # and its available 35-round checkpoint for this scope.
+                summary_id=db.execute('INSERT INTO memory_summaries(scope,text,sources,updated,schema_version) VALUES(?,?,?,?,?)',(scope,'35轮真实完成摘要','[]',time.time(),2)).lastrowid
+                db.execute("INSERT INTO memory_summary_levels VALUES(?,'small')",(summary_id,))
+                db.execute('INSERT INTO memory_summary_origins VALUES(?,?)',(summary_id,scope))
+                db.execute("INSERT INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,created,summary_id) VALUES(?,1,35,0,'available',?,?)",(scope,time.time(),summary_id))
+                db.commit()
                 result=subprocess.run([sys.executable,'-c',program,str(ROOT),str(path)],capture_output=True,text=True,timeout=30)
                 self.assertEqual(result.returncode,73,result.stderr)
-                restored=ReadonlyJournal(db,scope);self.assertEqual(restored.last.wire,first.wire)
-                self.assertEqual(db.execute('SELECT state FROM memory_web_context_permits').fetchone()[0],'reserved')
+                restored=ReadonlyJournal(db,scope);self.assertEqual(restored.last.wire,first.wire,'the last valid snapshot survives process death')
+                self.assertEqual(db.execute('SELECT state FROM memory_reconstruction_checkpoints').fetchone()[0],'reserved','the reserve committed; the in-transaction consumption rolled back, leaving an owner the next reserve reclaims')
                 incoming=[{'role':'system','content':'new'},base[1]]
-                candidate=restored.prepare(incoming,'retry',reconstruction_authority=store.reflection,reconstruction_scope=scope,reconstruction_web_proof={'permitId':'fixture-trusted-save','revision':2,'contextScope':scope})
+                stamp=store.reflection.reconstruction_stamp(scope)
+                candidate=restored.prepare(incoming,'retry',retirement=stamp,reconstruction_authority=store.reflection,reconstruction_scope=scope)
                 self.assertTrue(restored.commit(candidate))
-                self.assertEqual(db.execute('SELECT state FROM memory_web_context_permits').fetchone()[0],'consumed')
+                self.assertEqual(db.execute('SELECT state FROM memory_reconstruction_checkpoints').fetchone()[0],'consumed')
                 self.assertEqual(ReadonlyJournal(db,scope).last.wire,candidate.wire)
             finally:store.close()
 

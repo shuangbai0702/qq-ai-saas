@@ -66,6 +66,7 @@ class ClaimTests(unittest.IsolatedAsyncioTestCase):
             calls.append(kw)
             if len(calls)==1:
                 return NS(completion_text=json.dumps({'summary':'机器人猜测称呼被本人否认并纠正为小寒。',
+                    'evidence':[{'event':'0','who':'bot','quote':'我猜你是江哥吧'},{'event':'1','who':'user','quote':'我不叫江哥，以后叫我小寒'}],
                     'corrections':[{'event':'1','name':'称呼','oldValue':'江哥','newValue':'小寒','quote':'我不叫江哥，以后叫我小寒'}]}))
             return NS(completion_text=json.dumps({'summary':'普通持续背景'}))
         cfg={'memory':True,'memoryAutoCapture':True,'memorySummary':True,'summaryRounds':35,'naturalConversation':True}
@@ -115,7 +116,7 @@ class ClaimTests(unittest.IsolatedAsyncioTestCase):
         self.db.execute('INSERT INTO memory_pending VALUES(?,?,?,?,?,?)',(SCOPE,PERSON,event,'看这个','',self.now));self.db.commit()
         self.rounds()
         metrics={}
-        async def chat(**kw):return NS(completion_text=json.dumps({'summary':'普通背景，未确认的模型原文只作观察'}))
+        async def chat(**kw):return NS(completion_text=json.dumps({'summary':'普通背景，未确认的模型原文只作观察','evidence':[{'event':'native-only','who':'bot','quote':'模型历史原文，未确认投递'}]}))
         self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=chat),lambda:True,metrics,self.var)
         await self.drain()
         identifier=self.db.execute('SELECT id FROM memory_summaries ORDER BY id DESC LIMIT 1').fetchone()[0]
@@ -194,13 +195,15 @@ class ClaimTests(unittest.IsolatedAsyncioTestCase):
         batch=material.derive_claims(SCOPE,[{'event':'e1','sender_id':PERSON,'user':'我们约定明天爬山','bot':'好','at':1.0}],{},found)
         self.assertEqual(batch[0]['kind'],'correction');self.assertEqual(batch[0]['speaker']['id'],PERSON)
         agreement=material.derive_claims(SCOPE,[{'event':'e4','sender_id':PERSON,'user':'我们约定明天爬山','bot':'好','at':1.0}],{},[])
-        self.assertEqual(agreement[0]['kind'],'human_statement');self.assertNotIn('protected',agreement[0],'a keyword mention is not a protection judgment')
+        self.assertEqual(agreement,[],'unselected chat is never transcribed: a keyword mention is neither carried nor protected')
         staged=material.derive_claims(SCOPE,[{'event':'e4','sender_id':PERSON,'user':'我们约定明天爬山','bot':'好','at':1.0}],{},[],{'commitments':[{'event':'e4','topic':'明天爬山','quote':'我们约定明天爬山','who':'user','stage':'accepted'}]})
         hit=[claim for claim in staged if claim.get('protected')]
         self.assertEqual(len(hit),1);self.assertEqual(hit[0]['status'],'open');self.assertEqual(hit[0]['about'],'明天爬山')
         plain=material.derive_claims(SCOPE,[{'event':'e5','sender_id':PERSON,'user':'今天天气不错','bot':'嗯','at':1.0}],{},[])
-        self.assertEqual((plain[0]['kind'],plain[1]['kind']),('human_statement','bot_statement'))
-        self.assertNotIn('protected',plain[0])
+        self.assertEqual(plain,[],'ordinary chatter without a semantic selection stays summary prose only')
+        selected=material.derive_claims(SCOPE,[{'event':'e5','sender_id':PERSON,'user':'今天天气不错','bot':'嗯','at':1.0}],{},[],{'evidence':[{'event':'e5','who':'user','quote':'今天天气不错'}]})
+        self.assertEqual((selected[0]['kind'],selected[0]['speaker']),('human_statement',{'role':'human','id':PERSON}))
+        self.assertNotIn('protected',selected[0])
         turns=[{'event':'e6','sender_id':PERSON,'user':'改天教我昆曲吧','bot':'下次我们聊昆曲。','at':1.0}]
         open_topic=material.derive_claims(SCOPE,turns,{},[],{'motives':[{'event':'e6','topic':'昆曲','quote':'下次我们聊昆曲。','status':'open'}]})
         interpretation=next(c for c in open_topic if c['kind']=='interpretation')
@@ -235,7 +238,10 @@ class ClaimTests(unittest.IsolatedAsyncioTestCase):
 
     def test_fit_keeps_protected_first_within_bounds(self):
         claims=[correction_claim(SCOPE,'e'+str(i)) for i in range(3)]
-        claims+=material.derive_claims(SCOPE,[{'event':'c'+str(i),'sender_id':PERSON,'user':'普通话题'+str(i),'bot':'回复'+str(i),'at':float(i)} for i in range(60)],{},[])
+        claims+=[{'id':material.claim_identity(SCOPE,'c'+str(i),'human_statement','普通话题'+str(i)),
+                  'text':'普通话题'+str(i),'kind':'human_statement','speaker':{'role':'human','id':PERSON},'about':'',
+                  'sourceRefs':[material.claim_ref(SCOPE,'c'+str(i),'user','b'*64)],'occurredAt':float(i),
+                  'status':'active','visibility':SCOPE} for i in range(60)]
         kept,dropped=material.fit_claims(claims,budget=8192,max_claims=20)
         self.assertEqual(len([c for c in kept if c['kind']=='correction']),3,'protected claims are kept first')
         self.assertEqual(len(kept),20)

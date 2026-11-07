@@ -262,7 +262,10 @@ class AutonomousRuntime:
         policy=self.policies[id]['config'];interval=policy.get('minSleepSeconds',600)
         event=self.events.get(id);delay=interval
         deferred=[{k:c[k] for k in ('scope','owner','notBefore')} for c in self.candidates(id,include_waiting=True) if not c['eligibleNow']][:3]
-        experiences=st.memory.recall('self','0','自主研究',now,limit=3,budget=1200) if (s['config'].get('behavior') or {}).get('memory',True) else []
+        # Self experiences come from the authoritative action ledger (source-
+        # attributed tool tasks), never from persona facts: research results
+        # are task outcomes, not the bot's personal history.
+        experiences=bot_pipeline.experience_context(st,'self',s['config'].get('behavior') or {}).get('actions',[]) if (s['config'].get('behavior') or {}).get('memory',True) else []
         catalog=self.capability_catalog(id,candidates)
         available=[t['name'] for t in catalog['innerTools'] if t['available']]
         unavailable=['web_search']+[t['name'] for t in catalog['innerTools'] if not t['available']]
@@ -557,15 +560,13 @@ class AutonomousRuntime:
             unfinished=['核对已有回执并决定后续步骤；已确认的对外操作不可重复执行。']
         feedback={'status':status,'summary':summary,'stopReason':failure or result['reason'],'evidence':result['evidence'],'evidenceLimits':evidence_limits(result['evidence']),'effects':effects,'unfinished':unfinished,'usage':result['usage'],'contextScope':scope,'toolResults':result.get('toolResults',[]),'checkpoints':result.get('checkpoints',[])}
         if kind=='message':feedback['response']='' if event.get_extra('_hosted_final_reply_suppressed') else result['text'][:1600]
-        if kind=='research' and status=='completed' and feedback['evidence'] and (s['config'].get('behavior') or {}).get('memory',True) and st.reflection.epoch()==memory_epoch:
-            # Reuse the existing bounded, source-attributed event memory. This
-            # is a private self experience, never a human profile fact or a
-            # copy injected into unrelated group conversations. Reassessment
-            # still consumes the actual result above, not this summary.
-            from memory_reflection import scrub
-            sources=[{'source':str(e['source'])[:80],'referenceSha256':hashlib.sha256(str(e['reference']).encode()).hexdigest()} for e in feedback['evidence'][:2]]
-            value=json.dumps({'kind':'research_result_summary_not_verified_facts','summary':scrub(summary)[:500],'evidence':sources,'evidenceLimits':feedback['evidenceLimits']},ensure_ascii=False,separators=(',',':'))
-            st.memory.remember('self','0','自主研究:'+action['objective'][:32],value,identity['id'],time.time(),origin='autonomous_result',kind='event');st.db.commit()
+        if kind=='research' and status=='completed' and feedback['evidence']:
+            # Research outcomes stay in the authoritative action ledger and in
+            # execution-memory recall, both source-attributed. They are tool
+            # task results, never persona self facts, and existing rows of
+            # this trusted origin are excluded from every facts recall pool.
+            self.metrics.setdefault(id,{}).setdefault('researchResultsLedgered',0)
+            self.metrics[id]['researchResultsLedgered']+=1
         feedback['task']={'kind':kind,'target':target,'objective':action['objective'][:400],'sourceScope':action.get('sourceScope') or (action.get('requestSource') or {}).get('scope'),'outerDecision':action.get('outerDecision')}
         feedback['finishedAt']=int(time.time()*1000)
         st.pipeline.finish_internal(work,feedback);st.pipeline.finish(work,self.metrics.setdefault(id,{}))

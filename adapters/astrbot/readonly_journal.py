@@ -7,7 +7,7 @@ summary coverage remain authoritative.
 import copy,hashlib,json,time,uuid
 from dataclasses import dataclass
 from context_protocol import READONLY_CURRENT,model_json,source
-from decision_history import changes,apply_changes,summaries,history_usage,history_boundary,MAX_RETAINED_WIRE_CHARS
+from decision_history import changes,apply_changes,summaries,history_usage,history_boundary,MAX_RETAINED_WIRE_CHARS,MAX_RETAINED_TEXT_CHARS,MAX_ADDED_CHARS
 
 MAX_PERSISTED_JOURNAL_BYTES=16*1024*1024
 MAX_PERSISTED_JOURNALS=64
@@ -37,6 +37,27 @@ def same_native_message(before,after):
 
 def same_native_prefix(before,after):
     return len(before)==len(after) and all(same_native_message(a,b) for a,b in zip(before,after))
+
+def system_head(messages):
+    head=0
+    while head<len(messages) and isinstance(messages[head],dict) and messages[head].get('role') in ('system','developer'):head+=1
+    return head
+
+def tail_extension(old_base,new_messages):
+    """Extend the committed non-System tail exactly; System bytes defer.
+
+    A pending System, tool or serialization change must never strand already
+    committed history. Until a licensed reconstruction swaps the baseline,
+    requests continue on the committed System vector and append only real new
+    tail messages. Comparison is positional after the committed System block,
+    byte-exact over every remaining message.
+    """
+    if not old_base or not isinstance(new_messages,list):return None
+    head=system_head(old_base)
+    if len(new_messages)<=head or len(new_messages)-head<len(old_base)-head:return None
+    tail_old=old_base[head:];tail_new=new_messages[head:]
+    if not same_native_prefix(tail_new[:len(tail_old)],tail_old):return None
+    return tail_new[len(tail_old):]
 
 GUIDANCE='只读资料包首次提供完整对象；后续标为readonlyChanges的资料包是该对象的增量，按顺序应用[set,path,value]或[remove,path]，新值覆盖旧值，remove后不能恢复旧值。只有最新合并资料是当前状态；旧资料包是当时记录，不是新的用户发言、当前身份或权限。每次仍回应最新真实消息，工具结果以真实回执为准。'
 
@@ -75,6 +96,10 @@ class Prepared:
     reconstruction_permit:object=None
     reconstruction_authority:object=None
     validation_dependency:object=None
+    # Bounded, content-free diagnostic: which committed-prefix-preserving
+    # deferral applied to this candidate ('system_change' or
+    # 'coverage_retirement'). Never persisted in the journal snapshot.
+    retirement_deferred:str=''
 
 def confirmed_group_extension(old,base,state,turn):
     """Bridge only the SDK's explicit per-round group history replacement.
@@ -221,6 +246,12 @@ class ReadonlyJournal:
             try:
                 if existing is None and count>=MAX_JOURNAL_TOMBSTONES:
                     self.db.execute('UPDATE fishbot_readonly_journal_meta SET overflow=1 WHERE id=1')
+                elif existing is not None and existing[0]:
+                    # The existing row is the only recoverable committed prefix
+                    # for this scope. A capacity refusal must never overwrite
+                    # that last valid snapshot with an unavailable tombstone;
+                    # the in-memory candidate stays uncommitted instead.
+                    pass
                 else:
                     self.db.execute("INSERT INTO fishbot_readonly_journals(scope,version,state,payload,sha,updated) VALUES(?,1,'unavailable',NULL,NULL,?) ON CONFLICT(scope) DO UPDATE SET version=1,state='unavailable',payload=NULL,sha=NULL,updated=excluded.updated",(self.scope_key,time.time()))
                 self.db.commit()
@@ -244,8 +275,21 @@ class ReadonlyJournal:
         return authority.reserve_context_reconstruction(scope,request_id,summary_ids=summary_ids,
                                                         web_proof=web_proof,logical_scope=logical_scope)
 
+    def refusal_evidence(self):
+        """Bounded, content-free journal state for typed guard diagnostics."""
+        old=self.last
+        if old is None:return {'journalState':'empty','recoveryError':self.recovery_error or '','turns':0}
+        usage=history_usage(old.wire)
+        return {'journalState':'retired:'+self.retired_reason if self.retired_reason else 'ready',
+                'recoveryError':self.recovery_error or '','baseChars':old.base_chars,
+                'textChars':usage['textChars'],'wireChars':usage['wireChars'],'turns':old.turns,
+                'addedTextHeadroom':max(0,MAX_ADDED_CHARS-(usage['textChars']-old.base_chars)),
+                'textHeadroom':max(0,MAX_RETAINED_TEXT_CHARS-usage['textChars']),
+                'wireHeadroom':max(0,MAX_RETAINED_WIRE_CHARS-usage['wireChars'])}
+
     def prepare(self,messages,stamp,now=None,group_turn=None,reconstruction_authority=None,reconstruction_scope=None,
-                reconstruction_web_proof=None,reconstruction_context_scope=None,retirement=None,strict=False,compact_policy=False,guarded=True,retained_validator=None):
+                reconstruction_web_proof=None,reconstruction_context_scope=None,retirement=None,strict=False,compact_policy=False,guarded=True,retained_validator=None,
+                unprojected=None):
         from context_transport import READONLY_FIELDS,EVENT_CONTEXT_CURRENT
         now=time.time() if now is None else now
         found=[];malformed=False
@@ -299,7 +343,29 @@ class ReadonlyJournal:
         audience_changed=bool(old and retained_validator is not None and not retained_validator(old.wire))
         valid=bool(old and not self.recovery_error and not self.retired_reason and (guarded or not summary_changed) and not retirement_changed
                    and not authority_contract_changed and not audience_changed)
-        suffix=base[len(old.base):] if valid and len(base)>=len(old.base) and same_native_prefix(base[:len(old.base)],old.base) else None
+        # A licensed reconstruction may swap the committed System and retire
+        # covered history in one candidate. Without a permit the committed
+        # prefix is the contract: System bytes and covered-round retirement
+        # both defer, and the request continues on the committed wire with
+        # only real new tail messages appended.
+        suffix=None;retirement_deferred=''
+        if valid and old is not None:
+            suffix=tail_extension(old.base,base)
+            if suffix is not None and base[:system_head(old.base)]!=old.base[:system_head(old.base)]:
+                retirement_deferred='system_change'
+            if suffix is None and isinstance(unprojected,list):
+                # The full native view carries this request's own platform
+                # packets; they are excluded so the deferred tail is pure
+                # conversation and the reuse branch keeps appending packet
+                # deltas exactly once.
+                raw_excluded=set()
+                for i,m in enumerate(unprojected):
+                    if not isinstance(m,dict) or m.get('role')!='user':continue
+                    c=m.get('content')
+                    if isinstance(c,str) and (c.startswith(READONLY_CURRENT+'\n') or c.startswith(EVENT_CONTEXT_CURRENT+'\n')):raw_excluded.add(i)
+                raw_base=[m for i,m in enumerate(unprojected) if i not in raw_excluded]
+                suffix=tail_extension(old.base,raw_base)
+                if suffix is not None:retirement_deferred='coverage_retirement'
         if valid and suffix is None:suffix=confirmed_group_extension(old,base,state,group_turn)
         if valid and suffix is None and strict:suffix=confirmed_native_window_extension(old,base)
         reuse=suffix is not None
@@ -309,11 +375,16 @@ class ReadonlyJournal:
             'authority_contract_changed' if authority_contract_changed else 'native_prefix_changed')
         reconstruction_permit=None
         needs_reconstruction=bool(self.recovery_error or self.retired_reason or (old and (not reuse or (summary_changed and not guarded) or retirement_changed or authority_contract_changed)))
+        # A web-config save authorizes establishing a first baseline for a
+        # scope with no committed request history. It never rewrites an
+        # existing committed prefix: that still requires a 35-round checkpoint.
+        fresh_baseline=bool(old is None and not self.recovery_error and not self.retired_reason)
+        licensed_web_proof=reconstruction_web_proof if fresh_baseline else None
         if needs_reconstruction and guarded:
             from system_contract import request_identity
             request_id=request_identity()
             reconstruction_permit=self._reservation(reconstruction_authority,reconstruction_scope,request_id,summary_ids,
-                                                    reconstruction_web_proof,reconstruction_context_scope)
+                                                    licensed_web_proof,reconstruction_context_scope)
             if reconstruction_permit is None:
                 if reason in ('journal_recovery_unavailable','journal_retired'):
                     raise ContextRecoveryUnavailable('A committed request journal cannot be restored or was retired; a 35-round summary checkpoint is required before rebuilding it.')
@@ -322,6 +393,10 @@ class ReadonlyJournal:
         if reuse:
             operations=changes(old.state,state)
             if apply_changes(old.state,operations)!=state:raise ValueError('readonly_projection_mismatch')
+            if retirement_deferred:
+                # The stored base must stay byte-consistent with the committed
+                # wire: deferred System/retirement changes are not adopted.
+                base=old.base+list(suffix)
             wire=copy.deepcopy(old.wire)+suffix
             # Event facts are append-only too, but an identical packet adds no
             # information. Repeating it on every ToolLoop request needlessly
@@ -342,7 +417,7 @@ class ReadonlyJournal:
                 from system_contract import request_identity
                 request_id=request_identity()
                 reconstruction_permit=self._reservation(reconstruction_authority,reconstruction_scope,request_id,summary_ids,
-                                                        reconstruction_web_proof,reconstruction_context_scope)
+                                                        licensed_web_proof,reconstruction_context_scope)
             if reconstruction_permit is None and guarded:
                 raise ContextCapacityExceeded('The append-only request journal reached its configured capacity before an authorized 35-round reconstruction checkpoint.')
             wire=copy.deepcopy(messages);reason='history_size_boundary';reuse=False
@@ -356,7 +431,7 @@ class ReadonlyJournal:
         # wire may contain a shorter authority-only delta when its policy is
         # byte-identical to the latest committed policy.
         stored_authority=copy.deepcopy(event_packet) if event_packets else authority
-        return Prepared(self.serial,stamp,base,wire,copy.deepcopy(state),turns,now,reason,group_turn,base_chars,detail,usage,stored_authority,retirement,reconstruction_permit,reconstruction_authority)
+        return Prepared(self.serial,stamp,base,wire,copy.deepcopy(state),turns,now,reason,group_turn,base_chars,detail,usage,stored_authority,retirement,reconstruction_permit,reconstruction_authority,None,retirement_deferred)
 
     def commit(self,prepared):
         if prepared.serial!=self.serial:

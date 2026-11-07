@@ -50,8 +50,19 @@ class JournalTests(unittest.TestCase):
             if change=='identity':base[0]['content']='different actual owner'
             if change=='native':base[1]['content']='covered old turn was retired'
             retirement='new-memory-epoch' if change=='epoch' else None
-            with self.assertRaises(ContextReconstructionDenied):self.j.prepare(base+[packet(self.state)],stamp,now,retirement=retirement)
-            self.assertIs(self.j.last,first)
+            if change=='identity':
+                # A pending System change defers instead of stranding committed
+                # history: the request continues on the committed System bytes
+                # and appends only real new tail messages, until a licensed
+                # reconstruction swaps the baseline.
+                p=self.j.prepare(base+[packet(self.state)],stamp,now,retirement=retirement)
+                self.assertEqual(p.retirement_deferred,'system_change')
+                self.assertEqual(p.wire[:len(first.wire)],first.wire)
+                self.assertEqual(p.wire[-1],packet(self.state))
+                self.assertTrue(self.j.commit(p))
+            else:
+                with self.assertRaises(ContextReconstructionDenied):self.j.prepare(base+[packet(self.state)],stamp,now,retirement=retirement)
+                self.assertIs(self.j.last,first)
         first=self.first();later=self.base+[{'role':'assistant','content':'old reply'},{'role':'user','content':'next question'},packet(self.state)]
         p=self.j.prepare(later,'changed-model-binding',now=MAX_APPEND_IDLE_SECONDS+2)
         self.assertEqual(p.reason,'');self.assertEqual(p.wire[:len(first.wire)],first.wire)

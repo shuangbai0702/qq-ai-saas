@@ -188,11 +188,14 @@ def fact_rows(db,scope,subject,limit=200):
     # Value-level correction blocks drop the rejected values for this person
     # (including under a model-renamed field); a name whose value was blocked
     # keeps its replacement visible.
+    # Autonomous research task records keep their rows in storage for audit
+    # and rollback, but they are tool task outcomes — never persona facts —
+    # so every recall pool excludes them by their trusted origin.
     rows=db.execute('''SELECT f.name,f.value,f.event,f.version,f.updated,coalesce(m.kind,'stable') AS kind,
         coalesce(m.importance,.8) AS importance,coalesce(m.origin,'explicit') AS origin,
         coalesce(m.last_recalled,0) AS last_recalled,coalesce(m.recalls,0) AS recalls,f.scope AS source_scope
       FROM facts f LEFT JOIN fact_metadata m ON f.scope=m.scope AND f.subject=m.subject AND f.name=m.name
-      WHERE '''+where+''' AND f.active=1
+      WHERE '''+where+''' AND f.active=1 AND coalesce(m.origin,'explicit')<>'autonomous_result'
       ORDER BY (coalesce(m.origin,'explicit')='explicit') DESC,f.updated DESC,f.version DESC,f.scope''',args).fetchall()
     best={}
     for row in rows:
