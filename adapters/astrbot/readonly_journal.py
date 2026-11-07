@@ -153,10 +153,36 @@ def confirmed_native_window_extension(old, base):
         return current[size:]
     return None
 
+def fresh_event_extension(old_base,new_messages):
+    """Append only provably new tail turns when the native window has no
+    overlap at all (a worker restart lost the in-memory SDK conversation).
+
+    The committed journal stays authoritative. The tail must start at a
+    sourced user event absent from the committed base, and no sourced event
+    in the whole tail may already be known: one known event anywhere means
+    the view partially overlaps history in an order that cannot be proven,
+    which still requires a licensed reconstruction. Appending here adds
+    real, protocol-identified messages the journal never committed; it
+    never rewrites the committed prefix.
+    """
+    if not old_base or not isinstance(new_messages,list):return None
+    known=set()
+    for message in old_base:
+        origin=source(message)
+        if origin:known.add(str(origin['event_id']))
+    tail=new_messages[system_head(new_messages):]
+    if not tail or not isinstance(tail[0],dict):return None
+    origin=source(tail[0])
+    if not origin or str(origin['event_id']) in known:return None
+    for message in tail[1:]:
+        later=source(message) if isinstance(message,dict) else None
+        if later and str(later['event_id']) in known:return None
+    return tail
+
 class ReadonlyJournal:
     def __init__(self,db=None,scope_key=None):
         self.serial=0;self.last=None;self.db=db;self.scope_key=self._scope_key(scope_key)
-        self.recovery_error=None;self.retired_reason=''
+        self.recovery_error=None;self.retired_reason='';self._last_refusal_reason=''
         if db is not None:self._load()
 
     @staticmethod
@@ -278,10 +304,10 @@ class ReadonlyJournal:
     def refusal_evidence(self):
         """Bounded, content-free journal state for typed guard diagnostics."""
         old=self.last
-        if old is None:return {'journalState':'empty','recoveryError':self.recovery_error or '','turns':0}
+        if old is None:return {'journalState':'empty','recoveryError':self.recovery_error or '','refusal':self._last_refusal_reason,'turns':0}
         usage=history_usage(old.wire)
         return {'journalState':'retired:'+self.retired_reason if self.retired_reason else 'ready',
-                'recoveryError':self.recovery_error or '','baseChars':old.base_chars,
+                'recoveryError':self.recovery_error or '','refusal':self._last_refusal_reason,'baseChars':old.base_chars,
                 'textChars':usage['textChars'],'wireChars':usage['wireChars'],'turns':old.turns,
                 'addedTextHeadroom':max(0,MAX_ADDED_CHARS-(usage['textChars']-old.base_chars)),
                 'textHeadroom':max(0,MAX_RETAINED_TEXT_CHARS-usage['textChars']),
@@ -368,11 +394,18 @@ class ReadonlyJournal:
                 if suffix is not None:retirement_deferred='coverage_retirement'
         if valid and suffix is None:suffix=confirmed_group_extension(old,base,state,group_turn)
         if valid and suffix is None and strict:suffix=confirmed_native_window_extension(old,base)
+        if valid and suffix is None and strict:
+            # The honest full native view owns the fallback when provided: a
+            # projected view whose preceding blocks were dropped by coverage
+            # must never seed an append that skips uncommitted real turns.
+            suffix=fresh_event_extension(old.base,unprojected if isinstance(unprojected,list) else base)
+            if suffix is not None:retirement_deferred='fresh_native_window'
         reuse=suffix is not None
         reason='' if reuse else ('initial' if old is None and not self.recovery_error else
             'journal_recovery_unavailable' if self.recovery_error else 'journal_retired' if self.retired_reason else
             'memory_audience_changed' if audience_changed else 'summary_changed' if summary_changed else 'memory_epoch_changed' if retirement_changed else
             'authority_contract_changed' if authority_contract_changed else 'native_prefix_changed')
+        self._last_refusal_reason='' if reuse else reason
         reconstruction_permit=None
         needs_reconstruction=bool(self.recovery_error or self.retired_reason or (old and (not reuse or (summary_changed and not guarded) or retirement_changed or authority_contract_changed)))
         # A web-config save authorizes establishing a first baseline for a
