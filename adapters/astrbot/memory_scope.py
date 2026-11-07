@@ -28,10 +28,16 @@ def memory_audience(context,record):
     search and experience reads.
 
     scope='self' is not a public licence: merged self/big material is shown
-    only in its home scope or the owner's private chat. Private content stays
-    in its original chat; the same person keeps their own records across their
-    conversations (the existing same-QQ policy - participation membership is
-    enforced by the candidate queries, this gate decides direction only).
+    only in its home scope or the owner's private chat.
+
+    R3 audience contract: ``author/person``, ``source_scope`` and
+    ``allowed audience`` are separate dimensions. A private chat's verbatim
+    material is visible in that private chat only — the same person meeting
+    the bot in a group never makes their private conversation group-visible.
+    A group's material stays in that group, plus the participant's own
+    private chat (single-person audience; candidate queries still enforce
+    real participation). Authorized cross-scope continuity rides the fact
+    and agreement projections, never raw private rows.
     """
     if not isinstance(context,dict) or not isinstance(record,dict):return False
     scope=str(context.get('scope') or '');subject=str(context.get('subject') or '');owner=str(context.get('owner') or '')
@@ -39,10 +45,9 @@ def memory_audience(context,record):
     if not isinstance(origin,str) or not origin:return False
     if origin==scope:return True
     if origin=='self':return scope=='self' or bool(owner) and scope=='private:'+owner
-    if origin.startswith('private:'):
-        return bool(subject) and origin=='private:'+subject and shared_person(scope,subject)
+    if origin.startswith('private:'):return False
     if origin.startswith('group:'):
-        return bool(subject) and shared_person(scope,subject)
+        return bool(subject) and scope=='private:'+subject and shared_person(scope,subject)
     return False
 
 
@@ -80,16 +85,20 @@ def retained_context_visible(db,messages,scope,owner=''):
         note=value.get('persona_core_note')
         if isinstance(note,dict) and note.get('text') and not core_note_visible(note.get('source_scopes'),scope,owner):return False
         origin=value.get('source_scope')
+        # R3 wire gate for verbatim pending entries: the same direction rules
+        # as the query layer, applied to anything already present in the
+        # committed wire (including delta payloads, which this walk visits).
+        if isinstance(origin,str) and value.get('kind')=='recent_uncompressed_message':
+            if origin.startswith('private:') and origin!=scope:return False
+            if origin.startswith('group:') and origin!=scope and scope!='private:'+str(value.get('sender_id') or ''):return False
         if isinstance(origin,str) and isinstance(value.get('summary'),str):
             if origin=='self' and scope!='self' and not (owner and scope=='private:'+str(owner)):
                 origins=value.get('source_scopes')
                 if not isinstance(origins,list) or not set(origins)<={'self',scope}:return False
-            # Same-person query recall intentionally crosses group/private
-            # scopes. Only rolling-background rows establish this mismatch;
-            # do not mistake legitimate personal recall for global background.
-            rolling=value.get('recall_reason')=='rolling_background'
-            if rolling and origin.startswith('private:') and origin!=scope:return False
-            if rolling and origin.startswith('group:') and origin!=scope and scope!='self':
+            # R3: a private chat's summary is visible in that chat only, in
+            # every recall shape — not just the rolling background.
+            if origin.startswith('private:') and origin!=scope:return False
+            if origin.startswith('group:') and origin!=scope and scope!='self':
                 if not scope.startswith('private:'):return False
                 identifier=value.get('id')
                 # A live summary with no participation is a proven mismatch.
@@ -214,10 +223,16 @@ def fact_item(row,subject,reason):
 def summary_rows(db,scope,subject='',limit=1000):
     # Other conversations enter recall only with protocol-backed participation
     # evidence for the current QQ, never because its ID appears in model text.
+    # R3 audience contract: one group's audience is that group — another
+    # group's summary, and especially a private chat's summary, never enters
+    # it. A participant's own private chat may recall summaries of groups
+    # they really took part in (single-person audience).
     if shared_person(scope,subject):
+        if scope.startswith('group:'):
+            return db.execute('SELECT id,text,sources,updated,scope FROM memory_summaries WHERE scope=? ORDER BY updated DESC,id DESC LIMIT ?',(scope,min(1000,limit))).fetchall()
         return db.execute('''SELECT s.id,s.text,s.sources,s.updated,s.scope FROM memory_summaries s
-          WHERE s.scope=? OR ((s.scope LIKE 'group:%' OR s.scope=?) AND EXISTS (SELECT 1 FROM memory_summary_people p WHERE p.summary_id=s.id AND p.subject=?))
-          ORDER BY s.updated DESC,s.id DESC LIMIT ?''',(scope,'private:'+subject,subject,min(1000,limit))).fetchall()
+          WHERE s.scope=? OR (s.scope LIKE 'group:%' AND EXISTS (SELECT 1 FROM memory_summary_people p WHERE p.summary_id=s.id AND p.subject=?))
+          ORDER BY s.updated DESC,s.id DESC LIMIT ?''',(scope,subject,min(1000,limit))).fetchall()
     return db.execute('SELECT id,text,sources,updated,scope FROM memory_summaries WHERE scope=? ORDER BY updated DESC,id DESC LIMIT ?',(scope,min(1000,limit))).fetchall()
 
 
@@ -233,10 +248,24 @@ def summary_item(row,reason=None,db=None):
 
 
 def pending_messages(db,scope,subject,now,limit=16,budget=3000,cross_scope=True):
+    """Uncompressed recent material for this scope's request view.
+
+    ``cross_scope=False`` keeps this conversation's own rows. The historical
+    ``cross_scope=True`` view means ONLY other conversations' rows (the
+    caller renders the current scope separately); R3 fixes its direction:
+    a group request never receives verbatim material from anywhere else —
+    the 02:25 leak (a private instruction surfacing inside a group request)
+    is closed at the query layer, not by prompt discipline. A private chat's
+    cross-session view keeps the participant's own words from groups they
+    really spoke in (single-person audience of their own messages).
+    """
     if not shared_person(scope,subject):return []
-    where,args=person_filter(scope,subject)
-    source='scope!=?' if cross_scope else 'scope=?'
-    rows=db.execute('SELECT scope,subject,event,question,answer,at FROM memory_pending WHERE '+where+' AND '+source+' AND at>? AND at<=? ORDER BY at DESC,rowid DESC LIMIT ?',args+(scope,now-7*86400,now,min(16,max(1,limit)))).fetchall()
+    if not cross_scope or scope.startswith('group:'):
+        if cross_scope and scope.startswith('group:'):return []
+        where,args='scope=? AND subject=?',(scope,subject)
+    else:
+        where,args="subject=? AND scope LIKE 'group:%'",(subject,)
+    rows=db.execute('SELECT scope,subject,event,question,answer,at FROM memory_pending WHERE '+where+' AND at>? AND at<=? ORDER BY at DESC,rowid DESC LIMIT ?',args+(now-7*86400,now,min(16,max(1,limit)))).fetchall()
     result=[];used=0
     for source,person,event,question,answer,at in rows:
         question=question[:400];answer=answer[:400]

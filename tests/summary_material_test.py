@@ -129,16 +129,16 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(with_scope,self.store.reflection.context_dependency([identifier],SCOPE))
         self.assertEqual(without_scope,self.store.reflection.context_dependency([identifier]))
 
-    async def test_web_save_permit_is_trusted_scope_bound_and_single_use(self):
+    async def test_web_save_never_mints_a_journal_license(self):
+        # R1: an authenticated config save proves who saved configuration,
+        # never a mandate to retire committed model history. A web save mints
+        # no permit at all — no kind, no scope binding, no replay semantics.
         proof={'permitId':'audit-123','revision':19,'contextScope':'private:12345678'}
-        permit=self.store.reflection.reserve_context_reconstruction('private:12345678','first',[],proof)
-        self.assertEqual(permit['kind'],'web_config')
-        self.assertTrue(self.store.reflection.settle_context_reconstruction(permit,False))
-        retry=self.store.reflection.reserve_context_reconstruction('private:12345678','retry',[],proof)
-        self.assertTrue(self.store.reflection.settle_context_reconstruction(retry,True))
-        self.assertIsNone(self.store.reflection.reserve_context_reconstruction('private:12345678','replay',[],proof))
+        self.assertIsNone(self.store.reflection.reserve_context_reconstruction('private:12345678','first',[],proof))
+        self.assertIsNone(self.store.reflection.reserve_context_reconstruction('private:12345678','retry',[],proof))
         other_scope={**proof,'contextScope':'private:99999999'}
         self.assertIsNone(self.store.reflection.reserve_context_reconstruction('private:12345678','other-scope',[],other_scope))
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_web_context_permits').fetchone()[0],0)
 
     async def test_30_round_and_failed_summary_never_mint_reconstruction_permit(self):
         async def summarize(**kw):return NS(completion_text=json.dumps({'summary':'ordinary summary'}))

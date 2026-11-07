@@ -175,9 +175,21 @@ class Reflection:
               SELECT s.id,r.subject FROM memory_summaries s,json_each(s.sources) e
               JOIN relation_events r ON r.scope=s.scope AND r.event=CAST(e.value AS TEXT)
               WHERE length(r.subject) BETWEEN 5 AND 20 AND r.subject NOT GLOB '*[^0-9]*' ''')
-        db.execute('DELETE FROM memory_summaries WHERE id NOT IN (SELECT id FROM memory_summaries ORDER BY id DESC LIMIT 1000)')
+        # R2 material safety: the retained-summary count quota is not a delete
+        # licence. A summary carrying structured claims, a coverage proof or a
+        # reconstruction-checkpoint reference (its retirement evidence or
+        # pending-coverage proof depends on it) survives any quota pressure;
+        # only claim-free ordinary prose ages out here.
+        db.execute('''DELETE FROM memory_summaries WHERE id NOT IN (SELECT id FROM memory_summaries ORDER BY id DESC LIMIT 1000)
+          AND id NOT IN (SELECT summary_id FROM memory_summary_coverage)
+          AND id NOT IN (SELECT summary_id FROM memory_reconstruction_checkpoints WHERE summary_id IS NOT NULL)
+          AND (claims IS NULL OR json_array_length(claims)=0)''')
         db.execute('INSERT OR IGNORE INTO memory_summary_origins SELECT s.id,s.scope FROM memory_summaries s WHERE NOT EXISTS (SELECT 1 FROM memory_summary_origins o WHERE o.summary_id=s.id)')
         db.execute('DELETE FROM memory_vectors WHERE summary_id NOT IN (SELECT id FROM memory_summaries)');db.commit()
+        # R5: the bounded commitment projection shares this database and its
+        # initialization; existing deployments create it on first use.
+        import agreement_state
+        agreement_state.initialize(db)
         self.embedding_lock=asyncio.Lock()
     def epoch(self):return self.db.execute('SELECT epoch FROM memory_reflection_control WHERE id=1').fetchone()[0]
     def reconstruction_stamp(self,scope):
@@ -227,19 +239,36 @@ class Reflection:
             # without invalidating requests in unrelated conversations.
             progress=self.db.execute('SELECT summary_watermark FROM memory_reflection_progress WHERE scope=?',(scope,)).fetchone()
             value['summaryCheckpoint']=progress[0] if progress else 0
+            # R5: the scope's effective commitment state rides the same
+            # fence — a mid-Work revision or cancellation invalidates the
+            # stale candidate instead of letting an outdated reply ship.
+            import agreement_state
+            value['agreements']=agreement_state.agreements_stamp(self.db,scope)
         return hashlib.sha256(model_json(value).encode()).hexdigest()
     def reserve_context_reconstruction(self,scope,request_id,summary_ids=None,web_proof=None,logical_scope=None):
-        """Reserve one checkpoint tied to a currently visible summary, or one trusted web save."""
+        """Reserve one checkpoint tied to a currently visible summary.
+
+        R1 license safety: a reserved permit is never recycled by request
+        abandonment. A dead process cannot prove its licensed candidate never
+        reached the provider, so a missing owner leaves the permit reserved
+        (conservatively consumed) instead of re-issuing the same 35-round
+        license against another baseline. The stage transaction binds the
+        permit to its exact candidate, so a live request consumes its permit
+        at stage time and later failure paths never refund it.
+
+        A web-config save no longer mints any Journal-history license: an
+        authenticated operator identity proves who saved configuration, not
+        a mandate to retire already-committed model history. The committed
+        prefix keeps its System vector until this scope's own licensed
+        35-round reconstruction; ``web_proof``/``logical_scope`` stay in the
+        signature for call compatibility and are ignored.
+        """
         scopes={scope} if isinstance(scope,str) else set(scope) if isinstance(scope,(list,tuple,set)) else set()
         scopes={value for value in scopes if isinstance(value,str) and value}
         if not scopes or not isinstance(request_id,str) or not request_id:return None
         ids=sorted({value for value in summary_ids or [] if type(value) is int and value>0})
         epoch=self.epoch();self.db.execute('BEGIN IMMEDIATE')
         try:
-            from system_contract import abandoned_request
-            for table in ('memory_reconstruction_checkpoints','memory_web_context_permits'):
-                for rowid,owner in self.db.execute("SELECT rowid,request_id FROM "+table+" WHERE state='reserved'").fetchall():
-                    if abandoned_request(owner):self.db.execute("UPDATE "+table+" SET state='available',request_id=NULL WHERE rowid=? AND state='reserved'",(rowid,))
             self.db.execute("UPDATE memory_reconstruction_checkpoints SET state='invalidated',request_id=NULL WHERE state='available' AND NOT EXISTS (SELECT 1 FROM memory_summaries s WHERE s.id=memory_reconstruction_checkpoints.summary_id)")
             row=None
             if ids:
@@ -261,19 +290,6 @@ class Reflection:
                     if changed==1:
                         self.db.commit();return {'kind':'summary_checkpoint','id':row[0],'scope':row[1],'summaryId':row[3],'epoch':epoch,'requestId':request_id}
                     row=None
-            if isinstance(web_proof,dict):
-                permit=str(web_proof.get('permitId') or '');revision=str(web_proof.get('revision') or '')
-                context_scope=str(web_proof.get('contextScope') or '')
-                expected_scope=logical_scope if isinstance(logical_scope,str) and logical_scope else (scope if isinstance(scope,str) else None)
-                if permit and revision and context_scope and context_scope==expected_scope:
-                    existing=self.db.execute('SELECT revision,epoch,state,request_id FROM memory_web_context_permits WHERE permit_id=? AND scope=?',(permit,context_scope)).fetchone()
-                    if existing and existing[0]!=revision:raise ValueError('web_context_permit_revision_mismatch')
-                    if existing and existing[2]=='invalidated' and existing[1]==epoch:
-                        self.db.commit();return None
-                    self.db.execute("INSERT OR IGNORE INTO memory_web_context_permits VALUES(?,?,?,?, 'available',NULL,?)",(permit,context_scope,revision,epoch,time.time()))
-                    changed=self.db.execute("UPDATE memory_web_context_permits SET state='reserved',request_id=? WHERE permit_id=? AND scope=? AND state='available' AND revision=? AND epoch=?",(request_id,permit,context_scope,revision,epoch)).rowcount
-                    if changed==1:
-                        self.db.commit();return {'kind':'web_config','permitId':permit,'scope':context_scope,'revision':revision,'epoch':epoch,'requestId':request_id}
             self.db.commit();return None
         except BaseException:
             self.db.rollback();raise
@@ -315,8 +331,13 @@ class Reflection:
           SELECT 1 FROM memory_hold_rounds h WHERE h.scope=memory_pending.scope AND h.event=memory_pending.event)''',(now-7*86400,))
         # Keep recent material from each conversation before allocating extra
         # slots to a busy group. The total and seven-day retention stay bounded.
+        # R2 material safety: the global slot quota may only evict rows whose
+        # event is already retained in memory_rounds (the batch source of
+        # truth) — an unanswered or hold-adjacent pending row is the only
+        # copy of that evidence and is never deleted to satisfy the quota.
         self.db.execute('''DELETE FROM memory_pending WHERE NOT EXISTS (
           SELECT 1 FROM memory_hold_rounds h WHERE h.scope=memory_pending.scope AND h.event=memory_pending.event)
+          AND EXISTS (SELECT 1 FROM memory_rounds r WHERE r.scope=memory_pending.scope AND r.event=memory_pending.event)
           AND rowid NOT IN (
           SELECT rowid FROM (SELECT rowid,at,row_number() OVER (
             PARTITION BY scope ORDER BY at DESC,rowid DESC) AS scope_rank FROM memory_pending)
@@ -364,12 +385,24 @@ class Reflection:
         if shared_person(scope,subject):
             self.db.execute('INSERT INTO memory_pending VALUES(?,?,?,?,?,?) ON CONFLICT(scope,event) DO UPDATE SET answer=excluded.answer WHERE memory_pending.subject=excluded.subject AND memory_pending.question=excluded.question',(scope,subject,str(event),scrub(question),scrub(answer),now or time.time()))
             self.prune_pending(now)
-        self.db.execute('''DELETE FROM memory_rounds WHERE NOT EXISTS (
-          SELECT 1 FROM memory_hold_rounds h WHERE h.scope=memory_rounds.scope AND h.event=memory_rounds.event)
-          AND id NOT IN (
-          SELECT id FROM (SELECT id,at,row_number() OVER (
-            PARTITION BY scope ORDER BY id DESC) AS scope_rank FROM memory_rounds)
-          ORDER BY scope_rank,at DESC,id DESC LIMIT 1000)''');self.db.commit()
+        # R2 material safety: the retained-round quota may reclaim only rounds
+        # a completed summary batch already processed (at or below that
+        # scope's watermark) and not hold-registered. A scope below its 35
+        # rounds, or with unprocessed material, never loses evidence to the
+        # global slot count; excess stays as bounded backpressure instead.
+        self._prune_rounds()
+        self.db.commit()
+
+    def _prune_rounds(self):
+        total=self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0]
+        excess=total-1000
+        if excess<=0:return
+        self.db.execute('''DELETE FROM memory_rounds WHERE id IN (
+          SELECT r.id FROM memory_rounds r
+          JOIN memory_reflection_progress p ON p.scope=r.scope
+          WHERE r.id<=p.summary_watermark AND NOT EXISTS (
+            SELECT 1 FROM memory_hold_rounds h WHERE h.scope=r.scope AND h.event=r.event)
+          ORDER BY r.id LIMIT ?)''',(excess,))
     def confirmed_prefix(self,scope,subject,event,answer,epoch):
         # An incomplete multi-bubble reply is evidence, not a completed round.
         # Update only the original inbound row and never recreate forgotten data.
@@ -890,6 +923,10 @@ class Reflection:
                             claims,_dropped=fit_claims(batch)
                             from summary_material import settle_commitments
                             settle_commitments(self.db,scope,claims,prior_claims)
+                            # R5: fully evidenced open agreements enter the
+                            # bounded business projection for their own scope.
+                            import agreement_state
+                            metrics['agreementsPromoted']=metrics.get('agreementsPromoted',0)+agreement_state.promote_from_claims(self.db,scope,claims)
                             identifier=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated,schema_version,claims) VALUES(?,?,?,?,2,?)',(scope,text,json.dumps([r['event'] for r in payload]),time.time(),json.dumps(claims,ensure_ascii=False,separators=(',',':')) if claims else None)).lastrowid
                             self.db.execute("INSERT INTO memory_summary_levels VALUES(?,'small')",(identifier,))
                             self.db.execute('INSERT INTO memory_summary_origins VALUES(?,?)',(identifier,scope))

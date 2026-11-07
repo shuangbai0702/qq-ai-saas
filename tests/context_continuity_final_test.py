@@ -133,33 +133,30 @@ class PersistenceGuardTests(unittest.TestCase):
         db=sqlite3.connect(':memory:')
         authority=StubAuthority(grant=False)
         j=ReadonlyJournal(db,SCOPE)
-        proof={'permitId':'audit-1','revision':3,'contextScope':SCOPE}
         base=[{'role':'system','content':'old persona'},{'role':'user','content':'真实第一问'}]
         state={'state':{'facts':[]},'recent_messages':[]}
         tail=[event_packet({'sender_id':'12345678'}),packet(state)]
         p=j.prepare(base+tail,('t','b',1),now=1,strict=True,guarded=True,
-                    reconstruction_authority=authority,reconstruction_scope=SCOPE,reconstruction_web_proof=proof,reconstruction_context_scope=SCOPE)
+                    reconstruction_authority=authority,reconstruction_scope=SCOPE)
         self.assertTrue(j.commit(p));self.assertIsNone(p.reconstruction_permit)
         # A pending System change defers on the committed wire; it never needs
         # and never receives a reconstruction license.
         changed=[{'role':'system','content':'new persona'},{'role':'user','content':'真实第一问'}]
         deferred=j.prepare(changed+tail,('t','b',1),now=2,strict=True,guarded=True,
-                           reconstruction_authority=authority,reconstruction_scope=SCOPE,
-                           reconstruction_web_proof=proof,reconstruction_context_scope=SCOPE)
+                           reconstruction_authority=authority,reconstruction_scope=SCOPE)
         self.assertEqual(deferred.retirement_deferred,'system_change');self.assertIsNone(deferred.reconstruction_permit)
-        # A real reconstruction trigger (new checkpoint retirement) cannot be
-        # authorized by a web-config permit anymore: only a 35-round
-        # checkpoint reserve can mint that license.
+        # R1: only a 35-round checkpoint reserve can mint a reconstruction
+        # license. A web-config save mints none at all — the journal no longer
+        # even forwards a web proof to the authority.
         with self.assertRaises(ContextReconstructionDenied):
             j.prepare(base+tail,('t','b',1),now=3,strict=True,guarded=True,
                       reconstruction_authority=authority,reconstruction_scope=SCOPE,
-                      reconstruction_web_proof=proof,reconstruction_context_scope=SCOPE,
                       retirement='minted-checkpoint-stamp')
-        self.assertIsNone(authority.web_proofs[-1],'a committed prefix must never be rewritable by a web-config permit')
+        self.assertIsNone(authority.web_proofs[-1],'no web proof may ever reach the authority from the journal path')
         # A genuinely fresh scope builds its first baseline without any permit.
         fresh=ReadonlyJournal(sqlite3.connect(':memory:'),'private:99999999')
         fp=fresh.prepare([{'role':'system','content':'new persona'},{'role':'user','content':'新会话'}]+tail,('t','b',1),now=1,strict=True,guarded=True,
-                         reconstruction_authority=authority,reconstruction_scope='private:99999999',reconstruction_web_proof=proof,reconstruction_context_scope='private:99999999')
+                         reconstruction_authority=authority,reconstruction_scope='private:99999999')
         self.assertIsNone(fp.reconstruction_permit)
         self.assertTrue(fresh.commit(fp))
 

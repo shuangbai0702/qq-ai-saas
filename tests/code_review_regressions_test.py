@@ -103,13 +103,22 @@ class ReviewMemory(unittest.TestCase):
   with self.assertRaises(ContextReconstructionDenied):
    journal.prepare(base+[packet({'state':{'conversation_summaries':[]}})],1,retained_validator=lambda wire:retained_context_visible(self.db,wire,SCOPE))
   self.assertEqual(json.dumps(journal.last.wire),before)
- def test_personal_query_recall_is_not_confused_with_global_background(self):
+ def test_cross_scope_summary_recall_follows_audience_contract(self):
   from memory_scope import retained_context_visible
   from context_protocol import READONLY_CURRENT
+  # R3: one group's audience is that group. Neither a private chat's summary
+  # nor another group's summary may appear inside group:66666's request —
+  # whatever recall reason labelled it. Authorized cross-scope continuity
+  # rides the bounded fact/agreement projections instead (R5).
   for origin in ('private:'+PERSON,'group:55555'):
    data={'state':{'conversation_summaries':[{'source_scope':origin,'summary':'本人约定','recall_reason':'scoped_bm25'}]}}
    wire=[{'role':'user','content':READONLY_CURRENT+'\n'+json.dumps(data)}]
-   self.assertTrue(retained_context_visible(self.db,wire,'group:66666'))
+   self.assertFalse(retained_context_visible(self.db,wire,'group:66666'))
+  # The participant's own private chat remains a single-person audience for
+  # a group they really took part in.
+  data={'state':{'conversation_summaries':[{'source_scope':'group:55555','summary':'本人约定','recall_reason':'scoped_bm25'}]}}
+  wire=[{'role':'user','content':READONLY_CURRENT+'\n'+json.dumps(data)}]
+  self.assertTrue(retained_context_visible(self.db,wire,'private:'+PERSON))
 
 class ReviewSystem(unittest.TestCase):
  def test_conflicting_system_transitions_cannot_both_be_sent(self):

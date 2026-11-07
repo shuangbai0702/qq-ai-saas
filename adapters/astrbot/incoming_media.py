@@ -74,7 +74,7 @@ def install(adapter):
     adapter._convert_handle_message_event=convert
 
 
-async def attach_recent(event,db,lease,current):
+async def attach_recent(event,db,lease,current,*,journal=None):
     """Carry one observed conversation image into a short text follow-up.
 
     Reuses the existing trusted quote ledger and protocol revalidation; URLs
@@ -92,6 +92,18 @@ async def attach_recent(event,db,lease,current):
                 (r['sender_id']==str(event.get_sender_id()) or event.get_group_id() and now-r['at']<=45)]
     if not candidates:return None
     source=candidates[0]
+    # A warm append-only journal already resends its original image verbatim.
+    # Do not copy that same observed event onto every text follow-up. Match
+    # scope, author and source event, not image similarity or user keywords.
+    # Cold/retired journals keep the existing conservative attachment path.
+    if journal is not None and journal.last is not None and not journal.recovery_error and not journal.retired_reason:
+        from context_protocol import source as message_source
+        scope=quote_reply.delivery_scope(event)
+        for message in journal.last.base:
+            origin=message_source(message)
+            if not origin or (origin['scope'],str(origin['sender_id']),str(origin['event_id']))!=(scope,source['sender_id'],source['message_id']):continue
+            content=message.get('content')
+            if isinstance(content,list) and any(isinstance(p,dict) and p.get('type')=='image_url' for p in content):return None
     if now-source['at']>45:
         # A bare @ can be a delayed nudge for an unanswered picture, but is not
         # permission to attach an arbitrary old picture to unrelated new text.

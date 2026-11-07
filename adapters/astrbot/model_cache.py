@@ -78,8 +78,12 @@ def record_diagnostic(lease, record):
     row.update(at=time.time(),pid=os.getpid(),botId=lease['botId'],generation=lease.get('generation'),revision=lease.get('revision'))
     try:
         path=Path(lease['root'])/'model-diagnostics.jsonl'
-        if path.exists() and path.stat().st_size>=256*1024:
-            path.replace(path.with_name('model-diagnostics.previous.jsonl'))
+        limit=int(os.environ.get('FISHBOT_DIAGNOSTIC_ROTATE_BYTES',256*1024))
+        if limit>0 and path.exists() and path.stat().st_size>=limit:
+            # Python and Node can rotate the same bot file concurrently: a
+            # racing replace must drop that line, never kill the writer.
+            try:path.replace(path.with_name('model-diagnostics.previous.jsonl'))
+            except OSError:pass
         fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)
         with os.fdopen(fd,'w',encoding='utf-8') as file:file.write(json.dumps(row,ensure_ascii=False,separators=(',',':'))+'\n')
         return True
@@ -313,7 +317,10 @@ def observe_wire_request(request):
         if contract is not None:
             value['systemValidationStarted']=True
             try:
-                reservation=contract.reserve(payload['messages'],value.get('systemPermitId'),value['attemptId'],time.time())
+                # Per-scope baseline: one conversation's licensed System
+                # transition must never block another scope still running the
+                # previously committed vector (R1 cross-scope fix).
+                reservation=contract.reserve(payload['messages'],value.get('systemPermitId'),value['attemptId'],time.time(),scope=value.get('scope') or '')
                 value['systemReservation']=reservation
                 value['systemValidationStarted']=False
                 record_diagnostic(lease,{'kind':'wire_request','attemptId':value['attemptId'],'phase':value['phase'],
@@ -396,11 +403,13 @@ def submission_stage():
     return value.get('submissionStage') if value else None
 
 def record_error_site(error):
-    """Bounded, content-free raise-site evidence for import/attribute failures.
+    """Bounded, content-free raise-site evidence for any request failure.
 
     Replaces the old cross-bot raw /tmp/request-errors.log: module basename,
     line, symbol and attempt identity only; never the exception text, its
-    arguments or a traceback body (E package).
+    arguments or a traceback body (E package). TypeError and outer execution
+    boundaries previously left only a class name, which rolled out of the
+    256KiB diagnostic window before any root cause could be read (R0).
     """
     value=_attempt.get()
     if not value or not value.get('ended'):return
@@ -413,6 +422,25 @@ def record_error_site(error):
     module=str(frame.filename or '').replace('\\','/').rsplit('/',1)[-1] if frame else None
     record_diagnostic(value.get('lease'),{'kind':'request_error','attemptId':value['attemptId'],'phase':value['phase'],
         'workId':value.get('workId'),'reason':type(error).__name__,
+        'diagnosticDetail':json.dumps({'module':module,'line':frame.lineno if frame else None,
+                                       'symbol':frame.name if frame else None},ensure_ascii=False)})
+
+
+def record_execution_error(lease,error,phase='outer_execute',work_id=None):
+    """Bounded raise-site evidence outside a model attempt (guarded_execute).
+
+    Same content contract as record_error_site: never the exception text,
+    arguments or a traceback body. Keeps outer TypeError/failure evidence
+    inside the same diagnostic window as its pipeline ledger row."""
+    frame=None
+    try:
+        import traceback as _traceback
+        frames=_traceback.extract_tb(error.__traceback__)
+        frame=frames[-1] if frames else None
+    except Exception:frame=None
+    module=str(frame.filename or '').replace('\\','/').rsplit('/',1)[-1] if frame else None
+    record_diagnostic(lease,{'kind':'request_error','phase':phase,'workId':work_id,
+        'reason':type(error).__name__,
         'diagnosticDetail':json.dumps({'module':module,'line':frame.lineno if frame else None,
                                        'symbol':frame.name if frame else None},ensure_ascii=False)})
 
