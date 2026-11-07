@@ -60,9 +60,15 @@ def conversation_context(store,cfg,scope,subject,query,now,state=None):
     observed={(item['sender_id'],item['text'][:180]) for item in chronological if item['role']=='member'}
     from memory_reflection import CORE_NOTE_POLICY
     core={'guidance':CORE_NOTE_POLICY,**store.reflection.core_note(scope,subject,owner=str(cfg.get('ownerUin') or ''))} if enabled else {'text':''}
+    # R5: the bot's own effective commitments for THIS scope. A 02:25-class
+    # "stay silent when @ed" instruction reaches the group decision as a
+    # current, bounded state projection — never as raw private chat text.
+    import agreement_state
+    agreements=agreement_state.context_view(store.db,scope,owner=str(cfg.get('ownerUin') or '')) if enabled else []
     return {'persona_core_note':core,'state':state,'dialogue':dialogue,'autonomous_experience':experience_context(store,scope,cfg),
             'group_round_history':store.reflection.group_context(scope) if enabled else [],
             'conversation_timeline':chronological,
+            'active_agreements':agreements,
             'recent_messages':[item for item in pending if item['source_event'] not in covered],
             'recent_cross_session_messages':store.reflection.recent(scope,subject,now=now) if enabled else [],
             'ambient_group_messages':[item for item in ambient if (item['sender_id'],item['text']) not in observed]}
@@ -221,6 +227,12 @@ class Work:
     confirmed:int=0
     planned_messages:int=0
     confirmed_messages:int=0
+    # R2 effective-round contract: one Work earns at most one memory round,
+    # recorded once at Work finalization from everything that was actually
+    # confirmed. Individual sends only accumulate here.
+    confirmed_reply_parts:list=field(default_factory=list)
+    confirmed_media_kinds:list=field(default_factory=list)
+    summary_materials:list=field(default_factory=list)
 
     @property
     def observes_input(self):return self.source=='message'

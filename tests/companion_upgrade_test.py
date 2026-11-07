@@ -12,8 +12,10 @@ class Upgrades(unittest.IsolatedAsyncioTestCase):
   self.tmp=tempfile.TemporaryDirectory();self.store=BehaviorStore(Path(self.tmp.name)/'behavior.sqlite');self.db=self.store.db;self.now=time.time();self.var=contextvars.ContextVar('event',default=None)
  def tearDown(self):self.store.close();self.tmp.cleanup()
  async def test_one_background_call_persists_summary_facts_and_own_interest(self):
-  cfg={'memory':True,'memoryAutoCapture':True,'memorySummary':True,'summaryRounds':30,'selfDevelopment':True,'naturalConversation':True}
-  for i in range(30):self.store.reflection.record('group:1','11111',str(i),'我搬到了苏州','我喜欢昆曲的水磨腔。')
+  # The summary contract converged to exactly 35 completed business rounds
+  # (B package); a 30-round batch is never scheduled.
+  cfg={'memory':True,'memoryAutoCapture':True,'memorySummary':True,'selfDevelopment':True,'naturalConversation':True}
+  for i in range(35):self.store.reflection.record('group:1','11111',str(i),'我搬到了苏州','我喜欢昆曲的水磨腔。')
   calls=[]
   async def chat(**kw):
    calls.append(kw);return NS(completion_text=json.dumps({'summary':'11111说自己搬到了苏州，机器人喜欢昆曲。','facts':[{'event':'0','name':'居住城市','value':'苏州','quote':'我搬到了苏州'}],'interests':[{'event':'0','topic':'昆曲','quote':'我喜欢昆曲的水磨腔。'}]}))
@@ -64,11 +66,16 @@ class Upgrades(unittest.IsolatedAsyncioTestCase):
   async def fetch(url):return PNG
   c=self.store.social.stickers;c.observe(RAW,'group:12345','11111','99999',CFG,lambda:True,{},fetch=fetch,provider=NS(text_chat=chat),event_var=self.var)
   await c.task;return manage(self.db,{'action':'list_stickers'})['items'][0]
- async def test_remote_caption_keeps_manual_review_and_scope(self):
+ async def test_remote_caption_auto_approves_suitable_sticker(self):
   captured=[]
   async def chat(**kw):captured.append(kw);return NS(completion_text='{"meaning":"轻松得意、庆祝成功","suitable":true}')
-  item=await self.caption(chat);self.assertEqual(item['status'],'pending');self.assertEqual(item['version'],2)
-  self.assertIn('得意',item['meaning']);self.assertTrue(captured[0]['image_urls'][0].startswith('data:image/png;base64,'));self.assertFalse(self.store.social.stickers.catalog('group:12345'))
+  item=await self.caption(chat)
+  # R7B: a suitable, well-formed caption promotes the ordinary sticker to
+  # usable in the same CAS step; manual review stays an optional override,
+  # not the mandatory gate that left the whole fleet at zero approved.
+  self.assertEqual(item['status'],'approved');self.assertEqual(item['version'],2)
+  self.assertIn('得意',item['meaning']);self.assertTrue(captured[0]['image_urls'][0].startswith('data:image/png;base64,'))
+  self.assertEqual([row['id'] for row in self.store.social.stickers.catalog('group:12345')],[item['id']])
  async def test_late_caption_cannot_overwrite_manual_review(self):
   async def chat(**kw):
    item=manage(self.db,{'action':'list_stickers'})['items'][0]

@@ -16,6 +16,10 @@ def features(settings,event,db,scope,current,*,identity=None,evidence=None,memor
     result+=execution_memory.tools(settings,event,scope,memory_current or current,identity)
     result+=bili_tools(settings,event,current,evidence,identity,db=db)
     result+=image_tools(settings,event,db,current,identity)
+    # R5: the one constrained commitment-state tool shares this same
+    # identity/Work validation as every other capability.
+    import agreement_state
+    result+=agreement_state.tools(settings,event,db,scope,current)
     if manifest(settings) is None:
         enabled=(cfg.get('behavior') or {}).get('bilibiliSearchEnabled',False)
         result+=research_tools(lambda:current() and (cfg.get('behavior') or {}).get('bilibiliSearchEnabled',False),evidence,enabled=enabled)
@@ -43,4 +47,28 @@ def request_context(event):
     try:value=json.loads(raw)
     except (TypeError,ValueError):return raw
     if not isinstance(value,dict):return raw
-    return model_json({**value,'tool_context':tools})
+    return model_json({**value,'tool_context':tool_context_view(tools)})
+
+
+def tool_context_view(tools):
+    """Present source catalogs in stable chronological order, with no data loss.
+
+    Storage/tools still rank newest first. Model snapshots instead append new
+    candidates at the tail, which the existing readonly set/remove protocol
+    can express without retransmitting the entire list on every inbound event.
+    Handles, scope, timestamps and runtime authorization remain unchanged.
+    """
+    import copy
+    result=copy.deepcopy(tools)
+    def chronological(rows):
+        if not isinstance(rows,list) or not all(isinstance(r,dict) and type(r.get('at')) in (int,float) and isinstance(r.get('handle'),str) for r in rows):return rows
+        return sorted(rows,key=lambda r:(r['at'],r['handle']))
+    if not isinstance(result,dict):return result
+    if 'quote_reply' in result:result['quote_reply']=chronological(result['quote_reply'])
+    favorites=result.get('qq_favorites')
+    if isinstance(favorites,dict):
+        if 'media' in favorites:favorites['media']=chronological(favorites['media'])
+        ids=favorites.get('source_ids')
+        if isinstance(ids,list) and all(isinstance(v,str) for v in ids):
+            favorites['source_ids']=sorted(ids,key=lambda v:(v!='current',v))
+    return result

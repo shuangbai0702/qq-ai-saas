@@ -113,6 +113,11 @@ class Prepared:
     # deferral applied to this candidate ('system_change' or
     # 'coverage_retirement'). Never persisted in the journal snapshot.
     retirement_deferred:str=''
+    # R1 license binding: set when the stage transaction consumed this
+    # candidate's reconstruction permit. A consumed permit is never settled
+    # again, refunded or re-issued, whatever happens to the candidate after
+    # the durable stage.
+    reconstruction_consumed:bool=False
 
 def confirmed_group_extension(old,base,state,turn):
     """Bridge only the SDK's explicit per-round group history replacement.
@@ -236,52 +241,57 @@ def uncommitted_window_head_extension(old,raw_base,db=None):
     return head
 
 def window_reload_extension(old,raw_base,db=None):
-    """Match a native window that reloaded OLDER history in front of the
-    committed baseline, and/or omits trailing turns the journal staged but
-    never submitted.
+    """Align a reloaded SDK window without changing the committed wire.
 
-    Two restart shapes defeat every prefix overlap even though the journal is
-    authoritative and nothing was rewritten: the SDK store keeps turns older
-    than a rebuilt baseline (a licensed rebuild legitimately retired them),
-    and a staged candidate killed mid-flight leaves its never-submitted user
-    turn inside the baseline while the reloaded window never saw it. The
-    committed prefix must appear contiguously inside the window (the head
-    before it may not contain any known event, so no reorder is blessed),
-    trailing never-submitted staged turns may be absent, and only genuine
-    new tail messages after the baseline are appended. No license, round
-    count or retirement is implied.
+    The SDK may omit unanswered user turns retained after an unknown model
+    submission, and retain older history before the journal's baseline. A
+    delivery status cannot prove that a model never received a turn. Omitted
+    turns therefore stay in old.wire and old.base, including their exact media.
+    Require ordered, unchanged shared source events and an exact native suffix
+    ending at the retained baseline. Append only the genuinely new tail; never
+    replay a known event or infer a completed round/reconstruction license.
     """
     if not old or not isinstance(raw_base,list):return None
     prior=old.base[system_head(old.base):]
     current=raw_base[system_head(raw_base):]
-    if not current or not prior or len(current)<len(prior):return None
-    known={str(source(m)['event_id']) for m in old.base if (s:=source(m))}
+    if not current or not prior:return None
+    def identity(message):
+        o=source(message)
+        return (o['scope'],str(o['sender_id']),str(o['event_id'])) if o else None
+    known={}
+    for i,m in enumerate(prior):
+        key=identity(m)
+        if key is not None:known.setdefault(key,[]).append(i)
+    present=set();last=-1
+    for m in current:
+        key=identity(m)
+        if key not in known:continue
+        positions=known[key]
+        if len(positions)!=1:return None
+        index=positions[0]
+        if index<=last or not same_native_message(prior[index],m):return None
+        present.add(key);last=index
+    if not present:return None
     keep=len(prior)
     while keep>0:
         m=prior[keep-1]
         if not (isinstance(m,dict) and m.get('role')=='user'):break
-        o=source(m)
-        if not o:break
-        row=None
-        if db is not None:
-            try:row=db.execute("SELECT status,confirmed FROM pipeline_events WHERE scope=? AND event=?",(str(o.get('scope')),str(o['event_id']))).fetchone()
-            except Exception:return None
-        if row and row[0] in ('sent','partial') and row[1]:break
-        if any(isinstance(x,dict) and x.get('role')=='assistant' for x in prior[keep:]):break
+        key=identity(m)
+        if key is None or key in present:break
         keep-=1
     if keep<=0:return None
-    target=prior[:keep]
-    for start in range(0,len(current)-len(target)+1):
-        head=current[:start]
-        if any(isinstance(m,dict) and (o:=source(m)) and str(o['event_id']) in known for m in head):continue
-        if not same_native_prefix(target,current[start:start+len(target)]):continue
-        tail=current[start+len(target):]
-        if not tail or not any(isinstance(m,dict) and source(m) for m in tail):continue
-        # Tail turns are real platform-sourced inbound history the model has
-        # not answered yet (refused rounds leave their user turn in the SDK
-        # conversation): appending them finally lets the model see them. A
-        # turn without any sourced user is still refused.
-        return tail
+    # Start at a sourced user, never at an arbitrary equal assistant/tool text.
+    # Shared older events may precede this suffix after an SDK window reload;
+    # the ordered identity check above prevents a known-event reorder.
+    for begin in range(keep):
+        if identity(prior[begin]) is None:continue
+        target=prior[begin:keep]
+        for start in range(0,len(current)-len(target)+1):
+            if not same_native_prefix(target,current[start:start+len(target)]):continue
+            tail=current[start+len(target):]
+            if not tail or not any(identity(m) for m in tail):continue
+            if any(identity(m) in known for m in tail):continue
+            return tail
     return None
 
 class ReadonlyJournal:
@@ -311,7 +321,7 @@ class ReadonlyJournal:
         row=self.db.execute('SELECT version,state,payload,sha FROM fishbot_readonly_journals WHERE scope=?',(self.scope_key,)).fetchone()
         if row:
             version,state,payload,sha=row
-            if version!=1 or state not in ('ready','retired') or not isinstance(payload,str) or not isinstance(sha,str) or hashlib.sha256(payload.encode()).hexdigest()!=sha or len(payload.encode())>MAX_RETAINED_WIRE_CHARS+256000:
+            if version!=1 or state not in ('ready','retired') or not isinstance(payload,str) or not isinstance(sha,str) or hashlib.sha256(payload.encode()).hexdigest()!=sha or len(payload.encode())>MAX_PERSISTED_JOURNAL_BYTES:
                 self.recovery_error='journal_snapshot_integrity'
                 return
             if state=='retired':self.retired_reason='persisted_retirement'
@@ -359,7 +369,7 @@ class ReadonlyJournal:
         except (TypeError,ValueError):return False
         return False
 
-    def _persist(self,prepared,state='ready',settle_permit=False,tombstone=True,settle_cutover=True):
+    def _persist(self,prepared,state='ready',settle_permit=False,consume_permit=False,tombstone=True,settle_cutover=True):
         if self.db is None or self.scope_key is None:return True
         value={'scope':self.scope_key,'base':prepared.base,'wire':prepared.wire,'state':prepared.state,'turns':prepared.turns,'at':prepared.at,
                'group_turn':prepared.group_turn,'base_chars':prepared.base_chars,'detail':prepared.detail,'usage':prepared.usage,
@@ -373,7 +383,10 @@ class ReadonlyJournal:
         # unavailable tombstone already exists; distinguish that from no row.
         next_total=used[0]-((existing[0] or 0) if existing is not None else 0)+len(encoded)
         count=self.db.execute('SELECT count(*) FROM fishbot_readonly_journals').fetchone()[0]
-        allowed=(len(encoded)<=MAX_RETAINED_WIRE_CHARS+256000 and next_total<=MAX_PERSISTED_JOURNAL_BYTES and
+        # The snapshot contains both base and wire plus current state, encoded
+        # as UTF-8 bytes. A wire-character limit is not its storage-byte limit.
+        # The existing per-bot total still bounds every row and all scopes.
+        allowed=(next_total<=MAX_PERSISTED_JOURNAL_BYTES and
                  (existing is not None or (used[1] or 0)<MAX_PERSISTED_JOURNALS) and (existing is not None or count<MAX_JOURNAL_TOMBSTONES) and not overflow)
         if not allowed:
             self.db.execute('BEGIN IMMEDIATE')
@@ -409,6 +422,8 @@ class ReadonlyJournal:
                 self.db.execute("UPDATE fishbot_readonly_cutover SET state='consumed' WHERE scope=? AND state='available'",(self.scope_key,))
             if settle_permit and not self._settle(prepared,True,in_transaction=True):
                 self.db.rollback();return False
+            if consume_permit and not prepared.reconstruction_authority.settle_context_reconstruction(prepared.reconstruction_permit,True,in_transaction=True):
+                self.db.rollback();return False
             self.db.commit();return True
         except BaseException:self.db.rollback();raise
 
@@ -416,24 +431,44 @@ class ReadonlyJournal:
         """Persist the exact outgoing candidate before any HTTP submission.
 
         Once a request may leave the process, the next request must never fall
-        back to a prefix without this candidate's tail (A package). Staging is
-        best effort: a storage refusal keeps the previous committed row
-        untouched, changes no guard state and never fails the request; the
-        settle-time retain path still covers non-crash outcomes then. Staging
-        never consumes the reconstruction permit or a cutover enrollment.
+        back to a prefix without this candidate's tail (A package). A storage
+        refusal keeps the previous row and guard state untouched; the caller
+        must stop before HTTP submission when this returns False.
+
+        R1 license binding: when the durable stage succeeds, this candidate's
+        reconstruction permit is consumed inside the same transaction. From
+        that moment the 35-round license belongs to this exact candidate — a
+        later abort, failure or process death may discard the candidate but
+        never returns the license to ``available`` for a different baseline.
+        A stage refusal consumes nothing (nothing was submitted).
         """
         if self.db is None or self.scope_key is None:return True
         if prepared.serial!=self.serial or self._staged==prepared.serial:return self._staged==prepared.serial
+        consume=bool(prepared.reconstruction_permit and not prepared.reconstruction_consumed
+                     and prepared.reconstruction_authority is not None
+                     and getattr(prepared.reconstruction_authority,'db',None) is self.db)
         saved=(self.recovery_error,self.retired_reason)
-        ok=self._persist(prepared,'ready',settle_permit=False,tombstone=False,settle_cutover=False)
+        ok=self._persist(prepared,'ready',consume_permit=consume,tombstone=False,settle_cutover=False)
         self.recovery_error,self.retired_reason=saved
-        if ok:self._staged=prepared.serial
-        return ok
+        if not ok:return False
+        self._staged=prepared.serial
+        if consume:
+            prepared.reconstruction_consumed=True
+        elif prepared.reconstruction_permit and not prepared.reconstruction_consumed:
+            # Cross-database authority (test harnesses): consume after the
+            # durable stage. A crash between both steps leaves the permit
+            # reserved with a dead owner, which stays conservatively isolated.
+            if prepared.reconstruction_authority.settle_context_reconstruction(prepared.reconstruction_permit,True):
+                prepared.reconstruction_consumed=True
+            else:
+                self._staged=None
+                if self.last is not None:self._persist(self.last,'ready',tombstone=False,settle_cutover=False)
+                return False
+        return True
 
-    def _reservation(self,authority,scope,request_id,summary_ids,web_proof,logical_scope):
+    def _reservation(self,authority,scope,request_id,summary_ids):
         if authority is None or scope is None:return None
-        return authority.reserve_context_reconstruction(scope,request_id,summary_ids=summary_ids,
-                                                        web_proof=web_proof,logical_scope=logical_scope)
+        return authority.reserve_context_reconstruction(scope,request_id,summary_ids=summary_ids)
 
     def refusal_evidence(self):
         """Bounded, content-free journal state for typed guard diagnostics."""
@@ -449,7 +484,7 @@ class ReadonlyJournal:
                 'wireHeadroom':max(0,MAX_RETAINED_WIRE_CHARS-usage['wireChars'])}
 
     def prepare(self,messages,stamp,now=None,group_turn=None,reconstruction_authority=None,reconstruction_scope=None,
-                reconstruction_web_proof=None,reconstruction_context_scope=None,retirement=None,strict=False,compact_policy=False,guarded=True,retained_validator=None,
+                retirement=None,strict=False,compact_policy=False,guarded=True,retained_validator=None,
                 unprojected=None):
         from context_transport import READONLY_FIELDS,EVENT_CONTEXT_CURRENT
         now=time.time() if now is None else now
@@ -558,9 +593,8 @@ class ReadonlyJournal:
             suffix=uncommitted_window_head_extension(old,raw_base,self.db)
             if suffix is not None:retirement_deferred='uncommitted_window_head'
         if valid and suffix is None and strict:
-            # A reloaded SDK window keeps turns older than a rebuilt baseline
-            # and may omit never-submitted staged turns; the baseline itself
-            # still appears verbatim inside it.
+            # The SDK may retain older history and omit unanswered turns,
+            # including possibly submitted ones. Keep them in the old wire.
             suffix=window_reload_extension(old,raw_base,self.db)
             if suffix is not None:retirement_deferred='window_reload_extension'
         # Content-free evidence distinguishes a failed native overlap from
@@ -593,16 +627,15 @@ class ReadonlyJournal:
         self._last_refusal_reason='' if reuse else reason
         reconstruction_permit=None
         needs_reconstruction=bool(self.recovery_error or self.retired_reason or (old and (not reuse or (summary_changed and not guarded) or retirement_changed or authority_contract_changed)))
-        # A web-config save authorizes establishing a first baseline for a
-        # scope with no committed request history. It never rewrites an
-        # existing committed prefix: that still requires a 35-round checkpoint.
-        fresh_baseline=bool(old is None and not self.recovery_error and not self.retired_reason)
-        licensed_web_proof=reconstruction_web_proof if fresh_baseline else None
+        # R1: a web-config save no longer authorizes any journal rebuild —
+        # not even a first baseline. A scope with committed history keeps its
+        # committed System vector and wire until this scope's own licensed
+        # 35-round reconstruction; a fresh scope builds its first baseline
+        # without any license because there is nothing to retire.
         if needs_reconstruction and guarded:
             from system_contract import request_identity
             request_id=request_identity()
-            reconstruction_permit=self._reservation(reconstruction_authority,reconstruction_scope,request_id,summary_ids,
-                                                    licensed_web_proof,reconstruction_context_scope)
+            reconstruction_permit=self._reservation(reconstruction_authority,reconstruction_scope,request_id,summary_ids)
             if reconstruction_permit is None:
                 if reason in ('journal_recovery_unavailable','journal_retired'):
                     raise ContextRecoveryUnavailable('A committed request journal cannot be restored or was retired; a 35-round summary checkpoint is required before rebuilding it.')
@@ -636,8 +669,7 @@ class ReadonlyJournal:
             if not reconstruction_permit and guarded:
                 from system_contract import request_identity
                 request_id=request_identity()
-                reconstruction_permit=self._reservation(reconstruction_authority,reconstruction_scope,request_id,summary_ids,
-                                                        licensed_web_proof,reconstruction_context_scope)
+                reconstruction_permit=self._reservation(reconstruction_authority,reconstruction_scope,request_id,summary_ids)
             if reconstruction_permit is None and guarded:
                 raise ContextCapacityExceeded('The append-only request journal reached its configured capacity before an authorized 35-round reconstruction checkpoint.')
             wire=copy.deepcopy(messages);reason='history_size_boundary';reuse=False
@@ -651,17 +683,17 @@ class ReadonlyJournal:
         # wire may contain a shorter authority-only delta when its policy is
         # byte-identical to the latest committed policy.
         stored_authority=copy.deepcopy(event_packet) if event_packets else authority
-        return Prepared(self.serial,stamp,base,wire,copy.deepcopy(state),turns,now,reason,group_turn,base_chars,detail,usage,stored_authority,retirement,reconstruction_permit,reconstruction_authority,None,retirement_deferred)
+        return Prepared(self.serial,stamp,base,wire,copy.deepcopy(state),turns,now,reason,group_turn,base_chars,detail,usage,stored_authority,retirement,reconstruction_permit,reconstruction_authority,None,retirement_deferred,False)
 
     def commit(self,prepared):
         if prepared.serial!=self.serial:
             self._settle(prepared,False);return False
         usage=history_usage(prepared.wire)
         if history_boundary(usage['textChars'],prepared.base_chars,usage['wireChars'],growth_limit=False):
-            if prepared.reconstruction_permit:self._settle(prepared,False)
+            self._settle(prepared,False)
             return False
-        atomic=bool(prepared.reconstruction_permit and self.db is not None and getattr(prepared.reconstruction_authority,'db',None) is self.db)
-        if prepared.reconstruction_permit and not atomic and not self._settle(prepared,True):return False
+        atomic=bool(prepared.reconstruction_permit and not prepared.reconstruction_consumed and self.db is not None and getattr(prepared.reconstruction_authority,'db',None) is self.db)
+        if prepared.reconstruction_permit and not prepared.reconstruction_consumed and not atomic and not self._settle(prepared,True):return False
         if not self._persist(prepared,'ready',settle_permit=atomic):
             if atomic:self._settle(prepared,False)
             self.last=prepared;self.retired_reason='persistence_unavailable';self._staged=None;return False
@@ -677,10 +709,11 @@ class ReadonlyJournal:
         no license credit; the reconstruction permit, if any, is consumed
         rather than returned to available, because the licensed request may
         have been received and reusing it on another baseline is forbidden.
+        A permit already consumed by the stage transaction stays consumed.
         """
         if prepared.serial!=self.serial:return False
-        atomic=bool(prepared.reconstruction_permit and self.db is not None and getattr(prepared.reconstruction_authority,'db',None) is self.db)
-        if prepared.reconstruction_permit and not atomic and not self._settle(prepared,True):return False
+        atomic=bool(prepared.reconstruction_permit and not prepared.reconstruction_consumed and self.db is not None and getattr(prepared.reconstruction_authority,'db',None) is self.db)
+        if prepared.reconstruction_permit and not prepared.reconstruction_consumed and not atomic and not self._settle(prepared,True):return False
         if not self._persist(prepared,'ready',settle_permit=atomic):
             if atomic:self._settle(prepared,True)
             # Persistence failed: keep the candidate in memory so the next
@@ -689,7 +722,7 @@ class ReadonlyJournal:
         self.last=prepared;self.retired_reason='';self.recovery_error=None;self._staged=None;return True
 
     def _settle(self,prepared,success,in_transaction=False):
-        if not prepared.reconstruction_permit:return True
+        if not prepared.reconstruction_permit or prepared.reconstruction_consumed:return True
         # The authority that minted the permit is held on the candidate; it is
         # attached below by prepare, never reconstructed from model data.
         authority=prepared.reconstruction_authority

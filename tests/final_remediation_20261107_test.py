@@ -134,7 +134,10 @@ class SubmissionEvidenceTests(unittest.TestCase):
             self.assertFalse(self.j.stage_candidate(p2))
             self.assertEqual(self.j.recovery_error,None,'staging refusal must not poison later prepares')
             self.assertEqual(self.row()[1],before[1])
-        self.assertTrue(self.j.commit(p2),'the request itself continues normally after a staging refusal')
+        # Once storage is available, the candidate can be saved. Runtime must
+        # not send it while staging refuses (covered at the provider boundary).
+        self.assertTrue(self.j.stage_candidate(p2))
+        self.assertTrue(self.j.commit(p2))
 
 class ToolRoundMaterialTests(unittest.TestCase):
     def tool_block(self,complete=True):

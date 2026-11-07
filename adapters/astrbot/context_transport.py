@@ -12,7 +12,9 @@ READONLY_FIELDS=frozenset(('origin','conversation_environment','state','recent_m
     'recent_cross_session_messages','conversation_timeline','group_round_history',
     'companion','social','recent_image','ambient_group_messages','recent_burst',
     'previous_proactive_output','dialogue','conversation_candidate','participation_entry',
-    'reply_to','execution_memory_guidance','tool_context','autonomous_experience','execution_experience'))
+    'reply_to','execution_memory_guidance','tool_context','autonomous_experience','execution_experience',
+    # R5: the bot's own bounded effective-commitment state for this scope.
+    'active_agreements'))
 
 MODEL_STRENGTH_DIGITS=1
 

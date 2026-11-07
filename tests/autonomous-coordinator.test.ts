@@ -285,6 +285,94 @@ test('an uncertain effect is recorded once and never re-dispatched by a later wa
  }finally{await coordinator.stop();await db.close()}
 });
 
+test('a partial message handoff with every effect confirmed settles the goal honestly without a second dispatch',async()=>{
+ const db=await fixture();const goalId='aec9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c';let executions=0;
+ const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
+  if(op==='policy'||op==='snapshot')return{};
+  if(op==='execute'){executions++;throw Error('a fully confirmed delivery must never be re-dispatched')}
+  throw Error(op);
+ });
+ try{
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',rollout:'live'});
+  await handoffGoal(db,goalId);
+  await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget,started_at,finished_at) VALUES('partial-cycle','bot-0','tenant',2,0,0,'old','ended','{}',now(),now())");
+  await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,goal_id,status,expires_at,result,created_at,finished_at) VALUES('confirmed-partial','partial-cycle','bot-0','tenant',2,'message','private:12345678','deliver the accepted task result',$1,'partial',now()+interval '1 hour',$2,now(),now())",[goalId,JSON.stringify({status:'partial',summary:'回复已按协议送达',effects:[{id:'confirmed-partial:0',status:'confirmed',receipt:'real-fixture-ack'}],evidence:[],unfinished:[]})]);
+  await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
+  await coordinator.tick();await coordinator.active?.task;
+  const view=await coordinator.repo.view('tenant','bot-0');
+  assert.equal(executions,0,'planHandoff would replay the already-confirmed outward send');
+  assert.equal(view.goals[0].status,'completed');assert.equal(view.goals[0].progress,'回复已按协议送达');
+  assert.equal(view.cycles[0].reason,'handoff_executed');
+  assert.equal(view.actions.length,1);assert.equal(view.actions[0].status,'partial','the settled action ledger is not rewritten');
+ }finally{await coordinator.stop();await db.close()}
+});
+
+test('a partial message without a summary completes with an honest delivery description',async()=>{
+ const db=await fixture();const goalId='afc9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c';let executions=0;
+ const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
+  if(op==='policy'||op==='snapshot')return{};
+  if(op==='execute'){executions++;throw Error('a fully confirmed delivery must never be re-dispatched')}
+  throw Error(op);
+ });
+ try{
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',rollout:'live'});
+  await handoffGoal(db,goalId);
+  await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget,started_at,finished_at) VALUES('partial-blank-cycle','bot-0','tenant',2,0,0,'old','ended','{}',now(),now())");
+  await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,goal_id,status,expires_at,result,created_at,finished_at) VALUES('confirmed-blank','partial-blank-cycle','bot-0','tenant',2,'message','private:12345678','deliver the accepted task result',$1,'partial',now()+interval '1 hour',$2,now(),now())",[goalId,JSON.stringify({status:'partial',effects:[{id:'confirmed-blank:0',status:'confirmed',receipt:'real-fixture-ack'}],evidence:[],unfinished:[]})]);
+  await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
+  await coordinator.tick();await coordinator.active?.task;
+  const view=await coordinator.repo.view('tenant','bot-0');
+  assert.equal(executions,0);
+  assert.equal(view.goals[0].status,'completed');assert.equal(view.goals[0].progress,'此前不明的投递回执已全部确认为已送达');
+  assert.equal(view.cycles[0].reason,'handoff_executed');
+ }finally{await coordinator.stop();await db.close()}
+});
+
+test('a partial research handoff with unfinished items stays active and keeps a visible wake without re-dispatch',async()=>{
+ const db=await fixture();const goalId='bec9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c';let executions=0;
+ const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
+  if(op==='policy'||op==='snapshot')return{};
+  if(op==='execute'){executions++;throw Error('a partial research goal must not be re-dispatched')}
+  throw Error(op);
+ });
+ try{
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',rollout:'live'});
+  await handoffGoal(db,goalId);
+  await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget,started_at,finished_at) VALUES('partial-research-cycle','bot-0','tenant',2,0,0,'old','ended','{}',now(),now())");
+  await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,goal_id,status,expires_at,result,created_at,finished_at) VALUES('open-research','partial-research-cycle','bot-0','tenant',2,'research','','read the requested public facts',$1,'partial',now()+interval '1 hour',$2,now(),now())",[goalId,JSON.stringify({status:'partial',summary:'已读取部分公开来源',effects:[{id:'open-research:0',status:'confirmed'}],evidence:[{source:'fixture',reference:'checked'}],unfinished:['未能访问的其余来源']})]);
+  await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
+  await coordinator.tick();await coordinator.active?.task;
+  const view=await coordinator.repo.view('tenant','bot-0');
+  assert.equal(executions,0,'re-dispatching would replay confirmed sends; abandoning would drop them');
+  assert.equal(view.goals[0].status,'active','confirmed effects and remaining items stay visible');
+  assert.equal(view.cycles[0].reason,'handoff_partial_open');assert.equal(view.actions.length,1);
+  assert.equal(view.settings.state,'backoff');assert.equal(view.settings.last_error,'handoff_partial_open');
+  const delay=(new Date(view.settings.next_wake_at).getTime()-Date.now())/1000;assert.ok(delay>880&&delay<=900,'the open handoff keeps its own wake for manual handling');
+ }finally{await coordinator.stop();await db.close()}
+});
+
+test('a partial message with an unknown effect still waits for its authoritative receipt',async()=>{
+ const db=await fixture();const goalId='cec9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c';let executions=0;
+ const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
+  if(op==='policy'||op==='snapshot')return{};
+  if(op==='execute'){executions++;throw Error('an unsettled delivery must not be re-dispatched')}
+  throw Error(op);
+ });
+ try{
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',rollout:'live'});
+  await handoffGoal(db,goalId);
+  await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget,started_at,finished_at) VALUES('partial-unknown-cycle','bot-0','tenant',2,0,0,'old','ended','{}',now(),now())");
+  await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,goal_id,status,expires_at,result,created_at,finished_at) VALUES('mixed-partial','partial-unknown-cycle','bot-0','tenant',2,'message','private:12345678','deliver the accepted task result',$1,'partial',now()+interval '1 hour',$2,now(),now())",[goalId,JSON.stringify({status:'partial',summary:'一条气泡已确认，另一条回执未明',effects:[{id:'mixed-partial:0',status:'confirmed',receipt:'real-fixture-ack'},{id:'mixed-partial:1',status:'unknown'}],evidence:[],unfinished:[]})]);
+  await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
+  await coordinator.tick();await coordinator.active?.task;
+  const view=await coordinator.repo.view('tenant','bot-0');
+  assert.equal(executions,0);assert.equal(view.actions.length,1);
+  assert.equal(view.goals[0].status,'active','an unknown receipt is not a completion');
+  assert.equal(view.cycles[0].reason,'waiting_receipt');
+  const delay=(new Date(view.settings.next_wake_at).getTime()-Date.now())/1000;assert.ok(delay>250&&delay<=310,'the unsettled receipt keeps its bounded retry wake');
+ }finally{await coordinator.stop();await db.close()}
+});
+
 test('one hundred sleeping robots have no active work or per-bot timers; offline wake never starts QQ',async()=>{
  const db=await fixture(100);let modelCalls=0;
  const coordinator=new AutonomyCoordinator(db,async(_bot,op)=>{if(op==='execute')modelCalls++;return {}});

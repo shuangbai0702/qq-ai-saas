@@ -105,7 +105,10 @@ async def run():
   try:await AiocqhttpMessageEvent.send(event,MessageChain(chain=[Plain('第一条已经到达。\n\n第二条回执超时。')]))
   except asyncio.TimeoutError:pass
   else:raise AssertionError('Second send must remain uncertain')
-  st.pipeline.finish(work,runtime['metrics'].setdefault('qq',{}));assert work.status=='partial' and work.confirmed_messages==1
+  st.pipeline.finish(work,runtime['metrics'].setdefault('qq',{}))
+  runtime['settle_work_round'](st,event,work,lease)
+  assert work.status=='partial' and work.confirmed_messages==1
+  assert st.db.execute("SELECT count(*) FROM memory_rounds WHERE event='partial-fixture'").fetchone()[0]==0,'an uncertain suffix never mints a completed round'
   last_bot,last_output=st.db.execute("SELECT last_bot,last_output FROM contacts WHERE scope='group:55555'").fetchone()
   assert last_bot>=before and last_output=='第一条已经到达。','partial receipt lost actual timing or invented unsent text'
   assert st.presence.snapshot('group:55555')[1]>=before,'partial reply did not refresh local interaction clock'
@@ -135,6 +138,9 @@ async def run():
    work=st.pipeline.bind(event,lease)
    await AiocqhttpMessageEvent.send(event,MessageChain(chain=chain))
    st.pipeline.finish(work,runtime['metrics'].setdefault('qq',{}))
+   # R2: the single effective round settles once at Work finalization,
+   # adjacent to pipeline.finish (guarded_execute's finally in production).
+   runtime['settle_work_round'](st,event,work,lease)
    if silent:
     assert work.confirmed==0 and work.reason==silent and work.status=='silent',(name,work)
    else:

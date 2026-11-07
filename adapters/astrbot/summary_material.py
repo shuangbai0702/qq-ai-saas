@@ -69,6 +69,10 @@ def snapshots(messages,scope,signatures=None):
             complete=False
         replies=[];observed_reply=False
         for following in block:
+            if not isinstance(following,dict):
+                # A malformed block item cannot be proven; the material stays
+                # incomplete instead of crashing the summary pipeline.
+                complete=False;continue
             if tools is not None and (following.get('role')=='tool' or following.get('tool_calls')):continue
             if not supported_block([following]):complete=False
             if following.get('role')!='assistant':continue

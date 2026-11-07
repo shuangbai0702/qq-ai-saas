@@ -41,8 +41,9 @@ def fault(permit,success,**kw):
 authority.settle_context_reconstruction=fault
 journal.commit(candidate)
 '''
-                # The same fixture also proves the tightened web entry: with
-                # committed history, a web save can never authorize a rebuild.
+                # The same fixture also proves the R1 tightening: with
+                # committed history, no rebuild happens without a real 35-round
+                # checkpoint — a config save mints no license at all.
                 refuse='''import sys,sqlite3,os
 sys.path[:0]=[sys.argv[1]+'/references/astrbot',sys.argv[1]+'/adapters/astrbot']
 from memory_reflection import Reflection
@@ -52,8 +53,7 @@ journal=ReadonlyJournal(db,scope);base=journal.last.base.copy();base[0]={'role':
 from context_protocol import READONLY_CURRENT,model_json
 base.append({'role':'user','content':READONLY_CURRENT+'\\n'+model_json({'state':{'facts':['retained fact'],'recent_messages':[]}})})
 try:
- journal.prepare(base,'web',retirement='minted-checkpoint-stamp',reconstruction_authority=authority,reconstruction_scope=scope,
-                 reconstruction_web_proof={'permitId':'fixture-trusted-save','revision':2,'contextScope':scope},reconstruction_context_scope=scope)
+ journal.prepare(base,'web',retirement='minted-checkpoint-stamp',reconstruction_authority=authority,reconstruction_scope=scope)
  os._exit(0)
 except ContextReconstructionDenied:os._exit(73)
 '''
@@ -70,13 +70,18 @@ except ContextReconstructionDenied:os._exit(73)
                 result=subprocess.run([sys.executable,'-c',program,str(ROOT),str(path)],capture_output=True,text=True,timeout=30)
                 self.assertEqual(result.returncode,73,result.stderr)
                 restored=ReadonlyJournal(db,scope);self.assertEqual(restored.last.wire,first.wire,'the last valid snapshot survives process death')
-                self.assertEqual(db.execute('SELECT state FROM memory_reconstruction_checkpoints').fetchone()[0],'reserved','the reserve committed; the in-transaction consumption rolled back, leaving an owner the next reserve reclaims')
+                self.assertEqual(db.execute('SELECT state FROM memory_reconstruction_checkpoints').fetchone()[0],'reserved','the reserve committed; the in-transaction consumption rolled back')
+                # R1 conservative isolation: a dead owner's reserved permit is
+                # never reclaimed or re-issued, because a journal row that no
+                # longer shows the candidate is not proof the request was never
+                # staged or submitted. The license stays spent; the scope waits
+                # for its next legal 35-round checkpoint.
+                from readonly_journal import ContextReconstructionDenied
                 incoming=[{'role':'system','content':'new'},base[1]]
                 stamp=store.reflection.reconstruction_stamp(scope)
-                candidate=restored.prepare(incoming,'retry',retirement=stamp,reconstruction_authority=store.reflection,reconstruction_scope=scope)
-                self.assertTrue(restored.commit(candidate))
-                self.assertEqual(db.execute('SELECT state FROM memory_reconstruction_checkpoints').fetchone()[0],'consumed')
-                self.assertEqual(ReadonlyJournal(db,scope).last.wire,candidate.wire)
+                with self.assertRaises(ContextReconstructionDenied):
+                    restored.prepare(incoming,'retry',retirement=stamp,reconstruction_authority=store.reflection,reconstruction_scope=scope)
+                self.assertEqual(db.execute('SELECT state FROM memory_reconstruction_checkpoints').fetchone()[0],'reserved','no path may revive or refund the orphaned license')
             finally:store.close()
 
 if __name__=='__main__':unittest.main()

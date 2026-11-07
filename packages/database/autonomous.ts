@@ -165,7 +165,7 @@ export class AutonomyRepository {
   return this.db.query(`SELECT * FROM autonomy_goals WHERE bot_id=$1 AND tenant_id=$2 AND status='active' AND source->>'handoffId' IS NOT NULL AND COALESCE((source->>'notBefore')::double precision,0)<=extract(epoch FROM now())*1000 ORDER BY (source->>'notBefore')::double precision,created_at LIMIT 8`,[claim.bot_id,claim.tenant_id]);
  }
  async goalAction(claim:any,goalId:string){
-  const [row]=await this.db.query('SELECT id,status,result,(SELECT count(*)::int FROM autonomy_actions a2 WHERE a2.goal_id=a.goal_id AND a2.bot_id=a.bot_id AND a2.tenant_id=a.tenant_id) AS actions FROM autonomy_actions a WHERE a.goal_id=$1 AND a.bot_id=$2 AND a.tenant_id=$3 ORDER BY a.created_at DESC LIMIT 1',[goalId,claim.bot_id,claim.tenant_id]);
+  const [row]=await this.db.query('SELECT id,status,kind,result,(SELECT count(*)::int FROM autonomy_actions a2 WHERE a2.goal_id=a.goal_id AND a2.bot_id=a.bot_id AND a2.tenant_id=a.tenant_id) AS actions FROM autonomy_actions a WHERE a.goal_id=$1 AND a.bot_id=$2 AND a.tenant_id=$3 ORDER BY a.created_at DESC LIMIT 1',[goalId,claim.bot_id,claim.tenant_id]);
   return row||null;
  }
  async planHandoff(claim:any,goal:any,usage:any){

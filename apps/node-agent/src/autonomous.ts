@@ -196,9 +196,24 @@ export class AutonomyCoordinator {
       if(Number(prior.result?.receiptCheck?.attempts||0)>=10||prior.actions>=4){await this.repo.abandonGoal(c,goal.id);reason='handoff_blocked';continue}
       reason='waiting_receipt';sleep=300;break;
      }
-     if(prior.status==='completed'||prior.status==='partial'){
+     if(prior.status==='completed'){
       await this.repo.completeGoal(c,goal.id,taskResultFacts('message',prior.result)?.summary||prior.result?.summary||'');
       reason='handoff_executed';continue;
+     }
+     if(prior.status==='partial'){
+      // An honest completion: the only outward action of a message handoff is
+      // its delivery, and every effect was protocol-confirmed. The runtime may
+      // have crashed after sending, before recording its terminal status.
+      if(prior.kind==='message'&&effects.length&&effects.every((effect:any)=>effect.status==='confirmed')){
+       await this.repo.completeGoal(c,goal.id,prior.result?.summary||'此前不明的投递回执已全部确认为已送达');
+       reason='handoff_executed';continue;
+      }
+      // Any other partial (e.g. research with unfinished items) is not a
+      // completion: the goal keeps its confirmed effects and remaining items,
+      // without a re-dispatch (a planned handoff would replay confirmed sends)
+      // or an abandon that would drop them. The wake keeps it visible for
+      // manual handling via chat cancellation or a config revision.
+      reason='handoff_partial_open';sleep=900;break;
      }
      if(prior.status==='blocked'||prior.actions>=4){
       await this.repo.abandonGoal(c,goal.id);reason='handoff_blocked';continue;

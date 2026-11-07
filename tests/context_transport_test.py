@@ -264,7 +264,11 @@ class SnapshotLayout(unittest.TestCase):
                       {'role':'tool','tool_call_id':'call-unknown','content':'{"receipt":{"status":"unknown"},"actionId":"stable"}'}]
         system,projected=request_context_view('人格',tool_history,None,'策略','规则',json.dumps(self.snapshot()))
         material=snapshots(projected,'private:12345678')[0]
-        self.assertEqual(material['event'],'event-1');self.assertFalse(material['complete'])
+        # v2 captures the complete tool request/receipt, including an unknown
+        # outcome. Complete evidence does not assert successful execution.
+        self.assertEqual(material['event'],'event-1');self.assertTrue(material['complete'])
+        self.assertEqual(material['version'],2)
+        self.assertEqual(json.loads(material['tools'][0]['result'])['receipt']['status'],'unknown')
         self.assertNotIn('平台本轮',material['text'])
         proof={'event-1':{'subject':'12345678','digest':digest(current),'reply_digest':'invalid'}}
         self.assertEqual(project_history(projected,proof,'private:12345678','event-1'),projected)
@@ -395,6 +399,15 @@ class Wiring(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(control['payload']['messages'][:len(first)],first)
                     self.assertIsNotNone(journal.last)
                     committed=journal.last
+                    # Durable-stage failure must stop at the real common
+                    # provider boundary, before fake_chat can submit a payload.
+                    from readonly_journal import ContextRecoveryUnavailable
+                    last_payload=control['payload']
+                    extra['_hosted_pipeline'].stop=lambda *args:None
+                    with patch.object(ReadonlyJournal,'stage_candidate',return_value=False):
+                        with self.assertRaises(ContextRecoveryUnavailable):await invoke(native+packets('storage refused'))
+                    self.assertIs(control['payload'],last_payload)
+                    self.assertIs(journal.last,committed)
                     for failure in ('fail','cancel'):
                         control[failure]=True
                         with self.assertRaises(RuntimeError if failure=='fail' else asyncio.CancelledError):await invoke(native+packets(failure))
