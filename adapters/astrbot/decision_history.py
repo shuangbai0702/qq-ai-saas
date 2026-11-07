@@ -15,7 +15,9 @@ MAX_HISTORY_CHARS=160000
 # Active append journals budget text separately from encoded image transport.
 # The baseline is authoritative; growth is bounded relative to that baseline,
 # rather than giving a large baseline only a few remaining kilobytes.
-MAX_RETAINED_TEXT_CHARS=384000
+# Keep bounded append-only headroom while a legal checkpoint is pending.
+# This is a local transport limit, not a reconstruction permit or token limit.
+MAX_RETAINED_TEXT_CHARS=512000
 MAX_RETAINED_WIRE_CHARS=2*1024*1024
 MAX_IDLE_SECONDS=1800
 # Autonomous sleep commonly lasts 30 minutes plus scheduling latency. This is
