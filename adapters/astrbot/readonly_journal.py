@@ -30,6 +30,18 @@ def same_native_message(before,after):
     if {k:v for k,v in before.items() if k!='content'}!={k:v for k,v in after.items() if k!='content'}:return False
     left=before.get('content');right=after.get('content')
     if not isinstance(left,list) or not isinstance(right,list):return False
+    # Pinned SDK message rehydration adds optional image_url.id=None.
+    # Compare only that absent/null bookkeeping field equivalently; URLs,
+    # media bytes, detail, other keys and order still have to match exactly.
+    # The reuse branch sends old.wire unchanged, never these normalized views.
+    def image_view(parts):
+        result=[]
+        for part in parts:
+            if isinstance(part,dict) and part.get('type')=='image_url' and isinstance(part.get('image_url'),dict) and part['image_url'].get('id') is None:
+                part={**part,'image_url':{k:v for k,v in part['image_url'].items() if k!='id'}}
+            result.append(part)
+        return result
+    left=image_view(left);right=image_view(right)
     images=[p for p in left if isinstance(p,dict) and p.get('type')=='image_url']
     if not images or images!=[p for p in right if isinstance(p,dict) and p.get('type')=='image_url']:return False
     notice={'type':'text','text':_SDK_MONTAGE_NOTICE}
@@ -54,8 +66,9 @@ def tail_extension(old_base,new_messages):
     """
     if not old_base or not isinstance(new_messages,list):return None
     head=system_head(old_base)
-    if len(new_messages)<=head or len(new_messages)-head<len(old_base)-head:return None
-    tail_old=old_base[head:];tail_new=new_messages[head:]
+    new_head=system_head(new_messages)
+    if len(new_messages)<=new_head or len(new_messages)-new_head<len(old_base)-head:return None
+    tail_old=old_base[head:];tail_new=new_messages[new_head:]
     if not same_native_prefix(tail_new[:len(tail_old)],tail_old):return None
     return tail_new[len(tail_old):]
 
@@ -135,14 +148,13 @@ def confirmed_native_window_extension(old, base):
     """Retain wire in full when the SDK presents a shorter native window.
 
     Only an exact tail/prefix overlap containing a sourced event is evidence.
-    Repeated prose, replaced media, tools, or a changed System cannot prove it.
+    Repeated prose or replaced media cannot prove it. System changes defer:
+    the caller reuses committed wire, including its original System vector.
     This adapts the SDK view; it never truncates the committed wire.
     """
     if not old:return None
-    head=0
-    while head<len(old.base) and old.base[head].get('role')=='system':head+=1
-    if base[:head]!=old.base[:head] or any(m.get('role')=='system' for m in base[head:]):return None
-    prior=old.base[head:];current=base[head:]
+    prior=old.base[system_head(old.base):];current=base[system_head(base):]
+    if any(m.get('role') in ('system','developer') for m in current):return None
     for size in range(min(len(prior),len(current)),0,-1):
         overlap=prior[-size:]
         if not same_native_prefix(overlap,current[:size]):continue
@@ -307,7 +319,8 @@ class ReadonlyJournal:
         if old is None:return {'journalState':'empty','recoveryError':self.recovery_error or '','refusal':self._last_refusal_reason,'turns':0}
         usage=history_usage(old.wire)
         return {'journalState':'retired:'+self.retired_reason if self.retired_reason else 'ready',
-                'recoveryError':self.recovery_error or '','refusal':self._last_refusal_reason,'baseChars':old.base_chars,
+                'recoveryError':self.recovery_error or '','refusal':self._last_refusal_reason,
+                'view':getattr(self,'_last_view_evidence',{}),'baseChars':old.base_chars,
                 'textChars':usage['textChars'],'wireChars':usage['wireChars'],'turns':old.turns,
                 'addedTextHeadroom':max(0,MAX_ADDED_CHARS-(usage['textChars']-old.base_chars)),
                 'textHeadroom':max(0,MAX_RETAINED_TEXT_CHARS-usage['textChars']),
@@ -374,7 +387,7 @@ class ReadonlyJournal:
         # prefix is the contract: System bytes and covered-round retirement
         # both defer, and the request continues on the committed wire with
         # only real new tail messages appended.
-        suffix=None;retirement_deferred=''
+        suffix=None;retirement_deferred='';raw_base=base
         if valid and old is not None:
             suffix=tail_extension(old.base,base)
             if suffix is not None and base[:system_head(old.base)]!=old.base[:system_head(old.base)]:
@@ -393,13 +406,43 @@ class ReadonlyJournal:
                 suffix=tail_extension(old.base,raw_base)
                 if suffix is not None:retirement_deferred='coverage_retirement'
         if valid and suffix is None:suffix=confirmed_group_extension(old,base,state,group_turn)
-        if valid and suffix is None and strict:suffix=confirmed_native_window_extension(old,base)
+        if valid and suffix is None and strict:
+            # Use the honest full native view when coverage has projected out
+            # earlier blocks. SDK turn limits and pending System changes may
+            # happen together; neither authorizes rewriting committed wire.
+            suffix=confirmed_native_window_extension(old,raw_base)
+            if suffix is not None:retirement_deferred='native_window_overlap'
         if valid and suffix is None and strict:
             # The honest full native view owns the fallback when provided: a
             # projected view whose preceding blocks were dropped by coverage
             # must never seed an append that skips uncommitted real turns.
-            suffix=fresh_event_extension(old.base,unprojected if isinstance(unprojected,list) else base)
+            # Use the same packet-free native view as the coverage fallback.
+            # The SDK inserts the platform packets before the new prompt;
+            # passing that decorated view makes its first user unsourced.
+            suffix=fresh_event_extension(old.base,raw_base)
             if suffix is not None:retirement_deferred='fresh_native_window'
+        # Content-free evidence distinguishes a failed native overlap from
+        # retirement/authority fencing; summary changes alone are not a cause.
+        origins={str(o['event_id']) for m in (old.base if old else []) if (o:=source(m))}
+        tail=raw_base[system_head(raw_base):]
+        self._last_view_evidence={'valid':valid,'retirementChanged':retirement_changed,
+            'authorityChanged':authority_contract_changed,'nativeMessages':len(raw_base),
+            'tailShape':[{'role':m.get('role') if isinstance(m,dict) else 'invalid',
+                'sourced':bool(source(m)) if isinstance(m,dict) else False,
+                'known':bool((o:=source(m)) and str(o['event_id']) in origins) if isinstance(m,dict) else False}
+                for m in tail[:4]]}
+        if valid and suffix is None and old:
+            prior=old.base[system_head(old.base):]
+            for i,(a,b) in enumerate(zip(prior,tail)):
+                if same_native_message(a,b):continue
+                def shape(m):
+                    content=m.get('content')
+                    return {'role':m.get('role'),'keys':sorted(m),'contentType':type(content).__name__,
+                            'parts':[p.get('type') if isinstance(p,dict) else 'invalid' for p in content] if isinstance(content,list) else [],
+                            'chars':len(model_json(content))}
+                self._last_view_evidence['mismatch']={'index':i,'old':shape(a),'new':shape(b),
+                    'sameSource':source(a)==source(b),'sameContent':a.get('content')==b.get('content')}
+                break
         reuse=suffix is not None
         reason='' if reuse else ('initial' if old is None and not self.recovery_error else
             'journal_recovery_unavailable' if self.recovery_error else 'journal_retired' if self.retired_reason else

@@ -1,0 +1,24 @@
+{
+  "sourceSha256": "ea79bada754b7355d29ce126f302801b9bc7246731ff7a31deda29afe29e5a91",
+  "clips": [
+    {
+      "file": "naiwa-laugh-short.mp3",
+      "sourceStartSeconds": 0.59,
+      "sourceEndSeconds": 4.57,
+      "decodedDurationSeconds": 3.98,
+      "bytes": 48631,
+      "sha256": "1588d843aded1b0a910ebdde9f080848b2e1f108754cda0d8c6bb1ba5ba495e4"
+    },
+    {
+      "file": "naiwa-laugh-long.mp3",
+      "sourceStartSeconds": 0.59,
+      "sourceEndSeconds": 8.32,
+      "decodedDurationSeconds": 7.73,
+      "bytes": 93457,
+      "sha256": "a79a991cb126a8dc1705127423d0745cab63d9f1d818674a9095cb21d74a3db7"
+    }
+  ],
+  "fadeInMs": 8,
+  "fadeOutMs": 18,
+  "notes": "Waveform/spectral-boundary analysis; no listening verification available in this runtime."
+}

@@ -3,6 +3,7 @@
 No scheduler or model process lives here. Callers own their tasks and use the
 existing reply/delivery pipeline. Conversation text never grants authority.
 """
+from model_cache import auxiliary_scope,adopted,discarded
 import asyncio
 import contextvars
 import json
@@ -285,34 +286,38 @@ class GroupPresence:
         payload = {'persona': str(cfg.get('systemPrompt') or '')[:4000], 'scope': scope, 'style': b.get('groupParticipationStyle', 'natural'),'cooldown_base_seconds':cooldown_base(cfg,scope,'group'),
                    'allow_side_comment': b.get('groupParticipationOtherConversations', False), 'messages': list(reversed(recent)),
                    'attention': dialogue if b.get('attentionEnabled', True) else {}, 'companion': companion,'platform_addressing':addressing or {}}
-        started = time.monotonic(); token = event_var.set(None); limit_token = decision_token_limit.set(192)
-        try:
-            result = await asyncio.wait_for(provider.text_chat(prompt=json.dumps(payload, ensure_ascii=False), system_prompt=GROUP_SYSTEM+COOLDOWN_SYSTEM, contexts=[], func_tool=None, max_tokens=192, request_max_retries=1), b.get('groupDecisionTimeoutSeconds', 10))
-            data=parse_object(result.completion_text);model_cooldown(data)
-            # Protocol addressing is supplied above as evidence. Semantic target
-            # belongs to this decision model; it does not change trusted QQ IDs.
-            decision = normalize_decision_payload(data)
-            if decision.target == 'other' and not b.get('groupParticipationOtherConversations', False):
-                decision = ParticipationDecision.silent(source='policy', target='other')
-            current=self.current(scope, cfg, now, row[2], live)
-            if not current:
-                decision = ParticipationDecision.silent(source='stale')
-            cooldown={}
-            if current and decision.source=='ai':
-                with self.db:cooldown=record_decision(self.db,cfg,scope,event_id,data,decision.reply,now,'group')
-            metrics['lastGroupDecision'] = {'at': now, 'reply': decision.reply, 'target': decision.target, 'reason': decision.reason_code,
-                                            'source': decision.source, 'latencyMs': round((time.monotonic()-started)*1000), 'group': scope[6:],**cooldown}
-            return decision, now, row[2]
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            if live():
-                metrics['groupDecisionFailures'] = metrics.get('groupDecisionFailures', 0)+1
-                metrics['lastGroupDecision'] = {'at': now, 'reply': False, 'source': 'error', 'reason': failure_class(error), 'group': scope[6:]}
-            return None
-        finally:
-            decision_token_limit.reset(limit_token)
-            event_var.reset(token)
+        with auxiliary_scope(provider,'group_presence',event_id,scope):
+            started = time.monotonic(); token = event_var.set(None); limit_token = decision_token_limit.set(192)
+            try:
+                result = await asyncio.wait_for(provider.text_chat(prompt=json.dumps(payload, ensure_ascii=False), system_prompt=GROUP_SYSTEM+COOLDOWN_SYSTEM, contexts=[], func_tool=None, max_tokens=192, request_max_retries=1), b.get('groupDecisionTimeoutSeconds', 10))
+                data=parse_object(result.completion_text);model_cooldown(data)
+                # Protocol addressing is supplied above as evidence. Semantic target
+                # belongs to this decision model; it does not change trusted QQ IDs.
+                decision = normalize_decision_payload(data)
+                if decision.target == 'other' and not b.get('groupParticipationOtherConversations', False):
+                    decision = ParticipationDecision.silent(source='policy', target='other')
+                current=self.current(scope, cfg, now, row[2], live)
+                if not current:
+                    decision = ParticipationDecision.silent(source='stale')
+                cooldown={}
+                if current and decision.source=='ai':
+                    with self.db:cooldown=record_decision(self.db,cfg,scope,event_id,data,decision.reply,now,'group')
+                metrics['lastGroupDecision'] = {'at': now, 'reply': decision.reply, 'target': decision.target, 'reason': decision.reason_code,
+                                                'source': decision.source, 'latencyMs': round((time.monotonic()-started)*1000), 'group': scope[6:],**cooldown}
+                if current:adopted('policy' if decision.source=='policy' else 'decision_applied')
+                else:discarded('stale')
+                return decision, now, row[2]
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                discarded(type(error).__name__)
+                if live():
+                    metrics['groupDecisionFailures'] = metrics.get('groupDecisionFailures', 0)+1
+                    metrics['lastGroupDecision'] = {'at': now, 'reply': False, 'source': 'error', 'reason': failure_class(error), 'group': scope[6:]}
+                return None
+            finally:
+                decision_token_limit.reset(limit_token)
+                event_var.reset(token)
 
 
 def owner_state(db, cfg, now):

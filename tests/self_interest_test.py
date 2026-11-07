@@ -43,4 +43,4 @@ class ReflectionContract(unittest.TestCase):
   self.choose();self.assertEqual(self.choose(operation='cool_down')['heat'],0)
   self.choose(topic='系统设计');self.choose(topic='与主人聊天')
 
-unittest.main()
+if __name__=='__main__':unittest.main()

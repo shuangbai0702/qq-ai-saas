@@ -3,6 +3,7 @@
 Mechanisms informed by MaiBot expression learners, AstrBot Self Learning and
 Meme Manager/Magpie; implementation here owns per-bot state and lifecycle.
 """
+from model_cache import auxiliary_scope,adopted,discarded
 from memory_strength import decay,relevance,EXPRESSION_HALF_LIFE,EXPRESSION_USE_INTERVAL
 import asyncio
 import json
@@ -362,16 +363,19 @@ def maybe_learn(st, scope, cfg, provider, is_current, metrics, event_var):
     attempt=st.reserve_learning(scope,batch)
     epoch=st.db.execute('SELECT epoch FROM social_control WHERE id=1').fetchone()[0]
     async def run():
-        token=event_var.set(None)
-        try:
-            metrics['learningRequests']=metrics.get('learningRequests',0)+1
-            response = await asyncio.wait_for(provider.text_chat(prompt=json.dumps(batch,ensure_ascii=False),system_prompt=LEARN_SYSTEM,contexts=[],func_tool=None),20)
-            if st.closed or not is_current():return
-            if st.db.execute('SELECT epoch FROM social_control WHERE id=1').fetchone()[0]!=epoch:return
-            accepted=st.accept_learning(scope,batch,response.completion_text,attempt=attempt)
-            metrics['learnedPatterns']=metrics.get('learnedPatterns',0)+accepted
-        except asyncio.CancelledError:raise
-        except Exception:
-            metrics['learningFailures']=metrics.get('learningFailures',0)+1
-        finally:event_var.reset(token)
+        with auxiliary_scope(provider,'style_learning',scope=scope):
+            token=event_var.set(None)
+            try:
+                metrics['learningRequests']=metrics.get('learningRequests',0)+1
+                response = await asyncio.wait_for(provider.text_chat(prompt=json.dumps(batch,ensure_ascii=False),system_prompt=LEARN_SYSTEM,contexts=[],func_tool=None),20)
+                if st.closed or not is_current():return
+                if st.db.execute('SELECT epoch FROM social_control WHERE id=1').fetchone()[0]!=epoch:return
+                accepted=st.accept_learning(scope,batch,response.completion_text,attempt=attempt)
+                metrics['learnedPatterns']=metrics.get('learnedPatterns',0)+accepted
+                if st.db.execute('SELECT watermark FROM social_learning WHERE rowid=?',(attempt,)).fetchone()[0]:adopted('learning_applied')
+            except asyncio.CancelledError:raise
+            except Exception as error:
+                discarded(type(error).__name__)
+                metrics['learningFailures']=metrics.get('learningFailures',0)+1
+            finally:event_var.reset(token)
     st.task=asyncio.create_task(run())

@@ -255,7 +255,7 @@ class FailureTypingTests(unittest.TestCase):
         try:model_cache._attempt.get()['lease']=lease
         except AttributeError:pass
         value=model_cache._attempt.get()
-        if wire_seen:value['wireIndex']=1
+        if wire_seen:value.update(wireIndex=1,transportStarted=True)
         with patch.object(model_cache,'record_diagnostic',lambda lease,row:rows.append(row) or True):
             model_cache.finish_attempt('failed',reason='FixtureTimeout')
         model_cache.reset_attempt(token)
@@ -266,7 +266,7 @@ class FailureTypingTests(unittest.TestCase):
         rows=self.run_attempt(False)
         self.assertEqual(rows[-1]['diagnosticDetail'],'request_not_sent')
         rows=self.run_attempt(True)
-        self.assertEqual(rows[-1]['diagnosticDetail'],'provider_request_sent')
+        self.assertEqual(rows[-1]['diagnosticDetail'],'request_submission_unknown')
 
 class FreshWindowTests(unittest.TestCase):
     """Worker restarts can lose the in-memory SDK conversation: the presented
@@ -292,6 +292,64 @@ class FreshWindowTests(unittest.TestCase):
         self.assertEqual(p.wire[:len(first.wire)],first.wire,'committed prefix stays byte-exact')
         self.assertEqual(p.wire[len(first.wire)],fresh[-1],'the first appended element is the real new turn')
         self.assertTrue(self.j.commit(p))
+    def test_sdk_null_image_id_matches_view_but_never_changes_committed_wire(self):
+        self.base[2]['content']=[{'type':'text','text':self.base[2]['content']},{'type':'image_url','image_url':{'url':'data:image/png;base64,YQ=='}}]
+        first=self.first();incoming=copy.deepcopy(self.base)
+        incoming[2]['content'][1]['image_url']['id']=None
+        incoming += [event_packet({'sender_id':'12345678'}),packet(self.state),sourced('9','new')]
+        p=self.j.prepare(incoming,('t','b',1),now=2,strict=True,guarded=True)
+        self.assertEqual(p.wire[:len(first.wire)],first.wire)
+        self.assertNotIn('id',first.base[2]['content'][1]['image_url']);self.j.abort_candidate(p)
+        for key,value in (('id','changed-id'),('url','data:image/png;base64,Yg=='),('detail','low')):
+            changed=copy.deepcopy(incoming);changed[2]['content'][1]['image_url'][key]=value
+            with self.assertRaises(ContextReconstructionDenied):self.j.prepare(changed,('t','b',1),now=2,strict=True,guarded=True)
+
+    def test_system_message_count_change_defers_without_rewriting_history(self):
+        first=self.first()
+        for systems in ([{'role':'system','content':'new system'}], [{'role':'system','content':'new system'},{'role':'developer','content':'new policy'},{'role':'system','content':'extra'}]):
+            incoming=systems+self.base[2:]+[event_packet({'sender_id':'12345678'}),packet(self.state),sourced('9','new event')]
+            p=self.j.prepare(incoming,('t','b',1),now=2,strict=True,guarded=True)
+            self.assertEqual(p.wire[:len(first.wire)],first.wire)
+            self.assertEqual(p.base[:2],first.base[:2]);self.assertEqual(p.base[-1],sourced('9','new event'))
+            self.j.abort_candidate(p)
+
+    def test_sdk_packets_before_prompt_do_not_block_fresh_unprojected_tail(self):
+        first=self.first()
+        for image in (False,True):
+            new=sourced('9','new event')
+            if image:new['content']=[{'type':'text','text':new['content']},{'type':'image_url','image_url':{'url':'data:image/png;base64,YQ=='}}]
+            incoming=self.base[:2]+[event_packet({'sender_id':'12345678'}),packet(self.state),new]
+            p=self.j.prepare(incoming,('t','b',1),now=2,strict=True,guarded=True,unprojected=incoming)
+            self.assertEqual(p.retirement_deferred,'fresh_native_window')
+            self.assertEqual(p.wire[:len(first.wire)],first.wire)
+            self.assertEqual(p.wire[len(first.wire)],new)
+            self.assertEqual(p.base,first.base+[new])
+            self.j.abort_candidate(p)
+    def test_sdk_turn_truncation_and_system_change_preserve_committed_wire(self):
+        first=self.first()
+        # SDK enforces its turn limit before provider preparation. Its window
+        # starts at the second real user event while System has also changed.
+        new=sourced('9','new event')
+        native=[{'role':'system','content':'changed persona'}]+self.base[4:]+[
+            {'role':'assistant','content':'confirmed previous answer'},new]
+        incoming=native+[event_packet({'sender_id':'12345678'}),packet(self.state)]
+        p=self.j.prepare(incoming,('t','b',1),now=2,strict=True,guarded=True)
+        self.assertEqual(p.retirement_deferred,'native_window_overlap')
+        self.assertEqual(p.wire[:len(first.wire)],first.wire)
+        self.assertEqual(p.base,first.base+native[-2:])
+        self.assertEqual(p.wire[len(first.wire):len(first.wire)+2],native[-2:])
+        self.j.abort_candidate(p)
+        changed=copy.deepcopy(incoming);changed[1]['content']='changed historical user'
+        with self.assertRaises(ContextReconstructionDenied):
+            self.j.prepare(changed,('t','b',1),now=2,strict=True,guarded=True)
+        p=self.j.prepare(incoming,('t','b',1),now=2,strict=True,guarded=True)
+        self.assertTrue(self.j.commit(p))
+        next_native=[native[0],new,{'role':'assistant','content':'next confirmed answer'},sourced('10','next event')]
+        following=self.j.prepare(next_native+[event_packet({'sender_id':'12345678'}),packet(self.state)],
+                                 ('t','b',1),now=3,strict=True,guarded=True)
+        self.assertEqual(following.wire[:len(p.wire)],p.wire)
+        self.assertEqual(following.base,p.base+next_native[-2:])
+        self.j.abort_candidate(following)
     def test_known_event_in_fresh_view_still_requires_license(self):
         self.first()
         # A replayed/already-committed event cannot be re-appended: the view

@@ -3,7 +3,7 @@
 This is a routing hint, never a context cache. No message/permission is frozen.
 Unknown compatible providers keep their original request contract.
 """
-import hashlib,json,os,time
+import hashlib,json,os,time,re
 import uuid
 from collections import OrderedDict
 from pathlib import Path
@@ -17,6 +17,7 @@ _attempt=ContextVar('fishbot_model_attempt',default=None)
 _shapes=OrderedDict()
 _wire_shapes=OrderedDict()
 _system_contracts={}
+_auxiliary=ContextVar('fishbot_auxiliary_diagnostic',default=None)
 
 class AppendOnlyWireViolation(RuntimeError):pass
 
@@ -62,9 +63,14 @@ def record_diagnostic(lease, record):
              'messageCount','prefixMessages','firstDifference','inputChars','prefixChars','unsharedChars','costStatus','journalReason',
              'parametersSha','wireIndex','resetDetail','historyChars','baseChars','wireChars','textChars','plainTextChars',
              'mediaChars','imageCount','toolsChars','toolCount','wireBytes','diagnosticDetail','systemContractStatus',
-             'contentChars','reasoningChars','reasoningReported','finishReason','responseIdShape','appendOnlyStatus')
+             'contentChars','reasoningChars','reasoningReported','finishReason','responseIdShape','appendOnlyStatus',
+             'model','httpStatus','outputLimit','adoption','wireCount','scopeHash')
     row={key:value for key,value in record.items() if key in allowed and (value is None or type(value) in (str,int,float,bool))}
-    if any(isinstance(value,str) and len(value)>256 for value in row.values()):return False
+    # A long diagnostic must not erase the request's identity and outcome.
+    # These fields contain only program metadata; never serialize exceptions.
+    for key,value in list(row.items()):
+        if isinstance(value,str) and len(value)>(1024 if key=='diagnosticDetail' else 256):
+            row[key]='diagnostic_field_oversize'
     row.update(at=time.time(),pid=os.getpid(),botId=lease['botId'],generation=lease.get('generation'),revision=lease.get('revision'))
     try:
         path=Path(lease['root'])/'model-diagnostics.jsonl'
@@ -105,9 +111,11 @@ def usage_evidence(response):
     raw=getattr(response,'raw_completion',None);usage=read(raw,'usage');details=read(usage,'prompt_tokens_details')
     number=lambda value:value if type(value) is int and value>=0 else None
     identifier=read(raw,'id')
+    cached=number(read(details,'cached_tokens'))
+    if cached is None:cached=number(read(usage,'prompt_cache_hit_tokens'))
     return {'responseId':identifier,'inputTokens':number(read(usage,'prompt_tokens')),
-            'cachedTokens':number(read(details,'cached_tokens')),'outputTokens':number(read(usage,'completion_tokens')),
-            'cacheUsageReported':number(read(details,'cached_tokens')) is not None,
+            'cachedTokens':cached,'outputTokens':number(read(usage,'completion_tokens')),
+            'cacheUsageReported':cached is not None,
             # A response-id prefix is a shape, never a vendor or route claim.
             # It is recorded so a correlation with cache reuse stays auditable.
             'responseIdShape':'gen-prefixed' if isinstance(identifier,str) and identifier.startswith('gen-') else 'other',
@@ -135,7 +143,40 @@ def current_lease(event,provider):
     decision=_decision.get()
     if decision and decision[0] is provider and isinstance(decision[4],dict):return decision[4]
     binding=_system_contracts.get(id(provider))
-    return binding[1] if binding and binding[0] is provider else None
+    return binding[2] if binding and binding[0] is provider and isinstance(binding[2],dict) else None
+
+
+@contextmanager
+def auxiliary_scope(provider,phase,work_id=None,scope=None):
+    """Diagnostic ownership only; never an authorization or a new model call.
+
+    The provider wrapper binds its attempt to this scope. Its technical result
+    and the caller's adoption are separate records in the existing journal.
+    A completed request is not automatically a successfully applied result.
+    """
+    value={'provider':provider,'phase':phase,'workId':work_id,'attempts':[],
+           'adoption':'not_adopted','reason':'caller_did_not_adopt','scopeHash':hashlib.sha256(scope.encode()).hexdigest()[:16] if isinstance(scope,str) else None}
+    token=_auxiliary.set(value)
+    try:yield value
+    except BaseException as error:
+        value.update(adoption='not_adopted',reason=type(error).__name__)
+        raise
+    finally:
+        for attempt in value['attempts']:
+            record_diagnostic(attempt.get('lease'),{'kind':'request_disposition',
+                'attemptId':attempt['attemptId'],'phase':attempt['phase'],'workId':attempt['workId'],
+                'adoption':value['adoption'],'reason':value['reason'],'scopeHash':value['scopeHash']})
+        _auxiliary.reset(token)
+
+
+def adopted(reason='applied'):
+    value=_auxiliary.get()
+    if value:value.update(adoption='adopted',reason=reason)
+
+
+def discarded(reason):
+    value=_auxiliary.get()
+    if value:value.update(adoption='not_adopted',reason=reason)
 
 def is_foreground_event(event):
     if not event or event.get_extra('_hosted_internal_work'):return False
@@ -165,9 +206,17 @@ def begin_attempt(event,provider,system_contract=None,system_permit_id=None):
     if foreground and system_contract is not None:
         from system_contract import request_identity
         attempt_id=request_identity()
-    phase=('inner_execution' if event.get_extra('_hosted_internal_work') else 'foreground') if event else (decision[6] if len(decision)>6 and decision[6] else decision[3].split(':',1)[-1]) if decision else 'data_task'
+    auxiliary=_auxiliary.get()
+    if auxiliary and auxiliary['provider'] is not provider:auxiliary=None
+    phase=auxiliary['phase'] if auxiliary else ('inner_execution' if event.get_extra('_hosted_internal_work') else 'foreground') if event else (decision[6] if len(decision)>6 and decision[6] else decision[3].split(':',1)[-1]) if decision else 'data_task'
     value={'lease':lease,'provider':provider,'started':time.monotonic(),'phase':phase,'attemptId':attempt_id,'workId':getattr(work,'event_id',None) or (decision[5] if decision and len(decision)>5 else None),'scope':getattr(work,'scope',phase),'ended':False,
            'systemContract':system_contract,'systemPermitId':system_permit_id,'systemReservation':None}
+    if auxiliary:
+        value['workId']=auxiliary['workId']
+        # Each bounded job normally makes one request; image batching is also
+        # bounded. Do not retain response objects or request bodies here.
+        auxiliary['attempts'].append(value)
+    record_diagnostic(lease,{'kind':'request_start','attemptId':attempt_id,'phase':phase,'workId':value['workId'],'scopeHash':auxiliary['scopeHash'] if auxiliary else None})
     return _attempt.set(value)
 
 def expect_append_only_messages(messages):
@@ -205,9 +254,11 @@ def observe_payload(payload,journal_reason=None):
         while len(_shapes)>32:_shapes.popitem(last=False)
         value['fields']=fields
         value['journalReason']=journal_reason
+        model=payload.get('model')
+        value['model']=model if isinstance(model,str) and re.fullmatch(r'[\w.:/-]{1,128}',model) else None
         fields.update(toolsSha=hashlib.sha256(json.dumps(payload.get('tools'),ensure_ascii=False,separators=(',',':')).encode()).hexdigest()[:24],
                       routingSha=hashlib.sha256(str(payload.get('prompt_cache_key','')).encode()).hexdigest()[:24],journalReason=journal_reason)
-        record_diagnostic(lease,{'kind':'request','attemptId':value['attemptId'],'phase':value['phase'],'workId':value['workId'],**fields})
+        record_diagnostic(lease,{'kind':'request','attemptId':value['attemptId'],'phase':value['phase'],'workId':value['workId'],'model':value.get('model'),**fields})
     except Exception:
         return  # Diagnostics must never change request execution.
 
@@ -236,6 +287,12 @@ def observe_wire_request(request):
         except (UnicodeDecodeError,ValueError,TypeError):
             if expected is not None:_append_only_failure(value,lease,'append_only_wire_unreadable')
             return
+        if isinstance(payload,dict):
+            model=payload.get('model')
+            value['model']=model if isinstance(model,str) and re.fullmatch(r'[\w.:/-]{1,128}',model) else None
+            if value['phase']=='embedding':
+                record_diagnostic(lease,{'kind':'wire_request','attemptId':value['attemptId'],'phase':value['phase'],
+                    'workId':value['workId'],'wireIndex':value['wireIndex'],'model':value['model'],'wireBytes':len(raw)})
         if not isinstance(payload,dict) or not isinstance(payload.get('messages'),list):
             if expected is not None:_append_only_failure(value,lease,'append_only_wire_messages_missing')
             return
@@ -274,11 +331,30 @@ def observe_wire_request(request):
                           parametersSha=sha({k:v for k,v in payload.items() if k not in ('messages','tools','prompt_cache_key')}),
                           journalReason=value.get('journalReason'),wireIndex=value['wireIndex'],wireBytes=len(raw),
                           toolCount=len(payload.get('tools') or []),toolsChars=len(json.dumps(payload.get('tools'),ensure_ascii=False,separators=(',',':'))))
+            model=payload.get('model')
+            value['model']=model if isinstance(model,str) and re.fullmatch(r'[\w.:/-]{1,128}',model) else None
+            fields.update(model=value.get('model'),outputLimit=payload.get('max_completion_tokens',payload.get('max_tokens')) if type(payload.get('max_completion_tokens',payload.get('max_tokens'))) is int else None)
             record_diagnostic(lease,{'kind':'wire_request','attemptId':value['attemptId'],'phase':value['phase'],'workId':value['workId'],**fields})
     except Exception:
         value=_attempt.get()
         if value and (value.get('systemValidationStarted') or value.get('appendOnlyValidationStarted')):raise
         return
+
+
+def transport_started():
+    value=_attempt.get()
+    if not value:return None
+    value['transportStarted']=True
+    return {'attempt':value,'index':value.get('wireIndex',0),'started':time.monotonic(),'ended':False}
+
+
+def transport_result(wire,status,reason=None,http_status=None):
+    if not wire or wire['ended']:return
+    wire['ended']=True;value=wire['attempt']
+    record_diagnostic(value.get('lease'),{'kind':'wire_result','attemptId':value['attemptId'],
+        'phase':value['phase'],'workId':value['workId'],'wireIndex':wire['index'],'model':value.get('model'),
+        'status':status,'reason':reason,'httpStatus':http_status,'costStatus':'unknown',
+        'durationMs':round((time.monotonic()-wire['started'])*1000)})
 
 
 def finish_attempt(status,response=None,reason=None):
@@ -295,10 +371,11 @@ def finish_attempt(status,response=None,reason=None):
     detail=None
     if status!='completed':
         detail=('provider_stream_started' if value.get('firstResponseMs') is not None else
-                'provider_request_sent') if value.get('wireIndex') else 'request_not_sent'
+                'provider_response_received' if value.get('headersReceived') else
+                'request_submission_unknown' if value.get('transportStarted') else 'request_not_sent')
     record_diagnostic(value.get('lease'),{'kind':'request_result','attemptId':value['attemptId'],'phase':value['phase'],'workId':value['workId'],
         'status':status,'reason':reason,'durationMs':round((time.monotonic()-value['started'])*1000),'firstResponseMs':value.get('firstResponseMs'),'costStatus':'unknown',
-        'diagnosticDetail':detail,
+        'diagnosticDetail':detail,'model':value.get('model'),'wireCount':value.get('wireIndex',0),
         **(usage_evidence(response) if response is not None else {})})
 
 def first_response():

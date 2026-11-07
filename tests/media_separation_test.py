@@ -51,7 +51,10 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
   self.c.observe(RAW,'group:12345','123456','90000',CFG,lambda:True,self.metrics,fetch=held);await entered.wait();self.c.close()
   with self.assertRaises(asyncio.CancelledError):await self.c.task
  async def test_reject_untrusted_url_before_network(self):
-  for url in ['http://gchat.qpic.cn/a','https://127.0.0.1/a','https://gchat.qpic.cn.evil.test/a','file:///tmp/a','https://user:pass@gchat.qpic.cn/a']:
+  # Only URLs the origin gate rejects pre-network belong here. The http QQ
+  # CDN form is deliberately rewritten to https and fetched (OneBot support),
+  # so its outcome depends on the real network and is not a unit assertion.
+  for url in ['https://127.0.0.1/a','https://gchat.qpic.cn.evil.test/a','file:///tmp/a','https://user:pass@gchat.qpic.cn/a']:
    with self.assertRaises(ValueError):await download(url)
  async def test_pending_cap_and_bot_isolation(self):
   for i in range(10):self.store.db.execute("INSERT INTO sticker_inbox VALUES(?, 'group:12345','1','e','pending','',0,1,?)",('cap_'+str(i),PNG))

@@ -17,5 +17,5 @@ test('autonomy scopes, conversation clocks, owner decisions and stale delivery',
  }
  assert.equal(applyFishSocialPreset(defaultConfig).behavior?.ownerContactEnabled,true);
  const result=await promisify(execFile)(path.resolve('references/astrbot/.venv/'+(process.platform==='win32'?'Scripts/python.exe':'bin/python')),['-B','tests/autonomy_test.py'],{windowsHide:true,timeout:40000,maxBuffer:1024*1024});
- assert.match(result.stderr,/Ran 46 tests/);assert.match(result.stderr,/\bOK\b/);
+ assert.match(result.stderr,/Ran 54 tests/);assert.match(result.stderr,/\bOK\b/);
 });

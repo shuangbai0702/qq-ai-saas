@@ -1,38 +1,57 @@
 """Guard the actual SDK socket, not just the saved Base URL. Trusted plugins only."""
-import asyncio,ipaddress,os,socket
+import asyncio,ipaddress,os,socket,time
 from urllib.parse import urlsplit
 import httpx,httpcore
 
 MAX_RESPONSE_BYTES=1024*1024
 
 class LimitedStream(httpx.AsyncByteStream):
-    def __init__(self,stream):self.stream=stream;self.closed=False
+    def __init__(self,stream,wire=None,status=None):self.stream=stream;self.closed=False;self.wire=wire;self.status=status
     async def __aiter__(self):
+        from model_cache import transport_result
         size=0
-        async for chunk in self.stream:
-            size+=len(chunk)
-            if size>MAX_RESPONSE_BYTES:
-                await self.aclose()
-                raise httpx.ReadError('Model response exceeded the hosted byte limit')
-            yield chunk
+        try:
+            async for chunk in self.stream:
+                size+=len(chunk)
+                if size>MAX_RESPONSE_BYTES:
+                    raise httpx.ReadError('Model response exceeded the hosted byte limit')
+                if self.wire:
+                    value=self.wire['attempt']
+                    value.setdefault('firstResponseMs',round((time.monotonic()-value['started'])*1000))
+                yield chunk
+            transport_result(self.wire,'completed' if self.status and self.status<400 else 'failed',http_status=self.status)
+        except BaseException as error:
+            transport_result(self.wire,'canceled' if isinstance(error,asyncio.CancelledError) else 'failed',type(error).__name__,self.status)
+            await self.aclose()
+            raise
     async def aclose(self):
-        if not self.closed:self.closed=True;await self.stream.aclose()
+        if not self.closed:
+            self.closed=True
+            from model_cache import transport_result
+            try:await self.stream.aclose()
+            finally:transport_result(self.wire,'unknown','response_not_exhausted',self.status)
 
 class GuardedTransport(httpx.AsyncHTTPTransport):
     async def handle_async_request(self,request):
-        from model_cache import observe_wire_request
+        from model_cache import observe_wire_request,transport_started,transport_result
         observe_wire_request(request)
         from model_request_capture import begin,CaptureStream
         capture=begin(request)
         # Bound decoded memory as well as wire bytes. A malicious provider must
         # not turn a tiny compressed reply into a shared-process memory bomb.
         request.headers['Accept-Encoding']='identity'
-        response=await super().handle_async_request(request)
+        wire=transport_started()
+        try:response=await super().handle_async_request(request)
+        except BaseException as error:
+            transport_result(wire,'canceled' if isinstance(error,asyncio.CancelledError) else 'unknown',type(error).__name__)
+            raise
+        if wire:wire['attempt']['headersReceived']=True
         length=response.headers.get('content-length','')
         if response.headers.get('content-encoding','identity').lower()!='identity' or (length.isdecimal() and (len(length)>12 or int(length)>MAX_RESPONSE_BYTES)):
             await response.aclose()
+            transport_result(wire,'failed','response_size_or_encoding',response.status_code)
             raise httpx.ReadError('Model response encoding or size is not supported')
-        response.stream=LimitedStream(response.stream)
+        response.stream=LimitedStream(response.stream,wire,response.status_code)
         if capture:
             capture.status=response.status_code
             response.stream=CaptureStream(response.stream,capture)

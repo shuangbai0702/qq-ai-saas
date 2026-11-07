@@ -19,7 +19,7 @@ export function QQPluginControls({config,onChange}:Props){
  return <><section className="panel"><h2>QQ 资料与空间</h2><p>主人在真实QQ聊天中明确要求时提供对应模型工具；可另开随心情更新签名。普通群友和内部主动任务无权操作。每Bot每天最多20次，不自动重试。</p>
  <Field label="角色主人QQ号" hint="与真实发送人核对；留空时以下工具均不可执行。"><input aria-label="角色主人QQ号" inputMode="numeric" maxLength={20} value={b.ownerUin||''} onChange={e=>update({ownerUin:e.target.value.replace(/\D/g,'')})}/></Field>
  {!b.ownerUin&&<div className="notice">尚未设置主人QQ号，资料和空间工具不会对任何人开放。</div>}
- <label className="toggle-row"><div><b>主人管理QQ资料</b><small>昵称、签名、常见在线状态；头像只能取当前附带或引用的QQ图片。</small></div><input type="checkbox" aria-label="主人管理QQ资料" checked={!!b.qqProfile} onChange={e=>update({qqProfile:e.target.checked})}/></label>
+ <label className="toggle-row"><div><b>QQ资料管理</b><small>主人可改昵称、头像与在线状态；自主任务可换头像。头像可用当前QQ图片，或经B站工具下载校验的图片；自动签名也受此开关控制。</small></div><input type="checkbox" aria-label="QQ资料管理" checked={!!b.qqProfile} onChange={e=>update({qqProfile:e.target.checked})}/></label>
  <label className="toggle-row"><div><b>随心情更新签名</b><small>仅在主人夸奖、表达不满或提到生日的真实消息中允许模型顺手更新，最多40字；默认开启，每日最多2次，不是定时修改。需要开启QQ资料管理并设置主人。</small></div><input type="checkbox" aria-label="随心情更新签名" disabled={!b.qqProfile||!b.ownerUin} checked={b.autoSignature??true} onChange={e=>update({autoSignature:e.target.checked})}/></label>
  <Field label="每日自动签名次数"><input type="number" min={0} max={2} value={b.dailyAutoSignatureLimit??2} onChange={e=>update({dailyAutoSignatureLimit:Number(e.target.value)})}/></Field>
  <label className="toggle-row"><div><b>主人要求时使用QQ空间</b><small>发纯文字说说，或看自己最近5条说说。不定时自动发，不自动点赞、评论或读取别人空间。</small></div><input type="checkbox" aria-label="主人要求时使用QQ空间" checked={!!b.qzone} onChange={e=>update({qzone:e.target.checked})}/></label>
