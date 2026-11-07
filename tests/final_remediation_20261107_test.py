@@ -404,6 +404,22 @@ class WindowReloadExtensionTests(unittest.TestCase):
         self.assertEqual(p2.wire[:len(p.wire)],p.wire)
         self.assertTrue(self.j.commit(p2))
 
+    def test_refused_unanswered_turns_in_tail_are_adopted(self):
+        # Refused rounds leave their real user turn in the SDK conversation
+        # without a reply; the extension must append them so the model finally
+        # sees the backlog instead of deadlocking (live 00:42 shape).
+        window=self.committed_window()
+        backlog=window+[sourced('r1','被拒绝的真实消息一'),sourced('r2','被拒绝的真实消息二')]
+        self.db.executemany("INSERT OR REPLACE INTO pipeline_events VALUES(?,?,?,?,?,?,?,?,?,?)",
+            [(SCOPE,'12345678',e,time.time(),'message','admission','blocked','',0,0) for e in ('r1','r2')])
+        self.db.commit()
+        incoming=backlog+[event_packet({'sender_id':'12345678'}),packet({'state':{'facts':[]}})]
+        p=self.j.prepare(incoming,('t','b',1),now=4,strict=True,guarded=True,unprojected=copy.deepcopy(incoming))
+        self.assertEqual(p.retirement_deferred,'window_reload_extension')
+        self.assertTrue(self.j.commit(p))
+        events=[str(journal_module.source(m)['event_id']) for m in p.wire if journal_module.source(m)]
+        self.assertIn('r1',events);self.assertIn('r2',events);self.assertIn('7',events)
+
     def test_window_head_with_known_events_is_never_adopted(self):
         # A head that contains a known event means a reorder, not a reload.
         window=self.committed_window()
