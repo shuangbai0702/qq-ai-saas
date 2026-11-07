@@ -85,6 +85,7 @@ def retained_context_visible(db,messages,scope,owner=''):
         note=value.get('persona_core_note')
         if isinstance(note,dict) and note.get('text') and not core_note_visible(note.get('source_scopes'),scope,owner):return False
         origin=value.get('source_scope')
+        if scope.startswith('group:') and isinstance(origin,str) and 'name' in value and 'value' in value and 'source_event' in value and origin!=scope:return False
         # R3 wire gate for verbatim pending entries: the same direction rules
         # as the query layer, applied to anything already present in the
         # committed wire (including delta payloads, which this walk visits).
@@ -191,6 +192,11 @@ def release_value(db,scope,subject,name,value):
 
 def fact_rows(db,scope,subject,limit=200):
     where,args=person_filter(scope,subject,'f')
+    # A semantic fact is not automatically public. Until its record carries
+    # explicit audience evidence, groups read their own facts only. A person
+    # may still recall their own attributed group facts in private.
+    if scope.startswith('group:'):
+        where+=' AND f.scope=?';args+= (scope,)
     hard,rejected,blocked_values=blocked_facts(db,scope,subject)
     # Explicit records win over automatic captures. Among equal origins the
     # latest source wins; legacy duplicate records are read without data loss.

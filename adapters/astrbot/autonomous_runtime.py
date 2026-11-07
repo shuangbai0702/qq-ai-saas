@@ -113,6 +113,11 @@ class AutonomousRuntime:
         id=event.get_platform_id();identity=event.get_extra('_hosted_internal_work')
         if not self.valid(id,identity,effect=True):return False
         action=event.get_extra('_hosted_autonomous_action') or {}
+        if (action.get('requestSource') or {}).get('origin')=='model':return False
+        binding=(action.get('requestSource') or {}).get('agreement')
+        if binding:
+            import agreement_state
+            if not agreement_state.task_current(self.store(id,self.settings[id]).db,binding):return False
         if action.get('kind')!='message':return True
         s=self.settings[id];st=self.store(id,s);scope=action.get('target','');now=time.time()
         if event.get_extra('_hosted_requested_reply'):
@@ -183,17 +188,22 @@ class AutonomousRuntime:
         runtime=self;s=self.settings[id];st=self.store(id,s)
         event.set_extra('_hosted_handoff_available',True)
         class Propose(FunctionTool):
-            async def call(self,context,objective,delay_seconds=0):
+            async def call(self,context,objective,delay_seconds=0,kind='message',agreement_id='',agreement_revision=None):
                 live=runtime.policies.get(id)
                 if not current() or not live or live['lease'] is not s or live['epoch']!=p['epoch'] or live['config']['mode']!='active' or live['until']<=time.time()*1000:raise asyncio.CancelledError('stale task handoff')
                 work=event.get_extra('_hosted_pipeline')
                 if not isinstance(objective,str) or not 1<=len(objective.strip())<=1000 or type(delay_seconds) is not int or not 0<=delay_seconds<=604800:return json.dumps({'queued':False,'reason':'invalid_task_proposal'})
                 identity={k:live[k] for k in ('tenantId','botId','generation','revision','epoch')}
-                try:result=st.pipeline.propose_handoff(work,identity,{'objective':objective.strip(),'delaySeconds':delay_seconds})
+                if kind not in ('message','research'):return json.dumps({'queued':False,'reason':'invalid_task_kind'})
+                request={'objective':objective.strip(),'delaySeconds':delay_seconds,'kind':kind}
+                if agreement_id:
+                    if not isinstance(agreement_id,str) or type(agreement_revision) is not int:return json.dumps({'queued':False,'reason':'agreement_revision_required'})
+                    request['agreement']={'id':agreement_id,'revision':agreement_revision}
+                try:result=st.pipeline.propose_handoff(work,identity,request)
                 except ValueError as error:return json.dumps({'queued':False,'reason':str(error)})
                 event.set_extra('_hosted_task_handoff',result)
                 return json.dumps({**result,'queued':result['state'] in ('pending','accepted'),'meaning':'真实请求已保存到平台任务交接账本，等待平台接受并安排到期执行；pending不等于已经完成平台登记或安排执行。任务、后续联系仍须通过权限和预算校验，不能承诺已执行或必定准点。'},ensure_ascii=False)
-        result=[Propose(name='propose_background_task',description='把需要跨轮持续推进或延后执行的真实请求登记为平台后台任务，到期后由内层执行；即时任务由当前内层直接执行，已完成的动作不能重复登记。保存完整要求及其必要上下文；delay_seconds为最早执行延迟秒数，0表示尽快。登记不会直接执行或发送，也不授予额外权限。pending只表示待登记确认，不得谎称完成。每条真实入站只提交一项，同项可安全查询重试。',parameters={'type':'object','properties':{'objective':{'type':'string','minLength':1,'maxLength':1000},'delay_seconds':{'type':'integer','minimum':0,'maximum':604800}},'required':['objective'],'additionalProperties':False})]
+        result=[Propose(name='propose_background_task',description='登记跨轮或延后执行的任务。即时任务直接完成，不重复登记已完成动作。message用于原会话到期回复或提醒；research用于只读研究，可在现有主动时刻根据真实兴趣登记，不冒充用户委托且不直接对外发送。delay_seconds是最早执行延迟。涉及已接受的约定时填写agreement_id及agreement_revision；取消或修改约定会阻止旧版本任务。pending仅表示待平台确认，不是已经安排或履行。每条入站最多一项，同项可查询重试。',parameters={'type':'object','properties':{'objective':{'type':'string','minLength':1,'maxLength':1000},'delay_seconds':{'type':'integer','minimum':0,'maximum':604800},'kind':{'type':'string','enum':['message','research']},'agreement_id':{'type':'string','maxLength':24},'agreement_revision':{'type':'integer','minimum':1}},'required':['objective'],'additionalProperties':False})]
         # Durable delegation supplements the same inner Agent; it does not
         # replace immediate execution or grant any tool permissions.
         return result
@@ -251,7 +261,9 @@ class AutonomousRuntime:
     def snapshot(self,id,ledger_only=False):
         s=self.settings[id];st=self.store(id,s);now=time.time()
         if ledger_only:
+            import agreement_state
             return {'pendingHandoffs':st.pipeline.pending_handoffs(self.policies[id]['epoch']),
+                    'agreementStates':agreement_state.task_states(st.db),
                     'foregroundFeedback':self.feedbacks.get(id),'event':self.events.get(id),
                     'nextEventCheckSeconds':self.policies[id]['config'].get('minSleepSeconds',600)}
         candidates=self.candidates(id)
@@ -294,7 +306,11 @@ class AutonomousRuntime:
         from astrbot.core.platform.astr_message_event import current_message_event
         event=getattr(context,'event',None);token=current_message_event.set(event)
         epoch=event.get_extra('_hosted_memory_epoch',st.reflection.epoch()) if event else st.reflection.epoch()
-        control.current=lambda:self.valid(id,identity) and st.reflection.epoch()==epoch
+        binding=((event.get_extra('_hosted_autonomous_action') or {}).get('requestSource') or {}).get('agreement') if event else None
+        def current_work():
+            import agreement_state
+            return self.valid(id,identity) and st.reflection.epoch()==epoch and agreement_state.task_current(st.db,binding)
+        control.current=current_work
         control.output_tokens=8192 if tools else 4096
         token_limit=autonomy.decision_token_limit.set(control.output_tokens)
         try:
@@ -359,7 +375,13 @@ class AutonomousRuntime:
             def append(self,value):runtime.running[id].evidence.append(value)
             def checkpoint(self,value):
                 control=runtime.running[id];control.checkpoints.append(value);control.checkpoints[:]=control.checkpoints[-4:]
-        result+=inner_tools.features(s,event,st.db,scope,lambda:self.valid(id,identity),identity=identity,evidence=Evidence(),memory_current=lambda:self.valid(id,identity) and st.reflection.epoch()==epoch,effect_current=lambda:self.valid(id,identity,effect=True))
+        binding=((event.get_extra('_hosted_autonomous_action') or {}).get('requestSource') or {}).get('agreement')
+        def current_task():
+            import agreement_state
+            return self.valid(id,identity) and agreement_state.task_current(st.db,binding)
+        result+=inner_tools.features(s,event,st.db,scope,current_task,identity=identity,evidence=Evidence(),memory_current=lambda:current_task() and st.reflection.epoch()==epoch,effect_current=lambda:current_task() and self.effect_current(event))
+        if ((event.get_extra('_hosted_autonomous_action') or {}).get('requestSource') or {}).get('origin')=='model':
+            result=[tool for tool in result if not getattr(tool,'hosted_effect',False)]
         return result
 
     def capability_catalog(self,id,contacts):
@@ -433,6 +455,9 @@ class AutonomousRuntime:
         identity=data['work'];action=data['action'];s=self.settings[id];st=self.store(id,s)
         if not self.valid(id,identity):raise PreflightRejected('stale_internal_work')
         p=self.policies[id];kind=action['kind'];target=action.get('target','');candidates=self.candidates(id)
+        import agreement_state
+        if not agreement_state.task_current(st.db,(action.get('requestSource') or {}).get('agreement')):
+            return {'status':'canceled','summary':'约定已取消或修订，旧版本任务未执行','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE)}
         identity={**identity,'kind':kind}
         request=st.pipeline.request_reply(identity,action.get('goalId'),action.get('requestSource'),identity['id']) if kind=='message' else None
         if request and request['scope']!=target:request=None
@@ -559,6 +584,7 @@ class AutonomousRuntime:
             summary='已有'+str(len(effects))+'项对外操作获得协议确认；后续计算已停止（'+(failure or result['reason'])+'）。不得重复执行已确认操作。'
             unfinished=['核对已有回执并决定后续步骤；已确认的对外操作不可重复执行。']
         feedback={'status':status,'summary':summary,'stopReason':failure or result['reason'],'evidence':result['evidence'],'evidenceLimits':evidence_limits(result['evidence']),'effects':effects,'unfinished':unfinished,'usage':result['usage'],'contextScope':scope,'toolResults':result.get('toolResults',[]),'checkpoints':result.get('checkpoints',[])}
+        feedback['deliveryComplete']=bool(kind=='message' and status=='completed' and effects and work.planned_messages>0 and work.confirmed_messages==work.planned_messages and all(e['status']=='confirmed' for e in effects))
         if kind=='message':feedback['response']='' if event.get_extra('_hosted_final_reply_suppressed') else result['text'][:1600]
         if kind=='research' and status=='completed' and feedback['evidence']:
             # Research outcomes stay in the authoritative action ledger and in
@@ -570,6 +596,8 @@ class AutonomousRuntime:
         feedback['task']={'kind':kind,'target':target,'objective':action['objective'][:400],'sourceScope':action.get('sourceScope') or (action.get('requestSource') or {}).get('scope'),'outerDecision':action.get('outerDecision')}
         feedback['finishedAt']=int(time.time()*1000)
         st.pipeline.finish_internal(work,feedback);st.pipeline.finish(work,self.metrics.setdefault(id,{}))
+        import agreement_state
+        agreement_state.settle_task(st.db,action.get('goalId'),feedback);st.db.commit()
         return feedback
 
     async def handle(self,id,operation,data):

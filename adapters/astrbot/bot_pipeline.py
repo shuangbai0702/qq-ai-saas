@@ -264,11 +264,19 @@ class BotPipeline:
 
     def propose_handoff(self,work,identity,request):
         """Durable transfer to the existing PG owner, never a local scheduler."""
-        if not isinstance(work,Work) or not work.observes_input or not work.ledger_owner or not work.event_id:raise ValueError('handoff_requires_owned_input')
+        model_research=isinstance(work,Work) and work.source in ('scheduled_contact','owner_contact') and request.get('kind')=='research'
+        if not isinstance(work,Work) or not (work.observes_input or model_research) or not work.ledger_owner or not work.event_id:raise ValueError('handoff_requires_owned_input')
         if work.bot_id!=identity['botId'] or any(work.lease.get(k)!=identity[k] for k in ('tenantId','botId','generation','revision')):raise ValueError('handoff_identity_mismatch')
         stable=json.dumps([identity['tenantId'],identity['botId'],identity['generation'],work.scope,work.subject,work.event_id],separators=(',',':'))
         id=str(uuid.uuid5(uuid.NAMESPACE_URL,'fishbot:handoff:'+stable))
         with self.db:
+            binding=request.get('agreement')
+            if binding:
+                import agreement_state
+                if not agreement_state.task_current(self.db,binding):raise ValueError('agreement_revision_changed')
+                agreement=self.db.execute('SELECT source_scope,participants,handoff_id FROM memory_agreements WHERE id=?',(binding['id'],)).fetchone()
+                if work.scope!=agreement[0] or work.subject not in json.loads(agreement[1]):raise ValueError('agreement_task_source_mismatch')
+                if agreement[2] and agreement[2]!=id:raise ValueError('agreement_already_scheduled_no_replay')
             row=self.db.execute('SELECT data,state,receipt FROM pipeline_handoffs WHERE id=?',(id,)).fetchone()
             if row:
                 previous=json.loads(row[0])
@@ -276,8 +284,11 @@ class BotPipeline:
                 return {'requestId':id,'state':row[1],'receipt':json.loads(row[2]) if row[2] else None}
             if self.db.execute("SELECT count(*) FROM pipeline_handoffs WHERE state='pending'").fetchone()[0]>=16:raise ValueError('handoff_queue_full')
             at=int(time.time()*1000)
-            value={**identity,'id':id,'eventId':work.event_id,'scope':work.scope,'senderId':work.subject,'at':at,**request}
+            value={**identity,'id':id,'eventId':work.event_id,'scope':work.scope,'senderId':work.subject,'at':at,**request,**({'origin':'model'} if model_research else {})}
             self.db.execute("INSERT INTO pipeline_handoffs VALUES(?,?,?,'pending',NULL,?)",(id,identity['epoch'],json.dumps(value,ensure_ascii=False),at/1000))
+            if binding:
+                changed=self.db.execute("UPDATE memory_agreements SET handoff_id=?,task_revision=? WHERE id=? AND revision=? AND status='accepted' AND handoff_id IS NULL",(id,binding['revision'],binding['id'],binding['revision']))
+                if changed.rowcount!=1:raise ValueError('agreement_revision_changed')
             # Accepted tasks may be scheduled seven days ahead. Retain their
             # source through the due time plus the seven-day execution window.
             self.db.execute("DELETE FROM pipeline_handoffs WHERE state<>'pending' AND at<?",(time.time()-14*86400,))
@@ -306,6 +317,9 @@ class BotPipeline:
             row=self.db.execute("SELECT epoch,data,receipt FROM pipeline_handoffs WHERE id=? AND state='accepted'",(goal_id,)).fetchone()
             if not row:return None
             data=json.loads(row[1]);receipt=json.loads(row[2] or '{}')
+            if data.get('agreement'):
+                import agreement_state
+                if not agreement_state.task_current(self.db,data['agreement']):return None
             if receipt.get('goalId')!=goal_id:return None
             # A fresh authenticated Work grants CURRENT authority. Mode/goal
             # edits advance epoch but do not revoke an accepted durable request;

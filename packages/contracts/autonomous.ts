@@ -29,6 +29,8 @@ export const TaskHandoffSchema=z.object({
  generation:z.number().int().nonnegative(),revision:z.number().int().nonnegative(),epoch:z.number().int().positive(),
  eventId:z.string().min(1).max(100),scope:z.string().regex(/^(private|group):[0-9]{5,20}$/),senderId:z.string().regex(/^[0-9]{5,20}$/),
  at:z.number().int().positive(),objective:z.string().min(1).max(1000),delaySeconds:z.number().int().min(0).max(604800),
+ kind:z.enum(['message','research']).optional(),origin:z.literal('model').optional(),
+ agreement:z.object({id:z.string().regex(/^[a-f0-9]{24}$/),revision:z.number().int().positive()}).strict().optional(),
 }).strict();
 
 // The coordinator constructs one action per due handoff goal; every action,

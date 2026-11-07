@@ -157,6 +157,14 @@ async def send(event,cfg,db,group,text,mention,current,on_sent,include_prepared_
         # or get resent after a lost group response.
         event.set_extra('_hosted_tool_sticker',None);event.set_extra('_hosted_meme_sent',True)
     confirmed_receipt=None
+    # Only delivery to this Work's own conversation is a reply in its scope.
+    # Persist the protocol attempt before I/O; a timeout cannot earn a round.
+    from bot_pipeline import Work
+    work=event.get_extra('_hosted_pipeline')
+    reply_work=work if isinstance(work,Work) and work.scope=='group:'+group else None
+    if reply_work:
+        reply_work.planned_messages+=1;reply_work.attempted+=1
+        with db:db.execute("UPDATE pipeline_events SET stage='dispatch',status='sending',attempted=? WHERE scope=? AND subject=? AND event=?",(reply_work.attempted,reply_work.scope,reply_work.subject,reply_work.event_id))
     try:
         result=await asyncio.wait_for(event.bot.send_group_msg(group_id=int(group),message=wire),15)
         from bot_pipeline import message_receipt
@@ -165,6 +173,10 @@ async def send(event,cfg,db,group,text,mention,current,on_sent,include_prepared_
             db.execute("UPDATE group_message_attempts SET state='unknown' WHERE event=?",(key,));db.commit()
             return 'QQ未返回有效消息编号，发送结果未确认；不会自动重试，请先查看群实际结果。'
         confirmed_receipt=str(receipt)
+        if reply_work:
+            reply_work.confirmed+=1;reply_work.confirmed_messages+=1
+            if text:reply_work.confirmed_reply_parts.append(text)
+            if prepared:reply_work.confirmed_media_kinds.append('image')
         db.execute("UPDATE group_message_attempts SET state='confirmed',receipt=? WHERE event=?",(str(receipt),key));db.commit()
         if not current():return json.dumps({'status':'confirmed','message_id':str(receipt),'scope':'group:'+group,'state_committed':False,'meaning':'QQ已确认原群消息发送；配置已变化，不向新会话回写或继续发送，请勿重复发送。'},ensure_ascii=False)
         if prepared:social.image_sent('group:'+group,prepared['id'])

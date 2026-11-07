@@ -76,7 +76,7 @@ class GroupFreshness:
     def changes(self,scope,cursor,started,exclude='',now=None):
         now=time.monotonic() if now is None else now
         return [{k:v for k,v in r.items() if k!='observed'} for r in self.groups.get(scope,[])
-                if r['cursor']>cursor and r['observed']>=started and now-r['observed']<=600 and r['event']!=exclude][-12:]
+                if r['cursor']>cursor and r['observed']>=started and now-r['observed']<=600 and r['event']!=exclude and r['role']!='self'][-12:]
 
     async def check(self,scope,cursor,started,event_id,draft,confirmed,call,valid,timeout=60,fallback=False):
         version=self.cursor(scope)
