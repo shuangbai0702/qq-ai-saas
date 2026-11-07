@@ -65,6 +65,7 @@ export class AutonomyRepository {
   const parsed=TaskHandoffSchema.safeParse(value);
   if(!parsed.success)return{status:'rejected',reason:'invalid_handoff'};
   const r=parsed.data;
+  if(r.origin==='model'&&r.kind!=='research')return{status:'rejected',reason:'model_handoff_read_only'};
   const fingerprint=createHash('sha256').update(JSON.stringify(r)).digest('hex');
   if(r.botId!==bot.bot_id||r.tenantId!==bot.tenant_id||r.epoch!==bot.epoch||r.generation!==bot.generation||r.revision!==bot.revision)return{status:'rejected',reason:'handoff_identity_changed'};
   if(r.scope.startsWith('private:')&&r.scope!=='private:'+r.senderId)return{status:'rejected',reason:'handoff_scope_mismatch'};
@@ -78,8 +79,8 @@ export class AutonomyRepository {
    if(count>=12)return{status:'rejected',reason:'active_goal_limit'};
    const owner=Boolean(s.bot_config.behavior?.ownerUin&&String(s.bot_config.behavior.ownerUin)===r.senderId);
    const notBefore=r.at+r.delaySeconds*1000;
-   const source={eventId:r.eventId,scope:r.scope,senderId:r.senderId,owner,handoffId:r.id,handoffFingerprint:fingerprint,notBefore};
-   await tx.query("INSERT INTO autonomy_goals(id,bot_id,tenant_id,origin,status,title,reason,progress,success_condition,source) VALUES($1,$2,$3,$4,'active',$5,$6,'',$7,$8)",[r.id,r.botId,r.tenantId,owner?'owner_request':'contact_request',r.objective.slice(0,160),'真实聊天通过授权工具提交，等待外层判断可行性和下一步行动',r.objective,JSON.stringify(source)]);
+   const source={eventId:r.eventId,scope:r.scope,senderId:r.senderId,owner:r.origin==='model'?false:owner,handoffId:r.id,handoffFingerprint:fingerprint,notBefore,kind:r.kind||'message',...(r.origin?{origin:r.origin}:{}),...(r.agreement?{agreement:r.agreement}:{})};
+   await tx.query("INSERT INTO autonomy_goals(id,bot_id,tenant_id,origin,status,title,reason,progress,success_condition,source) VALUES($1,$2,$3,$4,'active',$5,$6,'',$7,$8)",[r.id,r.botId,r.tenantId,r.origin==='model'?'model':owner?'owner_request':'contact_request',r.objective.slice(0,160),'内层通过授权工具登记，由现有任务账本到期执行',r.objective,JSON.stringify(source)]);
    await tx.query('UPDATE autonomy_settings SET goal_revision=goal_revision+1,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2',[r.botId,r.tenantId]);
    await this.wake(r.tenantId,r.botId,r.epoch,'handoff-received',0,'',tx);
    await this.wake(r.tenantId,r.botId,r.epoch,'handoff-due',Math.max(0,(notBefore-Date.now())/1000),r.id,tx);
@@ -97,6 +98,16 @@ export class AutonomyRepository {
    const wanted=current?.wait?.scope;
    if(rows.length&&(!wanted||wanted===event.scope||event.directed))await this.wake(bot.tenant_id,bot.bot_id,bot.epoch,'real-event',event.directed?15:Math.max(60,seconds),String(event.scope||'').slice(0,100),tx);
   });
+ }
+ async reconcileAgreements(bot:any,states:any[]){
+  for(const state of states.slice(0,128)){
+   if(typeof state?.handoffId!=='string'||typeof state.id!=='string'||!Number.isSafeInteger(state.revision))continue;
+   // Invalidation only. Never replay an action, erase its receipts, or mark
+   // business completion from a state projection alone.
+   if(state.status==='accepted'&&state.revision===state.taskRevision)continue;
+   if(state.status==='fulfilled')continue;
+   await this.db.query("UPDATE autonomy_goals SET status='abandoned',updated_at=now() WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND status IN ('active','paused_mode') AND source->'agreement'->>'id'=$4 AND source->>'handoffId'=$1",[state.handoffId,bot.bot_id,bot.tenant_id,state.id]);
+  }
  }
  async latestFeedback(bot:any,value:any){
   const at=Number(value?.at||0);
@@ -188,7 +199,8 @@ export class AutonomyRepository {
    // canonical digest. It attributes content; it never grants sending.
    const eventId=String(source.eventId||'').slice(0,100),scope=String(source.scope||'').slice(0,100),senderId=String(source.senderId||'').slice(0,20),at=Math.max(0,Number(source.notBefore)||0);
    const evidenceSources=eventId?[{ref:'event:'+eventId,scope,eventId,senderId,at,kind:'goal_source',digest:createHash('sha256').update(JSON.stringify({scope,eventId,senderId,at,text:''})).digest('hex')}]:undefined;
-   const action={id:randomUUID(),...ActionIntentSchema.parse({kind:'message',goalId:goal.id,target:scope,objective:String(goal.progress||goal.success_condition||goal.title||'').slice(0,1000)})};
+   const kind=source.kind==='research'?'research':'message';
+   const action={id:randomUUID(),...ActionIntentSchema.parse({kind,goalId:goal.id,target:kind==='research'?'':scope,objective:String(goal.progress||goal.success_condition||goal.title||'').slice(0,1000)})};
    await tx.query("UPDATE autonomy_settings SET state='acting',updated_at=now() WHERE bot_id=$1 AND tenant_id=$2",[s.bot_id,s.tenant_id]);
    await tx.query("UPDATE autonomy_cycles SET decision=COALESCE(decision,'{}'::jsonb)||$2::jsonb||jsonb_build_object('decidedAt',now()),usage=$3,state='acting' WHERE id=$1 AND bot_id=$4 AND tenant_id=$5",[claim.cycleId,JSON.stringify({expectedGoalRevision:s.goal_revision,goalChanges:[],action:{goalId:action.goalId,kind:action.kind,target:action.target,objective:action.objective},summary:'',reason:'handoff_due',...(evidenceSources?{evidenceSources}:{}),wait:{kind:'event',seconds:0,scope:goal.id}}),JSON.stringify(usage),s.bot_id,s.tenant_id]);
    await tx.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,goal_id,status,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'planned',now()+($10*interval '1 second'))",[action.id,claim.cycleId,s.bot_id,s.tenant_id,s.epoch,action.kind,action.target,action.objective,action.goalId||null,claim.config.cycleSeconds]);

@@ -239,11 +239,9 @@ class Reflection:
             # without invalidating requests in unrelated conversations.
             progress=self.db.execute('SELECT summary_watermark FROM memory_reflection_progress WHERE scope=?',(scope,)).fetchone()
             value['summaryCheckpoint']=progress[0] if progress else 0
-            # R5: the scope's effective commitment state rides the same
-            # fence — a mid-Work revision or cancellation invalidates the
-            # stale candidate instead of letting an outdated reply ship.
-            import agreement_state
-            value['agreements']=agreement_state.agreements_stamp(self.db,scope)
+            # Agreement revisions have their own send-time fence. They are
+            # mutable business state, not authority to rebuild a Journal or
+            # invalidate a summary transaction.
         return hashlib.sha256(model_json(value).encode()).hexdigest()
     def reserve_context_reconstruction(self,scope,request_id,summary_ids=None,web_proof=None,logical_scope=None):
         """Reserve one checkpoint tied to a currently visible summary.

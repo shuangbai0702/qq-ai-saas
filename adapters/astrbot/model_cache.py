@@ -413,6 +413,11 @@ def record_error_site(error):
     """
     value=_attempt.get()
     if not value or not value.get('ended'):return
+    # The caller may be outside this ContextVar after the provider wrapper
+    # returns. Carry only typed, non-sensitive submission evidence on the
+    # exception so budget accounting does not label local rejects as unknown.
+    try:error._fishbot_submission_stage=value.get('submissionStage')
+    except Exception:pass
     frame=None
     try:
         import traceback as _traceback

@@ -10,7 +10,7 @@ audience filter. The model owns meaning: whether something is a commitment,
 who is bound, and what it says. No keywords, no second scheduler, no new
 memory store; the durable task ledger keeps owning actual execution.
 """
-import asyncio,hashlib,json,time
+import asyncio,hashlib,json,time,re
 
 STATUSES=('proposed','accepted','fulfilled','canceled','expired','uncertain')
 OPEN_STATUSES=('proposed','accepted','uncertain')
@@ -26,13 +26,14 @@ def initialize(db):
     # connections must never skip the table's creation on a fresh database.
     # The DDL branch only runs for a missing table (first use), never inside
     # a caller's open transaction where executescript() would commit it.
-    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_agreements'").fetchone():
-        return
-    db.executescript('''CREATE TABLE IF NOT EXISTS memory_agreements(
+    db.execute('''CREATE TABLE IF NOT EXISTS memory_agreements(
       id TEXT PRIMARY KEY,revision INTEGER NOT NULL DEFAULT 1,topic TEXT NOT NULL,detail TEXT NOT NULL,
       speaker TEXT NOT NULL,participants TEXT NOT NULL,source_scope TEXT NOT NULL,source_event TEXT NOT NULL,
-      audiences TEXT NOT NULL,status TEXT NOT NULL,due TEXT,created REAL NOT NULL,updated REAL NOT NULL);
-    CREATE INDEX IF NOT EXISTS memory_agreements_updated ON memory_agreements(updated);''')
+      audiences TEXT NOT NULL,status TEXT NOT NULL,due TEXT,created REAL NOT NULL,updated REAL NOT NULL)''')
+    db.execute('CREATE INDEX IF NOT EXISTS memory_agreements_updated ON memory_agreements(updated)')
+    columns={r[1] for r in db.execute('PRAGMA table_info(memory_agreements)')}
+    for name,kind in (('handoff_id','TEXT'),('task_revision','INTEGER'),('evidence',"TEXT NOT NULL DEFAULT '[]'")):
+        if name not in columns:db.execute('ALTER TABLE memory_agreements ADD COLUMN '+name+' '+kind)
 
 
 def agreement_identity(scope,event,topic):
@@ -40,13 +41,12 @@ def agreement_identity(scope,event,topic):
 
 
 def _valid_scope(value):
-    return isinstance(value,str) and value and len(value)<=64 and (
-        value=='self' or value.startswith(('group:','private:')))
+    return isinstance(value,str) and bool(re.fullmatch(r'(?:self|private:[1-9][0-9]{4,19}|group:[1-9][0-9]{3,19})',value))
 
 
 def _participants_ok(values):
     return isinstance(values,list) and 1<=len(values)<=8 and all(
-        isinstance(v,str) and (v=='bot' or len(v)<=20 and v.isdigit()) for v in values)
+        isinstance(v,str) and (v=='bot' or re.fullmatch(r'[1-9][0-9]{4,19}',v)) for v in values)
 
 
 def visible(db,scope,now=None):
@@ -59,14 +59,17 @@ def visible(db,scope,now=None):
     """
     now=time.time() if now is None else now
     result=[]
-    for row in db.execute('SELECT id,revision,topic,detail,speaker,participants,source_scope,source_event,audiences,status,due,created,updated FROM memory_agreements ORDER BY updated DESC LIMIT 128'):
+    for row in db.execute("SELECT id,revision,topic,detail,speaker,participants,source_scope,source_event,audiences,status,due,created,updated FROM memory_agreements ORDER BY (status IN ('proposed','accepted','uncertain')) DESC,updated DESC LIMIT 128"):
         try:audiences=json.loads(row[8])
         except (ValueError,TypeError):continue
         if not isinstance(audiences,list) or scope not in audiences:continue
         if row[9] not in OPEN_STATUSES and now-row[12]>AGREEMENT_TTL:continue
+        try:people=json.loads(row[5])
+        except (ValueError,TypeError):continue
+        if not _participants_ok(people):continue
         result.append({'id':row[0],'revision':row[1],'topic':row[2],'status':row[9],
-                       'due':row[10] or '','speaker':row[4],'participants':json.loads(row[5]) if row[5] else [],
-                       'source_scope':row[6],'source_event':row[7],'updated':row[12]})
+                       'due':row[10] or '','speaker':row[4],'participants':people,
+                       'source_scope':row[6],'source_event':row[7],'updated':row[12],**({'detail':row[3]} if scope==row[6] else {})})
         if len(result)>=8:break
     return result
 
@@ -76,7 +79,6 @@ def context_view(db,scope,owner=''):
     own effective commitment state — honored when it applies to the current
     conversation, and never a source of new permissions or identity."""
     rows=visible(db,scope)
-    for row in rows:row.pop('detail',None)
     return rows
 
 
@@ -96,8 +98,9 @@ def _allowed_audiences(db,scope,speaker,participants,cfg,proposed):
     authorizes: the current scope, private chats of real participants, and —
     only for the configured owner — groups the bot actually serves."""
     allowed={scope} if _valid_scope(scope) else set()
-    for person in participants or []:
-        if person!='bot':allowed.add('private:'+person)
+    # Membership suggested by a model cannot grant a new private audience.
+    # Only the authenticated human's own private view is eligible.
+    if speaker!='bot' and speaker in (participants or []):allowed.add('private:'+speaker)
     owner=str((cfg or {}).get('ownerUin') or '')
     if speaker==owner and owner:
         for group in (cfg or {}).get('groups') or []:
@@ -109,14 +112,15 @@ _MAX_AUD=MAX_AUDIENCES
 
 
 def apply_update(db,action,topic,speaker,participants,source_scope,source_event,audiences=None,
-                 detail='',due='',cfg=None,now=None):
+                 detail='',due='',cfg=None,now=None,expected_revision=None,evidence=None):
     """One CAS'd state write. Returns (row dict, error string). No keyword
     guessing: the caller's model already judged this a real commitment."""
     now=time.time() if now is None else now
     initialize(db)
-    if action not in ('propose','accept','revise','cancel','fulfill'):return None,'invalid_action'
+    if action not in ('propose','accept','revise','cancel','fulfill','expire'):return None,'invalid_action'
     if not isinstance(topic,str) or not 2<=len(topic.strip())<=MAX_TOPIC:return None,'invalid_topic'
     topic=topic.strip()
+    if not _valid_scope(source_scope) or not str(source_event):return None,'invalid_source'
     if not _participants_ok(participants):return None,'invalid_participants'
     if speaker!='bot' and speaker not in participants:return None,'speaker_not_participant'
     detail=str(detail or '')[:MAX_DETAIL]
@@ -131,35 +135,49 @@ def apply_update(db,action,topic,speaker,participants,source_scope,source_event,
              'participants':participants,'source_scope':source_scope,'source_event':str(source_event)[:100],
              'audiences':_allowed_audiences(db,source_scope,speaker,participants,cfg,audiences),
              'status':'proposed','due':due,'created':now,'updated':now}
-        db.execute('INSERT INTO memory_agreements VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        db.execute('INSERT INTO memory_agreements(id,revision,topic,detail,speaker,participants,source_scope,source_event,audiences,status,due,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
                    (row['id'],row['revision'],row['topic'],row['detail'],row['speaker'],json.dumps(row['participants'],ensure_ascii=False),
                     row['source_scope'],row['source_event'],json.dumps(row['audiences'],ensure_ascii=False),row['status'],row['due'],now,now))
+        if evidence:db.execute('UPDATE memory_agreements SET evidence=? WHERE id=?',(json.dumps([evidence],ensure_ascii=False),identifier))
         return row,''
     # Everything else targets an existing open row by exact identity.
     identifier=str(agreement_identity(source_scope,source_event,topic))
     row=db.execute('SELECT id,revision,topic,detail,speaker,participants,source_scope,source_event,audiences,status,due,created,updated FROM memory_agreements WHERE id=?',(identifier,)).fetchone()
     if row is None:return None,'agreement_not_found'
     stored_participants=json.loads(row[5]) if row[5] else []
-    if speaker!='bot' and speaker not in stored_participants and speaker not in participants:return None,'speaker_not_participant'
+    if speaker not in stored_participants:return None,'speaker_not_participant'
+    if expected_revision is not None and row[1]!=expected_revision:return None,'agreement_revision_changed'
     if row[9] not in OPEN_STATUSES:return None,'agreement_closed'
     revision=row[1]+1
     if action=='accept':
         # Both sides are now real: the original speaker plus whoever accepted.
-        merged=list(dict.fromkeys(stored_participants+list(participants)))
+        if speaker==row[4] or len(stored_participants)<2:return None,'other_party_confirmation_required'
+        merged=stored_participants
         status='accepted'
     elif action=='revise':
         merged=stored_participants
-        status=row[9]
+        # Changed terms need renewed agreement; they cannot inherit assent.
+        status='proposed' if detail and detail!=row[3] or due and due!=row[10] else row[9]
     elif action=='cancel':
         merged=stored_participants;status='canceled'
+    elif action=='expire':
+        merged=stored_participants;status='expired'
     else:
         merged=stored_participants;status='fulfilled'
     new_audiences=json.loads(row[8]) if row[8] else []
     if action=='revise' and audiences is not None:
-        new_audiences=_allowed_audiences(db,source_scope,row[4],merged,cfg,audiences)
-    db.execute('UPDATE memory_agreements SET revision=?,topic=?,detail=?,participants=?,audiences=?,status=?,due=?,updated=? WHERE id=? AND revision=?',
-               (revision,topic,detail,json.dumps(merged,ensure_ascii=False),json.dumps(new_audiences,ensure_ascii=False),
+        proposed=_allowed_audiences(db,source_scope,speaker,merged,cfg,audiences)
+        new_audiences=proposed if speaker!='bot' else [s for s in proposed if s in new_audiences] or new_audiences
+    proposer=speaker if action=='revise' and status=='proposed' else row[4]
+    updated=db.execute('UPDATE memory_agreements SET revision=?,topic=?,detail=?,speaker=?,participants=?,audiences=?,status=?,due=?,updated=? WHERE id=? AND revision=?',
+               (revision,topic,detail or row[3],proposer,json.dumps(merged,ensure_ascii=False),json.dumps(new_audiences,ensure_ascii=False),
                 status,due or row[10],now,identifier,row[1]))
+    if updated.rowcount!=1:return None,'agreement_revision_changed'
+    if evidence:
+        old_evidence=db.execute('SELECT evidence FROM memory_agreements WHERE id=?',(identifier,)).fetchone()[0]
+        try:items=json.loads(old_evidence)
+        except (ValueError,TypeError):items=[]
+        db.execute('UPDATE memory_agreements SET evidence=? WHERE id=?',(json.dumps((items+[evidence])[-8:],ensure_ascii=False),identifier))
     return {'id':identifier,'revision':revision,'topic':topic,'status':status,'audiences':new_audiences},''
 
 
@@ -184,9 +202,12 @@ def promote_from_claims(db,scope,claims,now=None):
         if not event:continue
         identifier=agreement_identity(scope,event,topic)
         if db.execute('SELECT 1 FROM memory_agreements WHERE id=?',(identifier,)).fetchone():continue
-        status='proposed' if claim.get('status') in ('proposed','unknown') else 'accepted'
+        if db.execute("SELECT count(*) FROM memory_agreements WHERE status IN ('proposed','accepted','uncertain')").fetchone()[0]>=MAX_OPEN:break
+        # A protected claim alone does not prove mutual assent.
+        roles={ref.get('role') for ref in refs if isinstance(ref,dict)}
+        status='accepted' if claim.get('stage')=='accepted' and {'user','assistant'}<=roles else 'proposed'
         participants=[person] if person=='bot' else [person,'bot']
-        db.execute('INSERT OR IGNORE INTO memory_agreements VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        db.execute('INSERT OR IGNORE INTO memory_agreements(id,revision,topic,detail,speaker,participants,source_scope,source_event,audiences,status,due,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
                    (identifier,1,topic,str(claim.get('text') or '')[:MAX_DETAIL],person,
                     json.dumps(participants,ensure_ascii=False),scope,event,json.dumps([scope]),status,
                     str(claim.get('due') or '')[:120],now,now))
@@ -201,6 +222,7 @@ def find_open(db,scope,topic,speaker):
     authorization is re-checked by apply_update on the stored participants."""
     topic=str(topic or '').strip()
     rows=db.execute("SELECT id,topic,source_scope,source_event,speaker,participants,status FROM memory_agreements WHERE status IN ('proposed','accepted','uncertain') ORDER BY updated DESC LIMIT 32").fetchall()
+    matches=[]
     for row in rows:
         if row[1].strip()!=topic:continue
         try:participants=json.loads(row[5])
@@ -208,8 +230,29 @@ def find_open(db,scope,topic,speaker):
         if speaker!='bot' and speaker not in participants and speaker not in (row[4],):continue
         try:audiences=json.loads(db.execute('SELECT audiences FROM memory_agreements WHERE id=?',(row[0],)).fetchone()[0])
         except (ValueError,TypeError):audiences=[]
-        if scope in audiences or row[2]==scope:return row
-    return None
+        if scope in audiences or row[2]==scope:matches.append(row)
+    return matches[0] if len(matches)==1 else None
+
+
+def task_current(db,binding):
+    if not binding:return True
+    row=db.execute('SELECT revision,status,handoff_id FROM memory_agreements WHERE id=?',(binding.get('id'),)).fetchone()
+    return bool(row and row[0]==binding.get('revision') and row[1]=='accepted')
+
+
+def task_states(db):
+    """Version fences for the existing PG goals; no chat bodies or scheduler."""
+    return [{'id':r[0],'revision':r[1],'status':r[2],'handoffId':r[3],'taskRevision':r[4]}
+            for r in db.execute('SELECT id,revision,status,handoff_id,task_revision FROM memory_agreements WHERE handoff_id IS NOT NULL')]
+
+
+def settle_task(db,handoff_id,result):
+    # An unknown/partial operation must retain its evidence and remain open.
+    if not handoff_id or result.get('status')!='completed' or result.get('unfinished'):return
+    effects=result.get('effects') or []
+    if any(e.get('status')!='confirmed' for e in effects):return
+    if any(t.get('status') in ('failed','unavailable') for t in result.get('toolResults',[])):return
+    db.execute("UPDATE memory_agreements SET status='fulfilled',revision=revision+1,updated=? WHERE handoff_id=? AND revision=task_revision AND status='accepted'",(time.time(),handoff_id))
 
 
 def tools(settings,event,db,scope,current):
@@ -219,30 +262,45 @@ def tools(settings,event,db,scope,current):
     import bot_pipeline
     work=event.get_extra('_hosted_pipeline') if hasattr(event,'get_extra') else None
     if not isinstance(work,bot_pipeline.Work) or work.source not in ('message','deferred_group'):return []
-    cfg=(settings.get('config') or {}).get('behavior') or {}
+    config=settings.get('config') or {}
+    cfg={**(config.get('behavior') or {}),'groups':config.get('groups') or []}
     if cfg.get('memory',True) is False:return []
     from astrbot.core.agent.tool import FunctionTool
     class UpdateAgreement(FunctionTool):
-        async def call(self,context,action='',topic='',detail='',due='',speakerRole='user',participants=None,audiences=None):
+        async def call(self,context,action='',topic='',detail='',due='',speakerRole='user',participants=None,audiences=None,quote='',revision=None):
             if not current():raise asyncio.CancelledError('stale agreement update')
             speaker=work.subject if speakerRole=='user' else 'bot'
-            people=list(participants or [])
+            if speakerRole not in ('user','bot'):return json.dumps({'ok':False,'error':'invalid_speaker'})
+            if speakerRole=='user' and (not isinstance(quote,str) or not quote.strip() or quote not in event.get_message_str()):
+                return json.dumps({'ok':False,'error':'current_user_evidence_required'})
+            people=list(participants if participants is not None else [work.subject,'bot'])
             people=[str(v) for v in people if isinstance(v,(str,int))]
             if speaker not in people:people.append(speaker)
+            if any(p not in (work.subject,'bot') for p in people):return json.dumps({'ok':False,'error':'unverified_participant'})
+            proof={'scope':scope,'event':work.event_id,'speaker':speaker,'quote':quote[:300] if speakerRole=='user' else ''}
             if action=='propose':
-                row,error=apply_update(db,'propose',topic,speaker,people,scope,work.event_id,audiences,detail,due,cfg=cfg)
+                row,error=apply_update(db,'propose',topic,speaker,people,scope,work.event_id,audiences,detail,due,cfg=cfg,evidence=proof)
             else:
                 open_row=find_open(db,scope,topic,speaker)
                 if open_row is None:return json.dumps({'ok':False,'error':'agreement_not_found'},ensure_ascii=False)
-                row,error=apply_update(db,action,topic,speaker,people,open_row[2],open_row[3],audiences,detail,due,cfg=cfg)
+                stored=db.execute('SELECT revision FROM memory_agreements WHERE id=?',(open_row[0],)).fetchone()
+                if type(revision) is not int or not stored or stored[0]!=revision:return json.dumps({'ok':False,'error':'agreement_revision_required'})
+                # A scheduled agreement is fulfilled only by its task receipt.
+                if action=='fulfill' and db.execute('SELECT handoff_id FROM memory_agreements WHERE id=?',(open_row[0],)).fetchone()[0]:
+                    return json.dumps({'ok':False,'error':'task_receipt_required'})
+                row,error=apply_update(db,action,topic,speaker,people,open_row[2],open_row[3],audiences,detail,due,cfg=cfg,expected_revision=revision,evidence=proof)
             if error:return json.dumps({'ok':False,'error':error},ensure_ascii=False)
             db.commit()
+            # A successful local update is now known to this Work. Other
+            # Works keep their old stamp and cannot dispatch stale effects.
+            event.set_extra('_hosted_agreement_fence',(scope,agreements_stamp(db,scope)))
             return json.dumps({'ok':True,'id':row['id'],'revision':row['revision'],'status':row['status'],
-                               'topic':row['topic'],'audiences':row.get('audiences') or []},ensure_ascii=False)
+                               'topic':row['topic'],'audiences':row.get('audiences') or [],'scheduling':'accepted且需要延后执行时，用propose_background_task关联agreement_id和agreement_revision；本工具本身不安排执行'},ensure_ascii=False)
     return [UpdateAgreement(name='hosted_update_agreement',
-        description='登记、接受、修订、取消或完成一项真实约定或待办。只有当本轮对话里确实形成了明确约定、接受、改变主意或完成时才调用；不要把普通闲聊、玩笑或单方面想法登记为约定。participants填写参与方真实QQ号（自己代表机器人时填"bot"）；speakerRole说明这个约定是谁提出或确认的；audiences填写该约定适用的会话（如当前群或某人私聊），程序会按真实权限过滤，模型建议不等于授权。时间不明确时due保持原话，不要编造具体时间。',
+        description='登记、接受、修订、取消或完成一项真实约定或待办。只有当本轮对话里确实形成了明确约定、接受、改变主意或完成时才调用；不要把普通闲聊、玩笑或单方面想法登记为约定。participants填写参与方真实QQ号（自己代表机器人时填"bot"）；speakerRole说明这个约定是谁提出或确认的；audiences填写该约定适用的会话（如当前群或某人私聊），程序会按真实权限过滤，模型建议不等于授权。时间不明确时due保持原话，不要编造具体时间。用户来源必须填写当前真实消息中的逐字quote；更新旧事项必须填写其revision。接受需要另一方确认。延后执行须另调用现有propose_background_task并关联约定，未得到登记回执不得承诺已安排。',
         parameters={'type':'object','properties':{
-            'action':{'type':'string','enum':['propose','accept','revise','cancel','fulfill']},
+            'quote':{'type':'string','maxLength':300},'revision':{'type':'integer','minimum':1},
+            'action':{'type':'string','enum':['propose','accept','revise','cancel','fulfill','expire']},
             'topic':{'type':'string','maxLength':MAX_TOPIC},
             'detail':{'type':'string','maxLength':MAX_DETAIL},
             'due':{'type':'string','maxLength':120},

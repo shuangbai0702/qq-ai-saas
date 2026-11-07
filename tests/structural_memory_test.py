@@ -79,21 +79,21 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
             if task:await task
             await asyncio.sleep(0)
             if self.store.reflection.task is task:break
-    async def test_shared_thirty_round_cadence_and_rollup(self):
+    async def test_shared_thirty_five_round_cadence_and_rollup(self):
         calls=[]
         async def chat(**kw):
             calls.append(kw)
             return NS(completion_text='持续背景：12345678喜欢红茶，来源私聊。' if '最多1500' in kw['system_prompt'] else json.dumps({'summary':'小摘要：12345678喜欢红茶。','facts':[]}))
-        cfg={'memory':True,'memorySummary':True,'summaryRounds':30,'naturalConversation':True}
-        self.add(29)
+        cfg={'memory':True,'memorySummary':True,'summaryRounds':35,'naturalConversation':True}
+        self.add(34)
         self.assertFalse(self.store.reflection.maybe_start(self.scope,cfg,NS(text_chat=chat),lambda:True,{},self.var))
-        self.add(1,29)
+        self.add(1,34)
         self.assertTrue(self.store.reflection.maybe_start(self.scope,cfg,NS(text_chat=chat),lambda:True,{},self.var));await self.drain()
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1)
         self.assertEqual(len(calls),1)
-        self.add(30,30);self.store.reflection.retry();await self.drain()
+        self.add(35,35);self.store.reflection.retry();await self.drain()
         self.assertEqual(len(self.store.reflection.rolling(self.scope)),2)
-        self.add(30,60);self.store.reflection.retry();await self.drain()
+        self.add(35,70);self.store.reflection.retry();await self.drain()
         rows=self.store.reflection.rolling(self.scope)
         self.assertEqual(len(rows),1);self.assertEqual(rows[0]['level'],'big')
         self.assertIn('持续背景',self.store.reflection.recall(self.scope,'毫不相关的问题')[0]['summary'])
@@ -198,17 +198,17 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_group_summary_keeps_new_unanswered_messages(self):
         scope='group:55555';base=time.time()-1000
-        for turn in range(30):
+        for turn in range(35):
             at=base+turn*20
             self.store.reflection.incoming(scope,'12345678',str(turn),'本轮内容',at)
             self.store.reflection.record(scope,'12345678',str(turn),'本轮内容','真实回复',at+10,context_through=at+1)
         # Arrived after the final model snapshot, before its successful send.
-        self.store.reflection.incoming(scope,'23456789','late','尚未回应的新问题',base+29*20+5)
+        self.store.reflection.incoming(scope,'23456789','late','尚未回应的新问题',base+34*20+5)
         seen=[]
         async def chat(**kw):
             seen.append(json.loads(kw['prompt']))
             return NS(completion_text=json.dumps({'summary':'有会话与人物来源的持续背景'}))
-        self.store.reflection.maybe_start(scope,{'memorySummary':True,'summaryRounds':30},NS(text_chat=chat),lambda:True,{},self.var)
+        self.store.reflection.maybe_start(scope,{'memorySummary':True,'summaryRounds':35},NS(text_chat=chat),lambda:True,{},self.var)
         await self.drain()
         self.assertNotIn('late',[r['event'] for r in seen[0]['turns']])
         pending=self.db.execute('SELECT event FROM memory_pending WHERE scope=?',(scope,)).fetchall()

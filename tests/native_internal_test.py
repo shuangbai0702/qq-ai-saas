@@ -33,6 +33,25 @@ class NativeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('private prompt',payload);self.assertNotIn('private system',payload)
         data=json.loads(payload.split(' ',1)[1]);self.assertEqual(data['cachedTokens'],20);self.assertEqual(data['phase'],'planning');self.assertEqual(data['responseId'],'request-id')
         self.assertEqual(seen,[{'prompt':'private prompt','system_prompt':'private system'}])
+    async def test_preflight_rejection_is_not_charged_as_unknown_submission(self):
+        async def reject(n,kw):
+            error=RuntimeError('local guard rejected')
+            error._fishbot_submission_stage='request_not_sent'
+            raise error
+        control=self.control()
+        with self.assertRaises(RuntimeError):await BoundedProvider(Provider(reject),control).text_chat(prompt='fixture')
+        self.assertEqual(control.used_tokens,0);self.assertEqual(control.used_models,0)
+        self.assertTrue(control.failure.startswith('model_request_not_sent:'))
+    async def test_provider_error_response_is_distinct_from_unknown_transport(self):
+        async def reject(n,kw):
+            error=RuntimeError('provider rejection')
+            error._fishbot_submission_stage='provider_response_received'
+            raise error
+        control=self.control()
+        with self.assertRaises(RuntimeError):await BoundedProvider(Provider(reject),control).text_chat(prompt='fixture')
+        self.assertGreater(control.used_tokens,0);self.assertEqual(control.used_models,1)
+        self.assertTrue(control.failure.startswith('model_request_failed:'))
+
     async def test_native_tools_feed_the_next_model_turn(self):
         observed=[]
         class Read(FunctionTool):

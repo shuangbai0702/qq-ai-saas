@@ -296,7 +296,7 @@ test('a partial message handoff with every effect confirmed settles the goal hon
   await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',rollout:'live'});
   await handoffGoal(db,goalId);
   await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget,started_at,finished_at) VALUES('partial-cycle','bot-0','tenant',2,0,0,'old','ended','{}',now(),now())");
-  await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,goal_id,status,expires_at,result,created_at,finished_at) VALUES('confirmed-partial','partial-cycle','bot-0','tenant',2,'message','private:12345678','deliver the accepted task result',$1,'partial',now()+interval '1 hour',$2,now(),now())",[goalId,JSON.stringify({status:'partial',summary:'回复已按协议送达',effects:[{id:'confirmed-partial:0',status:'confirmed',receipt:'real-fixture-ack'}],evidence:[],unfinished:[]})]);
+  await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,goal_id,status,expires_at,result,created_at,finished_at) VALUES('confirmed-partial','partial-cycle','bot-0','tenant',2,'message','private:12345678','deliver the accepted task result',$1,'partial',now()+interval '1 hour',$2,now(),now())",[goalId,JSON.stringify({status:'partial',deliveryComplete:true,summary:'回复已按协议送达',effects:[{id:'confirmed-partial:0',status:'confirmed',receipt:'real-fixture-ack'}],evidence:[],unfinished:[]})]);
   await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
   await coordinator.tick();await coordinator.active?.task;
   const view=await coordinator.repo.view('tenant','bot-0');
@@ -307,7 +307,7 @@ test('a partial message handoff with every effect confirmed settles the goal hon
  }finally{await coordinator.stop();await db.close()}
 });
 
-test('a partial message without a summary completes with an honest delivery description',async()=>{
+test('a legacy partial without business completion evidence stays open without re-dispatch',async()=>{
  const db=await fixture();const goalId='afc9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c';let executions=0;
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
@@ -323,8 +323,8 @@ test('a partial message without a summary completes with an honest delivery desc
   await coordinator.tick();await coordinator.active?.task;
   const view=await coordinator.repo.view('tenant','bot-0');
   assert.equal(executions,0);
-  assert.equal(view.goals[0].status,'completed');assert.equal(view.goals[0].progress,'此前不明的投递回执已全部确认为已送达');
-  assert.equal(view.cycles[0].reason,'handoff_executed');
+  assert.equal(view.goals[0].status,'active');
+  assert.equal(view.cycles[0].reason,'handoff_partial_open');
  }finally{await coordinator.stop();await db.close()}
 });
 
@@ -592,5 +592,20 @@ test('two due handoffs execute in one event chain without re-executing the first
   const view=await coordinator.repo.view('tenant','bot-0');
   assert.equal(view.actions.length,2);assert.equal(view.goals.every((g:any)=>g.status==='completed'),true);
   assert.equal((await db.query("SELECT count(*)::int AS n FROM autonomy_wakes WHERE bot_id='bot-0'"))[0].n,0,'no polling wake survives settled work');
+ }finally{await coordinator.stop();await db.close()}
+});
+
+
+test('agreement cancellation fences its own goal without touching another tenant or replaying effects',async()=>{
+ const db=await fixture();const coordinator=new AutonomyCoordinator(db,async()=>({}));
+ const goalId='cfc9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c',agreementId='0123456789abcdef01234567';
+ try{
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await handoffGoal(db,goalId);
+  await db.query("UPDATE autonomy_goals SET source=source||$2::jsonb WHERE id=$1",[goalId,JSON.stringify({agreement:{id:agreementId,revision:2},kind:'research',origin:'model'})]);
+  await coordinator.repo.reconcileAgreements({bot_id:'foreign',tenant_id:'tenant'},[{id:agreementId,handoffId:goalId,revision:3,taskRevision:2,status:'canceled'}]);
+  assert.equal((await db.query('SELECT status FROM autonomy_goals WHERE id=$1',[goalId]))[0].status,'active');
+  await coordinator.repo.reconcileAgreements({bot_id:'bot-0',tenant_id:'tenant'},[{id:agreementId,handoffId:goalId,revision:3,taskRevision:2,status:'canceled'}]);
+  assert.equal((await db.query('SELECT status FROM autonomy_goals WHERE id=$1',[goalId]))[0].status,'abandoned');
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM autonomy_actions'))[0].n,0);
  }finally{await coordinator.stop();await db.close()}
 });

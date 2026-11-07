@@ -128,12 +128,15 @@ async def run():
   selected.get_messages=lambda:[Plain('合并后实际选中的消息')]
   async def chat(**kwargs):return NS(completion_text=json.dumps({'reply':True,'target':'open','participation':'open','information':'substantive','interest':'strong','reason_code':'shared_interest','confidence':'high'}))
   core.provider_manager.inst_map['provider-qq']=NS(text_chat=chat)
-  entered,release=asyncio.Event(),asyncio.Event();original_sleep=asyncio.sleep
-  async def held_sleep(seconds):
-   if seconds==.1:entered.set();await release.wait()
-   else:await original_sleep(seconds)
+  entered,release=asyncio.Event(),asyncio.Event();original_wait=asyncio.wait_for
+  async def held_wait(awaitable,timeout):
+   if timeout==.1:
+    entered.set();await release.wait()
+    awaitable.close()
+    raise asyncio.TimeoutError
+   return await original_wait(awaitable,timeout)
   try:
-   with patch('behavior.asyncio.sleep',held_sleep):
+   with patch('behavior.asyncio.wait_for',held_wait):
     first=asyncio.create_task(PipelineScheduler.execute(None,event))
     await asyncio.wait_for(entered.wait(),3)
     await PipelineScheduler.execute(None,selected);release.set();await first

@@ -73,6 +73,7 @@ export class AutonomyCoordinator {
  }
  private async freshSnapshot(bot:any){
   const snapshot=await this.call(bot,'snapshot',{ledgerOnly:true},3000);
+  await this.repo.reconcileAgreements(bot,Array.isArray(snapshot.agreementStates)?snapshot.agreementStates:[]);
   for(const request of (Array.isArray(snapshot.pendingHandoffs)?snapshot.pendingHandoffs:[]).slice(0,16)){
    const receipt=await this.repo.acceptHandoff(bot,request);
    await this.call(bot,'handoff_ack',{epoch:bot.epoch,id:request.id,receipt},2000);
@@ -197,14 +198,14 @@ export class AutonomyCoordinator {
       reason='waiting_receipt';sleep=300;break;
      }
      if(prior.status==='completed'){
-      await this.repo.completeGoal(c,goal.id,taskResultFacts('message',prior.result)?.summary||prior.result?.summary||'');
+       await this.repo.completeGoal(c,goal.id,taskResultFacts(prior.kind,prior.result)?.summary||prior.result?.summary||'');
       reason='handoff_executed';continue;
      }
      if(prior.status==='partial'){
       // An honest completion: the only outward action of a message handoff is
       // its delivery, and every effect was protocol-confirmed. The runtime may
       // have crashed after sending, before recording its terminal status.
-      if(prior.kind==='message'&&effects.length&&effects.every((effect:any)=>effect.status==='confirmed')){
+      if(prior.kind==='message'&&prior.result?.deliveryComplete===true&&!(prior.result?.unfinished||[]).length&&effects.length&&effects.every((effect:any)=>effect.status==='confirmed')){
        await this.repo.completeGoal(c,goal.id,prior.result?.summary||'此前不明的投递回执已全部确认为已送达');
        reason='handoff_executed';continue;
       }
@@ -245,7 +246,7 @@ export class AutonomyCoordinator {
     // The settled result decides the goal's ledger state immediately: a
     // delivered reply completes the accepted handoff, a final refusal frees
     // its slot, an uncertain effect waits for its authoritative receipt.
-    if(feedback.status==='completed'){await this.repo.completeGoal(c,goal.id,taskResultFacts('message',feedback)?.summary||feedback.summary||'');reason='handoff_executed';continue}
+     if(feedback.status==='completed'){await this.repo.completeGoal(c,goal.id,taskResultFacts(task.kind,feedback)?.summary||feedback.summary||'');reason='handoff_executed';continue}
     if(feedback.status==='blocked'){await this.repo.abandonGoal(c,goal.id);reason='handoff_blocked';continue}
     if(feedback.status==='canceled'){reason='foreground_or_mode_changed';sleep=15;break}
     reason='waiting_receipt';sleep=300;break;

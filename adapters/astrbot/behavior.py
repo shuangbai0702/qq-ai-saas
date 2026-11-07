@@ -202,6 +202,10 @@ def install_runtime(core,settings):
     def delivery_current(event):
         if not current(event):return False
         st=stores.get(event.get_platform_id())
+        agreement_fence=event.get_extra('_hosted_agreement_fence')
+        if agreement_fence:
+            import agreement_state
+            if st is None or agreement_state.agreements_stamp(st.db,agreement_fence[0])!=agreement_fence[1]:return False
         epoch=event.get_extra('_hosted_memory_epoch')
         # Forget/edit/reset invalidates a prompt already in flight as well as
         # its later memory writes. Keep receipts for effects already sent.
@@ -895,7 +899,9 @@ def install_runtime(core,settings):
             metrics.setdefault(self.get_platform_id(),{})['lastMemeDecision']={'reason':'no_reply','at':time.time()}
             # A designed silence still needs its own terminal reason: without it
             # "chose not to answer" and "had no visible text" look identical.
-            bot_pipeline.stop(self,'model_no_reply_marker','silent')
+            work=self.get_extra('_hosted_pipeline')
+            if not (isinstance(work,bot_pipeline.Work) and work.planned_messages>0 and work.confirmed_messages==work.planned_messages):
+                bot_pipeline.stop(self,'model_no_reply_marker','silent')
             return
         id=self.get_platform_id();group=str(self.get_group_id() or '');scope='group:'+group if group else 'private:'+str(self.get_sender_id())
         if self.get_extra('_hosted_internal_work'):scope=self.get_extra('_hosted_pipeline').scope
@@ -1239,6 +1245,9 @@ def install_runtime(core,settings):
                 try:ids=visible_summary_ids(json.loads(context))
                 except (TypeError,ValueError):ids=[]
                 scope=event.get_extra('_hosted_pipeline').scope
+                if event.get_extra('_hosted_agreement_fence') is None:
+                    import agreement_state
+                    event.set_extra('_hosted_agreement_fence',(scope,agreement_state.agreements_stamp(owner.db,scope)))
                 event.set_extra('_hosted_context_fence',(owner,owner.reflection.epoch(),ids,scope,owner.reflection.context_dependency(ids,scope)))
             bound.arguments['system_prompt'],bound.arguments['contexts']=request_context_view(bound.arguments.get('system_prompt'),bound.arguments.get('contexts'),bound.arguments.get('prompt'),protocol,current_rules,context,bound.arguments.get('tool_calls_result'),incremental_policy=True)
             metrics[event.get_platform_id()]['requests']+=1
@@ -1447,7 +1456,6 @@ def install_runtime(core,settings):
     ProviderOpenAIOfficial._prepare_chat_payload=prepare_chat_payload
     chat=ProviderOpenAIOfficial.text_chat;stream=ProviderOpenAIOfficial.text_chat_stream
     async def text_chat(self,*args,**kwargs):
-        b=inject(chat,self,args,kwargs)
         started=time.time()
         journal_token=model_journal_pending.set(None)
         from model_cache import begin_attempt,finish_attempt,reset_attempt,current_lease
@@ -1461,6 +1469,7 @@ def install_runtime(core,settings):
         attempt_token=begin_attempt(event,self,system_contract=getattr(system_store,'system_contract',None) if foreground else None,
                                     system_permit_id=lease.get('systemChangePermitId') if foreground and isinstance(lease,dict) else None)
         try:
+            b=inject(chat,self,args,kwargs)
             response=await chat(*b.args,**b.kwargs)
             e=current_message_event.get()
             if foreground:suppress_separate_reasoning(response,e)
@@ -1479,11 +1488,8 @@ def install_runtime(core,settings):
             return response
         except Exception as error:
             finish_attempt('failed',reason=type(error).__name__)
-            if type(error).__name__ in ('ImportError','ModuleNotFoundError','AttributeError'):
-                # Bounded raise-site evidence only; the old raw cross-bot
-                # /tmp/request-errors.log is retired (E package).
-                from model_cache import record_error_site
-                record_error_site(error)
+            from model_cache import record_error_site
+            record_error_site(error)
             e=current_message_event.get()
             settle_journal(e,False)
             if e and current(e) and e.get_platform_id() in metrics:
@@ -1497,15 +1503,16 @@ def install_runtime(core,settings):
                     e.set_extra('_hosted_context_guard_error',type(error).__name__)
                     bot_pipeline.stop(e,'context_integrity:'+type(error).__name__,'error')
             raise
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as error:
             finish_attempt('canceled',reason='cancelled')
+            from model_cache import record_error_site
+            record_error_site(error)
             settle_journal(current_message_event.get(),False)
             raise
         finally:
             model_journal_pending.reset(journal_token)
             reset_attempt(attempt_token)
     async def text_stream(self,*args,**kwargs):
-        b=inject(stream,self,args,kwargs)
         journal_token=model_journal_pending.set(None)
         from model_cache import begin_attempt,finish_attempt,reset_attempt,current_lease
         event=current_message_event.get();lease=current_lease(event,self)
@@ -1519,6 +1526,7 @@ def install_runtime(core,settings):
                                     system_permit_id=lease.get('systemChangePermitId') if foreground and isinstance(lease,dict) else None)
         last_response=None
         try:
+            b=inject(stream,self,args,kwargs)
             async for response in stream(*b.args,**b.kwargs):
                 from model_cache import first_response
                 first_response()
@@ -1531,11 +1539,8 @@ def install_runtime(core,settings):
             settle_journal(current_message_event.get(),True)
         except Exception as error:
             finish_attempt('failed',reason=type(error).__name__)
-            if type(error).__name__ in ('ImportError','ModuleNotFoundError','AttributeError'):
-                # Bounded raise-site evidence only; the old raw cross-bot
-                # /tmp/request-errors.log is retired (E package).
-                from model_cache import record_error_site
-                record_error_site(error)
+            from model_cache import record_error_site
+            record_error_site(error)
             e=current_message_event.get()
             if e and current(e) and e.get_platform_id() in metrics:
                 metric=metrics[e.get_platform_id()];metric['failures']=metric.get('failures',0)+1
@@ -1563,7 +1568,7 @@ def install_runtime(core,settings):
         receipts is never minted here; its evidence stays in the pipeline
         ledger, the pending question row and the retained wire."""
         id=event.get_platform_id();s=lease;cfg=s['config'];rhythm=cfg.get('behavior') or {}
-        if work.planned_messages<=0 or work.confirmed_messages!=work.planned_messages:return
+        if work.status!='sent' or work.planned_messages<=0 or work.confirmed_messages!=work.planned_messages:return
         if not rhythm.get('memory',True) or event.get_extra('_hosted_initiative',False) or event.get_extra('_hosted_model_error',False) or event.get_extra('_hosted_platform_notice',False):return
         if event.get_extra('_hosted_memory_epoch',st.reflection.epoch())!=st.reflection.epoch():return
         answer='\n'.join(work.confirmed_reply_parts)

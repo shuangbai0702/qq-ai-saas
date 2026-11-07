@@ -234,7 +234,7 @@ async def main():
         initial=brain.snapshot('qq')
         with patch.object(brain,'candidates',side_effect=AssertionError('ledger poll built retired planner context')):
             ledger=await brain.handle('qq','snapshot',{'ledgerOnly':True})
-            assert set(ledger)=={'pendingHandoffs','foregroundFeedback','event','nextEventCheckSeconds'}
+            assert set(ledger)=={'pendingHandoffs','agreementStates','foregroundFeedback','event','nextEventCheckSeconds'}
         assert 'bilibili_search' not in initial['availableTools']
         assert next(t for t in initial['innerTools'] if t['name']=='bilibili_search')['code']=='feature_disabled'
         p['config']['capabilities']=['research','contact_owner','profile_signature','qzone_publish'];w['capabilities']=list(p['config']['capabilities'])

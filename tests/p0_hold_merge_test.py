@@ -217,7 +217,7 @@ class P0HoldMergeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(self.db.execute('SELECT 1 FROM memory_hold_rounds WHERE scope=? AND event=?',(SCOPE,'0')).fetchone())
         for i in range(1001):self.store.reflection.record(SCOPE,PERSON,'bulk-%d'%i,'问题%d'%i,'回复%d'%i,self.now+300+i)
         self.assertIsNotNone(self.db.execute('SELECT 1 FROM memory_rounds WHERE event=?',('0',)).fetchone(),'the held round survives the 1000-row quota')
-        self.assertIsNone(self.db.execute('SELECT 1 FROM memory_rounds WHERE event=?',('bulk-0',)).fetchone(),'unheld old rounds still retire')
+        self.assertIsNotNone(self.db.execute('SELECT 1 FROM memory_rounds WHERE event=?',('bulk-0',)).fetchone(),'unsummarized rounds cannot retire merely because a quota is full')
         self.assertIsNotNone(self.db.execute('SELECT 1 FROM memory_rounds WHERE event=?',('bulk-1000',)).fetchone())
         self.store.reflection.prune_pending(time.time()+90*86400)
         self.assertIsNotNone(self.db.execute('SELECT 1 FROM memory_pending WHERE scope=? AND event=?',(SCOPE,'0')).fetchone(),'held pending survives the TTL')

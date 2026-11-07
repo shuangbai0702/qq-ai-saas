@@ -545,6 +545,28 @@ class ReadonlyJournal:
         # both defer, and the request continues on the committed wire with
         # only real new tail messages appended.
         suffix=None;retirement_deferred='';raw_base=base
+        if isinstance(unprojected,list):
+            raw_base=[]
+            for m in unprojected:
+                c=m.get('content') if isinstance(m,dict) else None
+                if isinstance(m,dict) and m.get('role')=='user' and isinstance(c,str) and (c.startswith(READONLY_CURRENT+'\n') or c.startswith(EVENT_CONTEXT_CURRENT+'\n')):continue
+                raw_base.append(m)
+        # Projection is not authority to hide new events, or to reinterpret a
+        # known event under a different sender/scope. Check the honest SDK view
+        # before ANY overlap/reload fallback; the committed wire stays intact.
+        if valid and old:
+            known={str(o['event_id']):(o,m) for m in old.base if (o:=source(m))}
+            projected={model_json(o) for m in base if (o:=source(m))}
+            anchored=False
+            for m in raw_base:
+                o=source(m)
+                if not o:continue
+                prior=known.get(str(o['event_id']))
+                if prior is not None:
+                    anchored=True
+                    if o!=prior[0] or not same_native_message(prior[1],m):valid=False;break
+                elif anchored and model_json(o) not in projected:
+                    valid=False;break
         if valid and old is not None:
             suffix=tail_extension(old.base,base)
             if suffix is not None and base[:system_head(old.base)]!=old.base[:system_head(old.base)]:

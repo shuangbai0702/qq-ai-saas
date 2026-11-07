@@ -71,8 +71,19 @@ class BoundedProvider:
         from autonomy import decision_token_limit
         limit_token=decision_token_limit.set(output_cap)
         try:response=await self.provider.text_chat(*args,**kwargs)
-        except BaseException:
-            c.used_tokens+=estimated;c.estimated_usage=True;c.failure='model_request_unconfirmed';raise
+        except BaseException as error:
+            stage=getattr(error,'_fishbot_submission_stage',None)
+            if stage=='request_not_sent':
+                c.used_models-=1;c.output_caps.pop()
+                c.failure='model_request_not_sent:'+type(error).__name__
+            else:
+                c.used_tokens+=estimated;c.estimated_usage=True
+                c.failure=('model_request_failed:'+type(error).__name__ if stage in ('provider_response_received','provider_stream_started') else 'model_request_unconfirmed')
+            if c.trace:
+                from model_cache import record_diagnostic
+                record_diagnostic(c.diagnostic_lease,{'kind':'request_disposition',**c.trace,'status':'failed',
+                    'reason':c.failure,'diagnosticDetail':stage or 'submission_evidence_unavailable'})
+            raise
         finally:decision_token_limit.reset(limit_token)
         usage=getattr(response,'usage',None)
         total=getattr(usage,'total',None)
@@ -171,8 +182,8 @@ async def run(provider,control,prompt,system,tools=(),handlers=None,context=None
             if runner.was_aborted():status='canceled';reason='native_runner_aborted'
             elif getattr(result,'role',None)=='err':status='blocked';reason='native_model_error'
     except WorkBudgetExceeded as error:status='budget_exhausted';reason=str(error)
-    except (WorkStopped,asyncio.CancelledError) as error:status='blocked' if control.failure=='model_request_unconfirmed' else 'canceled';reason=str(error);runner.request_stop();task.cancel()
-    except Exception as error:status='blocked';reason=type(error).__name__
+    except (WorkStopped,asyncio.CancelledError) as error:status='blocked' if control.failure else 'canceled';reason=control.failure or str(error);runner.request_stop();task.cancel()
+    except Exception as error:status='blocked';reason=control.failure or type(error).__name__
     finally:
         canceled.cancel()
         if not task.done():task.cancel()
