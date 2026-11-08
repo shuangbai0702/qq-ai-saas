@@ -42,6 +42,15 @@ def atomic(path, value):
     temp.replace(path)
 
 
+def cgroup_process_ids(path):
+    # Container shutdown and empty-leaf cleanup can remove a group after glob.
+    # Only disappearance is benign; permission and I/O failures remain visible.
+    try:
+        return path.read_text().split()
+    except FileNotFoundError:
+        return []
+
+
 def process(pid):
     root = Path(f'/proc/{pid}')
     fields = root.joinpath('stat').read_text().rsplit(')', 1)[1].split()
@@ -259,7 +268,7 @@ def main():
             for name, group in scan_groups.items():
                 process_files = [group/'cgroup.procs'] + list(group.glob('**/cgroup.procs'))
                 for process_file in set(process_files):
-                    for value in process_file.read_text().split():
+                    for value in cgroup_process_ids(process_file):
                         try:
                             row = process(int(value))
                             rows.append(row)
