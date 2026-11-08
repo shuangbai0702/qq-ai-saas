@@ -32,10 +32,10 @@ class SharedMemory(unittest.IsolatedAsyncioTestCase):
         self.say('我喜欢喝红茶')
         for scope in [self.private]:
             facts=self.say('我爱喝什么',scope)['facts'];self.assertEqual(facts[0]['value'],'红茶');self.assertEqual(facts[0]['source_scope'],self.group);self.assertEqual(facts[0]['subject'],self.person)
-        self.assertEqual(self.say('喝什么','group:66666')['facts'],[])
+        self.assertEqual(self.say('喝什么','group:66666')['facts'][0]['value'],'红茶')
         self.assertEqual(self.say('喝什么',subject='87654321')['facts'],[])
         self.say('更正记忆：饮料偏好=咖啡',self.private)
-        self.assertEqual(self.say('喝什么')['facts'],[])
+        self.assertEqual(self.say('喝什么')['facts'][0]['value'],'咖啡')
         self.assertEqual(self.say('喝什么',self.private)['facts'][0]['value'],'咖啡')
         self.assertEqual(self.db.execute('SELECT count(*) FROM facts WHERE active=1').fetchone()[0],1)
     def test_other_bot_and_invalid_private_attribution_stay_isolated(self):
@@ -69,7 +69,7 @@ class SharedMemory(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.say('喝什么',self.private)['facts'][0]['value'],'手动红茶')
         self.assertEqual(self.db.execute('SELECT count(*) FROM facts WHERE active=1').fetchone()[0],2)
         self.say('更正记忆：饮料偏好=白水',self.private)
-        self.assertEqual(self.store.search.search(self.group,self.person,'白水'),[])
+        self.assertEqual(self.store.search.search(self.group,self.person,'白水')[0]['value'],'白水')
         self.assertEqual(self.store.search.search(self.private,self.person,'白水')[0]['value'],'白水')
         self.assertEqual(self.db.execute('SELECT count(*) FROM facts WHERE active=1').fetchone()[0],1)
     def test_admin_edit_forget_and_stale_version_apply_to_shared_person(self):
@@ -140,8 +140,9 @@ class SharedMemory(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[0]['source_scope'],self.private)
         self.assertEqual(self.db.execute('SELECT scope FROM fact_vectors').fetchone()[0],self.private)
         before=len(calls)
-        self.assertEqual(await self.store.memory.semantic_recall('group:66666',self.person,'beverage',self.now,cfg,NS(client=client),lambda:True),[])
-        self.assertEqual(len(calls),before,'forbidden audiences do not spend an embedding request')
+        self.assertEqual((await self.store.memory.semantic_recall('group:66666',self.person,'beverage',self.now,cfg,NS(client=client),lambda:True))[0]['value'],'红茶')
+        self.assertEqual(len(calls),before+1,'new request embeds its query, not the already cached fact')
+        self.assertEqual(calls[-1]['input'],['beverage'])
         self.say('忘记：爱好',self.group);self.assertEqual(self.db.execute('SELECT count(*) FROM fact_vectors').fetchone()[0],0)
     async def test_summary_vectors_use_only_attributed_candidates_and_late_forget_wins(self):
         self.say('记住：夜景=平江路')

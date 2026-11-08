@@ -307,3 +307,41 @@ test('inner-owned capability migration removes outer grants once and preserves m
   await db.transaction(async tx=>{await tx.query(sql)});assert.deepEqual(await db.query('SELECT * FROM autonomy_settings ORDER BY bot_id'),after,'rerun must not invalidate the next epoch');
  }finally{await db.close()}
 });
+
+
+test('finalized-cycle executing orphan becomes receipt-only unknown, with tenant and live-cycle fences',async()=>{
+ const{db,repo}=await fixture();try{
+  await repo.configure('ta','a',1,{mode:'active'});await repo.applied('ta','a',2);
+  const id=randomUUID();await handoffGoal(db,'a','ta',id);
+  const claim=await repo.claim('orphan-owner');assert.ok(claim);
+  const action=(await repo.planHandoff(claim,(await repo.view('ta','a')).goals[0],{})).action;
+  assert.equal(await repo.markExecuting(claim,action.id),true);
+  assert.equal((await repo.unconfirmed('ta','a')).length,0,'a live execution is not an orphan');
+  await repo.finish(claim,{tokens:0,modelCalls:0,toolCalls:0,externalActions:0},'fixture_feedback_lost',0);
+  assert.equal((await repo.unconfirmed('tb','a')).length,0,'wrong tenant cannot recover another action');
+  const pending=await repo.unconfirmed('ta','a');assert.deepEqual(pending.map((a:any)=>a.id),[action.id]);
+  assert.equal((await db.query('SELECT status FROM autonomy_actions WHERE id=$1',[action.id]))[0].status,'unknown');
+  assert.equal(await repo.markExecuting(claim,action.id),false,'receipt recovery must never replay');
+  await repo.receiptChecked({bot_id:'a',tenant_id:'ta'},pending[0]);
+  assert.equal((await repo.unconfirmed('ta','a')).length,0,'unresolved receipt uses existing backoff');
+ }finally{await db.close()}
+});
+
+
+test('chat cancellation projection abandons only its source-bound goal and preserves unknown evidence',async()=>{
+ const{db,repo}=await fixture();try{
+  await repo.configure('ta','a',1,{mode:'active'});await repo.applied('ta','a',2);
+  const id=randomUUID();await handoffGoal(db,'a','ta',id);
+  const c=await repo.claim('cancel-owner');const action=(await repo.planHandoff(c,(await repo.view('ta','a')).goals[0],{})).action;
+  await repo.markExecuting(c,action.id);
+  await repo.feedback(c,action.id,{status:'unknown',summary:'external ACK unknown',effects:[{id:'original-effect',status:'unknown'}]});
+  const request={id,botId:'a',tenantId:'ta',scope:'private:23456789',senderId:'23456789',eventId:'true-event'};
+  await repo.reconcileCancellations({bot_id:'a',tenant_id:'tb'},[request]);
+  await repo.reconcileCancellations({bot_id:'a',tenant_id:'ta'},[{...request,eventId:'forged-event'}]);
+  assert.equal((await repo.view('ta','a')).goals[0].status,'active');
+  await repo.reconcileCancellations({bot_id:'a',tenant_id:'ta'},[request]);
+  assert.equal((await repo.view('ta','a')).goals[0].status,'abandoned');
+  const saved=(await db.query('SELECT status,result FROM autonomy_actions WHERE id=$1',[action.id]))[0];
+  assert.equal(saved.status,'unknown');assert.equal(saved.result.effects[0].id,'original-effect');
+ }finally{await db.close()}
+});

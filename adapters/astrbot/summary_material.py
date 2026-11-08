@@ -19,8 +19,10 @@ def project_history(messages,covered,scope,current_event):
     result=[];dropping=False
     for i,message in enumerate(messages):
         if isinstance(message,dict) and message.get('role')=='user':
-            origin=source(message);proof=covered.get(str(origin['event_id'])) if origin else None
-            dropping=bool(origin and proof and i!=latest and str(origin['event_id'])!=str(current_event) and origin['scope']==scope and str(origin['sender_id'])==proof['subject'] and digest(message)==proof['digest'])
+            origin=source(message)
+            identifier=model_json([origin['scope'],str(origin['event_id'])]) if origin and scope=='bot_shared' else str(origin['event_id']) if origin else ''
+            proof=covered.get(identifier) if origin else None
+            dropping=bool(origin and proof and i!=latest and identifier!=str(current_event) and (scope=='bot_shared' or origin['scope']==scope) and str(origin['sender_id'])==proof['subject'] and digest(message)==proof['digest'])
             # A user-material proof does not cover arbitrary intermediate tool
             # output. Keep the entire block unless that evidence is covered too;
             # a tool round retires only against its full bound v2 evidence.
@@ -40,7 +42,7 @@ def snapshots(messages,scope,signatures=None):
     result=[]
     for index,message in enumerate(messages if isinstance(messages,list) else []):
         origin=source(message)
-        if not origin or origin['scope']!=scope:continue
+        if not origin or scope!='bot_shared' and origin['scope']!=scope:continue
         content=message.get('content');parts=[{'type':'text','text':content}] if isinstance(content,str) else content
         text=[];images=[];size=0;complete=True
         for part in parts:
@@ -83,7 +85,8 @@ def snapshots(messages,scope,signatures=None):
             elif value is not None:complete=False
         reply='\n'.join(replies)
         if len(reply)>MAX_TEXT:complete=False;reply=reply[:MAX_TEXT]
-        item={'version':2 if tools else 1,'event':str(origin['event_id']),'subject':str(origin['sender_id']),'scope':scope,'text':text,'reply':reply,'native_reply':reply if observed_reply else None,'images':images,'complete':complete,'digest':(signatures or {}).get(str(origin['event_id']),digest(message))}
+        identifier=model_json([origin['scope'],str(origin['event_id'])]) if scope=='bot_shared' else str(origin['event_id'])
+        item={'version':2 if tools else 1,'event':identifier,'subject':str(origin['sender_id']),'scope':scope,'text':text,'reply':reply,'native_reply':reply if observed_reply else None,'images':images,'complete':complete,'digest':(signatures or {}).get(identifier,digest(message))}
         if tools:item['tools']=tools
         result.append(item)
     return result
@@ -123,7 +126,9 @@ def valid_material(item,scope):
     if not isinstance(item.get('text'),str) or len(item['text'])>MAX_TEXT or not isinstance(item.get('reply',''),str) or len(item.get('reply',''))>MAX_TEXT:return False
     if item.get('native_reply') is not None and (not isinstance(item['native_reply'],str) or len(item['native_reply'])>MAX_TEXT):return False
     origin=source({'role':'user','content':item['text']})
-    if not origin or item.get('event')!=str(origin['event_id']) or item.get('subject')!=str(origin['sender_id']) or origin['scope']!=scope:return False
+    if not origin:return False
+    identifier=model_json([origin['scope'],str(origin['event_id'])]) if scope=='bot_shared' else str(origin['event_id'])
+    if item.get('event')!=identifier or item.get('subject')!=str(origin['sender_id']) or scope!='bot_shared' and origin['scope']!=scope:return False
     if version>=2:
         tools=item.get('tools')
         # Version 2 exists only to prove a complete tool round-trip; an empty
@@ -144,6 +149,10 @@ def remember(db,scope,materials):
     for item in materials or []:
         if not valid_material(item,scope):continue
         row=db.execute('SELECT subject FROM memory_rounds WHERE scope=? AND event=?',(scope,item.get('event'))).fetchone()
+        if not row and scope=='bot_shared':
+            # An observed silent/background message needs retirement evidence
+            # too; storing its material does NOT mint a completed round.
+            row=db.execute('SELECT subject FROM memory_pending WHERE scope=? AND event=?',(scope,item.get('event'))).fetchone()
         if not row or row[0]!=item.get('subject'):continue
         previous=db.execute('SELECT material FROM memory_round_material WHERE scope=? AND event=?',(scope,item['event'])).fetchone()
         if previous:
@@ -343,6 +352,8 @@ def derive_claims(scope,payload,materials,corrections,data=None):
     stored={str(key):value for key,value in (materials or {}).items() if isinstance(value,dict)}
     corrected={item['event']:item for item in corrections or []}
     def evidence_text(event,row,role):
+        author=(row.get('source') or {}).get('sender_id')
+        if role=='user' and author and str(author)!=str(row.get('sender_id','')):return ''
         observed=stored.get(str(event)) or {}
         if valid_material(observed,scope) and observed.get('subject')==str(row.get('sender_id','')) and observed.get('event')==str(event):
             # Full trusted observation can contain important text beyond the
@@ -440,6 +451,12 @@ def claim_view(claim):
     """Compact model view; full provenance and parent chains stay at rest."""
     view={key:claim[key] for key in ('id','text','kind','speaker','about','occurredAt','status','visibility','stage','due') if key in claim}
     view['sourceRefs']=[{key:ref[key] for key in ('scope','event','role') if key in ref} for ref in claim.get('sourceRefs',[]) if isinstance(ref,dict)]
+    for ref in view['sourceRefs']:
+        if ref.get('scope')=='bot_shared':
+            try:
+                channel,event=json.loads(ref.get('event',''))
+                if re.fullmatch(r'(?:private|group):\d{4,20}',str(channel)):ref.update(scope=channel,event=event)
+            except (ValueError,TypeError):pass
     return view
 
 

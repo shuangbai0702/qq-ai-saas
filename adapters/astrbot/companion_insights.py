@@ -45,6 +45,9 @@ def apply(db,memory,scope,cfg,payload,data,before,now=None):
         if not isinstance(item,dict):return None
         source=sources.get(str(item.get('event','')));quote=item.get('quote')
         if not source or not isinstance(quote,str) or len(quote.strip())<2 or quote not in source.get(role,''):return None
+        # A Work's trigger is not authority to relabel another event's author.
+        author=(source.get('source') or {}).get('sender_id')
+        if role=='user' and author and str(author)!=str(source.get('sender_id','')):return None
         if re.search(r'(?i)sk-[\w-]{8,}|Bearer\s+\S+|密码|密钥|提示词|系统指令',quote):return None
         return source
     def items(name):

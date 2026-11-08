@@ -70,6 +70,15 @@ def tools(settings,event,current,evidence,identity=None,db=None):
             if not current():raise asyncio.CancelledError('stale Bilibili Work')
             live=manifest(settings)
             if not live or live.get('settingsRevision')!=bridge.get('settingsRevision'):return json.dumps({'error':'configuration_changed','receipt':{'status':'rejected'}})
+            operation=self.name[len('bilibili_'):]
+            if event is not None and event.get_extra('_hosted_tool_completion') and operation=='analyze':
+                return json.dumps({'error':'completion_cannot_resubmit_analysis','receipt':{'status':'rejected'}})
+            spec=next((s for s in live.get('operations',[]) if s.get('operation')==operation),None)
+            if spec is None:return json.dumps({'error':'capability_unavailable','receipt':{'status':'rejected'}})
+            if not identity and (spec.get('write') or spec.get('scope')!='public.read'):
+                owner=str((settings.get('config',{}).get('behavior') or {}).get('ownerUin') or '')
+                if event is None or not owner or str(event.get_sender_id())!=owner:
+                    return json.dumps({'error':'owner_required','receipt':{'status':'rejected'}})
             continuation=event.get_extra('_hosted_tool_completion') if event is not None else None
             if identity:
                 work_id=identity['id'];authority='autonomous';sender=None;epoch=identity.get('epoch')
@@ -146,12 +155,9 @@ def tools(settings,event,current,evidence,identity=None,db=None):
     for spec in bridge.get('operations',[]):
         op=spec.get('operation')
         if not isinstance(op,str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,63}',op):continue
-        if event is not None and event.get_extra('_hosted_tool_completion') and op=='analyze':continue
-        if not identity and (spec.get('write') or spec.get('scope')!='public.read'):
-            owner=str((settings.get('config',{}).get('behavior') or {}).get('ownerUin') or '')
-            if event is None or not owner or str(event.get_sender_id())!=owner:continue
         parameters=dict(spec.get('args') or {});parameters.pop('$schema',None)
         description=DESCRIPTIONS.get(op) or '调用已授权B站能力'+op+'，只按当前工具参数合同执行，以真实返回为准'
+        if spec.get('write') or spec.get('scope')!='public.read':description+='。仅接受真实主人请求或已授权自主任务，工具可见不代表当前发言者有执行权限'
         result.append(BiliTool(name='bilibili_'+op,description=description+'。由服务端校验当前账号、权限、工作身份和真实回执；失败/未知不得编造成功。',parameters=parameters))
     return result
 

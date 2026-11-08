@@ -1,0 +1,120 @@
+"""Configured declarations stay fixed; execution never inherits visibility rights."""
+import asyncio,json,sqlite3,sys,tempfile,time,unittest
+from pathlib import Path
+from types import SimpleNamespace as NS
+from unittest.mock import patch
+ROOT=Path(__file__).resolve().parents[1]
+sys.path[:0]=[str(ROOT/'references/astrbot'),str(ROOT/'adapters/astrbot')]
+from astrbot.core.agent.tool import FunctionTool,ToolSet
+from behavior import BehaviorStore
+from bot_pipeline import Work
+from autonomous_runtime import AutonomousRuntime
+import bilibili_tools,inner_tools,qq_actions,group_actions
+
+
+class StableCatalog(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.root=Path(self.temp.name)
+        self.store=BehaviorStore(self.root/'behavior.sqlite');self.addCleanup(self.store.close)
+        self.settings={'root':str(self.root),'botId':'bot','tenantId':'tenant','generation':1,'revision':1,
+                       'config':{'groups':['55555'],'behavior':{'ownerUin':'12345678','qqProfile':True,'qzone':True}}}
+        self.operations=[{'operation':op,'write':op in ('like','coin','comment'),'scope':'public.read' if op not in ('like','coin','comment','analyze') else 'like.write' if op in ('like','coin','comment') else 'media.analyze','args':{'type':'object','properties':{}}} for op in list(bilibili_tools.DESCRIPTIONS)[:35]]
+        self.assertEqual(len(self.operations),35)
+        (self.root/'ai').mkdir()
+        self.bridge={'version':1,'botId':'bot','generation':1,'revision':1,'settingsRevision':1,'allowAutonomous':True,'url':'http://127.0.0.1:1','token':'fixture','operations':self.operations}
+        self.write_bridge()
+        self.brain=AutonomousRuntime(NS(),{'bot':self.settings},lambda *args:self.store,None,{},None,None)
+        self.brain.policies['bot']={'tenantId':'tenant','botId':'bot','generation':1,'revision':1,'epoch':1,'until':time.time()*1000+60000,'lease':self.settings,'config':{'mode':'active'}}
+
+    def write_bridge(self):
+        (self.root/'ai'/'bilibili-bridge.json').write_text(json.dumps(self.bridge),encoding='utf-8')
+
+    def event(self,subject='12345678',group='',completion=False,text='你好'):
+        scope='group:'+group if group else 'private:'+subject
+        work=Work('bot',scope,subject,'99999999','event','tool_result' if completion else 'message',time.time(),self.settings)
+        extras={'_hosted_pipeline':work,'_hosted_lease':self.settings}
+        if completion:extras['_hosted_tool_completion']={'id':'result','senderId':subject,'scope':scope,'workId':'original','owner':'permit'}
+        return NS(get_extra=lambda k,d=None:extras.get(k,d),set_extra=lambda k,v:extras.update({k:v}),get_sender_id=lambda:subject,
+                  get_self_id=lambda:'99999999',get_group_id=lambda:group,get_message_str=lambda:text,get_messages=lambda:[],message_obj=NS(message_id='event',raw_message={})),scope
+
+    def tools(self,event,scope):
+        result=inner_tools.features(self.settings,event,self.store.db,scope,lambda:True,evidence=[])
+        result+=self.brain.foreground_tools('bot',event,lambda:True)
+        return sorted([inner_tools.completion_guard(tool,event) for tool in result],key=lambda tool:tool.name)
+
+    async def test_full_schema_bytes_order_and_35_bridge_operations_across_speakers_and_completions(self):
+        expected=None
+        for subject in ('12345678','22345678'):
+            for group in ('','55555'):
+                for completion in (False,True):
+                    for text in ('你好','设置签名：今天摸鱼','不要发布QQ空间'):
+                        event,scope=self.event(subject,group,completion,text)
+                        tools=self.tools(event,scope)
+                        wire=json.dumps(ToolSet(tools=tools).openai_schema(),ensure_ascii=False,separators=(',',':'))
+                        self.assertEqual(sum(t.name.startswith('bilibili_') for t in tools),35)
+                        if expected is None:expected=wire
+                        self.assertEqual(wire,expected,(subject,group,completion,text))
+        self.assertNotIn('permit',expected)
+        print('PASS 35 bridge operations and all configured feature schemas byte-identical across 24 event variants')
+
+    async def test_visible_tools_do_not_authorize_member_or_synthetic_effects(self):
+        event,scope=self.event('22345678')
+        tools={t.name:t for t in self.tools(event,scope)};context=NS(context=NS(event=event))
+        with patch('bilibili_tools.aiohttp.ClientSession',side_effect=AssertionError('unauthorized network')):
+            reply=json.loads(await tools['bilibili_like'].call(context))
+            self.assertEqual(reply['receipt']['status'],'rejected')
+        reply=json.loads(await tools['hosted_qq_publish'].call(context,content='bad'))
+        self.assertEqual(reply['receipt']['status'],'rejected')
+        reply=json.loads(await tools['hosted_qq_group_send'].call(context,group_id='55555',text='bad'))
+        self.assertEqual(reply['receipt']['status'],'rejected')
+        reply=json.loads(await tools['hosted_update_agreement'].call(context,action='propose',topic='bad'))
+        self.assertEqual(reply['receipt']['status'],'rejected')
+        event,scope=self.event(completion=True)
+        tools=self.tools(event,scope);context=NS(context=NS(event=event))
+        for tool in tools:
+            if tool.name.startswith('bilibili_') and tool.name!='bilibili_analyze' or tool.name=='hosted_recall_experience':continue
+            reply=json.loads(await tool.call(context))
+            self.assertEqual(reply['receipt']['status'],'rejected',tool.name)
+        self.assertEqual(qq_actions.allowed(event,self.settings['config']),set())
+        self.assertFalse(group_actions.owner_request(event,self.settings['config']))
+        self.assertEqual(self.store.db.execute('SELECT count(*) FROM qq_action_attempts').fetchone()[0],0)
+
+    async def test_analysis_declaration_remains_but_execution_cannot_resubmit(self):
+        event,scope=self.event(completion=True)
+        tool=next(t for t in bilibili_tools.tools(self.settings,event,lambda:True,[]) if t.name=='bilibili_analyze')
+        reply=json.loads(await tool.call(NS(context=NS(event=event))))
+        self.assertEqual(reply['error'],'completion_cannot_resubmit_analysis')
+        self.bridge['settingsRevision']=2;self.write_bridge()
+        reply=json.loads(await tool.call(NS(context=NS(event=event))))
+        self.assertEqual(reply['error'],'configuration_changed')
+
+    async def test_z_actual_runner_reset_retains_native_and_feature_schemas_on_completion(self):
+        from behavior import install_runtime
+        from astrbot.core.provider.entities import ProviderRequest
+        from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
+        core=NS(event_bus=NS(stopped_platforms=set()),provider_manager=NS(inst_map={}))
+        runtime=install_runtime(core,{'bot':self.settings})
+        core._hosted_autonomous.policies=self.brain.policies
+        class Native(FunctionTool):
+            async def call(self,context,**kwargs):raise AssertionError('synthetic native send dispatched')
+        expected=None
+        try:
+            for subject,group,completion in [('12345678','',False),('22345678','55555',False),('12345678','',True),('22345678','55555',True)]:
+                event,scope=self.event(subject,group,completion)
+                event.get_platform_id=lambda:'bot';event.get_sender_name=lambda:'fixture'
+                request=ProviderRequest(prompt='real request',system_prompt='FIXED_SYSTEM',contexts=[],func_tool=ToolSet(tools=[Native(name='send_message_to_user',description='fixed native send',parameters={'type':'object','properties':{}})]))
+                runner=ToolLoopAgentRunner()
+                await runner.reset(provider=NS(provider_config={'id':'fixture'}),request=request,run_context=NS(context=NS(event=event)),tool_executor=NS(),agent_hooks=NS())
+                wire=json.dumps(request.func_tool.openai_schema(),ensure_ascii=False,separators=(',',':'))
+                self.assertEqual(request.system_prompt,'FIXED_SYSTEM')
+                if expected is None:expected=wire
+                self.assertEqual(wire,expected)
+                self.assertEqual(sum(t.name.startswith('bilibili_') for t in request.func_tool.tools),35)
+                if completion:
+                    native=next(t for t in request.func_tool.tools if t.name=='send_message_to_user')
+                    self.assertEqual(json.loads(await native.call(NS(context=NS(event=event))))['receipt']['status'],'rejected')
+        finally:runtime['close']()
+
+
+if __name__=='__main__':unittest.main()

@@ -44,10 +44,13 @@ class CoreNoteTests(unittest.IsolatedAsyncioTestCase):
   self.patch('阿梁喜欢可爱的猫')
   context=conversation_context(self.store,{'memory':True},self.scope,'12345678','无关查询',time.time())
   self.assertEqual(context['persona_core_note']['text'],'阿梁喜欢可爱的猫')
-  # D2 audience: a note sourced from one private chat is not injected into
-  # other scopes' requests; the update path and admin views still read it.
-  self.assertEqual(self.ref.core_note('group:55555','23456789')['text'],'')
-  self.assertEqual(self.ref.core_note('self','0')['text'],'')
+  # Current same-bot internal visibility is distinct from public disclosure.
+  # Preserve the original source; another bot's store remains isolated below.
+  group_note=self.ref.core_note('group:55555','23456789')
+  self.assertEqual(group_note['text'],'阿梁喜欢可爱的猫')
+  self.assertEqual(group_note['source_scopes'],[self.scope])
+  self.assertEqual(self.ref.core_note('self','0')['text'],'阿梁喜欢可爱的猫')
+  self.assertEqual(self.ref.core_note('invalid','23456789')['text'],'')
   self.assertEqual(self.ref.core_note(self.scope,'12345678')['text'],'阿梁喜欢可爱的猫')
   self.assertEqual(conversation_context(self.store,{'memory':False},self.scope,'12345678','',time.time())['persona_core_note']['text'],'')
   with tempfile.TemporaryDirectory() as d:

@@ -18,11 +18,11 @@ test('native SDK: whitelist entry, refreshed clocks, owner timer, stale decision
  const calls:{kind:string;body:any}[]=[];let releaseOwner:(()=>void)|undefined;
  const model=http.createServer(async(req,res)=>{
   let raw='';for await(const b of req)raw+=b;const body=JSON.parse(raw),system=body.messages.filter((m:any)=>m.role==='system').map((m:any)=>m.content).join('\n');
-  const selected=body.messages.map((m:any)=>typeof m.content==='string'?m.content:JSON.stringify(m.content)).join('\n').match(/"id"\s*:\s*"(bf_[a-f0-9]{16})"/)?.[1];const meme=selected?'[MEME:'+selected+']':'';const kind=system.includes('判断是否以当前人格自然加入群聊')?'group':system.includes('你是当前机器人的主动联系判断器')?'owner':'reply';calls.push({kind,body});let answer=JSON.stringify(nativeMessages(body).at(-1)).includes('平台内部主动聊天时刻')?'刚想到我们之前聊的那个话题，想听听你的近况。':'接着聊。'+meme;
+  const selected=body.messages.map((m:any)=>typeof m.content==='string'?m.content:JSON.stringify(m.content)).join('\n').match(/"id"\s*:\s*"(bf_[a-f0-9]{16})"/)?.[1];const meme=selected?'[MEME:'+selected+']':'';const kind=system.includes('判断是否以当前人格自然加入群聊')?'group':system.includes('你是当前机器人的主动联系判断器')?'owner':'reply';calls.push({kind,body});let answer=JSON.stringify(nativeMessages(body).at(-1)).includes('proactive_moment')?'刚想到我们之前聊的那个话题，想听听你的近况。':'接着聊。'+meme;
   if(kind==='group'){
    const silent=JSON.parse(nativeMessages(body).at(-1).content).messages.at(-1).text.includes('SILENT_TOPIC');
    const other=JSON.parse(nativeMessages(body).at(-1).content).messages.at(-1).text.includes('OTHER_TARGET_QUESTION');
-   answer=JSON.stringify({reply:!silent,target:other?'other':'open',participation:other?'side':'open',information:'substantive',interest:'strong',reason_code:'shared_interest',confidence:'high',cooldown_intervals:silent?1:0,cooldown_reason:silent?'no_motive':'none'});
+   answer=JSON.stringify({reply:!silent,target:other?'other':'open',participation:other?'side':'open',information:'substantive',interest:'strong',reason_code:'shared_interest',confidence:'high',cooldown_intervals:silent?1:0,cooldown_reason:silent?'busy':'none'});
   }
   if(kind==='owner'){
    if(calls.filter(x=>x.kind==='owner').length===1)await new Promise<void>(r=>{releaseOwner=r});
@@ -63,7 +63,7 @@ test('native SDK: whitelist entry, refreshed clocks, owner timer, stale decision
   await settled();const now=Math.floor(Date.now()/1000);await shiftClock(`UPDATE autonomy_groups SET checked=${now-601} WHERE scope='group:889900';`);
   const cooldown=await promisify(execFile)(python,['-B','-c',"import sqlite3,sys,json;d=sqlite3.connect(sys.argv[1]);print(json.dumps(d.execute(\"SELECT extra_intervals,base_seconds,cooldown_until-at FROM autonomy_decisions WHERE scope='group:889900' ORDER BY at DESC LIMIT 1\").fetchone()))",dbfile],{windowsHide:true});
   assert.deepEqual(JSON.parse(cooldown.stdout),[1,600,1200]);
-  await message('889900','基础间隔过了但额外冷却还在');await sleep(400);assert.equal(groupCalls(),2,'model-chosen extra cooldown survives the base interval');
+  await message('889900','基础间隔过了但额外冷却还在');await sleep(400);assert.equal(groupCalls(),2,'program-mapped busy cooldown survives the base interval');
   await shiftClock(`UPDATE initiative_pauses SET until=${now-1} WHERE scope='group:889900';`);
   await until(async()=>(await actions()).length===4,'cooldown expiry rechecks the already received input without another message');assert.equal(groupCalls(),3);
   await message(undefined,'主人先正常聊一句','11111111');await until(async()=>(await actions()).filter(x=>x.action==='send_private_msg').length===1,'real owner private contact');
@@ -83,7 +83,7 @@ test('native SDK: whitelist entry, refreshed clocks, owner timer, stale decision
   const addressed=calls.filter(x=>x.kind==='group').at(-1)!;assert.equal(JSON.parse(nativeMessages(addressed.body).at(-1).content).platform_addressing.mentions_other,true);
   await message('991122','OTHER_TARGET_QUESTION 这是只说给另一个人的','22222222','33333333');await until(async()=>groupCalls()===beforeAddressing+2,'other-person addressing reaches the semantic model');await sleep(400);
   assert.equal((await actions()).length,beforeAddressingSends+1,'disabled side comments still prevent joining somebody else’s conversation');
-  for(const call of calls)assert.equal(call.body.max_tokens,call.kind==='reply'?undefined:192,'actual SDK HTTP payload bounds decisions without changing normal replies');
-  await mkdir('test-results/autonomy',{recursive:true});await writeFile('test-results/autonomy/native-runtime.json',JSON.stringify({passed:true,transport:'real AstrBot SDK and shared runtime; model and QQ are isolated fixtures',groupDecisions:groupCalls(),ownerDecisions:ownerCalls(),messages:(await actions()).length,checks:['whitelist','no random bypass','10-minute gate','expiry replays pending real input without another message','model extra cooldown persisted and expired','real conversation refresh','multi-member followup','model-selected image','owner timer','new group interaction invalidates pending private message','no repeated polling call','nontext input preserves group window','semantic @other admission','side-comment policy retained','burst retains text before nontext','@other followup does not refresh interaction']},null,2));
+  for(const call of calls)assert.equal(call.body.max_tokens,call.kind==='reply'?undefined:2048,'actual SDK HTTP payload uses the structured-decision budget without changing normal replies');
+  await mkdir('test-results/autonomy',{recursive:true});await writeFile('test-results/autonomy/native-runtime.json',JSON.stringify({passed:true,transport:'real AstrBot SDK and shared runtime; model and QQ are isolated fixtures',groupDecisions:groupCalls(),ownerDecisions:ownerCalls(),messages:(await actions()).length,checks:['whitelist','no random bypass','10-minute gate','expiry replays pending real input without another message','semantic busy cooldown persisted and expired','real conversation refresh','multi-member followup','model-selected image','owner timer','new group interaction invalidates pending private message','no repeated polling call','nontext input preserves group window','semantic @other admission','side-comment policy retained','burst retains text before nontext','@other followup does not refresh interaction']},null,2));
  }finally{releaseOwner?.();await current.app.close();await new Promise<void>(r=>model.close(()=>r()))}
 });

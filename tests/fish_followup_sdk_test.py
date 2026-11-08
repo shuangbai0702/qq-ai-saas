@@ -31,14 +31,15 @@ async def run():
  try:
   await PipelineScheduler.execute(None,event(True));assert len(calls)==1
   db=runtime['stores']['a'].db;db.execute('UPDATE contacts SET last_bot=?',(time.time(),));db.commit()
+  runtime['stores']['a'].participation.outgoing('group:12345','真实已发回复',time.time(),subject='123456',request='接着聊')
   behavior.random.random=lambda:.8
-  await PipelineScheduler.execute(None,event());assert len(calls)==1,'80% boundary rejected'
+  await PipelineScheduler.execute(None,event());assert len(calls)==2,'nonzero followup admits contextual judgment without a random silence gate'
   behavior.random.random=lambda:.79
-  await PipelineScheduler.execute(None,event());assert len(calls)==2,'below 80% accepted'
+  await PipelineScheduler.execute(None,event());assert len(calls)==3,'contextual continuation is admitted independently of random sampling'
   initiative.quiet=lambda cfg,now:True
-  await PipelineScheduler.execute(None,event());assert len(calls)==2,'quiet auto-followup stays silent'
-  await PipelineScheduler.execute(None,event(True));assert len(calls)==3,'explicit mention still works'
+  await PipelineScheduler.execute(None,event());assert len(calls)==4,'quiet hours govern proactive outreach, not an ongoing real conversation'
+  await PipelineScheduler.execute(None,event(True));assert len(calls)==5,'explicit mention still works'
   assert calls[-1]['identity']['directed_to_bot'] is True
-  print('PASS SDK 80% boundary, quiet follow-up suppression and explicit mention')
+  print('PASS SDK contextual follow-up admission, quiet ongoing conversation and explicit mention')
  finally:behavior.random.random=old_random;initiative.quiet=old_quiet;runtime['close']()
 asyncio.run(run());tmp.cleanup()

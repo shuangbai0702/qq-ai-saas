@@ -106,6 +106,16 @@ class SystemContract:
             ''')
         db.commit()
 
+    def transition_available(self,messages,permit_id,request_id,scope=''):
+        """Read-only preflight; a Journal checkpoint is not a System permit."""
+        scope=str(scope or '');target=system_vector_sha(messages)
+        row=self.db.execute('SELECT system_sha FROM fishbot_system_scope_contract WHERE scope=?',(scope,)).fetchone()
+        if row is None:return False  # Existing Journal keeps its known System.
+        if row[0]==target:return True
+        if not permit_id:return False
+        token=self.db.execute('SELECT request_id,previous_sha,target_sha,state FROM fishbot_system_permits WHERE permit_id=? AND scope=?',(str(permit_id),scope)).fetchone()
+        return token is None or (token[3]=='reserved' and token[0]==request_id and token[1]==row[0] and token[2]==target)
+
     def reserve(self, messages, permit_id, request_id, now, scope=''):
         """Check the exact final wire vector and reserve a trusted save token.
 

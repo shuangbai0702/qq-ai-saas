@@ -38,6 +38,59 @@ class ProjectedWindowTests(unittest.TestCase):
         with self.assertRaises(ContextReconstructionDenied):
             self.j.prepare(self.projected+packet(),1,strict=True,guarded=True,unprojected=raw+packet(),now=2)
         self.assertEqual(self.j.last.wire,self.first.wire)
+    def test_covered_old_blocks_between_anchors_do_not_strand_journal(self):
+        from context_protocol import digest,reply_digest
+        self.db.executescript('CREATE TABLE memory_summaries(id INTEGER PRIMARY KEY);'
+            'CREATE TABLE memory_summary_coverage(scope TEXT,event TEXT,subject TEXT,digest TEXT,summary_id INTEGER);'
+            'INSERT INTO memory_summaries VALUES(1);')
+        covered=user('2','previously summarized');reply=assistant('covered reply')
+        proof='v1:'+digest(covered)+':'+reply_digest([reply])
+        self.db.execute('INSERT INTO memory_summary_coverage VALUES(?,?,?,?,1)',
+            ('private:12345678','2','12345678',proof));self.db.commit()
+        raw=self.base[:2]+[covered,reply]+self.projected[1:]
+        projected=self.base[:2]+self.projected[1:]
+        before=copy.deepcopy(self.first.wire)
+        p=self.j.prepare(projected+packet(),1,strict=True,guarded=True,unprojected=raw+packet(),
+            reconstruction_scope='private:12345678',now=2)
+        self.assertEqual(p.wire[:len(before)],before)
+        self.assertIsNone(p.reconstruction_permit)
+        self.assertEqual(p.base,self.base+[assistant('reply31'),user('32')])
+        # An edited reply invalidates full-block evidence; do not blindly trust
+        # a coverage row or permit projection to hide a new middle event.
+        raw[3]=assistant('changed reply')
+        with self.assertRaises(ContextReconstructionDenied):
+            self.j.prepare(projected+packet(),1,strict=True,guarded=True,unprojected=raw+packet(),
+                reconstruction_scope='private:12345678',now=3)
+    def test_covered_image_before_resize_uses_original_proof_only(self):
+        from context_protocol import digest,reply_digest
+        self.db.executescript('CREATE TABLE memory_summaries(id INTEGER PRIMARY KEY);'
+            'CREATE TABLE memory_summary_coverage(scope TEXT,event TEXT,subject TEXT,digest TEXT,summary_id INTEGER);'
+            'INSERT INTO memory_summaries VALUES(1);')
+        original=user('2','summarized image')
+        original['content']=[{'type':'text','text':original['content']},
+            {'type':'image_url','image_url':{'url':'data:image/png;base64,original'}}]
+        limited=copy.deepcopy(original);limited['content'][1]['image_url']['url']='data:image/png;base64,limited'
+        reply=assistant('covered image reply')
+        self.db.execute('INSERT INTO memory_summary_coverage VALUES(?,?,?,?,1)',
+            ('private:12345678','2','12345678','v1:'+digest(original)+':'+reply_digest([reply])))
+        self.db.commit()
+        raw=self.base[:2]+[limited,reply]+self.projected[1:]
+        proof=self.base[:2]+[original,reply]+self.projected[1:]
+        projected=self.base[:2]+self.projected[1:]
+        kwargs=dict(strict=True,reconstruction_scope='private:12345678',unprojected=raw+packet())
+        with self.assertRaises(ContextReconstructionDenied):self.j.prepare(projected+packet(),1,**kwargs)
+        p=self.j.prepare(projected+packet(),1,coverage_view=proof+packet(),**kwargs)
+        self.assertEqual(p.wire[:len(self.first.wire)],self.first.wire)
+        self.assertIsNone(p.reconstruction_permit)
+        for mode in ('reply','author','text','order'):
+            changed=copy.deepcopy(proof)
+            if mode=='reply':changed[3]=assistant('changed reply')
+            elif mode=='author':changed[2]['content'][0]['text']=changed[2]['content'][0]['text'].replace('12345678','87654321')
+            elif mode=='text':changed[2]['content'][0]['text']+='edited'
+            else:changed[2],changed[3]=changed[3],changed[2]
+            with self.subTest(mode=mode),self.assertRaises(ContextReconstructionDenied):
+                self.j.prepare(projected+packet(),1,coverage_view=changed+packet(),**kwargs)
+
     def test_changed_anchor_and_reordered_tail_still_refused(self):
         for mode in ('content','scope','order'):
             projected=copy.deepcopy(self.projected);raw=copy.deepcopy(self.raw)

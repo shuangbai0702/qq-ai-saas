@@ -9,8 +9,8 @@ Source: zexuanw958-svg/dafeiyu-config-pack, commit
 - DeepSeek 原生工具调用标记 DSML：<｜DSML｜function_calls> 整块、零散的 <｜DSML｜invoke …>、</｜DSML｜parameter> 等。
 - 老格式 <｜tool▁calls▁begin｜>…<｜tool▁calls▁end｜>、<tool_call>…</tool_call>。
 
-`without_analysis()` 保留为兼容 API，但不再猜测并删除正常正文。只有 provider 明确分开的
-reasoning 字段能在响应映射处被识别；无法从正文可靠识别的泄露会被保留并记录无正文诊断。
+只隔离新响应里的明确推理控制块（含未闭合变体），不根据普通正文猜测推理。
+代码示例保留；已提交历史只深拷贝，绝不通过清洗重写。
 """
 import copy
 import re
@@ -33,14 +33,33 @@ _HINT = re.compile(r"system_reminder|DSML|tool▁|tool_call|User ID:", re.I)
 _SPACE = r'[\s\u200b-\u200d\ufeff]*'
 _IMAGE_CONTROL = re.compile(r'\['+_SPACE+r'(?:(M'+_SPACE+'E'+_SPACE+'M'+_SPACE+'E)|(I'+_SPACE+'M'+_SPACE+'A'+_SPACE+'G'+_SPACE+'E))'+_SPACE+r':([^\]]{0,512})(?:\]|$)',re.I)
 
-def without_analysis(text: str) -> str:
-    """Compatibility shim; text heuristics must never delete a user-visible answer.
+# Explicit protocol markup only; prose, speaker intent and ordinary headings
+# are never classified as reasoning. Quoted code remains ordinary answer data.
+_REASON_START=re.compile(r'<\s*(/?)\s*(?:thinking|think)(?=>|\s|[^\x00-\x7f]|$)',re.I)
+_CODE=re.compile(r'(`{3,}|~{3,})[^\n]*\n.*?(?:\n\1[^\n]*(?:\n|$)|$)|(`+)[^`\n]*?\2',re.S)
+_QUOTED_CONTROL=re.compile(r'''["'“‘「『]<\s*/?\s*(?:thinking|think)\s*>["'”’」』]''',re.I)
 
-    Providers that expose reasoning separately are handled from their typed
-    response object. Once reasoning has been mapped into ordinary content,
-    this function cannot safely infer intent from words, language or headings.
+def without_analysis(text: str) -> str:
+    """Strip reserved reasoning blocks in NEW output, not committed history.
+
+    Unterminated open blocks withhold the remainder; an orphan closing control
+    removes only itself. No attempt to guess a hidden answer inside a block.
     """
-    return text
+    if not isinstance(text,str) or not _REASON_START.search(text):return text
+    protected=[(m.start(),m.end()) for pattern in (_CODE,_QUOTED_CONTROL) for m in pattern.finditer(text)]
+    result=[];cursor=0;depth=0
+    for match in _REASON_START.finditer(text):
+        if any(start<=match.start()<end for start,end in protected):continue
+        if match.start()<cursor:continue
+        end=text.find('>',match.end());next_open=text.find('<',match.end())
+        # Missing '>' is a malformed reserved opening, not an ordinary tag.
+        token_end=end+1 if end>=0 and (next_open<0 or end<next_open) else match.end()
+        if not depth:result.append(text[cursor:match.start()])
+        if match[1]:depth=max(0,depth-1)
+        else:depth+=1
+        cursor=token_end
+    if not depth:result.append(text[cursor:])
+    return ''.join(result)
 
 
 def normalize_image_markers(text):
@@ -65,7 +84,7 @@ def dirty(text: str) -> bool:
 
 
 def clean(text: str) -> str:
-    text = normalize_chat_layout(text)
+    text = without_analysis(normalize_chat_layout(text))
     if not text or not dirty(text):
         return text
     for p in _PATTERNS:
@@ -76,11 +95,23 @@ def clean(text: str) -> str:
 
 
 def prepare_history(messages: list) -> list:
-    """Remove leaked controls on a private copy, preserving dialogue paragraphs."""
-    result = copy.deepcopy(messages)
-    for message in result:
-        if not isinstance(message, dict) or message.get('role') != 'assistant' or not isinstance(message.get('content'), str):
-            continue
-        text = without_voice_markers(without_image_markers(without_boundaries(clean(message['content']))))
-        message['content'] = text
+    """History is immutable. New outputs are sanitized before SDK admission."""
+    return copy.deepcopy(messages)
+
+
+def memory_projection(prompt):
+    """Exclude explicit bot reasoning from a NEW summarizer input only.
+
+    Preserve human quotations, tools, raw evidence, hashes and coverage. This
+    view is never persisted back into the authoritative conversation sources.
+    """
+    result=copy.deepcopy(prompt)
+    for row in result.get('turns',[]):
+        if isinstance(row,dict) and isinstance(row.get('bot'),str):row['bot']=without_analysis(row['bot'])
+    for row in result.get('sent_messages',[]):
+        if isinstance(row,dict) and row.get('role')=='self' and isinstance(row.get('text'),str):row['text']=without_analysis(row['text'])
+    for row in result.get('observed_requests',[]):
+        if not isinstance(row,dict):continue
+        for key in ('confirmed_reply','native_reply'):
+            if isinstance(row.get(key),str):row[key]=without_analysis(row[key])
     return result

@@ -202,40 +202,40 @@ class AudienceContract(unittest.TestCase):
         self.db.execute('INSERT INTO memory_summary_people VALUES(?,?)',(identifier,self.person));self.db.commit()
     def tearDown(self):self.store.close();self.tmp.cleanup()
 
-    def test_private_pending_never_enters_a_group_request(self):
-        self.assertEqual(pending_messages(self.db,self.group,self.person,self.now+2),[])
+    def test_private_pending_enters_internal_group_reference(self):
+        self.assertEqual([r['source_event'] for r in pending_messages(self.db,self.group,self.person,self.now+2)],['secret-event'])
         # The private chat itself keeps its own rows (scope-local view).
         self.assertEqual(len(pending_messages(self.db,self.private,self.person,self.now+2,cross_scope=False)),1)
 
-    def test_private_summary_never_enters_group_recall(self):
+    def test_private_summary_enters_internal_group_recall(self):
         rows=summary_rows(self.db,self.group,self.person)
-        self.assertFalse(any(row[0]=='SYNTHETIC_PRIVATE_SUMMARY' or 'SYNTHETIC_PRIVATE' in row[1] for row in rows))
-        self.assertFalse(memory_audience({'scope':self.group,'subject':self.person},{'source_scope':self.private}))
+        self.assertTrue(any('SYNTHETIC_PRIVATE' in row[1] for row in rows))
+        self.assertTrue(memory_audience({'scope':self.group,'subject':self.person},{'source_scope':self.private}))
         self.assertTrue(memory_audience({'scope':self.private,'subject':self.person},{'source_scope':self.private}))
 
-    def test_group_material_reaches_participant_private_but_not_other_groups(self):
+    def test_group_material_reaches_related_private_and_group(self):
         gid=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated) VALUES(?,?,?,?)',(self.group,'群里的共同经历','[]',self.now)).lastrowid
         self.db.execute('INSERT INTO memory_summary_people VALUES(?,?)',(gid,self.person));self.db.commit()
         self.assertTrue(any(row[0]==gid for row in summary_rows(self.db,self.private,self.person)))
-        self.assertFalse(any(row[0]==gid for row in summary_rows(self.db,self.other,self.person)),'another group is a different audience')
+        self.assertTrue(any(row[0]==gid for row in summary_rows(self.db,self.other,self.person)))
         self.r.incoming(self.group,self.person,'group-event','群里的消息',self.now)
-        self.assertEqual(len(pending_messages(self.db,self.other,self.person,self.now+2)),0)
+        self.assertEqual({r['source_event'] for r in pending_messages(self.db,self.other,self.person,self.now+2)},{'secret-event','group-event'})
         # The participant's private chat cross-session view carries the group
         # message they really sent (single-person audience), not other scopes'
         # private rows; the scope-local view keeps their own private row.
         self.assertEqual([r['source_event'] for r in pending_messages(self.db,self.private,self.person,self.now+2)],['group-event'])
         self.assertEqual([r['source_event'] for r in pending_messages(self.db,self.private,self.person,self.now+2,cross_scope=False)],['secret-event'])
 
-    def test_retained_wire_gate_blocks_private_entries(self):
+    def test_retained_wire_accepts_internal_cross_scope_without_edits(self):
         entry={'kind':'recent_uncompressed_message','source_scope':self.private,'sender_id':self.person,'source_event':'secret-event','at':self.now,'user':'SYNTHETIC_PRIVATE_SECRET','bot':'SYNTHETIC_ACK'}
         poisoned=[{'role':'user','content':READONLY_CURRENT+'\n'+model_json({'state':{'recent_cross_session_messages':[entry]}})}]
-        self.assertFalse(retained_context_visible(self.db,poisoned,self.group,'768687099'))
+        self.assertTrue(retained_context_visible(self.db,poisoned,self.group,'768687099'))
         clean_group=[{'role':'user','content':READONLY_CURRENT+'\n'+model_json({'state':{'recent_cross_session_messages':[{**entry,'source_scope':self.group,'source_event':'group-event'}]}})}]
         self.assertTrue(retained_context_visible(self.db,clean_group,self.group,'768687099'))
         # A private summary row inside a group wire is equally forbidden.
         summary_entry={'id':1,'summary':'SYNTHETIC_PRIVATE_SUMMARY','source_scope':self.private,'source_events':[],'at':self.now}
         private_leak=[{'role':'user','content':READONLY_CURRENT+'\n'+model_json({'state':{'conversation_summaries':[summary_entry]}})}]
-        self.assertFalse(retained_context_visible(self.db,private_leak,self.group,'768687099'))
+        self.assertTrue(retained_context_visible(self.db,private_leak,self.group,'768687099'))
 
 
 class AgreementProjection(unittest.TestCase):
@@ -261,7 +261,7 @@ class AgreementProjection(unittest.TestCase):
         self.assertEqual(visible[0]['topic'],'主人在群里艾特时不回复')
         blob=json.dumps(visible,ensure_ascii=False)
         self.assertNotIn('用户说在群里别回',blob,'the cross-scope view carries the bounded state, never private verbatim text')
-        self.assertNotIn('主人一会去群里艾特',blob)
+        self.assertIn('主人一会去群里艾特',blob,'applicable conditions must not disappear across scopes')
         stamp=agreement_state.agreements_stamp(self.db,self.group)
         row3,_=agreement_state.apply_update(self.db,'cancel','主人在群里艾特时不回复',speaker=self.owner,
             participants=[self.owner],source_scope=row['source_scope'],source_event=row['source_event'],cfg=self.cfg)
@@ -273,8 +273,7 @@ class AgreementProjection(unittest.TestCase):
         row,error=agreement_state.apply_update(self.db,'propose','普通群友的约定',speaker=member,
             participants=[member,'bot'],source_scope=self.group,source_event='e-1',
             audiences=[self.private],cfg=self.cfg)
-        self.assertEqual(error,'')
-        self.assertEqual(row['audiences'],[self.group],'only the current scope and participant privates are available to non-owners')
+        self.assertEqual(error,'owner_agreement_required');self.assertIsNone(row)
 
     def test_claims_promotion_keeps_source_scope_only(self):
         claims=[{'id':'aabbccdd11223344','text':'周六八点东门见','kind':'agreement','speaker':{'role':'human','id':self.owner},

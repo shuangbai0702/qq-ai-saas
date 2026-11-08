@@ -13,7 +13,7 @@ class NaturalConversation(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.path=Path(self.tmp.name)/'behavior.sqlite'
         self.store=BehaviorStore(self.path);self.db=self.store.db;self.now=time.time()
-        self.cfg={'memory':True,'memoryAutoCapture':True,'memorySummary':True,'summaryRounds':30,'selfDevelopment':True,'naturalConversation':True}
+        self.cfg={'memory':True,'memoryAutoCapture':True,'memorySummary':True,'summaryRounds':35,'selfDevelopment':True,'naturalConversation':True}
     def tearDown(self):self.store.close();self.tmp.cleanup()
     def fact(self,name,value,scope='group:1',subject='11111',event='fact'):
         self.store.memory.remember(scope,subject,name,value,event,self.now)
@@ -112,13 +112,13 @@ class NaturalConversation(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(p.in_conversation('group:1','我也想听',{**cfg,'followupSeconds':0},1001))
     async def test_delayed_combined_reflection_cannot_undo_forget(self):
         self.fact('居住城市','杭州')
-        for i in range(30):self.store.reflection.record('group:1','11111',str(i),'我搬到了苏州','我喜欢昆曲')
+        for i in range(35):self.store.reflection.record('group:1','11111',str(i),'我搬到了苏州','我喜欢昆曲')
         entered=asyncio.Event();release=asyncio.Event()
         async def chat(**kw):
             entered.set();await release.wait()
             return NS(completion_text=json.dumps({'summary':'此人说搬去了苏州','facts':[{'event':'0','name':'住所','value':'苏州','quote':'我搬到了苏州'}]}))
         self.store.reflection.maybe_start('group:1',self.cfg,NS(text_chat=chat),lambda:True,{},contextvars.ContextVar('event',default=None))
-        await entered.wait()
+        await asyncio.wait_for(entered.wait(),3)
         run(self.path,{'action':'forget_fact','scope':'group:1','subject':'11111','name':'居住城市','expectedVersion':1},connection=self.db)
         release.set();await self.store.reflection.task
         self.assertEqual(self.db.execute('SELECT count(*) FROM facts WHERE active=1').fetchone()[0],0)

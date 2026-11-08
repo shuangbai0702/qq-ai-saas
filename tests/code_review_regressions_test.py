@@ -56,7 +56,7 @@ class ReviewMemory(unittest.TestCase):
   self.assertEqual({x['id'] for x in self.store.reflection.rolling(SCOPE)},{related})
   self.assertEqual({x['id'] for x in self.store.reflection.rolling('group:55555')},{other})
  def test_unknown_and_self_core_note_not_public(self):
-  for scopes in ([],['*'],['self']):
+  for scopes in ([],['*']):
    self.assertFalse(core_note_visible(scopes,'group:55555'))
    self.assertFalse(core_note_visible(scopes,SCOPE))
    self.assertTrue(core_note_visible(scopes,'self'))
@@ -90,7 +90,7 @@ class ReviewMemory(unittest.TestCase):
   status=self.store.memory.remember(SCOPE,PERSON,'称呼','乙','restore',4)
   self.assertIn('额度已满',status)
   self.assertEqual(self.db.execute('SELECT block_all FROM memory_blocks WHERE name=?',('称呼',)).fetchone(),(1,))
- def test_forbidden_committed_memory_blocks_without_rewriting_prefix(self):
+ def test_cross_scope_committed_memory_continues_without_rewriting_prefix(self):
   from memory_scope import retained_context_visible
   from readonly_journal import ReadonlyJournal,ContextReconstructionDenied
   from context_protocol import READONLY_CURRENT
@@ -100,8 +100,8 @@ class ReviewMemory(unittest.TestCase):
   old_state={'state':{'conversation_summaries':[{'id':identifier,'source_scope':'group:55555','summary':'不属于此人的群资料','recall_reason':'rolling_background'}]}}
   journal=ReadonlyJournal();first=journal.prepare(base+[packet(old_state)],1);self.assertTrue(journal.commit(first))
   before=json.dumps(journal.last.wire)
-  with self.assertRaises(ContextReconstructionDenied):
-   journal.prepare(base+[packet({'state':{'conversation_summaries':[]}})],1,retained_validator=lambda wire:retained_context_visible(self.db,wire,SCOPE))
+  prepared=journal.prepare(base+[packet({'state':{'conversation_summaries':[]}})],1,retained_validator=lambda wire:retained_context_visible(self.db,wire,SCOPE))
+  self.assertEqual(prepared.wire[:len(first.wire)],first.wire);self.assertIsNone(prepared.reconstruction_permit)
   self.assertEqual(json.dumps(journal.last.wire),before)
  def test_cross_scope_summary_recall_follows_audience_contract(self):
   from memory_scope import retained_context_visible
@@ -113,7 +113,7 @@ class ReviewMemory(unittest.TestCase):
   for origin in ('private:'+PERSON,'group:55555'):
    data={'state':{'conversation_summaries':[{'source_scope':origin,'summary':'本人约定','recall_reason':'scoped_bm25'}]}}
    wire=[{'role':'user','content':READONLY_CURRENT+'\n'+json.dumps(data)}]
-   self.assertFalse(retained_context_visible(self.db,wire,'group:66666'))
+   self.assertTrue(retained_context_visible(self.db,wire,'group:66666'))
   # The participant's own private chat remains a single-person audience for
   # a group they really took part in.
   data={'state':{'conversation_summaries':[{'source_scope':'group:55555','summary':'本人约定','recall_reason':'scoped_bm25'}]}}

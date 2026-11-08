@@ -9,6 +9,12 @@ for(const mode of ['passive','active'] as const)test(`native SDK ${mode}: privat
   const input=JSON.stringify(nativeMessages(body).findLast((m:any)=>m.role==='user')?.content||''),last=nativeMessages(body).at(-1);let message:any={role:'assistant',content:input.includes('MENTION_ME')?'来啦[AT:11111111][QQ_BREAK]接着聊':'我记得你刚在群里说过。'},finish='stop';
   if(input.includes('GROUP_SEND_TEST')&&last?.role!=='tool'){assert.ok(body.tools.some((tool:any)=>tool.function.name==='hosted_qq_group_send'));assert.ok(body.tools.some((tool:any)=>tool.function.name==='bilibili_search'),'inner search must exist independently of autonomy mode');assert.equal(body.tools.some((tool:any)=>tool.function.name==='propose_background_task'),mode==='active');message={role:'assistant',content:null,tool_calls:[{id:'group-send',type:'function',function:{name:'hosted_qq_group_send',arguments:JSON.stringify({group_id:'55555',text:'真实群消息继续聊',mention_user_id:'11111111'})}}]};finish='tool_calls'}
   if(input.includes('GROUP_READ_TEST')&&last?.role!=='tool'){assert.ok(body.tools.some((tool:any)=>tool.function.name==='hosted_qq_group_context'));message={role:'assistant',content:null,tool_calls:[{id:'group-read',type:'function',function:{name:'hosted_qq_group_context',arguments:JSON.stringify({group_id:'55555'})}}]};finish='tool_calls'}
+  if(input.includes('普通用户看看功能')&&last?.role!=='tool'){
+   message={role:'assistant',content:null,tool_calls:[
+    {id:'peer-group-read',type:'function',function:{name:'hosted_qq_group_context',arguments:JSON.stringify({group_id:'55555'})}},
+    {id:'peer-group-send',type:'function',function:{name:'hosted_qq_group_send',arguments:JSON.stringify({group_id:'55555',text:'不应发送的越权群消息'})}},
+   ]};finish='tool_calls';
+  }
   res.setHeader('Content-Type','application/json');res.end(JSON.stringify({id:'continuity-'+requests.length,model:body.model,object:'chat.completion',choices:[{index:0,message,finish_reason:finish}],usage:{total_tokens:100}}));
  });await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));permitModelFixture(server);t.after(()=>server.close());
  const root=await mkdtemp(path.resolve('.local/continuity-runtime-'));const current=await createApp({root}).catch(async error=>{await rm(root,{recursive:true,force:true});throw error});t.after(async()=>{await current.app.close();await rm(root,{recursive:true,force:true})});const {app,db,agent}=current;
@@ -38,10 +44,16 @@ for(const mode of ['passive','active'] as const)test(`native SDK ${mode}: privat
  if(mode==='active'){
   await wait(async()=>{const [s]=await db.query('SELECT s.*,b.generation,b.revision FROM autonomy_settings s JOIN bots b ON b.id=s.bot_id WHERE s.bot_id=$1',[id]);const snapshot=await runtimeClient(db)(s,'snapshot',{});return snapshot.foregroundFeedback?.result?.evidence?.some((e:any)=>e.source==='qq_group_context')&&snapshot.foregroundFeedback.result.toolResults.some((r:any)=>r.tool==='hosted_qq_group_context'&&r.status==='returned')},'fresh outer feedback contains real read receipt');
  }
- await mock.call(ctx,'/message',{sender:'22222222',text:'普通用户看看功能'});await wait(async()=>requests.some(r=>JSON.stringify(nativeMessages(r).at(-1)?.content).includes('普通用户看看功能')),'peer model turn');
+ const peerStart=requests.length,groupWritesBefore=(await actions()).filter(x=>x.action==='send_group_msg').length;
+ await mock.call(ctx,'/message',{sender:'22222222',text:'普通用户看看功能'});
+ await wait(async()=>requests.slice(peerStart).some(r=>['peer-group-read','peer-group-send'].every(id=>r.messages.some((m:any)=>m.role==='tool'&&m.tool_call_id===id&&JSON.parse(m.content).receipt?.status==='rejected'))),'real peer group read/send calls are rejected');
  if(mode==='active') {
   const [handoffs]=await db.query('SELECT count(*)::int AS count FROM autonomy_goals WHERE bot_id=$1',[id]);
   assert.equal(handoffs.count,0,'immediate execution must not require or duplicate a durable goal');
  }
- const peer=requests.findLast(r=>JSON.stringify(nativeMessages(r).at(-1)?.content).includes('普通用户看看功能'));assert.equal(peer.tools?.some((tool:any)=>tool.function.name.startsWith('hosted_qq_group_'))||false,false);
+ const peer=requests.slice(peerStart).find(r=>nativeMessages(r).at(-1)?.role==='user');
+ const owner=requests.find(r=>JSON.stringify(nativeMessages(r).at(-1)?.content).includes('GROUP_READ_TEST'));
+ const groupSchema=(r:any)=>r.tools.filter((tool:any)=>tool.function.name.startsWith('hosted_qq_group_'));
+ assert.deepEqual(groupSchema(peer),groupSchema(owner),'configured group schemas remain visible and stable for every author');
+ assert.equal((await actions()).filter(x=>x.action==='send_group_msg').length,groupWritesBefore,'denied peer calls cannot send any protocol group message');
 });

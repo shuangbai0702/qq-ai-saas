@@ -42,7 +42,7 @@ async def main():
             event.set_extra('_hosted_lease',settings[id]);event.set_extra('_hosted_generation',1)
             tools=brain.foreground_tools(id,event,lambda:True)
             assert any(t.name=='propose_background_task' for t in tools)==active
-            assert [t.name for t in tools]==(['propose_background_task'] if active else []),'durable delegation must not itself grant execution permissions'
+            assert [t.name for t in tools]==(['propose_background_task','cancel_background_task'] if active else []),'durable delegation must not itself grant execution permissions'
             token=current_message_event.set(event)
             try:await ProviderOpenAIOfficial.text_chat(NS(),prompt=event.get_message_str(),system_prompt='original persona',contexts=[])
             finally:current_message_event.reset(token)
@@ -60,6 +60,10 @@ async def main():
             assert ('目的会话的发送回执' in policy)==active,'foreground may claim a cross-conversation action without its receipt'
             assert ('[本轮图片表达规则，以此为准]' in policy)==meme
             assert 'original persona' in system
+            from context_protocol import CHAT_SEMANTIC_GUARD,persona_prompt
+            assert system.count(CHAT_SEMANTIC_GUARD)==1
+            assert persona_prompt(system,images=True,chat=True)==system
+            assert CHAT_SEMANTIC_GUARD not in policy,'stable guard duplicated into event policy'
             event.set_extra('_hosted_context',json.dumps({'conversation_candidate':True}))
             token=current_message_event.set(event)
             try:await ProviderOpenAIOfficial.text_chat(NS(),prompt='candidate',system_prompt='original persona',contexts=[])
@@ -115,6 +119,23 @@ async def main():
             assert event.get_message_str()=='' and event.get_messages()==[msg.message[0]],'input facts were mutated'
             assert request.prompt.find('你友好地询问')==-1
         print('PASS empty mention uses common pipeline, actual event facts and bound history in both modes')
+        # A synthetic proactive transport recipient is never the message author.
+        import initiative
+        id='proactive-origin';owner='12345678';scope='private:'+owner;last_user=time.time()-120
+        settings[id]={'tenantId':'tenant','botId':id,'generation':1,'revision':1,'root':str(Path(TEMP.name)/id),'config':{'proactive':True,'behavior':{'ownerUin':owner,'memory':False,'qqProfile':False,'memeEnabled':False,'styleLearning':False,'quietStart':0,'quietEnd':0}}}
+        runtime['manage'](id,{'action':'list'})
+        st=runtime['stores'][id];initiative.incoming(st.db,scope,owner,'90000000','真实旧交流',last_user,True)
+        msg=AstrBotMessage();msg.type=MessageType.FRIEND_MESSAGE;msg.self_id='90000000';msg.session_id=owner;msg.message_id='proactive-origin-event';msg.sender=MessageMember(owner,'recipient');msg.message=[Plain(initiative.PROACTIVE_PROMPT)];msg.message_str=initiative.PROACTIVE_PROMPT;msg.raw_message={'post_type':'message'}
+        event=AiocqhttpMessageEvent(msg.message_str,msg,PlatformMetadata('aiocqhttp','fixture',id),owner,bot=None)
+        for key,value in {'_hosted_lease':settings[id],'_hosted_generation':1,'_hosted_scheduled_generation':1,'_hosted_initiative':True,'_hosted_last_user':last_user,'_hosted_topic_origin':{'kind':'model_selected_topic','is_user_statement':False}}.items():event.set_extra(key,value)
+        await PipelineScheduler.execute(NS(),event)
+        context=json.loads(event.get_extra('_hosted_context'))
+        assert context['identity']['sender_id'] is None and context['identity']['owner'] is False
+        assert context['identity']['recipient_id']==owner and context['identity']['recipient_is_owner'] is True
+        assert context['topic_origin']['is_user_statement'] is False
+        assert event.get_sender_id()==owner,'semantic provenance must not change protocol identity or authorization'
+        print('PASS actual proactive context distinguishes bot initiative from its owner recipient')
+
         # H1: a 21-message burst seals the whole window. Every arrival reaches
         # the single reply; none is dropped and silently marked combined.
         id='burst-21'

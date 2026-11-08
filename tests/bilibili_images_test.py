@@ -27,7 +27,7 @@ async def main():
         current=True;calls=[];extras={'_hosted_internal_work':{'id':'work-1','kind':'research','principal':'autonomous-service'},'_hosted_autonomous_action':{'kind':'research'}}
         async def login():return {'user_id':'90000000'}
         async def avatar(**kwargs):calls.append(kwargs);return {}
-        event=NS(get_extra=lambda k,d=None:extras.get(k,d),get_sender_id=lambda:'0',get_self_id=lambda:'90000000',get_messages=lambda:[],message_obj=NS(message_id='stable-work-1'),bot=NS(get_login_info=login,set_qq_avatar=avatar))
+        event=NS(get_group_id=lambda:'',get_extra=lambda k,d=None:extras.get(k,d),get_sender_id=lambda:'0',get_self_id=lambda:'90000000',get_messages=lambda:[],message_obj=NS(message_id='stable-work-1'),bot=NS(get_login_info=login,set_qq_avatar=avatar))
         context=NS(context=NS(event=event));bridge={'settingsRevision':1,'allowAutonomous':True,'operations':[{'operation':'search'}]}
         with patch('bilibili_tools.manifest',side_effect=lambda _:json.loads(json.dumps(bridge))):
             import bilibili_tools

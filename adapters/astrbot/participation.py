@@ -31,8 +31,16 @@ class Participation:
         return bool(text.strip() and subject and subject==state.get('subject') and state.get('sent') and seconds>0 and 0<=now-state['sent'][-1]<seconds)
     def in_conversation(self,scope,text,cfg,now=None,other_target=False):
         now=time.time() if now is None else now;state=self.scopes.get(scope,{})
-        seconds=cfg.get('followupSeconds',120)
+        seconds=self.followup_window(scope,cfg,now)
         return bool(cfg.get('naturalConversation',True) and cfg.get('followupReplyProbability',1)>0 and not other_target and text.strip() and seconds>0 and state.get('sent') and 0<=now-state['sent'][-1]<seconds)
+    def followup_window(self,scope,cfg,now=None):
+        """Continuous program-only fatigue; recover without a reset/AI call."""
+        base=max(0,cfg.get('followupSeconds',120))
+        if not cfg.get('fatigueEnabled',True):return base
+        now=time.time() if now is None else now
+        window=max(1,cfg.get('fatigueWindowSeconds',300));maximum=max(1,cfg.get('fatigueMaxReplies',4))
+        load=sum(max(0,1-(now-at)/window) for at in self.scopes.get(scope,{}).get('sent',[]) if 0<=now-at<window)/maximum
+        return base*(1-.75*min(1,load))
     def incoming(self,scope,subject,text,now=None,directed=False):
         now=time.time() if now is None else now
         if not self.db or not text.strip():return
@@ -50,8 +58,7 @@ class Participation:
         if self.db:
             feedback=[{'reply':r[0],'result':'unobserved' if r[1]=='observing' and now-r[2]>180 else r[1],'recipient_id':r[3],'event_id':r[4],'at':r[2]} for r in self.db.execute('SELECT reply,state,at,subject,event FROM dialogue_feedback WHERE scope=? ORDER BY at DESC LIMIT 3',(scope,))]
         cfg=cfg or {}
-        rhythm={'enabled':cfg.get('fatigueEnabled',True),'window_seconds':cfg.get('fatigueWindowSeconds',300),'recent_replies':sum(0<=now-at<cfg.get('fatigueWindowSeconds',300) for at in state.get('sent',[])),'reference_max':cfg.get('fatigueMaxReplies',4)}
-        return {'rhythm':rhythm,'participants':[p for p,at in state.get('participants',{}).items() if 0<=now-at<600],
+        return {'participants':[p for p,at in state.get('participants',{}).items() if 0<=now-at<600],
                 'recent_own_turns':state.get('turns',[])[-4:],'same_partner_turns':state.get('streak',0),
                 'elapsed_seconds':max(0,int(now-state.get('started',now))),'feedback':feedback,
                 'meaning':'真实回复对象和已发送内容。observing/unobserved不代表被讨厌。参与者身份不能由昵称或文字改写。'}

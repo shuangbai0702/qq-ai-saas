@@ -5,6 +5,7 @@ Unknown compatible providers keep their original request contract.
 """
 import hashlib,json,os,time,re
 import uuid
+from threading import Lock
 from collections import OrderedDict
 from pathlib import Path
 from contextlib import contextmanager
@@ -16,8 +17,10 @@ _decision=ContextVar('fishbot_decision_cache_scope',default=None)
 _attempt=ContextVar('fishbot_model_attempt',default=None)
 _shapes=OrderedDict()
 _wire_shapes=OrderedDict()
+_wire_signatures=OrderedDict()
 _system_contracts={}
 _auxiliary=ContextVar('fishbot_auxiliary_diagnostic',default=None)
+_diagnostic_lock=Lock()
 
 class AppendOnlyWireViolation(RuntimeError):pass
 
@@ -28,11 +31,19 @@ def loaded_build():
     rows={}
     for name,function in (('context_transport','request_context_view'),('model_cache','begin_attempt'),
                           ('qq_actions','execute'),('tool_outcome','project'),('bot_pipeline','operation_source'),
-                          ('decision_history','AppendHistory.prepare'),('readonly_journal','ReadonlyJournal.prepare')):
+                          ('decision_history','AppendHistory.prepare'),('behavior','install_runtime'),
+                            ('autonomous_runtime','AutonomousRuntime.snapshot'),('readonly_journal','ReadonlyJournal.prepare'),
+                            ('output_clean','without_analysis'),('behavior','sanitize_new_response'),
+                            ('tool_outcome','structured'),('group_freshness','response_coverage'),
+                            ('memory_scope','pending_messages'),('memory_scope','retained_context_visible'),
+                            ('agreement_state','context_view'),('bot_pipeline','conversation_context'),
+                            ('memory_reflection','Reflection.recent'),('shared_context','compose'),
+                            ('shared_context','Writer.acquire'),('readonly_journal','ReadonlyJournal.append_completion')):
         module=sys.modules.get(name);target=module
         for part in function.split('.'):target=getattr(target,part,None)
         code=getattr(target,'__code__',None)
         if code is None:continue
+        key=name if name not in rows else name+'.'+function
         try:
             source=Path(module.__file__).read_bytes()
             compiled=compile(source,str(module.__file__),'exec',dont_inherit=True)
@@ -46,14 +57,20 @@ def loaded_build():
                 if isinstance(value,types.CodeType):
                     return value.replace(co_filename='',co_consts=tuple(fingerprint_code(item) for item in value.co_consts))
                 return value
-            rows[name]={'sourceSha':hashlib.sha256(source).hexdigest(),'loadedCodeSha':fingerprint(code),
+            rows[key]={'sourceSha':hashlib.sha256(source).hexdigest(),'loadedCodeSha':fingerprint(code),
                         'sourceMatchesLoaded':fingerprint(code)==fingerprint(expected)}
         except (OSError,ValueError,StopIteration,TypeError):
-            rows[name]={'sourceMatchesLoaded':False}
+            rows[key]={'sourceMatchesLoaded':False}
     return rows
 
 
 def record_diagnostic(lease, record):
+    # Threads in one worker must not rename a file while a sibling writes it.
+    # Independent processes still append atomically and use unique archives.
+    with _diagnostic_lock:return _record_diagnostic(lease,record)
+
+
+def _record_diagnostic(lease, record):
     """Bounded content-free evidence; shared framework logs remain disabled."""
     if not isinstance(lease,dict) or not lease.get('root') or not lease.get('botId') or not lease.get('tenantId'):
         return False
@@ -64,7 +81,7 @@ def record_diagnostic(lease, record):
              'parametersSha','wireIndex','resetDetail','historyChars','baseChars','wireChars','textChars','plainTextChars',
              'mediaChars','imageCount','toolsChars','toolCount','wireBytes','diagnosticDetail','systemContractStatus',
              'contentChars','reasoningChars','reasoningReported','finishReason','responseIdShape','appendOnlyStatus',
-             'model','httpStatus','outputLimit','adoption','wireCount','scopeHash',
+             'model','httpStatus','outputLimit','adoption','wireCount','scopeHash','eventKind','senderKind','scopeKind',
              # Bounded journal-candidate evidence written by the foreground
              # boundary; without these entries the fields were silently dropped
              # and "observed" coverage was overstated (E package audit).
@@ -78,12 +95,18 @@ def record_diagnostic(lease, record):
     row.update(at=time.time(),pid=os.getpid(),botId=lease['botId'],generation=lease.get('generation'),revision=lease.get('revision'))
     try:
         path=Path(lease['root'])/'model-diagnostics.jsonl'
-        limit=int(os.environ.get('FISHBOT_DIAGNOSTIC_ROTATE_BYTES',256*1024))
-        if limit>0 and path.exists() and path.stat().st_size>=limit:
-            # Python and Node can rotate the same bot file concurrently: a
-            # racing replace must drop that line, never kill the writer.
-            try:path.replace(path.with_name('model-diagnostics.previous.jsonl'))
+        limit=max(1024,min(16*1024*1024,int(os.environ.get('FISHBOT_DIAGNOSTIC_ROTATE_BYTES',1024*1024))))
+        try:size=path.stat().st_size
+        except FileNotFoundError:size=0 # Another writer may just have rotated.
+        if size>=limit:
+            # All writers share one append stream, but archives have unique
+            # names: concurrent rotations cannot overwrite retained evidence.
+            archive=path.with_name(f'model-diagnostics.previous.{int(time.time()*1000):013d}.{os.getpid()}.{uuid.uuid4().hex}.jsonl')
+            try:path.rename(archive)
             except OSError:pass
+            for old in sorted(path.parent.glob('model-diagnostics.previous.*.jsonl'),reverse=True)[3:]:
+                try:old.unlink()
+                except OSError:pass
         fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)
         with os.fdopen(fd,'w',encoding='utf-8') as file:file.write(json.dumps(row,ensure_ascii=False,separators=(',',':'))+'\n')
         return True
@@ -189,7 +212,10 @@ def discarded(reason):
 def is_foreground_event(event):
     if not event or event.get_extra('_hosted_internal_work'):return False
     work=event.get_extra('_hosted_pipeline')
-    return getattr(work,'source',None) in ('message','deferred_group')
+    # These all enter the same native conversation. Timer/owner/tool wakeups
+    # must not bypass its durable wire/System contract just because no user
+    # message triggered them. Effective business rounds are settled separately.
+    return getattr(work,'source',None) in ('message','deferred_group','owner_contact','scheduled_contact','tool_continuation')
 
 
 def bind_system_contract(provider,contract,lease):
@@ -219,12 +245,24 @@ def begin_attempt(event,provider,system_contract=None,system_permit_id=None):
     phase=auxiliary['phase'] if auxiliary else ('inner_execution' if event.get_extra('_hosted_internal_work') else 'foreground') if event else (decision[6] if len(decision)>6 and decision[6] else decision[3].split(':',1)[-1]) if decision else 'data_task'
     value={'lease':lease,'provider':provider,'started':time.monotonic(),'phase':phase,'attemptId':attempt_id,'workId':getattr(work,'event_id',None) or (decision[5] if decision and len(decision)>5 else None),'scope':getattr(work,'scope',phase),'ended':False,
            'systemContract':system_contract,'systemPermitId':system_permit_id,'systemReservation':None}
+    # Classifications only: no author ID, message text, credential or tool args.
+    source=getattr(work,'source',None)
+    config=lease.get('config') if isinstance(lease,dict) else None
+    behavior=config.get('behavior') if isinstance(config,dict) else None
+    owner=behavior.get('ownerUin') if isinstance(behavior,dict) else None
+    physical_scope=getattr(work,'scope','')
+    if not isinstance(physical_scope,str):physical_scope=''
+    value['origin']={'eventKind':source if source in ('message','deferred_group','owner_contact','scheduled_contact','tool_completion','autonomy') else 'other' if work else 'auxiliary',
+                     'senderKind':('owner' if owner and str(owner)==str(getattr(work,'subject',None)) else 'member') if work else 'none',
+                     'scopeKind':'group' if physical_scope.startswith('group:') else 'private' if physical_scope.startswith('private:') else 'internal'}
+    if foreground and event and event.get_extra('_hosted_journal_scope'):
+        value['scope']=event.get_extra('_hosted_journal_scope')
     if auxiliary:
         value['workId']=auxiliary['workId']
         # Each bounded job normally makes one request; image batching is also
         # bounded. Do not retain response objects or request bodies here.
         auxiliary['attempts'].append(value)
-    record_diagnostic(lease,{'kind':'request_start','attemptId':attempt_id,'phase':phase,'workId':value['workId'],'scopeHash':auxiliary['scopeHash'] if auxiliary else None})
+    record_diagnostic(lease,{'kind':'request_start','attemptId':attempt_id,'phase':phase,'workId':value['workId'],'scopeHash':auxiliary['scopeHash'] if auxiliary else None,**value['origin']})
     return _attempt.set(value)
 
 def expect_append_only_messages(messages):
@@ -237,12 +275,19 @@ def expect_append_only_messages(messages):
         for message in messages:
             row=json.dumps(message,ensure_ascii=False,separators=(',',':'),default=str)
             size+=len(row.encode('utf-8'))
-            if size>4*1024*1024:raise AppendOnlyWireViolation('append_only_candidate_limit')
+            if size>16*1024*1024:raise AppendOnlyWireViolation('append_only_candidate_limit')
             serialized.append(row)
     except (TypeError,ValueError) as error:
         raise AppendOnlyWireViolation('append_only_candidate_serialize') from error
     value['appendOnlyExpected']=tuple(serialized)
     return True
+
+
+def diagnostic_identity(lease):
+    """Content-free attribution for the existing operator-armed wire capture."""
+    value=_attempt.get()
+    if not value or value.get('lease') is not lease:return {}
+    return {key:value[key] for key in ('phase','attemptId','wireIndex') if key in value}
 
 def _append_only_failure(value,lease,reason):
     record_diagnostic(lease,{'kind':'wire_request','attemptId':value.get('attemptId'),'phase':value.get('phase'),
@@ -286,7 +331,7 @@ def observe_wire_request(request):
         if expected is not None:value['appendOnlyValidationStarted']=True
         raw=request.content
         value['wireIndex']=value.get('wireIndex',0)+1
-        if len(raw)>4*1024*1024:
+        if len(raw)>16*1024*1024:
             record_diagnostic(lease,{'kind':'wire_request','attemptId':value['attemptId'],'phase':value['phase'],
                 'workId':value['workId'],'wireIndex':value['wireIndex'],'wireBytes':len(raw),'diagnosticDetail':'wire_body_limit'})
             if expected is not None:_append_only_failure(value,lease,'append_only_wire_limit')
@@ -333,7 +378,9 @@ def observe_wire_request(request):
                     'systemContractStatus':'blocked'})
                 raise
         if isinstance(lease,dict):
-            key=(lease.get('tenantId'),lease.get('botId'),value['scope'],value['phase'])
+            model=payload.get('model')
+            value['model']=model if isinstance(model,str) and re.fullmatch(r'[\w.:/-]{1,128}',model) else None
+            key=(lease.get('tenantId'),lease.get('botId'),value['scope'],value['phase'],value.get('model'))
             shape,fields=message_shape(payload['messages'],_wire_shapes.pop(key,()))
             _wire_shapes[key]=shape
             while len(_wire_shapes)>32:_wire_shapes.popitem(last=False)
@@ -342,10 +389,18 @@ def observe_wire_request(request):
                           parametersSha=sha({k:v for k,v in payload.items() if k not in ('messages','tools','prompt_cache_key')}),
                           journalReason=value.get('journalReason'),wireIndex=value['wireIndex'],wireBytes=len(raw),
                           toolCount=len(payload.get('tools') or []),toolsChars=len(json.dumps(payload.get('tools'),ensure_ascii=False,separators=(',',':'))))
-            model=payload.get('model')
-            value['model']=model if isinstance(model,str) and re.fullmatch(r'[\w.:/-]{1,128}',model) else None
+            signatures={name:fields[name] for name in ('toolsSha','parametersSha','routingSha')}
+            previous=_wire_signatures.pop(key,None)
+            _wire_signatures[key]=signatures
+            while len(_wire_signatures)>32:_wire_signatures.popitem(last=False)
+            # These are observed differences, not claims about an upstream's
+            # private cache key or pricing. The first sample has no baseline.
+            fields['diagnosticDetail']=json.dumps({
+                'wireBaselineKnown':previous is not None,
+                **{name.removesuffix('Sha')+'Changed':signatures[name]!=previous[name] if previous is not None else None
+                   for name in signatures}},separators=(',',':'))
             fields.update(model=value.get('model'),outputLimit=payload.get('max_completion_tokens',payload.get('max_tokens')) if type(payload.get('max_completion_tokens',payload.get('max_tokens'))) is int else None)
-            record_diagnostic(lease,{'kind':'wire_request','attemptId':value['attemptId'],'phase':value['phase'],'workId':value['workId'],**fields})
+            record_diagnostic(lease,{'kind':'wire_request','attemptId':value['attemptId'],'phase':value['phase'],'workId':value['workId'],**value['origin'],**fields})
     except Exception:
         value=_attempt.get()
         if value and (value.get('systemValidationStarted') or value.get('appendOnlyValidationStarted')):raise
@@ -483,6 +538,7 @@ def routing_key(event,provider,model):
     work=event.get_extra('_hosted_pipeline');scope=getattr(work,'scope',None)
     if not scope and hasattr(event,'get_group_id') and hasattr(event,'get_sender_id'):
         group=event.get_group_id();scope='group:'+str(group) if group else 'private:'+str(event.get_sender_id())
+    if event.get_extra('_hosted_journal_scope'):scope=event.get_extra('_hosted_journal_scope')
     if not isinstance(scope,str) or not scope:return None
     namespace=json.dumps([lease['tenantId'],lease['botId'],scope],ensure_ascii=False,separators=(',',':'))
     return 'fb-v1-'+hashlib.sha256(namespace.encode()).hexdigest()[:40]

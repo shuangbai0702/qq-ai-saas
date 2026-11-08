@@ -48,7 +48,8 @@ class MemeSemantic(unittest.IsolatedAsyncioTestCase):
         self.items.extend({'id':f'extra{i}','meaning':'喝红茶','category':'neutral'} for i in range(10))
         result=await self.context()
         self.assertLessEqual(Counter(i.get('category') for i in result['meme_candidates'])['neutral'],2)
-        for key in ('meme_rule','participation_rule'):
+        self.assertNotIn('meme_rule',result)
+        for key in ('participation_rule',):
             self.assertEqual(result[key],self.store.context('group:1','饮品',self.cfg)[key])
 
     async def test_model_endpoint_and_content_isolation(self):

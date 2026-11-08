@@ -234,7 +234,7 @@ async def main():
         initial=brain.snapshot('qq')
         with patch.object(brain,'candidates',side_effect=AssertionError('ledger poll built retired planner context')):
             ledger=await brain.handle('qq','snapshot',{'ledgerOnly':True})
-            assert set(ledger)=={'pendingHandoffs','agreementStates','foregroundFeedback','event','nextEventCheckSeconds'}
+            assert set(ledger)=={'pendingHandoffs','agreementStates','canceledHandoffs','foregroundFeedback','event','nextEventCheckSeconds','feedbackVersion','foregroundBusy'}
         assert 'bilibili_search' not in initial['availableTools']
         assert next(t for t in initial['innerTools'] if t['name']=='bilibili_search')['code']=='feature_disabled'
         p['config']['capabilities']=['research','contact_owner','profile_signature','qzone_publish'];w['capabilities']=list(p['config']['capabilities'])
@@ -302,6 +302,14 @@ async def main():
         assert brain.policies['qq']['observedThrough']==finished,'an old cycle policy regressed the durable observation ACK'
         assert brain.snapshot('qq')['feedbackVersion']==finished,'ambient promotion erased the latest actual inner feedback'
         assert not brain.valid('qq',w),'an old feedback version retained execution permission'
+        ledger=brain.snapshot('qq',ledger_only=True)
+        assert ledger['feedbackVersion']==finished and ledger['foregroundFeedback']['at']==finished
+        assert ledger['foregroundBusy'] is False
+        st.active+=1
+        assert brain.snapshot('qq',ledger_only=True)['foregroundBusy'] is True
+        st.active-=1
+        rejected=await brain.handle('qq','execute',{'work':w,'action':{'kind':'message','target':'private:12345678','objective':'must not execute'}})
+        assert rejected['reason']=='stale_internal_work' and rejected['preflightReason']=='cycle_interrupted',rejected
         saved_feedback=brain.snapshot('qq')['foregroundFeedback'];new_cycle=str(uuid.uuid4())
         fresh_work={**w,'cycleId':new_cycle,'feedbackVersion':finished}
         brain.release('qq');brain.install('qq',{**p,'cycleId':new_cycle,'latestFeedback':saved_feedback})
@@ -374,18 +382,21 @@ async def main():
         assert '外层' not in brain.foreground_prompt('qq',incoming),'stale outer-layer wording must not return'
         brain.completed('qq',incoming,incoming_work)
         assert brain.events['qq']['result']['taskHandoff'] is None,'ordinary promise masqueraded as registered work'
-        submitted=json.loads(await propose.call(None,'read my real state later',delay_seconds=300))
+        for timestamp,delay in [('2026-11-08T15:15:00',0),('not a date',0),('2020-01-01T00:00:00+08:00',0)]:
+            invalid=json.loads(await propose.call(NS(context=NS(event=incoming)),'invalid time',run_at=timestamp,delay_seconds=delay))
+            assert invalid['reason']=='invalid_run_at' and not invalid['queued'],invalid
+        submitted=json.loads(await propose.call(NS(context=NS(event=incoming)),'read my real state later',delay_seconds=300))
         assert submitted['state']=='pending' and submitted['queued'] and calls==[]
-        again=json.loads(await propose.call(None,'read my real state later',delay_seconds=300))
+        again=json.loads(await propose.call(NS(context=NS(event=incoming)),'read my real state later',delay_seconds=300))
         assert again['requestId']==submitted['requestId']
         from bot_pipeline import BotPipeline
         reopened=BotPipeline(st.db);pending=reopened.pending_handoffs(p['epoch'])
         assert len(pending)==1 and pending[0]['senderId']=='23456789' and pending[0]['scope']=='private:23456789' and 'owner' not in pending[0]
-        conflict=json.loads(await propose.call(None,'silently replace another task',delay_seconds=300))
+        conflict=json.loads(await propose.call(NS(context=NS(event=incoming)),'silently replace another task',delay_seconds=300))
         assert conflict['queued'] is False and len(reopened.pending_handoffs(p['epoch']))==1
         await brain.handle('qq','handoff_ack',{'epoch':p['epoch'],'id':submitted['requestId'],'receipt':{'status':'accepted','goalId':submitted['requestId']}})
         assert reopened.pending_handoffs(p['epoch'])==[]
-        assert json.loads(await propose.call(None,'read my real state later',delay_seconds=300))['state']=='accepted'
+        assert json.loads(await propose.call(NS(context=NS(event=incoming)),'read my real state later',delay_seconds=300))['state']=='accepted'
         brain.completed('qq',incoming,incoming_work)
         assert brain.events['qq']['result']['taskHandoff']['state']=='accepted'
         print('PIPELINE durable handoff survives reopen, deduplicates and keeps actual sender; no local timer or QQ send passed')

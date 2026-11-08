@@ -15,7 +15,7 @@ class ReplyRhythmTest(unittest.TestCase):
         expected=['开发我？！','你个代码怪！\n大半夜不睡觉，居然还在连夜“开发”本鱼，说得本鱼好像是什么待上线的新产品一样！','我警告你啊，本鱼只吃白米饭，不吃任何奇怪的数据流！']
         self.assertEqual(split_text(raw),expected)
         self.assertEqual(split_text('[QQ_BREAK]'.join(expected)),expected)
-        self.assertEqual(prepare_history([{'role':'assistant','content':raw}])[0]['content'],'\n\n'.join(expected))
+        self.assertEqual(prepare_history([{'role':'assistant','content':raw}])[0]['content'],raw)
         self.assertEqual(prepare_history([{'role':'user','content':raw}])[0]['content'],raw)
 
     def test_soft_wrap_repair_preserves_structured_and_explicit_formatting(self):
@@ -27,7 +27,7 @@ class ReplyRhythmTest(unittest.TestCase):
         code='```html\n<br>\n\n\n---\n```'
         self.assertEqual(clean(code),code)
         self.assertEqual(clean('标签 `<br>` 的意思'), '标签 `<br>` 的意思')
-        self.assertEqual(prepare_history([{'role':'assistant','content':raw}])[0]['content'],clean(raw))
+        self.assertEqual(prepare_history([{'role':'assistant','content':raw}])[0]['content'],raw)
         self.assertEqual(prepare_history([{'role':'user','content':raw}])[0]['content'],raw)
         for raw in ['```py\n名字=1\n```','- 第一个\n- 第二个','> 引用\n下一行','| 名字 |\n| 数值 |','姓名：\n双白','甲句。\n乙句。','first\nsecond','保留  \n换行']:
             self.assertEqual(repair_soft_wraps(raw),raw)
@@ -67,19 +67,23 @@ class ReplyRhythmTest(unittest.TestCase):
         self.assertEqual(split_text(text+'[QQ_BREAK]结束'),[text,'结束'])
         self.assertEqual(without_boundaries(text+'[QQ_BREAK]结束'),text+'\n\n结束')
 
-    def test_disabled_splitting_and_history_never_leak_boundary_tokens(self):
+    def test_disabled_splitting_cleans_output_but_preserves_committed_history(self):
         self.assertEqual(without_boundaries('第一条[QQ_BREAK]第二条'),'第一条\n\n第二条')
-        self.assertEqual(prepare_history([{'role':'assistant','content':'第一条[QQ_BREAK]第二条'}])[0]['content'],'第一条\n\n第二条')
+        self.assertEqual(prepare_history([{'role':'assistant','content':'第一条[QQ_BREAK]第二条'}])[0]['content'],'第一条[QQ_BREAK]第二条')
 
-    def test_old_internal_tags_are_not_reintroduced(self):
-        result=prepare_history([{'role':'assistant','content':'<system_reminder>internal</system_reminder>第一句\n第二句'}])
-        self.assertEqual(result[0]['content'],'第一句第二句')
+    def test_old_internal_tags_are_not_rewritten(self):
+        raw='<system_reminder>internal</system_reminder>第一句\n第二句'
+        result=prepare_history([{'role':'assistant','content':raw}])
+        self.assertEqual(result[0]['content'],raw)
+        from output_clean import clean
+        self.assertEqual(clean(raw),'第一句\n第二句')
+        self.assertEqual(split_text(clean(raw)),['第一句第二句'])
 
     def test_wrapped_image_controls_never_become_dialogue_or_new_image_ids(self):
         text='[MEM\nE:bf_00dfc51307818\ne05]回应'
         self.assertEqual(normalize_image_markers(text),'[MEME:bf_00dfc51307818e05]回应')
         self.assertEqual(without_image_markers(text),'回应')
-        self.assertEqual(prepare_history([{'role':'assistant','content':text}])[0]['content'],'回应')
+        self.assertEqual(prepare_history([{'role':'assistant','content':text}])[0]['content'],text)
         self.assertEqual(normalize_image_markers('[MEME:../../private]安全'),'安全')
         self.assertEqual(without_image_markers('正常的[备忘：下一行\n再说]'),'正常的[备忘：下一行\n再说]')
 

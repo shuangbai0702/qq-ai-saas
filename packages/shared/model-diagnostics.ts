@@ -1,6 +1,6 @@
 /** Node model callers append to the same per-bot diagnostic journal as Python.
  * No prompts, headers, URLs, credentials or raw errors enter this adapter. */
-import {appendFileSync,renameSync,statSync,mkdirSync} from 'node:fs';
+import {appendFileSync,renameSync,statSync,mkdirSync,readdirSync,unlinkSync} from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 
@@ -16,7 +16,14 @@ export async function observeModel<T>(owner:ModelOwner|undefined,phase:string,mo
   try{
    const file=path.join(owner.root,'bots',owner.botId,'model-diagnostics.jsonl');
    mkdirSync(path.dirname(file),{recursive:true,mode:0o700});
-   try{if(statSync(file).size>=256*1024)renameSync(file,path.join(path.dirname(file),'model-diagnostics.previous.jsonl'))}catch{}
+   const configured=Number(process.env.FISHBOT_DIAGNOSTIC_ROTATE_BYTES||1024*1024);
+   const limit=Number.isFinite(configured)?Math.max(1024,Math.min(16*1024*1024,configured)):1024*1024;
+   try{if(statSync(file).size>=limit){
+    renameSync(file,path.join(path.dirname(file),`model-diagnostics.previous.${String(Date.now()).padStart(13,'0')}.${process.pid}.${randomUUID()}.jsonl`));
+    for(const old of readdirSync(path.dirname(file)).filter(n=>/^model-diagnostics\.previous\.[\d]+\.[\d]+\.[\w-]+\.jsonl$/.test(n)).sort().reverse().slice(3)){
+     try{unlinkSync(path.join(path.dirname(file),old))}catch{}
+    }
+   }}catch{}
    appendFileSync(file,JSON.stringify({at:Date.now()/1000,pid:process.pid,botId:owner.botId,generation:owner.generation,revision:owner.revision,attemptId,phase,model:safeModel,...row})+'\n',{mode:0o600});
   }catch{/* Diagnostics never alter a request's result. */}
  };

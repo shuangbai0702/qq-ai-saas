@@ -31,15 +31,23 @@ class Sizes(unittest.TestCase):
         exif=Image.Exif();exif[274]=6
         with decode(images.limit_data_url(encoded((1600,800),format='JPEG',exif=exif))) as picture:self.assertEqual(picture.size,(192,384))
 
-    def test_animation_frames_durations_and_small_animation_preserved(self):
+    def test_animation_motion_is_sampled_even_below_edge_limit(self):
         frames=[Image.new('RGB',(640,320),color) for color in ['red','green','blue']];out=io.BytesIO();frames[0].save(out,format='GIF',save_all=True,append_images=frames[1:],duration=[100,200,300],loop=2)
         for frame in frames:frame.close()
         raw='data:image/gif;base64,'+base64.b64encode(out.getvalue()).decode()
-        with decode(images.limit_data_url(raw)) as picture:
-            self.assertEqual(picture.size,(384,192));self.assertEqual(picture.n_frames,3);self.assertEqual(picture.info['loop'],2)
-            durations=[]
-            for i in range(picture.n_frames):picture.seek(i);durations.append(picture.info['duration'])
-            self.assertEqual(durations,[100,200,300])
+        original=out.getvalue()
+        details={}
+        with decode(images.limit_data_url(raw,details)) as picture:
+            self.assertEqual(picture.size,(384,192));self.assertEqual(getattr(picture,'n_frames',1),1)
+            # All three chronological colors survive in the first montage row.
+            for x,color in [(64,'red'),(192,'green'),(320,'blue')]:
+                rgb=picture.getpixel((x,32));self.assertGreater(rgb[['red','green','blue'].index(color)],100)
+        self.assertTrue(details['animated']);self.assertEqual(out.getvalue(),original)
+        small=[Image.new('RGB',(60,30),c) for c in ['red','blue']];buf=io.BytesIO()
+        small[0].save(buf,format='GIF',save_all=True,append_images=small[1:])
+        for frame in small:frame.close()
+        with decode(images.limit_data_url('data:image/gif;base64,'+base64.b64encode(buf.getvalue()).decode())) as picture:
+            self.assertEqual(picture.size,(180,90));self.assertEqual(picture.format,'JPEG')
 
     def test_invalid_and_over_budget_inputs_are_not_forwarded(self):
         for value in ['data:image/png;base64,AAAA','file:///secret','data:image/svg+xml;base64,AAAA']:

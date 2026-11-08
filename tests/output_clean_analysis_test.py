@@ -64,9 +64,10 @@ class HistoryIsNotRewritten(unittest.TestCase):
         self.assertEqual(result[0]['content'], LEAK)
         self.assertEqual(result[1]['content'], '我在的。')
 
-    def test_prepare_history_still_cleans_control_tags(self):
+    def test_prepare_history_preserves_even_old_control_tags(self):
         rows = [{'role': 'assistant', 'content': '在的<system_reminder>User ID: 1, Nickname: x</system_reminder>'}]
-        self.assertEqual(prepare_history(rows)[0]['content'], '在的')
+        self.assertEqual(prepare_history(rows), rows)
+        self.assertIsNot(prepare_history(rows)[0], rows[0])
 
     def test_prepare_history_is_deterministic(self):
         rows = [{'role': 'assistant', 'content': LEAK}]
@@ -74,6 +75,21 @@ class HistoryIsNotRewritten(unittest.TestCase):
 
 
 class ExistingCleanupStillWorks(unittest.TestCase):
+    def test_reserved_reasoning_blocks_and_incident_variants(self):
+        for text,expected in [
+            ('<thinking>内部推理</thinking>我在。','我在。'),
+            ('<thinking群里最近的话题，应该回复谁',''),
+            ('<thinking最新消息</thinking>好的','好的'),
+            ('</thinking>好的','好的'),
+            ('先说一句<think>隐藏<thinking>嵌套</thinking></think>再说一句','先说一句再说一句'),
+            ('<think>没有闭合',''),
+            ('<thinker>正常标签</thinker>','<thinker>正常标签</thinker>'),
+            ('用 `<thinking>` 标签举例。','用 `<thinking>` 标签举例。'),
+            ('这个标签叫“<thinking>”，这里只是在介绍名称。','这个标签叫“<thinking>”，这里只是在介绍名称。'),
+            ('```xml\n<think>示例</think>\n```\n这只是代码。','```xml\n<think>示例</think>\n```\n这只是代码。'),
+        ]:
+            with self.subTest(text=text):self.assertEqual(without_analysis(text),expected)
+
     def test_control_tags_still_stripped(self):
         self.assertEqual(clean('在的<system_reminder>User ID: 1, Nickname: x</system_reminder>'), '在的')
 

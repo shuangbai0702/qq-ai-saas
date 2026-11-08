@@ -125,19 +125,20 @@ async def run(provider,control,prompt,system,tools=(),handlers=None,context=None
             except (TypeError,ValueError):pass
             unavailable=isinstance(parsed,dict) and parsed.get('available') is False
             item={'tool':tool.name,'status':'unavailable' if unavailable else 'failed' if isinstance(value,CallToolResult) and value.isError else 'returned'}
-            from tool_outcome import project
-            outcome=project(parsed if isinstance(parsed,dict) else value,write=bool(getattr(tool,'hosted_effect',False)))
+            from tool_outcome import project,writes
+            outcome=project(parsed if isinstance(parsed,dict) else value,write=writes(tool,arguments))
             item['receipt']=outcome['receipt']
             item['execution']=outcome['execution']
+            if outcome['execution'] in ('failed','canceled'):item['status']='unavailable' if unavailable else 'failed'
+            if outcome.get('code'):item['code']=str(outcome['code'])[:80]
             if isinstance(outcome.get('actionId'),str):item['actionId']=outcome['actionId'][:128]
             if control.trace.get('workId'):item['workId']=control.trace['workId']
             item['evidence']=outcome.get('evidence',[])
             if unavailable:
                 item.update(code=str(parsed.get('code') or 'unavailable')[:80],scope=str(parsed.get('scope') or 'tool')[:40])
-            # These two hosted tools return controlled operation status only.
-            # Preserve the refusal reason without exposing arbitrary tool data
-            # (notably group chat bodies) to the outer decision model.
-            if tool.name in ('hosted_qq_signature','hosted_qq_publish','hosted_qq_avatar') and isinstance(value,str):
+            # Producers explicitly declare bounded status details. Arbitrary
+            # read bodies (notably group chat) are not diagnostic summaries.
+            if getattr(tool,'hosted_result_detail',False) and isinstance(value,str):
                 detail=parsed.get('data',{}).get('message') if isinstance(parsed,dict) and isinstance(parsed.get('data'),dict) else None
                 item['detail']=(detail if isinstance(detail,str) else value)[:400]
             if unavailable and parsed.get('scope')=='service' and type(parsed.get('retryAfterSeconds')) in (int,float) and parsed['retryAfterSeconds']>0:
