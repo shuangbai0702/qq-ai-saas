@@ -17,6 +17,17 @@ spec.loader.exec_module(controller)
 
 
 class ActivityTest(unittest.TestCase):
+    def test_cgroup_disappearance_after_enumeration_is_benign(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)/'cgroup.procs'
+            path.write_text('12\n34\n')
+            self.assertEqual(controller.cgroup_process_ids(path), ['12', '34'])
+            path.unlink()
+            self.assertEqual(controller.cgroup_process_ids(path), [])
+        with patch.object(Path, 'read_text', side_effect=PermissionError('denied')):
+            with self.assertRaises(PermissionError):
+                controller.cgroup_process_ids(path)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=os.environ.get('PI_SCRATCH_DIR'))
         self.addCleanup(self.temp.cleanup)
