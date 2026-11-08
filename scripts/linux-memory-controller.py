@@ -21,6 +21,7 @@ EXTRA_CONTAINERS = json.loads(os.environ.get('FISHBOT_MEMORY_EXTRA_CONTAINERS', 
 INSTANCE_ROLES = {'napcat', 'shared-ai', 'dedicated-ai'}
 RAMP_STEP = 32*1048576
 RAMP_SECONDS = 5
+IDLE_ROLE_MIB = {'napcat': 48, 'shared-ai': 72, 'dedicated-ai': 24}
 
 
 def container_scope(state):
@@ -158,6 +159,12 @@ def ramp_high(previous, current, target, elapsed):
     if old <= target or elapsed < RAMP_SECONDS:
         return str(max(old, target))
     return str(max(target, old-RAMP_STEP))
+
+
+def idle_target(role, instances=1):
+    default_mib = IDLE_ROLE_MIB.get(role, IDLE_MIB)
+    idle_mib = int(os.environ.get('FISHBOT_MEMORY_'+role.upper().replace('-', '_')+'_MIB', str(default_mib)))
+    return idle_mib*1048576*instances
 
 
 def load_reclaim(identity, boot, now):
@@ -380,14 +387,15 @@ def main():
             limits = {}
             for name, group in groups.items():
                 role = name.split(':', 1)[0]
-                default_mib = {'napcat': 48, 'shared-ai': 48, 'dedicated-ai': 16}.get(role, IDLE_MIB)
-                idle_mib = int(os.environ.get('FISHBOT_MEMORY_'+role.upper().replace('-', '_')+'_MIB', str(default_mib)))
-                target = idle_mib*1048576*aggregate_counts.get(name, 1)
+                target = idle_target(role, aggregate_counts.get(name, 1))
                 file = group/'memory.high'
                 old = file.read_text().strip()
                 current_bytes = int((group/'memory.current').read_text())
                 awake = wakes.get(name, False) or now-last_busy.get(name, now) < IDLE_SECONDS
-                if awake:
+                # The internal API group owns the central Node agent. I/O waits
+                # are not inactivity: throttling it stalls every runtime's IPC.
+                # Idle anonymous-page reclaim remains CPU/activity based.
+                if awake or name == 'api':
                     value = 'max'
                     ramp_at[name] = now
                 else:
@@ -428,7 +436,17 @@ def main():
             except OSError:
                 pass
         (BASE/'armed').unlink(missing_ok=True)
+        lock.close()
+
+
+def run():
+    # Guard cooldowns are intentional, healthy suspension, not service exits.
+    # Reentry must wait before inspecting/migrating any managed processes.
+    while True:
+        while (BASE/'disabled').exists():
+            time.sleep(1)
+        main()
 
 
 if __name__ == '__main__':
-    main()
+    run()

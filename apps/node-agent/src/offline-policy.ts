@@ -6,7 +6,9 @@ export const offlineGrace = (value:string|undefined, fallback:number) => Math.ma
 export function observeOffline(previous:OfflineObservation|undefined, protocol:Health, now:number,
  grace:{offline:number;fault:number;login:number;startup?:number},
  lifecycle:{ai?:Health;onlineSince?:number;requestedAt?:number}={}):OfflineObservation|undefined {
- if(protocol.online&&(!lifecycle.ai||lifecycle.ai.ready))return;
+ // QQ owns its connection independently of AI. Recovery repairs AI without
+ // expiring an authenticated, online QQ session.
+ if(protocol.online)return;
  const reason=lifecycle.ai&&!lifecycle.ai.ready?(lifecycle.onlineSince?'protocol-unavailable':'runtime-starting'):
   !protocol.alive||!protocol.ready||['created','starting','authenticating'].includes(protocol.loginState||'')?
    lifecycle.onlineSince?'protocol-unavailable':'runtime-starting':

@@ -1,6 +1,8 @@
 """Thin launcher over upstream AstrBotCoreLifecycle, without Dashboard or Electron."""
 import sys,os,json,asyncio,signal
 from pathlib import Path
+import worker_lifecycle
+worker_lifecycle.initialize()
 source,root=sys.argv[1],Path(sys.argv[2]).resolve()
 sys.path.insert(0,source)
 os.environ['ASTRBOT_ROOT']=str(root)
@@ -55,10 +57,8 @@ async def main():
     app=web.Application(client_max_size=131072);app.router.add_get('/health',health);app.router.add_post('/behavior-data',manage_data);app.router.add_post('/autonomous/{operation}',autonomous_work)
     runner=web.AppRunner(app);await runner.setup();await web.TCPSite(runner,'127.0.0.1',manifest['aiPort']+1).start()
     task=asyncio.create_task(core.start())
-    for sig in [signal.SIGTERM,signal.SIGINT]:
-        try:asyncio.get_running_loop().add_signal_handler(sig,stop.set)
-        except (NotImplementedError,RuntimeError):pass
-    try:await stop.wait()
+    worker_lifecycle.install_shutdown(stop)
+    try:await worker_lifecycle.wait_for_shutdown(task,stop)
     finally:
         await core.stop();task.cancel();await runner.cleanup();behavior['close']()
 

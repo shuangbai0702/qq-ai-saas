@@ -20,7 +20,7 @@ const vite=spawnSync(process.execPath,['node_modules/vite/bin/vite.js','build','
 if(vite.status!==0)process.exit(vite.status||1);
 const pkg=JSON.parse(await readFile('package.json','utf8'));
 const sha=file=>createHash('sha256').update(file).digest('hex');
-const sourceHashes={};for(const file of entries)sourceHashes[file]=sha(await readFile(file));
+const sourceHashes={};for(const file of entries)sourceHashes[path.relative(root,file).split(path.sep).join('/')]=sha(await readFile(file));
 // The behavior layer runs as Python source next to the compiled ESM. A
 // release manifest that omits it cannot detect old source with new bundles.
 const pythonSources={};const contracts={};const migrations={};
@@ -29,4 +29,8 @@ for(const file of await readdir('packages/contracts'))if(file.endsWith('.json'))
 await mkdir('dist-server/packages/contracts',{recursive:true});
 for(const name of Object.keys(contracts))await copyFile(name,path.join('dist-server',name));
 for(const file of await readdir('packages/database/migrations'))if(file.endsWith('.sql'))migrations['packages/database/migrations/'+file]=sha(await readFile('packages/database/migrations/'+file));
-await writeFile('dist-server/build.json',JSON.stringify({builtAt:new Date().toISOString(),node:process.version,version:pkg.version,entry:'apps/control-api/src/main.js',sourceHashes,pythonSources,contracts,migrations,note:'Compiled ESM: no tsx or resident Vite. Keep source Python launchers and references alongside this output.'},null,2));
+const revision=spawnSync('git',['rev-parse','HEAD'],{encoding:'utf8',windowsHide:true});
+if(revision.status!==0)throw new Error('Production build requires a traceable Git revision');
+const tree=spawnSync('git',['status','--porcelain','--untracked-files=normal'],{encoding:'utf8',windowsHide:true});
+if(tree.status!==0)throw new Error('Cannot verify production source state');
+await writeFile('dist-server/build.json',JSON.stringify({builtAt:new Date().toISOString(),gitCommit:revision.stdout.trim(),gitDirty:!!tree.stdout.trim(),node:process.version,version:pkg.version,entry:'apps/control-api/src/main.js',sourceHashes,pythonSources,contracts,migrations,note:'Compiled ESM: no tsx or resident Vite. Keep source Python launchers and references alongside this output.'},null,2));
