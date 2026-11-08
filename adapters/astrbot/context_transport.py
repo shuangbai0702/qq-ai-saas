@@ -3,8 +3,20 @@
 Used at ContextBuilder and the common provider boundary, not by individual skills.
 Only known platform envelopes and exact attributed events can be compacted.
 """
-import copy,json,re
+import copy,json,re,time
+from datetime import datetime,timezone,timedelta
 from context_protocol import SOURCE,TRUSTED_CURRENT,READONLY_CURRENT,source,image_notice,model_json
+
+
+def decision_request(payload,system):
+    """Common trusted prefix; task and audience-filtered observations stay separate.
+
+    This is a pure request view, not a shared chat history or permission cache.
+    Helpers with different jobs can reuse the same bot configuration prefix.
+    """
+    stable={k:payload[k] for k in ('persona','owner_id') if k in payload}
+    return {'system_prompt':'[机器人配置]\n'+model_json(stable)+'\n[本次判断职责]\n'+system,
+            'prompt':model_json({k:v for k,v in payload.items() if k not in stable})}
 
 # Explicit data-plane fields, not a heuristic for identifying permissions.
 # Unknown future contributions remain in the trusted envelope until reviewed.
@@ -14,7 +26,7 @@ READONLY_FIELDS=frozenset(('origin','conversation_environment','state','recent_m
     'previous_proactive_output','dialogue','conversation_candidate','participation_entry',
     'reply_to','execution_memory_guidance','tool_context','autonomous_experience','execution_experience',
     # R5: the bot's own bounded effective-commitment state for this scope.
-    'active_agreements'))
+    'active_agreements','cross_scope_guidance','periodic_guidance'))
 
 MODEL_STRENGTH_DIGITS=1
 
@@ -129,6 +141,10 @@ def request_context_view(system,contexts,prompt,policy,current_rules,context,too
         position=len(history)
     else:position=len(history)
     if not isinstance(data,dict):authority={'opaqueContext':context}
+    # The event's source time is historical evidence, not the current clock.
+    # Provide one readable local clock for absolute deadlines; only the new
+    # trusted event packet changes, never a System or historical message.
+    authority={**authority,'current_time':datetime.fromtimestamp(time.time(),timezone(timedelta(hours=8))).isoformat(timespec='seconds')}
     meaning='平台对本轮事件的可信来源资料和行为要求；身份是事实、能力是状态、授权仍由后端判断。'
     if incremental_policy:meaning+='同标记数据包按字段增量合并：新包出现的字段更新为最新值，未再次出现的policy沿用最近一次完整提供的policy。'
     event_packet={'role':'user','content':EVENT_CONTEXT_CURRENT+'\n'+model_json({

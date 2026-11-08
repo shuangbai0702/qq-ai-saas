@@ -12,18 +12,19 @@ import sqlite3
 
 class Ambient:
     def __init__(self): self.scopes = OrderedDict()
-    def observe(self, scope, sender, text, now, limit=50):
+    def observe(self, scope, sender, text, now, limit=50, source=None):
         self.prune(now)
         if not scope.startswith('group:') or not text.strip(): return
         limit=max(1,min(50,int(limit)))
         rows = self.scopes.pop(scope, deque(maxlen=50))
-        rows.append({'sender_id': sender, 'text': text[:180], 'at': now})
+        rows.append({**{k:source[k] for k in ('source_event','sender_name','mentions','reply_to') if isinstance(source,dict) and k in source},
+                     'sender_id': sender, 'text': text[:180], 'at': now})
         while len(rows)>limit:rows.popleft()
         self.scopes[scope] = rows
         while len(self.scopes) > 128: self.scopes.popitem(last=False)
     def context(self, scope, now):
         self.prune(now)
-        return [{'sender_id': x['sender_id'], 'text': x['text']} for x in self.scopes.get(scope, [])]
+        return [dict(x) for x in self.scopes.get(scope, [])]
     def acknowledged(self,scope,through):
         rows=self.scopes.get(scope)
         if rows is not None:
@@ -79,7 +80,11 @@ class RuntimeCare:
                  'active': any(self.busy(s) for s in self.stores.values())}
         for directory in roots:
             try:
-                value['active']=any(self.busy(s) for s in self.stores.values() if directory!=Path(root) or s.root==directory)
+                owners=[s for s in self.stores.values() if directory!=Path(root) or s.root==directory]
+                value['active']=any(self.busy(s) for s in owners)
+                value['work']={key:sum(getattr(s,key,0) for s in owners) for key in ('active','ingress','waiting')}
+                value['work']['batches']=sum(len(s.batches) for s in owners)
+                value['work']['background']=sum(bool(task and not task.done()) for s in owners for task in (s.social.task,s.social.stickers.task,s.reflection.task,getattr(getattr(s,'planner',None),'task',None)))
                 file = directory/'memory-activity.json'
                 temp = file.with_suffix('.tmp')
                 temp.write_text(json.dumps(value))

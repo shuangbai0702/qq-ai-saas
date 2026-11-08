@@ -41,7 +41,7 @@ class SocialContract(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(first,second);self.assertEqual(before,after)
         self.extra['_hosted_tool_context']={'quote_reply':second,'qq_favorites':qq_favorite_tools.context(self.event,self.st.db)}
         context=json.loads(inner_tools.request_context(self.event))
-        self.assertEqual(context['tool_context']['quote_reply'],second)
+        self.assertCountEqual(context['tool_context']['quote_reply'],second) # Context serialization is chronological; tool catalog is newest-first.
         self.assertEqual(context['state'],{'x':1})
         tool=quote_reply.tools(self.event,cfg,self.st.db,self.lease,lambda:True)[0]
         denied=json.loads(await tool.call(self.context,'qr_'+'f'*20))
@@ -374,7 +374,8 @@ class SocialContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(one['pagination']['totals']['relations'],105);self.assertEqual(len(one['relations']),100);self.assertEqual(len(two['relations']),5)
         self.st.participation.outgoing('group:55555','第一条',now-80,subject='12345678',event='first');self.st.participation.outgoing('group:55555','第二条',now-20,subject='12345678',event='second')
         self.st.close();self.st=BehaviorStore(self.path)
-        self.assertEqual(self.st.participation.context('group:55555',now=now)['rhythm']['recent_replies'],2)
+        self.assertEqual(len(self.st.participation.scopes['group:55555']['sent']),2,'restored program fatigue retains real completed turns')
+        self.assertNotIn('rhythm',self.st.participation.context('group:55555',now=now))
         self.assertTrue(self.st.participation.continuing('group:55555','接话','12345678',now,120))
         self.assertFalse(self.st.participation.continuing('group:66666','接话','12345678',now,120))
     async def test_one_turn_reuses_remote_query_across_fact_and_summary(self):

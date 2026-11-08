@@ -15,5 +15,8 @@ test('native autonomous group contact selects a known member and emits one real 
  await promisify(execFile)(path.resolve('references/astrbot/.venv/'+(process.platform==='win32'?'Scripts/python.exe':'bin/python')),['-c',"import sqlite3,sys;d=sqlite3.connect(sys.argv[1]);d.execute('UPDATE contacts SET last_user=last_user-70,last_bot=last_bot-70');d.commit()",path.join(ctx.root,'behavior.sqlite')],{windowsHide:true});
  await until(async()=>requests.length===2&&(await sent()).length===2);const last=(await sent()).at(-1);assert.deepEqual(last.params.message.filter((x:any)=>x.type==='at').map((x:any)=>String(x.data.qq)),['12345678']);assert.ok(JSON.stringify(requests[1]).includes('contact_target'));assert.ok((await mock.call(ctx,'/messages') as any[]).some(x=>x.action==='get_group_member_info'),'actual membership check before contact');
  await sleep(5500);assert.equal(requests.length,2,'no polling or self message loop');
+ assert.deepEqual(requests[1].messages.slice(0,requests[0].messages.length),requests[0].messages,'autonomous opportunity appends without changing the submitted wire prefix');
+ await mock.call(ctx,'/message',{group:'777777',sender:'12345678',text:'好呀，那我们继续聊',mention:true});await until(async()=>requests.length===3&&(await sent()).length===3);
+ assert.deepEqual(requests[2].messages.slice(0,requests[1].messages.length),requests[1].messages,'real human turn after autonomous contact preserves both prior requests');
  }finally{await current.app.close();await new Promise<void>(r=>server.close(()=>r()))}
 });

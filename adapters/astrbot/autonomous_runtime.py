@@ -93,15 +93,26 @@ class AutonomousRuntime:
     def permit_current(self,p):
         return p['until']>time.time()*1000 and time.monotonic()<p['_permit_deadline']
 
-    def valid(self,id,identity,effect=False):
+    def validation_error(self,id,identity,effect=False):
         p=self.policies.get(id);s=self.settings.get(id)
-        if self.closed or not p or not s or p['lease'] is not s or id in self.core.event_bus.stopped_platforms:return False
-        if p['config']['mode']!='active' or not self.permit_current(p) or self.interrupted.get(id)==identity.get('cycleId'):return False
-        if any(identity.get(k)!=p.get(k) for k in ('tenantId','botId','epoch','generation','revision','cycleId')):return False
-        if identity.get('principal')!='autonomous-service' or identity.get('expiresAt',0)<=time.time()*1000:return False
-        if identity.get('feedbackVersion',0)!=self.feedbacks.get(id,{}).get('at',0):return False
-        if effect and (p['config']['rollout']!='live' or p.get('actionId')!=identity.get('id')):return False
-        return True
+        if self.closed:return 'runtime_closed'
+        if not p or not s:return 'member_missing'
+        if p['lease'] is not s:return 'member_replaced'
+        if id in self.core.event_bus.stopped_platforms:return 'platform_stopped'
+        if p['config']['mode']!='active':return 'mode_changed'
+        if not self.permit_current(p):return 'permit_expired'
+        if self.interrupted.get(id)==identity.get('cycleId'):return 'cycle_interrupted'
+        for key in ('tenantId','botId','epoch','generation','revision','cycleId'):
+            if identity.get(key)!=p.get(key):return 'identity_'+key
+        if identity.get('principal')!='autonomous-service':return 'principal_invalid'
+        if identity.get('expiresAt',0)<=time.time()*1000:return 'work_expired'
+        if identity.get('feedbackVersion',0)!=self.feedbacks.get(id,{}).get('at',0):return 'feedback_changed'
+        if effect and p['config']['rollout']!='live':return 'shadow_effect'
+        if effect and p.get('actionId')!=identity.get('id'):return 'action_changed'
+        return ''
+
+    def valid(self,id,identity,effect=False):
+        return not self.validation_error(id,identity,effect)
 
     def cancel(self,id,invalidate=False):
         control=self.running.get(id)
@@ -113,6 +124,7 @@ class AutonomousRuntime:
         id=event.get_platform_id();identity=event.get_extra('_hosted_internal_work')
         if not self.valid(id,identity,effect=True):return False
         action=event.get_extra('_hosted_autonomous_action') or {}
+        if not self.store(id,self.settings[id]).pipeline.handoff_current(action.get('goalId')):return False
         if (action.get('requestSource') or {}).get('origin')=='model':return False
         binding=(action.get('requestSource') or {}).get('agreement')
         if binding:
@@ -179,7 +191,7 @@ class AutonomousRuntime:
     def foreground_prompt(self,id,event):
         p=self.policies.get(id)
         if not p or p['config']['mode']!='active' or not event.get_extra('_hosted_handoff_available'):return ''
-        return '\n[后台任务登记]\n主动模式可以把真实请求登记为平台后台任务，到期后由内层按登记内容执行。以下规则适用于本轮决定参与交流之后，不替代群聊的接话判断。先理解真实用户意图：普通闲聊、已有结果解释和连续对话自然回应；本轮即时任务由内层直接使用当前已授权工具完成，工具失败时根据真实结果调整做法。需要跨轮持续推进或延后执行时，调用propose_background_task把完整要求登记到平台任务账本；不要将已完成的即时任务再次登记执行。由模型判断意图，不依赖关键词。延续当前话题的普通聊天不重复建任务；需要变更或停止已登记任务时明确关联原要求，不自造任务ID。只有真实工具回执才能证明登记；pending表示等待后台登记确认，不是保证准点执行。未成功登记时，明确说明尚未安排，不用聊天文字承诺稍后会自动回来。登记、接受请求和完成执行分别表述；没有对应工具结果及目的会话的发送回执，不能声称已在其他会话联系、发言或完成任务。当前私聊回复送达只证明本次回复送达。\n'
+        return '\n[后台任务登记]\n主动模式可以把真实请求登记为平台后台任务，到期后由内层按登记内容执行。以下规则适用于本轮决定参与交流之后，不替代群聊的接话判断。先理解真实用户意图：普通闲聊、已有结果解释和连续对话自然回应；本轮即时任务由内层直接使用当前已授权工具完成，工具失败时根据真实结果调整做法。需要跨轮持续推进或延后提醒且你决定接受时，直接调用propose_background_task把完整要求和delay_seconds登记到平台任务账本，不能只记住或提出约定后就停止；若已登记用户的proposed约定，用其真实id/revision并设置accept_agreement=true，在同一事务接受并交接。指定钟点优先用run_at传带时区的ISO时间，程序换算延迟；相对等待使用delay_seconds。以本轮真实时间判断日期，不明确就询问；不要将已完成的即时任务再次登记执行。由模型判断意图，不依赖关键词。延续当前话题的普通聊天不重复建任务；需要变更或停止已登记任务时用cancel_background_task查看并取消原任务，不自造任务ID。只有真实工具回执才能证明登记；pending表示等待后台登记确认，不是保证准点执行。未成功登记时，明确说明尚未安排，不用聊天文字承诺稍后会自动回来。登记、接受请求和完成执行分别表述；没有对应工具结果及目的会话的发送回执，不能声称已在其他会话联系、发言或完成任务。当前私聊回复送达只证明本次回复送达。\n'
 
     def foreground_tools(self,id,event,current):
         p=self.policies.get(id)
@@ -188,22 +200,51 @@ class AutonomousRuntime:
         runtime=self;s=self.settings[id];st=self.store(id,s)
         event.set_extra('_hosted_handoff_available',True)
         class Propose(FunctionTool):
-            async def call(self,context,objective,delay_seconds=0,kind='message',agreement_id='',agreement_revision=None):
+            async def call(self,context,objective,delay_seconds=0,kind='message',agreement_id='',agreement_revision=None,accept_agreement=False,run_at=''):
+                if context.context.event is not event:return json.dumps({'queued':False,'reason':'tool_event_mismatch'})
+                if event.get_extra('_hosted_tool_completion'):return json.dumps({'queued':False,'reason':'real_message_work_required'})
                 live=runtime.policies.get(id)
                 if not current() or not live or live['lease'] is not s or live['epoch']!=p['epoch'] or live['config']['mode']!='active' or live['until']<=time.time()*1000:raise asyncio.CancelledError('stale task handoff')
                 work=event.get_extra('_hosted_pipeline')
                 if not isinstance(objective,str) or not 1<=len(objective.strip())<=1000 or type(delay_seconds) is not int or not 0<=delay_seconds<=604800:return json.dumps({'queued':False,'reason':'invalid_task_proposal'})
                 identity={k:live[k] for k in ('tenantId','botId','generation','revision','epoch')}
                 if kind not in ('message','research'):return json.dumps({'queued':False,'reason':'invalid_task_kind'})
+                if type(accept_agreement) is not bool:return json.dumps({'queued':False,'reason':'invalid_agreement_acceptance'})
                 request={'objective':objective.strip(),'delaySeconds':delay_seconds,'kind':kind}
+                if run_at:
+                    # The model interprets the requested time; code validates an
+                    # explicit timezone and computes the delay, never keywords.
+                    from datetime import datetime
+                    try:
+                        moment=datetime.fromisoformat(run_at.replace('Z','+00:00'))
+                        if moment.tzinfo is None:raise ValueError('timezone_required')
+                        when=int(moment.timestamp()*1000)
+                        if delay_seconds or not int(time.time()*1000)<=when<=int(time.time()*1000)+604800000:raise ValueError('time_range')
+                    except (ValueError,TypeError,AttributeError,OverflowError):return json.dumps({'queued':False,'reason':'invalid_run_at'})
+                    request['runAt']=when
+                if accept_agreement:request['acceptAgreement']=True
                 if agreement_id:
                     if not isinstance(agreement_id,str) or type(agreement_revision) is not int:return json.dumps({'queued':False,'reason':'agreement_revision_required'})
                     request['agreement']={'id':agreement_id,'revision':agreement_revision}
                 try:result=st.pipeline.propose_handoff(work,identity,request)
                 except ValueError as error:return json.dumps({'queued':False,'reason':str(error)})
+                if accept_agreement:
+                    import agreement_state
+                    event.set_extra('_hosted_agreement_fence',(work.scope,agreement_state.agreements_stamp(st.db,work.scope)))
                 event.set_extra('_hosted_task_handoff',result)
                 return json.dumps({**result,'queued':result['state'] in ('pending','accepted'),'meaning':'真实请求已保存到平台任务交接账本，等待平台接受并安排到期执行；pending不等于已经完成平台登记或安排执行。任务、后续联系仍须通过权限和预算校验，不能承诺已执行或必定准点。'},ensure_ascii=False)
-        result=[Propose(name='propose_background_task',description='登记跨轮或延后执行的任务。即时任务直接完成，不重复登记已完成动作。message用于原会话到期回复或提醒；research用于只读研究，可在现有主动时刻根据真实兴趣登记，不冒充用户委托且不直接对外发送。delay_seconds是最早执行延迟。涉及已接受的约定时填写agreement_id及agreement_revision；取消或修改约定会阻止旧版本任务。pending仅表示待平台确认，不是已经安排或履行。每条入站最多一项，同项可查询重试。',parameters={'type':'object','properties':{'objective':{'type':'string','minLength':1,'maxLength':1000},'delay_seconds':{'type':'integer','minimum':0,'maximum':604800},'kind':{'type':'string','enum':['message','research']},'agreement_id':{'type':'string','maxLength':24},'agreement_revision':{'type':'integer','minimum':1}},'required':['objective'],'additionalProperties':False})]
+        result=[Propose(name='propose_background_task',description='登记跨轮或延后执行的任务。即时任务直接完成，不重复登记已完成动作。message用于原会话到期回复或提醒；research用于只读研究，可在现有主动时刻根据真实兴趣登记，不冒充用户委托且不直接对外发送。delay_seconds是最早执行延迟。关联约定填写agreement_id及agreement_revision；若是当前真实用户提出、你决定接受的proposed事项，显式设置accept_agreement=true，以同一事务确认并登记任务；取消或修改约定会阻止旧版本任务。pending仅表示待平台确认，不是已经安排或履行。每条入站最多一项，同项可查询重试。',parameters={'type':'object','properties':{'objective':{'type':'string','minLength':1,'maxLength':1000},'delay_seconds':{'type':'integer','minimum':0,'maximum':604800},'run_at':{'type':'string','description':'明确钟点使用带时区的ISO时间，例如2026-11-08T15:15:00+08:00；与非零delay_seconds互斥，最多未来7天。'},'kind':{'type':'string','enum':['message','research']},'agreement_id':{'type':'string','maxLength':24},'agreement_revision':{'type':'integer','minimum':1},'accept_agreement':{'type':'boolean'}},'required':['objective'],'additionalProperties':False})]
+        class Manage(FunctionTool):
+            async def call(self,context,request_id=''):
+                if event.get_extra('_hosted_tool_completion'):return json.dumps({'status':'rejected','code':'real_message_work_required'})
+                live=runtime.policies.get(id)
+                if context.context.event is not event or not current() or not live or live['lease'] is not s or live['epoch']!=p['epoch'] or live['config']['mode']!='active' or live['until']<=time.time()*1000:raise asyncio.CancelledError('stale task management')
+                work=event.get_extra('_hosted_pipeline')
+                if not request_id:return json.dumps({'tasks':st.pipeline.handoff_catalog(work)},ensure_ascii=False)
+                try:value=st.pipeline.cancel_handoff(work,request_id)
+                except ValueError:return json.dumps({'status':'rejected','code':'task_not_owned_or_not_available'})
+                return json.dumps(value,ensure_ascii=False)
+        result.append(Manage(name='cancel_background_task',description='查看或取消当前真实用户在当前会话登记的后台任务。省略request_id只列出本人任务；理解用户意图后，用列表真实ID取消。取消仅阻止后续执行，不能撤销已发生或结果未知的操作，不声称外部操作已撤销。修改任务先取消旧项，再按本轮真实要求登记新项。',parameters={'type':'object','properties':{'request_id':{'type':'string','maxLength':36}},'additionalProperties':False}))
         # Durable delegation supplements the same inner Agent; it does not
         # replace immediate execution or grant any tool permissions.
         return result
@@ -263,8 +304,10 @@ class AutonomousRuntime:
         if ledger_only:
             import agreement_state
             return {'pendingHandoffs':st.pipeline.pending_handoffs(self.policies[id]['epoch']),
-                    'agreementStates':agreement_state.task_states(st.db),
+                    'agreementStates':agreement_state.task_states(st.db),'canceledHandoffs':st.pipeline.canceled_handoffs(),
                     'foregroundFeedback':self.feedbacks.get(id),'event':self.events.get(id),
+                    'feedbackVersion':self.feedbacks.get(id,{}).get('at',0),
+                    'foregroundBusy':st.active>(1 if id in self.running else 0) or bool(getattr(st,'waiting',0)),
                     'nextEventCheckSeconds':self.policies[id]['config'].get('minSleepSeconds',600)}
         candidates=self.candidates(id)
         # The supervisor sees private context, but the eventual task receives
@@ -309,7 +352,7 @@ class AutonomousRuntime:
         binding=((event.get_extra('_hosted_autonomous_action') or {}).get('requestSource') or {}).get('agreement') if event else None
         def current_work():
             import agreement_state
-            return self.valid(id,identity) and st.reflection.epoch()==epoch and agreement_state.task_current(st.db,binding)
+            return self.valid(id,identity) and st.reflection.epoch()==epoch and st.pipeline.handoff_current((event.get_extra('_hosted_autonomous_action') or {}).get('goalId') if event else None) and agreement_state.task_current(st.db,binding)
         control.current=current_work
         control.output_tokens=8192 if tools else 4096
         token_limit=autonomy.decision_token_limit.set(control.output_tokens)
@@ -363,7 +406,8 @@ class AutonomousRuntime:
                     control.evidence.append({'source':'self_interest_choice','reference':identity['id']+':'+result['topic']})
                     return json.dumps(result,ensure_ascii=False)
             tools.append(ReflectInterest(name='reflect_interest',description='在本轮真实读取后，自主增加、降低或放下自己的关注主题；写入原有自身兴趣，最多3个主题，不改人格、关系、权限或他人的记忆。explore增加关注，cool_down降低，drop放下；不是知识验证。',parameters={'type':'object','properties':{'topic':{'type':'string','minLength':2,'maxLength':50},'operation':{'type':'string','enum':['explore','cool_down','drop']},'reason':{'type':'string','minLength':1,'maxLength':240}},'required':['topic','operation','reason'],'additionalProperties':False}))
-        return tools
+        from tool_outcome import structured
+        return [structured(tool) for tool in tools]
 
     def task_tools(self,id,identity,scope,event=None):
         """Actual execution and metadata use the same shared feature registry."""
@@ -378,7 +422,7 @@ class AutonomousRuntime:
         binding=((event.get_extra('_hosted_autonomous_action') or {}).get('requestSource') or {}).get('agreement')
         def current_task():
             import agreement_state
-            return self.valid(id,identity) and agreement_state.task_current(st.db,binding)
+            return self.valid(id,identity) and st.pipeline.handoff_current((event.get_extra('_hosted_autonomous_action') or {}).get('goalId')) and agreement_state.task_current(st.db,binding)
         result+=inner_tools.features(s,event,st.db,scope,current_task,identity=identity,evidence=Evidence(),memory_current=lambda:current_task() and st.reflection.epoch()==epoch,effect_current=lambda:current_task() and self.effect_current(event))
         if ((event.get_extra('_hosted_autonomous_action') or {}).get('requestSource') or {}).get('origin')=='model':
             result=[tool for tool in result if not getattr(tool,'hosted_effect',False)]
@@ -456,6 +500,8 @@ class AutonomousRuntime:
         if not self.valid(id,identity):raise PreflightRejected('stale_internal_work')
         p=self.policies[id];kind=action['kind'];target=action.get('target','');candidates=self.candidates(id)
         import agreement_state
+        if not st.pipeline.handoff_current(action.get('goalId')):
+            return {'status':'canceled','summary':'原请求已取消，未继续执行','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE)}
         if not agreement_state.task_current(st.db,(action.get('requestSource') or {}).get('agreement')):
             return {'status':'canceled','summary':'约定已取消或修订，旧版本任务未执行','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE)}
         identity={**identity,'kind':kind}
@@ -609,7 +655,7 @@ class AutonomousRuntime:
             if id in self.tasks:raise ValueError('background_work_busy')
             self.tasks[id]=asyncio.current_task()
             try:return await self.execute(id,data)
-            except PreflightRejected as error:return {'status':'canceled','reason':str(error),'summary':'执行前身份已失效，未调用模型或协议','effects':[],'evidence':[],'unfinished':[],'usage':dict(ZERO_USAGE)}
+            except PreflightRejected as error:return {'status':'canceled','reason':str(error),'preflightReason':self.validation_error(id,data.get('work') or {}),'summary':'执行前身份已失效，未调用模型或协议','effects':[],'evidence':[],'unfinished':[],'usage':dict(ZERO_USAGE)}
             finally:self.tasks.pop(id,None)
         if operation=='receipt':
             if id not in self.tasks and self.store(id,self.settings[id]).db.execute("SELECT 1 FROM qq_favorite_writes WHERE action=? AND state='unknown' LIMIT 1",(data['id'],)).fetchone():

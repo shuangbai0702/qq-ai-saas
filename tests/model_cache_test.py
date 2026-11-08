@@ -21,6 +21,30 @@ class Tests(unittest.TestCase):
   provider.provider_config['api_base']='https://unknown.example/v1';self.assertIsNone(routing_key(event,provider,'gpt-6.1-sol'))
   self.assertIsNone(routing_key(None,provider,'gpt-6.1-sol'))
 class DiagnosticTests(unittest.TestCase):
+ def test_wire_origin_classifies_real_work_without_recording_author_or_body(self):
+  import model_cache
+  rows=[];lease={'tenantId':'tenant','botId':'bot','config':{'behavior':{'ownerUin':'12345678'}}}
+  work=NS(source='message',scope='private:12345678',subject='12345678',event_id='event')
+  extra={'_hosted_lease':lease,'_hosted_pipeline':work,'_hosted_internal_work':True}
+  event=NS(get_extra=lambda key,default=None:extra.get(key,default))
+  with patch.object(model_cache,'record_diagnostic',side_effect=lambda owner,row:rows.append(row)):
+   token=model_cache.begin_attempt(event,NS())
+   try:model_cache.observe_wire_request(NS(content=json.dumps({'model':'fixture','messages':[{'role':'user','content':'private fixture body'}],'tools':[]}).encode()))
+   finally:model_cache.reset_attempt(token)
+  wire=next(row for row in rows if row.get('toolsSha'))
+  self.assertEqual((wire['eventKind'],wire['senderKind'],wire['scopeKind']),('message','owner','private'))
+  self.assertNotIn('12345678',json.dumps(rows));self.assertNotIn('private fixture body',json.dumps(rows))
+ def test_concurrent_rotation_keeps_bounded_parseable_archives(self):
+  from concurrent.futures import ThreadPoolExecutor
+  with tempfile.TemporaryDirectory() as root,patch.dict('os.environ',{'FISHBOT_DIAGNOSTIC_ROTATE_BYTES':'1024'}):
+   lease={'root':root,'tenantId':'t','botId':'b'}
+   with ThreadPoolExecutor(max_workers=3) as pool:
+    results=list(pool.map(lambda i:record_diagnostic(lease,{'kind':'request_result','attemptId':str(i),'phase':'fixture','status':'completed'}),range(80)))
+   self.assertTrue(all(results))
+   archives=list(Path(root).glob('model-diagnostics.previous.*.jsonl'))
+   self.assertLessEqual(len(archives),3)
+   rows=[json.loads(line) for p in [*archives,Path(root)/'model-diagnostics.jsonl'] for line in p.read_text(encoding='utf-8').splitlines()]
+   self.assertTrue(rows);self.assertTrue(all(r['phase']=='fixture' for r in rows))
  def test_append_only_final_wire_allows_only_exact_prefix_plus_new_suffix(self):
   import model_cache
   provider=NS();rows=[];lease={'tenantId':'tenant-guard','botId':'bot-guard','root':'unused'}
@@ -48,7 +72,7 @@ class DiagnosticTests(unittest.TestCase):
    token=model_cache.begin_attempt(None,provider)
    try:self.assertIsNone(model_cache._attempt.get()['systemContract'])
    finally:model_cache.reset_attempt(token)
-   for source,internal,expected in [('autonomous',True,None),('message',False,guard)]:
+   for source,internal,expected in [('autonomous',True,None),('message',False,guard),('deferred_group',False,guard),('owner_contact',False,guard),('scheduled_contact',False,guard),('tool_continuation',False,guard),('scheduled_contact',True,None)]:
     extra={'_hosted_pipeline':NS(source=source),'_hosted_internal_work':internal}
     event=NS(get_extra=lambda key,default=None:extra.get(key,default))
     token=model_cache.begin_attempt(event,provider)
@@ -82,7 +106,7 @@ class DiagnosticTests(unittest.TestCase):
     for content in [b'not json',b'{"input":"not chat"}']:
      model_cache.observe_wire_request(NS(content=content))
     self.assertEqual(len(rows),count)
-    model_cache.observe_wire_request(NS(content=b'x'*(4*1024*1024+1)))
+    model_cache.observe_wire_request(NS(content=b'x'*(16*1024*1024+1)))
     self.assertEqual(rows[-1]['diagnosticDetail'],'wire_body_limit');self.assertNotIn('messagesSha',rows[-1])
   finally:model_cache.reset_attempt(token)
   with patch.object(model_cache,'record_diagnostic') as record:
@@ -95,9 +119,9 @@ class DiagnosticTests(unittest.TestCase):
    path=Path(root)/'model-diagnostics.jsonl';row=json.loads(path.read_text(encoding='utf-8'))
    self.assertEqual(row['botId'],'bot-a');self.assertIsNone(row['cachedTokens'])
    for key in ('apiKey','prompt','body'):self.assertNotIn(key,row)
-   path.write_text('x'*(256*1024))
+   path.write_text('x'*(1024*1024))
    self.assertTrue(record_diagnostic(lease,{'kind':'context','resetReason':'idle_boundary'}))
-   self.assertLess(path.stat().st_size,1024);self.assertTrue(path.with_name('model-diagnostics.previous.jsonl').exists())
+   self.assertLess(path.stat().st_size,1024);self.assertEqual(len(list(path.parent.glob('model-diagnostics.previous.*.jsonl'))),1)
    self.assertFalse(record_diagnostic({'root':root,'botId':'other'},{}))
  def test_diagnostic_io_failure_never_breaks_the_call(self):
   with tempfile.TemporaryDirectory() as root,patch('model_cache.os.open',side_effect=PermissionError):

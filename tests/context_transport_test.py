@@ -103,6 +103,20 @@ class Views(unittest.TestCase):
 
 
 class RequestLayout(unittest.TestCase):
+    def test_current_clock_is_readable_trusted_append_not_a_historical_time_rewrite(self):
+        from unittest.mock import patch
+        from context_transport import request_context_view,EVENT_CONTEXT_CURRENT
+        old=[{'role':'user','content':'old unchanged'}];before=copy.deepcopy(old)
+        context=json.dumps({'origin':{'at':1},'identity':{'sender_id':'12345678'}})
+        with patch('context_transport.time.time',return_value=1794156442):
+            system,history=request_context_view('fixed',old,'new','policy','guidance',context)
+        self.assertEqual(old,before);self.assertEqual(history[:1],before)
+        event=json.loads(history[-2]['content'].split('\n',1)[1])
+        self.assertEqual(event['authority']['current_time'],'2026-11-09T00:47:22+08:00')
+        self.assertTrue(history[-2]['content'].startswith(EVENT_CONTEXT_CURRENT))
+        with patch('context_transport.time.time',return_value=1794156502):
+            next_system,next_history=request_context_view('fixed',history,'next','policy','guidance',context)
+        self.assertEqual(system,next_system);self.assertEqual(next_history[:len(history)],history)
     def test_new_work_first_input_retains_current_task_after_shared_background(self):
         from context_transport import request_context_view,READONLY_CURRENT
         systems=[]
@@ -309,6 +323,7 @@ class SnapshotLayout(unittest.TestCase):
         from context_transport import request_context_view,EVENT_CONTEXT_CURRENT
         raw=self.snapshot();system,history=request_context_view('',[],None,'','规则',json.dumps(raw))
         event=json.loads(history[0]['content'].split('\n',1)[1]);authority=event['authority']
+        self.assertRegex(authority.pop('current_time'),r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+08:00$')
         readonly=json.loads(history[1]['content'].split('\n',1)[1])
         def merge(target,patch):
             for key,value in patch.items():

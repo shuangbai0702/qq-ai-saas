@@ -1,4 +1,5 @@
 """Real QQ favorites through the current OneBot, with durable uncertain writes."""
+from tool_outcome import rejected
 import asyncio,hashlib,json,time,logging,os,re,stat,tempfile
 from pathlib import Path
 from sticker_collection import download,png_thumbnail
@@ -182,8 +183,10 @@ def tools(event,cfg,db,root,current):
         records=list(event.get_extra('_hosted_tool_results') or []);records.append({'tool':'hosted_qq_favorites','status':'returned','operation':'save','receipt':proof,'at':int(time.time()*1000)});event.set_extra('_hosted_tool_results',records[-8:])
         return json.dumps({'status':'confirmed','item':item(row),'meaning':('QQ收藏详情已确认已有此原图，无需重复添加。' if existing else 'QQ收藏详情已读回原图MD5，真实收藏成功。此操作保留原动图；可读取收藏并选择发表情。')},ensure_ascii=False)
     class Favorites(FunctionTool):
+        @property
+        def hosted_write_operations(self):return frozenset({'save'})
         async def call(self,context,operation,source_id='current',favorite_handle=''):
-            if not current() or context.context.event is not event:return '未操作：配置或执行身份已变化。'
+            if not current() or context.context.event is not event:return rejected('tool_preflight_rejected','未操作：配置或执行身份已变化。')
             submitted=False;phase='source';digest=None;account=str(event.get_self_id())
             try:
                 if operation=='list':
@@ -197,7 +200,7 @@ def tools(event,cfg,db,root,current):
                     # being present (nor on which handle the model now picks).
                     if event.get_extra('_hosted_meme_sent',False):
                         return json.dumps({'status':'already_sent','meaning':'本轮已投递过收藏图；回执未知也不重复发送。'},ensure_ascii=False)
-                    if not b.get('memeEnabled',True):return '未准备：聊天表情能力已关闭。'
+                    if not b.get('memeEnabled',True):return rejected('tool_preflight_rejected','未准备：聊天表情能力已关闭。')
                     if event.get_extra('_hosted_meme_allowed') is False:
                         gate=event.get_extra('_hosted_meme_gate') or {}
                         return json.dumps({'status':'unavailable',**gate,'meaning':'未准备：本轮表情发送条件不满足，请保留文字回复。'},ensure_ascii=False)
@@ -218,10 +221,10 @@ def tools(event,cfg,db,root,current):
                         if prepared.get('id')==favorite_handle:
                             return json.dumps({'status':'already_prepared','id':favorite_handle,'source':prepared.get('source'),'meaning':'本轮已选定该收藏，尚未投递；不重复下载，也不改选其他图。'},ensure_ascii=False)
                     raw,source=await prepare_original(row,root,account,current)
-                    if not current():return '未准备：配置已变化。'
+                    if not current():return rejected('tool_preflight_rejected','未准备：配置已变化。')
                     event.set_extra('_hosted_tool_sticker',{'id':favorite_handle,'bytes':raw,'source':source,'digest':hashlib.md5(raw).hexdigest()})
                     return '已选定真实QQ收藏，将随本轮回复投递一次；成功与否以消息回执为准。'
-                if operation!='save' or not b.get('qqFavoriteSaveEnabled',True):return '未收藏：该操作未开放。'
+                if operation!='save' or not b.get('qqFavoriteSaveEnabled',True):return rejected('tool_preflight_rejected','未收藏：该操作未开放。')
                 scope=delivery_scope(event)
                 if source_id=='current':
                     native=getattr(event.message_obj,'raw_message',{})
@@ -248,11 +251,11 @@ def tools(event,cfg,db,root,current):
                     return confirmed(match,existing=True)
                 old=db.execute('SELECT state FROM qq_favorite_writes WHERE account=? AND md5=?',(account,digest)).fetchone()
                 if old:return '原收藏写入状态为'+old[0]+'；本次读回未确认，不会重复上传，请先在QQ检查。'
-                if db.execute('SELECT count(*) FROM qq_favorite_writes').fetchone()[0]>=200:return '收藏执行记录已到有界上限，需要管理员检查历史状态。'
+                if db.execute('SELECT count(*) FROM qq_favorite_writes').fetchone()[0]>=200:return rejected('tool_preflight_rejected','收藏执行记录已到有界上限，需要管理员检查历史状态。')
                 directory=Path(root)/'qq-favorites'/'uploads';directory.mkdir(parents=True,exist_ok=True)
                 file=directory/(digest+'.image');file.write_bytes(raw)
                 if not current():
-                    file.unlink(missing_ok=True);return '未收藏：提交前配置已变化。'
+                    file.unlink(missing_ok=True);return rejected('tool_preflight_rejected','未收藏：提交前配置已变化。')
                 db.execute("INSERT INTO qq_favorite_writes(account,md5,scope,source,state,res_id,at) VALUES(?,?,?,?,'unknown','',?)",(account,digest,scope,source_id,time.time()));db.commit()
                 event.set_extra('_hosted_favorite_md5',digest)
                 # Registered before the await. A lost response is never a retry.

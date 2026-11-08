@@ -9,13 +9,13 @@ import message_provenance
 
 def shared_person(scope,subject):
     return bool(re.fullmatch(r'\d{5,20}',str(subject)) and
-                (scope=='private:'+str(subject) or re.fullmatch(r'group:\d{4,20}',scope)))
+                (scope=='bot_shared' or scope=='private:'+str(subject) or re.fullmatch(r'group:\d{4,20}',scope)))
 
 
 def person_filter(scope,subject,alias=''):
     prefix=alias+'.' if alias else ''
     if shared_person(scope,subject):
-        return prefix+"subject=? AND ("+prefix+"scope LIKE 'group:%' OR "+prefix+"scope=?)",(subject,'private:'+subject)
+        return prefix+"subject=? AND ("+prefix+"scope LIKE 'group:%' OR "+prefix+"scope='bot_shared' OR "+prefix+"scope=?)",(subject,'private:'+subject)
     return prefix+'scope=? AND '+prefix+'subject=?',(scope,subject)
 
 
@@ -24,45 +24,32 @@ def value_hash(value):
 
 
 def memory_audience(context,record):
-    """One per-record audience gate shared by rolling, semantic candidates,
-    search and experience reads.
+    """Internal same-bot read, not permission to disclose to the destination.
 
-    scope='self' is not a public licence: merged self/big material is shown
-    only in its home scope or the owner's private chat.
-
-    R3 audience contract: ``author/person``, ``source_scope`` and
-    ``allowed audience`` are separate dimensions. A private chat's verbatim
-    material is visible in that private chat only — the same person meeting
-    the bot in a group never makes their private conversation group-visible.
-    A group's material stays in that group, plus the participant's own
-    private chat (single-person audience; candidate queries still enforce
-    real participation). Authorized cross-scope continuity rides the fact
-    and agreement projections, never raw private rows.
+    Callers select relevant people from this bot's database first. Scope
+    provenance remains attached; identity and external tool permissions never
+    come from the text. Unknown origins cannot establish trusted provenance.
     """
     if not isinstance(context,dict) or not isinstance(record,dict):return False
-    scope=str(context.get('scope') or '');subject=str(context.get('subject') or '');owner=str(context.get('owner') or '')
     origin=record.get('source_scope')
-    if not isinstance(origin,str) or not origin:return False
-    if origin==scope:return True
-    if origin=='self':return scope=='self' or bool(owner) and scope=='private:'+owner
-    if origin.startswith('private:'):return False
-    if origin.startswith('group:'):
-        return bool(subject) and scope=='private:'+subject and shared_person(scope,subject)
-    return False
+    if isinstance(origin,str) and origin and origin==context.get('scope'):return True
+    return valid_scope(origin) and valid_scope(context.get('scope'))
+
+
+def valid_scope(scope):
+    return isinstance(scope,str) and bool(re.fullmatch(r'(?:self|bot_shared|private:\d{5,20}|group:\d{4,20})',scope))
 
 
 def core_note_visible(scopes,scope,owner=''):
-    """Audience for the single core-note region, from its recorded sources.
+    """Internal read of the single core-note region, with known sources.
 
-    Unknown provenance cannot establish a public audience. Such rows remain
+    Unknown provenance cannot establish trusted reference data. Such rows remain
     available to the internal/admin path and the owner's private briefing.
     """
     private_owner=bool(owner) and scope=='private:'+str(owner)
     if not isinstance(scopes,list) or not scopes or '*' in scopes:return scope=='self' or private_owner
-    unique={str(x) for x in scopes if isinstance(x,str) and x}
-    if not unique or unique=={'self'}:return scope=='self' or private_owner
-    if len(unique)==1:return scope in unique
-    return scope=='self' or bool(owner) and scope=='private:'+str(owner)
+    if scopes==[scope] and isinstance(scope,str) and scope:return True
+    return valid_scope(scope) and all(valid_scope(x) for x in scopes)
 
 
 def core_note_legacy(scopes):
@@ -70,7 +57,7 @@ def core_note_legacy(scopes):
 
 
 def retained_context_visible(db,messages,scope,owner=''):
-    """Reject known forbidden memory already present in a committed wire.
+    """Validate platform provenance without reclassifying internal reads.
 
     Filtering the next snapshot cannot withdraw the earlier snapshot from an
     append-only request. Inspect platform envelopes only; ordinary quoted JSON
@@ -85,26 +72,11 @@ def retained_context_visible(db,messages,scope,owner=''):
         note=value.get('persona_core_note')
         if isinstance(note,dict) and note.get('text') and not core_note_visible(note.get('source_scopes'),scope,owner):return False
         origin=value.get('source_scope')
-        if scope.startswith('group:') and isinstance(origin,str) and 'name' in value and 'value' in value and 'source_event' in value and origin!=scope:return False
-        # R3 wire gate for verbatim pending entries: the same direction rules
-        # as the query layer, applied to anything already present in the
-        # committed wire (including delta payloads, which this walk visits).
-        if isinstance(origin,str) and value.get('kind')=='recent_uncompressed_message':
-            if origin.startswith('private:') and origin!=scope:return False
-            if origin.startswith('group:') and origin!=scope and scope!='private:'+str(value.get('sender_id') or ''):return False
-        if isinstance(origin,str) and isinstance(value.get('summary'),str):
-            if origin=='self' and scope!='self' and not (owner and scope=='private:'+str(owner)):
-                origins=value.get('source_scopes')
-                if not isinstance(origins,list) or not set(origins)<={'self',scope}:return False
-            # R3: a private chat's summary is visible in that chat only, in
-            # every recall shape — not just the rolling background.
-            if origin.startswith('private:') and origin!=scope:return False
-            if origin.startswith('group:') and origin!=scope and scope!='self':
-                if not scope.startswith('private:'):return False
-                identifier=value.get('id')
-                # A live summary with no participation is a proven mismatch.
-                # Missing legacy evidence is reported separately, not inferred.
-                if db.execute('SELECT 1 FROM memory_summaries WHERE id=?',(identifier,)).fetchone() and not db.execute('SELECT 1 FROM memory_summary_people WHERE summary_id=? AND subject=?',(identifier,scope[8:])).fetchone():return False
+        memory_record=(value.get('kind')=='recent_uncompressed_message' or isinstance(value.get('summary'),str)
+                       or {'name','value','source_event'}<=set(value))
+        # Other capability records legitimately use '*' as an aggregate
+        # interest scope. They are not message/fact provenance envelopes.
+        if memory_record and origin is not None and not valid_scope(origin):return False
         return all(visit(x) for x in value.values())
     for message in messages:
         content=message.get('content') if isinstance(message,dict) and message.get('role')=='user' else None
@@ -192,11 +164,7 @@ def release_value(db,scope,subject,name,value):
 
 def fact_rows(db,scope,subject,limit=200):
     where,args=person_filter(scope,subject,'f')
-    # A semantic fact is not automatically public. Until its record carries
-    # explicit audience evidence, groups read their own facts only. A person
-    # may still recall their own attributed group facts in private.
-    if scope.startswith('group:'):
-        where+=' AND f.scope=?';args+= (scope,)
+    # Source/person selection is internal relevance, not public disclosure.
     hard,rejected,blocked_values=blocked_facts(db,scope,subject)
     # Explicit records win over automatic captures. Among equal origins the
     # latest source wins; legacy duplicate records are read without data loss.
@@ -221,24 +189,26 @@ def fact_rows(db,scope,subject,limit=200):
 
 
 def fact_item(row,subject,reason):
-    return {'name':row[0],'value':row[1],'source_event':row[2],'version':row[3],
+    origin=row[10];event=row[2]
+    if origin=='bot_shared':
+        try:
+            channel,identifier=json.loads(event)
+            if valid_scope(channel):origin,event=channel,identifier
+        except (ValueError,TypeError):pass
+    return {'name':row[0],'value':row[1],'source_event':event,'version':row[3],
             'remembered_at':row[4],'kind':row[5],'origin':row[7],
-            'source_scope':row[10],'subject':subject,'recall_reason':reason}
+            'source_scope':origin,'subject':subject,'recall_reason':reason}
 
 
 def summary_rows(db,scope,subject='',limit=1000):
     # Other conversations enter recall only with protocol-backed participation
     # evidence for the current QQ, never because its ID appears in model text.
-    # R3 audience contract: one group's audience is that group — another
-    # group's summary, and especially a private chat's summary, never enters
-    # it. A participant's own private chat may recall summaries of groups
-    # they really took part in (single-person audience).
+    # The same person's private material and protocol-backed participation
+    # are relevant in both directions. Mentioning an ID in prose is no proof.
     if shared_person(scope,subject):
-        if scope.startswith('group:'):
-            return db.execute('SELECT id,text,sources,updated,scope FROM memory_summaries WHERE scope=? ORDER BY updated DESC,id DESC LIMIT ?',(scope,min(1000,limit))).fetchall()
         return db.execute('''SELECT s.id,s.text,s.sources,s.updated,s.scope FROM memory_summaries s
-          WHERE s.scope=? OR (s.scope LIKE 'group:%' AND EXISTS (SELECT 1 FROM memory_summary_people p WHERE p.summary_id=s.id AND p.subject=?))
-          ORDER BY s.updated DESC,s.id DESC LIMIT ?''',(scope,subject,min(1000,limit))).fetchall()
+          WHERE s.scope=? OR s.scope='bot_shared' OR (s.scope LIKE 'group:%' AND EXISTS (SELECT 1 FROM memory_summary_people p WHERE p.summary_id=s.id AND p.subject=?))
+          OR s.scope=? ORDER BY s.updated DESC,s.id DESC LIMIT ?''',(scope,subject,'private:'+str(subject),min(1000,limit))).fetchall()
     return db.execute('SELECT id,text,sources,updated,scope FROM memory_summaries WHERE scope=? ORDER BY updated DESC,id DESC LIMIT ?',(scope,min(1000,limit))).fetchall()
 
 
@@ -253,30 +223,87 @@ def summary_item(row,reason=None,db=None):
     return result
 
 
-def pending_messages(db,scope,subject,now,limit=16,budget=3000,cross_scope=True):
+def pending_messages(db,scope,subject,now,limit=16,budget=3000,cross_scope=True,people=None,owner=''):
     """Uncompressed recent material for this scope's request view.
 
     ``cross_scope=False`` keeps this conversation's own rows. The historical
-    ``cross_scope=True`` view means ONLY other conversations' rows (the
-    caller renders the current scope separately); R3 fixes its direction:
-    a group request never receives verbatim material from anywhere else —
-    the 02:25 leak (a private instruction surfacing inside a group request)
-    is closed at the query layer, not by prompt discipline. A private chat's
-    cross-session view keeps the participant's own words from groups they
-    really spoke in (single-person audience of their own messages).
+    ``cross_scope=True`` means ONLY other conversations' rows. The caller
+    supplies protocol-backed people, never model-invented identities. This
+    function reads one bot's existing pool and creates no replicated history.
     """
     if not shared_person(scope,subject):return []
-    if not cross_scope or scope.startswith('group:'):
-        if cross_scope and scope.startswith('group:'):return []
+    if cross_scope:
+        from shared_context import active,recent
+        if active(db):return recent(db,limit,budget)
+    if not cross_scope:
         where,args='scope=? AND subject=?',(scope,subject)
     else:
-        where,args="subject=? AND scope LIKE 'group:%'",(subject,)
-    rows=db.execute('SELECT scope,subject,event,question,answer,at FROM memory_pending WHERE '+where+' AND at>? AND at<=? ORDER BY at DESC,rowid DESC LIMIT ?',args+(now-7*86400,now,min(16,max(1,limit)))).fetchall()
+        persons=list(dict.fromkeys(str(p) for p in [subject,*(people or []),owner] if shared_person(scope,str(p))))[:16]
+        marks=','.join('?' for _ in persons)
+        where,args='subject IN ('+marks+") AND scope<>? AND (scope LIKE 'group:%' OR scope='private:'||subject)",tuple(persons)+(scope,)
+    columns='scope,subject,event,question,answer,at'
+    if cross_scope:
+        sql='WITH ranked AS (SELECT '+columns+''',rowid AS observed_order,
+            row_number() OVER (PARTITION BY scope,subject ORDER BY at DESC,rowid DESC) AS source_rank
+            FROM memory_pending WHERE '''+where+''' AND at>? AND at<=?)
+            SELECT '''+columns+''',observed_order FROM ranked
+            ORDER BY source_rank,at DESC,observed_order DESC LIMIT ?'''
+    else:sql='SELECT '+columns+',rowid FROM memory_pending WHERE '+where+' AND at>? AND at<=? ORDER BY at DESC,rowid DESC LIMIT ?'
+    raw=db.execute(sql,args+(now-7*86400,now,64 if cross_scope else min(16,max(1,limit)))).fetchall()
+    observed_order={(row[0],str(row[2])):row[6] for row in raw}
+    rows=[row[:6] for row in raw]
+    if cross_scope:
+        # First pass reserves one recent observation per person/source. Extra
+        # rows fill the remaining budget; a busy group cannot monopolise it.
+        first=[];rest=[];seen=set()
+        for row in rows:
+            key=(row[0],row[1])
+            (rest if key in seen else first).append(row);seen.add(key)
+        first.sort(key=lambda r:(r[1]!=str(owner),-r[5]))
+        rows=first+rest
     result=[];used=0
     for source,person,event,question,answer,at in rows:
+        if not valid_scope(source):continue
+        if cross_scope:
+            provenance=message_provenance.get(db,source,event)
+            # Legacy aggregate Work text is not proven single-author speech.
+            item={'kind':'recent_uncompressed_message','role':'member','source_scope':source,'source_event':event,
+                  'sender_id':person,'at':at,'text':question[:400]}
+            if len(question)>400:item['excerpt']=True
+            if provenance.get('sender_id')==person:
+                item.update({k:provenance[k] for k in ('sender_name','mentions','reply_to') if provenance.get(k)})
+                if person==str(owner):item['attention']='[important]'
+            else:item['attribution']='legacy_author_unverified'
+            size=len(json.dumps(item,ensure_ascii=False,separators=(',',':')))
+            if used+size>budget:continue
+            result.append(item);used+=size
+            if len(result)>=min(16,max(1,limit)):break
+            continue
         question=question[:400];answer=answer[:400]
         if used+len(question)+len(answer)>budget:continue
         result.append({'kind':'recent_uncompressed_message','source_scope':source,'sender_id':person,'source_event':event,'at':at,'age_seconds':max(0,int(now-at)),'user':question,'bot':answer})
         result[-1]['source']=message_provenance.get(db,source,event)
         used+=len(question)+len(answer)
-    return list(reversed(result))
+    if cross_scope and result and len(result)<min(16,max(1,limit)):
+        # Read actual destination sends, never treat pending.answer (possibly
+        # a whole multi-author Work) as a reply to this particular person.
+        sources=list(dict.fromkeys(r['source_scope'] for r in result))
+        marks=','.join('?' for _ in sources)
+        tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if 'dialogue_feedback' in tables:
+            sent=db.execute('SELECT scope,event,subject,at,reply FROM dialogue_feedback WHERE scope IN ('+marks+') AND at>? AND at<=? ORDER BY at DESC LIMIT 4',tuple(sources)+(now-7*86400,now)).fetchall()
+            for source,event,person,at,text in sent:
+                if str(person) not in persons:continue
+                proof=message_provenance.get(db,source,event,'outgoing')
+                if proof.get('receipt')!='confirmed' or not proof.get('message_ids'):continue
+                item={'kind':'recent_uncompressed_message','role':'self','source_scope':source,'source_event':event,
+                      'recipient_id':person,'at':at,'text':text[:400],
+                      'receipt':'confirmed','message_ids':proof['message_ids']}
+                if len(text)>400:item['excerpt']=True
+                size=len(json.dumps(item,ensure_ascii=False,separators=(',',':')))
+                if used+size>budget:continue
+                result.append(item);used+=size
+                if len(result)>=min(16,max(1,limit)):break
+    # Equal protocol timestamps are common. Preserve ingestion order instead
+    # of sorting new event IDs ahead of retained rows and resending their text.
+    return sorted(result,key=lambda r:(r['at'],observed_order.get((r['source_scope'],str(r['source_event'])),max(observed_order.values(),default=0)+1)))

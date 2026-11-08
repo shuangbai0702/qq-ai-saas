@@ -29,6 +29,7 @@ class SharingTests(unittest.TestCase):
   self.a.db.execute("INSERT INTO social_patterns VALUES('group:20000','有节目效果','开玩笑','[]',1,?)",(time.time(),));self.a.db.commit();self.assertEqual(len(self.hints('group:20000')),1)
   self.a.observe('group:10000','12345','记住：饮料=绿茶','e',time.time())
   same=self.a.observe('group:20000','12345','喝什么','e2',time.time())['facts'];self.assertEqual(same[0]['value'],'绿茶');self.assertEqual(same[0]['source_scope'],'group:10000')
+  private=self.a.observe('private:12345','12345','喝什么','e-private',time.time())['facts'];self.assertEqual(private[0]['value'],'绿茶');self.assertEqual(private[0]['source_scope'],'group:10000')
   self.assertFalse(self.a.observe('group:20000','67890','喝什么','e3',time.time())['facts'])
   self.assertFalse(self.b.observe('group:20000','12345','喝什么','e4',time.time())['facts'])
 

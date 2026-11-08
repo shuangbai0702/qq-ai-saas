@@ -61,3 +61,17 @@ test('Bilibili maintenance keeps current coordinator and child owners, and rolls
   await new Promise(r=>setTimeout(r,150));await agent.host.logWrites.get('media-fixture');assert.match(await readFile(path.join(childRoot,'runtime.log'),'utf8'),/bili-pipe-alive/);
  }finally{await agent.bilibili.stop();await agent.autonomy.stop();await agent.host.stop('media-fixture','protocol');await db.close()}
 });
+
+
+test('failed autonomous maintenance restores the running coordinator without replacing child owners',async()=>{
+ const root=await mkdtemp(path.resolve('.local/autonomous-rollback-')),db=await openDatabase(root),agent=new NodeAgent(db,root,Buffer.alloc(32));
+ const child={pid:123,exitCode:null} as any;agent.host.children.set('owner:protocol',child);
+ const prior=agent.autonomy;prior.start();
+ const stop=prior.stop.bind(prior),get=agent.host.children.get.bind(agent.host.children);
+ prior.stop=async()=>{await stop();agent.host.children.get=()=>undefined};
+ try{
+  await assert.rejects(()=>installAutonomousRuntime(agent,'e'.repeat(64)),/child owner changed/);
+  assert.equal(agent.autonomy,prior);assert.equal(prior.closed,false);assert.ok(prior.timer&&prior.heartbeatTimer);
+  agent.host.children.get=get;assert.equal(agent.host.children.get('owner:protocol'),child);
+ }finally{agent.host.children.get=get;prior.stop=stop;await prior.stop();agent.host.children.clear();await db.close()}
+});

@@ -73,6 +73,7 @@ export class AutonomyCoordinator {
  }
  private async freshSnapshot(bot:any){
   const snapshot=await this.call(bot,'snapshot',{ledgerOnly:true},3000);
+  await this.repo.reconcileCancellations(bot,Array.isArray(snapshot.canceledHandoffs)?snapshot.canceledHandoffs:[]);
   await this.repo.reconcileAgreements(bot,Array.isArray(snapshot.agreementStates)?snapshot.agreementStates:[]);
   for(const request of (Array.isArray(snapshot.pendingHandoffs)?snapshot.pendingHandoffs:[]).slice(0,16)){
    const receipt=await this.repo.acceptHandoff(bot,request);

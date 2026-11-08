@@ -48,7 +48,7 @@ def get(db,scope,event,direction='incoming'):
 
 def put(db,scope,event,direction,source):
     if not isinstance(source,dict):return
-    allowed=('sender_id','sender_name','name_source','mentions','reply_to','message_ids','receipt','complete')
+    allowed=('sender_id','sender_name','name_source','mentions','reply_to','message_ids','receipt','complete','responded_events','source_scope')
     data={k:source[k] for k in allowed if k in source}
     raw=json.dumps(data,ensure_ascii=False,separators=(',',':'))
     if len(raw)>3000:raise ValueError('message provenance exceeds bound')
@@ -65,6 +65,30 @@ def incoming_item(db,scope,person,event,text,at):
     return {'role':'member','source_scope':scope,'source_event':str(event),
             **source,'sender_id':person,'at':at,'text':text,
             'name_source':source.get('name_source','unavailable')}
+
+
+def responded_by(db,scope,event):
+    """Only an explicit semantic coverage claim with full protocol evidence.
+
+    Seeing an event, an attempted send, partial/unknown receipts and similar
+    text never discharge another real event.
+    """
+    if not event:return None
+    for work,raw in db.execute("SELECT event,data FROM memory_message_sources WHERE scope=? AND direction='outgoing' ORDER BY rowid DESC LIMIT 64",(scope,)):
+        try:value=json.loads(raw)
+        except (TypeError,ValueError):continue
+        if not isinstance(value,dict):continue
+        covered=value.get('responded_events')
+        if value.get('receipt')=='confirmed' and value.get('complete') is True and value.get('message_ids') and isinstance(covered,list) and str(event) in covered:return work
+    return None
+
+
+def settle_response(db,scope,event,complete):
+    """Coverage is published only after whole-Work settlement, never per bubble."""
+    data=get(db,scope,event,'outgoing')
+    if data and data.get('receipt')=='confirmed' and data.get('message_ids'):
+        put(db,scope,event,'outgoing',{**data,'complete':bool(complete)})
+        db.commit()
 
 
 def own_item(db,scope,event,subject,at,text):

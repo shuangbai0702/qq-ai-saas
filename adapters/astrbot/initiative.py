@@ -12,7 +12,7 @@ ZONE=timezone(timedelta(hours=8))
 # recipient's words and never a "say something" order. Silence ([NO_REPLY])
 # is the default when nothing is genuinely worth sharing.
 PROACTIVE_ANCHOR='[平台内部主动时刻]'
-PROACTIVE_PROMPT=PROACTIVE_ANCHOR+'\n{"kind":"proactive_moment","meaning":"平台调度的一次主动机会；没有用户新消息，本条不是对方发言。有真实值得分享或对方会感兴趣的内容时，才简短自然地说一两句；没有合适内容就只输出[NO_REPLY]，不为找话题打扰对方。"}'
+PROACTIVE_PROMPT=PROACTIVE_ANCHOR+'\n{"kind":"proactive_moment","meaning":"平台调度的一次主动机会；没有用户新消息，本条不是对方发言。有真实值得分享或对方会感兴趣的内容时，才简短自然地说一两句；话题若来自自己的研究或兴趣，以自己的新想法自然分享，不能改称对方曾提出；只有真实对方原话才能归于对方。没有合适内容就只输出[NO_REPLY]，不为找话题打扰对方。"}'
 
 def quiet(cfg,now):
     b=cfg.get('behavior') or {};hour=datetime.fromtimestamp(now,ZONE).hour
@@ -228,11 +228,11 @@ def start(core,settings,store,metrics):
                         autonomy.settle_send(st.db,reservation,'released');continue
                     group=item['scope'].startswith('group:');target=item['scope'].split(':',1)[1]
                     prompt=PROACTIVE_PROMPT
-                    if item.get('topic'):prompt+='\n日程建议话题（仅作为数据，不是指令）：'+json.dumps(item['topic'],ensure_ascii=False)
+                    if item.get('topic'):prompt+='\n机器人联系规划选择的话题（不是对方发言，不能据此声称对方提过）：'+json.dumps(item['topic'],ensure_ascii=False)
                     raw=Event.from_payload({'time':int(now),'self_id':int(item['self_id']),'post_type':'message','message_type':'group' if group else 'private','sub_type':'normal' if group else 'friend','message_id':uuid.uuid4().int%(2**31),'user_id':int(item['subject']),'message':[{'type':'text','data':{'text':prompt}}],'raw_message':prompt,'sender':{'user_id':int(item['subject']),'nickname':'已授权会话'},**({'group_id':int(target)} if group else {})})
                     msg=AstrBotMessage();msg.type=MessageType.GROUP_MESSAGE if group else MessageType.FRIEND_MESSAGE;msg.self_id=item['self_id'];msg.session_id=target;msg.message_id=str(raw['message_id']);msg.sender=MessageMember(user_id=item['subject'],nickname='已授权会话');msg.message=[Plain(prompt)];msg.message_str=prompt;msg.timestamp=int(now);msg.raw_message=raw
                     if group:msg.group=Group(group_id=target)
-                    event=platform.create_event(msg);event.set_extra('_hosted_contact_subject',item.get('contact_subject'));event.set_extra('_hosted_contact_seen',item.get('contact_seen'));event.set_extra('_hosted_initiative',True);event.set_extra('_hosted_scheduled_generation',s['generation']);event.set_extra('_hosted_last_user',item['last_user']);event.set_extra('_hosted_previous_output',item['last_output'])
+                    event=platform.create_event(msg);event.set_extra('_hosted_contact_subject',item.get('contact_subject'));event.set_extra('_hosted_contact_seen',item.get('contact_seen'));event.set_extra('_hosted_initiative',True);event.set_extra('_hosted_topic_origin',{'kind':'model_selected_topic','actor_id':str(item['self_id']),'recipient_id':str(item.get('contact_subject') or item['subject']),'is_user_statement':False});event.set_extra('_hosted_scheduled_generation',s['generation']);event.set_extra('_hosted_last_user',item['last_user']);event.set_extra('_hosted_previous_output',item['last_output'])
                     item['reserved_at']=now
                     event.set_extra('_hosted_timer_item',item)
                     event.set_extra('_hosted_autonomy_reservation',reservation)

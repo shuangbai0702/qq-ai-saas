@@ -16,15 +16,15 @@ class Continuity(unittest.IsolatedAsyncioTestCase):
     def pending(self,event='unanswered',person=None,scope=None):
         self.store.reflection.incoming(scope or self.scope,person or self.person,event,'刚在群里开头了',self.now)
     def seed(self):
-        for i in range(30):self.store.reflection.record(self.scope,self.person,'answered'+str(i),'真实问题'+str(i),'真实回复'+str(i),self.now+i+1)
+        for i in range(35):self.store.reflection.record(self.scope,self.person,'answered'+str(i),'真实问题'+str(i),'真实回复'+str(i),self.now+i+1)
     async def summarize(self,chat,current=lambda:True):
-        self.store.reflection.maybe_start(self.scope,{'memorySummary':True,'summaryRounds':30},NS(text_chat=chat),current,{},self.event_var)
+        self.store.reflection.maybe_start(self.scope,{'memorySummary':True,'summaryRounds':35},NS(text_chat=chat),current,{},self.event_var)
         await self.store.reflection.task
     def test_unanswered_group_visible_in_private_with_real_source_and_time(self):
         self.pending()
         recent=self.store.reflection.recent(self.private,self.person,now=self.now+1)
         self.assertEqual(recent[0]['source_scope'],self.scope);self.assertEqual(recent[0]['sender_id'],self.person)
-        self.assertEqual(recent[0]['user'],'刚在群里开头了');self.assertEqual(recent[0]['bot'],'');self.assertEqual(recent[0]['age_seconds'],1)
+        self.assertEqual(recent[0]['text'],'刚在群里开头了');self.assertEqual(recent[0]['role'],'member');self.assertEqual(recent[0]['at'],self.now)
         self.assertEqual(self.store.reflection.recent(self.scope,self.person),[],'native current-session history is not injected twice')
     def test_other_person_private_bot_and_invalid_attribution_isolated(self):
         self.pending();self.pending('peer','87654321','private:87654321')
@@ -40,7 +40,7 @@ class Continuity(unittest.IsolatedAsyncioTestCase):
         for i in range(1050):self.store.reflection.incoming(self.scope,self.person,str(i),'x'*800,self.now+2)
         self.assertLessEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],1000)
         recent=self.store.reflection.recent(self.private,self.person,now=self.now+3)
-        self.assertLessEqual(sum(len(r['user'])+len(r['bot']) for r in recent),3000)
+        self.assertLessEqual(sum(len(json.dumps(r,ensure_ascii=False,separators=(',',':'))) for r in recent),3000)
     async def test_successful_summary_atomically_replaces_only_covered_pending(self):
         self.pending();self.seed();calls=[]
         async def chat(**kw):calls.append(kw);return NS(completion_text='真实群聊摘要')
@@ -53,22 +53,23 @@ class Continuity(unittest.IsolatedAsyncioTestCase):
     async def test_new_messages_and_updated_answer_while_compressing_are_retained(self):
         self.pending();self.seed();entered=asyncio.Event();release=asyncio.Event()
         async def chat(**kw):entered.set();await release.wait();return NS(completion_text='摘要只覆盖旧版本')
-        task=asyncio.create_task(self.summarize(chat));await entered.wait()
+        task=asyncio.create_task(self.summarize(chat));await asyncio.wait_for(entered.wait(),3)
         self.store.reflection.record(self.scope,self.person,'unanswered','刚在群里开头了','后来真实回复',self.now+6)
         self.pending('newer');release.set();await task
         records=self.store.reflection.recent(self.private,self.person,now=self.now+7)
         self.assertEqual({r['source_event'] for r in records},{'unanswered','newer'})
-        self.assertEqual(next(r for r in records if r['source_event']=='unanswered')['bot'],'后来真实回复')
+        self.assertEqual(next(r for r in records if r['source_event']=='unanswered')['text'],'刚在群里开头了')
+        self.assertEqual(self.db.execute('SELECT answer FROM memory_pending WHERE event=?',('unanswered',)).fetchone()[0],'后来真实回复')
     async def test_failure_and_stale_summary_do_not_erase_pending(self):
         self.pending();self.seed()
         async def failed(**kw):raise TimeoutError()
-        await self.summarize(failed);self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],31)
+        await self.summarize(failed);self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],36)
         async def chat(**kw):return NS(completion_text='迟到摘要')
         await self.summarize(chat,lambda:False)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],31)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],36)
     def test_ambient_messages_do_not_create_more_summary_calls_and_forget_clears(self):
         for i in range(35):self.pending(str(i))
-        self.store.reflection.maybe_start(self.scope,{'memorySummary':True,'summaryRounds':30},NS(text_chat=None),lambda:True,{},self.event_var)
+        self.store.reflection.maybe_start(self.scope,{'memorySummary':True,'summaryRounds':35},NS(text_chat=None),lambda:True,{},self.event_var)
         self.assertIsNone(self.store.reflection.task)
         invalidate(self.db,self.private,self.person);self.db.commit()
         self.assertEqual(self.store.reflection.recent(self.private,self.person),[])

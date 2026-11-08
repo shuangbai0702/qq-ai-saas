@@ -70,6 +70,7 @@ export async function installAutonomousRuntime(agent:NodeAgent,release:string){
  let installed:AutonomyCoordinator|undefined;
  const prototype=Object.getPrototypeOf(agent);
  const old={start:agent.host.start,apply:agent.ai.applyConfig,attach:agent.shared.attach,health:prototype.health,context:prototype.context,autonomy:agent.autonomy,shutdown:previous?.originalShutdown||agent.shutdown};
+ const wasAutonomyRunning=!old.autonomy.closed&&Boolean(old.autonomy.timer);
  const children=[...agent.host.children].map(([id,child])=>({id,child,pid:child.pid}));
  try{
   const deadline=Date.now()+20000;
@@ -91,9 +92,9 @@ export async function installAutonomousRuntime(agent:NodeAgent,release:string){
   return{pid:process.pid,release,preservedChildren:children.map(({id,pid})=>({id,pid})),coordinator:installed.owner};
  }catch(error){
   await installed?.stop();agent.host.start=old.start;agent.ai.applyConfig=old.apply;agent.shared.attach=old.attach;prototype.health=old.health;prototype.context=old.context;agent.shutdown=old.shutdown;
-  // A coordinator that was already stopped is not restarted with stale work.
-  // The passive runtime and all protocol owners remain available on failure.
-  if(old.autonomy)agent.autonomy=old.autonomy;
+  // stop() has settled the old active Work before replacement. On failure,
+  // restore the previous scheduler only if it was running; never replay a Work.
+  if(old.autonomy){agent.autonomy=old.autonomy;if(wasAutonomyRunning&&!agent.closed){old.autonomy.closed=false;old.autonomy.start()}}
   throw error;
  }finally{
   if(timer&&!agent.closed){agent.timer=setInterval(()=>void agent.tick().catch(error=>console.error('agent tick:',redact(String(error)))),500);agent.timer.unref()}

@@ -39,9 +39,12 @@ class ModelCooldown(unittest.IsolatedAsyncioTestCase):
 
     async def test_configured_base_model_extension_scope_and_restart(self):
         self.cfg['behavior']['groupParticipationIntervalMinutes']=30
+        self.p.answer['cooldown_intervals']=96  # Legacy numeric output cannot choose group timing.
         self.assertFalse((await self.group())[0].reply)
         until=self.db.execute('SELECT until FROM initiative_pauses').fetchone()[0]
-        self.assertEqual(until,self.now+3*1800);self.assertEqual(json.loads(self.p.calls[0]['prompt'])['cooldown_base_seconds'],1800)
+        self.assertEqual(until,self.now+3*1800)
+        self.assertNotIn('cooldown_base_seconds',json.loads(self.p.calls[0]['prompt']))
+        self.assertNotIn('cooldown_intervals',self.p.calls[0]['system_prompt'],'technical duration is program-owned')
         self.restart();self.assertIsNone(await self.group('new',until-1))
         self.assertIsNone(await self.group('one',until),'elapsed time without a new event is insufficient')
         self.assertIsNotNone(await self.group('new',until));self.assertIsNotNone(await self.group('other',self.now+1,'group:67890'))

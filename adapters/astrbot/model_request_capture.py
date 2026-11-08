@@ -78,6 +78,10 @@ def begin(request):
         if not re.fullmatch(r'[a-f0-9]{24}',session):return None
         limit=cfg.get('maxRequests',0)
         if type(limit) is not int or not 1<=limit<=8:return None
+        from model_cache import diagnostic_identity
+        identity=diagnostic_identity(lease)
+        phase=cfg.get('phase')
+        if phase is not None and (not isinstance(phase,str) or not re.fullmatch(r'[a-z_]{1,48}',phase) or identity.get('phase')!=phase):return None
         raw=request.content
         if len(raw)>4*1024*1024:return None
         body=json.loads(raw)
@@ -88,6 +92,7 @@ def begin(request):
             try:_private(path,{'at':time.time(),'method':request.method,'endpoint':str(request.url.copy_with(query=None)),
                 'headers':{k:v for k,v in request.headers.items() if k.lower() in ('user-agent','content-type','x-astrbot-conversation-id')},
                 'botId':bot_id,'callKind':kind,'eventId':str(getattr(event.message_obj,'message_id','')) if event else '',
+                **identity,
                 'body':body})
             except FileExistsError:continue
             return Capture(folder/(str(index)+'.response.json'))
@@ -103,7 +108,7 @@ class Capture:
         if self.done:return
         self.done=True
         try:
-            usage=[];data=bytes(self.raw)
+            usage=[];finish_reasons=[];data=bytes(self.raw)
             parts=[line[5:].strip() for line in data.splitlines() if line.startswith(b'data:')]
             if not parts:parts=[data]
             for raw in parts:
@@ -113,7 +118,10 @@ class Capture:
                     if item.get('usage') is not None:usage.append(item['usage'])
                     for choice in item.get('choices') or []:
                         if choice.get('usage') is not None:usage.append(choice['usage'])
-            _private(self.path,{'at':time.time(),'status':self.status,'complete':complete,'usage':usage})
+                        reason=choice.get('finish_reason')
+                        if isinstance(reason,str) and re.fullmatch(r'[a-z_]{1,32}',reason) and reason not in finish_reasons:
+                            finish_reasons.append(reason)
+            _private(self.path,{'at':time.time(),'status':self.status,'complete':complete,'usage':usage,'finishReasons':finish_reasons[:8]})
         except Exception:LOG.warning('Model response capture unavailable; response unchanged')
 
 class CaptureStream(httpx.AsyncByteStream):

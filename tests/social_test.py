@@ -82,7 +82,9 @@ class SocialTests(unittest.TestCase):
   mixed=[{'id':'fish','meaning':'打招呼','source':'platform_pack'},{'id':'qqf_fixture','meaning':'挥手问好','source':'qq_favorite_cache'}]
   ctx=self.s.context('group:1','我收藏了一个视频',{'memeEnabled':True},_meme_catalog=mixed)
   self.assertEqual({i['id'] for i in ctx['meme_candidates']},{'fish','qqf_fixture'})
-  self.assertIn('不为来源偏好牺牲相关性',ctx['meme_rule'])
+  self.assertNotIn('meme_rule',ctx,'the static platform policy owns this rule, not mutable candidate data')
+  from meme_reactions import SELECTION_RULE
+  self.assertIn('不为来源偏好牺牲相关性',SELECTION_RULE)
   many=[{'id':'p'+str(i),'meaning':'笑死哈哈开心','source':'platform_pack'} for i in range(12)]+[mixed[1]]
   ctx=self.s.context('group:1','哈哈开心',{'memeEnabled':True},_meme_catalog=many)
   self.assertEqual(len(ctx['meme_candidates']),8)

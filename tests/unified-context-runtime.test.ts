@@ -1,0 +1,73 @@
+import test from 'node:test';import assert from 'node:assert/strict';import http from 'node:http';
+import path from 'node:path';import {execFile} from 'node:child_process';import {promisify} from 'node:util';import {mkdtemp,readFile} from 'node:fs/promises';
+import {createApp} from '../apps/control-api/src/app.js';import {defaultConfig} from '../packages/contracts/index.js';
+import {MockProtocolAdapter} from '../adapters/mock/index.js';
+import {permitModelFixture,platformContext} from './helpers/model-fixture.js';import {issueTestInvite} from './helpers/invitations.js';
+const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));
+async function until(check:()=>Promise<boolean>,why:string){for(let i=0;i<300;i++){if(await check())return;await sleep(100)}throw Error(why)}
+
+test('real SDK uses one canonical Journal across private and two groups with shared round accounting',{timeout:120000},async()=>{
+ let releaseTool:(()=>void)|undefined;
+ const calls:any[]=[];const model=http.createServer(async(req,res)=>{
+  let raw='';for await(const chunk of req)raw+=chunk;const body=JSON.parse(raw);calls.push(body);
+  const n=calls.length;if(n===6)await new Promise<void>(r=>{releaseTool=r});
+  const content=n===2?'[NO_REPLY]':'fixture reply '+n;
+  const response=n===5?{role:'assistant',content:null,tool_calls:[{id:'shared-read-1',type:'function',function:{name:'hosted_quote_reply',arguments:'{}'}}]}:{role:'assistant',content};
+  res.setHeader('Content-Type','application/json');res.end(JSON.stringify({id:'sync-fixture',model:body.model,choices:[{index:0,message:response,finish_reason:n===5?'tool_calls':'stop'}]}));
+ });await new Promise<void>(r=>model.listen(0,'127.0.0.1',r));permitModelFixture(model);
+ const root=await mkdtemp(path.resolve('.local/cross-scope-runtime-')),current=await createApp({root});
+ try{
+  const auth=await current.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(current.db),email:'sync@test.invalid',name:'sync',password:'sync-fixture-123'}}),cookies={fish_session:auth.cookies[0].value};
+  const config={...defaultConfig,proactive:false,baseUrl:`http://127.0.0.1:${(model.address()as any).port}/v1`,model:'sync-fixture',behavior:{...defaultConfig.behavior!,ownerUin:'12345678',groupParticipationGroups:['778180','778181'],groupParticipationEnabled:false,ownerContactEnabled:false,autonomousGroupContact:false,proactiveModelSchedule:false,selfDevelopment:false,followupSeconds:0,typingSimulation:false,typoEnabled:false,splitMessages:false,burstDebounceMs:0,styleLearning:false,memorySummary:false,memorySemantic:false,memeEnabled:false,fatigueEnabled:false}};
+  const created=await current.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'跨Scope验收',protocol:'mock',runtimeMode:'shared',expectedUin:'90008874',apiKey:'sync-local-fixture',config}});assert.equal(created.statusCode,201,created.body);const id=created.json().id;
+  await promisify(execFile)(process.env.FISHBOT_PYTHON||'python',['-B','-c',`import sys,json;sys.path.insert(0,'adapters/astrbot');from behavior import BehaviorStore;from shared_context import activate_authorized;s=BehaviorStore(sys.argv[1]);activate_authorized(s.db,json.loads(sys.argv[2]),{},'fixture-authorized-shared','a'*40);s.close()`,path.join(root,'bots',id,'behavior.sqlite'),JSON.stringify(config)],{windowsHide:true});
+  await current.app.inject({method:'POST',url:`/v1/bots/${id}/actions`,cookies,payload:{action:'start',idempotencyKey:'start'}});
+  await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.ai?.ready,'AI ready');
+  const ctx=await current.agent.context((await current.db.query('SELECT * FROM bots WHERE id=$1',[id]))[0]),mock=current.agent.protocols.mock as MockProtocolAdapter;
+  await mock.call(ctx,'/transition',{state:'online',uin:'90008874'});await until(async()=>!!(await mock.call(ctx,'/state')as any).connected,'connected');
+  const sent=async()=>(await mock.call(ctx,'/messages')as any[]).filter(x=>x.action.startsWith('send_'));
+  const settled=()=>until(async()=>{try{return JSON.parse(await readFile(path.join(root,'bots',id,'memory-activity.json'),'utf8')).active===false}catch{return false}},'settled');
+  await mock.call(ctx,'/message',{sender:'12345678',messageId:91000,text:'PRIVATE_SCOPE_SIGNAL'});
+  await until(async()=>calls.length===1&&(await sent()).length===1,'private reply');await settled();
+  await mock.call(ctx,'/message',{group:'778180',sender:'12345678',messageId:91001,mention:true,text:'GROUP_A_SIGNAL'});
+  await until(async()=>calls.length===2,'mentioned request');await settled();assert.equal((await sent()).length,1,'NO_REPLY must not dispatch even when mentioned');
+  const group=JSON.stringify(calls[1].messages);
+  assert.ok(group.includes('PRIVATE_SCOPE_SIGNAL')&&group.includes('[important]'));
+  assert.deepEqual(calls[1].messages.slice(0,calls[0].messages.length),calls[0].messages);
+  assert.deepEqual(platformContext(calls[1]).recent_cross_session_messages,[],'no person-selected duplicate transcript');
+  await mock.call(ctx,'/message',{group:'778181',sender:'12345678',messageId:91002,mention:true,text:'GROUP_B_SIGNAL'});
+  await until(async()=>calls.length===3&&(await sent()).length===2,'other group reply');await settled();
+  assert.ok(JSON.stringify(calls[2].messages).includes('GROUP_A_SIGNAL'),'silent group event remains in the shared Journal');
+  assert.deepEqual(calls[2].messages.slice(0,calls[1].messages.length),calls[1].messages);
+  await mock.call(ctx,'/message',{sender:'12345678',messageId:91003,text:'PRIVATE_FOLLOWUP'});
+  await until(async()=>calls.length===4&&(await sent()).length===3,'private followup');await settled();
+  assert.ok(JSON.stringify(calls[3].messages).includes('GROUP_B_SIGNAL'));
+  const state=JSON.parse((await promisify(execFile)(process.env.FISHBOT_PYTHON||'python',['-B','-c',`import sys,sqlite3,json;d=sqlite3.connect(sys.argv[1]);print(json.dumps({'journals':d.execute('SELECT scope FROM fishbot_readonly_journals').fetchall(),'rounds':d.execute('SELECT scope,count(*) FROM memory_rounds GROUP BY scope').fetchall(),'queued':d.execute('SELECT count(*) FROM fishbot_shared_inputs').fetchone()[0]}))`,path.join(root,'bots',id,'behavior.sqlite')],{windowsHide:true})).stdout);
+  assert.deepEqual(state.journals,[['"bot_shared"']]);assert.deepEqual(state.rounds,[['bot_shared',3]]);assert.equal(state.queued,0);
+  assert.deepEqual(calls[3].messages.slice(0,calls[0].messages.length),calls[0].messages,'previously submitted private wire must remain byte-exact');
+  assert.equal(calls.length,4,'no extra decision or extraction request');
+  await mock.call(ctx,'/message',{sender:'12345678',messageId:91004,text:'TOOL_LOOP_SIGNAL'});
+  await until(async()=>calls.length===6&&!!releaseTool,'tool continuation');
+  const toolIndex=calls[5].messages.findIndex((m:any)=>m.role==='assistant'&&m.tool_calls?.[0]?.id==='shared-read-1');
+  assert.ok(toolIndex>=0);assert.equal(calls[5].messages[toolIndex+1].role,'tool');
+  assert.equal(calls[5].messages[toolIndex+1].tool_call_id,'shared-read-1');
+  await mock.call(ctx,'/message',{sender:'87654321',messageId:91005,text:'OTHER_PRIVATE_SIGNAL'});
+  await sleep(200);assert.equal(calls.length,6,'another private cannot write while a tool continuation is active');
+  releaseTool!();await until(async()=>calls.length===7&&(await sent()).length===5,'both independent private replies');await settled();
+  assert.ok(JSON.stringify(calls[6].messages).includes('fixture reply 6'),'next private sees the preceding terminal model answer');
+  assert.deepEqual(calls[6].messages.slice(0,calls[5].messages.length),calls[5].messages);
+  const image=(await readFile(path.resolve('tests/fixtures/model-vision-probe.jpg'))).toString('base64');
+  await mock.call(ctx,'/message',{sender:'87654321',messageId:91006,text:'IMAGE_SIGNAL',imageUrl:'base64://'+image});
+  await until(async()=>calls.length===8&&(await sent()).length===6,'shared image reply');await settled();
+  assert.ok(calls[7].messages.some((m:any)=>Array.isArray(m.content)&&m.content.some((p:any)=>p.type==='image_url'&&p.image_url.url.startsWith('data:image/'))));
+  await current.app.inject({method:'POST',url:`/v1/bots/${id}/actions`,cookies,payload:{action:'stop',idempotencyKey:'fixture-stop'}});
+  await current.app.inject({method:'POST',url:`/v1/bots/${id}/actions`,cookies,payload:{action:'start',idempotencyKey:'fixture-restart'}});
+  await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.ai?.ready,'AI restarts from same shared Journal');
+  const restarted=await current.agent.context((await current.db.query('SELECT * FROM bots WHERE id=$1',[id]))[0]);
+  await mock.call(restarted,'/transition',{state:'online',uin:'90008874'});
+  await until(async()=>!!(await mock.call(restarted,'/state')as any).connected,'fixture reconnected');
+  await mock.call(restarted,'/message',{sender:'12345678',messageId:91007,text:'AFTER_RESTART'});
+  await until(async()=>calls.length===9,'post-restart model request');
+  assert.deepEqual(calls[8].messages.slice(0,calls[7].messages.length),calls[7].messages,'restart preserves the complete submitted media prefix');
+ }finally{await current.app.close();await new Promise<void>(r=>model.close(()=>r()))}
+});

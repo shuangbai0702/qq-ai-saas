@@ -11,10 +11,12 @@ class Requests(unittest.TestCase):
         changed=copy.deepcopy(source);changed.update(companion={'energy':2},eligible_members=[],current_time=2)
         second=decision_request(changed,'固定规则')
         self.assertEqual(first['system_prompt'],second['system_prompt'])
-        stable=json.loads(first['system_prompt'].rsplit('\n',1)[1])
+        stable=json.loads(first['system_prompt'].split('\n',2)[1])
         self.assertEqual({**stable,**json.loads(first['prompt'])},source)
         self.assertEqual({**stable,**json.loads(second['prompt'])},changed)
         self.assertEqual(source,before)
+        other=decision_request(source,'另一个判断职责')
+        self.assertEqual(first['system_prompt'].split('[本次判断职责]')[0],other['system_prompt'].split('[本次判断职责]')[0])
         changed['owner_id']='54321'
         self.assertNotEqual(decision_request(changed,'固定规则')['system_prompt'],first['system_prompt'])
         changed['owner_id']='12345';changed['persona']='新人格'

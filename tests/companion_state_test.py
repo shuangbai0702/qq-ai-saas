@@ -33,6 +33,12 @@ class CompanionState(unittest.IsolatedAsyncioTestCase):
   cs.outgoing(self.db,self.cfg,'private:12345','12345','我喜欢乌龙茶','bot1',self.now)
   self.assertNotIn('乌龙茶',json.dumps(cs.context(self.db,self.cfg,'group:other',self.now),ensure_ascii=False))
   self.assertNotIn('private:12345',cs.targets(self.db,self.cfg,self.now))
+ def test_own_research_interest_has_explicit_bot_attribution(self):
+  self.db.execute("INSERT INTO companion_interests VALUES('self',?,?,?,?,?,'autonomous_choice')",('光学设计',1,1,self.now,'research-work'))
+  view=cs.context(self.db,self.cfg,'private:12345',self.now)
+  interest=next(x for x in view['interests'] if x['topic']=='光学设计')
+  self.assertEqual(interest['attribution'],'bot_self_interest_not_user_statement')
+  self.assertEqual(interest['source_scope'],'self')
  def test_chat_is_model_evidence_and_cooldown_is_scope_local(self):
   self.seen();item=initiative.candidates(self.db,self.cfg,self.now)[0]
   self.seen(text='不要艾特我',now=self.now,event='two')
@@ -109,7 +115,9 @@ class CompanionState(unittest.IsolatedAsyncioTestCase):
  def test_semantic_context_follows_same_person_but_does_not_fill_other_people(self):
   self.s.observe('private:12345','12345','记住：饮料=乌龙茶','a',self.now)
   same=recall(self.s,'group:77777','12345','饮料',self.cfg['behavior'],lambda:True,{})[0]
-  self.assertEqual(same[0]['value'],'乌龙茶');self.assertEqual(same[0]['subject'],'12345');self.assertEqual(same[0]['source_scope'],'private:12345')
+  self.assertEqual(same[0]['value'],'乌龙茶');self.assertEqual(same[0]['source_scope'],'private:12345')
+  private=recall(self.s,'private:12345','12345','饮料',self.cfg['behavior'],lambda:True,{})[0]
+  self.assertEqual(private[0]['value'],'乌龙茶');self.assertEqual(private[0]['source_scope'],'private:12345')
   self.assertEqual(recall(self.s,'group:77777','54321','饮料',self.cfg['behavior'],lambda:True,{}),([],[]))
   self.assertEqual(recall(self.s,'private:12345','54321','饮料',self.cfg['behavior'],lambda:True,{}),([],[]))
 

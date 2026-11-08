@@ -528,13 +528,13 @@ test('platform access requires login or explicit anonymous permission and never 
  await assert.rejects(()=>f.repo.validate(stale),/账号未就绪/);
  await executor.execute(await f.repo.claim('no-anonymous-fallback'),new AbortController().signal);assert.equal(requests,1);
  const config=(await f.repo.settings(f.bot.tenant_id,f.id)).config;
- assert.ok(!executor.catalog({config,account_state:'auth_required'}).some(o=>o.operation==='video_info'),'invalid account is not an anonymous grant');
+ assert.ok(executor.catalog({config,account_state:'auth_required'}).some(o=>o.operation==='video_info'),'configured declarations survive account expiry; validate/execute above still deny access');
  await f.db.query("UPDATE bilibili_accounts SET state='ready' WHERE bot_id=$1",[f.id]);
  const unlink=await f.app.inject({method:'DELETE',url:'/v1/bots/'+f.id+'/bilibili/account',cookies:f.cookies,payload:{expectedRevision:1}});assert.equal(unlink.statusCode,200,unlink.body);
  const off=await f.repo.settings(f.bot.tenant_id,f.id);assert.equal(off.config.enabled,false);assert.equal(off.config.allowAnonymous,false);
  await f.repo.configure(f.bot.tenant_id,f.id,off.revision,{...off.config,enabled:true});
  await assert.rejects(()=>f.repo.admit(f.bot,f.call('video_info',{bvid:'BV1xx411c7mD'},{stepId:'unbound-default'})),/手动开启匿名访问/);
- const guarded=await f.repo.settings(f.bot.tenant_id,f.id);assert.ok(!executor.catalog({config:guarded.config}).some(o=>o.operation==='video_info'));
+ const guarded=await f.repo.settings(f.bot.tenant_id,f.id);assert.ok(executor.catalog({config:guarded.config}).some(o=>o.operation==='video_info'),'declared capability is not anonymous execution permission');
  await f.repo.configure(f.bot.tenant_id,f.id,guarded.revision,{...guarded.config,allowAnonymous:true});
  const anonymous=await f.repo.admit(f.bot,f.call('video_info',{bvid:'BV1xx411c7mD'},{stepId:'explicit-anonymous'}));assert.equal(anonymous.account_revision,null);
  await assert.rejects(()=>f.repo.admit(f.bot,f.call('account_info',{},{stepId:'anonymous-private'})),/未授权|未绑定|登录/);

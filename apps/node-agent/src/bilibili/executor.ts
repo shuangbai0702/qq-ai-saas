@@ -3,7 +3,7 @@ import {mkdir,writeFile,rename} from 'node:fs/promises';
 import path from 'node:path';
 import type {Sql} from '../../../../packages/database/index.js';
 import {ToolEffects} from '../../../../packages/database/tool-effects.js';
-import {biliOperations,biliOperationAllowed,biliAccessAllowed,type ToolResult} from '../../../../packages/contracts/bilibili.js';
+import {biliOperations,biliOperationAllowed,type ToolResult} from '../../../../packages/contracts/bilibili.js';
 import {BiliAccounts} from './account-broker.js';
 import {BiliWeb,BiliError,type Credential} from './web-adapter.js';
 import {VideoEvidence,mediaAvailable,recoverMedia} from './video-evidence.js';
@@ -56,7 +56,9 @@ export class BilibiliExecutor {
   }
  }
  private snapshots=new Map<string,string>();
- catalog(b:any){return Object.entries(biliOperations).filter(([name,op])=>biliOperationAllowed(b.config,name)&&biliAccessAllowed(b.config,name,b.account_state?{state:b.account_state,refresh_state:b.refresh_state}:null)&&(name!=='analyze'||this.mediaReady&&(b.config.model.provider==='bot'||b.config.model.provider==='openai'&&b.has_model_key))).map(([name,op])=>({operation:name,write:op.write,scope:op.scope,args:op.args.toJSONSchema?.()??{},status:'available_to_attempt',verification:'not_account_verified'}))}
+ // A declaration describes configured capabilities, not momentary account or
+ // media readiness. Admission/execution retain their live access validation.
+ catalog(b:any){return Object.entries(biliOperations).filter(([name])=>biliOperationAllowed(b.config,name)).map(([name,op])=>({operation:name,write:op.write,scope:op.scope,args:op.args.toJSONSchema?.()??{},status:'available_to_attempt',verification:'not_account_verified'}))}
  async execute(job:any,parent:AbortSignal){
   const op=biliOperations[job.operation as keyof typeof biliOperations];let dispatched=false;
   const signal=AbortSignal.any([parent,AbortSignal.timeout(Math.max(1,+new Date(job.deadline_at)-Date.now()))]);

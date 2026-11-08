@@ -7,6 +7,20 @@ import qq_actions
 from bot_pipeline import operation_source
 from context_protocol import persona_prompt,PERSONA_PREFIX,PERSONA_IMAGES
 class Contracts(unittest.IsolatedAsyncioTestCase):
+ async def test_real_tool_preflight_rejections_do_not_become_completed_reads(self):
+  import group_actions
+  from tool_outcome import structured
+  db=sqlite3.connect(':memory:')
+  event=NS(get_group_id=lambda:'',get_sender_id=lambda:'12345',get_self_id=lambda:'99999',get_extra=lambda k,d=None:d,get_message_str=lambda:'查看QQ空间')
+  cfg={'behavior':{'ownerUin':'12345','qqProfile':True,'qzone':True}}
+  try:
+   tools=qq_actions.tools(event,cfg,db,lambda:True)+group_actions.tools(event,cfg,db,lambda:True,lambda *args:None)
+   self.assertTrue(tools)
+   for tool in tools:
+    value=json.loads(await structured(tool).call(NS(context=NS(event=object()))))
+    self.assertEqual(value['execution'],'failed',tool.name)
+    self.assertEqual(value['receipt']['status'],'rejected',tool.name)
+  finally:db.close()
  def test_loaded_attestation_detects_a_replaced_function(self):
   import model_cache
   before=model_cache.loaded_build();self.assertTrue(before);self.assertTrue(all(row['sourceMatchesLoaded'] for row in before.values()))

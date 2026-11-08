@@ -23,6 +23,26 @@ class Agreements(unittest.TestCase):
     def accept(self,row):
         row,error=agreements.apply_update(self.db,'accept',row['topic'],'bot',['bot'],self.scope,'source',expected_revision=1)
         self.assertEqual(error,'');return row
+    def test_unbound_task_cancel_is_source_bound_retains_receipt_and_survives_restart(self):
+        result=self.store.pipeline.propose_handoff(self.work,self.identity,{'objective':'稍后提醒','delaySeconds':60,'kind':'message'})
+        id=result['requestId'];receipt={'status':'accepted','goalId':id,'replyActionId':'unknown-actual-action'}
+        self.store.pipeline.acknowledge_handoff(1,id,receipt)
+        for scope,subject in [('group:98765','12345678'),(self.scope,'22222222')]:
+            other=Work('bot',scope,subject,'87654321','cancel','message',time.time(),self.lease);other.ledger_owner=True
+            self.assertEqual(self.store.pipeline.handoff_catalog(other),[])
+            with self.assertRaises(ValueError):self.store.pipeline.cancel_handoff(other,id)
+        self.assertTrue(self.store.pipeline.handoff_current(id))
+        self.store.pipeline.cancel_handoff(self.work,id)
+        self.assertFalse(self.store.pipeline.handoff_current(id))
+        self.assertEqual(self.store.pipeline.canceled_handoffs()[0]['id'],id)
+        saved=json.loads(self.db.execute('SELECT receipt FROM pipeline_handoffs WHERE id=?',(id,)).fetchone()[0])
+        self.assertEqual(saved['replyActionId'],'unknown-actual-action')
+        self.assertIsNone(self.store.pipeline.request_reply(self.identity,id,{'handoffId':id},'new-action'))
+        self.assertEqual(self.store.pipeline.pending_handoffs(1),[])
+        from bot_pipeline import BotPipeline
+        restored=BotPipeline(self.db)
+        self.assertFalse(restored.handoff_current(id))
+
     def test_confirmation_cas_and_unauthorized_participant(self):
         row=self.propose()
         _,error=agreements.apply_update(self.db,'accept',row['topic'],'12345678',['12345678'],self.scope,'source')

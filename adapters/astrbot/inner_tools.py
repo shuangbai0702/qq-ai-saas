@@ -1,7 +1,7 @@
 """Shared feature-tool assembly for foreground, autonomous work and catalog.
 
 Add hosted capabilities here. Catalogs inspect these very same tool objects;
-factories retain identity/feature checks, calls retain live Work validation.
+declarations follow bot configuration, calls retain live Work validation.
 """
 def features(settings,event,db,scope,current,*,identity=None,evidence=None,memory_current=None,effect_current=None,on_sent=None,social=None,review=None):
     import qq_actions,group_actions,quote_reply,qq_favorite_tools,execution_memory
@@ -34,7 +34,32 @@ def features(settings,event,db,scope,current,*,identity=None,evidence=None,memor
         if names & {'hosted_qq_signature','hosted_qq_publish','hosted_qq_avatar','hosted_qq_nickname','hosted_qq_status'}:
             data['qq_profile_limits']=qq_actions.limit_context(db,cfg)
         event.set_extra('_hosted_tool_context',data)
-    return [structured(tool) for tool in result]
+    return sorted([structured(tool) for tool in result],key=lambda tool:tool.name)
+
+
+def completion_guard(tool,event):
+    """Keep declarations identical while synthetic results retain narrow rights.
+
+    Continuations may inspect receipts and continue their authenticated Bili
+    request. They cannot turn a synthetic result into a fresh QQ action, task,
+    agreement, or native send. The Bili backend validates the original permit.
+    """
+    if not event.get_extra('_hosted_tool_completion'):return tool
+    from astrbot.core.agent.tool import FunctionTool
+    from tool_outcome import rejected
+    class CompletionTool(FunctionTool):
+        @property
+        def hosted_effect(self):return bool(getattr(tool,'hosted_effect',False))
+        @property
+        def hosted_write_operations(self):return getattr(tool,'hosted_write_operations',None)
+        @property
+        def hosted_result_detail(self):return bool(getattr(tool,'hosted_result_detail',False))
+        async def call(self,context,**kwargs):
+            if context.context.event is not event:return rejected('tool_event_mismatch','工具不属于当前事件。')
+            if tool.name=='hosted_recall_experience' or tool.name.startswith('bilibili_') and tool.name!='bilibili_analyze':
+                return await tool.call(context,**kwargs)
+            return rejected('completion_capability_denied','工具结果续接不能授予新操作权限。')
+    return CompletionTool(name=tool.name,description=tool.description,parameters=tool.parameters,active=tool.active,is_background_task=tool.is_background_task)
 
 
 def request_context(event):

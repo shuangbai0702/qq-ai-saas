@@ -26,9 +26,10 @@ class Freshness(unittest.IsolatedAsyncioTestCase):
     def test_reviewer_uses_stable_trusted_owner_not_draft_claims(self):
         text=review_system('固定人格','12345','99999')
         identity=json.loads(text.rsplit('\n',1)[1])
-        self.assertEqual(identity['owner_id'],'12345');self.assertEqual(identity['self_id'],'99999')
+        config=json.loads(text.split('\n',2)[1])
+        self.assertEqual(config['owner_id'],'12345');self.assertEqual(config['persona'],'固定人格');self.assertEqual(identity['self_id'],'99999')
         self.assertIn('对外执行信息边界',text)
-        self.assertIsNone(json.loads(review_system('固定人格',None,'99999').rsplit('\n',1)[1])['owner_id'])
+        self.assertEqual(json.loads(review_system('固定人格',None,'99999').split('\n',2)[1])['owner_id'],'')
     def test_final_fence_uses_destination_not_originating_private_work(self):
         event=NS(get_extra=lambda key: {'group:12345':self.cursor} if key=='_hosted_freshness_cursors' else None)
         store=NS(freshness=self.f)

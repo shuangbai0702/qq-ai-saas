@@ -171,7 +171,7 @@ def context(db,cfg,scope,now,query=''):
     seed(db,cfg,now)
     rows=db.execute("SELECT topic,weight,source,updated,scope,hits FROM companion_interests WHERE scope IN (?, '*') OR (scope='self' AND source='autonomous_choice') LIMIT 512",(scope,)).fetchall()
     rows.sort(key=lambda r:(relevance(r[0],query),interest_strength(r[1],r[5],r[3],now,r[2])),reverse=True)
-    interests=[{'topic':r[0],'heat':round(interest_strength(r[1],r[5],r[3],now,r[2]),4),'source':r[2],'source_scope':r[4],'consolidated':r[5]>=3} for r in rows[:12]]
+    interests=[{'topic':r[0],'heat':round(interest_strength(r[1],r[5],r[3],now,r[2]),4),'source':r[2],'source_scope':r[4],'consolidated':r[5]>=3,**({'attribution':'bot_self_interest_not_user_statement'} if r[4]=='self' and r[2]=='autonomous_choice' else {})} for r in rows[:12]]
     motives=[{'topic':r[0],'subject':r[1],'expires':r[2],'status':r[3],**motive_evidence(r[4])[0]} for r in db.execute("SELECT topic,subject,expires,status,evidence FROM companion_motives WHERE scope=? AND status IN ('open','contacted') AND expires>? ORDER BY due LIMIT 3",(scope,now))]
     motives=[{k:v for k,v in m.items() if k!='event'} for m in motives]
     mood=db.execute('SELECT valence,energy,updated FROM companion_mood WHERE scope=?',(scope,)).fetchone()

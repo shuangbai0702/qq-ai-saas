@@ -27,7 +27,7 @@ class Companion(unittest.IsolatedAsyncioTestCase):
   async def chat(**kw):captured.append(kw);return NS(completion_text='{"contact":false,"delay_minutes":30,"topic":""}')
   self.cfg['systemPrompt']='角色有稳定的个人兴趣。'
   self.p.maybe_start(self.cfg,NS(text_chat=chat),lambda:True,self.var,{},self.now);await self.p.task
-  self.assertEqual(json.loads(captured[0]['system_prompt'].rsplit('\n',1)[1])['persona'],self.cfg['systemPrompt'])
+  self.assertEqual(json.loads(captured[0]['system_prompt'].split('\n',2)[1])['persona'],self.cfg['systemPrompt'])
   self.assertNotIn('persona',json.loads(captured[0]['prompt']))
  async def test_unlimited_planning_does_not_inherit_old_six_checks_cap(self):
   day=int((self.now+8*3600)//86400);self.db.execute('INSERT INTO companion_plan_budget VALUES(?,100)',(day,));calls=[]

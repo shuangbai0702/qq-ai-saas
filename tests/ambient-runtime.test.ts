@@ -20,7 +20,7 @@ test('real shared AstrBot sees unmentioned group atmosphere without extra infere
   await mock.call(ctx,'/message',{text:'OTHER_GROUP_ATMOSPHERE',group:'888888',sender:'12345670',mention:false});
   await mock.call(ctx,'/message',{text:'UNMENTIONED_ATMOSPHERE_A',group:'777777',sender:'12345671',mention:false});
   await mock.call(ctx,'/message',{text:'UNMENTIONED_ATMOSPHERE_B',group:'777777',sender:'12345672',mention:false});
-  await sleep(1000);assert.equal(requests.length,0,'ambient messages do not invoke the model');assert.equal(await activity(),beforeActivity,'untriggered messages must not stamp AI activity');
+  await sleep(1000);assert.equal(requests.length,0,'ambient messages do not invoke the model');assert.equal(JSON.parse(await activity()).active,false,'ambient ingress may stamp lifecycle telemetry but cannot leave model work active');
   await mock.call(ctx,'/message',{text:'你觉得刚才气氛怎么样',group:'777777',sender:'12345673',mention:true});
   await until(async()=>requests.length===1,'one inference');assert.equal(JSON.parse(await activity()).active,true,'real in-flight model request keeps the AI active');releaseModel();const payload=JSON.stringify(requests[0]);assert.ok(payload.includes('UNMENTIONED_ATMOSPHERE_A'));assert.ok(payload.includes('UNMENTIONED_ATMOSPHERE_B'));assert.ok(payload.includes('12345671'));assert.ok(!payload.includes('OTHER_GROUP_ATMOSPHERE'));
   await until(async()=>((await mock.call(ctx,'/messages')) as any[]).some(x=>x.action==='send_group_msg'),'actual OneBot reply');

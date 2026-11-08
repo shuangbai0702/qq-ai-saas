@@ -17,7 +17,7 @@ test('shared native requests held across apply, stop and delete never send stale
   const connect=async(n:number)=>{await mock.call(contexts[n],'/transition',{state:'online',uin:contexts[n].expectedUin});await wait(async()=>!!(await mock.call(contexts[n],'/state')as any).connected,'connected')};await connect(0);await connect(1);
   const actions=async(n:number)=>(await mock.call(contexts[n],'/messages')as any[]).filter(m=>m.action.startsWith('send_'));
   await mock.call(contexts[0],'/message',{text:'HOLD apply'});await wait(async()=>!!hold,'held model');const old=(await call('GET','/v1/bots/'+ids[0])).json();
-  await call('PUT',`/v1/bots/${ids[0]}/config`,{name:'updated',expectedRevision:old.bot.revision,config:{...old.config,systemPrompt:'新配置'},apiKey:'barrier-key-updated'});
+  const saved=await call('PUT',`/v1/bots/${ids[0]}/config`,{name:'updated',expectedRevision:old.bot.revision,expectedUin:old.bot.expected_uin,config:{...old.config,systemPrompt:'新配置'},apiKey:'barrier-key-updated'});assert.equal(saved.statusCode,200,saved.body);
   await wait(async()=>(await call('GET','/v1/bots/'+ids[0])).json().bot.applied_revision===2,'applied config');reply(hold!);hold=undefined;await connect(0);await sleep(300);assert.equal((await actions(0)).length,0,'old model response after apply');
   await mock.call(contexts[1],'/message',{text:'peer remains healthy'});await wait(async()=>(await actions(1)).length>0,'peer response');
   await mock.call(contexts[0],'/message',{text:'HOLD stop'});await wait(async()=>!!hold,'held before stop');await call('POST',`/v1/bots/${ids[0]}/actions`,{action:'stop',idempotencyKey:'stop'});

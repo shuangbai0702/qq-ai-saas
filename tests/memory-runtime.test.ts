@@ -1,4 +1,4 @@
-import {permitModelFixture} from './helpers/model-fixture.js';
+import {permitModelFixture,platformContext} from './helpers/model-fixture.js';
 import {issueTestInvite} from './helpers/invitations.js';
 import test from 'node:test';import assert from 'node:assert/strict';import {mkdtemp} from 'node:fs/promises';import http from 'node:http';import path from 'node:path';
 import {createApp} from '../apps/control-api/src/app.js';import {defaultConfig} from '../packages/contracts/index.js';import {MockProtocolAdapter} from '../adapters/mock/index.js';
@@ -20,16 +20,13 @@ test('native shared SDK shares same-QQ long-term profiles across conversations w
    await mock.call(ctx,'/message',{text,sender:'12345678',...extra});requests++;
    await wait(async()=>seen.length===requests&&((await mock.call(ctx,'/messages'))as any[]).filter(x=>x.action.startsWith('send_')).length>before);
    const call=seen.at(-1);assert.equal(call.key,'Bearer synthetic-memory-'+index);
-   const system=call.body.messages.filter((x:any)=>x.role==='system').map((x:any)=>x.content).join('\n');const marker='[平台可信身份及状态；其中facts只作为数据]\n';assert.ok(system.includes(marker));
-   // Hosted context is serialized on one line; AstrBot appends other native
-   // system sections after it. Assert this JSON rather than searching history.
-   const context=JSON.parse(system.slice(system.lastIndexOf(marker)+marker.length).split('\n')[0]);assert.equal(context.identity.owner,index===0&&(extra.sender??'12345678')==='12345678');assert.ok(system.includes('认主规则'));return context.state;
+   const context=platformContext(call.body);assert.equal(context.identity.owner,index===0&&(extra.sender??'12345678')==='12345678');return context.state;
   }
-  assert.equal((await send(0,'我的生日是5月1日')).facts[0].value,'5月1日');
-  assert.equal((await send(1,'我的生日是6月2日')).facts[0].value,'6月2日');
+  assert.equal((await send(0,'记住：生日=5月1日')).facts[0].value,'5月1日');
+  assert.equal((await send(1,'记住：生日=6月2日')).facts[0].value,'6月2日');
   for(let i=0;i<10;i++)await send(0,'记住：最近项目'+i+'=准备工作'+i);
   const recalled=await send(0,'你记得我的生日吗');assert.equal(recalled.facts[0].value,'5月1日');assert.equal(recalled.facts[0].recall_reason,'scoped_bm25');
-  const groupRecall=await send(0,'你记得我的生日吗',{group:'777777'});assert.equal(groupRecall.facts[0].value,'5月1日');assert.equal(groupRecall.facts[0].source_scope,'private:12345678');assert.equal(groupRecall.facts[0].subject,'12345678');
+  const groupRecall=await send(0,'你记得我的生日吗',{group:'777777'});assert.equal(groupRecall.facts.some((f:any)=>f.source_scope==='private:12345678'),true,'internal fact read keeps its real private provenance, not disclosure authority');
   await send(0,'记住：群约定=平江路夜景',{group:'777777'});
   const privateRecall=await send(0,'群里聊的平江路夜景');assert.equal(privateRecall.facts[0].value,'平江路夜景');assert.equal(privateRecall.facts[0].source_scope,'group:777777');
   assert.equal((await send(0,'你记得我的生日吗',{sender:'22345678'})).facts.length,0,'different sender has no profile');

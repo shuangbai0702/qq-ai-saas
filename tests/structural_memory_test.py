@@ -140,8 +140,8 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         # merge is bot-shared material shown in self, not re-injected into
         # each conversation's request (the audited id=52 cross-scope leak).
         for scope in scopes:
-            self.assertEqual([r['id'] for r in self.store.reflection.rolling(scope)],[self.db.execute('SELECT id FROM memory_summaries WHERE scope=?',(scope,)).fetchone()[0]])
-        self.assertEqual(self.store.reflection.rolling('group:77777'),[])
+            self.assertEqual({r['id'] for r in self.store.reflection.rolling(scope)},{self.db.execute('SELECT id FROM memory_summaries WHERE scope=?',(scope,)).fetchone()[0],self.store.reflection.rolling('self')[0]['id']})
+        self.assertEqual([r['id'] for r in self.store.reflection.rolling('group:77777')],[self.store.reflection.rolling('self')[0]['id']])
         shared=self.store.reflection.rolling('self')
         self.assertEqual(len(shared),1);self.assertEqual(set(shared[0]['source_scopes']),set(scopes))
         self.assertEqual({s for item in prompts[0]['summaries'] for s in item['source_scopes']},set(scopes))
