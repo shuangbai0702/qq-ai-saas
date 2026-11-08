@@ -20,7 +20,26 @@ export class SharedAstrBotAdapter {
   }else await this.attach(group,ctx);
   await this.db.query("UPDATE runtime_groups SET observed_state='ready',desired_state='running' WHERE id=$1",[group.id]);
  }
+ async recoverReadiness(ctx:RuntimeContext){
+  const group=await this.group(ctx.botId);if(!group)return this.start(ctx);
+  this.host.endInspection();const owner=await this.host.inspect(group.id,'ai');if(!owner)return this.start(ctx);
+  let health:any;try{health=await this.request(group,'/health','GET',undefined,undefined,1500)}catch{/* A timed-out control plane is rechecked against current PID ownership below. */}
+  if(health?.ready){
+   if(health.generation!==group.generation)throw Object.assign(new Error('共享组代次已变化，拒绝替换健康进程'),{superseded:true});
+   const member=health.members?.[ctx.botId];if(member?.generation===ctx.generation&&member?.revision===ctx.revision)return;
+   // Healthy group: only repair this member; peers keep their live work.
+   return this.start(ctx);
+  }
+  const currentGroup=await this.group(ctx.botId);const [bot]=await this.db.query('SELECT generation,revision,desired_state,deleted_at FROM bots WHERE id=$1',[ctx.botId]);
+  if(!currentGroup||currentGroup.id!==group.id||currentGroup.generation!==group.generation||!bot||bot.deleted_at||bot.desired_state!=='running'||bot.generation!==ctx.generation||bot.revision!==ctx.revision)throw Object.assign(new Error('共享组恢复已被新生命周期替代'),{superseded:true});
+  this.host.endInspection();const current=await this.host.inspect(group.id,'ai');
+  if(!current||current.pid!==owner.pid||current.created!==owner.created)throw Object.assign(new Error('共享组进程所有权已变化'),{superseded:true});
+  await this.host.stop(group.id,'ai','shared-readiness-timeout',{pid:owner.pid,created:owner.created});
+  // Existing start owns generation advancement and reattaches all running
+  // members. It never replays an external action or stops their QQ handles.
+  return this.start(ctx);
+ }
  async stop(id:string,permanent=false,db:Sql=this.db){const group=await this.group(id,db);if(!group)return;const [bot]=await db.query('SELECT generation FROM bots WHERE id=$1',[id]);if(await this.host.inspect(group.id,'ai'))await this.request(group,'/members/'+id+(permanent?'?permanent=true':''),'DELETE',undefined,bot?.generation);await db.query("UPDATE group_members SET desired_state='stopped',observed_state='stopped' WHERE bot_id=$1",[id]);if(permanent){await db.query('DELETE FROM group_members WHERE bot_id=$1',[id]);await db.query('UPDATE bots SET group_id=NULL WHERE id=$1',[id]);}
   const [active]=await db.query("SELECT count(*)::int AS count FROM group_members WHERE group_id=$1 AND desired_state='running'",[group.id]);if(!active.count){await this.host.stop(group.id,'ai');await db.query("UPDATE runtime_groups SET desired_state='stopped',observed_state='stopped' WHERE id=$1",[group.id]);}}
- async probe(ctx:RuntimeContext):Promise<Health>{const group=await this.group(ctx.botId);if(!group)return{alive:false,ready:false};const p=await this.host.inspect(group.id,'ai');if(!p){await this.db.query("UPDATE runtime_groups SET observed_state='failed',health=$2 WHERE id=$1",[group.id,JSON.stringify({alive:false})]);await this.db.query("UPDATE group_members SET observed_state='failed' WHERE group_id=$1 AND desired_state='running'",[group.id]);return{alive:false,ready:false,detail:'共享组进程退出'}}try{const h=await this.request(group,'/health');const m=h.members[ctx.botId];const ready=h.generation===group.generation&&m?.generation===ctx.generation&&m?.revision===ctx.revision;await this.db.query('UPDATE runtime_groups SET health=$2 WHERE id=$1',[group.id,JSON.stringify({pid:p.pid,rssBytes:p.rssBytes,members:Object.keys(h.members).length,generation:h.generation})]);return{alive:!!m,ready,pid:p.pid,memoryPolicy:p.memoryPolicy,metrics:h.metrics?.[ctx.botId],detail:`共享组 ${group.id}；${m?.modelConfigured?'模型已配置，需对话验收':'尚未配置模型Key'}；组RSS ${Math.round(p.rssBytes/1048576)} MiB（不按成员重复计费）`};}catch{return{alive:false,ready:false,detail:'共享组IPC未就绪'}}}
+ async probe(ctx:RuntimeContext):Promise<Health>{const group=await this.group(ctx.botId);if(!group)return{alive:false,ready:false};const p=await this.host.inspect(group.id,'ai');if(!p){await this.db.query("UPDATE runtime_groups SET observed_state='failed',health=$2 WHERE id=$1",[group.id,JSON.stringify({alive:false})]);await this.db.query("UPDATE group_members SET observed_state='failed' WHERE group_id=$1 AND desired_state='running'",[group.id]);return{alive:false,ready:false,detail:'共享组进程退出'}}try{const h=await this.request(group,'/health','GET',undefined,undefined,1500);const m=h.members[ctx.botId];const ready=h.ready&&h.generation===group.generation&&m?.generation===ctx.generation&&m?.revision===ctx.revision;await this.db.query('UPDATE runtime_groups SET health=$2 WHERE id=$1',[group.id,JSON.stringify({pid:p.pid,rssBytes:p.rssBytes,members:Object.keys(h.members).length,generation:h.generation})]);return{alive:true,ready:!!ready,pid:p.pid,memoryPolicy:p.memoryPolicy,metrics:h.metrics?.[ctx.botId],detail:`共享组 ${group.id}；${m?.modelConfigured?'模型已配置，需对话验收':'尚未配置模型Key'}；组RSS ${Math.round(p.rssBytes/1048576)} MiB（不按成员重复计费）`};}catch{return{alive:true,ready:false,pid:p.pid,memoryPolicy:p.memoryPolicy,detail:'共享组IPC未就绪'}}}
 }

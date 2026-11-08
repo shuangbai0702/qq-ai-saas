@@ -32,13 +32,13 @@ test('an established QQ whose session expires keeps the 300-second offline windo
 
 test('startup 120s, QQ waiting 180s, offline 300s caps survive retry phases and persisted observation gaps',()=>{
  const grace={startup:120000,login:180000,offline:300000,fault:300000};const ai={alive:true,ready:false};
- let p=observeOffline(undefined,{alive:true,ready:true,online:true},1000000,grace,{ai,requestedAt:900000})!;
+ let p=observeOffline(undefined,{alive:true,ready:true,online:false},1000000,grace,{ai,requestedAt:900000})!;
  assert.equal(p.reason,'runtime-starting');assert.equal(p.since,900000);assert.equal(p.graceMs,120000);
  p=observeOffline(p,{alive:true,ready:true,loginState:'waiting_scan'},1001000,grace)!;assert.equal(p.graceMs,180000);
- p=observeOffline(p,{alive:true,ready:true,online:true},1020001,grace,{ai})!;assert.equal(p.since,900000,'return to startup cannot reset its deadline');
- p=observeOffline(p,{alive:true,ready:true,online:true},1020002,grace,{ai})!;p=observeOffline(p,{alive:true,ready:true,online:true},1020003,grace,{ai})!;assert.ok(evictionDue(p,1020003));
+ p=observeOffline(p,{alive:true,ready:true,online:false},1020001,grace,{ai})!;assert.equal(p.since,900000,'return to startup cannot reset its deadline');
+ p=observeOffline(p,{alive:true,ready:true,online:false},1020002,grace,{ai})!;p=observeOffline(p,{alive:true,ready:true,online:false},1020003,grace,{ai})!;assert.ok(evictionDue(p,1020003));
  let fault=observeOffline(undefined,{alive:false,ready:false},1000000,grace,{onlineSince:900000})!;assert.equal(fault.graceMs,300000);
- assert.equal(observeOffline(undefined,{alive:true,ready:true,online:true},1000000,grace,{ai,onlineSince:900000,requestedAt:1})!.graceMs,300000,'an old start timestamp cannot prematurely evict a previously healthy account');
+ assert.equal(observeOffline(undefined,{alive:true,ready:true,online:true},1000000,grace,{ai,onlineSince:900000,requestedAt:1}),undefined,'AI failure never evicts online QQ');
  fault=observeOffline(fault,{alive:false,ready:false},1400000,grace,{onlineSince:900000})!;assert.equal(fault.since,1000000);assert.equal(fault.observations,1);
  assert.equal(observeOffline(undefined,{alive:true,ready:true,online:true},1400000,grace),undefined);
 });
@@ -89,6 +89,24 @@ test('native reconnect after durable claim supersedes eviction without stopping 
  assert.deepEqual(f.state.stops,[]);const [bot]=await f.db.query('SELECT * FROM bots WHERE id=$1',[f.id]);assert.equal(bot.desired_state,'running');assert.equal(bot.health.offline,undefined);
  assert.equal((await f.db.query('SELECT status FROM commands WHERE id=$1',[command.id]))[0].status,'superseded');
  const [resume]=await f.db.query("SELECT * FROM commands WHERE kind='start'");assert.equal(resume.generation,command.generation);
+});
+
+test('AI failure preserves online QQ before and after a durable eviction claim',async t=>{
+ const f=await fixture(t);f.state.online=true;f.state.ai=false;
+ await f.agent.health();await f.agent.health();await f.agent.health();
+ assert.equal((await f.db.query('SELECT desired_state,health FROM bots WHERE id=$1',[f.id]))[0].desired_state,'running');
+ assert.equal((await f.db.query("SELECT * FROM commands WHERE kind='evict-offline'")).length,0);
+ assert.equal((await f.db.query("SELECT * FROM commands WHERE kind='restart'")).length,1);
+ await f.db.query("UPDATE commands SET status='failed'");f.state.online=false;f.state.ai=true;const command=await f.claim();assert.ok(command);
+ f.state.online=true;f.state.ai=false;await f.agent.execute(command);assert.deepEqual(f.state.stops,[]);
+ assert.equal((await f.db.query('SELECT status FROM commands WHERE id=$1',[command.id]))[0].status,'superseded');
+});
+
+test('transient database failure during identity validation preserves QQ; real mismatch stops it',async t=>{
+ const f=await fixture(t);f.state.online=true;f.state.ai=false;const query=f.db.query.bind(f.db);
+ f.db.query=async(sql,params)=>{if(sql==='SELECT generation,deleted_at FROM bots WHERE id=$1')throw Object.assign(new Error('fixture lock timeout'),{code:'55P03'});return query(sql,params)};
+ await f.agent.health();assert.deepEqual(f.state.stops,[]);assert.equal(f.state.online,true);f.db.query=query;
+ await f.db.query("UPDATE bots SET expected_uin='90999999' WHERE id=$1",[f.id]);await f.agent.health();assert.deepEqual(f.state.stops,['protocol:'+f.id]);
 });
 
 test('new login supersedes claimed eviction before destruction and recreates AI',async t=>{

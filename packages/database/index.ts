@@ -6,6 +6,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { seedPGliteIfMissing } from './template.js';
 export interface Sql {query<T=any>(sql:string,params?:any[]):Promise<T[]>;transaction<T>(fn:(tx:Sql)=>Promise<T>):Promise<T>;close():Promise<void>}
+export function postgresPoolOptions(url:string){
+ const timeout=(name:string,fallback:number)=>{const value=process.env[name];if(value===undefined)return fallback;const parsed=Number(value);if(!Number.isSafeInteger(parsed)||parsed<=0)throw new Error(`${name} must be a positive integer`);return parsed};
+ return {connectionString:url,max:Math.min(32,Math.max(1,Math.floor(Number(process.env.PG_POOL_MAX)||4))),idleTimeoutMillis:30000,connectionTimeoutMillis:5000,allowExitOnIdle:false,
+  // Server-side cancellation preserves the query outcome/transaction contract;
+  // a JS Promise timeout alone would leave the statement running in the pool.
+  statement_timeout:timeout('PG_STATEMENT_TIMEOUT_MS',30000),lock_timeout:timeout('PG_LOCK_TIMEOUT_MS',10000),idle_in_transaction_session_timeout:timeout('PG_IDLE_TRANSACTION_TIMEOUT_MS',180000)};
+}
 export async function configuredDatabaseUrl(){
  if(process.env.DATABASE_URL)return process.env.DATABASE_URL;
  if(!process.env.PGHOST)return undefined;
@@ -19,7 +26,8 @@ export async function openDatabase(dataRoot:string,url?:string):Promise<Sql>{
   if(!url){await mkdir(dataRoot,{recursive:true});release=await acquireLease(path.resolve(dataRoot),'database')}
   try{
   if(url){
-    const max=Math.min(32,Math.max(1,Number(process.env.PG_POOL_MAX)||4));const pool=new pg.Pool({connectionString:url,max,idleTimeoutMillis:30000,connectionTimeoutMillis:5000,allowExitOnIdle:false});
+    const pool=new pg.Pool(postgresPoolOptions(url));
+    pool.on('error',error=>console.error('PostgreSQL idle connection error:',(error as NodeJS.ErrnoException).code||error.name));
     let savepoint=0;
     const wrap=(client:pg.PoolClient):Sql=>({
       query:async(sql,params)=>(await client.query(sql,params)).rows,
@@ -33,8 +41,9 @@ export async function openDatabase(dataRoot:string,url?:string):Promise<Sql>{
     });
     db={query:async(sql,params)=>(await pool.query(sql,params)).rows,transaction:async fn=>{
       const client=await pool.connect();
+      let discard=false;
       try{await client.query('BEGIN');const result=await fn(wrap(client));await client.query('COMMIT');return result}
-      catch(error){await client.query('ROLLBACK');throw error}finally{client.release()}
+      catch(error){try{await client.query('ROLLBACK')}catch{discard=true}throw error}finally{client.release(discard)}
     },close:()=>pool.end()};
   }else{
     await mkdir(dataRoot,{recursive:true});

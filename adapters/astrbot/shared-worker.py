@@ -3,6 +3,8 @@ Uses pinned AstrBot's native profiles, UMO routing, event draining and providers
 """
 import os,sys,json,copy,asyncio,signal,logging,time
 from pathlib import Path
+import worker_lifecycle
+worker_lifecycle.initialize()
 def validate_member(id,body):
     """Validate authenticated IPC before changing a live member; not a sandbox."""
     import math,re
@@ -199,9 +201,7 @@ async def main():
     app=web.Application(middlewares=[auth],client_max_size=131072);app.router.add_post('/members/{id}/autonomous/{operation}',autonomous_work);app.router.add_post('/members/{id}/behavior-data',manage_data);app.router.add_get('/health',health);app.router.add_put('/members/{id}',put);app.router.add_delete('/members/{id}',remove)
     runner=web.AppRunner(app);await runner.setup();await web.TCPSite(runner,'127.0.0.1',manifest['healthPort']).start()
     task=asyncio.create_task(core.start());stop=asyncio.Event()
-    for sig in [signal.SIGINT,signal.SIGTERM]:
-        try:asyncio.get_running_loop().add_signal_handler(sig,stop.set)
-        except(NotImplementedError,RuntimeError):pass
-    try:await stop.wait()
+    worker_lifecycle.install_shutdown(stop)
+    try:await worker_lifecycle.wait_for_shutdown(task,stop)
     finally:await core.stop();task.cancel();await runner.cleanup();behavior['close']()
 asyncio.run(main())

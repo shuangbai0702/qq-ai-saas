@@ -1,6 +1,7 @@
-import {spawn,execFile, type ChildProcess} from 'node:child_process';import {mkdir,readFile,writeFile,appendFile,rm,stat,readdir} from 'node:fs/promises';import path from 'node:path';
+import {spawn,execFile, type ChildProcess} from 'node:child_process';import {mkdir,readFile,writeFile,appendFile,rm,stat,readdir,rename} from 'node:fs/promises';import path from 'node:path';
 import {redact} from '../../../packages/shared/security.js';
 import {StringDecoder} from 'node:string_decoder';
+const stopIntents=new WeakMap<ChildProcess,string>();
 export class ProcessHost {
   children=new Map<string,ChildProcess>(); secrets=new Map<string,string[]>(); logWrites=new Map<string,Promise<void>>();
   constructor(public root:string,public python:string){}
@@ -45,18 +46,24 @@ export class ProcessHost {
     }
     this.children.set(`${id}:${kind}`,child);
     let queued=0;
-    const enqueue=(line:string)=>{if(queued>=32)return;queued++;const text=redact(line,childKeys);const file=path.join(this.root,'bots',id,'runtime.log');const pending=(this.logWrites.get(id)||Promise.resolve()).then(async()=>{try{if((await stat(file)).size>2*1024*1024)await writeFile(file,'[platform] log rotated\n')}catch{};await appendFile(file,`[${kind}] ${text}`)}).catch(()=>{}).finally(()=>{queued--;if(this.logWrites.get(id)===pending)this.logWrites.delete(id)});this.logWrites.set(id,pending)};
+    const enqueue=(line:string)=>{if(queued>=32)return;queued++;const text=redact(line,childKeys);const file=path.join(this.root,'bots',id,'runtime.log');const pending=(this.logWrites.get(id)||Promise.resolve()).then(async()=>{try{if((await stat(file)).size>2*1024*1024)await rename(file,file+'.previous')}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')return};await appendFile(file,`[${kind}] ${text}`)}).catch(()=>{}).finally(()=>{queued--;if(this.logWrites.get(id)===pending)this.logWrites.delete(id)});this.logWrites.set(id,pending)};
     // Redact complete lines, including secrets split over pipe chunks. Discard
     // oversized lines entirely rather than exposing a truncated secret suffix.
     const streamLogger=()=>{const decoder=new StringDecoder('utf8');let line='',discard=false;return{data:(buf:Buffer)=>{for(const part of decoder.write(buf).split(/(?<=\n)/)){if(!discard)line+=part;if(line.length>65536){line='';discard=true}if(part.endsWith('\n')){if(!discard)enqueue(line);line='';discard=false}}},end:()=>{if(!discard&&line)enqueue(line+decoder.end()+'\n')}}};
     const stdout=streamLogger(),stderr=streamLogger();child.stdout?.on('data',stdout.data);child.stderr?.on('data',stderr.data);
-    child.once('close',code=>{stdout.end();stderr.end();if(this.children.get(`${id}:${kind}`)===child)this.children.delete(`${id}:${kind}`);enqueue(`process exited (${code})\n`)});
+    child.once('close',(code,signal)=>{stdout.end();stderr.end();if(this.children.get(`${id}:${kind}`)===child)this.children.delete(`${id}:${kind}`);enqueue(`process exited (${code}) at=${new Date().toISOString()} pid=${child.pid} signal=${signal||'none'} intent=${stopIntents.get(child)||'unexpected-or-external'}\n`)});
+    enqueue(`process started at=${new Date().toISOString()} pid=${child.pid} source=ProcessHost.start\n`);
     await writeFile(this.file(id,kind),JSON.stringify({pid:child.pid,kind,startedAt:new Date().toISOString()}),{mode:0o600});
     const identity=await this.inspect(id,kind);if(identity)await writeFile(this.file(id,kind),JSON.stringify({pid:child.pid,kind,created:identity.created,startedAt:new Date().toISOString()}),{mode:0o600});
   }
-  async stop(id:string,kind:string){
+  async stop(id:string,kind:string,intent='managed-stop',expected?:{pid:number;created?:number}){
     this.endInspection();
     const rec=await this.record(id,kind);if(!rec)return;
+    if(expected&&(rec.pid!==expected.pid||rec.created!==expected.created))throw Object.assign(new Error('Process ownership changed before stop'),{superseded:true});
+    const child=this.children.get(`${id}:${kind}`);if(child&&child.pid===rec.pid)stopIntents.set(child,intent);
+    // Also records maintenance stop calls outside the command ledger, and
+    // adopted processes whose close event belongs to a previous Agent.
+    await appendFile(path.join(this.root,'bots',id,'runtime.log'),`[${kind}] stop requested at=${new Date().toISOString()} pid=${rec.pid} intent=${redact(intent)}\n`).catch(()=>console.error('Process stop audit unavailable:',id,kind,rec.pid));
     await this.helper(['stop',String(rec.pid),path.join(this.root,'bots',id),String(rec.created??'unknown')]);
     await rm(this.file(id,kind),{force:true});this.children.delete(`${id}:${kind}`);
   }

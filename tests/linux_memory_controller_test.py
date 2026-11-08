@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import types
 import unittest
 from unittest.mock import patch
 
@@ -149,6 +150,75 @@ class ClassificationTest(unittest.TestCase):
 
 
 class RecoveryTest(unittest.TestCase):
+    def test_exact_runtime_targets_and_aggregate_count(self):
+        with patch.dict(os.environ, {}, clear=True):
+            for role, mib in [('napcat', 48), ('shared-ai', 72), ('dedicated-ai', 24)]:
+                self.assertEqual(controller.idle_target(role), mib*1048576)
+                self.assertEqual(controller.idle_target(role, 3), 3*mib*1048576)
+        with patch.dict(os.environ, {'FISHBOT_MEMORY_SHARED_AI_MIB': '80'}):
+            self.assertEqual(controller.idle_target('shared-ai'), 80*1048576)
+
+    def test_guard_cooldown_waits_without_reentering_controller(self):
+        with tempfile.TemporaryDirectory() as root, patch.object(controller, 'BASE', Path(root)):
+            disabled = Path(root)/'disabled'
+            disabled.write_text('pressure')
+            sleeps = []
+            def sleep(seconds):
+                sleeps.append(seconds)
+                if len(sleeps) == 3:
+                    disabled.unlink()
+            def control():
+                if control.calls == 0:
+                    control.calls += 1
+                    disabled.write_text('pressure-again')
+                else:
+                    raise SystemExit(0)
+            control.calls = 0
+            def resumed_sleep(seconds):
+                sleep(seconds)
+                if len(sleeps) == 5:
+                    disabled.unlink()
+            with patch.object(controller.time, 'sleep', side_effect=resumed_sleep), patch.object(controller, 'main', side_effect=control) as main:
+                with self.assertRaises(SystemExit):
+                    controller.run()
+            self.assertEqual(main.call_count, 2)
+            self.assertEqual(sleeps, [1]*5)
+
+    def test_idle_central_agent_stays_unthrottled_while_other_groups_reclaim(self):
+        class StopLoop(Exception):
+            pass
+        with tempfile.TemporaryDirectory() as root:
+            base, parent = Path(root)/'state', Path(root)/'docker-abc.scope'
+            base.mkdir(); parent.mkdir()
+            (base/'guard-heartbeat').touch()
+            (parent/'cgroup.procs').write_text('')
+            for role in ['api', 'shared-ai', 'dedicated-ai', 'napcat', 'mock']:
+                group = parent/('fishbot-'+role)
+                group.mkdir()
+                for name, value in [('cgroup.procs', ''), ('memory.high', 'max'), ('memory.current', '0'), ('memory.swap.current', '0')]:
+                    (group/name).write_text(value)
+            now = [100]
+            def sleep(seconds):
+                if now[0] == 100:
+                    now[0] = 140
+                else:
+                    raise StopLoop()
+            original_read = Path.read_text
+            def read(path, *args, **kwargs):
+                if str(path) == str(Path('/proc/sys/kernel/random/boot_id')):
+                    return 'boot'
+                return original_read(path, *args, **kwargs)
+            state = {'Id': 'abc', 'State': {'Pid': 1, 'StartedAt': 'start'}}
+            fake_lock = types.SimpleNamespace(flock=lambda *args: None, LOCK_EX=1, LOCK_NB=2)
+            with patch.dict(sys.modules, {'fcntl': fake_lock}), patch.multiple(controller, BASE=base, DATA=base, EXTRA_CONTAINERS={}), patch.object(controller, 'container_scope', return_value=parent), patch.object(controller.subprocess, 'check_output', return_value=json.dumps([state])), patch.object(controller.time, 'time', side_effect=lambda: now[0]), patch.object(controller.time, 'sleep', side_effect=sleep), patch.object(Path, 'read_text', autospec=True, side_effect=read):
+                with self.assertRaises(StopLoop):
+                    controller.main()
+            groups = json.loads((base/'controller-state.json').read_text())['groups']
+            self.assertEqual(groups['api']['high'], 'max')
+            self.assertEqual(groups['mock']['high'], str(controller.IDLE_MIB*1048576))
+            self.assertFalse((base/'armed').exists())
+            self.assertEqual((parent/'fishbot-mock/memory.high').read_text(), 'max')
+
     def test_ramp_reaches_original_target_in_bounded_steps(self):
         mib=1048576
         value=controller.ramp_high('max',201*mib,48*mib,0)
