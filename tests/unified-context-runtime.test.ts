@@ -26,7 +26,7 @@ test('real SDK uses one canonical Journal across private and two groups with sha
   const ctx=await current.agent.context((await current.db.query('SELECT * FROM bots WHERE id=$1',[id]))[0]),mock=current.agent.protocols.mock as MockProtocolAdapter;
   await mock.call(ctx,'/transition',{state:'online',uin:'90008874'});await until(async()=>!!(await mock.call(ctx,'/state')as any).connected,'connected');
   const sent=async()=>(await mock.call(ctx,'/messages')as any[]).filter(x=>x.action.startsWith('send_'));
-  const settled=()=>until(async()=>{try{return JSON.parse(await readFile(path.join(root,'bots',id,'memory-activity.json'),'utf8')).active===false}catch{return false}},'settled');
+  const settled=async()=>{let lastActivity:any,lastReadError='';try{await until(async()=>{try{lastActivity=JSON.parse(await readFile(path.join(root,'bots',id,'memory-activity.json'),'utf8'));lastReadError='';return lastActivity.active===false}catch(error){lastReadError=String(error);return false}},'settled')}catch(error){throw new Error(`settled after ${calls.length} model requests: ${JSON.stringify({lastActivity,lastReadError})}`,{cause:error})}};
   await mock.call(ctx,'/message',{sender:'12345678',messageId:91000,text:'PRIVATE_SCOPE_SIGNAL'});
   await until(async()=>calls.length===1&&(await sent()).length===1,'private reply');await settled();
   await mock.call(ctx,'/message',{group:'778180',sender:'12345678',messageId:91001,mention:true,text:'GROUP_A_SIGNAL'});
