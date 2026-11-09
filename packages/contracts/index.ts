@@ -12,7 +12,7 @@ export const BotConfigSchema = z.object({
   personaId:z.string().max(100).default('dafeiyu'), systemPrompt:z.string().min(1).max(20000),
   provider:z.enum(['deepseek','openai','custom']).default('deepseek'),
   baseUrl:z.url().max(2000).refine(x=>{const u=new URL(x);return ['https:','http:'].includes(u.protocol)&&!u.username&&!u.password&&!u.search&&!u.hash},'请填写不含账号、查询参数的 HTTP(S) 地址'),
-  model:z.string().min(1).max(150), trigger:z.enum(['mention','all']).default('mention'),
+  model:z.string().min(1).max(150), auxiliaryModel:z.string().trim().min(1).max(150).optional(), trigger:z.enum(['mention','all']).default('mention'),
   reasoningEffort:z.enum(['none','minimal','low','medium','high','xhigh','max']).optional(),
   groups:z.array(z.string().regex(/^\d{4,20}$/)).max(100).default([]),
   proactive:z.boolean().default(false), historyTurns:z.number().int().min(1).max(100).default(behaviorDefaults.summaryRounds),

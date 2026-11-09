@@ -90,7 +90,7 @@ def _record_diagnostic(lease, record):
              # boundary; without these entries the fields were silently dropped
              # and "observed" coverage was overstated (E package audit).
              'layoutVersion','journalScopeKind','committedPrefixMessages','committedPrefixSha','permitKind','candidateAppendChars',
-             'logicalWorkId','activationId','userPrefixChars','userChars','referenceChars','referenceSha','userPrefixKnown','mediaStatus','imageId')
+             'logicalWorkId','activationId','userPrefixChars','userChars','referenceChars','referenceSha','userPrefixKnown','mediaStatus','imageId','endpointSha')
     row={key:value for key,value in record.items() if key in allowed and (value is None or type(value) in (str,int,float,bool))}
     # A long diagnostic must not erase the request's identity and outcome.
     # These fields contain only program metadata; never serialize exceptions.
@@ -184,7 +184,7 @@ def current_lease(event,provider):
 
 @contextmanager
 def auxiliary_scope(provider,phase,work_id=None,scope=None):
-    """Diagnostic ownership only; never an authorization or a new model call.
+    """Auxiliary request ownership; never an authorization or a new model call.
 
     The provider wrapper binds its attempt to this scope. Its technical result
     and the caller's adoption are separate records in the existing journal.
@@ -203,6 +203,34 @@ def auxiliary_scope(provider,phase,work_id=None,scope=None):
                 'attemptId':attempt['attemptId'],'phase':attempt['phase'],'workId':attempt['workId'],
                 'adoption':value['adoption'],'reason':value['reason'],'scopeHash':value['scopeHash']})
         _auxiliary.reset(token)
+
+
+def auxiliary_model(event,provider):
+    """Select only a trusted bot-configured model for the five decision jobs.
+
+    Context-local ownership prevents a shared provider's foreground, nested or
+    concurrent requests from borrowing another job's model selection.
+    """
+    owner=_auxiliary.get()
+    if not owner or owner['provider'] is not provider or owner['phase'] not in (
+        'private_freshness','group_freshness','group_presence','owner_contact','companion_plan'):
+        return None
+    # An ambient event can belong to another bot. Select the provider-bound
+    # lease first, then validate the event's tenant/bot identity against it.
+    binding=_system_contracts.get(id(provider))
+    lease=binding[2] if binding and binding[0] is provider else None
+    decision=_decision.get()
+    decision_lease=decision[4] if decision and decision[0] is provider else None
+    def identity(value):
+        return (value.get('tenantId'),value.get('botId')) if isinstance(value,dict) else None
+    if not isinstance(lease,dict):lease=decision_lease
+    expected=identity(lease)
+    if not expected or not all(expected):return None
+    if decision_lease is not None and identity(decision_lease)!=expected:return None
+    if event is not None and identity(event.get_extra('_hosted_lease'))!=expected:return None
+    config=lease.get('config') if isinstance(lease,dict) else None
+    model=config.get('auxiliaryModel') if isinstance(config,dict) else None
+    return model if isinstance(model,str) and model==model.strip() and 1<=len(model)<=150 else None
 
 
 def adopted(reason='applied'):
@@ -334,6 +362,15 @@ def observe_wire_request(request):
         if not value:return
         lease=value.get('lease')
         if not isinstance(lease,dict):lease=None
+        # A routing hint is not an endpoint. Hash the actual socket request's
+        # origin/path separately; never retain URL credentials or query data.
+        endpoint_sha=None
+        url=getattr(request,'url',None)
+        if url is not None:
+            target=urlsplit(str(url))
+            if target.hostname:
+                endpoint=json.dumps([target.scheme.lower(),target.hostname.lower(),target.port or (443 if target.scheme=='https' else 80),target.path],separators=(',',':'))
+                endpoint_sha=hashlib.sha256(endpoint.encode()).hexdigest()[:24]
         expected=value.get('appendOnlyExpected')
         if expected is not None:value['appendOnlyValidationStarted']=True
         raw=request.content
@@ -387,12 +424,12 @@ def observe_wire_request(request):
         if isinstance(lease,dict):
             model=payload.get('model')
             value['model']=model if isinstance(model,str) and re.fullmatch(r'[\w.:/-]{1,128}',model) else None
-            key=(lease.get('tenantId'),lease.get('botId'),value['scope'],value['phase'],value.get('model'))
+            key=(lease.get('tenantId'),lease.get('botId'),value['scope'],value['phase'],value.get('model'),endpoint_sha)
             shape,fields=message_shape(payload['messages'],_wire_shapes.pop(key,()))
             _wire_shapes[key]=shape
             while len(_wire_shapes)>32:_wire_shapes.popitem(last=False)
             sha=lambda v:hashlib.sha256(json.dumps(v,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()[:24]
-            fields.update(toolsSha=sha(payload.get('tools')),routingSha=hashlib.sha256(str(payload.get('prompt_cache_key','')).encode()).hexdigest()[:24],
+            fields.update(endpointSha=endpoint_sha,toolsSha=sha(payload.get('tools')),routingSha=hashlib.sha256(str(payload.get('prompt_cache_key','')).encode()).hexdigest()[:24],
                           parametersSha=sha({k:v for k,v in payload.items() if k not in ('messages','tools','prompt_cache_key')}),
                           journalReason=value.get('journalReason'),wireIndex=value['wireIndex'],wireBytes=len(raw),
                           toolCount=len(payload.get('tools') or []),toolsChars=len(json.dumps(payload.get('tools'),ensure_ascii=False,separators=(',',':'))))
