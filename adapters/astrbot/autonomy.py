@@ -289,7 +289,24 @@ class GroupPresence:
         row=self.snapshot(scope);interval=cooldown_base(cfg,scope,'group')
         return bool(row[3]!=str(event_id) and (not max(row[:2]) or now-max(row[:2])>=interval) and not group_muted(self.db,scope,now) and has_capacity(self.db,cfg,now))
 
-    async def evaluate(self, scope, cfg, event_id, provider, messages, companion, dialogue, live, metrics, event_var, now=None, addressing=None, lease=None):
+    def complete_silence_events(self,scope,recent):
+        # Ambient text and this decision's text budget may both truncate an
+        # event. Only the durable original can prove the whole input was seen.
+        events=[]
+        for message in recent:
+            event=message.get('source_event')
+            if not event or message.get('source_scope',scope)!=scope:continue
+            row=self.db.execute("SELECT payload FROM pipeline_work_inputs WHERE scope=? AND event=? AND status='owned'",(scope,str(event))).fetchone()
+            if not row or not row[0]:continue
+            try:parts=json.loads(row[0]).get('message')
+            except (ValueError,TypeError,AttributeError):continue
+            # Presence's ambient projector does not preserve media, replies or
+            # mentions. A text preview cannot dispose of those original inputs.
+            if not isinstance(parts,list) or not parts or any(not isinstance(p,dict) or p.get('type')!='text' or not isinstance(p.get('data'),dict) or not isinstance(p['data'].get('text'),str) for p in parts):continue
+            if ''.join(p['data']['text'] for p in parts)==message.get('text'):events.append(str(event))
+        return events
+
+    async def evaluate(self, scope, cfg, event_id, provider, messages, companion, dialogue, live, metrics, event_var, now=None, addressing=None, lease=None, on_silence=None):
         from initiative import quiet
         now = time.time() if now is None else now
         b = cfg.get('behavior') or {}
@@ -347,6 +364,11 @@ class GroupPresence:
                 cooldown={}
                 if current and decision.source=='ai':
                     with self.db:cooldown=record_decision(self.db,cfg,scope,event_id,data,decision.reply,now,'group')
+                    # Only a valid, current semantic decision can dispose of
+                    # the exact events in this bounded view. A timeout, stale
+                    # response or policy gate is not evidence of model silence.
+                    if not decision.reply and on_silence:
+                        on_silence(self.complete_silence_events(scope,recent))
                 metrics['lastGroupDecision'] = {'at': now, 'reply': decision.reply, 'target': decision.target, 'reason': decision.reason_code,
                                                 'source': decision.source, 'latencyMs': round((time.monotonic()-started)*1000), 'group': scope[6:],**cooldown}
                 if current:adopted('policy' if decision.source=='policy' else 'decision_applied')

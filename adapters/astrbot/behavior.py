@@ -873,7 +873,7 @@ def install_runtime(core,settings):
             if not messages or messages[-1].get('sender_id')!=subject or messages[-1].get('text')!=incoming[:180]:messages.append({'sender_id':subject,'text':incoming,'at':float(getattr(event.message_obj,'timestamp',0) or now),'source_event':event_id})
             st.active+=1;care.stamp(s['root'])
             try:
-                semantic=await st.presence.evaluate(scope,cfg,event_id,provider,messages,companion_state.context(st.db,cfg,scope,now,event.get_message_str()),bot_pipeline.decision_conversation(st,cfg.get('behavior') or {},scope,subject,time.time()),lambda:current(event),metrics.setdefault(id,{}),current_message_event,now=decision_at,lease=s,addressing={'self_id':str(event.get_self_id()),'mentions_other':any(isinstance(c,At) and str(c.qq)!=str(event.get_self_id()) for c in event.get_messages()),'replies_to_other':any(isinstance(c,Reply) and str(c.sender_id) not in ('','0',str(event.get_self_id())) for c in event.get_messages())})
+                semantic=await st.presence.evaluate(scope,cfg,event_id,provider,messages,companion_state.context(st.db,cfg,scope,now,event.get_message_str()),bot_pipeline.decision_conversation(st,cfg.get('behavior') or {},scope,subject,time.time()),lambda:current(event),metrics.setdefault(id,{}),current_message_event,now=decision_at,lease=s,on_silence=lambda events:st.pipeline.ignored_inputs(work,events),addressing={'self_id':str(event.get_self_id()),'mentions_other':any(isinstance(c,At) and str(c.qq)!=str(event.get_self_id()) for c in event.get_messages()),'replies_to_other':any(isinstance(c,Reply) and str(c.sender_id) not in ('','0',str(event.get_self_id())) for c in event.get_messages())})
             finally:st.active-=1;st.slot_changed.set();care.stamp(s['root'])
             if not semantic or not semantic[0].reply or not st.presence.current(scope,cfg,semantic[1],semantic[2],lambda:current(event)):
                 bot_pipeline.stop(event,'group_model_silent_or_stale','silent');return
@@ -1909,12 +1909,12 @@ def install_runtime(core,settings):
                 # selection, not only the pre-execute ingress snapshot.
                 owner=stores.get(event.get_platform_id())
                 reason='processed'
-                if owner is None or settings.get(event.get_platform_id()) is not lease or not owner.shared_context or work is None or work.source!='message':reason='not_foreground_owner'
+                if owner is None or settings.get(event.get_platform_id()) is not lease or not owner.shared_context or work is None or not work.observes_input:reason='not_foreground_owner'
                 elif active_event.get_extra('_hosted_model_error',False):reason='model_error'
                 elif work.attempted!=work.confirmed:reason='unconfirmed_effect'
                 elif not owner.pipeline.unseen_inputs(work):reason='inputs_decided'
                 elif passes>=4:reason='activation_pass_limit'
-                elif work.status in ('blocked','error') or work.reason in ('group_waiting','group_presence_busy_deferred'):reason='admission_blocked'
+                elif work.status in ('blocked','error','duplicate') or work.reason in ('group_waiting','group_presence_busy_deferred','group_model_silent_or_stale'):reason='admission_blocked'
                 else:reason='continue_inputs'
                 if work and owner:owner.pipeline.activation_progress(work,passes,reason)
                 if reason!='continue_inputs':break

@@ -49,6 +49,40 @@ class AutonomyTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await self.judge(event='one',now=self.now+901))
         self.assertTrue((await self.judge(event='three',now=self.now+900))[0].reply)
         self.assertEqual(len(self.provider.calls),2)
+    async def test_silence_settles_only_exact_bounded_model_view(self):
+        self.provider.answer={'reply':False,'target':'open','participation':'open','information':'substantive','interest':'weak','reason_code':'not_needed','confidence':'high'}
+        self.cfg['behavior']['groupDecisionContextMessages']=12
+        messages=[{'sender_id':'22222222','text':'topic '+str(i),'source_event':str(i),'source_scope':'group:12345'} for i in range(100)]
+        for m in messages:
+            self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,payload,status) VALUES(?,?,?,'owned')",('group:12345',m['source_event'],json.dumps({'message':[{'type':'text','data':{'text':m['text']}}]})))
+        self.db.commit()
+        disposed=[]
+        with patch('autonomy.time.time',return_value=self.now):
+            decision=await self.store.presence.evaluate('group:12345',self.cfg,'99',self.provider,messages,{}, {},lambda:True,self.metrics,self.event,self.now,on_silence=disposed.extend)
+        self.assertIsNotNone(decision);self.assertFalse(decision[0].reply)
+        self.assertEqual(set(disposed),{str(i) for i in range(88,100)})
+        self.assertEqual(len(self.provider.calls),1)
+    async def test_silence_does_not_dispose_of_partial_text_or_missing_media(self):
+        self.provider.answer={'reply':False,'target':'open','participation':'open','information':'substantive','interest':'weak','reason_code':'not_needed','confidence':'high'}
+        originals={'long':'x'*300+' 请帮我解决尾部问题','ambient':'x'*180+' 尾部问题', 'media':'图片说明', 'complete':'完整短文本'}
+        messages=[]
+        for event,text in originals.items():
+            parts=[{'type':'text','data':{'text':text}}]
+            if event=='media':parts.append({'type':'image','data':{'file':'fixture.png'}})
+            self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,payload,status) VALUES(?,?,?,'owned')",('group:12345',event,json.dumps({'message':parts})))
+            messages.append({'sender_id':'22222222','text':text[:180] if event=='ambient' else text,'source_event':event,'source_scope':'group:12345'})
+        self.db.commit();disposed=[]
+        with patch('autonomy.time.time',return_value=self.now):
+            decision=await self.store.presence.evaluate('group:12345',self.cfg,'complete',self.provider,messages,{}, {},lambda:True,self.metrics,self.event,self.now,on_silence=disposed.extend)
+        self.assertFalse(decision[0].reply)
+        self.assertEqual(disposed,['complete'])
+        self.assertNotIn('尾部问题',self.provider.calls[0]['prompt'])
+        # Absence of original evidence is not proof that a preview is complete.
+        self.assertEqual(self.store.presence.complete_silence_events('group:12345',[{'source_event':'missing','text':'预览'}]),[])
+    async def test_failed_presence_does_not_claim_inputs_ignored(self):
+        self.provider.fail=True;disposed=[]
+        result=await self.store.presence.evaluate('group:12345',self.cfg,'1',self.provider,[{'sender_id':'22222222','text':'topic','source_event':'1'}],{}, {},lambda:True,self.metrics,self.event,self.now,on_silence=disposed.extend)
+        self.assertIsNone(result);self.assertEqual(disposed,[])
     async def test_real_conversation_refreshes_window(self):
         await self.judge()
         autonomy.note_interaction(self.db,self.cfg,'group:12345','22222222',self.now+600)

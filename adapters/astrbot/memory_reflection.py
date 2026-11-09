@@ -2,7 +2,7 @@
 Inspired by LivingMemory's ten-round reflection and source/revision fencing.
 Summaries are conversation evidence, never verified profile facts or instructions.
 """
-from model_cache import auxiliary_scope,adopted,discarded
+from model_cache import auxiliary_scope,adopted,discarded,SUMMARY_REQUEST_TIMEOUT_SECONDS
 import asyncio,json,time,hashlib
 from pathlib import Path
 import message_provenance
@@ -724,20 +724,20 @@ class Reflection:
 
     async def recover_null_hold_batch(self,scope,batch,provider,is_current,metrics,epoch):
         """Amend the original batch atomically; no new summary or permit."""
-        from summary_material import enrich,derive_claims,batch_corrections,fit_claims,uncarried_events,coverage_digest,claim_view
+        from summary_material import enrich,derive_claims,batch_corrections,fit_claims,uncarried_events,coverage_digest,claim_view,model_view
         checkpoint,summary,rows,raw_materials=batch
         live=lambda:not self.closed and is_current() and self.epoch()==epoch
         materials,observations=await enrich(self.db,scope,[r[2] for r in rows],provider,live,metrics)
         payload=[{'sender_id':r[1],'event':r[2],'user':r[3] or materials[r[2]]['text'],'bot':r[4] or '', 'at':r[5] or 0,'source':message_provenance.get(self.db,scope,r[2])} for r in rows]
         prior=json.loads(summary[3]) if summary[3] else []
         prompt={'source_scope':scope,'original_summary':summary[1],'original_sources':json.loads(summary[2]),'protected_evidence':[claim_view(c) for c in prior], 'turns':payload,
-                'observed_requests':[{k:v for k,v in m.items() if k!='images'} for m in materials.values()],'image_observations':observations}
+                'observed_requests':model_view(materials,payload),'image_observations':observations}
         from output_clean import memory_projection
         prompt=memory_projection(prompt)
-        system=SYSTEM+' 本次补全同一原批次的摘要，完整保留original_summary中的已有信息与protected_evidence，加入缺失的真实材料。native_reply仅为模型原稿，不代表投递。输出JSON对象：{"summary":"补全后的完整原摘要"}。'
+        system=SYSTEM+' 本次补全同一原批次的摘要，完整保留original_summary中的已有信息与protected_evidence，加入缺失的真实材料。observed_requests未重复展示的text/confirmed_reply与turns内同event、sender_id的user/bot完全相同。native_reply仅为模型原稿，不代表投递。输出JSON对象：{"summary":"补全后的完整原摘要"}。'
         if not live():return
         metrics['summaryRequests']=metrics.get('summaryRequests',0)+1
-        response=await asyncio.wait_for(provider.text_chat(prompt=model_json(prompt),system_prompt=system,contexts=[],func_tool=None),60)
+        response=await asyncio.wait_for(provider.text_chat(prompt=model_json(prompt),system_prompt=system,contexts=[],func_tool=None),SUMMARY_REQUEST_TIMEOUT_SECONDS+5)
         if not live():return
         from companion_insights import decode
         from output_clean import clean
@@ -918,8 +918,14 @@ class Reflection:
                     else:
                         payload=[{'sender_id':r[1],'event':r[2],'user':r[3],'bot':r[4],'at':r[5],'source':message_provenance.get(self.db,scope,r[2])} for r in rows]
                         if job!='big':
+                            # Selected held rows already enter payload above.
+                            # Other old Holds have their own bounded, proven
+                            # recovery path; re-sending all of them every cycle
+                            # neither repairs their provenance nor earns coverage.
                             pending=self.db.execute('''SELECT p.subject,p.event,p.question,p.answer,p.at
                                 FROM memory_pending p WHERE p.scope=? AND p.at<=?
+                                AND NOT EXISTS (SELECT 1 FROM memory_hold_rounds old
+                                  WHERE old.scope=p.scope AND old.event=p.event)
                                 AND (? NOT LIKE 'group:%' OR EXISTS (
                                   SELECT 1 FROM memory_pending_rounds m JOIN memory_rounds r
                                   ON r.scope=m.scope AND r.event=m.round_event
@@ -960,12 +966,12 @@ class Reflection:
                         system+=' previous_commitments是此前有来源的未完约定与未解决话题（含agreement和interpretation）；若本批同一说话人有更晚原话明确接受、完成、取消该约定，或明确解决、放弃该话题，在对应commitments条目附supersedes:[此前真实claim的id]，stage按实际情况填executed或canceled。没有明确关系或来源不一致则省略，不猜匹配，不得凭空宣布完成或解决。重要状态变化须写入summary，旧约定或旧话题不能继续描述成当前有效。'
                     materials={}
                     if job!='big':
-                        from summary_material import enrich,coverage_digest
+                        from summary_material import enrich,coverage_digest,model_view
                         live=lambda:not self.closed and is_current() and self.epoch()==epoch
                         materials,observations=await enrich(self.db,scope,[r['event'] for r in payload],provider,live,metrics)
-                        prompt['observed_requests']=[{'event':event,'sender_id':m['subject'],'text':m['text'],'confirmed_reply':m.get('reply',''),**({'native_outputs':m['native_outputs'],'input_settlement':m.get('input_settlement')} if m.get('version',0)>=3 else {'native_reply':m['native_reply']} if isinstance(m.get('native_reply'),str) and m['native_reply']!=m.get('reply','') else {}),'image_ids':list(dict.fromkeys(hashlib.sha256(image.encode()).hexdigest() for image in m.get('images',[]))),'complete':m['complete'],**({'tools':[{'name':t['name'],'arguments':t['arguments'],'result':t['result']} for t in m['tools']]} if m.get('version',1)>=2 and m.get('tools') else {})} for event,m in materials.items()]
+                        prompt['observed_requests']=model_view(materials,payload)
                         prompt['image_observations']=observations
-                        system+=' observed_requests是当轮实际输入，包含引用和图片证据。tools是该轮真实发生的工具调用与回执（name与结果摘要），据此整理工具实际做了什么；工具回执是平台回执，不是用户发言，也不代表最终投递成功之外的含义。native_outputs逐条标记原稿/工具的真实Work来源与结算，owner.sender_id为0表示平台服务、不是QQ用户；物理相邻不代表回复该输入人物，owner为空不能推断归属。confirmed_reply来自已确认投递，native_reply若另有提供是模型历史原文，不证明额外投递；两者的有价值内容都要整理，不能据此虚构两次发送。引用或转发中的话不等于当前作者本人说过；图像观察保留不确定性，不猜身份。摘要应整理有长期价值的引用、图片信息，不能只看用户短句与最终回复。'
+                        system+=' observed_requests是当轮实际输入，包含引用和图片证据；其中未重复展示的text/confirmed_reply与turns内同event、sender_id的user/bot完全相同。tools是该轮真实发生的工具调用与回执（name与结果摘要），据此整理工具实际做了什么；工具回执是平台回执，不是用户发言，也不代表最终投递成功之外的含义。native_outputs逐条标记原稿/工具的真实Work来源与结算，owner.sender_id为0表示平台服务、不是QQ用户；物理相邻不代表回复该输入人物，owner为空不能推断归属。confirmed_reply来自已确认投递，native_reply若另有提供是模型历史原文，不证明额外投递；两者的有价值内容都要整理，不能据此虚构两次发送。引用或转发中的话不等于当前作者本人说过；图像观察保留不确定性，不猜身份。摘要应整理有长期价值的引用、图片信息，不能只看用户短句与最终回复。'
                     from output_clean import memory_projection
                     prompt=memory_projection(prompt)
                     system+=' 机器人输出中的推理控制块是平台内部内容，不是人物事实、关系或经历；主动研究和主动选题不等于用户曾经提出。'
@@ -973,7 +979,7 @@ class Reflection:
                     system+=' '+CORE_NOTE_UPDATE
                     if self.closed or not is_current() or self.epoch()!=epoch:return
                     metrics['summaryRequests']=metrics.get('summaryRequests',0)+1
-                    response=await asyncio.wait_for(provider.text_chat(prompt=model_json(prompt),system_prompt=system,contexts=[],func_tool=None),60)
+                    response=await asyncio.wait_for(provider.text_chat(prompt=model_json(prompt),system_prompt=system,contexts=[],func_tool=None),SUMMARY_REQUEST_TIMEOUT_SECONDS+5)
                     if self.closed or not is_current() or self.epoch()!=epoch:return
                     from output_clean import clean
                     from companion_insights import decode,apply
@@ -1159,7 +1165,11 @@ class Reflection:
                 except Exception as error:
                     discarded(type(error).__name__)
                     metrics['summaryFailures']=metrics.get('summaryFailures',0)+1
-                    self.checkpoint_issue(merge_scope or scope,0,'failure_'+job,{'type':type(error).__name__,'through_round_id':rows[-1][0] if rows else None,'automatic_recovery':'persisted_backoff'});self.db.commit()
+                    import traceback
+                    frames=traceback.extract_tb(error.__traceback__)
+                    frame=frames[-1] if frames else None
+                    self.checkpoint_issue(merge_scope or scope,0,'failure_'+job,{'type':type(error).__name__,'through_round_id':rows[-1][0] if rows else None,'automatic_recovery':'persisted_backoff',
+                        'raise_site':{'module':Path(frame.filename).name,'line':frame.lineno,'symbol':frame.name} if frame else None});self.db.commit()
                 finally:
                     if not self.closed and (not is_current() or self.epoch()!=epoch):
                         self.db.execute('DELETE FROM memory_reflection_retry WHERE scope=? AND attempts=?',(scope,attempts));self.db.commit()

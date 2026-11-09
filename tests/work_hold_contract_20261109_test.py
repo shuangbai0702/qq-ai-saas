@@ -73,6 +73,47 @@ class Ownership(unittest.TestCase):
   self.p.seen_inputs(w,[message(w.scope,'2')]);w.attempted=1
   self.p.finish(w,{});self.p.release_work(w)
   self.assertEqual(self.db.execute('SELECT status FROM pipeline_work_inputs').fetchone()[0],'blocked_unknown')
+ def test_group_admission_wait_preserves_unseen_inputs_without_unknown_or_replay(self):
+  scope='group:55555';w=self.p.bind(Event('1',scope),{'botId':'bot'})
+  for n in range(2,102):self.p.join_active(Event(str(n),scope))
+  w.stop('group_waiting','waiting');self.p.finish(w,{});self.p.release_work(w)
+  self.assertEqual(dict(self.db.execute('SELECT status,count(*) FROM pipeline_work_inputs GROUP BY status')),{'deferred':100})
+  self.assertEqual(self.db.execute('SELECT sum(seen),sum(retry_count) FROM pipeline_work_inputs').fetchone(),(0,0))
+  from initiative import resume_scope_input
+  self.assertFalse(asyncio.run(resume_scope_input(NS(),None,{},self.store,{})))
+  e=Event('101',scope);e.set_extra('_hosted_deferred_group',{})
+  e.set_extra('_hosted_deferred_group',{'event':'101'})
+  resumed=self.p.bind(e,{'botId':'bot'})
+  self.assertTrue(resumed.ledger_owner);self.assertTrue(resumed.scope_owner)
+  self.assertTrue(resumed.observes_input);self.assertEqual(resumed.work_id,w.work_id)
+  self.assertEqual(self.p.unseen_inputs(resumed),99)
+  # Only the exact events with a semantic no-response decision are settled.
+  self.p.ignored_inputs(resumed,['100','101'])
+  resumed.stop('group_model_silent_or_stale','silent');self.p.finish(resumed,{})
+  self.p.release_work(resumed)
+  self.assertEqual(dict(self.db.execute('SELECT status,count(*) FROM pipeline_work_inputs GROUP BY status')),{'deferred':98,'settled':2})
+ def test_deferred_admission_cannot_replay_confirmed_or_unknown_output(self):
+  for index,status,attempted,confirmed in ((1,'sent',1,1),(2,'unknown',1,0),(3,'received',0,0)):
+   self.db.execute('INSERT INTO pipeline_events(scope,subject,event,status,attempted,confirmed) VALUES(?,?,?,?,?,?)',('group:55555','12345678',str(index),status,attempted,confirmed));self.db.commit()
+   e=Event(str(index),'group:55555');e.set_extra('_hosted_deferred_group',{'event':str(index)})
+   w=self.p.bind(e,{'botId':'bot'});self.assertEqual(w.status,'duplicate');self.assertFalse(w.scope_owner)
+ def test_restart_repairs_only_exact_zero_effect_waiting_root(self):
+  scope='group:55555'
+  for e,status,reason,attempted in (('1','waiting','group_waiting',0),('2','waiting','group_waiting',1),('3','silent','group_model_silent_or_stale',0)):
+   self.db.execute('INSERT INTO pipeline_events(scope,subject,event,status,reason,attempted,confirmed) VALUES(?,?,?,?,?,?,0)',(scope,'12345678',e,status,reason,attempted))
+   self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,subject,status,seen) VALUES(?,?,?,'blocked_unknown',0)",(scope,e,'12345678'))
+  self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,subject,status,seen) VALUES(?, '4','12345678','blocked_unknown',0)",(scope,));self.db.commit()
+  BotPipeline(self.db)
+  self.assertEqual(list(self.db.execute('SELECT event,status,seen FROM pipeline_work_inputs ORDER BY event')),[('1','deferred',0),('2','blocked_unknown',0),('3','blocked_unknown',0),('4','blocked_unknown',0)])
+ def test_deferred_inbox_cannot_replay_settled_or_held_joined_input_without_root_ledger(self):
+  for n,status in enumerate(('settled','settled_duplicate','blocked_unknown'),10):
+   with self.subTest(status=status):
+    identifier=str(n)
+    self.db.execute('INSERT INTO pipeline_work_inputs(scope,event,subject,status,seen) VALUES(?,?,?,?,0)',('group:55555',identifier,'12345678',status));self.db.commit()
+    e=Event(identifier,'group:55555');e.set_extra('_hosted_deferred_group',{'event':identifier})
+    w=self.p.bind(e,{'botId':'bot'})
+    self.assertEqual(w.status,'duplicate');self.assertFalse(w.scope_owner);self.assertFalse(w.ledger_owner)
+    self.assertIsNone(self.db.execute('SELECT event FROM pipeline_events WHERE event=?',(identifier,)).fetchone())
  def test_exact_terminal_ledger_repair_does_not_guess_waiting_or_owner(self):
   w=self.p.bind(Event('1'),{'botId':'bot'});mp.bind_model_input(self.db,'bot_shared',w.scope,'1',w.subject,message(w.scope,'1'))
   w.status='silent';self.p.finish(w,{})

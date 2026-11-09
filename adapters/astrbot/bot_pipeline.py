@@ -352,7 +352,7 @@ class Work:
             'fishbot-work',self.lease.get('tenantId',''),self.bot_id,self.scope],separators=(',',':'))).hex
 
     @property
-    def observes_input(self):return self.source=='message'
+    def observes_input(self):return self.source in ('message','deferred_group')
 
     def stage(self,name):
         if name not in STAGES:raise ValueError('Unknown bot pipeline stage')
@@ -393,6 +393,14 @@ class BotPipeline:
         # Batch windows live only in this process. A durable group-presence
         # wait can resume, but an old in-memory batch cannot still be waiting.
         db.execute("UPDATE pipeline_events SET status='interrupted',reason='runtime_restarted' WHERE status='waiting' AND reason='batch_waiting'");db.commit()
+        # Repair only the exact original admission ledger, not guessed owners
+        # of old joined inputs. No model/send/response evidence is invented.
+        db.execute("""UPDATE pipeline_work_inputs AS i SET status='deferred'
+          WHERE i.status='blocked_unknown' AND i.seen=0 AND i.owner IS NULL
+          AND i.scope LIKE 'group:%' AND EXISTS (SELECT 1 FROM pipeline_events e
+            WHERE e.scope=i.scope AND e.subject=i.subject AND e.event=i.event
+            AND e.status='waiting' AND e.reason='group_waiting'
+            AND e.attempted=0 AND e.confirmed=0)""");db.commit()
         db.execute('CREATE TABLE IF NOT EXISTS pipeline_actions(id TEXT PRIMARY KEY,fingerprint TEXT,epoch INTEGER,scope TEXT,expires REAL,state TEXT,result TEXT,at REAL)')
         db.execute('CREATE TABLE IF NOT EXISTS pipeline_action_effects(action TEXT,sequence INTEGER,method TEXT,target TEXT,state TEXT,receipt TEXT,at REAL,PRIMARY KEY(action,sequence))')
         db.execute("UPDATE pipeline_action_effects SET state='unknown' WHERE state='dispatching'")
@@ -412,10 +420,10 @@ class BotPipeline:
         if existing:
             previous=existing[1] or (hashlib.sha256(json.dumps(json.loads(existing[0]),ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest() if existing[0] else None)
             if previous!=signature:raise ValueError('scope_input_redelivery_evidence_changed')
-            if existing[2] not in ('owned','pending','queued'):return False
+            if existing[2] not in ('owned','pending','queued','deferred'):return False
         if owner[0]==identifier:return False  # A redelivery is not another input to its own Work.
         with self.db:
-            self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,subject,owner,payload,status,created,observed_at,payload_sha) VALUES(?,?,?,?,?,'owned',?,?,?) ON CONFLICT(scope,event) DO UPDATE SET owner=excluded.owner,status='owned' WHERE pipeline_work_inputs.status IN ('pending','queued')",(scope,identifier,str(event.get_sender_id()),owner[0],json.dumps(raw,ensure_ascii=False),time.time(),float(event.message_obj.timestamp),signature))
+            self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,subject,owner,payload,status,created,observed_at,payload_sha) VALUES(?,?,?,?,?,'owned',?,?,?) ON CONFLICT(scope,event) DO UPDATE SET owner=excluded.owner,status='owned' WHERE pipeline_work_inputs.status IN ('pending','queued','deferred')",(scope,identifier,str(event.get_sender_id()),owner[0],json.dumps(raw,ensure_ascii=False),time.time(),float(event.message_obj.timestamp),signature))
         return True
 
     def seen_inputs(self,work,messages):
@@ -449,14 +457,18 @@ class BotPipeline:
         with self.db:
             if not self.db.execute('SELECT 1 FROM pipeline_scope_work WHERE scope=? AND event=? AND runtime=?',(work.scope,work.event_id,self.runtime)).fetchone():return
             terminal=work.status in ('sent','silent','superseded','blocked','error','interrupted') and work.attempted==work.confirmed
+            # Admission waiting is not an uncertain external operation. Leave
+            # these inputs to the existing presence inbox / next real ingress,
+            # rather than replaying them immediately or claiming a response.
+            deferred=work.scope.startswith('group:') and work.attempted==work.confirmed==0 and work.reason in ('group_waiting','group_presence_busy_deferred','autonomous_owner_observing','group_model_silent_or_stale','auth_backoff')
             for identifier,subject,seen in self.db.execute("SELECT event,subject,seen FROM pipeline_work_inputs WHERE scope=? AND owner=? AND status='owned'",(work.scope,work.event_id)).fetchall():
                 # Inclusion in a request is not a completed business decision:
                 # a stale/dropped draft must leave its questions pending.
                 completed=work.status in ('sent','silent') and (work.status=='sent' and work.planned_messages==work.confirmed_messages or work.reason=='model_no_reply_marker')
                 processed=seen==3 or seen==1 and completed or seen==2 and work.status=='sent' and work.planned_messages==work.confirmed_messages
-                status='settled' if processed and terminal else 'pending' if terminal else 'blocked_unknown'
+                status='settled' if processed and terminal else 'deferred' if deferred else 'pending' if terminal else 'blocked_unknown'
                 # Preserve the settled input's parent Work as audit evidence.
-                self.db.execute('UPDATE pipeline_work_inputs SET status=?,owner=?,payload=CASE WHEN ? THEN NULL ELSE payload END WHERE scope=? AND event=?',(status,work.event_id if status=='settled' else None,status=='settled' and seen==1,work.scope,identifier))
+                self.db.execute('UPDATE pipeline_work_inputs SET status=?,owner=?,payload=CASE WHEN ? THEN NULL ELSE payload END WHERE scope=? AND event=?',(status,work.event_id,status=='settled' and seen==1,work.scope,identifier))
                 if status=='settled' and identifier!=work.event_id:
                     # It was processed within this Work, not a separate reply
                     # or a second effective business round.
@@ -668,15 +680,22 @@ class BotPipeline:
         event.set_extra('_hosted_pipeline',work);work.stage('ingress')
         if subject==self_id:
             work.stop('self_message');return work
-        if source=='deferred_group':
-            row=self.db.execute('SELECT status FROM pipeline_events WHERE scope=? AND subject=? AND event=?',(scope,subject,work.event_id)).fetchone()
-            if row and row[0] in ('sending','sent','partial','unknown'):work.stop('deferred_output_already_attempted','duplicate')
-            if work.status=='received':self.claim_scope(work)
-            return work
-        if not work.event_id:return work
         previous=self.db.execute('SELECT status FROM pipeline_work_inputs WHERE scope=? AND event=?',(scope,work.event_id)).fetchone()
         if previous and previous[0].startswith(('settled','blocked_')):
             work.stop('previous_input_already_settled_or_held','duplicate');return work
+        if source=='deferred_group':
+            row=self.db.execute('SELECT status,attempted,confirmed FROM pipeline_events WHERE scope=? AND subject=? AND event=?',(scope,subject,work.event_id)).fetchone()
+            if row and (row[1] or row[2] or row[0] not in ('waiting','silent')):
+                work.stop('deferred_output_already_attempted','duplicate');return work
+            if not self.claim_scope(work):return work
+            with self.db:
+                if row:
+                    work.ledger_owner=bool(self.db.execute("UPDATE pipeline_events SET status='received',reason='deferred_admission',source=? WHERE scope=? AND subject=? AND event=? AND status IN ('waiting','silent') AND attempted=0 AND confirmed=0",(source,scope,subject,work.event_id)).rowcount)
+                else:
+                    work.ledger_owner=bool(self.db.execute("INSERT OR IGNORE INTO pipeline_events(scope,subject,event,at,source,stage,status,reason) VALUES(?,?,?,?,?,'ingress','received','deferred_admission')",(scope,subject,work.event_id,time.time(),source)).rowcount)
+            if not work.ledger_owner:work.stop('duplicate_deferred_admission','duplicate')
+            return work
+        if not work.event_id:return work
         now=time.time()
         with self.db:
             work.ledger_owner=bool(self.db.execute("INSERT OR IGNORE INTO pipeline_events(scope,subject,event,at,source,stage,status,reason) VALUES(?,?,?,?,?,'ingress','received','')",(scope,subject,work.event_id,now,source)).rowcount)
@@ -703,7 +722,7 @@ class BotPipeline:
         with self.db:
             owned=self.db.execute('INSERT OR IGNORE INTO pipeline_scope_work VALUES(?,?,?,?,?)',(work.scope,work.event_id,work.subject,self.runtime,os.getpid())).rowcount
             work.scope_owner=bool(owned)
-            if owned:self.db.execute("UPDATE pipeline_work_inputs SET status='owned',owner=?,seen=0 WHERE scope=? AND status IN ('pending','queued')",(work.event_id,work.scope))
+            if owned:self.db.execute("UPDATE pipeline_work_inputs SET status='owned',owner=?,seen=0 WHERE scope=? AND status IN ('pending','queued','deferred')",(work.event_id,work.scope))
         if not owned:work.stop('scope_work_owned_elsewhere','blocked')
         return bool(owned)
 

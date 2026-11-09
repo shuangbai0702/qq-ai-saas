@@ -41,7 +41,7 @@ class Pipeline(unittest.TestCase):
   self.assertEqual(self.db.execute('SELECT status FROM pipeline_events WHERE scope=?',('group:22222',)).fetchone()[0],'unknown')
   deferred=self.bind(group='22222',source={'_hosted_deferred_group':{'event':'101'}});self.assertEqual(deferred.status,'duplicate');self.p.finish(deferred,{})
   self.assertEqual(self.db.execute('SELECT status FROM pipeline_events WHERE scope=?',('group:22222',)).fetchone()[0],'unknown')
-  allowed=self.bind(group='33333',source={'_hosted_deferred_group':{'event':'101'}});self.assertEqual(allowed.status,'received');self.assertFalse(allowed.observes_input)
+  allowed=self.bind(group='33333',source={'_hosted_deferred_group':{'event':'101'}});self.assertEqual(allowed.status,'received');self.assertTrue(allowed.observes_input);self.assertTrue(allowed.ledger_owner)
   self.assertEqual(self.db.execute('SELECT status FROM pipeline_events WHERE event=?',('103',)).fetchone()[0],'interrupted')
  def test_context_capabilities_preserve_platform_and_peer_ownership(self):
   ctx=ContextBuilder({'sender_id':'12345','owner':False},'real_QQ')

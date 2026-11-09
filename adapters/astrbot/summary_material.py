@@ -301,6 +301,30 @@ def coverage_digest(material):
     return 'v1:'+material['digest']+':'+hashlib.sha256(reply.encode()).hexdigest()
 
 
+def model_view(materials,turns):
+    """Summary-only view; the stored material and coverage proof stay exact.
+
+    A field may be omitted only when this very event and author already carry
+    its identical value in turns. Unknown or unequal representations survive.
+    """
+    by_event={}
+    for row in turns:
+        key=(row.get('event'),row.get('sender_id'))
+        by_event.setdefault(key,[]).append(row)
+    result=[]
+    for event,m in materials.items():
+        row={'event':event,'sender_id':m['subject'],'text':m['text'],'confirmed_reply':m.get('reply',''),
+             **({'native_outputs':m['native_outputs'],'input_settlement':m.get('input_settlement')} if m.get('version',0)>=3 else {'native_reply':m['native_reply']} if isinstance(m.get('native_reply'),str) and m['native_reply']!=m.get('reply','') else {}),
+             'image_ids':list(dict.fromkeys(hashlib.sha256(image.encode()).hexdigest() for image in m.get('images',[]))), 'complete':m['complete'],
+             **({'tools':[{'name':t['name'],'arguments':t['arguments'],'result':t['result']} for t in m['tools']]} if m.get('version',1)>=2 and m.get('tools') else {})}
+        matches=by_event.get((event,m['subject']),[])
+        if len(matches)==1:
+            if row['text']==matches[0].get('user'):row.pop('text')
+            if row['confirmed_reply']==matches[0].get('bot'):row.pop('confirmed_reply')
+        result.append(row)
+    return result
+
+
 async def enrich(db,scope,events,provider,is_current,metrics):
     """Interpret each distinct image once per batch, then use the existing summary.
 
