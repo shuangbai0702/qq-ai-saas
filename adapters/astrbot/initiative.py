@@ -16,7 +16,7 @@ PROACTIVE_PROMPT=PROACTIVE_ANCHOR+'\n{"kind":"proactive_moment","meaning":"Âπ≥Âè
 
 def quiet(cfg,now):
     b=cfg.get('behavior') or {};hour=datetime.fromtimestamp(now,ZONE).hour
-    start,end=b.get('quietStart',23),b.get('quietEnd',8)
+    start,end=b.get('quietStart',autonomy.BEHAVIOR_DEFAULTS['quietStart']),b.get('quietEnd',autonomy.BEHAVIOR_DEFAULTS['quietEnd'])
     return start<=hour<end if start<end else (hour>=start or hour<end) if start!=end else False
 
 def initialize(db):
@@ -52,7 +52,7 @@ def sweep_reason(db,cfg,now):
     This reports facts only: no owner quota is added and no default changes.
     """
     b=cfg.get('behavior') or {}
-    if b.get('enabled',True) is False or not cfg.get('proactive'):return {'reason':'disabled'}
+    if b.get('enabled',True) is False or not (cfg.get('proactive') or b.get('ownerContactEnabled',autonomy.BEHAVIOR_DEFAULTS['ownerContactEnabled'])):return {'reason':'disabled'}
     if quiet(cfg,now):return {'reason':'quiet_hours'}
     day=datetime.fromtimestamp(now,ZONE).date().isoformat()
     limit=b.get('dailyProactiveLimit',10)
@@ -60,24 +60,25 @@ def sweep_reason(db,cfg,now):
     budget={'used':int(total),'limit':limit}
     if total>=limit:return {'reason':'budget_exhausted','budget':budget,'owner':'not_considered_daily_budget_exhausted'}
     if autonomy.owner_delivery_candidate(db,cfg,now):return {'reason':'ok_owner','budget':budget}
-    if not companion_state.targets(db,cfg,now):return {'reason':'no_candidates','budget':budget,'owner':'not_due'}
+    if not cfg.get('proactive') or not companion_state.targets(db,cfg,now):return {'reason':'no_candidates','budget':budget,'owner':'not_due'}
     return {'reason':'no_candidates','budget':budget,'owner':'not_due'}
 
 
 def candidates(db,cfg,now,rng=random.random):
     b=cfg.get('behavior') or {};targets=set(companion_state.targets(db,cfg,now))
-    if b.get('enabled',True) is False or not cfg.get('proactive') or quiet(cfg,now):return []
+    if b.get('enabled',True) is False or not (cfg.get('proactive') or b.get('ownerContactEnabled',autonomy.BEHAVIOR_DEFAULTS['ownerContactEnabled'])) or quiet(cfg,now):return []
     day=datetime.fromtimestamp(now,ZONE).date().isoformat()
     total=db.execute('SELECT coalesce(sum(count),0) FROM deliveries WHERE day=?',(day,)).fetchone()[0]
     if total>=b.get('dailyProactiveLimit',10):return []
     owner_item=autonomy.owner_delivery_candidate(db,cfg,now)
     if owner_item:return [owner_item]
+    if not cfg.get('proactive'):return []
     if not targets:return []
     rows=db.execute('SELECT scope,subject,self_id,last_user,last_bot,last_attempt,unanswered,opted_out,last_text,last_output FROM contacts WHERE scope IN ('+','.join('?' for _ in targets)+') ORDER BY last_user DESC LIMIT 50',tuple(targets)).fetchall()
     result=[]
     for r in rows:
         scope,subject,self_id,last_user,last_bot,last_attempt,unanswered,opted_out,last_text,last_output=r
-        if b.get('ownerContactEnabled',False) and scope=='private:'+str(b.get('ownerUin') or ''):continue
+        if b.get('ownerContactEnabled',autonomy.BEHAVIOR_DEFAULTS['ownerContactEnabled']) and scope=='private:'+str(b.get('ownerUin') or ''):continue
         if scope.startswith('group:') and not autonomy.group_allowed(cfg,scope):continue
         selected=companion_state.select_member(db,cfg,scope,now,allow_without_topic=b.get('proactiveModelSchedule',False))
         automatic=scope not in b.get('proactiveTargets',[])
@@ -125,6 +126,7 @@ def candidates(db,cfg,now,rng=random.random):
 
 def reserve(db,cfg,item,now):
     day=datetime.fromtimestamp(now,ZONE).date().isoformat();b=cfg.get('behavior') or {}
+    if not b.get('enabled',True) or quiet(cfg,now) or not (b.get('ownerContactEnabled',autonomy.BEHAVIOR_DEFAULTS['ownerContactEnabled']) if item.get('owner_contact') else cfg.get('proactive')):return False
     # Reserve before enqueue. Failure consumes an attempt instead of retry-spending.
     with db:
         total=db.execute('SELECT coalesce(sum(count),0) FROM deliveries WHERE day=?',(day,)).fetchone()[0]
@@ -162,6 +164,59 @@ def release_unstarted(db,item,key):
 def split_text(text,limit=4):
     return split_messages(text,limit)
 
+async def resume_scope_input(core,id,lease,store,settings):
+    """Resume one durable unprocessed ingress, never an unknown external effect."""
+    # Protocol redelivery may already have a terminal original Work. Reconcile
+    # only queue bookkeeping; never manufacture a response or replay effects.
+    with store.db:
+        store.db.execute("""UPDATE pipeline_work_inputs AS i SET status=CASE WHEN EXISTS
+          (SELECT 1 FROM pipeline_events e WHERE e.scope=i.scope AND e.subject=i.subject AND e.event=i.event
+           AND e.status IN ('sent','silent','superseded','blocked','error','interrupted','combined') AND e.attempted=e.confirmed)
+          THEN 'settled_duplicate' ELSE 'blocked_unknown' END
+          WHERE i.status='queued' AND NOT EXISTS (SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope)
+          AND EXISTS (SELECT 1 FROM pipeline_events e WHERE e.scope=i.scope AND e.subject=i.subject AND e.event=i.event)""")
+        store.db.execute("""UPDATE pipeline_work_inputs AS i SET retry_count=coalesce(retry_count,0)+1,
+          status=CASE WHEN coalesce(retry_count,0)>=4 THEN 'blocked_recovery' ELSE 'pending' END
+          WHERE i.status='queued' AND coalesce(i.retry_at,0)<?
+          AND NOT EXISTS (SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope)
+          AND NOT EXISTS (SELECT 1 FROM pipeline_events e WHERE e.scope=i.scope AND e.subject=i.subject AND e.event=i.event)""",(time.time(),))
+        for failed_scope,failed_event,count in store.db.execute("SELECT scope,event,retry_count FROM pipeline_work_inputs WHERE status='blocked_recovery'").fetchall():
+            store.reflection.checkpoint_issue('bot_shared',0,'input_recovery:'+failed_scope+':'+failed_event,{'scope':failed_scope,'event':failed_event,'reason':'ingress_not_accepted','state':'blocked_recovery','retry_count':count,'external_replay':False})
+    row=store.db.execute("SELECT scope,event,payload,observed_at,retry_count FROM pipeline_work_inputs i WHERE status='pending' AND coalesce(retry_at,0)<=? AND NOT EXISTS (SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope) ORDER BY created LIMIT 1",(time.time(),)).fetchone()
+    if not row:return False
+    scope,event_id,payload,observed_at,retries=row
+    platform=next((p for p in core.platform_manager.get_insts() if p.meta().id==id),None)
+    if not platform or settings.get(id) is not lease or id in core.event_bus.stopped_platforms:return False
+    from aiocqhttp import Event
+    with store.db:
+        if not store.db.execute("UPDATE pipeline_work_inputs SET status='queued',retry_at=? WHERE scope=? AND event=? AND status='pending'",(time.time()+30,scope,event_id)).rowcount:return False
+    try:
+        raw=Event.from_payload(json.loads(payload));message=await asyncio.wait_for(platform.convert_message(raw),5)
+        if message is None or settings.get(id) is not lease:raise RuntimeError('scope_resume_stale')
+        # The SDK conversion stamps replay time. Reuse the first trusted
+        # observation instead; redelivery must not change protocol identity.
+        if observed_at is None:
+            from context_protocol import source
+            previous=store.db.execute('SELECT message FROM fishbot_shared_inputs WHERE scope=? AND event=?',(scope,event_id)).fetchone()
+            origin=source(json.loads(previous[0])) if previous else None
+            observed_at=origin.get('at') if origin else None
+        if not isinstance(observed_at,(int,float)) or observed_at<=0:
+            with store.db:store.db.execute("UPDATE pipeline_work_inputs SET status='blocked_evidence' WHERE scope=? AND event=?",(scope,event_id))
+            raise ValueError('scope_resume_original_time_missing')
+        message.timestamp=observed_at
+        platform.commit_event(platform.create_event(message))
+        return True
+    except BaseException as error:
+        cancelled=isinstance(error,asyncio.CancelledError)
+        retries=(retries or 0)+(not cancelled)
+        with store.db:
+            store.db.execute("UPDATE pipeline_work_inputs SET status=?,retry_count=?,retry_at=? WHERE scope=? AND event=? AND status='queued'",('blocked_recovery' if retries>=5 else 'pending',retries,time.time()+(min(600,15*2**min(retries,6)) if not cancelled else 0),scope,event_id))
+            blocked=store.db.execute('SELECT status FROM pipeline_work_inputs WHERE scope=? AND event=?',(scope,event_id)).fetchone()[0]
+            if blocked.startswith('blocked_'):
+                store.reflection.checkpoint_issue('bot_shared',0,'input_recovery:'+scope+':'+event_id,{'scope':scope,'event':event_id,'reason':type(error).__name__,'state':blocked,'retry_count':retries,'external_replay':False})
+        raise
+
+
 def start(core,settings,store,metrics):
     async def sweep():
         from aiocqhttp import Event
@@ -175,10 +230,12 @@ def start(core,settings,store,metrics):
                     brain=getattr(core,'_hosted_autonomous',None)
                     from bilibili_tools import resume_completion
                     st=store(id,s)
+                    if await resume_scope_input(core,id,s,st,settings):continue
                     if not st.active and await resume_completion(core,id,s,st,settings):continue
                     if brain and brain.owns(id):continue
                     cfg=s['config']
-                    if not cfg.get('proactive') and not (cfg.get('behavior') or {}).get('groupParticipationEnabled',False):continue
+                    b=cfg.get('behavior') or {}
+                    if not (cfg.get('proactive') or b.get('groupParticipationEnabled',autonomy.BEHAVIOR_DEFAULTS['groupParticipationEnabled']) or b.get('ownerContactEnabled',autonomy.BEHAVIOR_DEFAULTS['ownerContactEnabled'])):continue
                     st=store(id,s)
                     if st.active:continue
                     provider=core.provider_manager.inst_map.get('provider-'+id) or (core.provider_manager.inst_map.get('platform-model') if len(settings)==1 else None)

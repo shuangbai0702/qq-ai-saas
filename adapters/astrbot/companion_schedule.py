@@ -25,7 +25,7 @@ class Planner:
         return {'due':row[0],'topic':row[1],'allowed':bool(row[2])} if row else None
     def maybe_start(self,cfg,provider,current,event_var,metrics,now=None,lease=None):
         b=cfg.get('behavior') or {};now=time.time() if now is None else now
-        if self.closed or not current() or b.get('enabled',True) is False or not cfg.get('proactive') or not provider:return
+        if self.closed or not current() or b.get('enabled',True) is False or not (cfg.get('proactive') or b.get('ownerContactEnabled',autonomy.BEHAVIOR_DEFAULTS['ownerContactEnabled'])) or not provider:return
         # A broken credential must not turn every planning sweep into another
         # doomed request; per-bot backoff resumes on the next config apply (C).
         if autonomy.auth_paused(lease,'companion_plan'):return
@@ -37,7 +37,7 @@ class Planner:
         if owner:
             self.start_owner(cfg,provider,current,event_var,metrics,owner,now,lease=lease)
             return
-        if not b.get('proactiveModelSchedule'):return
+        if not cfg.get('proactive') or not b.get('proactiveModelSchedule'):return
         send_day=datetime.fromtimestamp(now,timezone(timedelta(hours=8))).date().isoformat()
         sent=self.db.execute('SELECT coalesce(sum(count),0) FROM deliveries WHERE day=?',(send_day,)).fetchone()[0]
         if sent>=b.get('dailyProactiveLimit',10):return
@@ -45,12 +45,16 @@ class Planner:
         if not targets:return
         rows=self.db.execute('SELECT scope,last_user,last_bot,last_attempt,last_text,last_output,unanswered,opted_out,subject FROM contacts WHERE scope IN ('+','.join('?' for _ in targets)+') AND NOT EXISTS(SELECT 1 FROM initiative_pauses p WHERE p.scope=contacts.scope AND p.until>?) AND NOT EXISTS(SELECT 1 FROM autonomy_group_inbox i WHERE i.scope=contacts.scope) ORDER BY last_user DESC LIMIT 50',(*targets,now)).fetchall()
         def needs_plan(row):
+            # A plan cannot be delivered before silence/attempt gates pass.
+            # Do not ask a model while known recent conversation already
+            # disqualifies this anchor, especially in a continuously busy group.
+            if now-row[1]<b.get('silenceSeconds',1800) or now-max(row[2:4])<b.get('proactiveIntervalSeconds',3600):return False
             if row[0].startswith('group:'):
                 clock=autonomy.GroupPresence(self.db).snapshot(row[0])
                 if row[1]<=clock[0] or now-max(clock[:2])<autonomy.cooldown_base(cfg,row[0],'group'):return False
             plan=self.plan(row[0],max(row[1:4]))
             return plan is None or not plan['allowed'] and now>=plan['due']
-        candidate=next((r for r in rows if r[0] in targets and not (b.get('ownerContactEnabled',False) and r[0]=='private:'+str(b.get('ownerUin') or '')) and (not r[0].startswith('group:') or autonomy.group_allowed(cfg,r[0])) and not r[7] and r[6]<b.get('maxUnanswered',4) and 300<=now-max(r[1:4])<=7*86400 and needs_plan(r)),None)
+        candidate=next((r for r in rows if r[0] in targets and not (b.get('ownerContactEnabled',autonomy.BEHAVIOR_DEFAULTS['ownerContactEnabled']) and r[0]=='private:'+str(b.get('ownerUin') or '')) and (not r[0].startswith('group:') or autonomy.group_allowed(cfg,r[0])) and not r[7] and r[6]<b.get('maxUnanswered',4) and 300<=now-max(r[1:4])<=7*86400 and needs_plan(r)),None)
         if not candidate:return
         day=int((now+8*3600)//86400);used=self.db.execute('SELECT count FROM companion_plan_budget WHERE day=?',(day,)).fetchone()
         limit=b.get('dailyPlanLimit',-1)
@@ -61,6 +65,7 @@ class Planner:
         subject=member['subject'] if member else candidate[8]
         def stale_reason(at,started=False):
             if self.closed or not current():return 'runtime_replaced'
+            if not cfg.get('proactive') or not b.get('enabled',True):return 'mechanism_disabled'
             row=self.db.execute('SELECT last_user,last_bot,last_attempt,opted_out FROM contacts WHERE scope=?',(scope,)).fetchone()
             if not row or row[3] or max(row[:3])!=anchor:return 'conversation_changed'
             if paused(self.db,scope,at):return 'contact_paused'
@@ -81,8 +86,8 @@ class Planner:
                         if group_version is not None:self.db.execute('INSERT INTO autonomy_groups(scope,checked) VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET checked=excluded.checked',(scope,now))
                     metrics['planRequests']=metrics.get('planRequests',0)+1
                     memory_version=decision_version(self.db,scope)
-                    recent=[{'sender_id':r[0],'text':r[1][:180],'at':r[2]} for r in self.db.execute('SELECT subject,question,at FROM memory_pending WHERE scope=? ORDER BY at DESC LIMIT 8',(scope,))] if b.get('memory',True) else []
-                    result=await asyncio.wait_for(provider.text_chat(**decision_request({'persona':str(cfg.get('systemPrompt') or ''),'owner_id':str(b.get('ownerUin') or ''),'memory':decision_memory(self.db,cfg,scope,subject,now),'companion':companion_state.context(self.db,cfg,scope,now),'current_time':datetime.fromtimestamp(now,timezone(timedelta(hours=8))).isoformat(),'last_user_text':candidate[4],'last_bot_text':candidate[5],'last_user_at':candidate[1],'last_bot_at':candidate[2] or None,'idle_seconds':max(0,int(now-anchor)),'recent_received':recent,'cooldown_base_seconds':autonomy.cooldown_base(cfg,scope,'plan'),'unanswered':candidate[6],'contact_subject':subject,'eligible_members':members},SYSTEM+autonomy.COOLDOWN_SYSTEM+' 群聊可额外输出contact_subject，从eligible_members的真实subject中选择最适合延续兴趣或未完话题的人；不能选择列表外的人。无需为了联系而强造话题，联系理由不成立就contact=false。'),contexts=[],func_tool=None),15)
+                    recent=[{'sender_id':r[0],'text':r[1][:180],'at':r[2],'source_event':r[3],'source_scope':scope} for r in self.db.execute('SELECT subject,question,at,event FROM memory_pending WHERE scope=? ORDER BY at DESC LIMIT 8',(scope,))] if b.get('memory',True) else []
+                    result=await asyncio.wait_for(provider.text_chat(**decision_request({'persona':str(cfg.get('systemPrompt') or ''),'owner_id':str(b.get('ownerUin') or ''),'scope':scope,'memory':decision_memory(self.db,cfg,scope,subject,now),'companion':companion_state.context(self.db,cfg,scope,now),'current_time':datetime.fromtimestamp(now,timezone(timedelta(hours=8))).isoformat(),'last_user_text':candidate[4],'last_bot_text':candidate[5],'last_user_at':candidate[1],'last_bot_at':candidate[2] or None,'idle_seconds':max(0,int(now-anchor)),'recent_received':recent,'cooldown_base_seconds':autonomy.cooldown_base(cfg,scope,'plan'),'unanswered':candidate[6],'contact_subject':subject,'eligible_members':members},SYSTEM+autonomy.COOLDOWN_SYSTEM+' 群聊可额外输出contact_subject，从eligible_members的真实subject中选择最适合延续兴趣或未完话题的人；不能选择列表外的人。无需为了联系而强造话题，联系理由不成立就contact=false。',reference_first=True),contexts=[],func_tool=None),15)
                     if self.closed or not current():discarded('runtime_replaced');return
                     metrics['lastPlanUsage']={'at':time.time(),**usage_evidence(result)}
                     reason=stale_reason(time.time(),started=True)
@@ -162,7 +167,7 @@ class Planner:
                     # Background owner checks are not time-sensitive group admission.
                     # Allow the configured chat provider to finish; real conversation
                     # or configuration changes still invalidate the result below.
-                    result=await asyncio.wait_for(provider.text_chat(**decision_request({'owner_id':owner,'persona':str(cfg.get('systemPrompt') or ''),'companion':companion_state.context(self.db,cfg,scope,now),'owner_memory':memory,'conversation_timing':timing,'cooldown_base_seconds':autonomy.cooldown_base(cfg,scope,'owner'),'last_user_text':contact[7][:500],'last_bot_text':contact[8][:500],'current_time':datetime.fromtimestamp(now,timezone(timedelta(hours=8))).isoformat()},autonomy.OWNER_SYSTEM+autonomy.COOLDOWN_SYSTEM),contexts=[],func_tool=None,max_tokens=autonomy.DECISION_OUTPUT_TOKENS,request_max_retries=1),60)
+                    result=await asyncio.wait_for(provider.text_chat(**decision_request({'owner_id':owner,'persona':str(cfg.get('systemPrompt') or ''),'scope':scope,'companion':companion_state.context(self.db,cfg,scope,now),'owner_memory':memory,'conversation_timing':timing,'cooldown_base_seconds':autonomy.cooldown_base(cfg,scope,'owner'),'last_user_text':contact[7][:500],'last_bot_text':contact[8][:500],'current_time':datetime.fromtimestamp(now,timezone(timedelta(hours=8))).isoformat()},autonomy.OWNER_SYSTEM+autonomy.COOLDOWN_SYSTEM,reference_first=True),contexts=[],func_tool=None,max_tokens=autonomy.DECISION_OUTPUT_TOKENS,request_max_retries=1),60)
                     if self.closed or not current():discarded('runtime_replaced');return
                     metrics['lastOwnerUsage']={'at':time.time(),**usage_evidence(result)}
                     if decision_version(self.db,scope)!=memory_version:

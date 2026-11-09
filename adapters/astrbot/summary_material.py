@@ -12,7 +12,7 @@ MAX_IMAGES_BYTES=4*1024*1024
 MAX_STORE_BYTES=24*1024*1024
 
 
-def project_history(messages,covered,scope,current_event):
+def project_history(messages,covered,scope,current_event,protect_latest=True):
     """Drop a covered user/assistant/tool block atomically, keeping current turn."""
     if not isinstance(messages,list) or not covered:return messages
     latest=max((i for i,m in enumerate(messages) if isinstance(m,dict) and m.get('role')=='user'),default=-1)
@@ -22,7 +22,7 @@ def project_history(messages,covered,scope,current_event):
             origin=source(message)
             identifier=model_json([origin['scope'],str(origin['event_id'])]) if origin and scope=='bot_shared' else str(origin['event_id']) if origin else ''
             proof=covered.get(identifier) if origin else None
-            dropping=bool(origin and proof and i!=latest and identifier!=str(current_event) and (scope=='bot_shared' or origin['scope']==scope) and str(origin['sender_id'])==proof['subject'] and digest(message)==proof['digest'])
+            dropping=bool(origin and proof and (not protect_latest or i!=latest) and identifier!=str(current_event) and (scope=='bot_shared' or origin['scope']==scope) and str(origin['sender_id'])==proof['subject'] and digest(message)==proof['digest'])
             # A user-material proof does not cover arbitrary intermediate tool
             # output. Keep the entire block unless that evidence is covered too;
             # a tool round retires only against its full bound v2 evidence.
@@ -36,10 +36,14 @@ def project_history(messages,covered,scope,current_event):
     return result
 
 
-def snapshots(messages,scope,signatures=None):
+def snapshots(messages,scope,signatures=None,db=None):
     """Capture model-observed material, including quoted text, bounded images
     and this system's own complete tool round-trips (version 2)."""
     result=[]
+    owners=None
+    if scope=='bot_shared' and db is not None:
+        from message_provenance import model_output_owners
+        owners=model_output_owners(db,scope,messages)
     for index,message in enumerate(messages if isinstance(messages,list) else []):
         origin=source(message)
         if not origin or scope!='bot_shared' and origin['scope']!=scope:continue
@@ -86,8 +90,15 @@ def snapshots(messages,scope,signatures=None):
         reply='\n'.join(replies)
         if len(reply)>MAX_TEXT:complete=False;reply=reply[:MAX_TEXT]
         identifier=model_json([origin['scope'],str(origin['event_id'])]) if scope=='bot_shared' else str(origin['event_id'])
-        item={'version':2 if tools else 1,'event':identifier,'subject':str(origin['sender_id']),'scope':scope,'text':text,'reply':reply,'native_reply':reply if observed_reply else None,'images':images,'complete':complete,'digest':(signatures or {}).get(identifier,digest(message))}
+        item={'version':2 if tools else 1,'event':identifier,'subject':str(origin['sender_id']),'scope':scope,'text':text,'reply':'' if scope=='bot_shared' else reply,'native_reply':reply if observed_reply else None,'images':images,'complete':complete,'digest':(signatures or {}).get(identifier,digest(message))}
         if tools:item['tools']=tools
+        if owners is not None:
+            from message_provenance import model_input_settlement
+            item['version']=3
+            item['input_settlement']=model_input_settlement(db,scope,identifier)
+            item['native_outputs']=[{'role':following['role'],'owner':owners.get((identifier,offset)),
+                'text':following.get('content') if isinstance(following.get('content'),str) else '\n'.join(p['text'] for p in following.get('content') or [] if isinstance(p,dict) and p.get('type')=='text' and isinstance(p.get('text'),str))}
+                for offset,following in enumerate(block,1) if isinstance(following,dict) and following.get('role') in ('assistant','tool')]
         result.append(item)
     return result
 
@@ -118,9 +129,10 @@ def valid_material(item,scope):
     system's own complete tool round-trip. Unknown versions cannot retire
     history."""
     version=item.get('version',0) if isinstance(item,dict) else None
-    if not isinstance(item,dict) or type(version) is not int or version not in (0,1,2) or item.get('scope')!=scope:return False
+    if not isinstance(item,dict) or type(version) is not int or version not in (0,1,2,3) or item.get('scope')!=scope:return False
     allowed={'version','event','subject','scope','text','reply','native_reply','images','complete','digest'}
     if version>=2:allowed=allowed|{'tools'}
+    if version>=3:allowed=allowed|{'native_outputs','input_settlement'}
     if set(item)-allowed:return False
     if type(item.get('complete')) is not bool or not isinstance(item.get('digest'),str) or not re.fullmatch(r'[0-9a-f]{64}',item['digest']):return False
     if not isinstance(item.get('text'),str) or len(item['text'])>MAX_TEXT or not isinstance(item.get('reply',''),str) or len(item.get('reply',''))>MAX_TEXT:return False
@@ -129,7 +141,7 @@ def valid_material(item,scope):
     if not origin:return False
     identifier=model_json([origin['scope'],str(origin['event_id'])]) if scope=='bot_shared' else str(origin['event_id'])
     if item.get('event')!=identifier or item.get('subject')!=str(origin['sender_id']) or scope!='bot_shared' and origin['scope']!=scope:return False
-    if version>=2:
+    if version==2 or version>=3 and item.get('tools'):
         tools=item.get('tools')
         # Version 2 exists only to prove a complete tool round-trip; an empty
         # or malformed tools field stays version 1.
@@ -140,14 +152,57 @@ def valid_material(item,scope):
             if not tool['id'] or not tool['name'] or len(tool['id'])>256 or len(tool['name'])>128:return False
             if len(tool['arguments'])>TOOL_ARGUMENT_CHARS or len(tool['result'])>TOOL_RESULT_CHARS:return False
         if sum(len(t['arguments'])+len(t['result']) for t in tools)>MAX_TEXT:return False
+    if version>=3:
+        def valid_settlement(value):
+            return value is None or isinstance(value,dict) and set(value)=={'status','attempted','confirmed','planned','confirmed_messages'} and isinstance(value['status'],str) and all(type(value[k]) is int and value[k]>=0 for k in ('attempted','confirmed','planned','confirmed_messages'))
+        if not valid_settlement(item.get('input_settlement')):return False
+        outputs=item.get('native_outputs')
+        if not isinstance(outputs,list):return False
+        if sum(len(o.get('text','')) for o in outputs if isinstance(o,dict) and isinstance(o.get('text'),str))>MAX_TEXT*2:return False
+        for output in outputs:
+            if not isinstance(output,dict) or set(output)!={'role','owner','text'} or output['role'] not in ('assistant','tool') or not isinstance(output['text'],str):return False
+            owner=output['owner']
+            if owner is not None:
+                if not isinstance(owner,dict) or set(owner)!={'source_scope','event_id','sender_id','settlement'}:return False
+                # Work subject 0 is the existing platform-service principal,
+                # not a QQ person and never an owner authorization assertion.
+                if source({'role':'user','content':SOURCE+model_json({'scope':owner['source_scope'],'event_id':owner['event_id'],'sender_id':'10000' if owner['sender_id']=='0' else owner['sender_id']})+'\n'}) is None:return False
+                settlement=owner['settlement']
+                if not valid_settlement(settlement):return False
     images=item.get('images')
     return isinstance(images,list) and all(isinstance(value,str) and value.startswith('data:image/') for value in images) and sum(len(value) for value in images)<=MAX_IMAGES_BYTES
+
+
+def coverage_eligible(item,scope):
+    """A physical block may contain another Work's draft, never its receipt."""
+    if not valid_material(item,scope) or not item.get('complete'):return False
+    if item.get('version',1)<3:
+        return bool(item.get('reply')) or not item.get('native_reply') or scope=='bot_shared' and item.get('native_reply','').strip()=='[NO_REPLY]'
+    settlement=item.get('input_settlement')
+    if not isinstance(settlement,dict) or settlement.get('status') not in ('sent','silent','superseded','blocked','error','interrupted') or settlement.get('attempted')!=settlement.get('confirmed'):return False
+    if settlement['status']=='sent' and (not settlement['confirmed'] or settlement['planned']!=settlement['confirmed_messages']):return False
+    for output in item['native_outputs']:
+        owner=output['owner'];settlement=owner.get('settlement') if owner else None
+        if not settlement or settlement['status'] not in ('sent','silent','superseded','blocked','error','interrupted'):return False
+        if settlement['attempted']!=settlement['confirmed']:return False
+        if settlement['status']=='sent' and (not settlement['confirmed'] or settlement['planned']!=settlement['confirmed_messages']):return False
+    return True
 
 
 def remember(db,scope,materials):
     used=db.execute('SELECT COALESCE(sum(length(CAST(material AS BLOB))),0) FROM memory_round_material').fetchone()[0]
     for item in materials or []:
         if not valid_material(item,scope):continue
+        item=json.loads(json.dumps(item,ensure_ascii=False))
+        # Apply the same storage boundary before both insert and v3 refresh.
+        # Refresh returns early below; it must not bypass credential removal.
+        redact=lambda value:re.sub(r'(?i)\bsk-[A-Za-z0-9_-]{12,}|Bearer\s+\S+','[凭据已移除]',value)
+        for field in ('text','reply','native_reply'):
+            if isinstance(item.get(field),str):item[field]=redact(item[field])
+        if isinstance(item.get('tools'),list):
+            item['tools']=[{**tool,'arguments':redact(tool['arguments']),'result':redact(tool['result'])} for tool in item['tools']]
+        for output in item.get('native_outputs',[]):
+            output['text']=redact(output['text'])
         row=db.execute('SELECT subject FROM memory_rounds WHERE scope=? AND event=?',(scope,item.get('event'))).fetchone()
         if not row and scope=='bot_shared':
             # An observed silent/background message needs retirement evidence
@@ -160,6 +215,20 @@ def remember(db,scope,materials):
             except (ValueError,TypeError):continue
             if not valid_material(prior,scope):continue
             if prior.get('digest')!=item.get('digest'):continue
+            # Enriched ownership may only replace metadata for the exact same
+            # observed physical block, never reinterpret a changed old draft.
+            prior_outputs=prior.get('native_outputs',[]);next_outputs=item.get('native_outputs',[])
+            def raw_outputs(outputs):return [{k:v for k,v in output.items() if k!='owner'} for output in outputs]
+            same_block=prior.get('native_reply')==item.get('native_reply') and prior.get('tools')==item.get('tools')
+            extended_block=prior.get('version')==3 and raw_outputs(prior_outputs)==raw_outputs(next_outputs[:len(prior_outputs)]) and (prior.get('tools') or [])==(item.get('tools') or [])[:len(prior.get('tools') or [])]
+            if item.get('version')==3 and (same_block or extended_block):
+                item={**item,'reply':prior.get('reply','') or item.get('reply','')}
+                previous_size=len(previous[0].encode())
+                encoded=json.dumps(item,ensure_ascii=False,separators=(',',':'))
+                if used-previous_size+len(encoded.encode())<=MAX_STORE_BYTES:
+                    db.execute('UPDATE memory_round_material SET material=? WHERE scope=? AND event=?',(encoded,scope,item['event']))
+                    used+=len(encoded.encode())-previous_size
+                continue
             fill_reply=not prior.get('reply') and item.get('reply')
             fill_native=prior.get('native_reply') is None and item.get('native_reply') is not None
             # A later complete capture of the same immutable event may restore
@@ -179,14 +248,6 @@ def remember(db,scope,materials):
                       **({'images':item['images']} if fill_complete and item.get('images') else {})}
                 if fill_complete:item['complete']=True
                 elif fill_native:item['complete']=prior['complete'] and item['complete']
-        item=dict(item)
-        item['text']=re.sub(r'(?i)\bsk-[A-Za-z0-9_-]{12,}|Bearer\s+\S+','[凭据已移除]',item.get('text',''))
-        item['reply']=re.sub(r'(?i)\bsk-[A-Za-z0-9_-]{12,}|Bearer\s+\S+','[凭据已移除]',item.get('reply',''))
-        if isinstance(item.get('native_reply'),str):item['native_reply']=re.sub(r'(?i)\bsk-[A-Za-z0-9_-]{12,}|Bearer\s+\S+','[凭据已移除]',item['native_reply'])
-        if isinstance(item.get('tools'),list):
-            item['tools']=[{**tool,'arguments':re.sub(r'(?i)\bsk-[A-Za-z0-9_-]{12,}|Bearer\s+\S+','[凭据已移除]',tool['arguments']),
-                            'result':re.sub(r'(?i)\bsk-[A-Za-z0-9_-]{12,}|Bearer\s+\S+','[凭据已移除]',tool['result'])}
-                           for tool in item['tools'] if isinstance(tool,dict)]
         available=used-(len(previous[0].encode()) if previous else 0)
         encoded=json.dumps(item,ensure_ascii=False,separators=(',',':'))
         if available+len(encoded.encode())>MAX_STORE_BYTES:
@@ -199,7 +260,7 @@ def remember(db,scope,materials):
 
 
 def coverage(db,scope,events=None):
-    query='SELECT c.event,c.subject,c.digest FROM memory_summary_coverage c JOIN memory_summaries s ON s.id=c.summary_id WHERE c.scope=?'
+    query="SELECT c.event,c.subject,c.digest FROM memory_summary_coverage c JOIN memory_summaries s ON s.id=c.summary_id LEFT JOIN memory_summary_levels l ON l.id=s.id WHERE c.scope=? AND coalesce(l.kind,'small')<>'pending_small'"
     if events is None:rows=db.execute(query,(scope,)).fetchall()
     else:
         identifiers=list(dict.fromkeys(str(event) for event in events));rows=[]
@@ -212,7 +273,11 @@ def coverage(db,scope,events=None):
         # migration and no unverified upgrade of legacy user-only coverage.
         match=re.fullmatch(r'v1:([0-9a-f]{64}):([0-9a-f]{64})',signature) if isinstance(signature,str) else None
         match2=re.fullmatch(r'v2:([0-9a-f]{64}):([0-9a-f]{64}):([0-9a-f]{64})',signature) if isinstance(signature,str) else None
-        if match2:
+        match3=re.fullmatch(r'v3:([0-9a-f]{64}):([0-9a-f]{64}):(none|[0-9a-f]{64}):([0-9a-f]{64})',signature) if isinstance(signature,str) else None
+        if match3:
+            result[event]={'subject':subject,'digest':match3[1],'reply_digest':match3[2],'version':3,'settlement_digest':match3[4]}
+            if match3[3]!='none':result[event]['tools_digest']=match3[3]
+        elif match2:
             result[event]={'subject':subject,'digest':match2[1],'reply_digest':match2[2],'tools_digest':match2[3]}
         elif match:
             result[event]={'subject':subject,'digest':match[1],'reply_digest':match[2]}
@@ -225,6 +290,10 @@ def coverage_digest(material):
     if not valid_material(material,material.get('scope')) or not material['complete']:raise ValueError('incomplete_summary_proof')
     reply=material.get('native_reply')
     if reply is None:reply=material.get('reply','')
+    if material.get('version',1)>=3:
+        if not coverage_eligible(material,material['scope']):raise ValueError('unsettled_summary_proof')
+        evidence={'input':material['input_settlement'],'outputs':[o['owner'] for o in material['native_outputs']]}
+        return 'v3:'+material['digest']+':'+hashlib.sha256(reply.encode()).hexdigest()+':'+(tools_digest(material['tools']) if material.get('tools') else 'none')+':'+hashlib.sha256(model_json(evidence).encode()).hexdigest()
     if material.get('version',1)>=2 and material.get('tools'):
         # The tool round-trip is bound into the proof: a coverage row can only
         # retire the exact block whose tool calls and results were summarized.
@@ -360,6 +429,8 @@ def derive_claims(scope,payload,materials,corrections,data=None):
             # 800-character display row. Native-only replies prove no delivery.
             if role=='user':return observed['text'].split('\n',1)[-1]
             if observed.get('reply'):return observed['reply']
+            if observed.get('version',1)>=3:
+                return '\n'.join(output['text'] for output in observed['native_outputs'] if output['role']=='assistant' and output['owner'] and model_json([output['owner']['source_scope'],str(output['owner']['event_id'])])==str(event))
             if isinstance(observed.get('native_reply'),str) and observed['native_reply'].strip():return observed['native_reply']
         return str(row.get(role,'') or '')
     claims=[]
@@ -498,17 +569,14 @@ def bound_claim_views(items,budget=1200,query=''):
     """One measured evidence budget AFTER rolling, recall and core are joined.
     Skip oversized entries without preventing smaller evidence from fitting.
     Only the request view changes; stored claims and history are untouched."""
-    from hosted_memory import tokens
-    terms=tokens(query);candidates=[];seen=set();used=2
+    candidates=[];seen=set();used=2
     for item in items:
         if not isinstance(item,dict):continue
         claims=item.pop('protected_claims',None) or []
         for claim in claims:
             if not isinstance(claim,dict) or not claim.get('id'):continue
             candidates.append((item,claim_view(claim)))
-    # Reuse lexical recall scoring only for choosing the bounded request view;
-    # this never determines importance, truth or storage protection.
-    candidates.sort(key=lambda pair:-len(terms & tokens(pair[1].get('text','')+' '+pair[1].get('about',''))))
+    # Stable source order: a question cannot dynamically select summary evidence.
     for item,view in candidates:
         if view['id'] in seen:continue
         size=len(json.dumps(view,ensure_ascii=False,separators=(',',':')))+(1 if seen else 0)

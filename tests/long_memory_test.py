@@ -2,7 +2,7 @@ import asyncio,json,os,sqlite3,sys,unittest,contextvars,time
 from pathlib import Path
 from types import SimpleNamespace as NS
 from unittest.mock import patch
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters'/'astrbot'))
+sys.path[:0]=[str(Path(__file__).resolve().parents[1]/'adapters'/'astrbot'),str(Path(__file__).resolve().parents[1]/'references'/'astrbot')]
 from memory_reflection import Reflection,invalidate
 from hosted_memory import ScopedMemory
 from data_admin import run
@@ -31,57 +31,31 @@ class LongMemory(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.r.epoch(),1)
     async def recall(self,query='drink',current=lambda:True):
         return await self.r.semantic_recall('group:1',query,self.cfg,self.provider,current,{})
-    async def test_full_bounded_library_progressive_and_scoped(self):
+    async def test_fixed_basis_is_bounded_without_indexing_library(self):
         self.summary('tea');self.summary('private secret','group:2')
-        for i in range(998):self.summary('unrelated '+str(i))
-        # The oldest relevant summary is outside the former 100-row window.
-        for i in range(63):result=await self.recall()
-        self.assertEqual(result[0]['summary'],'tea')
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_vectors').fetchone()[0],999)
-        self.assertTrue(all(len(c['input'])<=17 for c in self.calls))
-        self.assertFalse(any('private secret' in c['input'] for c in self.calls))
-        await self.recall();self.assertEqual(len(self.calls[-1]['input']),1)
-        self.summary('overflow');Reflection(self.db).close()
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1000)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_vectors WHERE summary_id NOT IN (SELECT id FROM memory_summaries)').fetchone()[0],0)
-    async def test_unindexed_lexical_and_model_spaces(self):
-        self.summary('rare-topic');
-        for i in range(120):self.summary('tea')
-        result=await self.recall('rare-topic');self.assertEqual(result[0]['summary'],'rare-topic')
-        await self.recall();self.assertEqual(len(self.calls[-1]['input']),17)
-        self.cfg['embeddingModel']='other';await self.recall();self.assertEqual(len(self.calls[-1]['input']),17)
-        self.assertEqual(self.r.recall('group:1','rare-topic')[0]['summary'],'rare-topic')
-    async def test_independent_guarded_real_sdk_and_owned_cleanup(self):
-        import httpx,model_egress
-        self.summary('tea');requests=[];clients=[];configs=[]
-        async def handler(request):
-            requests.append(request);data=json.loads(request.content)
-            return httpx.Response(200,json={'data':[{'index':i,'embedding':[1.,0.],'object':'embedding'} for i,_ in enumerate(data['input'])],'model':data['model'],'object':'list','usage':{'prompt_tokens':1,'total_tokens':1}})
-        def guarded(config):
-            configs.append(config);client=httpx.AsyncClient(transport=httpx.MockTransport(handler),follow_redirects=False);clients.append(client);return client
-        self.cfg['embeddingBaseUrl']='http://localhost:11434/v1'
-        with patch.object(model_egress,'client',side_effect=guarded):
-            self.assertTrue(await self.recall())
-            self.cfg['embeddingBaseUrl']='https://embedding.example/v1';self.assertTrue(await self.recall())
-        self.assertEqual(configs,[{'api_base':'http://localhost:11434/v1'},{'api_base':'https://embedding.example/v1'}])
-        self.assertEqual(str(requests[0].url),'http://localhost:11434/v1/embeddings')
-        self.assertEqual(requests[0].headers['authorization'],'Bearer test-bot-key')
-        self.assertTrue(all(c.is_closed for c in clients));self.assertFalse(self.calls)
-        self.assertEqual(len(json.loads(requests[-1].content)['input']),2)
-        self.assertNotIn('test-bot-key',str(list(self.db.iterdump())))
-    async def test_independent_failure_and_cancel_close_http_owner(self):
-        import httpx,model_egress
+        for i in range(20):self.summary('unrelated '+str(i))
+        result=await self.recall()
+        self.assertEqual([item['summary'] for item in result],['tea','unrelated 0'])
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_vectors').fetchone()[0],0)
+        self.assertFalse(self.calls)
+    async def test_query_and_embedding_config_cannot_change_summary_basis(self):
+        self.summary('rare-topic');self.summary('tea')
+        first=await self.recall('rare-topic');self.cfg['embeddingModel']='other'
+        self.assertEqual(await self.recall('completely different'),first)
+        self.assertEqual(self.r.recall('group:1','tea'),first)
+        self.assertFalse(self.calls)
+    async def test_summary_reader_never_constructs_independent_embedding_client(self):
+        import model_egress
         self.summary('tea');self.cfg['embeddingBaseUrl']='https://embedding.example/v1'
-        entered=asyncio.Event();release=asyncio.Event();clients=[]
-        async def handler(request):entered.set();await release.wait();return httpx.Response(503)
-        def guarded(config):
-            client=httpx.AsyncClient(transport=httpx.MockTransport(handler));clients.append(client);return client
-        with patch.object(model_egress,'client',side_effect=guarded):
-            task=asyncio.create_task(self.recall());await entered.wait();task.cancel()
-            with self.assertRaises(asyncio.CancelledError):await task
-            self.assertTrue(clients[-1].is_closed);self.assertFalse(self.r.embedding_lock.locked())
-            release.set();self.assertTrue(await self.recall())
-        self.assertEqual(len(clients),2);self.assertTrue(all(c.is_closed for c in clients))
+        with patch.object(model_egress,'client',side_effect=AssertionError('unexpected embedding client')):
+            self.assertTrue(await self.recall())
+        self.assertFalse(self.calls)
+    async def test_summary_read_has_no_awaited_embedding_resource(self):
+        self.summary('tea')
+        async def unsupported(**kw):raise AssertionError('unexpected embedding')
+        self.client.embeddings.create=unsupported
+        self.assertTrue(await self.recall())
+        self.assertFalse(self.r.embedding_lock.locked())
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_vectors').fetchone()[0],0)
     async def test_real_private_origin_policy(self):
         import model_egress,httpx
@@ -96,30 +70,14 @@ class LongMemory(unittest.IsolatedAsyncioTestCase):
         with patch.dict(os.environ,{'FISHBOT_MODEL_ALLOWED_PRIVATE_ORIGINS':'http://localhost:11434'}):
             client=model_egress.client({'api_base':'http://localhost:11434/v1'})
             self.assertEqual(client._transport._pool._network_backend.trusted,('localhost',11434));await client.aclose()
-    async def test_late_delete_correct_stop_replace_and_cancel(self):
-        for mode in ('delete','correct','stop','replace','cancel'):
-            self.summary('tea');self.facts.remember('group:1','123','name','old','e',1);self.db.commit()
-            entered=asyncio.Event();release=asyncio.Event();valid=[True]
-            async def delayed(**kw):
-                entered.set();await release.wait()
-                return NS(data=[NS(index=i,embedding=[1.,0.]) for i in range(len(kw['input']))])
-            self.client.embeddings.create=delayed
-            task=asyncio.create_task(self.recall(current=lambda:valid[0]));await entered.wait()
-            if mode=='delete':
-                row=self.db.execute('SELECT id,updated FROM memory_summaries ORDER BY id DESC LIMIT 1').fetchone()
-                self.assertTrue(run(Path('unused'),{'action':'forget_summary','scope':'group:1','id':row[0],'expectedUpdated':row[1]},self.db)['ok'])
-            elif mode=='correct':
-                self.assertTrue(run(Path('unused'),{'action':'edit_fact','scope':'group:1','subject':'123','name':'name','expectedVersion':1,'value':'new'},self.db)['ok'])
-            elif mode=='stop':self.r.close()
-            elif mode=='replace':valid[0]=False
-            else:task.cancel()
-            release.set()
-            if mode=='cancel':
-                with self.assertRaises(asyncio.CancelledError):await task
-            else:self.assertEqual(await task,[])
-            self.assertEqual(self.db.execute('SELECT count(*) FROM memory_vectors').fetchone()[0],0)
-            self.assertFalse(self.r.embedding_lock.locked())
-            self.db.execute('DELETE FROM facts');self.db.execute('DELETE FROM memory_summaries');self.db.commit();self.r=Reflection(self.db)
+    async def test_current_and_closed_summary_reader_fences(self):
+        self.summary('tea')
+        self.assertEqual(await self.recall(current=lambda:False),[])
+        invalidate(self.db,'group:1');self.db.commit()
+        self.assertEqual(await self.recall(),[])
+        self.summary('new evidence');self.r.close()
+        self.assertEqual(await self.recall(),[])
+        self.assertFalse(self.calls)
     async def test_late_reflection_cannot_restore_deleted_sources(self):
         entered=asyncio.Event();release=asyncio.Event()
         async def text_chat(**kw):entered.set();await release.wait();return NS(completion_text='真实话题摘要')
@@ -168,7 +126,8 @@ class FactSemantics(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(self.db.execute('SELECT count(*) FROM fact_vectors').fetchone()[0],200)
         self.db.execute('DELETE FROM memory_embedding_budget');self.db.commit();self.cfg['dailyEmbeddingLimit']=1
         self.summary('tea');await self.recall();before=len(self.calls)
-        await self.fact_recall();self.assertEqual(len(self.calls),before)
+        await self.fact_recall();self.assertEqual(len(self.calls),before+1)
+        before=len(self.calls)
         self.cfg['dailyEmbeddingLimit']=0;await self.fact_recall();self.assertEqual(len(self.calls),before)
         self.db.execute('DELETE FROM memory_embedding_budget');self.db.commit();self.cfg['dailyEmbeddingLimit']=1
         await self.fact_recall();before=len(self.calls);await self.recall();self.assertEqual(len(self.calls),before)

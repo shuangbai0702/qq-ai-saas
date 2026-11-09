@@ -378,7 +378,7 @@ class SocialContract(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('rhythm',self.st.participation.context('group:55555',now=now))
         self.assertTrue(self.st.participation.continuing('group:55555','接话','12345678',now,120))
         self.assertFalse(self.st.participation.continuing('group:66666','接话','12345678',now,120))
-    async def test_one_turn_reuses_remote_query_across_fact_and_summary(self):
+    async def test_fact_embedding_remains_available_without_summary_embedding_calls(self):
         now=time.time();calls=[]
         self.st.memory.remember('private:12345678','12345678','饮料','红茶','fact',now)
         self.st.db.execute("INSERT INTO memory_summaries(scope,text,sources,updated) VALUES('private:12345678','喝茶的真实对话','[]',?)",(now,));self.st.db.commit()
@@ -387,8 +387,11 @@ class SocialContract(unittest.IsolatedAsyncioTestCase):
         cfg={'memory':True,'memorySemantic':True,'embeddingModel':'fixture','dailyEmbeddingLimit':100}
         async with EmbeddingTurn():
             await self.st.memory.semantic_recall('private:12345678','12345678','茶',now,cfg,provider,lambda:True)
-            await self.st.reflection.semantic_recall('private:12345678','茶',cfg,provider,lambda:True,{},subject='12345678')
-        self.assertEqual(sum(x=='茶' for inputs in calls for x in inputs),1);self.assertEqual(len(calls),2)
+            summaries=await self.st.reflection.semantic_recall('private:12345678','茶',cfg,provider,lambda:True,{},subject='12345678')
+        self.assertEqual(sum(x=='茶' for inputs in calls for x in inputs),1);self.assertEqual(len(calls),1)
+        self.assertEqual(summaries,self.st.reflection.foundation('private:12345678'))
+        self.assertNotIn('喝茶的真实对话',[x for inputs in calls for x in inputs])
+        self.assertEqual(self.st.reflection.foundation('private:12345678')[0]['summary'],'喝茶的真实对话')
 
     async def test_embedding_queue_expiry_does_not_charge_a_remote_request(self):
         provider=NS(client=NS(base_url='https://embedding.example/v1'));metrics={}

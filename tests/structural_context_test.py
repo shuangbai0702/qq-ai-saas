@@ -83,11 +83,14 @@ class DurableCapacity(unittest.TestCase):
             p=j.prepare([m,{'role':'user','content':READONLY_CURRENT+'\n'+model_json({'recent_messages':[]})}],1)
             self.assertTrue(j.stage_candidate(p))
             size=db.execute('SELECT length(cast(payload AS BLOB)) FROM fishbot_readonly_journals').fetchone()[0]
-            self.assertGreater(size,2*1024*1024+256000)
-            self.assertLess(size,MAX_PERSISTED_JOURNAL_BYTES)
+            blob_size=db.execute('SELECT sum(length(data)) FROM fishbot_readonly_journal_blobs').fetchone()[0]
+            self.assertLess(size,10000)
+            self.assertGreater(blob_size,1300000)
+            self.assertLess(size+blob_size,MAX_PERSISTED_JOURNAL_BYTES)
             restored=ReadonlyJournal(db,'private:12345678')
             self.assertIsNone(restored.recovery_error)
             self.assertEqual(restored.last.wire,p.wire)
+            self.assertEqual(model_json(restored.last.wire),model_json(p.wire))
         finally:db.close()
 
 

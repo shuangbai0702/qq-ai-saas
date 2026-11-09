@@ -9,8 +9,11 @@ import contextvars
 import json
 import re
 import time
+from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from persona_presence_core import ParticipationDecision, normalize_decision_payload
+
+BEHAVIOR_DEFAULTS=json.loads((Path(__file__).resolve().parents[2]/'packages/contracts/behavior-runtime-defaults.json').read_text(encoding='utf-8'))
 
 # Pinned AstrBot ignores per-call max_tokens in text_chat's **kwargs. The
 # hosted payload hook reads this task-local limit without mutating a provider
@@ -130,7 +133,7 @@ def record_decision(db,cfg,scope,event,data,reply,now,kind):
 def group_allowed(cfg, scope):
     b = cfg.get('behavior') or {}
     group = scope[6:] if scope.startswith('group:') else ''
-    return bool(b.get('enabled', True) and b.get('groupParticipationEnabled', False)
+    return bool(b.get('enabled', True) and b.get('groupParticipationEnabled', BEHAVIOR_DEFAULTS['groupParticipationEnabled'])
                 and group and group in b.get('groupParticipationGroups', [])
                 and (not cfg.get('groups') or group in cfg['groups']))
 
@@ -308,19 +311,16 @@ class GroupPresence:
             if not text:
                 continue
             recent.append({'sender_id': str(message.get('sender_id', '')), 'text': text,
-                           **{k:message[k] for k in ('at','source_event','role','sender_name','mentions','reply_to') if k in message}})
+                           **{k:message[k] for k in ('at','source_scope','source_event','role','sender_name','mentions','reply_to','attachments','images','media','content','parts') if k in message}})
             remaining -= len(text)
             if remaining <= 0:
                 break
         from bot_pipeline import decision_memory,decision_version
         from context_transport import decision_request
         memory_version=decision_version(self.db,scope)
-        # The same real event appears once: dynamic incoming window here,
-        # confirmed own replies and older context in the shared projection.
+        # Keep both observations until the common projector establishes exact
+        # attributed body/media equivalence; windows may truncate differently.
         dialogue=dict(dialogue or {})
-        seen={str(m['source_event']) for m in recent if m.get('source_event')}
-        if isinstance(dialogue.get('timeline'),list):
-            dialogue['timeline']=[m for m in dialogue['timeline'] if m.get('role')=='self' or str(m.get('source_event','')) not in seen]
         payload = {'persona': str(cfg.get('systemPrompt') or ''),'owner_id':str(b.get('ownerUin') or ''),
                    'current_time':datetime.fromtimestamp(now,timezone(timedelta(hours=8))).isoformat(),
                    'memory':decision_memory(self.db,cfg,scope,str(messages[-1].get('sender_id','')),now),
@@ -330,7 +330,7 @@ class GroupPresence:
         with auxiliary_scope(provider,'group_presence',event_id,scope):
             started = time.monotonic(); token = event_var.set(None); limit_token = decision_token_limit.set(DECISION_OUTPUT_TOKENS)
             try:
-                result = await asyncio.wait_for(provider.text_chat(**decision_request(payload,GROUP_SYSTEM+COOLDOWN_SYSTEM), contexts=[], func_tool=None, max_tokens=DECISION_OUTPUT_TOKENS, request_max_retries=1), b.get('groupDecisionTimeoutSeconds', 10))
+                result = await asyncio.wait_for(provider.text_chat(**decision_request(payload,GROUP_SYSTEM+COOLDOWN_SYSTEM,reference_first=True), contexts=[], func_tool=None, max_tokens=DECISION_OUTPUT_TOKENS, request_max_retries=1), b.get('groupDecisionTimeoutSeconds', 10))
                 data=parse_object(result.completion_text)
                 model_cooldown(data)  # Validate legacy fields before discarding.
                 # Group timing is program-owned; tolerate old model fields
@@ -369,7 +369,7 @@ class GroupPresence:
 def owner_state(db, cfg, now):
     """Return a known owner's real private contact; never invent chat evidence."""
     b = cfg.get('behavior') or {}; owner = str(b.get('ownerUin') or '')
-    if not cfg.get('proactive') or not b.get('ownerContactEnabled', False) or not re.fullmatch(r'\d{5,20}', owner):
+    if not b.get('enabled',True) or not b.get('ownerContactEnabled', BEHAVIOR_DEFAULTS['ownerContactEnabled']) or not re.fullmatch(r'\d{5,20}', owner):
         return None
     scope = 'private:'+owner
     contact = db.execute('SELECT subject,self_id,last_user,last_bot,last_attempt,unanswered,opted_out,last_text,last_output FROM contacts WHERE scope=?', (scope,)).fetchone()
@@ -419,7 +419,7 @@ def owner_delivery_candidate(db, cfg, now):
 def owner_delivery_current(db, cfg, item, now):
     from initiative import quiet, paused
     b=cfg.get('behavior') or {}
-    if not cfg.get('proactive') or not b.get('ownerContactEnabled',False) or not b.get('enabled',True) or quiet(cfg,now):return False
+    if not b.get('ownerContactEnabled',BEHAVIOR_DEFAULTS['ownerContactEnabled']) or not b.get('enabled',True) or quiet(cfg,now):return False
     owner=str(b.get('ownerUin') or '')
     if item.get('scope')!='private:'+owner or paused(db,item['scope'],now):return False
     row=db.execute('SELECT checked,version,checked_version,allowed FROM autonomy_owner WHERE owner=?',(owner,)).fetchone()

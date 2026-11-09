@@ -1,17 +1,18 @@
 // Canonical defaults v2. Explicit false, zero, empty lists and saved overrides win.
 import memoryDefaults from './memory-defaults.json' with {type:'json'};
+import runtimeDefaults from './behavior-runtime-defaults.json' with {type:'json'};
 export const behaviorDefaultsVersion=2;
 export const behaviorDefaults={
  qqFavoriteSaveEnabled:true,
  quoteReplyEnabled:true,
- groupParticipationEnabled:true,
+ groupParticipationEnabled:runtimeDefaults.groupParticipationEnabled,
  groupParticipationGroups:[],
  groupParticipationIntervalMinutes:10,
  groupParticipationStyle:'active' as const,
  groupParticipationOtherConversations:false,
  groupDecisionContextMessages:12,
  groupDecisionTimeoutSeconds:10,
- ownerContactEnabled:true,
+ ownerContactEnabled:runtimeDefaults.ownerContactEnabled,
  ownerContactIntervalMinutes:30,
  ownerContactIdleMinutes:10,
  ownerContactDailyChecks:48,
@@ -77,8 +78,8 @@ export const behaviorDefaults={
  memeCooldownSeconds:20,
  cooldownSeconds:0,
  randomReplyProbability:0.03,
- quietStart:1,
- quietEnd:7,
+ quietStart:runtimeDefaults.quietStart,
+ quietEnd:runtimeDefaults.quietEnd,
  dailyProactiveLimit:10,
  maxReplyChars:500,
  ownerUin:'',

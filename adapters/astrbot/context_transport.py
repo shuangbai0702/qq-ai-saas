@@ -8,15 +8,121 @@ from datetime import datetime,timezone,timedelta
 from context_protocol import SOURCE,TRUSTED_CURRENT,READONLY_CURRENT,source,image_notice,model_json
 
 
-def decision_request(payload,system):
+def ordered_reference(value):
+    """Canonical reference keys; checkpoint foundation before person queries.
+
+    Facts may legitimately vary with the current speaker. They must stay
+    current, but need not precede the much larger unchanged foundation.
+    """
+    if isinstance(value,dict):return {k:ordered_reference(value[k]) for k in sorted(value,key=lambda k:(0 if k=='memory_foundation' else 1,k))}
+    if isinstance(value,list):return [ordered_reference(v) for v in value]
+    return value
+
+
+def decision_request(payload,system,reference_first=False):
     """Common trusted prefix; task and audience-filtered observations stay separate.
 
     This is a pure request view, not a shared chat history or permission cache.
     Helpers with different jobs can reuse the same bot configuration prefix.
     """
+    if reference_first:
+        payload=copy.deepcopy(payload)
+        reference={};changes={}
+        for name in ('memory','owner_memory'):
+            if name not in payload:continue
+            memory=payload.pop(name)
+            if not isinstance(memory,dict):
+                changes[name]=memory
+                continue
+            reference[name]={k:memory[k] for k in ('memory_foundation','facts','cross_scope_guidance') if k in memory}
+            changes[name]={k:v for k,v in memory.items() if k not in reference[name]}
+            for receipt in changes[name].get('cross_scope_deliveries',[]):
+                if isinstance(receipt,dict) and isinstance(receipt.get('confirmed_text_ref'),list):
+                    receipt['confirmed_text_ref']='/changes/'+name+'/'+('/'.join(str(v).replace('~','~0').replace('/','~1') for v in receipt['confirmed_text_ref']))
+        config={k:payload.pop(k) for k in ('persona','owner_id') if k in payload}
+        context={k:payload.pop(k) for k in ('scope',) if k in payload}
+        changes.update(payload)
+        payload={**config,'reference':reference,'context':context,'changes':changes}
+    if isinstance(payload.get('reference'),dict):payload={**payload,'reference':ordered_reference(payload['reference'])}
+    payload=decision_context_view(payload)
     stable={k:payload[k] for k in ('persona','owner_id') if k in payload}
     return {'system_prompt':'[机器人配置]\n'+model_json(stable)+'\n[本次判断职责]\n'+system,
             'prompt':model_json({k:v for k,v in payload.items() if k not in stable})}
+
+
+def decision_context_view(payload):
+    """Reference exact attributed duplicates within THIS stateless request.
+
+    Metadata remains on each observation. Conflicting metadata (including
+    unknown future fields) prevents sharing its body; drafts and receipts are
+    never inferred to be member messages from matching prose.
+    """
+    result=copy.deepcopy(payload);seen={};changed=False
+    summary_provenance_view(result)
+    scope=result.get('scope') or (result.get('context') or {}).get('scope','')
+    pinned=set();windows=[]
+    roots=[('',result)]+[('/'+key,result[key]) for key in ('reference','context','changes','review') if isinstance(result.get(key),dict)]
+    for prefix,parent in roots:
+        windows.extend((prefix+'/'+key,parent.get(key)) for key in ('messages','recent_received','recent_private','recent_uncompressed','latest_messages'))
+        windows.extend((prefix+'/'+key+'/timeline',(parent.get(key) or {}).get('timeline')) for key in ('attention','conversation'))
+        row=parent.get('original_message')
+        if isinstance(row,dict):windows.append((prefix+'/original_message',[row]))
+        for name in ('memory','owner_memory'):
+            memory=parent.get(name)
+            if not isinstance(memory,dict):continue
+            memory_path=prefix+'/'+name
+            for row in memory.get('cross_scope_deliveries',[]):
+                if not isinstance(row,dict):continue
+                ref=row.get('confirmed_text_ref')
+                if isinstance(ref,list):pinned.add(memory_path+'/'+('/'.join(str(v).replace('~','~0').replace('/','~1') for v in ref)))
+                elif isinstance(ref,str):pinned.add(ref)
+            windows.extend((memory_path+'/'+key,memory.get(key)) for key in ('recent_cross_session_messages','recent_private','recent_uncompressed'))
+    identity_fields={'source_scope','scope','source_event','event_id','event','sender_id','role','text'}
+    # A missing media representation cannot establish equivalence either.
+    media_fields={'attachments','images','media','content','parts'}
+    def identity(row):
+        origin=row.get('source_scope',row.get('scope',scope))
+        event=row.get('source_event',row.get('event_id',row.get('event')))
+        author=row.get('sender_id');role=row.get('role','member')
+        if not origin or event is None or not author or role not in ('member','user'):return None
+        # Contradictory identity aliases are evidence, not interchangeable IDs.
+        for keys in (('source_scope','scope'),('source_event','event_id','event')):
+            values=[str(row[k]) for k in keys if k in row]
+            if len(set(values))>1:return None
+        return (str(origin),str(event),str(author),role)
+    def compatible(left,right):
+        if any(left.get(k)!=right.get(k) for k in media_fields):return False
+        # cursor is an observation-buffer position, not event provenance.
+        return all(left[k]==right[k] for k in left.keys() & right.keys()
+                   if k not in identity_fields and k!='cursor')
+    observations=[]
+    for path,rows in windows:
+        if not isinstance(rows,list):continue
+        for index,row in enumerate(rows):
+            if isinstance(row,dict):
+                body_path=path+('/text' if path.endswith('original_message') else '/'+str(index)+'/text')
+                observations.append((body_path,row))
+    # Existing receipt references keep a direct text target. Process their
+    # targets first without moving any event in its actual business list.
+    pinned_objects={id(row) for path,row in observations if path in pinned}
+    # Python callers may reuse one row object in two windows. Keep it literal
+    # rather than replacing both aliases with a reference to a removed body.
+    observed_objects=set()
+    for _,row in observations:
+        if id(row) in observed_objects:pinned_objects.add(id(row))
+        observed_objects.add(id(row))
+    for body_path,row in sorted(observations,key=lambda item:item[0] not in pinned):
+        body=row.get('text');key=identity(row)
+        if not isinstance(body,str) or key is None or 'text_ref' in row:continue
+        key=(*key,body)
+        candidates=seen.setdefault(key,[])
+        match=next(((reference,rows) for reference,rows in candidates if all(compatible(original,row) for original in rows)),None)
+        if match and id(row) not in pinned_objects and len(match[0])+20<len(body):
+            match[1].append(copy.deepcopy(row))
+            row.pop('text');row['text_ref']=match[0];changed=True
+        else:candidates.append((body_path,[copy.deepcopy(row)]))
+    if changed:result['reference_guidance']=REFERENCE_GUIDANCE
+    return result
 
 # Explicit data-plane fields, not a heuristic for identifying permissions.
 # Unknown future contributions remain in the trusted envelope until reviewed.
@@ -26,7 +132,7 @@ READONLY_FIELDS=frozenset(('origin','conversation_environment','state','recent_m
     'previous_proactive_output','dialogue','conversation_candidate','participation_entry',
     'reply_to','execution_memory_guidance','tool_context','autonomous_experience','execution_experience',
     # R5: the bot's own bounded effective-commitment state for this scope.
-    'active_agreements','cross_scope_guidance','periodic_guidance'))
+    'active_agreements','cross_scope_guidance','periodic_guidance','memory_foundation'))
 
 MODEL_STRENGTH_DIGITS=1
 
@@ -289,9 +395,12 @@ def model_messages(messages):
     return result
 
 
-def memory_context_view(context):
-    """Share exact event bodies, retain distinct state/recipient/receipt metadata."""
-    result=social_context_view(context);seen={};changed=False
+def summary_provenance_view(context):
+    """Compact only model-view provenance on the caller's private copy.
+
+    Summary prose, claims, scope and timestamps remain verbatim. Full event
+    membership stays in storage; receipts and arbitrary event lists are exempt.
+    """
     # Full event membership belongs to the database's coverage/forget logic.
     # The model needs the summary and its conversation/person provenance, not
     # thousands of opaque event IDs. Never compact evidence in real receipts.
@@ -302,13 +411,25 @@ def memory_context_view(context):
         row[key]=values[-6:]
         row[key+'_count']=len(values)
         row[key+'_view']='last_6_examples; full membership retained in storage'
-    state=result.get('state')
-    if isinstance(state,dict):
-        summaries=state.get('conversation_summaries')
-        if isinstance(summaries,list):
-            for summary in summaries:
-                if isinstance(summary,dict) and summary.get('kind')=='conversation_summary_not_verified_facts':provenance(summary,'source_events')
-    provenance(result.get('persona_core_note'),'sources')
+    if not isinstance(context,dict):return
+    for name in ('state','memory_foundation'):
+        state=context.get(name)
+        if isinstance(state,dict):
+            summaries=state.get('conversation_summaries')
+            if isinstance(summaries,list):
+                for summary in summaries:
+                    if isinstance(summary,dict) and summary.get('kind')=='conversation_summary_not_verified_facts':provenance(summary,'source_events')
+    provenance(context.get('persona_core_note'),'sources')
+    # Known auxiliary envelopes only: never recurse into facts, claims, raw
+    # tool output or receipt evidence based on a coincidentally matching key.
+    for name in ('memory','owner_memory','reference','changes'):
+        if isinstance(context.get(name),dict):summary_provenance_view(context[name])
+
+
+def memory_context_view(context):
+    """Share exact event bodies, retain distinct state/recipient/receipt metadata."""
+    result=social_context_view(context);seen={};changed=False
+    summary_provenance_view(result)
     identity=result.get('identity') or {};environment=result.get('conversation_environment') or {}
     scope=identity.get('scope') or environment.get('scope','')
     def body(row,path,field='text',default_scope='',role='member',event=None,author=None):

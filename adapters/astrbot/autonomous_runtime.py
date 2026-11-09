@@ -100,6 +100,7 @@ class AutonomousRuntime:
         if p['lease'] is not s:return 'member_replaced'
         if id in self.core.event_bus.stopped_platforms:return 'platform_stopped'
         if p['config']['mode']!='active':return 'mode_changed'
+        if identity.get('_model_origin') and not s['config'].get('proactive'):return 'autonomy_disabled'
         if not self.permit_current(p):return 'permit_expired'
         if self.interrupted.get(id)==identity.get('cycleId'):return 'cycle_interrupted'
         for key in ('tenantId','botId','epoch','generation','revision','cycleId'):
@@ -133,7 +134,7 @@ class AutonomousRuntime:
         if action.get('kind')!='message':return True
         s=self.settings[id];st=self.store(id,s);scope=action.get('target','');now=time.time()
         if event.get_extra('_hosted_requested_reply'):
-            request=st.pipeline.request_reply(identity,action.get('goalId'),action.get('requestSource'),identity['id'])
+            request=st.pipeline.request_reply(identity,action.get('goalId'),action.get('requestSource'),identity['id'],current_lease=self.settings[id])
             return bool(request and request['scope']==scope)
         row=st.db.execute('SELECT last_user,opted_out FROM contacts WHERE scope=?',(scope,)).fetchone()
         return bool(row and not row[1] and row[0]==event.get_extra('_hosted_internal_last_user') and s['config'].get('proactive') and not initiative.quiet(s['config'],now) and not initiative.paused(st.db,scope,now))
@@ -206,6 +207,7 @@ class AutonomousRuntime:
                 live=runtime.policies.get(id)
                 if not current() or not live or live['lease'] is not s or live['epoch']!=p['epoch'] or live['config']['mode']!='active' or live['until']<=time.time()*1000:raise asyncio.CancelledError('stale task handoff')
                 work=event.get_extra('_hosted_pipeline')
+                if kind=='research' and getattr(work,'source',None) in ('scheduled_contact','owner_contact') and not s['config'].get('proactive'):return json.dumps({'queued':False,'reason':'autonomy_disabled'})
                 if not isinstance(objective,str) or not 1<=len(objective.strip())<=1000 or type(delay_seconds) is not int or not 0<=delay_seconds<=604800:return json.dumps({'queued':False,'reason':'invalid_task_proposal'})
                 identity={k:live[k] for k in ('tenantId','botId','generation','revision','epoch')}
                 if kind not in ('message','research'):return json.dumps({'queued':False,'reason':'invalid_task_kind'})
@@ -262,7 +264,7 @@ class AutonomousRuntime:
             if scope.startswith('private:'):
                 if scope[8:]!=subject or not re.fullmatch(r'\d{5,20}',subject) or subject==self_id:continue
                 if subject==owner:
-                    if not b.get('ownerContactEnabled',False):continue
+                    if not b.get('ownerContactEnabled',autonomy.BEHAVIOR_DEFAULTS['ownerContactEnabled']):continue
                     row=st.db.execute('SELECT interaction FROM autonomy_owner WHERE owner=?',(owner,)).fetchone()
                     interaction=max(user,bot,row[0] if row else 0)
                     not_before=max(max(interaction,attempt)+b.get('ownerContactIntervalMinutes',30)*60,interaction+b.get('ownerContactIdleMinutes',10)*60)
@@ -324,7 +326,7 @@ class AutonomousRuntime:
         catalog=self.capability_catalog(id,candidates)
         available=[t['name'] for t in catalog['innerTools'] if t['available']]
         unavailable=['web_search']+[t['name'] for t in catalog['innerTools'] if not t['available']]
-        behavior=s['config'].get('behavior') or {};start,end=behavior.get('quietStart',23),behavior.get('quietEnd',8)
+        behavior=s['config'].get('behavior') or {};start,end=behavior.get('quietStart',autonomy.BEHAVIOR_DEFAULTS['quietStart']),behavior.get('quietEnd',autonomy.BEHAVIOR_DEFAULTS['quietEnd'])
         quiet_hours={'startHour':start,'endHour':end,'enabled':start!=end,'activeNow':initiative.quiet(s['config'],now),'timezone':str(initiative.ZONE),'scope':'unsolicited_outbound_messages','meaning':'真实配置的主动消息安静时段；不表示联系人正在休息，普通入站回复仍按原管线处理。'}
         return {'foregroundBusy':st.active>(1 if id in self.running else 0),'feedbackVersion':self.feedbacks.get(id,{}).get('at',0),'foregroundFeedback':self.feedbacks.get(id), 'now':int(now*1000),'persona':s['config'].get('systemPrompt',''),'self':companion_state.context(st.db,s['config'],'self',now),'selfExperiences':experiences,'identity':{'ownerId':str((s['config'].get('behavior') or {}).get('ownerUin') or ''),'selfId':str(s.get('expectedUin') or '')},'contacts':candidates,'deferredContacts':deferred,'contexts':contexts,'observedConversations':self.observed_conversations(id),'event':event,'nextEventCheckSeconds':delay,'wakePolicy':{'idleCheckSeconds':interval,'maxSleepSeconds':policy.get('maxSleepSeconds',86400),'quietHours':quiet_hours},'availableTools':available,'unavailableTools':unavailable,**catalog,'pendingHandoffs':st.pipeline.pending_handoffs(self.policies[id]['epoch'])}
 
@@ -497,6 +499,10 @@ class AutonomousRuntime:
 
     async def execute(self,id,data):
         identity=data['work'];action=data['action'];s=self.settings[id];st=self.store(id,s)
+        model_origin=(action.get('requestSource') or {}).get('origin')=='model'
+        if model_origin and not s['config'].get('proactive'):
+            return {'status':'blocked','summary':'自主模式已关闭，未发起自主研究模型调用','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE)}
+        identity={**identity,'_model_origin':model_origin}
         if not self.valid(id,identity):raise PreflightRejected('stale_internal_work')
         p=self.policies[id];kind=action['kind'];target=action.get('target','');candidates=self.candidates(id)
         import agreement_state
@@ -505,7 +511,7 @@ class AutonomousRuntime:
         if not agreement_state.task_current(st.db,(action.get('requestSource') or {}).get('agreement')):
             return {'status':'canceled','summary':'约定已取消或修订，旧版本任务未执行','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE)}
         identity={**identity,'kind':kind}
-        request=st.pipeline.request_reply(identity,action.get('goalId'),action.get('requestSource'),identity['id']) if kind=='message' else None
+        request=st.pipeline.request_reply(identity,action.get('goalId'),action.get('requestSource'),identity['id'],current_lease=s) if kind=='message' else None
         if request and request['scope']!=target:request=None
         if request and target.startswith('group:') and s['config'].get('groups') and target[6:] not in s['config']['groups']:request=None
         previous=st.pipeline.internal_result(identity['id'])
@@ -544,7 +550,7 @@ class AutonomousRuntime:
         event.set_extra('_hosted_autonomous_action',action)
         if candidate:event.set_extra('_hosted_internal_last_user',candidate['lastUserAt'])
         if request:
-            if not st.pipeline.request_reply(identity,action.get('goalId'),action.get('requestSource'),identity['id'],reserve=True):
+            if not st.pipeline.request_reply(identity,action.get('goalId'),action.get('requestSource'),identity['id'],reserve=True,current_lease=s):
                 feedback={'status':'blocked','summary':'原请求的回复许可已被其他动作持有','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE)};st.pipeline.finish_internal(work,feedback);return feedback
             event.set_extra('_hosted_requested_reply',True)
         if kind=='message' and not request:

@@ -41,14 +41,64 @@ test('a due handoff goal is dispatched to the inner with its trusted source and 
   throw Error(op);
  });
  try{
+  await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) SELECT id,revision,$1 FROM bots",[JSON.stringify({proactive:false})]);
   await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',rollout:'live'});
   await handoffGoal(db,goalId);
   await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
   await coordinator.tick();await coordinator.active?.task;
-  assert.equal(executions,1);assert.equal(thinkCalls,0,'no orientation or planning model call exists');
+  assert.equal(executions,1,'an accepted user reminder still runs with proactive=false');assert.equal(thinkCalls,0,'no orientation or planning model call exists');
   const view=await coordinator.repo.view('tenant','bot-0');
   assert.equal(view.goals[0].status,'completed');assert.equal(view.actions[0].status,'completed');
   assert.equal(view.cycles[0].reason,'handoff_executed');assert.equal(view.actions.length,1,'one action per goal, no planning call');
+ }finally{await coordinator.stop();await db.close()}
+});
+
+test('proactive off and an idle active-mode wake never start a planning model',async()=>{
+ const db=await fixture();const operations:string[]=[];
+ const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
+  operations.push(op);assert.ok(['policy','snapshot'].includes(op),'idle wake must not execute or think');
+  if(op==='snapshot')assert.deepEqual(body,{ledgerOnly:true});return{};
+ });
+ try{
+  await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) SELECT id,revision,$1 FROM bots",[JSON.stringify({proactive:false})]);
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});
+  await coordinator.tick();await coordinator.active?.task;
+  const view=await coordinator.repo.view('tenant','bot-0');
+  assert.equal(view.actions.length,0);assert.ok(operations.includes('snapshot'));
+  assert.equal(view.cycles[0].usage.modelCalls,0);assert.equal(view.settings.config.mode,'active');
+ }finally{await coordinator.stop();await db.close()}
+});
+
+test('config re-enable restores dormant model work without replaying an unknown action',async()=>{
+ const db=await fixture(),executed:string[]=[];
+ const pendingId='a1786cd0-91c4-40ec-8e42-75d80ae70a9d',unknownId='d1786cd0-91c4-40ec-8e42-75d80ae70a9d',actionId='e1786cd0-91c4-40ec-8e42-75d80ae70a9d';
+ const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
+  if(op==='policy'||op==='snapshot')return{};
+  if(op==='receipt')return{active:true,effects:[{status:'unknown'}]};
+  if(op==='execute'){executed.push(body.action.goalId);return{status:'completed',summary:'read-only work settled',effects:[],evidence:[],unfinished:[],usage}}
+  throw Error(op);
+ });
+ try{
+  await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) SELECT id,revision,$1 FROM bots",[JSON.stringify({proactive:false})]);
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});
+  for(const id of [pendingId,unknownId]){
+   await handoffGoal(db,id);
+   await db.query("UPDATE autonomy_goals SET origin='model',source=source||$2::jsonb WHERE id=$1",[id,JSON.stringify({origin:'model',kind:'research'})]);
+  }
+  await coordinator.tick();await coordinator.active?.task;
+  assert.deepEqual(executed,[]);
+  let view=await coordinator.repo.view('tenant','bot-0');
+  assert.equal(view.cycles[0].usage.modelCalls,0);
+  assert.equal((await db.query("SELECT count(*)::int AS n FROM autonomy_wakes WHERE bot_id='bot-0'"))[0].n,0,'disabled work consumed its old wake without a model request');
+  await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,goal_id,status,expires_at,result) VALUES($1,$2,'bot-0','tenant',2,'research','','unresolved old task',$3,'unknown',now(),$4)",[actionId,view.cycles[0].id,unknownId,JSON.stringify({effects:[{id:actionId+':0',status:'unknown'}]})]);
+  await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) VALUES('bot-0',2,$1)",[JSON.stringify({proactive:true})]);
+  await db.query("UPDATE bots SET revision=2 WHERE id='bot-0'");
+  await coordinator.tick();await coordinator.active?.task;
+  assert.deepEqual(executed,[pendingId],'a config revision bypasses sampling delay and restores only unstarted work');
+  view=await coordinator.repo.view('tenant','bot-0');
+  assert.equal(view.goals.find((g:any)=>g.id===pendingId).status,'completed');
+  assert.equal(view.actions.find((a:any)=>a.id===actionId).status,'unknown');
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM autonomy_actions WHERE goal_id=$1',[unknownId]))[0].n,1);
  }finally{await coordinator.stop();await db.close()}
 });
 

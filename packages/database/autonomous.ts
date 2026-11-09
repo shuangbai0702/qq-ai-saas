@@ -57,7 +57,7 @@ export class AutonomyRepository {
   await tx.query('UPDATE autonomy_settings SET next_wake_at=(SELECT min(due_at) FROM autonomy_wakes WHERE bot_id=$1),updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3',[botId,tenantId,epoch]);
  }
  async rearmHandoffs(tenantId:string,botId:string,epoch:number,tx=this.db){
-  const goals=await tx.query("SELECT id,source FROM autonomy_goals WHERE bot_id=$1 AND tenant_id=$2 AND status='active' AND source->>'handoffId'=id::text",[botId,tenantId]);
+  const goals=await tx.query("SELECT id,source FROM autonomy_goals g WHERE bot_id=$1 AND tenant_id=$2 AND status='active' AND source->>'handoffId'=id::text AND NOT EXISTS(SELECT 1 FROM autonomy_actions a WHERE a.goal_id=g.id AND a.bot_id=g.bot_id AND a.tenant_id=g.tenant_id AND a.status IN ('planned','executing','unknown','partial'))",[botId,tenantId]);
   for(const goal of goals)await this.wake(tenantId,botId,epoch,'handoff-due',Math.max(0,(Number(goal.source?.notBefore||0)-Date.now())/1000),goal.id,tx);
  }
  async policies(){return this.db.query("SELECT s.*,b.generation,b.revision,b.desired_state,b.health,b.runtime_mode,b.group_id FROM autonomy_settings s JOIN bots b ON b.id=s.bot_id AND b.tenant_id=s.tenant_id WHERE b.deleted_at IS NULL AND (s.config->>'mode'='active' OR s.runtime_epoch<>s.epoch OR EXISTS(SELECT 1 FROM autonomy_cycles c WHERE c.bot_id=s.bot_id AND c.tenant_id=s.tenant_id AND c.decision ? 'expectedGoalRevision') OR EXISTS(SELECT 1 FROM autonomy_actions a WHERE a.bot_id=s.bot_id AND a.tenant_id=s.tenant_id AND (a.status='unknown' OR a.status='executing' AND EXISTS(SELECT 1 FROM autonomy_cycles c WHERE c.id=a.cycle_id AND c.bot_id=a.bot_id AND c.tenant_id=a.tenant_id AND c.finished_at IS NOT NULL) OR a.status='partial' AND a.result->'effects' @> '[{\"status\":\"unknown\"}]'::jsonb))) ORDER BY s.bot_id")}
@@ -75,6 +75,9 @@ export class AutonomyRepository {
    if(!s||s.epoch!==r.epoch||s.generation!==r.generation||s.revision!==r.revision||s.config.mode!=='active')return{status:'rejected',reason:'handoff_identity_changed'};
    const [existing]=await tx.query('SELECT source FROM autonomy_goals WHERE bot_id=$1 AND tenant_id=$2 AND id=$3',[r.botId,r.tenantId,r.id]);
    if(existing)return existing.source?.handoffId===r.id&&existing.source?.handoffFingerprint===fingerprint?{status:'accepted',goalId:r.id,notBefore:existing.source.notBefore}:{status:'rejected',reason:'handoff_identity_conflict'};
+   // Mode authorizes the durable task executor; proactive only authorizes
+   // model-created work. User-accepted reminders keep their separate source.
+   if(r.origin==='model'&&s.bot_config.proactive!==true)return{status:'rejected',reason:'proactive_disabled'};
    const [{count}]=await tx.query("SELECT count(*)::int AS count FROM autonomy_goals WHERE bot_id=$1 AND tenant_id=$2 AND status IN ('active','paused_mode')",[r.botId,r.tenantId]);
    if(count>=12)return{status:'rejected',reason:'active_goal_limit'};
    const owner=Boolean(s.bot_config.behavior?.ownerUin&&String(s.bot_config.behavior.ownerUin)===r.senderId);
@@ -181,7 +184,9 @@ export class AutonomyRepository {
   * own source — never from model output — so the requestSource same-scope
   * rule and the reply permit stay exactly as before. */
  async dueHandoffs(claim:any){
-  return this.db.query(`SELECT * FROM autonomy_goals WHERE bot_id=$1 AND tenant_id=$2 AND status='active' AND source->>'handoffId' IS NOT NULL AND COALESCE((source->>'notBefore')::double precision,0)<=extract(epoch FROM now())*1000 ORDER BY (source->>'notBefore')::double precision,created_at LIMIT 8`,[claim.bot_id,claim.tenant_id]);
+  // Keep disabled model goals intact. Do not manufacture cancellation or lose
+  // unresolved effects; receipt reconciliation remains independent of dispatch.
+  return this.db.query(`SELECT * FROM autonomy_goals g WHERE bot_id=$1 AND tenant_id=$2 AND status='active' AND source->>'handoffId' IS NOT NULL AND COALESCE((source->>'notBefore')::double precision,0)<=extract(epoch FROM now())*1000 AND (coalesce(source->>'origin','')<>'model' AND origin<>'model' OR EXISTS(SELECT 1 FROM bots b JOIN bot_config_revisions c ON c.bot_id=b.id AND c.revision=b.revision WHERE b.id=g.bot_id AND b.tenant_id=g.tenant_id AND c.config->>'proactive'='true')) ORDER BY (source->>'notBefore')::double precision,created_at LIMIT 8`,[claim.bot_id,claim.tenant_id]);
  }
  async goalAction(claim:any,goalId:string){
   const [row]=await this.db.query('SELECT id,status,kind,result,(SELECT count(*)::int FROM autonomy_actions a2 WHERE a2.goal_id=a.goal_id AND a2.bot_id=a.bot_id AND a2.tenant_id=a.tenant_id) AS actions FROM autonomy_actions a WHERE a.goal_id=$1 AND a.bot_id=$2 AND a.tenant_id=$3 ORDER BY a.created_at DESC LIMIT 1',[goalId,claim.bot_id,claim.tenant_id]);
@@ -191,12 +196,16 @@ export class AutonomyRepository {
   return this.db.transaction(async tx=>{
    const [s]=await tx.query('SELECT *,lease_until>now() AS lease_valid FROM autonomy_settings WHERE bot_id=$1 AND tenant_id=$2 FOR UPDATE',[claim.bot_id,claim.tenant_id]);
    if(!s||s.epoch!==claim.epoch||s.lease_owner!==claim.owner||!s.lease_valid)throw new AutonomyConflict('自主工作已失效');
-   const [bot]=await tx.query(`SELECT b.generation,b.revision,(${onlineSql}) AS online FROM bots b WHERE b.id=$1 AND b.tenant_id=$2 FOR UPDATE`,[claim.bot_id,claim.tenant_id]);
+   const [bot]=await tx.query(`SELECT b.generation,b.revision,(${onlineSql}) AS online,c.config AS bot_config FROM bots b LEFT JOIN bot_config_revisions c ON c.bot_id=b.id AND c.revision=b.revision WHERE b.id=$1 AND b.tenant_id=$2 FOR UPDATE OF b`,[claim.bot_id,claim.tenant_id]);
    if(!bot||bot.generation!==claim.generation||bot.revision!==claim.revision||!bot.online)throw new AutonomyConflict('机器人配置或运行状态已变化');
    const [persisted]=await tx.query("SELECT * FROM autonomy_goals WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND status='active' FOR UPDATE",[goal.id,claim.bot_id,claim.tenant_id]);
    if(!persisted)throw new AutonomyConflict('交接目标已取消或暂停');
    goal=persisted;
-   const source=goal.source||{};
+   // Legacy model goals predate source.origin. Carry the trusted ledger
+   // classification to Python's per-request fence without rewriting the
+   // accepted source or its fingerprint, or relabeling user-origin work.
+   const source=goal.origin==='model'?{...(goal.source||{}),origin:'model'}:goal.source||{};
+   if((source.origin==='model'||goal.origin==='model')&&bot.bot_config?.proactive!==true)throw new AutonomyConflict('主动模式已关闭，自主创建的任务暂停派发');
    if(source.handoffId!==goal.id)throw new AutonomyConflict('目标不是交接来源，无法直接派发');
    if(Number(source.notBefore||0)>Date.now())throw new AutonomyConflict('尚未到该任务最早执行时间');
    // One live dispatch per goal: a planned/executing/unknown action still owns

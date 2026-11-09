@@ -6,7 +6,7 @@ The index is disposable; primary records and their versions remain authoritative
 """
 import json
 from hosted_memory import tokens, ALIASES
-from memory_scope import fact_rows,fact_item,summary_rows,summary_item,memory_audience
+from memory_scope import fact_rows,fact_item
 
 
 class MemorySearch:
@@ -22,35 +22,17 @@ class MemorySearch:
         CREATE TRIGGER IF NOT EXISTS search_fact_deleted AFTER DELETE ON facts BEGIN
           DELETE FROM memory_search WHERE kind='fact' AND scope=OLD.scope AND subject=OLD.subject AND key=OLD.name;
         END;
-        CREATE TRIGGER IF NOT EXISTS search_summary_deleted AFTER DELETE ON memory_summaries BEGIN
-          DELETE FROM memory_search WHERE kind='summary' AND key=CAST(OLD.id AS TEXT);
-        END;
-        CREATE TRIGGER IF NOT EXISTS search_summary_changed AFTER UPDATE ON memory_summaries BEGIN
-          DELETE FROM memory_search WHERE kind='summary' AND key=CAST(OLD.id AS TEXT);
-        END;''')
+        DROP TRIGGER IF EXISTS search_summary_deleted;
+        DROP TRIGGER IF EXISTS search_summary_changed;
+        DELETE FROM memory_search WHERE kind='summary';''')
         db.commit()
 
     def search(self, scope, subject, query, summaries=False, limit=12):
-        kind = 'summary' if summaries else 'fact'
-        person = '' if summaries else subject
-        if summaries:
-            rows=[r for r in summary_rows(self.db,scope,subject) if memory_audience({'scope':scope,'subject':subject},{'source_scope':r[4]})]
-            # Claim-only evidence must be findable: index the claims text next
-            # to the prose. A claim-bearing row re-indexes once via the ':c'
-            # revision suffix; a claims-only revision invalidates its old row.
-            claim_map={}
-            identifiers=[str(r[0]) for r in rows]
-            if identifiers:
-                marks=','.join('?' for _ in identifiers)
-                for identifier,raw in self.db.execute('SELECT id,claims FROM memory_summaries WHERE id IN ('+marks+') AND claims IS NOT NULL',identifiers):
-                    try:claims=json.loads(raw) if raw else []
-                    except (ValueError,TypeError):claims=[]
-                    if isinstance(claims,list) and claims:
-                        claim_map[identifier]=' '.join(str(claim.get('text',''))+' '+str(claim.get('about','')) for claim in claims if isinstance(claim,dict) and claim.get('text'))
-            docs=[(str(r[0]),str(r[3])+(':c' if r[0] in claim_map else ''),r[1]+' '+claim_map.get(r[0],''),r[4]) for r in rows]
-        else:
-            rows=fact_rows(self.db,scope,subject)
-            docs=[(r[0],str(r[3]),r[0]+' '+r[1],r[10]) for r in rows]
+        # Summary retrieval is retired; ordinary fact BM25 remains available.
+        if summaries:return []
+        kind='fact';person=subject
+        rows=fact_rows(self.db,scope,subject)
+        docs=[(r[0],str(r[3]),r[0]+' '+r[1],r[10]) for r in rows]
         if not docs:return []
         old={(r[0],r[1]):str(r[2]) for r in self.db.execute('SELECT scope,key,revision FROM memory_search WHERE kind=? AND subject=? LIMIT 20000',(kind,person))}
         with self.db:
@@ -69,8 +51,6 @@ class MemorySearch:
         hits=self.db.execute('''SELECT m.scope,m.key FROM memory_search m JOIN json_each(?) a
           ON m.scope=json_extract(a.value,'$[0]') AND m.key=json_extract(a.value,'$[1]') AND m.revision=json_extract(a.value,'$[2]')
           WHERE memory_search MATCH ? AND m.kind=? AND m.subject=? ORDER BY bm25(memory_search) LIMIT ?''',(allowed,match,kind,person,limit)).fetchall()
-        by_key={(r[4] if summaries else r[10],str(r[0])):r for r in rows}
+        by_key={(r[10],str(r[0])):r for r in rows}
         selected=[by_key[tuple(r)] for r in hits if tuple(r) in by_key]
-        if summaries:
-            return [summary_item(r,'scoped_bm25',db=self.db) for r in selected]
         return [fact_item(r,subject,'scoped_bm25') for r in selected]

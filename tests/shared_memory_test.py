@@ -88,7 +88,7 @@ class SharedMemory(unittest.IsolatedAsyncioTestCase):
         other_private=self.summary('平江路别人私聊','private:87654321')
         self.store.close();self.store=BehaviorStore(self.path);self.db=self.store.db
         result=self.store.reflection.recall(self.private,'平江路',subject=self.person)
-        self.assertEqual({x['id'] for x in result},{good,own_private});self.assertTrue(all('source_scope' in x for x in result))
+        self.assertEqual({x['id'] for x in result},{own_private});self.assertTrue(all('source_scope' in x for x in result))
         self.assertNotIn(fake,{r[0] for r in summary_rows(self.db,self.private,self.person)})
         self.assertNotIn(other_private,{r[0] for r in summary_rows(self.db,self.private,self.person)})
         self.assertEqual({r['id'] for r in self.store.reflection.recall('private:87654321','平江路',subject='87654321')},{other_private})
@@ -109,7 +109,7 @@ class SharedMemory(unittest.IsolatedAsyncioTestCase):
         await self.store.reflection.task
         self.assertEqual([r[0] for r in self.db.execute('SELECT subject FROM memory_summary_people')],[self.person])
         self.store.close();self.store=BehaviorStore(self.path);self.db=self.store.db
-        self.assertTrue(self.store.reflection.recall(self.private,'夜景',subject=self.person))
+        self.assertFalse(self.store.reflection.recall(self.private,'夜景',subject=self.person))
         # Merely mentioning a QQ cannot disclose this group's history to it.
         # The actual participant above still recalls the group after restart.
         shared=self.store.reflection.recall('private:87654321','夜景',subject='87654321')
@@ -144,17 +144,18 @@ class SharedMemory(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls),before+1,'new request embeds its query, not the already cached fact')
         self.assertEqual(calls[-1]['input'],['beverage'])
         self.say('忘记：爱好',self.group);self.assertEqual(self.db.execute('SELECT count(*) FROM fact_vectors').fetchone()[0],0)
-    async def test_summary_vectors_use_only_attributed_candidates_and_late_forget_wins(self):
+    async def test_summary_basis_is_attributed_query_independent_and_never_embeds(self):
         self.say('记住：夜景=平江路')
         good=self.summary('平江路夜景',self.private,[self.person])
         self.summary('另一个人的秘密夜景','private:87654321',['87654321'])
-        entered=asyncio.Event();release=asyncio.Event();calls=[]
-        async def create(**kw):calls.append(kw);entered.set();await release.wait();return NS(data=[NS(index=i,embedding=[1.,0.]) for i in range(len(kw['input']))])
+        calls=[]
+        async def create(**kw):calls.append(kw);raise AssertionError('summary embedding is retired')
         client=NS(base_url='https://fixture.invalid',embeddings=NS(create=create));client.with_options=lambda **kw:client
         cfg={'memorySemantic':True,'embeddingModel':'fixture'}
-        task=asyncio.create_task(self.store.reflection.semantic_recall(self.private,'night view',cfg,NS(client=client),lambda:True,{},subject=self.person))
-        await entered.wait();self.assertEqual(calls[0]['input'],['night view','平江路夜景'])
-        self.say('忘记：夜景',self.private);release.set();self.assertEqual(await task,[])
+        result=await self.store.reflection.semantic_recall(self.private,'night view',cfg,NS(client=client),lambda:True,{},subject=self.person)
+        self.assertEqual([item['id'] for item in result],[good]);self.assertFalse(calls)
+        self.say('忘记：夜景',self.private)
+        self.assertEqual(await self.store.reflection.semantic_recall(self.private,'night view',cfg,NS(client=client),lambda:True,{},subject=self.person),[])
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_vectors').fetchone()[0],0)
         self.assertNotIn(good,{r[0] for r in summary_rows(self.db,self.group,self.person)})
 

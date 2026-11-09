@@ -4,7 +4,7 @@ Capabilities add context/tools/output inside this work. They do not create a
 second ingress, invent a sender, or own the QQ transport or a bot's database.
 """
 from dataclasses import dataclass,field
-import hashlib,json,math,time,uuid
+import hashlib,json,math,time,uuid,os
 
 
 STAGES=('ingress','observe','admission','context','model_tools','output_plan','dispatch','commit')
@@ -83,7 +83,7 @@ def decision_memory(db,cfg,scope,subject,now,recent=True):
     cfg=cfg.get('behavior') or cfg
     if not cfg.get('memory',True):return {}
     if not db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_reflection_control'").fetchone():return {}
-    from memory_scope import fact_rows,fact_item,summary_rows,summary_item,pending_messages
+    from memory_scope import fact_rows,fact_item,pending_messages
     from agreement_state import context_view
     owner=str((cfg.get('behavior') or cfg).get('ownerUin') or '')
     from shared_context import active as shared_active,recent as shared_recent
@@ -98,9 +98,22 @@ def decision_memory(db,cfg,scope,subject,now,recent=True):
         # Current-scope confirmations already have a timeline/last_bot_text.
         # A cross-scope draft in shared_recent is explicitly NOT a send; pair
         # it with this small projection of existing actual protocol evidence.
-        result['cross_scope_deliveries']=delivery_view(db,limit=4,budget=1200,exclude_scope=scope)
+        result['cross_scope_deliveries']=delivery_view(db,limit=4,budget=3000,exclude_scope=scope)
+        # Each helper is stateless: retain current settlement/feedback even
+        # when another helper already saw it. Reference an exact text already
+        # present in THIS request rather than pretending it persists upstream.
+        for receipt in result['cross_scope_deliveries']:
+            for index,row in enumerate(result.get('recent_cross_session_messages',[])):
+                if receipt.get('text_complete') and receipt.get('confirmed_text')==row.get('text'):
+                    receipt.pop('confirmed_text');receipt['confirmed_text_ref']=['recent_cross_session_messages',index,'text'];break
+        feedback=[]
+        for receipt in delivery_view(db,limit=4,budget=1600,only_scope=scope,text_limit=0):
+            if 'feedback' not in receipt:continue
+            feedback.append({k:v for k,v in receipt.items() if k not in ('confirmed_text','text_complete')})
+        if feedback:result['current_scope_feedback']=feedback
     if cfg.get('memorySummary',True):
-        result['summaries']=[{'id':r[0],'summary':r[1][:300],'at':r[3],'source_scope':r[4],'kind':'conversation_summary_not_verified_facts'} for r in summary_rows(db,'bot_shared' if unified else scope,subject,limit=2)]
+        from context_foundation import summaries
+        result['memory_foundation']={'conversation_summaries':summaries(db,'bot_shared' if unified else scope,owner)}
     return result
 
 
@@ -110,14 +123,11 @@ def conversation_context(store,cfg,scope,subject,query,now,state=None):
     from message_provenance import timeline
     enabled=cfg.get('memory',True)
     state=dict(state or {})
-    # Ingress state may predate batch collection, media or execution-memory
-    # awaits. Re-read authoritative memory at assembly, never bless an old
-    # fact snapshot with the new epoch captured after one of those awaits.
-    state.update(facts=store.memory.recall(scope,subject,query,now) if enabled else [],
-                 conversation_summaries=store.reflection.recall(scope,query,subject=subject) if enabled and cfg.get('memorySummary',True) else [])
-    relation=store.db.execute('SELECT affinity,emotion,expires,last_seen FROM relations WHERE scope=? AND subject=?',(scope,subject)).fetchone()
-    if relation:
-        state.update(affinity=relation[0],relationship='熟悉' if relation[0]>=5 else '初识',emotion=relation[1] if relation[2]>now else '平静',emotion_expired=relation[2]<=now,relationship_observed_at=relation[3])
+    # Ordinary memory belongs to a checkpoint foundation, not query-selected
+    # per-turn snapshots. New chat already lives in the authoritative Journal.
+    state={k:v for k,v in state.items() if k not in ('facts','conversation_summaries','affinity','relationship','emotion','emotion_expired','relationship_observed_at','memory_status')}
+    from context_foundation import read as read_foundation
+    foundation=read_foundation(store,cfg,scope,subject)
     if getattr(store,'shared_context',False):
         import agreement_state
         from shared_context import JOURNAL_SCOPE,delivery_context
@@ -125,7 +135,7 @@ def conversation_context(store,cfg,scope,subject,query,now,state=None):
         # The canonical shared Journal already contains the real channel
         # messages. Do not reinject person-selected copies or SDK round views.
         return {'persona_core_note':{'guidance':CORE_NOTE_POLICY,**store.reflection.core_note('bot_shared',subject,owner=str(cfg.get('ownerUin') or ''))},
-                'state':state,'dialogue':delivery_context(store.db,store.model_journals.get(JOURNAL_SCOPE)),'autonomous_experience':experience_context(store,scope,cfg),
+                'memory_foundation':foundation,'state':state,'dialogue':delivery_context(store.db,store.model_journals.get(JOURNAL_SCOPE)),'autonomous_experience':experience_context(store,scope,cfg),
                 'group_round_history':[],'conversation_timeline':[],'recent_messages':[],
                 'recent_cross_session_messages':[],'ambient_group_messages':[],
                 'active_agreements':agreement_state.context_view(store.db,scope,owner=str(cfg.get('ownerUin') or '')) if enabled else [],
@@ -135,15 +145,6 @@ def conversation_context(store,cfg,scope,subject,query,now,state=None):
     chronological=timeline(store.db,scope,subject,now) if enabled else []
     owner=str(cfg.get('ownerUin') or '')
     people=relevant_people(store.db,scope,subject,now,owner,timeline=chronological) if enabled else []
-    if enabled:
-        from memory_scope import fact_rows,fact_item
-        known={(r.get('subject'),r.get('name')) for r in state['facts']}
-        for person in people:
-            if person==subject:continue
-            for row in fact_rows(store.db,scope,person,limit=2):
-                if len(state['facts'])>=8:break
-                if (person,row[0]) not in known:
-                    state['facts'].append(fact_item(row,person,'related_person'));known.add((person,row[0]))
     covered={item['source_event'] for item in chronological if item['role']=='member'}
     pending=pending_messages(store.db,scope,subject,now,cross_scope=False) if enabled else []
     ambient=store.ambient.context(scope,now) if cfg.get('socialAwareness',True) and scope.startswith('group:') else []
@@ -155,7 +156,7 @@ def conversation_context(store,cfg,scope,subject,query,now,state=None):
     # current, bounded state projection — never as raw private chat text.
     import agreement_state
     agreements=agreement_state.context_view(store.db,scope,owner=str(cfg.get('ownerUin') or '')) if enabled else []
-    return {'persona_core_note':core,'state':state,'dialogue':dialogue,'autonomous_experience':experience_context(store,scope,cfg),
+    return {'memory_foundation':foundation,'persona_core_note':core,'state':state,'dialogue':dialogue,'autonomous_experience':experience_context(store,scope,cfg),
             'group_round_history':store.reflection.group_context(scope) if enabled else [],
             'conversation_timeline':chronological,
             'active_agreements':agreements,
@@ -166,14 +167,8 @@ def conversation_context(store,cfg,scope,subject,query,now,state=None):
 
 
 def finish_memory_view(store,shared,cfg,scope,query):
-    """Same rolling, matched evidence and budget for foreground and Work."""
-    if not cfg.get('memory',True) or not cfg.get('memorySummary',True):return
-    rolling=store.reflection.rolling('bot_shared' if getattr(store,'shared_context',False) else scope,owner=str(cfg.get('ownerUin') or ''))
-    local_ids={item['id'] for item in rolling}
-    state=shared['state']
-    state['conversation_summaries']=[item for item in state.get('conversation_summaries',[]) if item['id'] not in local_ids]+rolling
-    from summary_material import bound_claim_views
-    bound_claim_views([shared.get('persona_core_note')]+state['conversation_summaries'],query=query)
+    """Compatibility assembly hook; the foundation is already fixed and unique."""
+    return shared
 
 
 def protocol_experience(store,scope,query='',limit=6):
@@ -239,13 +234,36 @@ def experience_context(store,scope,cfg):
         if scope=='self' or action and allowed({**action,'sourceScope':item.get('sourceScope')}):decisions.append(item)
         elif not action:decisions.append({k:item.get(k) for k in ('cycleId','at','cycleStartedAt','wait')})
     from context_transport import experience_view
-    selected=[a for a in local+list(actions.values()) if allowed(a)]
+    local_ids={a['id'] for a in local}
+    selected=[];protected_ids=set()
+    for action in local+list(actions.values()):
+        if not allowed(action):continue
+        # Current local settlements and incomplete/error work must remain
+        # visible immediately, including a task's successful terminal result.
+        # Ordinary completed history keeps only a settlement link; its prose
+        # belongs to the checkpoint foundation, not a new per-turn projection.
+        uncertain=any(e.get('status') in ('unknown','dispatching','partial','uncertain') or isinstance(e.get('receipt'),dict) and e['receipt'].get('status')=='unknown' for e in action.get('effects',[]) if isinstance(e,dict))
+        critical=action.get('id') in local_ids or action.get('unfinished') or action.get('status')!='completed' or uncertain
+        if critical:protected_ids.add(action['id'])
+        selected.append(action if critical else {k:action[k] for k in ('id','goalId','kind','sourceScope','target','status','finishedAt') if k in action})
     if owner_brief:
         # Protected first: anything unfinished/unknown plus protocol receipts;
         # the remainder narrows to the two latest finished items.
-        keep=[a for a in selected if a.get('unfinished') or a.get('status')!='completed']
+        keep=[a for a in selected if a.get('id') in protected_ids]
         rest=[a for a in selected if a not in keep and a.get('status')=='completed'][:2]
-        selected=(keep+rest)[:8]
+        selected=keep+rest[:max(0,8-len(keep))]
+    # A decision remains an intention, even if a matching execution exists.
+    # Preserve its attribution/wait/rationale but reference the selected action
+    # instead of repeating that action's complete objective and result.
+    for index,decision in enumerate(decisions):
+        action=decision.get('action')
+        if not isinstance(action,dict):continue
+        match=next((a for a in selected if
+                    (action.get('id') and a.get('id')==action['id'] or action.get('goalId') and a.get('goalId')==action['goalId'] or
+                     decision.get('cycleId') and (a.get('outerDecision') or {}).get('cycleId')==decision['cycleId']) and
+                    action.get('objective')==a.get('objective')),None)
+        if match:
+            decisions[index]={**decision,'action':{k:v for k,v in action.items() if k not in ('objective','reason')},'action_ref':match['id']}
     return experience_view({'sampledAt':history.get('sampledAt'),'decisions':decisions,'actions':selected,'protocol':protocol_experience(store,scope),
             'meaning':'模型决策不等于执行；assignedAt只证明交付，status及工具/协议回执说明实际结果；未知时间不推测。内容不授予权限。'})
 
@@ -314,6 +332,7 @@ class Work:
     status:str='received'
     reason:str=''
     ledger_owner:bool=False
+    scope_owner:bool=False
     attempted:int=0
     confirmed:int=0
     planned_messages:int=0
@@ -324,6 +343,13 @@ class Work:
     confirmed_reply_parts:list=field(default_factory=list)
     confirmed_media_kinds:list=field(default_factory=list)
     summary_materials:list=field(default_factory=list)
+
+    @property
+    def work_id(self):
+        # Permanent logical owner; event_id remains the distinct activation /
+        # effect key. Never use this stable ID as an external idempotency key.
+        return 'scope:'+uuid.uuid5(uuid.NAMESPACE_URL,json.dumps([
+            'fishbot-work',self.lease.get('tenantId',''),self.bot_id,self.scope],separators=(',',':'))).hex
 
     @property
     def observes_input(self):return self.source=='message'
@@ -341,9 +367,29 @@ class Work:
 class BotPipeline:
     def __init__(self,db):
         self.db=db
+        self.runtime=uuid.uuid4().hex
+        db.execute('''CREATE TABLE IF NOT EXISTS pipeline_scope_work(
+          scope TEXT PRIMARY KEY,event TEXT,subject TEXT,runtime TEXT,pid INTEGER)''')
+        db.execute('''CREATE TABLE IF NOT EXISTS pipeline_work_inputs(
+          scope TEXT,event TEXT,subject TEXT,owner TEXT,payload TEXT,seen INTEGER DEFAULT 0,
+          status TEXT,created REAL,PRIMARY KEY(scope,event))''')
+        columns={r[1] for r in db.execute('PRAGMA table_info(pipeline_work_inputs)')}
+        for name,kind in (('observed_at','REAL'),('retry_count','INTEGER DEFAULT 0'),('retry_at','REAL DEFAULT 0'),('payload_sha','TEXT')):
+            if name not in columns:db.execute('ALTER TABLE pipeline_work_inputs ADD COLUMN '+name+' '+kind)
+        for scope,owner,pid in db.execute('SELECT scope,runtime,pid FROM pipeline_scope_work').fetchall():
+            try:os.kill(pid,0)
+            except ProcessLookupError:
+                db.execute('DELETE FROM pipeline_scope_work WHERE scope=? AND runtime=?',(scope,owner))
+                db.execute("UPDATE pipeline_work_inputs SET status='pending',owner=NULL WHERE scope=? AND status='owned' AND seen=0",(scope,))
+                db.execute("UPDATE pipeline_work_inputs SET status='blocked_unknown',owner=NULL WHERE scope=? AND status='owned'",(scope,))
+            except PermissionError:pass  # A live process which we cannot signal still owns it.
+        db.execute("UPDATE pipeline_work_inputs SET status='pending' WHERE status='queued' AND NOT EXISTS (SELECT 1 FROM pipeline_scope_work w WHERE w.scope=pipeline_work_inputs.scope)")
         db.execute('''CREATE TABLE IF NOT EXISTS pipeline_events(scope TEXT,subject TEXT,event TEXT,at REAL,source TEXT,stage TEXT,status TEXT,reason TEXT,attempted INTEGER DEFAULT 0,confirmed INTEGER DEFAULT 0,PRIMARY KEY(scope,subject,event))''')
         db.execute('CREATE INDEX IF NOT EXISTS pipeline_events_by_event ON pipeline_events(event)')
-        db.execute("UPDATE pipeline_events SET status=CASE WHEN status='sending' THEN 'unknown' ELSE 'interrupted' END,reason='runtime_restarted' WHERE status IN ('received','sending')");db.commit()
+        columns={r[1] for r in db.execute('PRAGMA table_info(pipeline_events)')}
+        for name,kind in (('work_id','TEXT'),('passes','INTEGER DEFAULT 0'),('exit_reason','TEXT')):
+            if name not in columns:db.execute('ALTER TABLE pipeline_events ADD COLUMN '+name+' '+kind)
+        db.execute("UPDATE pipeline_events SET status=CASE WHEN status='sending' THEN 'unknown' ELSE 'interrupted' END,reason='runtime_restarted' WHERE status IN ('received','sending') AND NOT EXISTS (SELECT 1 FROM pipeline_scope_work w WHERE w.scope=pipeline_events.scope)");db.commit()
         # Batch windows live only in this process. A durable group-presence
         # wait can resume, but an old in-memory batch cannot still be waiting.
         db.execute("UPDATE pipeline_events SET status='interrupted',reason='runtime_restarted' WHERE status='waiting' AND reason='batch_waiting'");db.commit()
@@ -352,6 +398,88 @@ class BotPipeline:
         db.execute("UPDATE pipeline_action_effects SET state='unknown' WHERE state='dispatching'")
         db.execute("UPDATE pipeline_actions SET state='interrupted' WHERE state='working'");db.commit()
         db.execute('CREATE TABLE IF NOT EXISTS pipeline_handoffs(id TEXT PRIMARY KEY,epoch INTEGER NOT NULL,data TEXT NOT NULL,state TEXT NOT NULL,receipt TEXT,at REAL NOT NULL)');db.commit()
+
+    def join_active(self,event):
+        """Durable ingress ownership, not another Work or model history."""
+        scope=delivery_scope(event)
+        owner=self.db.execute('SELECT event FROM pipeline_scope_work WHERE scope=?',(scope,)).fetchone()
+        if not owner:return False
+        identifier=str(getattr(event.message_obj,'message_id',''))
+        if not identifier:raise ValueError('scope_input_event_missing')
+        raw=getattr(event.message_obj,'raw_message',{})
+        signature=hashlib.sha256(json.dumps(raw,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+        existing=self.db.execute('SELECT payload,payload_sha,status FROM pipeline_work_inputs WHERE scope=? AND event=?',(scope,identifier)).fetchone()
+        if existing:
+            previous=existing[1] or (hashlib.sha256(json.dumps(json.loads(existing[0]),ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest() if existing[0] else None)
+            if previous!=signature:raise ValueError('scope_input_redelivery_evidence_changed')
+            if existing[2] not in ('owned','pending','queued'):return False
+        if owner[0]==identifier:return False  # A redelivery is not another input to its own Work.
+        with self.db:
+            self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,subject,owner,payload,status,created,observed_at,payload_sha) VALUES(?,?,?,?,?,'owned',?,?,?) ON CONFLICT(scope,event) DO UPDATE SET owner=excluded.owner,status='owned' WHERE pipeline_work_inputs.status IN ('pending','queued')",(scope,identifier,str(event.get_sender_id()),owner[0],json.dumps(raw,ensure_ascii=False),time.time(),float(event.message_obj.timestamp),signature))
+        return True
+
+    def seen_inputs(self,work,messages):
+        from context_protocol import source
+        seen=[str(o['event_id']) for m in messages if (o:=source(m)) and o['scope']==work.scope]
+        with self.db:
+            self.db.executemany("UPDATE pipeline_work_inputs SET seen=1 WHERE scope=? AND event=? AND owner=? AND status='owned'",[(work.scope,e,work.event_id) for e in seen])
+
+    def unseen_inputs(self,work):
+        return self.db.execute("SELECT count(*) FROM pipeline_work_inputs WHERE scope=? AND owner=? AND event<>? AND status='owned' AND seen=0",(work.scope,work.event_id,work.event_id)).fetchone()[0]
+
+    def covered_inputs(self,work,events):
+        # A review's explicit semantic coverage is provisional until the whole
+        # output is confirmed; value 2 is distinct from the main-model seen set.
+        with self.db:
+            self.db.executemany("UPDATE pipeline_work_inputs SET seen=2 WHERE scope=? AND owner=? AND event=? AND status='owned' AND seen=0",[(work.scope,work.event_id,str(e)) for e in events])
+
+    def ignored_inputs(self,work,events):
+        # Explicit semantic disposition, not inferred from seen/keep/silence.
+        with self.db:
+            self.db.executemany("UPDATE pipeline_work_inputs SET seen=3 WHERE scope=? AND owner=? AND event=? AND status='owned' AND seen=0",[(work.scope,work.event_id,str(e)) for e in events])
+
+    def activation_progress(self,work,passes,reason):
+        with self.db:
+            self.db.execute('UPDATE pipeline_events SET work_id=?,passes=?,exit_reason=? WHERE scope=? AND subject=? AND event=?',
+                            (work.work_id,passes,reason,work.scope,work.subject,work.event_id))
+
+    def release_work(self,work,release=True):
+        from context_protocol import model_json
+        if not work.scope_owner:return
+        with self.db:
+            if not self.db.execute('SELECT 1 FROM pipeline_scope_work WHERE scope=? AND event=? AND runtime=?',(work.scope,work.event_id,self.runtime)).fetchone():return
+            terminal=work.status in ('sent','silent','superseded','blocked','error','interrupted') and work.attempted==work.confirmed
+            for identifier,subject,seen in self.db.execute("SELECT event,subject,seen FROM pipeline_work_inputs WHERE scope=? AND owner=? AND status='owned'",(work.scope,work.event_id)).fetchall():
+                # Inclusion in a request is not a completed business decision:
+                # a stale/dropped draft must leave its questions pending.
+                completed=work.status in ('sent','silent') and (work.status=='sent' and work.planned_messages==work.confirmed_messages or work.reason=='model_no_reply_marker')
+                processed=seen==3 or seen==1 and completed or seen==2 and work.status=='sent' and work.planned_messages==work.confirmed_messages
+                status='settled' if processed and terminal else 'pending' if terminal else 'blocked_unknown'
+                # Preserve the settled input's parent Work as audit evidence.
+                self.db.execute('UPDATE pipeline_work_inputs SET status=?,owner=?,payload=CASE WHEN ? THEN NULL ELSE payload END WHERE scope=? AND event=?',(status,work.event_id if status=='settled' else None,status=='settled' and seen==1,work.scope,identifier))
+                if status=='settled' and identifier!=work.event_id:
+                    # It was processed within this Work, not a separate reply
+                    # or a second effective business round.
+                    key=model_json([work.scope,identifier])
+                    row=self.db.execute("SELECT data FROM memory_message_sources WHERE scope='bot_shared' AND event=? AND direction='model'",(key,)).fetchone()
+                    if row:
+                        value=json.loads(row[0]);value['settlement']={'status':'superseded','attempted':0,'confirmed':0,'planned':0,'confirmed_messages':0,'parent_work':model_json([work.scope,work.event_id]),'basis':'main_completed' if seen==1 else 'explicit_no_response' if seen==3 else 'confirmed_reply_coverage'}
+                        self.db.execute("UPDATE memory_message_sources SET data=? WHERE scope='bot_shared' AND event=? AND direction='model'",(model_json(value),key))
+            if release:self.db.execute('DELETE FROM pipeline_scope_work WHERE scope=? AND event=? AND runtime=?',(work.scope,work.event_id,self.runtime))
+
+    def close(self):
+        with self.db:
+            self.db.execute("UPDATE pipeline_work_inputs SET status='pending',owner=NULL WHERE status='owned' AND seen=0 AND scope IN (SELECT scope FROM pipeline_scope_work WHERE runtime=?)",(self.runtime,))
+            self.db.execute("UPDATE pipeline_work_inputs SET status='blocked_unknown',owner=NULL WHERE status='owned' AND scope IN (SELECT scope FROM pipeline_scope_work WHERE runtime=?)",(self.runtime,))
+            self.db.execute('DELETE FROM pipeline_scope_work WHERE runtime=?',(self.runtime,))
+
+    def abandon_scope(self,work):
+        """Release execution ownership after failed settlement, never effects."""
+        if not work.scope_owner:return
+        with self.db:
+            if not self.db.execute('SELECT 1 FROM pipeline_scope_work WHERE scope=? AND event=? AND runtime=?',(work.scope,work.event_id,self.runtime)).fetchone():return
+            self.db.execute("UPDATE pipeline_work_inputs SET status='blocked_unknown' WHERE scope=? AND owner=? AND status='owned'",(work.scope,work.event_id))
+            self.db.execute('DELETE FROM pipeline_scope_work WHERE scope=? AND event=? AND runtime=?',(work.scope,work.event_id,self.runtime))
 
     def propose_handoff(self,work,identity,request):
         """Durable transfer to the existing PG owner, never a local scheduler."""
@@ -443,7 +571,7 @@ class BotPipeline:
             self.db.execute("UPDATE pipeline_handoffs SET state=?,receipt=? WHERE id=? AND epoch=? AND state='pending'",(receipt['status'],json.dumps(receipt,ensure_ascii=False),id,epoch))
         return {'ok':True}
 
-    def request_reply(self,identity,goal_id,source,action_id=None,reserve=False):
+    def request_reply(self,identity,goal_id,source,action_id=None,reserve=False,current_lease=None):
         """A reply belongs to one accepted real request, not proactive contact.
 
         The original Work supplied identity; neither model text nor a contact
@@ -455,14 +583,22 @@ class BotPipeline:
             row=self.db.execute("SELECT epoch,data,receipt FROM pipeline_handoffs WHERE id=? AND state='accepted'",(goal_id,)).fetchone()
             if not row:return None
             data=json.loads(row[1]);receipt=json.loads(row[2] or '{}')
+            if data.get('origin')=='model' or source.get('origin')=='model':return None
             if data.get('agreement'):
                 import agreement_state
                 if not agreement_state.task_current(self.db,data['agreement']):return None
             if receipt.get('goalId')!=goal_id:return None
             # A fresh authenticated Work grants CURRENT authority. Mode/goal
             # edits advance epoch but do not revoke an accepted durable request;
-            # tenant, bot and QQ/config generations still cannot be crossed.
-            if any(data.get(k)!=identity.get(k) for k in ('tenantId','botId','generation','revision')):return None
+            # tenant, bot and QQ generations still cannot be crossed. A config
+            # save may change revision without canceling this accepted request;
+            # only a caller already bound to the current authenticated lease
+            # may carry it forward. The immutable original source stays intact.
+            keys=('tenantId','botId','generation','revision')
+            if any(data.get(k)!=identity.get(k) for k in keys[:3]):return None
+            if any(k in source and source[k]!=data.get(k) for k in keys):return None
+            if data.get('revision')!=identity.get('revision'):
+                if not isinstance(current_lease,dict) or any(current_lease.get(k)!=identity.get(k) for k in keys):return None
             if any(data.get(k)!=source.get(k) for k in ('eventId','scope','senderId')):return None
             now=time.time()*1000
             due=data['at']+data['delaySeconds']*1000
@@ -535,15 +671,41 @@ class BotPipeline:
         if source=='deferred_group':
             row=self.db.execute('SELECT status FROM pipeline_events WHERE scope=? AND subject=? AND event=?',(scope,subject,work.event_id)).fetchone()
             if row and row[0] in ('sending','sent','partial','unknown'):work.stop('deferred_output_already_attempted','duplicate')
+            if work.status=='received':self.claim_scope(work)
             return work
         if not work.event_id:return work
+        previous=self.db.execute('SELECT status FROM pipeline_work_inputs WHERE scope=? AND event=?',(scope,work.event_id)).fetchone()
+        if previous and previous[0].startswith(('settled','blocked_')):
+            work.stop('previous_input_already_settled_or_held','duplicate');return work
         now=time.time()
         with self.db:
             work.ledger_owner=bool(self.db.execute("INSERT OR IGNORE INTO pipeline_events(scope,subject,event,at,source,stage,status,reason) VALUES(?,?,?,?,?,'ingress','received','')",(scope,subject,work.event_id,now,source)).rowcount)
-            self.db.execute('DELETE FROM pipeline_events WHERE at<?',(now-86400,))
-            self.db.execute('DELETE FROM pipeline_events WHERE rowid NOT IN (SELECT rowid FROM pipeline_events ORDER BY at DESC LIMIT 2048)')
-        if not work.ledger_owner:work.stop('duplicate_input','duplicate')
+            # Retain exact recovery evidence while its model input lacks final
+            # provenance; a blanket 24h/2048 prune caused irreparable Holds.
+            protected="NOT EXISTS (SELECT 1 FROM memory_message_sources m WHERE m.direction='model' AND json_extract(m.data,'$.source_scope')=pipeline_events.scope AND json_extract(m.data,'$.event_id')=pipeline_events.event AND json_extract(m.data,'$.settlement') IS NULL)" if self.db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_message_sources'").fetchone() else '1'
+            terminal="status IN ('sent','silent','superseded','blocked','error','interrupted','combined') AND attempted=confirmed"
+            self.db.execute('DELETE FROM pipeline_events WHERE at<? AND '+terminal+' AND '+protected,(now-86400,))
+            self.db.execute('DELETE FROM pipeline_events WHERE rowid NOT IN (SELECT rowid FROM pipeline_events ORDER BY at DESC LIMIT 2048) AND '+terminal+' AND '+protected)
+        if not work.ledger_owner:
+            work.stop('duplicate_input','duplicate')
+            # A queued redelivery whose original Work already ended cannot
+            # remain queued forever, nor gain a fresh execution permission.
+            with self.db:
+                self.db.execute("UPDATE pipeline_work_inputs SET status=CASE WHEN EXISTS (SELECT 1 FROM pipeline_events e WHERE e.scope=? AND e.subject=? AND e.event=? AND e.status IN ('sent','silent','superseded','blocked','error','interrupted','combined') AND e.attempted=e.confirmed) THEN 'settled_duplicate' ELSE 'blocked_unknown' END WHERE scope=? AND event=? AND status IN ('pending','queued')",(scope,subject,work.event_id,scope,work.event_id))
+        else:self.claim_scope(work)
+        if work.ledger_owner:
+            self.activation_progress(work,0,'activated')
         return work
+
+    def claim_scope(self,work):
+        from shared_context import active
+        if not active(self.db):return True  # Legacy sessions keep their existing scheduler until lawful migration.
+        with self.db:
+            owned=self.db.execute('INSERT OR IGNORE INTO pipeline_scope_work VALUES(?,?,?,?,?)',(work.scope,work.event_id,work.subject,self.runtime,os.getpid())).rowcount
+            work.scope_owner=bool(owned)
+            if owned:self.db.execute("UPDATE pipeline_work_inputs SET status='owned',owner=?,seen=0 WHERE scope=? AND status IN ('pending','queued')",(work.event_id,work.scope))
+        if not owned:work.stop('scope_work_owned_elsewhere','blocked')
+        return bool(owned)
 
     def sending(self,work):
         work.stage('dispatch');work.attempted+=1
@@ -562,11 +724,16 @@ class BotPipeline:
             work.status='partial' if work.confirmed_messages<work.planned_messages and work.confirmed else 'sent' if work.confirmed else 'silent'
             if not work.confirmed and not work.reason:work.reason='no_output'
         elif work.confirmed and work.status not in ('sent','duplicate') and not (work.status=='error' and work.reason=='model_error'):work.status='partial'
-        value={'source':work.source,'stage':work.trace[-1]['stage'],'status':work.status,'reason':work.reason,'protocolAttempts':work.attempted,'protocolConfirmed':work.confirmed,'plannedMessages':work.planned_messages,'confirmedMessages':work.confirmed_messages,'stages':work.trace}
+        value={'workId':work.work_id,'activationId':work.event_id,'source':work.source,'stage':work.trace[-1]['stage'],'status':work.status,'reason':work.reason,'protocolAttempts':work.attempted,'protocolConfirmed':work.confirmed,'plannedMessages':work.planned_messages,'confirmedMessages':work.confirmed_messages,'stages':work.trace}
         metrics['lastPipeline']=value
         if work.status=='duplicate' or work.source=='message' and not work.ledger_owner:return
         with self.db:
             self.db.execute('UPDATE pipeline_events SET stage=?,status=?,reason=?,attempted=?,confirmed=? WHERE scope=? AND subject=? AND event=?',(value['stage'],work.status,work.reason,work.attempted,work.confirmed,work.scope,work.subject,work.event_id))
+            from shared_context import active
+            if active(self.db):
+                import message_provenance
+                message_provenance.settle_model_output(self.db,work)
+                self.release_work(work,release=False)
 
 
 def stage(event,name):

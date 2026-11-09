@@ -5,6 +5,123 @@ stays in memory_pending / dialogue_feedback and is read through one timeline.
 Names are display data, never an identity or permission assertion.
 """
 import json,re
+import hashlib
+
+
+def bind_model_input(db,logical,scope,event,subject,message):
+    """Bind the protocol input before SDK enrichment; no user text copied."""
+    from context_protocol import model_json
+    key=model_json([scope,str(event)])
+    row=db.execute("SELECT data FROM memory_message_sources WHERE scope=? AND event=? AND direction='model'",(logical,key)).fetchone()
+    value=json.loads(row[0]) if row else {'source_scope':scope,'event_id':str(event),'sender_id':str(subject),'outputs':[]}
+    signature=hashlib.sha256(model_json(message).encode()).hexdigest()
+    if value.get('sender_id')!=str(subject) or value.get('input_digest',signature)!=signature:raise ValueError('shared_context_protocol_input_changed')
+    value['input_digest']=signature
+    db.execute("INSERT INTO memory_message_sources VALUES(?,?,'model',?) ON CONFLICT(scope,event,direction) DO UPDATE SET data=excluded.data",(logical,key,model_json(value)))
+    return signature
+
+
+def bind_model_output(db,logical,scope,event,subject,messages,index):
+    """Ownership metadata for an exact draft/tool message, never a receipt.
+
+    Reuse the provenance ledger. No second transcript and no inferred owner
+    from the nearest user in the shared message sequence.
+    """
+    from context_protocol import model_json,source
+    message=messages[index]
+    anchor_index=next((i for i in range(index-1,-1,-1) if source(messages[i])),None)
+    if anchor_index is None:raise ValueError('model_output_anchor_missing')
+    anchor=source(messages[anchor_index])
+    location={'anchor':model_json([anchor['scope'],str(anchor['event_id'])]),'offset':index-anchor_index}
+    if not isinstance(message,dict) or message.get('role') not in ('assistant','tool'):raise ValueError('model_output_required')
+    key=model_json([scope,str(event)]) if logical=='bot_shared' else str(event)
+    row=db.execute("SELECT data FROM memory_message_sources WHERE scope=? AND event=? AND direction='model'",(logical,key)).fetchone()
+    value=json.loads(row[0]) if row else {'source_scope':scope,'event_id':str(event),'sender_id':str(subject),'outputs':[]}
+    if any(value.get(k)!=v for k,v in (('source_scope',scope),('event_id',str(event)),('sender_id',str(subject)))):raise ValueError('model_output_owner_changed')
+    signature=hashlib.sha256(model_json(message).encode()).hexdigest()
+    binding={**location,'digest':signature}
+    if binding not in value['outputs']:value['outputs'].append(binding)
+    db.execute("INSERT INTO memory_message_sources VALUES(?,?, 'model',?) ON CONFLICT(scope,event,direction) DO UPDATE SET data=excluded.data",(logical,key,model_json(value)))
+
+
+def settle_model_output(db,work):
+    """Persist terminal Work evidence next to its draft ownership metadata."""
+    from context_protocol import model_json
+    key=model_json([work.scope,str(work.event_id)])
+    row=db.execute("SELECT data FROM memory_message_sources WHERE scope='bot_shared' AND event=? AND direction='model'",(key,)).fetchone()
+    value=json.loads(row[0]) if row else {'source_scope':work.scope,'event_id':str(work.event_id),'sender_id':str(work.subject),'outputs':[]}
+    if value.get('sender_id')!=str(work.subject):raise ValueError('model_settlement_owner_changed')
+    value['settlement']={'status':work.status,'attempted':work.attempted,'confirmed':work.confirmed,
+                         'planned':work.planned_messages,'confirmed_messages':work.confirmed_messages}
+    db.execute("INSERT INTO memory_message_sources VALUES('bot_shared',?,'model',?) ON CONFLICT(scope,event,direction) DO UPDATE SET data=excluded.data",(key,model_json(value)))
+
+
+def model_input_settlement(db,logical,event):
+    row=db.execute("SELECT data FROM memory_message_sources WHERE scope=? AND event=? AND direction='model'",(logical,event)).fetchone()
+    return json.loads(row[0]).get('settlement') if row else None
+
+
+def recover_model_settlements(db,logical='bot_shared'):
+    """Repair metadata only from exact terminal ledger/receipt identities.
+
+    No adjacent-message owner inference, waiting->silent conversion, round
+    creation or external operation replay. Unknown/partial outcomes stay held.
+    """
+    from context_protocol import model_json
+    repaired=0
+    for key,raw in db.execute("SELECT event,data FROM memory_message_sources WHERE scope=? AND direction='model'",(logical,)).fetchall():
+        value=json.loads(raw)
+        if value.get('settlement'):continue
+        scope=value.get('source_scope');event=value.get('event_id');subject=value.get('sender_id')
+        if key!=model_json([scope,str(event)]):continue
+        row=db.execute('SELECT status,attempted,confirmed FROM pipeline_events WHERE scope=? AND subject=? AND event=?',(scope,subject,str(event))).fetchone()
+        if not row:continue
+        status,attempted,confirmed=row
+        if status not in ('sent','silent','superseded','blocked','error','interrupted') or type(attempted) is not int or attempted!=confirmed:continue
+        planned=0
+        if status=='sent':
+            receipt=get(db,scope,str(event),'outgoing')
+            ids=receipt.get('message_ids')
+            if receipt.get('receipt')!='confirmed' or receipt.get('complete') is not True or not isinstance(ids,list) or not ids or len(set(ids))!=len(ids) or not confirmed or confirmed<len(ids):continue
+            planned=len(ids)
+        elif attempted:continue  # No complete chat-plan evidence for a partial tail.
+        value['settlement']={'status':status,'attempted':attempted,'confirmed':confirmed,'planned':planned,'confirmed_messages':planned}
+        db.execute("UPDATE memory_message_sources SET data=? WHERE scope=? AND event=? AND direction='model'",(model_json(value),logical,key));repaired+=1
+    return repaired
+
+
+def prune_retired_model_owners(db,logical,messages):
+    """Only at licensed retirement; never discard unresolved ownership."""
+    from context_protocol import source,model_json
+    retained={model_json([o['scope'],str(o['event_id'])]) for m in messages if (o:=source(m))}
+    for event,raw in db.execute("SELECT event,data FROM memory_message_sources WHERE scope=? AND direction='model'",(logical,)).fetchall():
+        value=json.loads(raw);settlement=value.get('settlement') or {}
+        if event in retained or any(item['anchor'] in retained for item in value.get('outputs',[])):continue
+        if settlement.get('status') not in ('sent','silent','superseded','blocked','error','interrupted') or settlement.get('attempted')!=settlement.get('confirmed'):continue
+        if any(db.execute('SELECT 1 FROM '+table+' WHERE scope=? AND event=? LIMIT 1',(logical,event)).fetchone() for table in ('memory_hold_rounds','memory_round_material','memory_pending','memory_rounds')):continue
+        db.execute("DELETE FROM memory_message_sources WHERE scope=? AND event=? AND direction='model'",(logical,event))
+
+
+def model_output_owners(db,logical,messages):
+    from context_protocol import model_json,source
+    positions={};anchor=None;anchor_index=0
+    for index,message in enumerate(messages):
+        origin=source(message)
+        if origin:
+            anchor=model_json([origin['scope'],str(origin['event_id'])]);anchor_index=index
+        elif anchor and message.get('role') in ('assistant','tool'):
+            positions[(anchor,index-anchor_index)]=hashlib.sha256(model_json(message).encode()).hexdigest()
+    owners={}
+    for raw, in db.execute("SELECT data FROM memory_message_sources WHERE scope=? AND direction='model'",(logical,)):
+        value=json.loads(raw)
+        for binding in value.get('outputs',[]):
+            key=(binding['anchor'],binding['offset'])
+            if positions.get(key)!=binding['digest']:continue
+            owner={k:value[k] for k in ('source_scope','event_id','sender_id')}
+            owner['settlement']=value.get('settlement')
+            if key not in owners:owners[key]=owner
+            elif owners[key]!=owner:owners[key]=None
+    return owners
 
 
 def initialize(db):
@@ -48,7 +165,7 @@ def get(db,scope,event,direction='incoming'):
 
 def put(db,scope,event,direction,source):
     if not isinstance(source,dict):return
-    allowed=('sender_id','sender_name','name_source','mentions','reply_to','message_ids','receipt','complete','responded_events','source_scope')
+    allowed=('sender_id','sender_name','name_source','mentions','reply_to','message_ids','receipt','complete','responded_events','source_scope','confirmed_media_kinds')
     data={k:source[k] for k in allowed if k in source}
     raw=json.dumps(data,ensure_ascii=False,separators=(',',':'))
     if len(raw)>3000:raise ValueError('message provenance exceeds bound')

@@ -18,6 +18,7 @@ _attempt=ContextVar('fishbot_model_attempt',default=None)
 _shapes=OrderedDict()
 _wire_shapes=OrderedDict()
 _wire_signatures=OrderedDict()
+_decision_prefixes=OrderedDict()
 _system_contracts={}
 _auxiliary=ContextVar('fishbot_auxiliary_diagnostic',default=None)
 _diagnostic_lock=Lock()
@@ -85,7 +86,8 @@ def _record_diagnostic(lease, record):
              # Bounded journal-candidate evidence written by the foreground
              # boundary; without these entries the fields were silently dropped
              # and "observed" coverage was overstated (E package audit).
-             'layoutVersion','journalScopeKind','committedPrefixMessages','committedPrefixSha','permitKind','candidateAppendChars')
+             'layoutVersion','journalScopeKind','committedPrefixMessages','committedPrefixSha','permitKind','candidateAppendChars',
+             'logicalWorkId','activationId','userPrefixChars','userChars','referenceChars','referenceSha','userPrefixKnown','mediaStatus','imageId')
     row={key:value for key,value in record.items() if key in allowed and (value is None or type(value) in (str,int,float,bool))}
     # A long diagnostic must not erase the request's identity and outcome.
     # These fields contain only program metadata; never serialize exceptions.
@@ -255,6 +257,8 @@ def begin_attempt(event,provider,system_contract=None,system_permit_id=None):
     value['origin']={'eventKind':source if source in ('message','deferred_group','owner_contact','scheduled_contact','tool_completion','autonomy') else 'other' if work else 'auxiliary',
                      'senderKind':('owner' if owner and str(owner)==str(getattr(work,'subject',None)) else 'member') if work else 'none',
                      'scopeKind':'group' if physical_scope.startswith('group:') else 'private' if physical_scope.startswith('private:') else 'internal'}
+    if work is not None:
+        value['origin'].update(logicalWorkId=getattr(work,'work_id',None),activationId=getattr(work,'event_id',None))
     if foreground and event and event.get_extra('_hosted_journal_scope'):
         value['scope']=event.get_extra('_hosted_journal_scope')
     if auxiliary:
@@ -400,11 +404,39 @@ def observe_wire_request(request):
                 **{name.removesuffix('Sha')+'Changed':signatures[name]!=previous[name] if previous is not None else None
                    for name in signatures}},separators=(',',':'))
             fields.update(model=value.get('model'),outputLimit=payload.get('max_completion_tokens',payload.get('max_tokens')) if type(payload.get('max_completion_tokens',payload.get('max_tokens'))) is int else None)
+            if value['phase'] in ('private_freshness','group_freshness','group_presence','owner_contact','companion_plan'):
+                fields.update(decision_prefix_fields(key,payload['messages']))
             record_diagnostic(lease,{'kind':'wire_request','attemptId':value['attemptId'],'phase':value['phase'],'workId':value['workId'],**value['origin'],**fields})
     except Exception:
         value=_attempt.get()
         if value and (value.get('systemValidationStarted') or value.get('appendOnlyValidationStarted')):raise
         return
+
+
+def decision_prefix_fields(key,messages):
+    """Actual User common prefix, without recording bodies or freezing state.
+
+    Eight last requests only, in this interpreter; plaintext is never written
+    to diagnostics. Oversized requests have hashes/lengths but no prefix cache.
+    """
+    text=next((m.get('content') for m in reversed(messages) if m.get('role')=='user'),None)
+    if not isinstance(text,str):return {}
+    previous=_decision_prefixes.pop(key,None);common=0
+    if previous is not None:
+        for a,b in zip(previous,text):
+            if a!=b:break
+            common+=1
+    if len(text)<=131072:
+        _decision_prefixes[key]=text
+        while len(_decision_prefixes)>8:_decision_prefixes.popitem(last=False)
+    fields={'userChars':len(text),'userPrefixKnown':previous is not None,'userPrefixChars':common}
+    try:
+        reference=json.loads(text).get('reference')
+        if reference is not None:
+            raw=json.dumps(reference,ensure_ascii=False,separators=(',',':'))
+            fields.update(referenceChars=len(raw),referenceSha=hashlib.sha256(raw.encode()).hexdigest()[:24])
+    except (ValueError,AttributeError):pass
+    return fields
 
 
 def transport_started():

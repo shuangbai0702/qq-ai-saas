@@ -22,7 +22,7 @@ test('native group preflight keeps, replaces and drops delayed drafts with true 
   let answer:string;
   if(system.includes('你是群聊发送前复核器')){
    const payload=JSON.parse(nativeMessages(body).at(-1).content);reviews.push({body,payload});
-   const latest=JSON.stringify(payload.latest_messages);
+   const latest=JSON.stringify(payload.review.latest_messages);
    answer=latest.includes('LATEST_FALLBACK')?'invalid JSON':JSON.stringify(latest.includes('LATEST_REPLACE')?{action:'replace',text:'结合刚才的补充回答。',reason:'updated'}:latest.includes('LATEST_DROP')?{action:'drop',reason:'already_resolved'}:{action:'keep',reason:'unrelated'});
   }else{
    const input=JSON.stringify(nativeMessages(body).at(-1));
@@ -63,7 +63,7 @@ test('native group preflight keeps, replaces and drops delayed drafts with true 
   assert.equal(text(sent[0]),'结合刚才的补充回答。');assert.equal(text(sent[1]),'原始回复：CASE_KEEP。');
   assert.equal(text(sent[2]),'原始回复：CASE_FALLBACK。');assert.ok(sent[2].params.message.some((c:any)=>c.type==='reply'&&String(c.data.id)==='83030'),'fallback quotes the original trusted protocol message');
   assert.equal(reviews.length,4);assert.ok(reviews.every(r=>!r.body.tools?.length),'review cannot invoke tools');
-  assert.ok(reviews.every(r=>r.payload.latest_messages.every((m:any)=>m.sender_id==='22345678')),'group identities retained');
+  assert.ok(reviews.every(r=>r.payload.review.latest_messages.every((m:any)=>m.sender_id==='22345678')),'group identities retained');
   await mock.call(ctx,'/message',{group:'778104',sender:'12345678',mention:true,messageId:83040,text:'CASE_PARTIAL'});
   await until(async()=>waiting.has('PARTIAL'),'partial draft held');waiting.get('PARTIAL')!();
   await until(async()=>(await sends()).length===4,'first partial bubble really delivered');
@@ -71,7 +71,7 @@ test('native group preflight keeps, replaces and drops delayed drafts with true 
   await mock.call(ctx,'/message',{group:'778104',sender:'22345678',mention:false,messageId:83041,text:'LATEST_DROP'});
   await until(async()=>(await state("SELECT status FROM pipeline_events WHERE event='83040'")).some((r:any[])=>r[0]==='partial'),'remaining bubble stopped after a new message');
   assert.equal((await sends()).length,4,'confirmed first bubble is not resent and stale tail never sent');
-  assert.equal(reviews.length,5);assert.equal(reviews[4].payload.already_sent,'前半段。');
+  assert.equal(reviews.length,5);assert.equal(reviews[4].payload.review.already_sent,'前半段。');
   const [binding]=await current.db.query('SELECT group_id FROM bots WHERE id=$1',[id]);
   const native=path.join(root,'bots',binding.group_id||id,'ai','data','data_v4.db');
   const histories=JSON.parse((await promisify(execFile)(python,['-B','-c',`import sqlite3,sys,json;d=sqlite3.connect(sys.argv[1]);print(json.dumps([json.loads(r[0]) for r in d.execute('SELECT content FROM conversations')]))`,native],{windowsHide:true})).stdout);

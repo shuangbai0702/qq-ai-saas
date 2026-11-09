@@ -48,7 +48,12 @@ class Continuity(unittest.IsolatedAsyncioTestCase):
         payload=json.loads(calls[0]['prompt']);turns=payload['turns'] if isinstance(payload,dict) else payload
         self.assertIn('unanswered',{r['event'] for r in turns})
         self.assertEqual(self.store.reflection.recent(self.private,self.person),[])
-        self.assertTrue(self.store.reflection.recall(self.private,'真实群聊',subject=self.person))
+        self.assertEqual(self.store.reflection.recall(self.private,'真实群聊',subject=self.person),[],'a query cannot pull another scope summary into this foundation')
+        foundation=self.store.reflection.foundation(self.scope)
+        self.assertEqual(len(foundation),1)
+        self.assertEqual(foundation[0]['summary'],'真实群聊摘要')
+        self.assertEqual(foundation[0]['source_scope'],self.scope)
+        self.assertEqual(self.store.reflection.recall(self.scope,'完全无关查询',subject=self.person),foundation)
         self.assertEqual(len(calls),1)
     async def test_new_messages_and_updated_answer_while_compressing_are_retained(self):
         self.pending();self.seed();entered=asyncio.Event();release=asyncio.Event()

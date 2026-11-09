@@ -1,10 +1,11 @@
-"""Disposable provider wire continuity, never a conversation or memory store.
+"""Authoritative submitted provider-wire continuity and crash recovery.
 
-Exact native-prefix extensions and proven completed group-round transitions
-can reuse a successful request. Source history, identity, permissions and
-summary coverage remain authoritative.
+SDK windows supply new events, never authority to replace a committed prefix.
+Source identity, permissions, protocol receipts and legal summary coverage keep
+their own business authority; this Journal owns the exact submitted sequence.
 """
 import copy,hashlib,json,time,uuid
+import journal_storage
 from dataclasses import dataclass
 from context_protocol import READONLY_CURRENT,model_json,source
 from decision_history import changes,apply_changes,summaries,history_usage,history_boundary,MAX_RETAINED_WIRE_CHARS,MAX_RETAINED_TEXT_CHARS
@@ -79,7 +80,8 @@ def visible_summary_ids(value):
     def visit(node):
         if isinstance(node,dict):
             content=node.get('content') if node.get('role')=='user' else None
-            if isinstance(content,str) and content.startswith(READONLY_CURRENT+'\n'):
+            from context_foundation import FOUNDATION_CURRENT
+            if isinstance(content,str) and content.startswith((READONLY_CURRENT+'\n',FOUNDATION_CURRENT+'\n')):
                 try:visit(json.loads(content.split('\n',1)[1]))
                 except (TypeError,ValueError):pass
             for key,child in node.items():
@@ -335,17 +337,24 @@ class ReadonlyJournal:
             CREATE TABLE IF NOT EXISTS fishbot_readonly_journal_meta(
               id INTEGER PRIMARY KEY CHECK(id=1),overflow INTEGER NOT NULL DEFAULT 0);
             INSERT OR IGNORE INTO fishbot_readonly_journal_meta(id,overflow) VALUES(1,0);
+            CREATE TABLE IF NOT EXISTS fishbot_readonly_journal_blobs(
+              scope TEXT NOT NULL,sha TEXT NOT NULL,data BLOB NOT NULL,
+              PRIMARY KEY(scope,sha));
         ''')
         if self.scope_key is None:return
         row=self.db.execute('SELECT version,state,payload,sha FROM fishbot_readonly_journals WHERE scope=?',(self.scope_key,)).fetchone()
         if row:
             version,state,payload,sha=row
-            if version!=1 or state not in ('ready','retired') or not isinstance(payload,str) or not isinstance(sha,str) or hashlib.sha256(payload.encode()).hexdigest()!=sha or len(payload.encode())>MAX_PERSISTED_JOURNAL_BYTES:
+            if version not in (1,journal_storage.VERSION) or state not in ('ready','retired') or not isinstance(payload,str) or not isinstance(sha,str) or hashlib.sha256(payload.encode()).hexdigest()!=sha or len(payload.encode())>MAX_PERSISTED_JOURNAL_BYTES:
                 self.recovery_error='journal_snapshot_integrity'
                 return
             if state=='retired':self.retired_reason='persisted_retirement'
-            try:value=json.loads(payload)
-            except (TypeError,ValueError):self.recovery_error='journal_snapshot_invalid';return
+            try:
+                def read_blob(scope,digest):
+                    row=self.db.execute('SELECT data FROM fishbot_readonly_journal_blobs WHERE scope=? AND sha=?',(scope,digest)).fetchone()
+                    return row[0] if row else None
+                value=json.loads(payload) if version==1 else journal_storage.decode(payload,self.scope_key,read_blob)
+            except (TypeError,ValueError,KeyError,IndexError):self.recovery_error='journal_snapshot_invalid';return
             required={'scope','base','wire','state','turns','at','group_turn','base_chars','detail','usage','authority','retirement'}
             if not isinstance(value,dict) or set(value)!=required or value['scope']!=self.scope_key or not isinstance(value['base'],list) or not isinstance(value['wire'],list) or not isinstance(value['state'],dict) or type(value['turns']) is not int or not isinstance(value['at'],(int,float)):
                 self.recovery_error='journal_snapshot_invalid';return
@@ -391,30 +400,39 @@ class ReadonlyJournal:
         except (TypeError,ValueError):return False
         return False
 
-    def _snapshot(self,prepared):
+    def _snapshot_parts(self,prepared):
         value={'scope':self.scope_key,'base':prepared.base,'wire':prepared.wire,'state':prepared.state,'turns':prepared.turns,'at':prepared.at,
                'group_turn':prepared.group_turn,'base_chars':prepared.base_chars,'detail':prepared.detail,'usage':prepared.usage,
                'authority':prepared.authority,'retirement':prepared.retirement}
-        return json.dumps(value,ensure_ascii=False,separators=(',',':'))
+        return journal_storage.encode(value)
 
-    def _persist(self,prepared,state='ready',settle_permit=False,consume_permit=False,tombstone=True,settle_cutover=True):
+    def _snapshot(self,prepared):return self._snapshot_parts(prepared)[0]
+
+    def _persist(self,prepared,state='ready',settle_permit=False,consume_permit=False,tombstone=True,settle_cutover=True,model_origin=None):
         if self.db is None or self.scope_key is None:return True
-        try:payload=self._snapshot(prepared)
+        try:payload,blobs=self._snapshot_parts(prepared)
         except (TypeError,ValueError):self.recovery_error='journal_snapshot_serialize';return False
         encoded=payload.encode('utf-8');sha=hashlib.sha256(encoded).hexdigest()
         # Capacity accounting and snapshot/permit commit share the same write
         # lock, including separate connections serving different scopes.
         self.db.execute('BEGIN IMMEDIATE')
         try:
+            # Blob and referencing snapshot share one transaction. Never GC:
+            # older protected snapshots/operator archives may retain references.
+            for digest,raw in blobs.items():
+                row=self.db.execute('SELECT data FROM fishbot_readonly_journal_blobs WHERE scope=? AND sha=?',(self.scope_key,digest)).fetchone()
+                if row is not None and row[0]!=raw:raise ValueError('journal_blob_integrity')
+            blob_total=self.db.execute('SELECT coalesce(sum(length(data)),0) FROM fishbot_readonly_journal_blobs').fetchone()[0]
+            new_blobs=[(digest,raw) for digest,raw in blobs.items() if not self.db.execute('SELECT 1 FROM fishbot_readonly_journal_blobs WHERE scope=? AND sha=?',(self.scope_key,digest)).fetchone()]
             existing=self.db.execute('SELECT length(cast(payload AS BLOB)) FROM fishbot_readonly_journals WHERE scope=?',(self.scope_key,)).fetchone()
             used=self.db.execute("SELECT coalesce(sum(length(cast(payload AS BLOB))),0),sum(state='ready') FROM fishbot_readonly_journals WHERE state IN ('ready','retired')").fetchone()
             overflow=self.db.execute('SELECT overflow FROM fishbot_readonly_journal_meta WHERE id=1').fetchone()[0]
             # SELECT length(payload) returns a row whose value may be NULL when an
             # unavailable tombstone already exists; distinguish that from no row.
-            next_total=used[0]-((existing[0] or 0) if existing is not None else 0)+len(encoded)
+            next_total=used[0]-((existing[0] or 0) if existing is not None else 0)+len(encoded)+blob_total+sum(len(raw) for _,raw in new_blobs)
             count=self.db.execute('SELECT count(*) FROM fishbot_readonly_journals').fetchone()[0]
-            # The snapshot contains both base and wire plus current state, encoded
-            # as UTF-8 bytes. A wire-character limit is not its storage-byte limit.
+            # Account for UTF-8 snapshot bytes and all retained scoped blobs.
+            # A wire-character limit is not its storage-byte limit.
             # The existing per-bot total still bounds every row and all scopes.
             allowed=(next_total<=MAX_PERSISTED_JOURNAL_BYTES and
                      (existing is not None or (used[1] or 0)<MAX_PERSISTED_JOURNALS) and (existing is not None or count<MAX_JOURNAL_TOMBSTONES) and not overflow)
@@ -429,8 +447,10 @@ class ReadonlyJournal:
                         self.db.execute("INSERT INTO fishbot_readonly_journals(scope,version,state,payload,sha,updated) VALUES(?,1,'unavailable',NULL,NULL,?) ON CONFLICT(scope) DO UPDATE SET version=1,state='unavailable',payload=NULL,sha=NULL,updated=excluded.updated",(self.scope_key,time.time()))
                     self.db.commit()
                 self.recovery_error='journal_storage_capacity';self._last_persist_error=self.recovery_error;return False
-            self.db.execute("INSERT INTO fishbot_readonly_journals(scope,version,state,payload,sha,updated) VALUES(?,1,?,?,?,?) ON CONFLICT(scope) DO UPDATE SET version=1,state=excluded.state,payload=excluded.payload,sha=excluded.sha,updated=excluded.updated",
-                            (self.scope_key,state,payload,sha,time.time()))
+            for digest,raw in new_blobs:
+                self.db.execute('INSERT INTO fishbot_readonly_journal_blobs(scope,sha,data) VALUES(?,?,?)',(self.scope_key,digest,raw))
+            self.db.execute("INSERT INTO fishbot_readonly_journals(scope,version,state,payload,sha,updated) VALUES(?,?,?,?,?,?) ON CONFLICT(scope) DO UPDATE SET version=excluded.version,state=excluded.state,payload=excluded.payload,sha=excluded.sha,updated=excluded.updated",
+                            (self.scope_key,journal_storage.VERSION,state,payload,sha,time.time()))
             tables={r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if settle_cutover and 'fishbot_readonly_cutover' in tables:
                 self.db.execute("UPDATE fishbot_readonly_cutover SET state='consumed' WHERE scope=? AND state='available'",(self.scope_key,))
@@ -442,6 +462,27 @@ class ReadonlyJournal:
                 self.db.rollback();return False
             if consume_permit and not prepared.reconstruction_authority.settle_context_reconstruction(prepared.reconstruction_permit,True,in_transaction=True):
                 self.db.rollback();return False
+            if consume_permit and prepared.reconstruction_permit.get('kind')=='summary_checkpoint':
+                self.db.execute('''CREATE TABLE IF NOT EXISTS memory_checkpoint_retirements(
+                  checkpoint_id INTEGER PRIMARY KEY,scope TEXT,request_id TEXT,
+                  retired_events TEXT,retained_events TEXT,before_sha TEXT,after_sha TEXT,created REAL)''')
+                def events(messages):
+                    return {model_json([o['scope'],str(o['event_id'])]) for m in messages if (o:=source(m))}
+                before=events(self.last.base) if self.last else set();after=events(prepared.base)
+                self.db.execute('INSERT INTO memory_checkpoint_retirements VALUES(?,?,?,?,?,?,?,?)',
+                    (prepared.reconstruction_permit['id'],json.loads(self.scope_key),prepared.reconstruction_permit['requestId'],
+                     model_json(sorted(before-after)),model_json(sorted(before&after)),
+                     hashlib.sha256(model_json(self.last.wire if self.last else []).encode()).hexdigest(),
+                     hashlib.sha256(model_json(prepared.wire).encode()).hexdigest(),time.time()))
+                prepared.reconstruction_authority.checkpoint_issue(json.loads(self.scope_key),prepared.reconstruction_permit['id'],'retirement',
+                    {'retired_events':len(before-after),'retained_events':len(before&after),'result':'partial' if before&after and before-after else 'no_history_retired' if not before-after else 'retired',
+                     'retirement_evidence':'memory_checkpoint_retirements','request_id':prepared.reconstruction_permit['requestId']},resolved=not bool(before&after))
+            if model_origin is not None:
+                from message_provenance import bind_model_output
+                bind_model_output(self.db,json.loads(self.scope_key),*model_origin,prepared.base,len(prepared.base)-1)
+            if consume_permit and json.loads(self.scope_key)=='bot_shared' and 'memory_message_sources' in tables:
+                from message_provenance import prune_retired_model_owners
+                prune_retired_model_owners(self.db,'bot_shared',prepared.base)
             self.db.commit();return True
         except BaseException:self.db.rollback();raise
 
@@ -492,6 +533,19 @@ class ReadonlyJournal:
     def _reservation(self,authority,scope,request_id,summary_ids):
         if authority is None or scope is None:return None
         return authority.reserve_context_reconstruction(scope,request_id,summary_ids=summary_ids)
+
+    def _validate_partial_retirement(self,permit,authority,scope,old,base):
+        if not permit or not permit.get('partialRetirement'):return
+        from summary_material import project_history,coverage
+        proofs={e:p for e,p in coverage(self.db,scope).items() if p.get('version')==3}
+        retained=project_history(old.base,proofs,scope,'',protect_latest=False) if old else []
+        cursor=0
+        for message in retained:
+            while cursor<len(base) and model_json(base[cursor])!=model_json(message):cursor+=1
+            if cursor==len(base):
+                authority.settle_context_reconstruction(permit,False)
+                raise ContextPrefixViolation('partial_checkpoint_retained_material_missing')
+            cursor+=1
 
     def refusal_evidence(self):
         """Bounded, content-free journal state for typed guard diagnostics."""
@@ -736,8 +790,11 @@ class ReadonlyJournal:
                 elif reason in ('journal_recovery_unavailable','journal_retired'):
                     raise ContextRecoveryUnavailable('A committed request journal cannot be restored or was retired; a 35-round summary checkpoint is required before rebuilding it.')
                 else:raise ContextReconstructionDenied('A full request-history reconstruction is not authorized by a successful 35-round summary checkpoint.')
-            else:reuse=False
+            else:
+                reuse=False
         if reuse:
+            from context_foundation import freeze
+            state=freeze(state,old.state)
             operations=changes(old.state,state)
             if apply_changes(old.state,operations)!=state:raise ValueError('readonly_projection_mismatch')
             if retirement_deferred:
@@ -764,7 +821,9 @@ class ReadonlyJournal:
                     else:authority={'role':authority['role'],'content':EVENT_CONTEXT_CURRENT+'\n'+model_json(fallback)}
                 wire.append(authority)
             if operations:wire.append({'role':'user','content':READONLY_CURRENT+'\n'+model_json({'readonlyChanges':operations})})
-        else:wire=copy.deepcopy(messages)
+        else:
+            from context_foundation import arrange
+            wire=arrange(messages,state)
         usage=history_usage(wire);base_chars=old.base_chars if reuse else usage['textChars']
         # A foreground journal cannot rebuild at a cache-growth threshold.
         # Existing absolute text/wire limits still require a real permit.
@@ -776,11 +835,15 @@ class ReadonlyJournal:
                 reconstruction_permit=self._reservation(reconstruction_authority,reconstruction_scope,request_id,summary_ids)
             if reconstruction_permit is None and guarded:
                 raise ContextCapacityExceeded('The append-only request journal reached its configured capacity before an authorized 35-round reconstruction checkpoint.')
-            wire=copy.deepcopy(messages);reason='history_size_boundary';reuse=False
+            from context_foundation import arrange
+            wire=arrange(messages,state);reason='history_size_boundary';reuse=False
             usage=history_usage(wire);base_chars=usage['textChars'];detail=history_boundary(usage['textChars'],base_chars,usage['wireChars'],growth_limit=False)
             if detail:
                 if reconstruction_permit:reconstruction_authority.settle_context_reconstruction(reconstruction_permit,False)
                 raise ContextCapacityExceeded('The current complete request exceeds the configured bounded context capacity.')
+        # Both retirement-driven and capacity-driven reservations must keep
+        # every unproven native block byte-for-byte, including media/tools.
+        self._validate_partial_retirement(reconstruction_permit,reconstruction_authority,reconstruction_scope,old,base)
         self.serial+=1
         turns=old.turns+sum(m.get('role')=='user' for m in suffix) if reuse else 1
         # Persist the complete current event contract for future comparisons;
@@ -804,7 +867,7 @@ class ReadonlyJournal:
             self.last=prepared;self.retired_reason='persistence_unavailable';self._staged=None;return False
         self.last=prepared;self.retired_reason='';self.recovery_error=None;self._staged=None;return True
 
-    def append_completion(self,message):
+    def append_completion(self,message,model_origin=None):
         """Append a new terminal response before another channel can continue.
 
         No existing message is reserialized or projected. A response is not a
@@ -821,7 +884,7 @@ class ReadonlyJournal:
         candidate.usage=usage
         if history_boundary(usage['textChars'],candidate.base_chars,usage['wireChars'],growth_limit=False):
             raise ContextCapacityExceeded('The terminal completion exceeds Journal capacity.')
-        if not self._persist(candidate,'ready',settle_cutover=False):
+        if not self._persist(candidate,'ready',settle_cutover=False,model_origin=model_origin):
             raise ContextRecoveryUnavailable('The terminal completion could not be persisted.')
         self.last=candidate
         return True

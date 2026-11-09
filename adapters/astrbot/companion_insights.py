@@ -35,6 +35,7 @@ def decode(text):
 def snapshot(db,scope,subjects):
     return {'facts':{(subject,r[0]):(r[10],r[3],r[2]) for subject in subjects for r in fact_rows(db,scope,subject)},
             'relations':{r[0]:(r[1],r[2]) for r in db.execute('SELECT subject,affinity,last_seen FROM relations WHERE scope=?',(scope,)) if r[0] in subjects},
+            'feedback':{r[0]:r[1] for r in db.execute('SELECT event,state FROM dialogue_feedback WHERE scope=?',(scope,))},
             'emotion':db.execute('SELECT kind,intensity,updated,expires,neutral FROM companion_emotion WHERE scope=?',(scope,)).fetchone()}
 
 
@@ -137,12 +138,27 @@ def apply(db,memory,scope,cfg,payload,data,before,now=None):
         db.execute('UPDATE relation_evidence SET delta=?,reason=?,quote=? WHERE scope=? AND subject=? AND event=?',(desired,'semantic',item['quote'][:200],scope,person,source['event']))
         db.execute('INSERT OR IGNORE INTO companion_signals VALUES(?,?,?,?,?)',(scope,source['event'],'relation',item['quote'][:200],now))
     positions={str(x['event']):i for i,x in enumerate(payload)}
-    for item in items('effects'):
+    # A batch may describe several reactions to one answer; the newest valid
+    # source wins before the snapshot fence rejects subsequent replacements.
+    effects=sorted(items('effects'),key=lambda item:positions.get(str(item.get('reaction_event','')),-1) if isinstance(item,dict) else -1,reverse=True)
+    for item in effects:
         if not isinstance(item,dict):continue
         target=str(item.get('event',''));reaction=str(item.get('reaction_event',''))
         source=evidence({**item,'event':reaction},'user')
         if not source or target not in positions or positions[reaction]<=positions[target] or item.get('result') not in ('engaged','confused','corrected','rejected'):continue
+        # A slow reflection must not replace feedback settled since its input
+        # snapshot. Keep the evidence beside existing companion signals; this
+        # is one current interpretation, not a second delivery/message log.
+        current=db.execute('SELECT state FROM dialogue_feedback WHERE scope=? AND event=?',(scope,target)).fetchone()
+        if not current or current[0]!=before.get('feedback',{}).get(target):continue
+        prior=db.execute("SELECT quote FROM companion_signals WHERE scope=? AND event=? AND kind='dialogue_feedback'",(scope,target)).fetchone()
+        previous=json.loads(prior[0]) if prior else {}
+        reaction_at=source.get('at')
+        if previous.get('reaction_at') is not None and (type(reaction_at) not in (int,float) or reaction_at<previous['reaction_at']):continue
+        feedback={'state':item['result'],'reaction_event':reaction,'sender_id':str(source['sender_id']),'quote':item['quote'][:200]}
+        if type(reaction_at) in (int,float):feedback['reaction_at']=reaction_at
         db.execute('UPDATE dialogue_feedback SET state=? WHERE scope=? AND event=?',(item['result'],scope,target))
+        db.execute("INSERT INTO companion_signals VALUES(?,?,'dialogue_feedback',?,?) ON CONFLICT(scope,event,kind) DO UPDATE SET quote=excluded.quote,at=excluded.at",(scope,target,json.dumps(feedback,ensure_ascii=False),now))
         if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='expression_reinforcement'").fetchone():
             from social import reinforce_expression
             for expression, in db.execute('SELECT expression FROM social_patterns WHERE scope=? LIMIT 200',(scope,)).fetchall():
