@@ -1476,6 +1476,12 @@ def install_runtime(core,settings):
             'reason':None if retained and success else 'request_submitted_unknown' if retained else 'candidate_or_size_boundary' if success and valid and material_current else 'request_failed' if valid and material_current else 'summary_changed_during_request' if valid else 'authority_changed',
             'resetDetail':prepared.detail,'diagnosticDetail':(getattr(journal,'recovery_error',None) or prepared.retirement_deferred or stage or None),**(prepared.usage or {})})
     async def prepare_chat_payload(self,*args,**kwargs):
+        from model_cache import auxiliary_model
+        model=auxiliary_model(current_message_event.get(),self)
+        if model is not None:
+            bound=inspect.signature(prepare).bind_partial(self,*args,**kwargs)
+            bound.arguments['model']=model
+            args=bound.args[1:];kwargs=bound.kwargs
         payload,query=await prepare(self,*args,**kwargs)
         journal_reason=None
         from context_transport import model_messages
@@ -1677,6 +1683,13 @@ def install_runtime(core,settings):
     provider_overrides=ProviderOpenAIOfficial._apply_provider_specific_request_overrides
     def decision_output_override(self,payload,extra_body):
         provider_overrides(self,payload,extra_body)
+        from model_cache import auxiliary_model
+        model=auxiliary_model(current_message_event.get(),self)
+        if model is not None:
+            # The SDK merges custom_extra_body after payload assembly. Keep
+            # that per-request merge from replacing the trusted aux route.
+            payload['model']=model
+            extra_body.pop('model',None)
         limit=autonomy.decision_token_limit.get()
         if limit is not None:
             # The SDK merges custom_extra_body AFTER prepare_chat_payload.

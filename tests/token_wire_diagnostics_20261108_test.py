@@ -11,6 +11,26 @@ import model_request_capture as capture
 
 
 class WireDiagnosticsTests(unittest.TestCase):
+    def test_endpoint_hash_uses_actual_target_without_credentials_and_isolates_baselines(self):
+        lease={'tenantId':'endpoint-test','botId':'bot','root':'unused'}
+        event=NS(get_extra=lambda key,default=None:lease if key=='_hosted_lease' else NS(scope='shared',event_id='w') if key=='_hosted_pipeline' else default)
+        token=m.begin_attempt(event,NS());rows=[]
+        try:
+            with patch.object(m,'_wire_shapes',OrderedDict()),patch.object(m,'_wire_signatures',OrderedDict()),patch.object(m,'record_diagnostic',side_effect=lambda _,row:rows.append(row)):
+                def observe(url):
+                    request=httpx.Request('POST',url,json={'model':'same','messages':[{'role':'user','content':'private body'}]})
+                    raw=request.content;m.observe_wire_request(request);self.assertEqual(request.content,raw)
+                    return rows[-1]
+                first=observe('https://credential:secret@one.invalid/v1/chat/completions?token=secret')
+                same=observe('https://one.invalid:443/v1/chat/completions?token=other')
+                self.assertEqual(first['endpointSha'],same['endpointSha'])
+                self.assertTrue(json.loads(same['diagnosticDetail'])['wireBaselineKnown'])
+                other=observe('https://two.invalid/v1/chat/completions')
+                self.assertNotEqual(first['endpointSha'],other['endpointSha'])
+                self.assertFalse(json.loads(other['diagnosticDetail'])['wireBaselineKnown'])
+                self.assertNotIn('secret',json.dumps(rows));self.assertNotIn('private body',json.dumps(rows))
+        finally:m.reset_attempt(token)
+
     def test_wire_metadata_history_is_bounded_and_never_shared_between_tenants(self):
         lease={'tenantId':'one','botId':'same-bot','root':'unused'}
         event=NS(get_extra=lambda key,default=None:lease if key=='_hosted_lease' else NS(scope='shared',event_id='w') if key=='_hosted_pipeline' else default)
