@@ -68,8 +68,8 @@ class SubmissionEvidenceTests(unittest.TestCase):
         self.assertEqual(self.j._staged,p.serial)
         state,payload,sha=self.row()
         self.assertEqual(state,'ready')
-        saved=json.loads(payload)
-        self.assertIn('第三轮新消息',json.dumps(saved['wire'],ensure_ascii=False),'the outgoing tail is recoverable before any HTTP submission')
+        saved=ReadonlyJournal(self.db,SCOPE).last
+        self.assertIn('第三轮新消息',json.dumps(saved.wire,ensure_ascii=False),'the outgoing tail is recoverable before any HTTP submission')
 
     def test_unsent_candidate_abort_restores_previous_snapshot_exactly(self):
         before=self.row()
@@ -86,7 +86,7 @@ class SubmissionEvidenceTests(unittest.TestCase):
         self.assertEqual(self.j.last.wire,p.wire,'a possibly-received request must not fall back to a prefix without its tail')
         self.assertIsNone(self.j._staged)
         state,payload,sha=self.row()
-        self.assertIn('第三轮新消息',json.dumps(json.loads(payload)['wire'],ensure_ascii=False))
+        self.assertIn('第三轮新消息',json.dumps(ReadonlyJournal(self.db,SCOPE).last.wire,ensure_ascii=False))
         # The next request continues from the retained baseline byte-exactly.
         incoming=base_messages()+[{'role':'assistant','content':'第二轮真实回复'},sourced('3','第三轮新消息'),{'role':'assistant','content':'第三轮真实回复'},sourced('4','第四轮'),event_packet({'sender_id':'12345678'}),packet({'state':{'facts':[]}})]
         nxt=self.j.prepare(incoming,('t','b',1),now=3,strict=True,guarded=True)

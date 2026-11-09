@@ -49,11 +49,12 @@ class ReviewMemory(unittest.TestCase):
   self.db.execute("INSERT INTO memory_summary_levels VALUES(?,'small')",(identifier,))
   for person in people:self.db.execute('INSERT INTO memory_summary_people VALUES(?,?)',(identifier,person))
   self.db.commit();return identifier
- def test_rolling_excludes_unrelated_group_but_preserves_participation(self):
+ def test_fixed_foundation_does_not_select_cross_scope_participation(self):
   other=self.add_summary('group:55555','他群资料')
   related=self.add_summary('group:66666','本人参与的群资料',[PERSON])
   self.assertEqual(self.store.reflection.rolling('group:77777'),[])
-  self.assertEqual({x['id'] for x in self.store.reflection.rolling(SCOPE)},{related})
+  self.assertEqual(self.store.reflection.rolling(SCOPE),[])
+  self.assertEqual({x['id'] for x in self.store.reflection.rolling('group:66666')},{related})
   self.assertEqual({x['id'] for x in self.store.reflection.rolling('group:55555')},{other})
  def test_unknown_and_self_core_note_not_public(self):
   for scopes in ([],['*']):

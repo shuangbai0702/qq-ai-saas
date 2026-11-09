@@ -15,7 +15,7 @@ class Preflight(unittest.IsolatedAsyncioTestCase):
         self.db.execute('CREATE TABLE group_interjections(scope TEXT,event TEXT,at REAL)')
         self.planner=Planner(self.db);self.now=time.time();self.event=contextvars.ContextVar('event',default=None)
         initiative.incoming(self.db,'private:12345','12345','99999','想聊茶',self.now-400)
-        self.cfg={'proactive':True,'behavior':{'memory':False,'proactiveTargets':['private:12345'],'proactiveModelSchedule':True,'quietStart':0,'quietEnd':0,'dailyPlanLimit':10}}
+        self.cfg={'proactive':True,'behavior':{'memory':False,'proactiveTargets':['private:12345'],'proactiveModelSchedule':True,'quietStart':0,'quietEnd':0,'dailyPlanLimit':10,'silenceSeconds':300,'proactiveIntervalSeconds':300}}
         self.calls=[];self.reasons=[]
         async def chat(**kwargs):
             self.calls.append(kwargs)
@@ -62,13 +62,14 @@ class Preflight(unittest.IsolatedAsyncioTestCase):
     def test_private_window_reads_shared_authority_without_drafts_or_group_displacement(self):
         from shared_context import recent,JOURNAL_SCOPE
         from context_protocol import SOURCE,model_json
-        self.db.execute('CREATE TABLE fishbot_readonly_journals(scope TEXT,payload TEXT)')
+        import hashlib
+        self.db.execute('CREATE TABLE fishbot_readonly_journals(scope TEXT,payload TEXT,version INTEGER,sha TEXT)')
         def message(scope,event,text):
             return {'role':'user','content':SOURCE+model_json({'scope':scope,'event_id':event,'sender_id':'12345','at':self.now})+'\n'+text}
         messages=[message('private:12345','private','真实共同话题'),{'role':'assistant','content':'这只是模型原稿，不等于发送成功'}]
         messages.extend(message('group:55555',str(i),'群聊'+str(i)) for i in range(20))
-        payload=model_json({'base':messages})
-        self.db.execute('INSERT INTO fishbot_readonly_journals VALUES(?,?)',(model_json(JOURNAL_SCOPE),payload))
+        payload=model_json({'scope':model_json(JOURNAL_SCOPE),'base':messages})
+        self.db.execute('INSERT INTO fishbot_readonly_journals VALUES(?,?,1,?)',(model_json(JOURNAL_SCOPE),payload,hashlib.sha256(payload.encode()).hexdigest()))
         view=recent(self.db,4,1200,scope='private:12345')
         self.assertEqual(len(view),1);self.assertEqual(view[0]['source_event'],'private')
         self.assertEqual(view[0]['sender_id'],'12345');self.assertEqual(view[0]['text'],'真实共同话题')

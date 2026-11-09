@@ -4,7 +4,7 @@ The existing Journal owns wire history; this module only selects its logical
 key, serializes writers, and prepares new, never-submitted inputs.
 """
 import asyncio,copy,json,re,time,hashlib
-from context_protocol import SOURCE,source,model_json
+from context_protocol import SOURCE,source,model_json,event_message
 
 JOURNAL_SCOPE='bot_shared'
 
@@ -132,16 +132,18 @@ def observe(db,event,cfg,group_limit=2):
                  '[语音消息，尚未转写]' if isinstance(c,Record) else '' for c in parts)
     owner=str((cfg.get('behavior') or cfg).get('ownerUin') or '')
     if sender==owner and owner:origin['attention']='[important]'
-    text=SOURCE+model_json(origin)+'\n'+body
-    content=[{'type':'text','text':text}]
+    content=[{'type':'text','text':body}]
     for c in parts:
         if isinstance(c,Image):
             location=getattr(c,'url',None) or getattr(c,'file',None)
             if isinstance(location,str) and location:
                 if location.startswith('base64://'):location='data:image/jpeg;base64,'+location[9:]
                 content.append({'type':'image_url','image_url':{'url':location}})
-    message={'role':'user','content':content if len(content)>1 else text}
+    message=event_message(origin,content)
     raw=model_json(message)
+    from message_provenance import bind_model_input
+    signature=bind_model_input(db,JOURNAL_SCOPE,scope,identifier,sender,message)
+    event.set_extra('_hosted_shared_input_digest',signature)
     # A redelivery cannot replace the first protocol-bound author or body.
     db.execute('INSERT OR IGNORE INTO fishbot_shared_inputs(scope,event,message,created) VALUES(?,?,?,?)',(scope,identifier,raw,time.time()))
     db.commit();return True
@@ -158,12 +160,14 @@ def queued(db,cfg,journal,group_limit=2,current=None):
                 # Prefer SDK-rendered quotes/voice/media for the current NEW
                 # event. A previously committed event never enters this branch.
                 native=copy.deepcopy(current[2]);a=source(native);b=source(message)
-                if not a or not b or a['sender_id']!=b['sender_id']:raise ValueError('shared_context_current_author_changed')
+                if not a or not b or any(str(a.get(k))!=str(b.get(k)) for k in ('scope','event_id','sender_id')):raise ValueError('shared_context_current_author_changed')
                 content=native['content'];parts=[{'type':'text','text':content}] if isinstance(content,str) else content
                 line,sep,body=parts[0]['text'].partition('\n');a['at']=b.get('at')
                 parts[0]['text']=SOURCE+model_json(a)+'\n'+body
-                native['content']=parts[0]['text'] if isinstance(content,str) else parts
-                message=native
+                # Only this never-submitted event may receive SDK enrichment.
+                # Freeze the queue's trusted time/identity and a single shape.
+                parts[0]={**parts[0],'text':body}
+                message={**native,**event_message(a,parts)}
             result.append(message)
     return result
 
@@ -176,9 +180,10 @@ def settle_inputs(db,journal):
 
 def recent(db,limit=12,budget=3000,scope=None):
     """Bounded auxiliary judgment view of the ONE committed Journal."""
-    row=db.execute('SELECT payload FROM fishbot_readonly_journals WHERE scope=?',(model_json(JOURNAL_SCOPE),)).fetchone()
-    if not row or not row[0]:return []
-    messages=json.loads(row[0]).get('base',[]);result=[]
+    from journal_storage import read_snapshot
+    snapshot=read_snapshot(db,model_json(JOURNAL_SCOPE))
+    if snapshot is None:return []
+    messages=snapshot.get('base',[]);result=[]
     for message in messages:
         origin=source(message)
         if origin:
@@ -194,7 +199,7 @@ def recent(db,limit=12,budget=3000,scope=None):
     return result
 
 
-def delivery_view(db,journal=None,limit=8,budget=3000,exclude_scope=None):
+def delivery_view(db,journal=None,limit=8,budget=3000,exclude_scope=None,text_limit=1200,only_scope=None):
     """Read existing settled protocol evidence, not another message history.
 
     Terminal assistant messages are model drafts. Freshness may replace/drop
@@ -207,22 +212,24 @@ def delivery_view(db,journal=None,limit=8,budget=3000,exclude_scope=None):
         # constructor has created persistence. No submitted history means no
         # deliveries; do not suppress other database errors.
         if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fishbot_readonly_journals'").fetchone():return []
-        row=db.execute('SELECT payload FROM fishbot_readonly_journals WHERE scope=?',(model_json(JOURNAL_SCOPE),)).fetchone()
-        if not row or not row[0]:return []
-        messages=json.loads(row[0]).get('base',[])
+        from journal_storage import read_snapshot
+        snapshot=read_snapshot(db,model_json(JOURNAL_SCOPE))
+        if snapshot is None:return []
+        messages=snapshot.get('base',[])
     else:
         if journal.last is None:return []
         messages=journal.last.base
     known={(o['scope'],str(o['event_id'])) for m in messages if (o:=source(m)) and o['scope']!=exclude_scope}
     rows=db.execute('''SELECT p.scope,p.subject,p.event,p.status,p.attempted,p.confirmed,
-                      d.reply,d.at,s.data FROM pipeline_events p
+                      d.reply,d.at,s.data,d.state FROM pipeline_events p
                       LEFT JOIN dialogue_feedback d ON d.scope=p.scope AND d.event=p.event
                       LEFT JOIN memory_message_sources s ON s.scope=p.scope AND s.event=p.event AND s.direction='outgoing'
                       WHERE p.status NOT IN ('received','sending','waiting','duplicate','silent')
                       ORDER BY p.at DESC LIMIT 64''').fetchall()
     result=[];used=0
-    for scope,subject,event,status,attempted,confirmed,text,at,raw in rows:
-        if (scope,str(event)) not in known:continue
+    has_signals=bool(db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='companion_signals'").fetchone())
+    for scope,subject,event,status,attempted,confirmed,text,at,raw,feedback_state in rows:
+        if (scope,str(event)) not in known or only_scope is not None and scope!=only_scope:continue
         try:receipt=json.loads(raw) if raw else {}
         except (ValueError,TypeError):receipt={}
         if not isinstance(receipt,dict):receipt={}
@@ -231,11 +238,19 @@ def delivery_view(db,journal=None,limit=8,budget=3000,exclude_scope=None):
         item={'source_scope':scope,'source_event':str(event),'recipient_id':subject}
         if proven:
             item.update(delivery='confirmed' if status=='sent' and receipt.get('complete') is True else 'partial',
-                        confirmed_text=text[:1200],text_complete=len(text)<2000 and len(text)<=1200,at=at)
+                        confirmed_text=text[:text_limit],text_complete=len(text)<2000 and len(text)<=text_limit,at=at)
         else:
             # A completed model response or an attempted protocol write does
             # not establish delivery. Never infer success from Work status.
             item['delivery']='unknown' if attempted or confirmed or status in ('sent','partial','unknown') else 'not_sent'
+        # Human feedback changes interpretation, never protocol confirmation.
+        # Older records have only state; do not invent a reaction or quote.
+        if feedback_state in ('engaged','confused','corrected','rejected'):
+            item['feedback']={'state':feedback_state}
+            signal=db.execute("SELECT quote FROM companion_signals WHERE scope=? AND event=? AND kind='dialogue_feedback'",(scope,event)).fetchone() if has_signals else None
+            if signal:
+                evidence=json.loads(signal[0])
+                if isinstance(evidence,dict) and evidence.get('state')==feedback_state:item['feedback']=evidence
         size=len(model_json(item))
         if used+size>budget:continue
         result.append(item);used+=size
@@ -245,7 +260,7 @@ def delivery_view(db,journal=None,limit=8,budget=3000,exclude_scope=None):
 
 def delivery_context(db,journal):
     return {'deliveries':delivery_view(db,journal),
-            'meaning':'历史assistant内容是模型原稿，不等于已发送；deliveries记录原会话最终聊天回复的投递结算，不替代独立工具回执。confirmed_text为协议确认文本，text_complete=false时只是有界摘录；unknown不代表失败或允许重发。'}
+            'meaning':'历史assistant内容是模型原稿，不等于已发送；deliveries记录原会话最终聊天回复的投递结算，不替代独立工具回执。confirmed_text为协议确认文本，text_complete=false时只是有界摘录；unknown不代表失败或允许重发。feedback是对方后续反应，corrected/rejected不撤销协议投递确认，也不授予重发权限。'}
 
 
 def refresh_deliveries(messages,db,journal):
@@ -298,7 +313,7 @@ def current_view(messages,scope,event,service=False):
     return copy.deepcopy(head)+native_tail(messages,scope,event,service)
 
 
-def compose(journal,messages,scope,event,inputs=None,previous_tools=None,service=False,self_id=''):
+def compose(journal,messages,scope,event,inputs=None,previous_tools=None,service=False,self_id='',input_digest=None):
     """Keep the exact canonical native prefix; append this event's new tail.
 
     Never overlap-match another SDK conversation or copy its old history.
@@ -309,6 +324,15 @@ def compose(journal,messages,scope,event,inputs=None,previous_tools=None,service
     packets=[copy.deepcopy(m) for m in messages if m.get('role')=='user' and isinstance(m.get('content'),str)
              and m['content'].startswith((READONLY_CURRENT+'\n',EVENT_CONTEXT_CURRENT+'\n'))]
     native=native_tail(messages,scope,event,service)
+    if not service:
+        committed=next((m for m in (journal.last.base if journal.last else []) if (o:=source(m)) and o['scope']==scope and str(o['event_id'])==str(event)),None)
+        if committed is not None:
+            old_source=source(committed);live_source=source(native[0])
+            if not live_source or str(old_source['sender_id'])!=str(live_source['sender_id']):raise ValueError('shared_context_current_author_changed')
+            if input_digest is not None:
+                from message_provenance import get
+                proof=get(journal.db,JOURNAL_SCOPE,event_key(old_source),'model')
+                if proof.get('input_digest')!=input_digest:raise ValueError('shared_context_protocol_input_changed')
     first_call=previous_tools is None
     tools=native[1:];previous_tools=previous_tools or []
     if tools[:len(previous_tools)]!=previous_tools:raise ValueError('shared_context_tool_prefix_changed')

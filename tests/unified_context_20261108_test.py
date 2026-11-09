@@ -5,7 +5,7 @@ from types import SimpleNamespace as NS
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
 import shared_context as shared
 from readonly_journal import ReadonlyJournal
-from context_protocol import SOURCE,READONLY_CURRENT,model_json
+from context_protocol import SOURCE,READONLY_CURRENT,model_json,source
 from context_transport import EVENT_CONTEXT_CURRENT
 from summary_material import snapshots,valid_material,remember,coverage,project_history,coverage_digest
 from behavior import BehaviorStore
@@ -125,11 +125,22 @@ class Writers(unittest.IsolatedAsyncioTestCase):
                 states=db.execute('SELECT scope,round_count,state FROM memory_reconstruction_checkpoints').fetchall()
                 self.assertEqual(states,[(shared.JOURNAL_SCOPE,35,'available')],metrics)
                 next_message=message('private:87654321','36',who='87654321')
-                composed,_=shared.compose(j,request(next_message),'private:87654321','36',[next_message])
+                foundation={'conversation_summaries':store.reflection.foundation(shared.JOURNAL_SCOPE),'facts':[{'subject':'12345678','value':'retained trusted fact'}]}
+                next_request=request(next_message)
+                next_request[1]={'role':'user','content':READONLY_CURRENT+'\n'+model_json({'memory_foundation':foundation,'state':{}})}
+                old_system=copy.deepcopy(j.last.wire[0])
+                composed,_=shared.compose(j,next_request,'private:87654321','36',[next_message])
                 projected=project_history(composed,coverage(db,shared.JOURNAL_SCOPE),shared.JOURNAL_SCOPE,shared.event_key({'scope':'private:87654321','event_id':'36'}))
                 prepared=j.prepare(projected,('bot',),strict=True,reconstruction_authority=store.reflection,reconstruction_scope=shared.JOURNAL_SCOPE,retirement=store.reflection.reconstruction_stamp(shared.JOURNAL_SCOPE))
                 self.assertIsNotNone(prepared.reconstruction_permit);self.assertTrue(j.stage_candidate(prepared));self.assertTrue(j.commit(prepared))
                 self.assertEqual(db.execute('SELECT state FROM memory_reconstruction_checkpoints').fetchone()[0],'consumed')
+                self.assertEqual(prepared.wire[0],old_system)
+                from context_foundation import FOUNDATION_CURRENT
+                regions=[json.loads(m['content'].split('\n',1)[1])['region'] for m in prepared.wire if isinstance(m.get('content'),str) and m['content'].startswith(FOUNDATION_CURRENT+'\n')]
+                self.assertEqual(regions,['small_summaries','long_term_facts'])
+                self.assertEqual([source(m)['event_id'] for m in prepared.wire if source(m)],['36'])
+                self.assertNotIn('completed real event',model_json(prepared.wire))
+                self.assertEqual(model_json(ReadonlyJournal(db,shared.JOURNAL_SCOPE).last.wire),model_json(prepared.wire))
             finally:store.close()
     async def test_same_bot_serial_different_bot_parallel_and_send_unlocked(self):
         first=shared.Writer();second=shared.Writer();entered=asyncio.Event();release=asyncio.Event();order=[]

@@ -4,7 +4,7 @@ Origin belongs to the first platform-bound text envelope, never a quote/body.
 Unknown content remains in requests and cannot prove summary completeness.
 Serialization preserves dictionary insertion order, arrays and string contents.
 """
-import hashlib,json,re
+import copy,hashlib,json,re
 
 PERSONA_PREFIX='important[要时刻注意自己应该保持人格，不要机械性，任务性得对话]'
 PERSONA_IMAGES='自然交流时多用贴合语境的表情表达，优先选语义合适的QQ收藏表情；没有合适收藏再选平台表情。遇到自己喜欢、适合以后使用的QQ表情，可以主动调用已启用的收藏工具保存，以真实回执确认结果。不为凑图打断交流，不覆盖专门的角色输出格式，具体发送以已启用能力和真实回执为准。'
@@ -29,6 +29,21 @@ _IMAGE_NOTICE=re.compile(r'\[(Image (?:\d+|Attachment)(?: in quoted message)?): 
 def model_json(value):
     """Format structured model data, not raw user text or persistent records."""
     return json.dumps(value,ensure_ascii=False,separators=(',',':'))
+
+
+def event_message(origin,parts):
+    """Render NEW trusted input once; never apply to a committed Journal.
+
+    The staging queue and live SDK input share the same envelope order and
+    text-part shape. Unknown provenance is retained, not silently discarded.
+    """
+    order=('scope','sender_id','event_id','at','attention','sender_name','mentions','reply_to')
+    header={k:origin[k] for k in order if k in origin}
+    header.update({k:v for k,v in origin.items() if k not in header})
+    parts=[{'type':'text','text':parts}] if isinstance(parts,str) else copy.deepcopy(parts)
+    if not isinstance(parts,list) or not parts or parts[0].get('type')!='text':raise ValueError('event_text_part_required')
+    parts[0]={**parts[0],'text':SOURCE+model_json(header)+'\n'+parts[0]['text']}
+    return {'role':'user','content':parts}
 
 
 def source(message):

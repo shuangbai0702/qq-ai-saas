@@ -5,6 +5,38 @@ from media_egress import valid_url
 
 def remote_media_url(value):return valid_url(value)
 
+def _install_tool_catalog(active):
+    """Keep native tools stable before the runner builds its execution table."""
+    import inspect
+    from functools import wraps
+    from astrbot.core.agent.tool import ToolSet
+    from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
+    from astrbot.core.tools.message_tools import GetGroupMessageHistoryTool
+    original=ToolLoopAgentRunner.reset
+    @wraps(original)
+    async def reset(self,*args,**kwargs):
+        bound=inspect.signature(original).bind_partial(self,*args,**kwargs)
+        context=bound.arguments.get('run_context')
+        agent_context=getattr(context,'context',None)
+        event=getattr(agent_context,'event',None)
+        request=bound.arguments.get('request')
+        if event is not None and request is not None and active(event) and not event.get_extra('_hosted_internal_work'):
+            plugin_context=agent_context.context
+            settings=plugin_context.get_config(umo=event.unified_msg_origin).get('provider_ltm_settings',{})
+            if settings.get('group_message_history_enable',False):
+                # The SDK adds this tool only for group events. Advertising the
+                # same definition in private chats does not grant group access:
+                # its guarded call still requires the current group and lease.
+                previous=request.func_tool
+                request.func_tool=ToolSet(tools=list(previous.tools) if previous else [])
+                if request.func_tool.get_tool('get_group_message_history') is None:
+                    from inner_tools import completion_guard
+                    tool=plugin_context.get_llm_tool_manager().get_builtin_tool(GetGroupMessageHistoryTool)
+                    request.func_tool.add_tool(completion_guard(tool,event))
+                request.func_tool.tools.sort(key=lambda tool:tool.name)
+        return await original(*bound.args,**bound.kwargs)
+    ToolLoopAgentRunner.reset=reset
+
 def install(members):
     if getattr(install,'installed',False):return
     from media_egress import install_downloads
@@ -90,4 +122,5 @@ def install(members):
         if not active(event):return 'error: stale bot configuration'
         return await history_original(self,context,**kwargs)
     SendMessageToUserTool.call=send;GetGroupMessageHistoryTool.call=history
+    _install_tool_catalog(active)
     install.installed=True

@@ -127,6 +127,53 @@ test('foreground handoff registers one persistent goal and due wake; forged iden
   assert.equal((await repo.view('tb','b')).goals.length,0);
  }finally{await db.close()}
 });
+
+test('legacy model origin reaches the request fence without rewriting accepted source',async()=>{
+ const{db,repo}=await fixture();try{
+  await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) SELECT id,revision,$1 FROM bots",[JSON.stringify({proactive:true})]);
+  await repo.configure('ta','a',1,{mode:'active'});await repo.applied('ta','a',2);
+  const goalId=randomUUID();await handoffGoal(db,'a','ta',goalId);
+  await db.query("UPDATE autonomy_goals SET origin='model',source=source||$2::jsonb WHERE id=$1",[goalId,JSON.stringify({kind:'research',handoffFingerprint:'original-accepted-fingerprint'})]);
+  const before=(await db.query('SELECT source FROM autonomy_goals WHERE id=$1',[goalId]))[0].source;
+  assert.equal(before.origin,undefined);
+  const claim=await repo.claim('legacy-origin');assert.ok(claim);
+  const goal=(await repo.dueHandoffs(claim)).find(g=>g.id===goalId)!;
+  const prepared=await repo.planHandoff(claim,goal,{});
+  assert.equal(prepared.source.origin,'model','Python must recognize autonomous work after config changes during execution');
+  assert.equal(prepared.action.kind,'research');
+  assert.deepEqual(prepared.source,{...before,origin:'model'});
+  assert.deepEqual((await db.query('SELECT source FROM autonomy_goals WHERE id=$1',[goalId]))[0].source,before,'accepted source and fingerprint remain unchanged');
+ }finally{await db.close()}
+});
+
+test('proactive disables model-origin registration and dispatch while user reminder authority stays independent',async()=>{
+ const{db,repo}=await fixture();try{
+  await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) SELECT id,revision,$1 FROM bots",[JSON.stringify({proactive:false,behavior:{ownerUin:'12345678'}})]);
+  await repo.configure('ta','a',1,{mode:'active'});await repo.applied('ta','a',2);
+  const bot=(await repo.policies()).find(b=>b.bot_id==='a')!;
+  const request={id:randomUUID(),tenantId:'ta',botId:'a',epoch:2,generation:bot.generation,revision:bot.revision,eventId:'true-event',scope:'private:23456789',senderId:'23456789',at:Date.now()-1000,objective:'read accepted evidence',delaySeconds:0,kind:'research',origin:'model'};
+  assert.deepEqual(await repo.acceptHandoff(bot,request),{status:'rejected',reason:'proactive_disabled'});
+  assert.equal((await repo.view('ta','a')).goals.length,0);
+  await db.query("UPDATE bot_config_revisions SET config=jsonb_set(config,'{proactive}','true') WHERE bot_id='a'");
+  const accepted=await repo.acceptHandoff(bot,request);assert.equal(accepted.status,'accepted');
+  const reminder={...request,id:randomUUID(),origin:undefined,kind:'message',objective:'the user asked for this reminder'};
+  await db.query("UPDATE bot_config_revisions SET config=jsonb_set(config,'{proactive}','false') WHERE bot_id='a'");
+  assert.deepEqual(await repo.acceptHandoff(bot,request),accepted,'existing accepted acknowledgement remains idempotent after disabling');
+  assert.equal((await repo.acceptHandoff(bot,reminder)).status,'accepted','user-source reminders do not inherit proactive permission');
+  const claim=await repo.claim('proactive-switch');assert.ok(claim);
+  assert.deepEqual((await repo.dueHandoffs(claim)).map(g=>g.id),[reminder.id]);
+  const modelGoal=(await repo.view('ta','a')).goals.find(g=>g.id===request.id)!;
+  await assert.rejects(repo.planHandoff(claim,modelGoal,{}),/主动模式已关闭/,'dispatch rechecks latest config after due selection');
+  const goals=(await repo.view('ta','a')).goals;
+  assert.equal(goals.find(g=>g.id===request.id)!.status,'active','disabled model work is retained, not falsely canceled or completed');
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM autonomy_actions'))[0].n,0);
+  const userGoal=goals.find(g=>g.id===reminder.id)!;
+  const planned=await repo.planHandoff(claim,userGoal,{});
+  assert.equal(planned.source.senderId,reminder.senderId);assert.equal(planned.action.target,reminder.scope);
+  assert.equal(planned.source.origin,undefined,'user-source authority is never relabeled as model-origin');
+  assert.equal((await repo.view('tb','b')).goals.length,0);
+ }finally{await db.close()}
+});
 test('tenant ownership, epoch CAS, wake coalescing and durable pause retain goals',async()=>{
  const{db,repo}=await fixture();try{
   await assert.rejects(repo.view('tb','a'));

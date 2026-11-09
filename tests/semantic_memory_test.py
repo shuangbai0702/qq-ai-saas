@@ -19,44 +19,25 @@ class SemanticMemory(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):self.r.close();self.db.close()
     async def recall(self,**kw):
         return await self.r.semantic_recall('group:1','饮品',self.cfg,self.provider,kw.get('current',lambda:True),{})
-    async def test_semantic_isolation_and_cache(self):
-        result=await self.recall();self.assertEqual([x['summary'] for x in result],['喜欢喝红茶'])
-        self.assertEqual(len(self.calls[0]['input']),3)
-        await self.recall();self.assertEqual(len(self.calls[-1]['input']),1)
-        self.client.base_url='https://other.example/v1';await self.recall()
-        self.assertEqual(len(self.calls[-1]['input']),3)
-    async def test_disabled_budget_and_failure_fallback(self):
-        self.cfg['dailyEmbeddingLimit']=0;self.assertTrue(await self.recall());self.assertFalse(self.calls)
-        self.cfg['dailyEmbeddingLimit']=100
-        async def broken(**kw):raise ValueError('unsupported')
-        self.client.embeddings.create=broken
-        self.assertTrue(await self.recall())
-        self.cfg['memorySemantic']=False;self.assertTrue(await self.recall())
-    async def test_invalid_vectors_fallback(self):
-        async def malformed(**kw):return NS(data=[NS(index=i,embedding=[float('nan')]) for i in range(len(kw['input']))])
-        self.client.embeddings.create=malformed
-        self.assertTrue(await self.recall());self.assertEqual(self.db.execute('SELECT count(*) FROM memory_vectors').fetchone()[0],0)
-    async def test_missing_embedding_client_falls_back(self):
-        self.provider=NS()
-        self.assertTrue(await self.recall())
-    async def test_late_forget_stop_and_replacement(self):
-        for mode in ('forget','stop','replace'):
-            entered=asyncio.Event();release=asyncio.Event();valid=[True]
-            async def delayed(**kw):
-                entered.set();await release.wait()
-                return NS(data=[NS(index=i,embedding=[1.,0.]) for i in range(len(kw['input']))])
-            self.client.embeddings.create=delayed
-            task=asyncio.create_task(self.recall(current=lambda:valid[0]));await entered.wait()
-            if mode=='forget':invalidate(self.db,'group:1')
-            elif mode=='stop':self.r.close()
-            else:valid[0]=False
-            release.set();self.assertEqual(await task,[])
-            self.assertEqual(self.db.execute('SELECT count(*) FROM memory_vectors').fetchone()[0],0)
-            self.r.closed=False
-            self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated) VALUES(?,?,?,?)',('group:1','喜欢喝红茶','[]',1));self.db.commit()
-    async def test_forget_deletes_cached_vectors(self):
-        await self.recall();invalidate(self.db,'group:1')
+    async def test_summary_reader_is_fixed_and_never_embeds(self):
+        first=await self.recall()
+        second=await self.r.semantic_recall('group:1','爬山',self.cfg,self.provider,lambda:True,{})
+        self.assertEqual(first,second)
+        self.assertEqual([item['summary'] for item in first],['喜欢喝红茶','明天去爬山'])
+        self.assertFalse(self.calls)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_vectors').fetchone()[0],0)
+
+    async def test_closed_or_stale_reader_returns_no_material(self):
+        self.assertEqual(await self.recall(current=lambda:False),[])
+        self.r.close()
+        self.assertEqual(await self.recall(),[])
+
+    async def test_forget_removes_summary_basis(self):
+        self.assertTrue(await self.recall())
+        invalidate(self.db,'group:1')
+        self.assertEqual(await self.recall(),[])
+        self.assertFalse(self.calls)
+
 
 class ProactiveSchedule(unittest.TestCase):
     def test_persisted_random_wait_and_unanswered_limit(self):

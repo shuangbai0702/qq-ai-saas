@@ -46,26 +46,27 @@ class Audience(unittest.IsolatedAsyncioTestCase):
   self.assertEqual({item['id'] for item in self.store.reflection.rolling('group:55555')},{big})
   self.assertEqual({item['id'] for item in self.store.reflection.rolling('group:66666')},{big})
   self.assertEqual({item['id'] for item in self.store.reflection.rolling('self')},{big})
- def test_rolling_takes_newest_same_scope_smalls(self):
-  scopes=['private:'+STRANGER]*5
-  ids=[self.summary('旧摘要'+str(i),scopes[i]) for i in range(5)]
+ def test_fixed_same_scope_smalls_keep_creation_order(self):
+  ids=[self.summary('摘要'+str(i),'private:'+STRANGER) for i in range(2)]
   rolling=[item['id'] for item in self.store.reflection.rolling('private:'+STRANGER)]
-  self.assertEqual(rolling,list(reversed(ids))[:3],'newest three, not the oldest three')
+  self.assertEqual(rolling,ids,'the complete steady-state foundation has at most two smalls, in creation order')
+  for query in ('旧摘要','完全无关查询'):
+   self.assertEqual([item['id'] for item in self.store.reflection.recall('private:'+STRANGER,query)],ids)
  def test_protected_material_survives_small_quota(self):
   protected=self.summary('与陌生人还有未解决的约定','private:'+STRANGER)
-  newer=[self.summary('闲聊'+str(i),'private:'+STRANGER) for i in range(4)]
+  newer=self.summary('闲聊','private:'+STRANGER)
   # Protection comes from evidence-backed model selection, never prose keywords.
   from summary_material import derive_claims
   claims=derive_claims('private:'+STRANGER,[{'event':'e1','sender_id':STRANGER,'user':'周六八点见','bot':'好','at':1}],{},[],{'commitments':[{'event':'e1','topic':'见面','quote':'周六八点见','who':'user','stage':'accepted'}]})
   self.db.execute('UPDATE memory_summaries SET schema_version=2,claims=? WHERE id=?',(json.dumps(claims),protected));self.db.commit()
-  rolling=[item['id'] for item in self.store.reflection.rolling('private:'+STRANGER)]
-  self.assertIn(protected,rolling);self.assertEqual(len(rolling),3);self.assertIn(newer[-1],rolling)
-  recent_protected=self.summary('新的纠正已确认','private:'+STRANGER)
-  rolling=[item['id'] for item in self.store.reflection.rolling('private:'+STRANGER)]
-  self.assertIn(recent_protected,rolling);self.assertIn(protected,rolling);self.assertEqual(len(rolling),3)
- def test_recall_and_search_exclude_self_summary_for_non_owner(self):
+  rolling=self.store.reflection.rolling('private:'+STRANGER)
+  self.assertEqual([item['id'] for item in rolling],[protected,newer])
+  self.assertEqual(rolling[0]['protected_claims'],claims,'fixed placement retains full evidence-backed claims')
+  self.assertEqual(self.store.reflection.recall('private:'+STRANGER,'新的纠正'),rolling,'query relevance cannot evict the protected basis')
+ def test_recall_uses_fixed_basis_and_summary_search_is_retired(self):
   big=self.summary('合并背景含主人私聊内容','self','big',origins=['private:'+OWNER,'group:55555'])
   good=self.summary('平江路夜景','group:55555',people=[STRANGER])
+  own=self.summary('本会话固定资料','private:'+STRANGER)
   context={'scope':'private:'+STRANGER,'subject':STRANGER}
   self.assertTrue(memory_audience(context,{'source_scope':'group:55555'}))
   self.assertTrue(memory_audience(context,{'source_scope':'self'}))
@@ -73,20 +74,23 @@ class Audience(unittest.IsolatedAsyncioTestCase):
   self.assertTrue(memory_audience({'scope':'private:'+OWNER,'subject':OWNER},{'source_scope':'private:'+STRANGER}))
   self.assertTrue(memory_audience({'scope':'private:'+OWNER,'subject':OWNER},{'source_scope':'private:'+OWNER}))
   result=self.store.reflection.recall('private:'+STRANGER,'平江路',subject=STRANGER)
-  self.assertIn(big,{item['id'] for item in result});self.assertIn(good,{item['id'] for item in result})
+  self.assertEqual({item['id'] for item in result},{big,own})
+  self.assertNotIn(good,{item['id'] for item in result})
+  self.assertEqual(self.store.reflection.recall('private:'+STRANGER,'完全无关查询',subject=STRANGER),result)
   self.assertNotIn(big,[r[0] for r in summary_rows(self.db,'private:'+STRANGER,STRANGER)])
   hits=self.store.search.search('private:'+STRANGER,STRANGER,'平江路',summaries=True)
-  self.assertIn(good,[item['id'] for item in hits]);self.assertNotIn(big,[item['id'] for item in hits])
- def test_semantic_context_candidates_share_the_same_gate(self):
+  self.assertEqual(hits,[],'no parallel summary search lifecycle remains')
+ def test_semantic_context_uses_fixed_scope_basis(self):
   big=self.summary('合并背景','self','big',origins=['private:'+OWNER,'group:55555'])
   good=self.summary('木雕展览未完话题','group:55555',people=[STRANGER])
+  own=self.summary('本会话固定资料','private:'+STRANGER)
   facts,summaries=semantic_recall(self.store,'private:'+STRANGER,STRANGER,'木雕展览',{'memorySummary':True,'ownerUin':OWNER},lambda:True,{})
-  self.assertIn(big,{item['id'] for item in summaries})
-  self.assertIn(good,{item['id'] for item in summaries})
+  self.assertEqual({item['id'] for item in summaries},{big,own})
+  self.assertNotIn(good,{item['id'] for item in summaries})
   owner_facts,owner_summaries=semantic_recall(self.store,'private:'+OWNER,OWNER,'木雕展览',{'memorySummary':True,'ownerUin':OWNER},lambda:True,{})
-  self.assertIn(big,{item['id'] for item in owner_summaries},'the owner private chat may read the bot shared background')
+  self.assertEqual({item['id'] for item in owner_summaries},{big},'the owner private chat reads the shared big basis, not another scope smalls')
   stranger_facts,stranger_summaries=semantic_recall(self.store,'private:'+STRANGER,STRANGER,'木雕展览',{'memorySummary':True,'ownerUin':OWNER},lambda:True,{})
-  self.assertIn(big,{item['id'] for item in stranger_summaries})
+  self.assertEqual({item['id'] for item in stranger_summaries},{big,own})
  def test_core_note_single_scope_multi_scope_and_legacy(self):
   def note(text,scopes):
    self.db.execute('INSERT OR REPLACE INTO memory_core_notes(slot,text,scopes,people,sources,updated,schema_version,claims) VALUES(1,?,?,?,?,?,1,NULL)',(text,json.dumps(sorted(scopes)),'[]','[]',self.now));self.db.commit()

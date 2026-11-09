@@ -26,16 +26,19 @@ class NaturalConversation(unittest.IsolatedAsyncioTestCase):
     def extract(self,payload,data,before=None):
         before=before or snapshot(self.db,'group:1',{'11111'})
         with self.db:return apply(self.db,self.store.memory,'group:1',self.cfg,payload,data,before,self.now+1)
-    def test_old_summary_recalled_before_recent_noise_and_no_scope_leak(self):
+    def test_fixed_foundation_is_query_independent_and_has_no_scope_leak(self):
         self.summary('11111上次去平江路拍夜景，雨天还想再去。')
         for i in range(80):self.summary('无关项目的进度记录'+str(i),at=10+i)
         self.summary('平江路秘密约定',scope='group:2',at=200)
         facts,summaries=recall(self.store,'group:1','11111','还记得平江路的夜景吗',self.cfg,lambda:True,{})
         self.assertIn('平江路',summaries[0]['summary']);self.assertNotIn('秘密',json.dumps(summaries,ensure_ascii=False))
-        # D4 ordering contract: a query-matched old summary ranks before the
-        # rolling background, and the rolling window stays fully visible after.
-        self.assertEqual(summaries[0]['recall_reason'],'scoped_bm25')
-        self.assertIn('rolling_background',{s['recall_reason'] for s in summaries})
+        # Fixed checkpoint summaries remain complete and chronological even
+        # when the question changes; legacy overflow never creates retrieval.
+        self.assertEqual(summaries,self.store.reflection.foundation('group:1'))
+        self.assertEqual(len(summaries),2)
+        self.assertEqual({s['recall_reason'] for s in summaries},{'checkpoint_foundation'})
+        _,other=recall(self.store,'group:1','11111','另一个完全不同的问题',self.cfg,lambda:True,{})
+        self.assertEqual(other,summaries)
     def test_fact_index_obeys_person_scope_correction_and_forget(self):
         self.fact('职业','木雕师');self.fact('职业','不应出现的私密职业',subject='22222')
         result=self.store.search.search('group:1','11111','木雕师');self.assertEqual(result[0]['value'],'木雕师')

@@ -53,7 +53,7 @@ export class AutonomyCoordinator {
  timer?:NodeJS.Timeout;heartbeatTimer?:NodeJS.Timeout;heartbeatTask?:Promise<void>;closed=false;busy=false;active?:{claim:any;actionId?:string;feedbackVersion?:number;task:Promise<void>};
  private policyCursor=0;
  private policySerial=0;
- private events=new Map<string,number>();private sampled=new Map<string,number>();
+ private events=new Map<string,number>();private sampled=new Map<string,{at:number;revision:number}>();
  // Optional bounded isolation for persistent deterministic faults. Undefined
  // by default: the existing 30-second error backoff stays the only behavior.
  readonly isolation?:{consecutiveLimit:number;cooldownSeconds:number};
@@ -107,8 +107,12 @@ export class AutonomyCoordinator {
     try{
      const installed=await this.call(bot,'policy',await this.policy(bot,current?owned.claim.cycleId:'',current?owned.actionId:''),2000);
      await this.repo.applied(bot.tenant_id,bot.bot_id,bot.epoch);
-     if(!installed?.pendingHandoffs&&Date.now()-(this.sampled.get(bot.bot_id)||0)<30000)return;
-     this.sampled.set(bot.bot_id,Date.now());
+     const sampled=this.sampled.get(bot.bot_id),revisionChanged=sampled?.revision!==bot.revision;
+     if(!revisionChanged&&!installed?.pendingHandoffs&&Date.now()-(sampled?.at||0)<30000)return;
+     // A config revision may re-enable model-origin work whose disabled wake
+     // was already consumed. Reuse discovery sampling, not a new polling loop.
+     if(revisionChanged&&bot.config.mode==='active')await this.repo.rearmHandoffs(bot.tenant_id,bot.bot_id,bot.epoch);
+     this.sampled.set(bot.bot_id,{at:Date.now(),revision:bot.revision});
      for(const pending of await this.repo.unconfirmed(bot.tenant_id,bot.bot_id)){
       const receipt=await this.call(bot,'receipt',{id:pending.id},4000).catch(()=>null);
       if(receipt?.result&&receipt.result.status!=='unknown')await this.repo.feedback({...bot,cycleId:pending.cycle_id},pending.id,receipt.result);

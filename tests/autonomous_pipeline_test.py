@@ -362,6 +362,21 @@ async def main():
         other.autonomous_experience['actions'][-1].update(status='completed',finishedAt=int(time.time()*1000),summary='durable final result')
         final=experience_context(other,'group:34567890',settings['qq']['config']['behavior'])['actions'][0]
         assert final['status']=='completed' and final['summary']=='durable final result'
+        other.autonomous_experience['actions'].extend([
+            {'id':'ordinary-completed','kind':'research','sourceScope':'group:34567890','status':'completed','objective':'old ordinary objective','summary':'old ordinary prose'},
+            {'id':'uncertain-completed','kind':'message','sourceScope':'group:34567890','status':'completed','objective':'verify actual receipt','summary':'unknown send remains unresolved','effects':[{'status':'unknown','receipt':{'status':'unknown'}}]},
+            {'id':'failed-task','kind':'research','sourceScope':'group:34567890','status':'failed','summary':'actual failure'},
+            {'id':'canceled-task','kind':'research','sourceScope':'group:34567890','status':'canceled','summary':'actual cancellation'}])
+        other.autonomous_experience['decisions'].append({'cycleId':'current-intention','sourceScope':'group:34567890','reason':'actual decision reason','action':{'id':'uncertain-completed','kind':'message','objective':'verify actual receipt'}})
+        original=json.dumps(other.autonomous_experience,sort_keys=True)
+        view=experience_context(other,'group:34567890',settings['qq']['config']['behavior'])
+        by_id={a['id']:a for a in view['actions']}
+        assert by_id['ordinary-completed']['status']=='completed' and 'summary' not in by_id['ordinary-completed'] and 'objective' not in by_id['ordinary-completed']
+        assert by_id['uncertain-completed']['summary']=='unknown send remains unresolved' and by_id['uncertain-completed']['effects'][0]['status']=='unknown'
+        assert by_id['failed-task']['summary']=='actual failure' and by_id['canceled-task']['summary']=='actual cancellation'
+        decision=next(d for d in view['decisions'] if d.get('cycleId')=='current-intention')
+        assert decision['action_ref']=='uncertain-completed' and 'objective' not in decision['action'] and decision['reason']=='actual decision reason'
+        assert json.dumps(other.autonomous_experience,sort_keys=True)==original,'projection changed authoritative ledger'
         assert brain.valid('qq',w),'experience synchronization incorrectly invalidated autonomous work'
         settings['qq']['config']['behavior']['memory']=False
         assert experience_context(other,'private:12345678',settings['qq']['config']['behavior'])['actions']==[]
@@ -404,13 +419,14 @@ async def main():
         # A real accepted task may return its result while proactive contact
         # is disabled/cooling down. Permission remains bound to that one goal.
         row=st.db.execute('SELECT data FROM pipeline_handoffs WHERE id=?',(submitted['requestId'],)).fetchone();request_data=json.loads(row[0]);request_data['at']-=301000;st.db.execute('UPDATE pipeline_handoffs SET data=? WHERE id=?',(json.dumps(request_data),submitted['requestId']));st.db.commit()
-        calls.clear();settings['qq']['config']['proactive']=False
+        calls.clear();settings['qq']['config']['proactive']=False;settings['qq']['revision']=2
         st.db.execute("INSERT INTO contacts(scope,subject,self_id,last_user,last_text) VALUES('private:23456789','23456789','90000000',?,'actual task input')",(time.time(),));st.db.commit()
         source={'handoffId':submitted['requestId'],'eventId':'handoff-event','scope':'private:23456789','senderId':'23456789','owner':False}
-        p={**p,'cycleId':str(uuid.uuid4()),'actionId':str(uuid.uuid4()),'until':time.time()*1000+14000};brain.install('qq',p)
-        w={**w,'id':p['actionId'],'cycleId':p['cycleId'],'feedbackVersion':brain.snapshot('qq')['feedbackVersion'],'expiresAt':time.time()*1000+30000}
+        p={**p,'revision':2,'cycleId':str(uuid.uuid4()),'actionId':str(uuid.uuid4()),'until':time.time()*1000+14000};brain.install('qq',p)
+        w={**w,'revision':2,'id':p['actionId'],'cycleId':p['cycleId'],'feedbackVersion':brain.snapshot('qq')['feedbackVersion'],'expiresAt':time.time()*1000+30000}
         assert brain.candidates('qq')==[]
-        granted=st.pipeline.request_reply(p,submitted['requestId'],source)
+        assert st.pipeline.request_reply(p,submitted['requestId'],source) is None,'revision crossing without a current lease was accepted'
+        granted=st.pipeline.request_reply(p,submitted['requestId'],source,current_lease=settings['qq'])
         assert granted and granted['scope']=='private:23456789','accepted handoff lost its scoped reply permit'
         forged={**source,'senderId':'12345678'}
         assert st.pipeline.request_reply(w,submitted['requestId'],forged,w['id']) is None

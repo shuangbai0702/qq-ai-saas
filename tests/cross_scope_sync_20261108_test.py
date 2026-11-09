@@ -87,11 +87,12 @@ class Sync(unittest.TestCase):
         self.assertFalse(any(r['role']=='self' for r in self.context()['recent_cross_session_messages']))
     def test_facts_shared_correction_and_forget_preserved(self):
         self.store.observe(self.private,self.owner,'记住：饮料=绿茶','f',self.now)
-        self.assertEqual(self.context()['state']['facts'][0]['value'],'绿茶')
+        self.assertEqual(self.context()['memory_foundation']['facts'][0]['value'],'绿茶')
         self.store.observe(self.other,self.owner,'更正记忆：饮料=红茶','c',self.now+1)
-        self.assertEqual(self.context()['state']['facts'][0]['value'],'红茶')
+        self.assertEqual(self.context()['memory_foundation']['facts'][0]['value'],'红茶')
         self.store.observe(self.private,self.owner,'忘记：饮料','x',self.now+2)
-        self.assertEqual(self.context()['state']['facts'],[])
+        self.assertEqual(self.context()['memory_foundation']['facts'],[])
+        self.assertNotIn('facts',self.context()['state'])
     def test_summaries_keep_real_participation(self):
         a=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated) VALUES(?,?,?,?)',(self.private,'private fixture','[]',self.now)).lastrowid
         b=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated) VALUES(?,?,?,?)',(self.other,'group fixture','[]',self.now)).lastrowid

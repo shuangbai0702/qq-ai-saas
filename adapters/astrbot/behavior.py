@@ -7,6 +7,7 @@ from context_protocol import model_json
 import autonomy
 import companion_state
 from hosted_memory import ScopedMemory
+import context_foundation
 from social import SocialStore,maybe_learn,requests_meme
 from pathlib import Path
 from datetime import datetime,timezone,timedelta
@@ -120,7 +121,7 @@ class BehaviorStore:
                 except asyncio.TimeoutError:return False
             return valid()
         finally:self.waiting-=1
-    def observe(self,scope,subject,text,event,now=None,auto_capture=False,memory_enabled=True,directed=True):
+    def observe(self,scope,subject,text,event,now=None,auto_capture=False,memory_enabled=True,directed=True,project_facts=True):
         now=time.time() if now is None else now
         status=self.memory.observe(scope,subject,text,event,now,auto_capture) if memory_enabled else '长期记忆已关闭'
         previous=self.db.execute('SELECT affinity,emotion,expires FROM relations WHERE scope=? AND subject=?',(scope,subject)).fetchone()
@@ -148,7 +149,7 @@ class BehaviorStore:
         if text.strip():
             self.db.execute('INSERT INTO relations VALUES(?,?,?,?,?,?) ON CONFLICT(scope,subject) DO UPDATE SET affinity=excluded.affinity,emotion=excluded.emotion,expires=excluded.expires,last_seen=excluded.last_seen',(scope,subject,affinity,emotion,expires,now))
         self.db.commit()
-        facts=self.memory.recall(scope,subject,text,now) if memory_enabled else []
+        facts=self.memory.recall(scope,subject,text,now) if memory_enabled and project_facts else []
         return {'memory_status':status,'facts':facts,'emotion':emotion,'relationship':'熟悉' if affinity>=5 else '初识','affinity':affinity}
     def eligible(self,cfg,scope,group,mentioned,text,now=None,rng=random.random):
         now=time.time() if now is None else now;b=cfg.get('behavior') or {}
@@ -159,7 +160,7 @@ class BehaviorStore:
     def reserve_interjection(self,scope,cfg,now=None):
         event='legacy-'+str(now if now is not None else time.time())+'-'+scope
         return autonomy.reserve_send(self.db,scope,event,cfg,now)
-    def close(self):self.planner.close();self.memory.close();self.reflection.close();self.social.close();autonomy.recover_unstarted(self.db);self.db.close()
+    def close(self):self.pipeline.close();self.planner.close();self.memory.close();self.reflection.close();self.social.close();autonomy.recover_unstarted(self.db);self.db.close()
 
 def is_no_reply_marker(text):return isinstance(text,str) and text.strip()=='[NO_REPLY]'
 
@@ -371,9 +372,10 @@ def install_runtime(core,settings):
                 payload['memory']=bot_pipeline.decision_memory(st.db,s['config'],scope,work.subject,time.time())
                 payload['current_time']=datetime.fromtimestamp(time.time(),timezone(timedelta(hours=8))).isoformat()
                 if work.scope==scope:payload['original_message']={'event':work.event_id,'sender_id':work.subject,'text':event.get_message_str()[:600]}
+                request=group_freshness.review_request(payload,s['config'].get('systemPrompt',''),(s['config'].get('behavior') or {}).get('ownerUin'),event.get_self_id(),group=is_group)
                 from model_cache import decision_scope
                 with decision_scope(provider,s,'group_freshness',work.event_id):
-                    response=await provider.text_chat(prompt=model_json(payload),system_prompt=group_freshness.review_system(s['config'].get('systemPrompt',''),(s['config'].get('behavior') or {}).get('ownerUin'),event.get_self_id(),group=is_group),contexts=[],func_tool=None,request_max_retries=0)
+                    response=await provider.text_chat(**request,contexts=[],func_tool=None,request_max_retries=0)
                 usage=getattr(response,'usage',None)
                 from model_cache import usage_evidence
                 m['lastGroupFreshnessUsage']={'at':time.time(),**usage_evidence(response)}
@@ -391,19 +393,27 @@ def install_runtime(core,settings):
         with auxiliary_scope(provider,phase,work.event_id,scope):
             for _ in range(2):
                 began=time.monotonic()
+                version=bot_pipeline.decision_version(st.db,scope)
+                state_changed=event.get_extra('_hosted_decision_version',version)!=version
                 fallback=work.scope==scope and work.source in ('message','deferred_group') and bool(re.fullmatch(r'-?\d+',work.event_id)) and int(work.event_id)!=0
                 timeout=float(getattr(provider,'provider_config',{}).get('timeout',60) or 60)
-                decision=await st.freshness.check(scope,cursor,work.started,work.event_id,draft,confirmed,call,lambda:delivery_current(event) and stores.get(event.get_platform_id()) is st,timeout=max(0,timeout-event.get_extra('_hosted_freshness_elapsed',0)),fallback=fallback)
+                decision=await st.freshness.check(scope,cursor,work.started,work.event_id,draft,confirmed,call,lambda:delivery_current(event) and stores.get(event.get_platform_id()) is st,timeout=max(0,timeout-event.get_extra('_hosted_freshness_elapsed',0)),fallback=fallback,
+                    seen_events=(event.get_extra('_hosted_model_seen_events') or {}).get(scope),state_changed=state_changed)
+                if version!=bot_pipeline.decision_version(st.db,scope):decision={**decision,'action':'retry','reason':'state_changed_during_review'}
                 if decision.get('checked'):event.set_extra('_hosted_freshness_elapsed',event.get_extra('_hosted_freshness_elapsed',0)+time.monotonic()-began)
                 if decision['action']!='retry':break
             if decision['action']=='retry':decision={**decision,'action':'drop','reason':'group_changed_during_review'}
             if decision.get('checked') and decision['action'] in ('keep','replace','drop'):adopted('freshness_'+decision['action'])
             else:discarded('freshness_'+str(decision.get('action','unknown')))
         if decision['action']!='drop':
+            event.set_extra('_hosted_decision_version',version)
             cursors[scope]=decision['cursor'];event.set_extra('_hosted_freshness_cursors',cursors)
             if scope==work.scope and not confirmed:
                 from group_freshness import response_coverage
                 event.set_extra('_hosted_responded_events',response_coverage(event.get_extra('_hosted_responded_events',[]),decision))
+                if decision['action']=='keep':st.pipeline.covered_inputs(work,decision.get('responded_events',[]))
+        if scope==work.scope and decision.get('checked'):
+            st.pipeline.ignored_inputs(work,decision.get('ignored_events',[]))
         metrics.setdefault(event.get_platform_id(),{})['lastGroupFreshness']={'scope':scope,'at':time.time(),**{k:decision[k] for k in ('action','reason','checked') if k in decision}}
         return decision
     def journal_recapture(st):
@@ -414,6 +424,7 @@ def install_runtime(core,settings):
         from context_protocol import source,digest
         from readonly_journal import ReadonlyJournal
         def capture(scope,events):
+            if scope=='bot_shared':message_provenance.recover_model_settlements(st.db,scope)
             wanted={str(event) for event in events}
             journal=st.model_journals.get(scope)
             if journal is None or journal.last is None or journal.recovery_error or journal.retired_reason:
@@ -428,7 +439,7 @@ def install_runtime(core,settings):
                     if identifier in wanted:signatures[identifier]=digest(message)
             if not signatures:return
             from summary_material import snapshots,remember
-            remember(st.db,scope,snapshots(messages,scope,signatures))
+            remember(st.db,scope,snapshots(messages,scope,signatures,db=st.db))
         return capture
     def store(id,s):
         if id not in stores:
@@ -436,6 +447,16 @@ def install_runtime(core,settings):
         provider=provider_for(id)
         stores[id].reflection.binding=({**(s['config'].get('behavior') or {}),'_persona':s['config'].get('systemPrompt','')},provider,lambda:settings.get(id) is s and id not in core.event_bus.stopped_platforms,metrics.setdefault(id,{}),current_message_event)
         stores[id].reflection.recapture=journal_recapture(stores[id])
+        def learned_checkpoint(scope):
+            st=stores[id];cfg=s['config'].get('behavior') or {}
+            if not cfg.get('styleLearning') or not settings.get(id) is s:return
+            scopes=[scope] if scope!='bot_shared' else [r[0] for r in st.db.execute('SELECT scope FROM social_samples GROUP BY scope ORDER BY max(id) DESC')]
+            for candidate in scopes:
+                if not st.social.learning_batch(candidate):continue
+                maybe_learn(st.social,candidate,cfg,provider,lambda:settings.get(id) is s,metrics.setdefault(id,{}),current_message_event,lease=s)
+                care.track(st,st.social.task)
+                break
+        stores[id].reflection.checkpoint_callback=learned_checkpoint
         if provider is not None:
             from model_cache import bind_system_contract
             bind_system_contract(provider,stores[id].system_contract,s)
@@ -447,18 +468,19 @@ def install_runtime(core,settings):
         identity={'bot_id':s['botId'],'scope':scope,'sender_id':'0','owner':False,'owner_id':str(b.get('ownerUin') or '') or None,'principal':'autonomous-service','group_id':scope[6:] if scope.startswith('group:') else None}
         assembly=bot_pipeline.ContextBuilder(identity,'autonomous_work')
         assembly.contribute('delivery',{'recipient':{'scope':scope,'owner':bool(subject and subject==str(b.get('ownerUin') or ''))},'task':event.get_extra('_hosted_autonomous_action')})
-        assembly.contribute('companion',{'companion':companion_state.context(st.db,s['config'],scope,now,objective)})
+        assembly.contribute('companion',{'companion':context_foundation.live_companion(companion_state.context(st.db,s['config'],scope,now,objective))})
         shared=bot_pipeline.conversation_context(st,b,scope,subject,objective,now)
         bot_pipeline.finish_memory_view(st,shared,b,scope,objective)
-        shared['execution_experience']=event.get_extra('_hosted_execution_memory',{'status':'not_loaded'})
+        shared['execution_experience']=execution_memory.context_projection(event.get_extra('_hosted_execution_memory',{'status':'not_loaded'}),shared['memory_foundation'])
         assembly.contribute('memory',{'execution_memory_guidance':execution_memory.GUIDANCE})
-        assembly.contribute('memory',{key:shared[key] for key in ('persona_core_note','state','recent_messages','recent_cross_session_messages','conversation_timeline','autonomous_experience','execution_experience','group_round_history','active_agreements')})
+        assembly.contribute('memory',{key:shared[key] for key in ('memory_foundation','state','recent_messages','recent_cross_session_messages','conversation_timeline','autonomous_experience','execution_experience','group_round_history','active_agreements')})
         assembly.contribute('conversation',{key:shared[key] for key in ('dialogue','ambient_group_messages')})
         if (event.get_extra('_hosted_autonomous_action') or {}).get('kind')=='message':
             social_cfg={**b,'_qqAccount':str(event.get_self_id())}
             gate=st.social.image_status(scope,social_cfg,request=objective)
             social_cfg['memeEnabled']=gate['reason']=='available'
             social=st.social.context(scope,objective,social_cfg)
+            social.pop('expression_hints',None)
             social['image_expression']={'available':gate['reason']=='available','reason':gate['reason']}
             assembly.contribute('social',{'social':social})
             event.set_extra('_hosted_meme_gate',gate)
@@ -697,18 +719,20 @@ def install_runtime(core,settings):
         if await poke(event,cfg,st.db,lambda:current(event)):return
         internal=event.get_extra('_hosted_initiative',False);deferred=event.get_extra('_hosted_deferred_group');now=time.time()
         if deferred and (event.get_extra('_hosted_scheduled_generation')!=s.get('generation') or not st.presence.pending_current(deferred,cfg,lambda:current(event))):return
-        work=st.pipeline.bind(event,s)
-        if work.status!='received':
+        continuation=bool(event.get_extra('_hosted_scope_continuation'))
+        joined=not continuation and not internal and not deferred and subject!=str(event.get_self_id()) and st.pipeline.join_active(event)
+        work=event.get_extra('_hosted_pipeline') if continuation else None if joined else st.pipeline.bind(event,s)
+        if work is not None and work.status!='received':
             if deferred and work.reason=='deferred_output_already_attempted':st.presence.discard(deferred)
             return
-        work.stage('observe')
+        if work is not None:work.stage('observe')
         if st.shared_context:
             import shared_context
             event.set_extra('_hosted_journal_scope',shared_context.JOURNAL_SCOPE)
             if not shared_context.included(scope,cfg,st.shared_group_limit):
                 bot_pipeline.stop(event,'outside_shared_group_whitelist','silent');return
-            if not internal and not deferred:shared_context.observe(st.db,event,cfg,st.shared_group_limit)
-        if not internal and not deferred:
+            if not internal and not deferred and not continuation:shared_context.observe(st.db,event,cfg,st.shared_group_limit)
+        if not internal and not deferred and not continuation:
             import quote_reply
             quote_reply.observe(st.db,event,s,scope)
         mentioned=any(isinstance(c,At) and str(c.qq)==str(event.get_self_id()) for c in event.get_messages())
@@ -716,17 +740,19 @@ def install_runtime(core,settings):
         mentioned=mentioned or quoted_bot
         other_target=any(isinstance(c,At) and str(c.qq)!=str(event.get_self_id()) for c in event.get_messages()) and not mentioned
         incoming=''.join(c.text for c in event.get_messages() if isinstance(c,Plain))
-        if not internal and not deferred and (group or subject!=str(event.get_self_id())):
+        if not internal and not deferred and not continuation and (group or subject!=str(event.get_self_id())):
             # R7A: private inbound messages join the same bounded pre-send
             # observation buffer; group behaviour is unchanged.
-            st.freshness.observe(scope,work.event_id,subject,event.get_message_str(),message_provenance.capture(event))
+            st.freshness.observe(scope,str(getattr(event.message_obj,'message_id','')),subject,event.get_message_str(),message_provenance.capture(event))
         early_directed=subject!=str(event.get_self_id()) and (not group or mentioned or not other_target and st.participation.continuing(scope,incoming,subject,now,seconds=st.participation.followup_window(scope,cfg.get('behavior') or {},now)))
-        if not internal and not deferred:brain.observe(id,event,early_directed)
+        if not internal and not deferred and not continuation:brain.observe(id,event,early_directed)
         if internal and not event.get_extra('_hosted_tool_completion'):
             if event.get_extra('_hosted_scheduled_generation')!=s.get('generation'):return
             row=st.db.execute('SELECT last_user,opted_out FROM contacts WHERE scope=?',(scope,)).fetchone()
-            if not row or row[0]!=event.get_extra('_hosted_last_user') or row[1] or not cfg.get('proactive') or initiative.quiet(cfg,now):return
-        elif not internal and not deferred:
+            owner_contact=event.get_extra('_hosted_owner_contact')
+            enabled=autonomy.owner_delivery_current(st.db,cfg,owner_contact,now) if owner_contact else cfg.get('proactive')
+            if not row or row[0]!=event.get_extra('_hosted_last_user') or row[1] or not enabled or initiative.quiet(cfg,now):return
+        elif not internal and not deferred and not continuation:
             if subject!=str(event.get_self_id()) and (cfg.get('behavior') or {}).get('memory',True):
                 st.reflection.incoming(scope,subject,getattr(event.message_obj,'message_id',''),incoming,now,source=message_provenance.capture(event))
             initiative.incoming(st.db,scope,subject,str(event.get_self_id()),incoming,now,directed=early_directed)
@@ -734,7 +760,7 @@ def install_runtime(core,settings):
             event.set_extra('_hosted_interaction_observed',early_directed)
             if subject!=str(event.get_self_id()):companion_state.observe(st.db,cfg,scope,subject,incoming,getattr(event.message_obj,'message_id',''),now,directed=early_directed)
             if (cfg.get('behavior') or {}).get('socialAwareness',True):st.ambient.observe(scope,subject,incoming,now,(cfg.get('behavior') or {}).get('ambientContextMessages',50),source={'source_event':str(getattr(event.message_obj,'message_id','')),**message_provenance.capture(event)})
-        if not internal and not deferred:
+        if not internal and not deferred and not continuation:
             raw=getattr(event.message_obj,'raw_message',{})
             provider=provider_for(id)
             st.social.stickers.observe(raw,scope,subject,str(event.get_self_id()),cfg.get('behavior') or {},lambda:settings.get(id) is s,metrics.setdefault(id,{}),provider=provider,event_var=current_message_event)
@@ -744,15 +770,13 @@ def install_runtime(core,settings):
             # per message (single-flight, budget-gated, no-op when current).
             st.social.stickers.maybe_backfill(provider,lambda:settings.get(id) is s and id not in core.event_bus.stopped_platforms,metrics.setdefault(id,{}))
             care.track(st,st.social.stickers.backfill_task)
-        if not internal and not deferred and subject!=str(event.get_self_id()) and (cfg.get('behavior') or {}).get('styleLearning'):
+        if not internal and not deferred and not continuation and subject!=str(event.get_self_id()) and (cfg.get('behavior') or {}).get('styleLearning'):
             st.social.observe(scope,subject,incoming,getattr(event.message_obj,'message_id',''))
-            provider=provider_for(id)
-            if not autonomy.auth_paused(s,'style_learning'):
-                maybe_learn(st.social,scope,cfg.get('behavior') or {},provider,lambda:settings.get(id) is s,metrics.setdefault(id,{}),current_message_event,lease=s)
-            care.track(st,st.social.task)
-        state=st.observe(scope,subject,incoming if not internal and not deferred else '',getattr(event.message_obj,'message_id',''),auto_capture=not internal and not deferred and (cfg.get('behavior') or {}).get('memoryAutoCapture',False),memory_enabled=(cfg.get('behavior') or {}).get('memory',True),directed=not internal and not deferred and (early_directed or incoming.startswith('/')))
+            # Persist samples now; learn only after a legal 35-round checkpoint.
+        state=st.observe(scope,subject,incoming if not internal and not deferred else '',getattr(event.message_obj,'message_id',''),auto_capture=not internal and not deferred and (cfg.get('behavior') or {}).get('memoryAutoCapture',False),memory_enabled=(cfg.get('behavior') or {}).get('memory',True),directed=not internal and not deferred and (early_directed or incoming.startswith('/')),project_facts=False)
         if companion_state.enabled(cfg):
             emotion=companion_state.context(st.db,cfg,scope,now,event.get_message_str())['emotion'];state['emotion']=emotion['label']
+        if joined:return  # Durable ingress belongs to the active scope Work.
         # Own mood and this person's relationship reaction have separate owners.
         # Ambient messages to other people remain observable, without eliciting a reply.
         # An @ to somebody else is addressing evidence for the model, not proof
@@ -764,8 +788,8 @@ def install_runtime(core,settings):
         hot_group=bool(group and not internal and not deferred and st.participation.in_conversation(scope,incoming or '[媒体]',b,now=now))
         # A fixed window belongs to its first ingress Work. New arrivals join
         # that window; they neither reset its deadline nor start another reply.
-        debounce=5 if hot_group else b.get('burstDebounceMs',0)/1000
-        if (debounce or scope in st.batches) and not internal and not deferred:
+        debounce=0 if continuation else 5 if hot_group else b.get('burstDebounceMs',0)/1000
+        if (debounce or scope in st.batches) and not internal and not deferred and not continuation:
             entry={'event':event,'text':incoming[:500],'sender_id':subject,'mentioned':mentioned,'state':state,'other_target':other_target,'source':message_provenance.capture(event)}
             if scope in st.batches:
                 rows=st.batches[scope];rows.append(entry)
@@ -805,7 +829,7 @@ def install_runtime(core,settings):
                 source_event.set_extra('_hosted_pipeline_selected_event',event)
             other_target=any(isinstance(c,At) and str(c.qq)!=str(event.get_self_id()) for c in event.get_messages()) and not mentioned
             incoming=''.join(c.text for c in event.get_messages() if isinstance(c,Plain));now=time.time()
-        try:acquired=await st.acquire_scope(scope,lambda:delivery_current(event))
+        try:acquired=bool(source_event.get_extra('_hosted_scope_owner')) or await st.acquire_scope(scope,lambda:delivery_current(event))
         except asyncio.TimeoutError:
             bot_pipeline.stop(event,'scope_capacity_timeout','blocked');return
         if not acquired:
@@ -888,6 +912,7 @@ def install_runtime(core,settings):
             gate=st.social.image_status(scope,social_cfg,request=event.get_message_str())
             social_cfg['memeEnabled']=gate['reason']=='available'
             social_context=st.social.context(scope,event.get_message_str(),social_cfg)
+            social_context.pop('expression_hints',None) # checkpoint foundation owns learned styles
             meme_allowed=social_cfg['memeEnabled']
             candidates_offered=bool(social_context.get('meme_candidates'))
             if meme_allowed:gate={'reason':'offered' if candidates_offered else 'no_candidates','candidates':len(social_context.get('meme_candidates',[]))}
@@ -901,15 +926,16 @@ def install_runtime(core,settings):
             # Snapshot before the first context read/embedding await, so an
             # arrival during assembly cannot be silently blessed as old input.
             event.set_extra('_hosted_freshness_cursors',{scope:st.freshness.cursor(scope)})
+            event.set_extra('_hosted_decision_version',bot_pipeline.decision_version(st.db,scope))
             assembly=bot_pipeline.ContextBuilder(identity,'tool_result' if event.get_extra('_hosted_tool_completion') else 'internal_timer' if internal else 'deferred_real_QQ' if deferred else 'real_QQ')
             # Ingress time is provenance, not the read cutoff. A queued Work
             # must see replies confirmed while it waited (including across a
             # debounce boundary); old wire itself remains immutable.
             shared=bot_pipeline.conversation_context(st,cfg.get('behavior') or {},scope,subject,event.get_message_str(),time.time(),state=state)
-            shared['execution_experience']=execution
+            shared['execution_experience']=execution_memory.context_projection(execution,shared['memory_foundation'])
             state=shared['state']
-            assembly.contribute('memory',{key:shared[key] for key in ('persona_core_note','state','recent_messages','recent_cross_session_messages','conversation_timeline','autonomous_experience','execution_experience','group_round_history','active_agreements')})
-            assembly.contribute('companion',{'companion':companion_state.context(st.db,cfg,scope,now,event.get_message_str())})
+            assembly.contribute('memory',{key:shared[key] for key in ('memory_foundation','state','recent_messages','recent_cross_session_messages','conversation_timeline','autonomous_experience','execution_experience','group_round_history','active_agreements')})
+            assembly.contribute('companion',{'companion':context_foundation.live_companion(companion_state.context(st.db,cfg,scope,now,event.get_message_str()))})
             assembly.contribute('social',{'social':social_context})
             assembly.contribute('conversation',{'recent_image':recent_image,'ambient_group_messages':shared['ambient_group_messages'],'recent_burst':[{'sender_id':x['sender_id'],'source_event':str(getattr(x['event'].message_obj,'message_id','')),'text':x['text'],'at':float(getattr(x['event'].message_obj,'timestamp',0) or now),**x['source']} for x in batch]})
             assembly.contribute('delivery',{'contact_target':event.get_extra('_hosted_contact_subject'),'previous_proactive_output':event.get_extra('_hosted_previous_output',''),'topic_origin':event.get_extra('_hosted_topic_origin')})
@@ -920,22 +946,13 @@ def install_runtime(core,settings):
             assembly.contribute('conversation',{'dialogue':dialogue,'conversation_candidate':bool(group and not command),
                 'participation_entry':{'explicitly_addressed':bool(not group or mentioned),'same_partner_followup':continuing,'group_followup_window':contextual,'reply_required_by_window':False},
                 'reply_to':[{'sender_id':str(c.sender_id),'text':str(getattr(c,'message_str','') or '')[:200]} for c in event.get_messages() if isinstance(c,Reply)][:1]})
-            if b.get('memory',True) and b.get('memorySemantic',True) and not b.get('embeddingModel','').strip():
-                from semantic_context import recall as semantic_context
-                state['facts'],state['conversation_summaries']=semantic_context(st,scope,subject,event.get_message_str(),b,lambda:current(event),stamps)
-                if not current(event):return
-            if b.get('memory',True) and b.get('memorySemantic',True) and b.get('embeddingModel','').strip():
-                provider=provider_for(id)
-                from embedding_turn import EmbeddingTurn
-                async with EmbeddingTurn():
-                    state['facts']=await st.memory.semantic_recall(scope,subject,event.get_message_str(),now,b,provider,lambda:current(event),stamps)
-                    if not current(event):return
-                    if b.get('memorySummary'):
-                        state['conversation_summaries']=await st.reflection.semantic_recall(scope,event.get_message_str(),b,provider,lambda:current(event),stamps,subject=subject)
-                if not current(event):return
+            # Ordinary Facts and summaries are fixed foundation data. The
+            # main model reads recent evidence in its Journal, without another
+            # per-message lexical/embedding summary retrieval path.
             if social_cfg.get('memeEnabled') and social_cfg.get('memeSemantic'):
                 provider=provider_for(id)
                 social_context=await st.social.context_semantic(scope,event.get_message_str(),social_cfg,provider,lambda:current(event))
+                social_context.pop('expression_hints',None)
                 if not current(event):return
                 assembly.contribute('social',{'social':social_context})
             assembly.contribute('memory',{'execution_memory_guidance':execution_memory.GUIDANCE})
@@ -1001,13 +1018,17 @@ def install_runtime(core,settings):
             if not (isinstance(work,bot_pipeline.Work) and work.planned_messages>0 and work.confirmed_messages==work.planned_messages):
                 bot_pipeline.stop(self,'model_no_reply_marker','silent')
             return
-        id=self.get_platform_id();group=str(self.get_group_id() or '');scope='group:'+group if group else 'private:'+str(self.get_sender_id())
+        id=self.get_platform_id();st=store(id,s);group=str(self.get_group_id() or '');scope='group:'+group if group else 'private:'+str(self.get_sender_id())
         if self.get_extra('_hosted_internal_work'):scope=self.get_extra('_hosted_pipeline').scope
         import group_actions
         if group_actions.owns_reply(store(id,s).db,self,scope):
             self.set_extra('_hosted_final_reply_suppressed',True)
             self.set_extra('_hosted_freshness_history_original','')
             return
+        from model_cache import record_diagnostic
+        record_diagnostic(s,{'kind':'output_candidate','phase':'foreground','workId':getattr(self.get_extra('_hosted_pipeline'),'event_id',None),
+            'diagnosticDetail':json.dumps({'components':[type(c).__name__ for c in message.chain],
+                'continuation':bool(self.get_extra('_hosted_scope_continuation')),'freshness_rendering':bool(self.get_extra('_hosted_freshness_rendering'))})})
         social=store(id,s).social
         raw=normalize_image_markers(clean_internal(''.join(x.text for x in message.chain if isinstance(x,Plain))))
         voice_catalog=reply_voice.load(s) if not self.get_extra('_hosted_internal_work') and not self.get_extra('_hosted_model_error',False) else None
@@ -1039,6 +1060,10 @@ def install_runtime(core,settings):
         elif self.get_extra('_hosted_meme_sent',False):reason='already_sent'
         if not image and reason=='selected':reason='invalid_selection'
         metrics.setdefault(id,{})['lastMemeDecision']={**gate,'reason':reason,'at':time.time()}
+        if '[MEME:' in raw:
+            from model_cache import record_diagnostic
+            record_diagnostic(s,{'kind':'media_selection','workId':getattr(self.get_extra('_hosted_pipeline'),'event_id',None),
+                'phase':'foreground','mediaStatus':reason,'imageId':image.get('id') if image else None})
         chain=[];remaining=(s['config'].get('behavior') or {}).get('maxReplyChars',500)
         # Merge adjacent Plain chunks before parsing: streamed/model SDK chunks
         # can split a control word or image ID across component boundaries.
@@ -1067,6 +1092,8 @@ def install_runtime(core,settings):
             except OSError:
                 image=None;gallery=None;m=metrics.setdefault(id,{});m['imageReadFailures']=m.get('imageReadFailures',0)+1
                 m['lastMemeDecision']={'reason':'read_failed','at':time.time()}
+                from model_cache import record_diagnostic
+                record_diagnostic(s,{'kind':'media_selection','phase':'foreground','workId':getattr(self.get_extra('_hosted_pipeline'),'event_id',None),'mediaStatus':'read_failed','imageId':chosen.get('id')})
             else:
                 if chosen is prepared or chosen.get('source')=='qq_favorite_cache':self.set_extra('_hosted_favorite_wire',component.file)
                 chain=[x for x in chain if not isinstance(x,Face)]+[component]
@@ -1126,7 +1153,10 @@ def install_runtime(core,settings):
         result=None;confirmed_text=list(work.confirmed_reply_parts) if work else []
         for index,(outgoing,delay) in enumerate(zip(plan.messages,plan.delays)):
             if delay:await asyncio.sleep(delay)
-            if not delivery_current(self) or self.get_extra('_hosted_generation')!=s.get('generation'):return
+            if not delivery_current(self) or self.get_extra('_hosted_generation')!=s.get('generation'):
+                bot_pipeline.stop(self,'output_lease_or_state_changed','superseded')
+                record_diagnostic(s,{'kind':'output_fence','workId':getattr(work,'event_id',None),'reason':'lease_or_state_changed'})
+                return
             # R7A pre-send staleness review, group and private alike: the
             # review fires only when this exact destination observed real new
             # messages after this Work's request-time cursor snapshot. No new
@@ -1135,12 +1165,32 @@ def install_runtime(core,settings):
             if not self.get_extra('_hosted_model_error',False) and scope in (self.get_extra('_hosted_freshness_cursors') or {}):
                 pending='\n'.join(''.join(c.text for c in p.chain if isinstance(c,Plain)) for p in plan.messages[index:])
                 decision=await review_group(self,scope,raw if index==0 else pending,'\n'.join(confirmed_text))
+                record_diagnostic(s,{'kind':'output_review','workId':getattr(work,'event_id',None),'reason':decision.get('reason'),'status':decision.get('action'),
+                    'diagnosticDetail':json.dumps({'unseen':st.pipeline.unseen_inputs(work) if work else None,'checked':decision.get('checked')})})
+                if decision['action']!='keep' and any(isinstance(c,Image) for c in outgoing.chain):
+                    record_diagnostic(s,{'kind':'media_selection','phase':'foreground','workId':getattr(work,'event_id',None),
+                        'mediaStatus':'superseded_before_send','reason':'freshness_'+decision['action'],'imageId':image.get('id') if image else None})
                 fence='group_freshness:' if scope.startswith('group:') else 'private_freshness:'
+                if decision['action']=='keep' and work and work.source=='message' and not confirmed_text and st.pipeline.unseen_inputs(work):
+                    # An applicable draft is not completion of newly joined
+                    # questions. Let this same Work reason over ALL inputs
+                    # before emitting its first bubble, unless explicitly
+                    # covered or classified as requiring no response.
+                    work.planned_messages-=len(plan.messages)-index
+                    bot_pipeline.stop(self,fence+'unhandled_inputs','superseded')
+                    return result
                 if decision['action']=='drop':
+                    if work and work.source=='message':work.planned_messages-=len(plan.messages)-index
                     self.set_extra('_hosted_freshness_history','\n'.join(confirmed_text))
                     bot_pipeline.stop(self,fence+decision['reason'],'superseded')
                     return result
                 if decision['action']=='replace':
+                    if work and work.source=='message' and not confirmed_text:
+                        # Freshness advises; the current main Work performs the
+                        # renewed reasoning with the real appended events.
+                        work.planned_messages-=len(plan.messages)-index
+                        bot_pipeline.stop(self,fence+'main_continuation','superseded')
+                        return result
                     # Re-render through the same OutputPlan, never a second
                     # sender. No protocol attempt has happened at index zero.
                     count=self.get_extra('_hosted_freshness_replans',0)
@@ -1173,6 +1223,12 @@ def install_runtime(core,settings):
                 raise
             if self.get_extra('_hosted_protocol_blocked',False):return result
             if work and work.confirmed>before_confirmed:work.confirmed_messages+=1
+            if any(isinstance(c,Image) for c in outgoing.chain):
+                image_confirmed=bool(work and work.confirmed>before_confirmed)
+                if image_confirmed:self.set_extra('_hosted_meme_confirmed',True)
+                from model_cache import record_diagnostic
+                record_diagnostic(s,{'kind':'media_delivery','phase':'foreground','workId':getattr(work,'event_id',None),
+                    'mediaStatus':'confirmed' if image_confirmed else 'unknown','imageId':image.get('id') if image else None})
             if setting(self) is s and self.get_extra('_hosted_protocol_dispatched'):autonomy.settle_send(store(id,s).db,self.get_extra('_hosted_autonomy_reservation'),'sent')
             if contact:self.set_extra('_hosted_contact_at_sent',True)
             # A committed protocol send cannot be recalled. Its late completion
@@ -1194,8 +1250,7 @@ def install_runtime(core,settings):
                         # the single memory round is recorded once at Work
                         # finalization with the complete confirmed content.
                         work.confirmed_reply_parts.append(bubble_text)
-                        if not bubble_text.strip():
-                            work.confirmed_media_kinds.extend(sorted({type(c).__name__ for c in outgoing.chain if isinstance(c,(Image,Record,Face))}))
+                        work.confirmed_media_kinds.extend(sorted({type(c).__name__ for c in outgoing.chain if isinstance(c,(Image,Record,Face))}))
                     if self.get_extra('_hosted_freshness_history') is not None:self.set_extra('_hosted_freshness_history','\n'.join(confirmed_text))
                     received_at=time.time();who='' if self.get_extra('_hosted_initiative',False) else str(self.get_sender_id())
                     # A platform notice is not a persona interaction: it never
@@ -1211,7 +1266,7 @@ def install_runtime(core,settings):
                     if rhythm.get('memory',True) and not self.get_extra('_hosted_initiative',False) and not self.get_extra('_hosted_model_error',False):
                         active_store.reflection.confirmed_prefix(scope,str(self.get_sender_id()),getattr(self.message_obj,'message_id',''),'\n'.join(confirmed_text),self.get_extra('_hosted_memory_epoch',-1))
                     if rhythm.get('memory',True) and not self.get_extra('_hosted_platform_notice',False) and active_store.reflection.epoch()==self.get_extra('_hosted_memory_epoch',-1):
-                        active_store.participation.confirmed(scope,'\n'.join(confirmed_text),received_at,who,getattr(self.message_obj,'message_id',''),{'sender_id':str(self.get_self_id()),'message_ids':(self.get_extra('_hosted_protocol_receipts_by_scope') or {}).get(scope,[]),'receipt':'confirmed','complete':False,'responded_events':self.get_extra('_hosted_responded_events',[])})
+                        active_store.participation.confirmed(scope,'\n'.join(confirmed_text),received_at,who,getattr(self.message_obj,'message_id',''),{'sender_id':str(self.get_self_id()),'message_ids':(self.get_extra('_hosted_protocol_receipts_by_scope') or {}).get(scope,[]),'receipt':'confirmed','complete':False,'responded_events':self.get_extra('_hosted_responded_events',[]),'confirmed_media_kinds':list(dict.fromkeys(work.confirmed_media_kinds)) if work else []})
             if not self.get_extra('_hosted_initiative',False):
                 started=self.get_extra('_hosted_received_at')
                 if started is not None:
@@ -1222,7 +1277,7 @@ def install_runtime(core,settings):
                     if entry:entry.update(completeMs=elapsed,at=time.time())
                     else:samples.append({'event':key,'firstMs':elapsed,'completeMs':elapsed,'at':time.time()})
                     samples[:]=samples[-16:]
-        if image:
+        if image and self.get_extra('_hosted_meme_confirmed',False):
             social.image_sent(scope,image['id'])
             m=metrics.setdefault(id,{});m['imagesSent']=m.get('imagesSent',0)+1
             m['lastMemeDecision']={'reason':'sent','imageId':image['id'],'at':time.time()}
@@ -1499,12 +1554,18 @@ def install_runtime(core,settings):
                 additions=shared_context.queued(owned.db,setting(image_event)['config'],journal,owned.shared_group_limit,current=(work.scope,str(work.event_id),current_native) if current_native else None)
                 additions=await constrain_messages(additions)
                 projected=shared_context.refresh_deliveries(projected,owned.db,journal)
-                projected,tools_seen=shared_context.compose(journal,projected,work.scope,work.event_id,additions,image_event.get_extra('_hosted_shared_tools'),service=work.source not in ('message','deferred_group'),self_id=image_event.get_self_id())
+                projected,tools_seen=shared_context.compose(journal,projected,work.scope,work.event_id,additions,image_event.get_extra('_hosted_shared_tools'),service=work.source not in ('message','deferred_group'),self_id=image_event.get_self_id(),input_digest=image_event.get_extra('_hosted_shared_input_digest'))
                 image_event.set_extra('_hosted_shared_tools',tools_seen)
                 from context_transport import READONLY_CURRENT,EVENT_CONTEXT_CURRENT
                 native_shared=[m for m in projected if not (m.get('role')=='user' and isinstance(m.get('content'),str) and m['content'].startswith((READONLY_CURRENT+'\n',EVENT_CONTEXT_CURRENT+'\n')))]
+                # Attribute only this Work's NEW tool continuation, never a
+                # neighbouring user/assistant block in the shared prefix.
+                new_tools=shared_context.native_tail(projected,work.scope,work.event_id)[1:] if work.source in ('message','deferred_group') else []
+                for index,message in enumerate(native_shared):
+                    if index>=len(journal.last.base if journal.last else []) and message.get('role') in ('assistant','tool') and message in new_tools:
+                        message_provenance.bind_model_output(owned.db,key,work.scope,work.event_id,work.subject,native_shared,index)
                 signatures={shared_context.event_key(o):digest(m) for m in native_shared if (o:=source(m))}
-                captured=snapshots(native_shared,key,signatures)
+                captured=snapshots(native_shared,key,signatures,db=owned.db)
                 work.summary_materials.extend(captured)
                 for item in captured:
                     original=source({'role':'user','content':item['text']})
@@ -1512,8 +1573,14 @@ def install_runtime(core,settings):
                         owned.db.execute('INSERT OR IGNORE INTO memory_pending VALUES(?,?,?,?,?,?)',(key,item['subject'],item['event'],item['text'],'',float(original.get('at') or time.time())))
                         message_provenance.put(owned.db,key,item['event'],'incoming',{'sender_id':item['subject'],'source_scope':original['scope']})
                 owned.db.commit()
-                projected=project_history(projected,coverage(owned.db,key),key,shared_context.event_key({'scope':work.scope,'event_id':work.event_id}))
-                unprojected_for_journal=None;native_view=None
+                # Coverage is only a candidate retirement view, not permission
+                # to discard the canonical prefix. Keep its exact full input
+                # for prepare() to defer retirement until a real checkpoint,
+                # including when another Work already submitted this event.
+                unprojected_for_journal=projected
+                proved={e:p for e,p in coverage(owned.db,key).items() if p.get('version')==3}
+                projected=project_history(projected,proved,key,shared_context.event_key({'scope':work.scope,'event_id':work.event_id}))
+                native_view=None
             # The one active Work is temporary and must not evict a chat's
             # warm prefix. Its journal is released by invoke's finally.
             chat_keys=[k for k in owned.model_journals if isinstance(k,str)]
@@ -1559,6 +1626,12 @@ def install_runtime(core,settings):
             if prepared:
                 journal_reason=prepared.reason or 'append'
                 projected=prepared.wire
+                if foreground:
+                    seen={}
+                    for m in prepared.base:
+                        origin=source(m)
+                        if origin:seen.setdefault(origin['scope'],set()).add(str(origin['event_id']))
+                    image_event.set_extra('_hosted_model_seen_events',seen)
                 model_journal_pending.set((owned,key,journal,prepared,epoch))
                 if foreground:
                     from model_cache import expect_append_only_messages
@@ -1630,15 +1703,16 @@ def install_runtime(core,settings):
         from shared_context import JOURNAL_SCOPE,settle_inputs
         journal=st.model_journals.get(JOURNAL_SCOPE)
         if journal and journal.last:
+            work=event.get_extra('_hosted_pipeline')
             # Only a terminal answer goes here. Tool call/result adjacency is
             # captured together by the next request while this writer is held.
             if not getattr(response,'tools_call_names',None) and response.completion_text:
-                journal.append_completion({'role':'assistant','content':response.completion_text or ''})
+                journal.append_completion({'role':'assistant','content':response.completion_text or ''},model_origin=(work.scope,work.event_id,work.subject))
+            st.pipeline.seen_inputs(work,journal.last.base)
             from summary_material import snapshots,remember
             from shared_context import event_key
-            work=event.get_extra('_hosted_pipeline')
             current_id=event_key({'scope':work.scope,'event_id':work.event_id})
-            materials=snapshots(journal.last.base,JOURNAL_SCOPE)
+            materials=snapshots(journal.last.base,JOURNAL_SCOPE,db=st.db)
             for item in materials:
                 actual=st.db.execute('SELECT answer FROM memory_rounds WHERE scope=? AND event=?',(JOURNAL_SCOPE,item['event'])).fetchone()
                 item['reply']=actual[0] if actual else ''
@@ -1824,7 +1898,41 @@ def install_runtime(core,settings):
         admitted=store(event.get_platform_id(),lease) if lease is not None and current(event) else None
         if admitted is not None:
             admitted.ingress+=1;care.stamp(admitted.root)
-        try:return await execute(self,event)
+        try:
+            passes=0
+            while True:
+                passes+=1
+                result=await execute(self,event)
+                active_event=event.get_extra('_hosted_pipeline_selected_event') or event
+                work=active_event.get_extra('_hosted_pipeline')
+                # Resolve the actual executing owner after admission/batch
+                # selection, not only the pre-execute ingress snapshot.
+                owner=stores.get(event.get_platform_id())
+                reason='processed'
+                if owner is None or settings.get(event.get_platform_id()) is not lease or not owner.shared_context or work is None or work.source!='message':reason='not_foreground_owner'
+                elif active_event.get_extra('_hosted_model_error',False):reason='model_error'
+                elif work.attempted!=work.confirmed:reason='unconfirmed_effect'
+                elif not owner.pipeline.unseen_inputs(work):reason='inputs_decided'
+                elif passes>=4:reason='activation_pass_limit'
+                elif work.status in ('blocked','error') or work.reason in ('group_waiting','group_presence_busy_deferred'):reason='admission_blocked'
+                else:reason='continue_inputs'
+                if work and owner:owner.pipeline.activation_progress(work,passes,reason)
+                if reason!='continue_inputs':break
+                # No new Work, no replay of effects: next main call appends the
+                # queued protocol inputs on the same canonical Journal. Yield
+                # between cycles so unrelated scopes remain schedulable.
+                event=active_event
+                event.set_extra('_hosted_scope_continuation',True)
+                event.set_extra('_hosted_shared_tools',None)
+                event.set_extra('_hosted_freshness_elapsed',0)
+                event.set_extra('_hosted_freshness_cursors',{})
+                # SDK per-pass result flags are not execution evidence. Reuse
+                # the Work/Journal/effect ledger, not the prior SDK result.
+                event.clear_result()
+                event._has_send_oper=False
+                work.status='received';work.reason=''
+                await asyncio.sleep(0)
+            return result
         except asyncio.CancelledError:
             bot_pipeline.stop(event,'cancelled');raise
         except Exception as error:
@@ -1848,10 +1956,25 @@ def install_runtime(core,settings):
                         work=owned_event.get_extra('_hosted_pipeline')
                         if work:
                             st.pipeline.finish(work,metrics.setdefault(event.get_platform_id(),{}))
+                            if st.shared_context:
+                                from shared_context import JOURNAL_SCOPE,event_key
+                                from summary_material import snapshots,remember,confirmed_reply
+                                journal=st.model_journals.get(JOURNAL_SCOPE)
+                                if journal and journal.last:
+                                    materials=snapshots(journal.last.base,JOURNAL_SCOPE,db=st.db)
+                                    for item in materials:
+                                        actual=st.db.execute('SELECT answer FROM memory_rounds WHERE scope=? AND event=?',(JOURNAL_SCOPE,item['event'])).fetchone()
+                                        item['reply']=actual[0] if actual else ''
+                                    if work.status=='sent' and work.planned_messages>0 and work.confirmed_messages==work.planned_messages:
+                                        materials=confirmed_reply(materials,event_key({'scope':work.scope,'event_id':work.event_id}),'\n'.join(work.confirmed_reply_parts))
+                                    remember(st.db,JOURNAL_SCOPE,materials)
+                                    work.summary_materials=materials
+                                    st.db.commit()
                             brain.completed(event.get_platform_id(),owned_event,work)
                             settle_work_round(st,owned_event,work,lease)
                             from message_provenance import settle_response
                             settle_response(st.db,work.scope,work.event_id,work.status=='sent' and work.planned_messages>0 and work.confirmed_messages==work.planned_messages)
+                            st.pipeline.release_work(work)
                         key=owned_event.get_extra('_hosted_autonomy_reservation')
                         if key:
                             row=st.db.execute('SELECT state FROM autonomy_sends WHERE event=?',(key,)).fetchone()
@@ -1859,13 +1982,26 @@ def install_runtime(core,settings):
                                 if owned_event.get_extra('_hosted_timer_item'):initiative.release_unstarted(st.db,owned_event.get_extra('_hosted_timer_item'),key)
                                 autonomy.settle_send(st.db,key,'released')
             finally:
+                work=event.get_extra('_hosted_pipeline')
+                if admitted is not None and stores.get(event.get_platform_id()) is admitted and work is not None:
+                    admitted.pipeline.abandon_scope(work)
                 writer_owner=event.get_extra('_hosted_model_writer')
                 if writer_owner:writer_owner.model_writer.release()
                 owner=event.get_extra('_hosted_scope_owner')
                 if owner:
                     event.set_extra('_hosted_scope_owner',None)
                     owner[0].release_scope(owner[1])
-    PipelineScheduler.execute=guarded_execute;AiocqhttpMessageEvent.send=send
+    async def observed_send(event,message):
+        try:return await send(event,message)
+        except asyncio.CancelledError:raise
+        except Exception as error:
+            # The SDK can catch adapter failures before the outer scheduler;
+            # retain typed, content-free evidence at the real failure boundary.
+            from model_cache import record_execution_error
+            record_execution_error(setting(event),error,work_id=getattr(event.get_extra('_hosted_pipeline'),'event_id',None))
+            bot_pipeline.stop(event,type(error).__name__,'error')
+            raise
+    PipelineScheduler.execute=guarded_execute;AiocqhttpMessageEvent.send=observed_send
     timer=initiative.start(core,settings,store,metrics)
     def release(id):
         brain.release(id)

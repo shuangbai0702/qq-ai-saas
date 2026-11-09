@@ -24,11 +24,11 @@ class CommitBoundaries(unittest.IsolatedAsyncioTestCase):
                 st.memory.remember('private:12345678','12345678','饮料偏好','咖啡','new',now+1)
                 st.db.commit()
                 fresh=conversation_context(st,{'memory':True},'private:12345678','12345678','喝什么',now+2,state=old)
-                self.assertEqual(fresh['state']['facts'][0]['value'],'咖啡')
+                self.assertEqual(fresh['memory_foundation']['facts'][0]['value'],'咖啡')
                 self.assertEqual(old['facts'][0]['value'],'红茶','do not mutate the ingress snapshot')
                 invalidate(st.db,'private:12345678','12345678')
                 st.db.execute("UPDATE facts SET active=0");st.db.commit()
-                self.assertEqual(conversation_context(st,{'memory':True},'private:12345678','12345678','喝什么',now+3,state=old)['state']['facts'],[])
+                self.assertEqual(conversation_context(st,{'memory':True},'private:12345678','12345678','喝什么',now+3,state=old)['memory_foundation']['facts'],[])
             finally:st.close()
 
     async def test_summary_rechecks_epoch_at_the_actual_write_boundary(self):

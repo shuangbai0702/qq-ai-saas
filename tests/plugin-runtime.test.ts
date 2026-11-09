@@ -29,8 +29,11 @@ test('real AstrBot agent executes only owner requested QQ tools and stores bound
  await wait(async()=>(await call('GET',`/v1/bots/${id}/behavior-data`)).json().summaries?.length===1,'reflection persisted through runtime');
  const data=(await call('GET',`/v1/bots/${id}/behavior-data`)).json();assert.equal(data.summaries[0].scope,'private:11111111');assert.ok(data.summaries[0].text.includes('红茶'));assert.equal(data.summaries.some((s:any)=>s.scope==='private:22222222'),false);
  const semanticBefore=requests.length;await mock.call(ctx,'/message',{sender:'11111111',text:'还记得我喝的饮品吗'});
- await wait(async()=>requests.slice(semanticBefore).some(r=>r.input&&r.model==='bge-m3'),'real SDK embedding request');
- await wait(async()=>requests.slice(semanticBefore).some(r=>r.messages&&JSON.stringify(r.messages).includes('conversation_summary_not_verified_facts')),'semantic context injection');
+ // Summaries now belong to the fixed checkpoint foundation, never a
+ // query/embedding-selected injection. The post-checkpoint provider request
+ // must still contain the real summary without an extra retrieval request.
+ await wait(async()=>requests.slice(semanticBefore).some(r=>r.messages&&JSON.stringify(r.messages).includes('conversation_summary_not_verified_facts')),'checkpoint foundation reaches provider');
+ assert.equal(requests.slice(semanticBefore).some(r=>r.input),false,'summary recall must not initiate an embedding request');
  const autoBefore=(await mock.call(ctx,'/messages') as any[]).filter(x=>x.action==='set_self_longnick').length;
  const autoRequestStart=requests.length;
  await mock.call(ctx,'/message',{sender:'11111111',text:'你好可爱'});

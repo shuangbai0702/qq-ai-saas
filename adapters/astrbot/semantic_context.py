@@ -3,12 +3,11 @@ Vector retrieval remains available when a remote embedding model is configured.
 Every candidate retains its scope, attribution and revision evidence.
 """
 import time
-from memory_scope import fact_rows,fact_item,summary_rows,summary_item,memory_audience
+from memory_scope import fact_rows,fact_item
 
 def recall(store,scope,subject,query,cfg,current,metrics):
     if store.memory.closed or not current():return [],[]
     owner=str(cfg.get('ownerUin','') or '')
-    context={'scope':scope,'subject':subject,'owner':owner}
     facts=store.memory.recall(scope,subject,query,time.time())
     # Keep relevant lexical matches first, then allow the reply model to read
     # recent candidates whose wording differs from the current question.
@@ -20,30 +19,6 @@ def recall(store,scope,subject,query,cfg,current,metrics):
         if item['name'] in seen or used+size>1600:continue
         selected.append({**item,'recall_reason':item.get('recall_reason','model_semantic_candidate'),'semantic_mode':'model_semantic_candidate'});seen.add(item['name']);used+=size
         if len(selected)>=16:break
-    summaries=[]
-    if cfg.get('memorySummary'):
-        old=[item for item in store.search.search(scope,subject,query,summaries=True)+store.reflection.recall(scope,query,subject=subject) if memory_audience(context,item)]
-        rows=[r for r in summary_rows(store.db,scope,subject,limit=8) if memory_audience(context,{'source_scope':r[4]})]
-        seen=set();used=0
-        for item in old+[summary_item(r,'model_semantic_candidate',db=store.db) for r in rows]:
-            if item['id'] in seen:continue
-            text=item['summary'][:300]
-            if used+len(text)>1200:continue
-            summaries.append({**item,'summary':text,'recall_reason':item.get('recall_reason','model_semantic_candidate')});seen.add(item['id']);used+=len(text)
-            if len(summaries)>=5:break
     metrics['semanticContextTurns']=metrics.get('semanticContextTurns',0)+1
-    metrics['semanticContextCandidates']=len(selected)+len(summaries)
-    # The current conversation always sees its rolling big + pending small
-    # summaries. Cross-session recall remains attributed and bounded above.
-    rolling=store.reflection.rolling(scope,owner=owner)
-    # The rolling window carries the newest audience-filtered material; topic
-    # matches outside that window (including this scope's own older
-    # conventions) remain visible after it instead of disappearing.
-    # Query-matched summaries rank before the rolling background so an exact
-    # rare topic is not buried; the rolling window stays fully visible after.
-    rolling_ids={item['id'] for item in rolling}
-    matched=[item for item in summaries if item['id'] not in rolling_ids]
-    summaries=matched+rolling
-    from summary_material import bound_claim_views
-    bound_claim_views(summaries,query=query)
-    return selected,summaries
+    metrics['semanticContextCandidates']=len(selected)
+    return selected,store.reflection.foundation(scope,owner=owner) if cfg.get('memorySummary') else []

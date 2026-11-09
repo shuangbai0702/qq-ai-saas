@@ -39,7 +39,7 @@ class Upgrades(unittest.IsolatedAsyncioTestCase):
   self.assertEqual(self.db.execute("SELECT unanswered FROM companion_members WHERE subject='22222'").fetchone()[0],1)
   self.assertEqual(self.db.execute("SELECT unanswered FROM contacts WHERE scope='group:1'").fetchone()[0],1)
  def group(self):
-  cfg={'proactive':True,'behavior':{'selfDevelopment':True,'autonomousGroupContact':True,'groupParticipationEnabled':True,'groupParticipationGroups':['1'],'proactiveTargets':['group:1'],'proactiveModelSchedule':True,'quietStart':0,'quietEnd':0,'proactiveIntervalSeconds':60}}
+  cfg={'proactive':True,'behavior':{'selfDevelopment':True,'autonomousGroupContact':True,'groupParticipationEnabled':True,'groupParticipationGroups':['1'],'proactiveTargets':['group:1'],'proactiveModelSchedule':True,'quietStart':0,'quietEnd':0,'proactiveIntervalSeconds':60,'silenceSeconds':300}}
   initiative.incoming(self.db,'group:1','11111','99999','继续聊茶',self.now-400,directed=True)
   for person,age in [('11111',400),('22222',500)]:companion_state.observe(self.db,cfg,'group:1',person,'来聊会儿',person,self.now-age,True)
   return cfg
@@ -48,7 +48,7 @@ class Upgrades(unittest.IsolatedAsyncioTestCase):
  async def test_planner_selects_real_nonfirst_member(self):
   cfg=self.group();captured=[]
   async def chat(**kw):captured.append(json.loads(kw['prompt']));return NS(completion_text='{"contact":true,"contact_subject":"22222","delay_minutes":30,"topic":"继续聊茶"}')
-  result=await self.plan(cfg,chat);self.assertTrue(result['allowed']);self.assertEqual(len(captured[0]['eligible_members']),2)
+  result=await self.plan(cfg,chat);self.assertTrue(result['allowed']);self.assertEqual(len(captured[0]['changes']['eligible_members']),2)
   self.assertEqual(self.db.execute('SELECT subject FROM companion_plan_members').fetchone()[0],'22222')
  async def test_planner_cannot_invent_recipient(self):
   cfg=self.group()

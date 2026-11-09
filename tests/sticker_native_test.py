@@ -22,11 +22,12 @@ import sticker_collection
 from behavior import install_runtime
 
 async def run():
- sent=[];payloads=[];after_send=None
+ sent=[];payloads=[];after_send=None;confirm_transport=True
  async def transport(self,message):
   sent.append((self.get_platform_id(),message));payloads.append(await AiocqhttpMessageEvent._parse_onebot_json(message))
   st=runtime['stores'][self.get_platform_id()];work=self.get_extra('_hosted_pipeline')
-  st.pipeline.sending(work);st.pipeline.confirmed(work)
+  st.pipeline.sending(work)
+  if confirm_transport:st.pipeline.confirmed(work)
   if after_send:after_send()
  async def no_model(self,event):raise AssertionError('unmentioned collection must not call model')
  AiocqhttpMessageEvent.send=transport;PipelineScheduler.execute=no_model
@@ -95,6 +96,7 @@ async def run():
   settings['b']['config']['behavior'].update({'memePacks':['blue-fat-fish'],'memeProbability':0})
   requested=event('b',text='发个表情包');await AiocqhttpMessageEvent.send(requested,MessageChain(chain=[Plain('[MEME:'+pack['items'][0]['id']+']')]))
   assert sent[-1][0]=='b' and any(isinstance(x,Image) for x in sent[-1][1].chain)
+  assert requested.get_extra('_hosted_meme_confirmed') is True,'selected image is counted only after this image-containing send is confirmed'
   assert all('[MEME:' not in ''.join(x.text for x in msg.chain if isinstance(x,Plain)) for _,msg in sent)
   # Whitespace-wrapped control words/IDs and adjacent SDK text chunks still
   # select the same offered/authorized image and never leak protocol text.
@@ -177,6 +179,17 @@ async def run():
   assert sum(isinstance(c,At) for _,m in actual for c in m.chain)==1
   print('PASS natural paragraph bubbles with image once last and mention once first')
   print('PASS model-selected real At components: current sender, one first bubble, no literal markers or unknown/all recipients')
+  # An image-containing protocol attempt without a receipt stays unknown;
+  # selecting it, or sending its accompanying text, cannot confirm the image.
+  unknown_image=event('b','44462',text='正常聊天');before=len(sent)
+  image_count=runtime['metrics']['b'].get('imagesSent',0)
+  confirm_transport=False
+  await AiocqhttpMessageEvent.send(unknown_image,MessageChain(chain=[Plain('图片说明'+marker)]))
+  confirm_transport=True
+  assert len(sent)==before+1,'unknown image operation must not be automatically resent'
+  assert any(isinstance(x,Image) for x in sent[-1][1].chain)
+  assert unknown_image.get_extra('_hosted_meme_confirmed') is not True
+  assert runtime['metrics']['b'].get('imagesSent',0)==image_count,'unknown delivery cannot consume confirmed-image accounting'
   # A configuration replacement after the first successful bubble must still
   # fence the remaining text and the unsent image, without resurrecting stores.
   before=len(sent)

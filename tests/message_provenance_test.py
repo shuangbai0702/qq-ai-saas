@@ -125,9 +125,11 @@ class MessageProvenance(unittest.IsolatedAsyncioTestCase):
     def test_disabled_summary_memory_and_other_bot_are_isolated(self):
         self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated) VALUES(?,?,?,?)',(self.group,'old summary','[]',self.now));self.db.commit()
         ctx=conversation_context(self.store,{'memory':True,'memorySummary':False},self.group,self.member,'old',self.now+1)
-        self.assertEqual(ctx['state']['conversation_summaries'],[])
+        self.assertEqual(ctx['memory_foundation']['conversation_summaries'],[])
+        self.assertNotIn('conversation_summaries',ctx['state'])
         ctx=conversation_context(self.store,{'memory':False},self.group,self.member,'',self.now+1,state={'facts':['stale'],'conversation_summaries':['stale']})
-        self.assertEqual(ctx['state']['facts'],[]);self.assertEqual(ctx['state']['conversation_summaries'],[]);self.assertEqual(ctx['conversation_timeline'],[])
+        self.assertEqual(ctx['memory_foundation']['facts'],[]);self.assertEqual(ctx['memory_foundation']['conversation_summaries'],[]);self.assertEqual(ctx['conversation_timeline'],[])
+        self.assertNotIn('facts',ctx['state']);self.assertNotIn('conversation_summaries',ctx['state'])
         self.confirmed();other=BehaviorStore(Path(self.tmp.name)/'other.sqlite')
         try:self.assertEqual(provenance.timeline(other.db,self.group,self.member,self.now+2),[])
         finally:other.close()

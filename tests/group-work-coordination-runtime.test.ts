@@ -51,13 +51,15 @@ test('real SDK queues adjacent Work through confirmed settlement and skips only 
   assert.ok(reviews[0].conversation.timeline.some((x:any)=>x.sender_id==='87654321'&&x.source_event==='84002'),'review sees bounded authoritative multi-person timeline');
   assert.equal((await mock.call(ctx,'/messages')as any[]).filter(x=>x.action==='send_group_msg').length,2,'independent question survives coverage of another sender event');
   // A new event during context assembly must not be hidden by a later cursor
-  // snapshot. Hold the real embedding HTTP request before main generation.
+  // snapshot. Hold the real opt-in meme embedding HTTP request before main
+  // generation. Ordinary fact/summary embedding lookup is retired; the
+  // remaining semantic catalog path supplies the same genuine assembly await.
   const detail=(await current.app.inject({url:`/v1/bots/${id}`,cookies})).json();
-  const changed=await current.app.inject({method:'PUT',url:`/v1/bots/${id}/config`,cookies,payload:{expectedRevision:detail.bot.revision,name:detail.bot.name,expectedUin:detail.bot.expected_uin,config:{...config,behavior:{...config.behavior,memorySemantic:true,embeddingModel:'fixture-embedding',embeddingBaseUrl:config.baseUrl}}}});
+  const changed=await current.app.inject({method:'PUT',url:`/v1/bots/${id}/config`,cookies,payload:{expectedRevision:detail.bot.revision,name:detail.bot.name,expectedUin:detail.bot.expected_uin,config:{...config,behavior:{...config.behavior,memeEnabled:true,memeSemantic:true,memePacks:[],embeddingModel:'fixture-embedding',embeddingBaseUrl:config.baseUrl}}}});
   assert.equal(changed.statusCode,200,changed.body);
   await until(async()=>(await current.db.query('SELECT applied_revision FROM bots WHERE id=$1',[id]))[0].applied_revision===changed.json().revision,'embedding config ready');
   await until(async()=>!!(await mock.call(ctx,'/state')as any).connected,'reconnected fixture');
-  await promisify(execFile)(process.env.FISHBOT_PYTHON||'python',['-B','-c',"import sqlite3,sys,time;d=sqlite3.connect(sys.argv[1]);d.execute('INSERT INTO facts VALUES(?,?,?,?,?,?,?,?)',('group:778181','12345678','fixture interest','真实离线夹具','fixture',time.time(),1,1));d.commit()",path.join(root,'bots',id,'behavior.sqlite')],{windowsHide:true});
+  await promisify(execFile)(process.env.FISHBOT_PYTHON||'python',['-B','-c',"import sqlite3,sys,time;d=sqlite3.connect(sys.argv[1]);d.execute('INSERT INTO sticker_inbox VALUES(?,?,?,?,?,?,?,1,?)',('coordination-fixture','group:778181','12345678','fixture','approved','真实离线表情夹具',time.time(),b'png'));d.commit()",path.join(root,'bots',id,'behavior.sqlite')],{windowsHide:true});
   waiting.delete('FIRST_A');
   await mock.call(ctx,'/message',{group:'778181',sender:'12345678',mention:true,messageId:84100,text:'FIRST_A'});
   await until(async()=>!!releaseEmbedding,'embedding holds context assembly');
