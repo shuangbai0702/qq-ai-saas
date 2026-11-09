@@ -21,6 +21,9 @@ _wire_signatures=OrderedDict()
 _decision_prefixes=OrderedDict()
 _system_contracts={}
 _auxiliary=ContextVar('fishbot_auxiliary_diagnostic',default=None)
+# Background checkpoint extraction has a separate bounded read budget. This
+# does not extend foreground/presence deadlines or enable SDK retries.
+SUMMARY_REQUEST_TIMEOUT_SECONDS=180
 _diagnostic_lock=Lock()
 
 class AppendOnlyWireViolation(RuntimeError):pass

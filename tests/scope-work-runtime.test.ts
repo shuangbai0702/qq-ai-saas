@@ -32,6 +32,7 @@ test('real SDK keeps one active Work per Scope, absorbs bursts and hands off onl
  const main:any[]=[],reviews:any[]=[],gates=new Map<string,()=>void>(),errors:unknown[]=[];
  const model=http.createServer(async(req,res)=>{
   try{
+   req.setEncoding('utf8'); // Preserve multibyte Schema text across TCP chunks.
    let raw='';for await(const chunk of req)raw+=chunk;const body=JSON.parse(raw);
    let answer:string;
    if(body.messages.some((m:any)=>m.role==='system'&&/你是(?:群聊|私聊)发送前复核器/.test(textOf(m)))){

@@ -45,8 +45,12 @@ class PermanentWork(unittest.TestCase):
  def test_seen_superseded_draft_leaves_question_pending(self):
   w=self.joined();self.p.seen_inputs(w,[message(w.scope,'2')]);self.done(w,'superseded','freshness_drop')
   seen,status,owner,payload=self.input()
-  self.assertEqual((seen,status,owner),(1,'pending',None));self.assertIsNotNone(payload)
+  self.assertEqual((seen,status,owner),(1,'pending',w.event_id));self.assertIsNotNone(payload)
   self.assertIsNone(mp.model_input_settlement(self.db,'bot_shared',model_json([w.scope,'2'])))
+  self.assertIsNone(self.db.execute('SELECT event FROM pipeline_scope_work WHERE scope=?',(w.scope,)).fetchone())
+  next_work=self.bind('3')
+  self.assertTrue(next_work.scope_owner)
+  self.assertEqual(self.input()[:3],(0,'owned',next_work.event_id))
  def test_seen_fully_confirmed_send_settles_joined_input(self):
   w=self.joined();self.p.seen_inputs(w,[message(w.scope,'2')]);w.planned_messages=2
   for _ in range(2):self.p.sending(w);self.p.confirmed(w);w.confirmed_messages+=1

@@ -41,6 +41,13 @@ class GuardedTransport(httpx.AsyncHTTPTransport):
         # not turn a tiny compressed reply into a shared-process memory bomb.
         request.headers['Accept-Encoding']='identity'
         wire=transport_started()
+        if wire and wire['attempt']['phase'] in ('small_summary','big_merge'):
+            from model_cache import SUMMARY_REQUEST_TIMEOUT_SECONDS
+            # Per-request extension only; never mutate a shared provider/client
+            # while foreground and other bots are using it.
+            limits=dict(request.extensions.get('timeout') or {})
+            limits['read']=SUMMARY_REQUEST_TIMEOUT_SECONDS
+            request.extensions['timeout']=limits
         try:response=await super().handle_async_request(request)
         except BaseException as error:
             transport_result(wire,'canceled' if isinstance(error,asyncio.CancelledError) else 'unknown',type(error).__name__)

@@ -16,6 +16,16 @@ def message(event='1',scope=SCOPE,image=False):
     return {'role':'user','content':parts}
 
 class ProjectionTests(unittest.TestCase):
+    def test_model_view_elides_only_same_event_and_author_exact_duplicates(self):
+        item=material.snapshots([message(),{'role':'assistant','content':'confirmed'}],SCOPE)[0]
+        item['reply']='confirmed';original=copy.deepcopy(item)
+        turns=[{'event':'1','sender_id':'12345678','user':item['text'],'bot':'confirmed'}]
+        view=material.model_view({'1':item},turns)[0]
+        self.assertNotIn('text',view);self.assertNotIn('confirmed_reply',view)
+        self.assertEqual(item,original)
+        for rows in ([{**turns[0],'sender_id':'99999999'}],[{**turns[0],'event':'2'}],[{**turns[0],'user':'different','bot':'different'}],turns*2):
+            view=material.model_view({'1':item},rows)[0]
+            self.assertEqual(view['text'],item['text']);self.assertEqual(view['confirmed_reply'],'confirmed')
     def test_source_and_scope(self):
         self.assertIsNone(material.source({'role':'assistant','content':message()['content']}))
         self.assertIsNone(material.source({'role':'user','content':'正文\n'+message()['content'][0]['text']}))
@@ -52,6 +62,23 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         self.tmp=tempfile.TemporaryDirectory();self.store=BehaviorStore(Path(self.tmp.name)/'behavior.sqlite');self.db=self.store.db
         self.var=contextvars.ContextVar('summary_test',default=None)
     def tearDown(self):self.store.close();self.tmp.cleanup()
+    async def test_unselected_old_hold_is_preserved_without_reinjection(self):
+        self.add()
+        held=material.snapshots([message('old-held')],SCOPE)[0]
+        self.db.execute('INSERT INTO memory_pending VALUES(?,?,?,?,?,?)',(SCOPE,'12345678','old-held',held['text'],'',0))
+        self.db.execute('INSERT INTO memory_round_material VALUES(?,?,?,?)',(SCOPE,'old-held','12345678',json.dumps(held)))
+        self.db.execute("INSERT INTO memory_hold_rounds VALUES(?,?,NULL,'uncovered',0)",(SCOPE,'old-held'));self.db.commit()
+        seen=[]
+        async def chat(**kw):
+            seen.append(json.loads(kw['prompt']))
+            return NS(completion_text=json.dumps({'summary':'本批经历'}))
+        self.start(chat);await self.drain()
+        self.assertTrue(seen)
+        self.assertFalse(any(row['event']=='old-held' for row in seen[0]['turns']))
+        self.assertEqual(len(seen[0]['turns']),35)
+        self.assertIsNotNone(self.db.execute('SELECT material FROM memory_round_material WHERE event=?',('old-held',)).fetchone())
+        self.assertEqual(self.db.execute('SELECT reason FROM memory_hold_rounds WHERE event=?',('old-held',)).fetchone()[0],'uncovered')
+        self.assertEqual(self.db.execute('SELECT round_count FROM memory_reconstruction_checkpoints').fetchone()[0],35)
     def add(self,image=False,start=0):
         for i in range(start,start+35):
             msg=message(str(i),image=image)
@@ -241,7 +268,10 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         async def chat(**kw):prompts.append(json.loads(kw['prompt']));return NS(completion_text=json.dumps({'summary':'按各自来源整理投递文本和模型历史'}))
         self.start(chat);await self.drain()
         captured=next(r for r in prompts[0]['observed_requests'] if r['event']=='native-difference')
-        self.assertEqual(captured['confirmed_reply'],'协议实际投递文本');self.assertEqual(captured['native_reply'],native[1]['content'])
+        turn=next(r for r in prompts[0]['turns'] if r['event']=='native-difference')
+        self.assertEqual(turn['bot'],'协议实际投递文本')
+        self.assertNotIn('confirmed_reply',captured,'identical delivered text is provided once in turns')
+        self.assertEqual(captured['native_reply'],native[1]['content'])
         proof=material.coverage(self.db,SCOPE);current=message('new')
         self.assertEqual(material.project_history(native+[current],proof,SCOPE,'new'),[current])
         changed=copy.deepcopy(native);changed[1]['content']='摘要之后才出现的新内容'
