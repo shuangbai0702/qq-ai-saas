@@ -42,6 +42,18 @@ def atomic(path, value):
     temp.replace(path)
 
 
+def append_diagnostic(path, value, max_bytes=50*1048576, backups=2):
+    """Bound controller diagnostics, never lifecycle or Journal evidence."""
+    line = json.dumps(value)+'\n'
+    if path.exists() and path.stat().st_size+len(line.encode('utf-8')) > max_bytes:
+        for number in range(backups, 0, -1):
+            source = path if number == 1 else path.with_name(path.name+'.'+str(number-1))
+            if source.exists():
+                source.replace(path.with_name(path.name+'.'+str(number)))
+    with path.open('a', encoding='utf-8') as file:
+        file.write(line)
+
+
 def cgroup_process_ids(path):
     # Container shutdown and empty-leaf cleanup can remove a group after glob.
     # Only disappearance is benign; permission and I/O failures remain visible.
@@ -422,8 +434,7 @@ def main():
                                 'swap': int((group/'memory.swap.current').read_text())}
             atomic(BASE/'controller-state.json', {'at': now, 'container': identity, 'groups': limits})
             if iteration % 10 == 0:
-                with (BASE/'controller.jsonl').open('a') as file:
-                    file.write(json.dumps({'at': now, 'groups': limits})+'\n')
+                append_diagnostic(BASE/'controller.jsonl', {'at': now, 'groups': limits})
             previous = {row['pid']: row for row in rows}
             live = {(row['pid'], row['created']) for row in rows}
             reclaimed = {key: value for key, value in reclaimed.items() if key in live}

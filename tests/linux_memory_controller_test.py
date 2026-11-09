@@ -17,6 +17,16 @@ spec.loader.exec_module(controller)
 
 
 class ActivityTest(unittest.TestCase):
+    def test_diagnostic_rotation_keeps_complete_recent_lines_and_two_backups(self):
+        with tempfile.TemporaryDirectory() as root:
+            path=Path(root)/'controller.jsonl'
+            for number in range(6):
+                controller.append_diagnostic(path, {'n':number,'text':'状态'}, max_bytes=1)
+            self.assertEqual(sorted(p.name for p in Path(root).iterdir()), ['controller.jsonl','controller.jsonl.1','controller.jsonl.2'])
+            self.assertEqual([json.loads(p.read_text(encoding='utf-8'))['n'] for p in (path,path.with_name(path.name+'.1'),path.with_name(path.name+'.2'))], [5,4,3])
+            controller.append_diagnostic(path, {'n':6}, max_bytes=1000)
+            self.assertEqual([json.loads(line)['n'] for line in path.read_text(encoding='utf-8').splitlines()], [5,6])
+
     def test_cgroup_disappearance_after_enumeration_is_benign(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root)/'cgroup.procs'
