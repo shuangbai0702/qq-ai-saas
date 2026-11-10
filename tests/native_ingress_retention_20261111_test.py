@@ -52,6 +52,16 @@ class Ingress(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(row[0],time.time()+25);self.assertEqual(row[1],self.message.timestamp)
         await self.gate(self.message)
         self.assertEqual(len(self.executed),1)
+    async def test_sdk_notice_and_request_without_protocol_message_id_are_retained(self):
+        for kind in ('notice','request'):
+            with self.subTest(kind=kind):
+                self.raw={'post_type':kind,'user_id':'12345','self_id':'99999','sub_type':'poke','target_id':'99999'}
+                self.message.raw_message=self.raw;self.message.message_id='sdk-'+kind
+                await self.gate(self.message)
+                row=self.db.execute('SELECT event,payload FROM pipeline_work_inputs WHERE event=?',('sdk-'+kind,)).fetchone()
+                self.assertIsNotNone(row);self.assertNotIn('message_id',__import__('json').loads(row[1]))
+        self.assertEqual(len(self.executed),2)
+
     async def test_quiescing_retains_input_without_sdk_call_and_restart_can_recover_it(self):
         self.assertTrue(self.fence.request_if_idle())
         await self.gate(self.message)
