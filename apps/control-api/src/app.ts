@@ -120,7 +120,7 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
  async function loginOwned(req:any){if(!z.uuid().safeParse(req.params.id).success)fail('登录会话不存在',404);const [s]=await db.query('SELECT * FROM login_sessions WHERE id=$1',[req.params.id]);if(!s)fail('登录会话不存在',404);await owned(req,s.bot_id);return s}
  registerSocialMedia(app,root,owned);
  registerQQFavorites(app,root,owned,{caption:createFavoriteCaptioner(db,key,root)});
- registerBehaviorData(app,root,owned,agent);
+ registerBehaviorData(app,root,owned,agent,db);
  registerAutonomous(app,db,owned);
  registerBilibili(app,db,key,owned,root);
  const publicLogin=(s:any)=>({...s,qr:undefined,hasQr:!!s.qr});

@@ -2050,6 +2050,9 @@ def install_runtime(core,settings):
         s=settings.get(id)
         if s is None:return {'error':'机器人当前未就绪','status':409}
         st=store(id,s)
+        if data.get('action') in ('admin_force_compress','admin_force_compress_status'):
+            from compression_admin import manage as manage_compression
+            return manage_compression(st,data,care)
         result=run(Path(s['root'])/'behavior.sqlite',data,connection=st.db)
         if result.get('ok') and data.get('action') in ('set_pattern','clear_learning'):
             # A management action must not reintroduce a disabled expression via

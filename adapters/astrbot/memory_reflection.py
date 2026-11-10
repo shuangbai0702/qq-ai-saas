@@ -140,6 +140,7 @@ class Reflection:
         db.execute('CREATE TABLE IF NOT EXISTS memory_core_notes(slot INTEGER PRIMARY KEY CHECK(slot=1),text TEXT NOT NULL,scopes TEXT NOT NULL,people TEXT NOT NULL,sources TEXT NOT NULL,updated REAL NOT NULL)')
         db.executescript('''CREATE TABLE IF NOT EXISTS memory_rounds(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT,subject TEXT,event TEXT,question TEXT,answer TEXT,at REAL,UNIQUE(scope,event));
         CREATE TABLE IF NOT EXISTS memory_reconstruction_checkpoints(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,through_round_id INTEGER NOT NULL,round_count INTEGER NOT NULL,epoch INTEGER NOT NULL,state TEXT NOT NULL DEFAULT 'available',request_id TEXT,created REAL NOT NULL,summary_id INTEGER,UNIQUE(scope,through_round_id));
+        CREATE TABLE IF NOT EXISTS memory_checkpoint_admin_overrides(checkpoint_id INTEGER PRIMARY KEY,administrator TEXT NOT NULL,request_id TEXT NOT NULL UNIQUE,created REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS memory_summaries(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT,text TEXT,sources TEXT,updated REAL);
         CREATE TABLE IF NOT EXISTS memory_reflection_budget(day INTEGER PRIMARY KEY,count INTEGER);
         CREATE TABLE IF NOT EXISTS memory_summary_levels(id INTEGER PRIMARY KEY,kind TEXT NOT NULL);
@@ -319,20 +320,22 @@ class Reflection:
         scopes={value for value in scopes if isinstance(value,str) and value}
         if not scopes or not isinstance(request_id,str) or not request_id:return None
         ids=sorted({value for value in summary_ids or [] if type(value) is int and value>0})
+        from summary_material import checkpoint_round_gate
+        round_gate=checkpoint_round_gate(self.db)
         epoch=self.epoch();self.db.execute('BEGIN IMMEDIATE')
         try:
             self.db.execute("UPDATE memory_reconstruction_checkpoints SET state='invalidated',request_id=NULL WHERE state='available' AND NOT EXISTS (SELECT 1 FROM memory_summaries s WHERE s.id=memory_reconstruction_checkpoints.summary_id)")
             row=None
             if ids:
                 scope_marks=','.join('?' for _ in scopes);id_marks=','.join('?' for _ in ids)
-                row=self.db.execute(f"SELECT c.id,c.scope,c.epoch,c.summary_id FROM memory_reconstruction_checkpoints c JOIN memory_summaries s ON s.id=c.summary_id WHERE c.scope IN ({scope_marks}) AND c.summary_id IN ({id_marks}) AND c.round_count=35 AND c.state='available' AND NOT EXISTS (SELECT 1 FROM memory_reconstruction_checkpoints used WHERE used.scope=c.scope AND used.epoch=c.epoch AND used.state='consumed' AND used.through_round_id>=c.through_round_id) ORDER BY c.created DESC,c.id DESC LIMIT 1",(*sorted(scopes),*ids)).fetchone()
+                row=self.db.execute(f"SELECT c.id,c.scope,c.epoch,c.summary_id FROM memory_reconstruction_checkpoints c JOIN memory_summaries s ON s.id=c.summary_id WHERE c.scope IN ({scope_marks}) AND c.summary_id IN ({id_marks}) AND {round_gate} AND c.state='available' AND NOT EXISTS (SELECT 1 FROM memory_reconstruction_checkpoints used WHERE used.scope=c.scope AND used.epoch=c.epoch AND used.state='consumed' AND used.through_round_id>=c.through_round_id) ORDER BY c.created DESC,c.id DESC LIMIT 1",(*sorted(scopes),*ids)).fetchone()
             if row is None:
                 # A valid checkpoint may have aged out of the request's rolling
                 # summary window. Its own stored summary row is the validity
                 # proof, so reserve it from the same audience's authoritative
                 # candidates — never a guessed id and never a wider scope.
                 scope_marks=','.join('?' for _ in scopes)
-                row=self.db.execute(f"SELECT c.id,c.scope,c.epoch,c.summary_id FROM memory_reconstruction_checkpoints c JOIN memory_summaries s ON s.id=c.summary_id WHERE c.scope IN ({scope_marks}) AND c.round_count=35 AND c.state='available' AND NOT EXISTS (SELECT 1 FROM memory_reconstruction_checkpoints used WHERE used.scope=c.scope AND used.epoch=c.epoch AND used.state='consumed' AND used.through_round_id>=c.through_round_id) AND c.epoch=? ORDER BY c.created DESC,c.id DESC LIMIT 1",(*sorted(scopes),epoch)).fetchone()
+                row=self.db.execute(f"SELECT c.id,c.scope,c.epoch,c.summary_id FROM memory_reconstruction_checkpoints c JOIN memory_summaries s ON s.id=c.summary_id WHERE c.scope IN ({scope_marks}) AND {round_gate} AND c.state='available' AND NOT EXISTS (SELECT 1 FROM memory_reconstruction_checkpoints used WHERE used.scope=c.scope AND used.epoch=c.epoch AND used.state='consumed' AND used.through_round_id>=c.through_round_id) AND c.epoch=? ORDER BY c.created DESC,c.id DESC LIMIT 1",(*sorted(scopes),epoch)).fetchone()
             if row:
                 if row[2]!=epoch:
                     self.db.execute("UPDATE memory_reconstruction_checkpoints SET state='invalidated',request_id=NULL WHERE id=? AND state='available'",(row[0],))
@@ -574,7 +577,7 @@ class Reflection:
         claims,_=fit_claims(inherit_claims(rows))
         return claims,uncarried_sources(rows,claims)
 
-    def merge_group(self):
+    def merge_group(self,scope_filter=None):
         """One audience-safe big-merge group per attempt: a scope's own smalls
         with that scope's single-origin bigs, or bigs sharing identical
         origins. Cross-scope material never enters another conversation's
@@ -600,6 +603,7 @@ class Reflection:
         for b in bigs:peers.setdefault(b[6],[]).append(b)
         for group in peers.values():
             if len(group)>1:groups.append((group[0][0],group,group[0][4]))
+        if scope_filter is not None:groups=[g for g in groups if g[2]==scope_filter]
         if not groups:return [],None
         _,rows,merge_scope=min(groups,key=lambda g:g[0])
         return sorted(rows,key=lambda r:r[0]),merge_scope
@@ -718,7 +722,8 @@ class Reflection:
             except Exception:metrics['summaryHoldRecaptureFailures']=metrics.get('summaryHoldRecaptureFailures',0)+1
         ready=[(None,person,event,question,answer,at) for event,person,question,answer,at in held]
         if not self.hold_recovery_ready(scope,ready,now,metrics):return None
-        for checkpoint in self.db.execute("SELECT id,summary_id,pending_events,through_round_id,round_count,epoch FROM memory_reconstruction_checkpoints WHERE scope=? AND state IN ('pending_coverage','available') AND pending_events IS NOT NULL AND epoch=? AND round_count=35 ORDER BY id",(scope,self.epoch())):
+        from summary_material import checkpoint_round_gate
+        for checkpoint in self.db.execute(f"SELECT id,summary_id,pending_events,through_round_id,round_count,epoch FROM memory_reconstruction_checkpoints c WHERE scope=? AND state IN ('pending_coverage','available') AND pending_events IS NOT NULL AND epoch=? AND {checkpoint_round_gate(self.db)} ORDER BY id",(scope,self.epoch())):
             try:pending=json.loads(checkpoint[2])
             except (ValueError,TypeError):continue
             if not isinstance(pending,list):continue
@@ -758,10 +763,10 @@ class Reflection:
         from output_clean import memory_projection
         prompt=memory_projection(prompt)
         system=SYSTEM+' 本次补全同一原批次的摘要，完整保留original_summary中的已有信息与protected_evidence，加入缺失的真实材料。observed_requests未重复展示的text/confirmed_reply与turns内同event、sender_id的user/bot完全相同。native_reply仅为模型原稿，不代表投递。输出JSON对象：{"summary":"补全后的完整原摘要"}。'
-        if not live():return
+        if not live():return False
         metrics['summaryRequests']=metrics.get('summaryRequests',0)+1
         response=await asyncio.wait_for(provider.text_chat(prompt=model_json(prompt),system_prompt=system,contexts=[],func_tool=None,request_max_retries=0),SUMMARY_REQUEST_TIMEOUT_SECONDS+5)
-        if not live():return
+        if not live():return False
         from companion_insights import decode
         from output_clean import clean
         data=decode(response.completion_text);text=clean(data['summary']).strip()
@@ -786,6 +791,7 @@ class Reflection:
         if promoted and callable(self.checkpoint_callback):
             try:self.checkpoint_callback(scope)
             except Exception:metrics['checkpointCallbackFailures']=metrics.get('checkpointCallbackFailures',0)+1
+        return True
 
     def health_snapshot(self,scope,summary_rounds=DEFAULT_SUMMARY_ROUNDS):
         """Bounded, content-free per-scope reflection health (B package).
@@ -842,7 +848,23 @@ class Reflection:
             return False
         return True
 
-    def retry(self,_inline=False):
+    def force_compress_once(self,scope='bot_shared',*,allow_partial=False,administrator=None,request_id=None):
+        """Trusted maintenance caller only; never forge business rounds.
+
+        The API authenticates the administrator. A partial checkpoint records
+        that authorization separately; Coverage and audience fences still apply.
+        """
+        if scope!='bot_shared':return {'started':False,'reason':'unsupported_scope'}
+        if allow_partial and (not isinstance(administrator,str) or not administrator.strip() or not isinstance(request_id,str) or not request_id.strip()):
+            raise PermissionError('administrator_authorization_required')
+        if request_id and self.db.execute('SELECT checkpoint_id FROM memory_checkpoint_admin_overrides WHERE request_id=?',(request_id,)).fetchone():
+            return {'started':False,'reason':'request_already_committed'}
+        if self.task and not self.task.done():return {'started':False,'reason':'busy'}
+        manual={'scope':scope,'allow_partial':allow_partial,'administrator':administrator,'request_id':request_id,'summary_done':False}
+        started=self.retry(_manual=manual)
+        return {'started':bool(started),'reason':'started' if started else 'no_eligible_material'}
+
+    def retry(self,_inline=False,_manual=None):
         if not self.binding:return False
         cfg,provider,is_current,metrics,event_var=self.binding
         if self.closed or cfg.get('memory') is False or not cfg.get('memorySummary') or not callable(getattr(provider,'text_chat',None)) or not is_current() or not _inline and self.task and not self.task.done():return False
@@ -870,8 +892,8 @@ class Reflection:
         # Mandatory rollup runs before the next ordinary reflection, one
         # audience-safe group at a time instead of across every scope.
         retry=self.db.execute("SELECT next_at FROM memory_reflection_retry WHERE scope='self'").fetchone()
-        if not retry or retry[0]<=now:
-            big_rows,merge_scope=self.merge_group()
+        if not retry or retry[0]<=now or _manual is not None:
+            big_rows,merge_scope=self.merge_group(_manual['scope'] if _manual is not None else None)
             if big_rows and self.merge_sources([r[0] for r in big_rows])[1]:
                 self.checkpoint_issue(merge_scope,0,'merge_protected',{'summary_ids':[r[0] for r in big_rows],'reason':'protected_claim_capacity','retry':'after_evidence_or_state_change'})
                 self.db.execute("INSERT INTO memory_reflection_retry VALUES('self',1,?) ON CONFLICT(scope) DO UPDATE SET next_at=excluded.next_at",(now+600,))
@@ -879,22 +901,27 @@ class Reflection:
             if big_rows:scope='self';job='big'
         if not scope:
             candidates=self.db.execute("SELECT r.scope FROM (SELECT scope,id FROM memory_rounds UNION ALL SELECT scope,0 FROM memory_hold_rounds WHERE round_id IS NULL AND reason<>'lost') r LEFT JOIN memory_reflection_retry q ON r.scope=q.scope WHERE coalesce(q.next_at,0)<=? AND (?=0 OR r.scope='bot_shared') GROUP BY r.scope ORDER BY min(r.id)",(now,int(bool(getattr(self,'shared_context',False))))).fetchall()
+            if _manual is not None:candidates=[(_manual['scope'],)]
             for (candidate,) in candidates:
+                if _manual is not None and (candidate!=_manual['scope'] or _manual['summary_done']):continue
                 progress=self.db.execute('SELECT summary_watermark,insight_watermark FROM memory_reflection_progress WHERE scope=?',(candidate,)).fetchone() or (0,0)
-                null_batch=self.null_hold_batch(candidate,now,metrics)
+                null_batch=self.null_hold_batch(candidate,now,metrics) if _manual is None else None
                 if null_batch:
                     scope=candidate;job='null_hold_recovery';break
                 # Retry held evidence alongside 35 NEW rounds. Re-reading an
                 # old round cannot earn another checkpoint round.
                 held=self.hold_rounds(candidate,progress[0],metrics)
                 batch=self.db.execute('SELECT id,subject,event,question,answer,at FROM memory_rounds WHERE scope=? AND id>? ORDER BY id LIMIT ?',(candidate,progress[0],summary_rounds)).fetchall()
-                if len(batch)>=summary_rounds:
+                if len(batch)>=summary_rounds or (batch and _manual is not None and _manual['allow_partial']):
                     scope=candidate;job='summary';rows=held+batch;summary_from=progress[0];break
+                if _manual is not None:
+                    null_batch=self.null_hold_batch(candidate,now,metrics)
+                    if null_batch:scope=candidate;job='null_hold_recovery';break
                 # Hold recovery without waiting for new rounds (B package):
                 # held evidence that is provably recoverable may be re-summarized
                 # on its own; the watermark, round accounting and mint gate stay
                 # untouched, so no license or business round is earned here.
-                if held and self.hold_recovery_ready(candidate,held,now,metrics):
+                if _manual is None and held and self.hold_recovery_ready(candidate,held,now,metrics):
                     scope=candidate;job='hold_recovery';rows=held;summary_from=progress[0];break
         if not scope:
             # Persist lost-state discovery even when no new batch is due;
@@ -916,12 +943,13 @@ class Reflection:
             with auxiliary_scope(provider,'big_merge' if job=='big' else 'small_summary',scope=merge_scope if job=='big' else scope):
                 token=event_var.set(None)
                 try:
-                    if self.closed or not is_current() or self.epoch()!=epoch:return
+                    if self.closed or not is_current() or self.epoch()!=epoch:return {'ok':False,'reason':'stale_configuration'}
                     if job=='null_hold_recovery':
-                        await self.recover_null_hold_batch(scope,null_batch,provider,is_current,metrics,epoch)
+                        recovered=await self.recover_null_hold_batch(scope,null_batch,provider,is_current,metrics,epoch)
+                        if not recovered:return {'ok':False,'reason':'existing_batch_not_committed'}
                         adopted('hold_recovery_committed')
-                        asyncio.get_running_loop().call_soon(self.retry)
-                        return
+                        if _manual is None:asyncio.get_running_loop().call_soon(self.retry)
+                        return {'ok':True,'reason':'existing_batch_repaired','checkpointId':null_batch[0][0]}
                     if job=='big':
                         prompt={'source_scope':'bot_shared_background','summaries':[{'id':r[0],'text':r[1],'source_scopes':[x[0] for x in self.db.execute('SELECT scope FROM memory_summary_origins WHERE summary_id=?',(r[0],))] or [r[4]],'level':r[5]} for r in big_rows]}
                         # The merge model must see the structured protected evidence,
@@ -1019,10 +1047,10 @@ class Reflection:
                     system+=' 机器人输出中的推理控制块是平台内部内容，不是人物事实、关系或经历；主动研究和主动选题不等于用户曾经提出。'
                     prompt['core_note']=core_before
                     system+=' '+CORE_NOTE_UPDATE
-                    if self.closed or not is_current() or self.epoch()!=epoch:return
+                    if self.closed or not is_current() or self.epoch()!=epoch:return {'ok':False,'reason':'stale_configuration'}
                     metrics['summaryRequests']=metrics.get('summaryRequests',0)+1
                     response=await asyncio.wait_for(provider.text_chat(prompt=model_json(prompt),system_prompt=system,contexts=[],func_tool=None,request_max_retries=0),SUMMARY_REQUEST_TIMEOUT_SECONDS+5)
-                    if self.closed or not is_current() or self.epoch()!=epoch:return
+                    if self.closed or not is_current() or self.epoch()!=epoch:return {'ok':False,'reason':'stale_configuration'}
                     from output_clean import clean
                     from companion_insights import decode,apply
                     data=decode(response.completion_text)
@@ -1031,7 +1059,7 @@ class Reflection:
                     available_before={r[0] for r in self.db.execute("SELECT id FROM memory_reconstruction_checkpoints WHERE state='available'")}
                     with self.db:
                         self.db.execute('BEGIN IMMEDIATE')
-                        if self.closed or not is_current() or self.epoch()!=epoch:return
+                        if self.closed or not is_current() or self.epoch()!=epoch:return {'ok':False,'reason':'stale_configuration'}
                         if job in ('summary','hold_recovery'):
                             progress_now=self.db.execute('SELECT summary_watermark,insight_watermark FROM memory_reflection_progress WHERE scope=?',(scope,)).fetchone() or (0,0)
                             held_now=self.hold_rounds(scope,summary_from)
@@ -1178,7 +1206,8 @@ class Reflection:
                             # and scopes with an unresolved hold inside the
                             # reconstruction range never issue one.
                             new_rows=[r for r in rows if r[0]>summary_from]
-                            if (summary_rounds==35 and len(new_rows)==35 and
+                            admin_partial=bool(_manual is not None and _manual['allow_partial'] and 0<len(new_rows)<35)
+                            if (summary_rounds==35 and (len(new_rows)==35 or admin_partial) and
                                 all(isinstance(r[1],str) and r[1] and isinstance(r[2],str) and r[2] and
                                     isinstance(r[3],str) and r[3].strip() and isinstance(r[4],str) and r[4].strip() and
                                     isinstance(r[5],(int,float)) for r in new_rows)):
@@ -1189,15 +1218,18 @@ class Reflection:
                                 waiting=[str(r[0]) for r in self.db.execute('SELECT event FROM memory_hold_rounds WHERE scope=? AND (round_id IS NULL OR round_id<=?) ORDER BY event',(scope,rows[-1][0]))]
                                 pending=list(dict.fromkeys(waiting+[str(event) for event in holds]))
                                 state='pending_merge' if pending_merge else 'available' if not pending else 'pending_coverage'
-                                self.db.execute('INSERT OR IGNORE INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,created,summary_id,pending_events) VALUES(?,?,35,?,?,?,?,?)',
-                                                (scope,rows[-1][0],epoch,state,time.time(),identifier,json.dumps(pending,ensure_ascii=False) if pending else None))
+                                self.db.execute('INSERT OR IGNORE INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,created,summary_id,pending_events) VALUES(?,?,?,?,?,?,?,?)',
+                                                (scope,rows[-1][0],len(new_rows),epoch,state,time.time(),identifier,json.dumps(pending,ensure_ascii=False) if pending else None))
+                                if _manual is not None and _manual.get('administrator') and _manual.get('request_id'):
+                                    checkpoint_id=self.db.execute('SELECT id FROM memory_reconstruction_checkpoints WHERE scope=? AND through_round_id=? AND summary_id=?',(scope,rows[-1][0],identifier)).fetchone()[0]
+                                    self.db.execute('INSERT INTO memory_checkpoint_admin_overrides VALUES(?,?,?,?)',(checkpoint_id,_manual['administrator'],_manual['request_id'],time.time()))
                             elif new_rows and job=='summary':
                                 # Bounded mint-skip accounting: the batch did not
                                 # reach the exact 35-round contract. Never widened
                                 # into a license; visible via metrics.
                                 metrics['summaryMintSkipped']=metrics.get('summaryMintSkipped',0)+1
                             if job=='summary':
-                                cp=self.db.execute('SELECT id FROM memory_reconstruction_checkpoints WHERE scope=? AND through_round_id=? AND summary_id=? AND round_count=35',(scope,rows[-1][0],identifier)).fetchone()
+                                cp=self.db.execute('SELECT id FROM memory_reconstruction_checkpoints WHERE scope=? AND through_round_id=? AND summary_id=?',(scope,rows[-1][0],identifier)).fetchone()
                                 if cp:
                                     from summary_material import offer_legacy_retirements
                                     choices=data.get('retire_legacy_events',[])
@@ -1219,10 +1251,20 @@ class Reflection:
                     adopted('merge_committed' if job=='big' else 'hold_recovery_committed' if job=='hold_recovery' else 'summary_committed')
                     self.checkpoint_issue(merge_scope or scope,0,'failure_'+job,{},resolved=True);self.db.commit()
                     # Drain only immediately due persisted work, never a per-bot timer.
-                    if job!='big' and pending_merge:
+                    if _manual is not None:
+                        if job!='big':_manual['summary_done']=True
+                        if (job!='big' and pending_merge) or (job=='big' and not _manual['summary_done']):
+                            continuation=self.retry(_inline=True,_manual=_manual)
+                            if continuation:
+                                outcome=await continuation
+                                if isinstance(outcome,dict) and outcome.get('ok') is False:return outcome
+                    elif job!='big' and pending_merge:
                         continuation=self.retry(_inline=True)
                         if continuation:await continuation
                     else:asyncio.get_running_loop().call_soon(self.retry)
+                    if _manual is not None:
+                        checkpoint=self.db.execute('SELECT id,round_count,state FROM memory_reconstruction_checkpoints WHERE scope=? AND epoch=? ORDER BY through_round_id DESC LIMIT 1',(_manual['scope'],epoch)).fetchone()
+                        return {'ok':True,'reason':'summary_committed','checkpoint':dict(zip(('id','roundCount','state'),checkpoint)) if checkpoint else None}
                 except asyncio.CancelledError:
                     if not self.closed:self.checkpoint_issue(merge_scope or scope,0,'canceled_'+job,
                         {'source':'reflection_close' if self.closed else 'external_cancellation',
@@ -1238,6 +1280,7 @@ class Reflection:
                     frame=frames[-1] if frames else None
                     self.checkpoint_issue(merge_scope or scope,0,'failure_'+job,{'type':type(error).__name__,'through_round_id':rows[-1][0] if rows else None,'automatic_recovery':'persisted_backoff',
                         'raise_site':{'module':Path(frame.filename).name,'line':frame.lineno,'symbol':frame.name} if frame else None});self.db.commit()
+                    if _manual is not None:return {'ok':False,'reason':type(error).__name__}
                 finally:
                     if not self.closed and (not is_current() or self.epoch()!=epoch):
                         self.db.execute('DELETE FROM memory_reflection_retry WHERE scope=? AND attempts=?',(scope,attempts));self.db.commit()

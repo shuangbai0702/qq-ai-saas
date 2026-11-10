@@ -12,6 +12,13 @@ MAX_IMAGES_BYTES=4*1024*1024
 MAX_STORE_BYTES=24*1024*1024
 
 
+def checkpoint_round_gate(db,alias='c'):
+    """Only an exact checkpoint-bound administrator grant may waive 35 rounds."""
+    ordinary=f'{alias}.round_count=35'
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_checkpoint_admin_overrides'").fetchone():return ordinary
+    return f"({ordinary} OR ({alias}.round_count BETWEEN 1 AND 34 AND EXISTS (SELECT 1 FROM memory_checkpoint_admin_overrides a WHERE a.checkpoint_id={alias}.id AND length(trim(a.administrator))>0 AND length(trim(a.request_id))>0)))"
+
+
 def project_history(messages,covered,scope,current_event,protect_latest=True):
     """Drop a covered user/assistant/tool block atomically, keeping current turn."""
     if not isinstance(messages,list) or not covered:return messages
@@ -375,10 +382,10 @@ def coverage(db,scope,events=None):
     # published summary; never treated as a successful delivery.
     tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if 'memory_retirement_exceptions' in tables and 'memory_reconstruction_checkpoints' in tables:
-        for event,subject,signature,reply,checkpoint in db.execute("""SELECT e.event,e.subject,e.digest,e.reply_digest,e.checkpoint_id
+        for event,subject,signature,reply,checkpoint in db.execute(f"""SELECT e.event,e.subject,e.digest,e.reply_digest,e.checkpoint_id
           FROM memory_retirement_exceptions e JOIN memory_reconstruction_checkpoints c ON c.id=e.checkpoint_id
           JOIN memory_summaries s ON s.id=e.summary_id LEFT JOIN memory_summary_levels l ON l.id=s.id
-          WHERE e.scope=? AND c.scope=e.scope AND c.round_count=35 AND c.summary_id=e.summary_id
+          WHERE e.scope=? AND c.scope=e.scope AND {checkpoint_round_gate(db)} AND c.summary_id=e.summary_id
           AND c.epoch=(SELECT epoch FROM memory_reflection_control WHERE id=1)
           AND c.state IN ('pending_coverage','available','reserved','consumed')
           AND NOT EXISTS (SELECT 1 FROM memory_media_retirement_choices m WHERE m.scope=e.scope AND m.event=e.event AND m.digest=e.digest AND m.retire=0)
