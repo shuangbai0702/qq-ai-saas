@@ -101,7 +101,16 @@ async def collect_protocol_originals(event,live,db=None,*,shared=False):
             if isinstance(result,dict) and isinstance(result.get('data'),dict):result=result['data']
             name=result.get('file') if isinstance(result,dict) else None
             if not isinstance(name,str) or not Path(name).is_absolute():raise ValueError('protocol_image_path_unavailable')
-            path=Path(name).absolute();root=next((r for r in roots if _contained(path,r)),None)
+            path=Path(name).absolute()
+            # Linux QQ uses a hashed account directory directly under this
+            # runner's isolated profile. Derive only the returned path's exact
+            # layout; do not discover or authorize other profile subtrees.
+            candidates=list(roots)
+            if path.is_relative_to(profile):
+                parts=path.relative_to(profile).parts
+                if len(parts)>3 and re.fullmatch(r'nt_qq_[0-9a-f]{32}',parts[0]) and parts[1:3]==('nt_data','Pic'):
+                    candidates.append(profile/parts[0]/'nt_data'/'Pic')
+            root=next((r for r in candidates if _contained(path,r)),None)
             if root is None:raise ValueError('protocol_image_outside_bot_cache')
             info=path.lstat()
             if not stat.S_ISREG(info.st_mode) or not 0<info.st_size<=POLICY['maxSourceBytes']:
