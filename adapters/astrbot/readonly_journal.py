@@ -820,8 +820,8 @@ class ReadonlyJournal:
             else:
                 reuse=False
         if reuse:
-            from context_foundation import freeze
-            state=freeze(state,old.state)
+            from context_foundation import freeze,execution_view
+            state=execution_view(freeze(state,old.state))
             operations=changes(old.state,state)
             if apply_changes(old.state,operations)!=state:raise ValueError('readonly_projection_mismatch')
             if retirement_deferred:
@@ -849,7 +849,8 @@ class ReadonlyJournal:
                 wire.append(authority)
             if operations:wire.append({'role':'user','content':READONLY_CURRENT+'\n'+model_json({'readonlyChanges':operations})})
         else:
-            from context_foundation import arrange
+            from context_foundation import arrange,execution_view
+            state=execution_view(state)
             wire=arrange(messages,state)
         usage=history_usage(wire);base_chars=old.base_chars if reuse else usage['textChars']
         # A foreground journal cannot rebuild at a cache-growth threshold.

@@ -25,12 +25,10 @@ def context_projection(result,foundation):
         return isinstance(row,dict) and row.get('execution')=='completed' and (row.get('receipt') or {}).get('status') in ('confirmed','not_applicable')
     if isinstance(foundation,dict) and 'execution_experience' not in foundation:
         foundation['execution_experience']={**copy.deepcopy(current),'experiences':[copy.deepcopy(row) for row in rows if settled(row)]}
-    keys=('actionId','service','operation','startedAt','observedAt','execution','receipt','visibility','sourceScope','bvid','coverage','errorCode')
-    # Preserve uncertainty, failure and pending material in full. Completed
-    # ordinary prose lives in the basis / original tool wire, not another hot
-    # autobiographical paragraph. Identity and actual settlement remain visible.
-    current['experiences']=[{k:copy.deepcopy(row[k]) for k in keys if k in row} if settled(row) else copy.deepcopy(row) for row in rows]
-    return current
+    # Keep the complete current view, including newly completed prose and
+    # future fields. Presentation deduplication follows Journal foundation
+    # freezing, so it can only reference a basis actually visible on the wire.
+    return copy.deepcopy(current)
 
 
 async def recall(settings,event,scope,current,query='',limit=6,share=False,identity=None):
