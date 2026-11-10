@@ -23,10 +23,12 @@ test('compression requires server administrator role and forwards only server ac
  assert.equal((await app.inject({method:'POST',url,headers:{'x-test-role':'admin'},payload})).statusCode,200);
  assert.equal(posts[0].body.administrator,'real-session-admin');assert.equal(posts[0].body.allowPartial,true);
  assert.equal(audits.length,1);assert.equal(audits[0].args[0],'target-tenant');assert.equal(audits[0].args[1],id);
- assert.deepEqual(JSON.parse(audits[0].args[2]),{requestId,allowPartial:true,actorId:'real-session-admin'});
+ assert.deepEqual(JSON.parse(audits[0].args[2]),{requestId,allowPartial:true,discardUnavailable:false,actorId:'real-session-admin'});
  assert.equal(posts[0].headers['X-Member-Revision'],'9');assert.equal(posts[0].headers['X-Group-Generation'],'5');
  assert.equal(posts[0].url,`http://127.0.0.1:12345/members/${id}/behavior-data`);
+ assert.equal((await app.inject({method:'POST',url,headers:{'x-test-role':'admin'},payload:{...payload,discardUnavailable:true}})).statusCode,200);
+ assert.equal(posts[1].body.discardUnavailable,true);assert.equal(JSON.parse(audits[1].args[2]).discardUnavailable,true);
  inspected=false;
  assert.equal((await app.inject({method:'POST',url,headers:{'x-test-role':'admin'},payload})).statusCode,409);
- assert.equal(posts.length,1,'maintenance cannot fall back to an offline process');
+ assert.equal(posts.length,2,'maintenance cannot fall back to an offline process');
 });

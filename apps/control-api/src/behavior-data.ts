@@ -58,7 +58,7 @@ export function registerBehaviorData(app:FastifyInstance,root:string,owned:(req:
  }
  app.post<{Params:{id:string}}>('/v1/admin/bots/:id/force-compress',{config:{rateLimit:{max:6,timeWindow:'1 minute'}}},async req=>{
   const bot=await adminBot(req);
-  const body=z.object({requestId:z.uuid(),allowPartial:z.boolean().default(false)}).strict().parse(req.body);
+  const body=z.object({requestId:z.uuid(),allowPartial:z.boolean().default(false),discardUnavailable:z.boolean().default(false)}).strict().parse(req.body);
   await db.query("INSERT INTO audit_events(tenant_id,event,bot_id,detail) VALUES($1,'admin.memory.force_compress',$2,$3)",[bot.tenant_id,bot.id,JSON.stringify({...body,actorId:req.user!.id})]);
   return access(bot,{action:'admin_force_compress',...body,administrator:req.user!.id},true);
  });
