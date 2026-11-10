@@ -52,6 +52,15 @@ class ServiceInputs(unittest.TestCase):
         self.assertEqual(discard_failed_service_inputs(self.db,'bot_shared'),1)
         self.assertEqual(self.db.execute('SELECT subject FROM pipeline_events').fetchall(),[('87654321',)])
 
+    def test_unsubmitted_model_binding_can_use_the_real_contact_work_subject(self):
+        self.db.execute("UPDATE pipeline_events SET subject='87654321'")
+        bound=copy.deepcopy(self.binding);bound['sender_id']='87654321';self.save_binding(bound)
+        self.assertEqual(discard_failed_service_inputs(self.db,'bot_shared'),1)
+
+    def test_unrelated_binding_subject_does_not_authorize_cleanup(self):
+        bound=copy.deepcopy(self.binding);bound['sender_id']='87654321';self.save_binding(bound)
+        self.assert_protected()
+
     def test_ambiguous_work_subjects_do_not_authorize_cleanup(self):
         self.db.execute("INSERT INTO pipeline_events(scope,subject,event,at,source,stage,status,attempted,confirmed) VALUES(?, '87654321', ?, 0, 'owner_contact','settle','error',0,0)",(self.scope,self.event))
         self.db.commit();self.assert_protected()

@@ -47,15 +47,17 @@ def discard_failed_service_inputs(db,scope):
         if (scope,str(event)) not in identities:continue
         # The service input speaks as the bot; the owner-contact Work is
         # addressed to the contact. Those principals need not be identical.
-        ledgers=db.execute('SELECT source,status,attempted,confirmed FROM pipeline_events WHERE scope=? AND event=?',(channel,identifier)).fetchall()
-        if ledgers!=[('owner_contact','error',0,0)]:continue
+        ledgers=db.execute('SELECT subject,source,status,attempted,confirmed FROM pipeline_events WHERE scope=? AND event=?',(channel,identifier)).fetchall()
+        if len(ledgers)!=1 or ledgers[0][1:]!=('owner_contact','error',0,0):continue
+        work_subject=str(ledgers[0][0])
         bindings=db.execute("SELECT data FROM memory_message_sources WHERE scope=? AND event=? AND direction='model'",(scope,event)).fetchall()
         if len(bindings)!=1:continue
         try:binding=json.loads(bindings[0][0])
         except (TypeError,ValueError):continue
         if not isinstance(binding,dict) or 'input_digest' in binding or binding.get('outputs')!=[]:continue
         if any(str(binding.get(key,''))!=str(value) for key,value in
-               (('source_scope',channel),('event_id',identifier),('sender_id',subject))):continue
+               (('source_scope',channel),('event_id',identifier))):continue
+        if str(binding.get('sender_id','')) not in (str(subject),work_subject):continue
         settlement=binding.get('settlement')
         if not isinstance(settlement,dict) or settlement.get('status')!='error' or any(
             type(settlement.get(key)) is not int or settlement[key]!=0
