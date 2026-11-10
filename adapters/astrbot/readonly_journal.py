@@ -636,7 +636,10 @@ class ReadonlyJournal:
         # Content-free membership tombstones fence that resurrection before
         # native-prefix comparison; no Coverage or timestamp inference.
         if self.db is not None and self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_semantic_batches'").fetchone():
-            scope=reconstruction_scope or json.loads(self.scope_key)
+            # Internal Work journals use an ephemeral tuple as their owner key;
+            # it is not a conversation scope or a SQLite parameter. They still
+            # apply the bot's shared tombstones to real sourced chat blocks.
+            scope=reconstruction_scope if isinstance(reconstruction_scope,str) else json.loads(self.scope_key) if self.scope_key is not None else None
             by_scope={}
             for batch_scope,raw in self.db.execute("SELECT scope,members FROM memory_semantic_batches WHERE scope IN (?,'bot_shared') AND state='retired'",(scope,)):
                 by_scope.setdefault(batch_scope,set()).update(json.loads(raw))

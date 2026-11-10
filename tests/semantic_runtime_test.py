@@ -106,6 +106,18 @@ class RuntimeTests(unittest.TestCase):
         self.assertNotIn('original old',model_json(prepared.base));self.assertNotIn('old reply',model_json(prepared.wire))
         self.assertIn('original new',model_json(prepared.wire));self.assertIn('foreign old',model_json(prepared.wire))
         self.assertEqual(prepared.wire[0],self.base[0]);self.assertEqual(incoming,before)
+
+    def test_internal_tuple_owner_is_not_bound_as_sql_scope(self):
+        from context_protocol import READONLY_CURRENT
+        self.st.db.execute("INSERT INTO memory_semantic_batches VALUES(2,'bot_shared','digest',?,0,'retired',0,0)",
+                           (model_json([event_key('bot_shared',model_json([SCOPE,'old']))]),));self.st.db.commit()
+        journal=ReadonlyJournal(self.st.db,None)
+        incoming=copy.deepcopy(self.base)+[{'role':'user','content':READONLY_CURRENT+'\n'+model_json({'execution_experience':{'status':'ok'}})}]
+        before=copy.deepcopy(incoming)
+        prepared=journal.prepare(incoming,None,reconstruction_scope=('autonomous','actual-action-id'),guarded=False)
+        self.assertIsNotNone(prepared)
+        self.assertNotIn('original old',model_json(prepared.wire));self.assertIn('original new',model_json(prepared.wire))
+        self.assertEqual(incoming,before);self.assertTrue(journal.commit(prepared))
     def test_retirement_removes_exact_raw_evidence_and_keeps_other_events_and_state(self):
         import quote_reply,shared_context
         db=self.st.db;quote_reply.initialize(db);shared_context.initialize(db)
