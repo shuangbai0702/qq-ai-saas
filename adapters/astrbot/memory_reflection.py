@@ -1168,11 +1168,24 @@ class Reflection:
                             from semantic_batch import event_key
                             # Whole-batch inputs belong to their committed Journal
                             # replacement; legacy coverage cannot retire them early.
-                            semantic_members={member for (members,) in self.db.execute(
-                                "SELECT members FROM memory_semantic_batches WHERE scope=? AND state='committed'",(merge_scope,))
-                                for member in json.loads(members)}
+                            semantic_members={}
+                            for batch_scope,members in self.db.execute(
+                                "SELECT scope,members FROM memory_semantic_batches WHERE state='committed'"):
+                                semantic_members.setdefault(batch_scope,set()).update(json.loads(members))
                             for event,raw in self.db.execute('SELECT event,material FROM memory_round_material WHERE scope=?',(merge_scope,)).fetchall():
-                                if event_key(merge_scope,event) in semantic_members:continue
+                                # Shared batches own original-scope copies by
+                                # the same [scope,event] mapping used by purge.
+                                # A legacy merge in that source scope cannot
+                                # delete them before the shared Journal settles.
+                                identities=[(merge_scope,str(event))]
+                                if merge_scope!='bot_shared':identities.append(('bot_shared',model_json([merge_scope,str(event)])))
+                                else:
+                                    try:
+                                        origin=json.loads(event)
+                                        from memory_scope import valid_scope
+                                        if isinstance(origin,list) and len(origin)==2 and all(isinstance(x,str) for x in origin) and valid_scope(origin[0]):identities.append(tuple(origin))
+                                    except (ValueError,TypeError):pass
+                                if any(event_key(channel,identifier) in semantic_members.get(channel,set()) for channel,identifier in identities):continue
                                 material=json.loads(raw)
                                 proof=self.db.execute('SELECT digest FROM memory_summary_coverage WHERE scope=? AND event=? AND summary_id=?',(merge_scope,event,identifier)).fetchone()
                                 if not proof or not coverage_eligible(material,merge_scope) or proof[0]!=coverage_digest(material):continue
