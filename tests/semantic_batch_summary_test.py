@@ -69,5 +69,32 @@ class SemanticSummary(unittest.IsolatedAsyncioTestCase):
   prior=self.r.core_note();self.assertNotIn('sources',prior)
   changed=self.r.update_core_note({'core_note':{'text':'新的提炼事实','events':['new'],'summaries':[]}},prior,[{'event':'new','sender_id':'12345678'}],[],SCOPE)
   self.assertEqual(changed,1);self.assertEqual(self.db.execute('SELECT sources FROM memory_core_notes').fetchone()[0],'[]')
+ async def test_merge_keeps_committed_batch_inputs_until_journal_retirement(self):
+  self.record();await self.run_summary();self.r.binding=None
+  checkpoint=self.checkpoint()[0]
+  summary=self.db.execute('SELECT summary_id FROM memory_reconstruction_checkpoints WHERE id=?',(checkpoint,)).fetchone()[0]
+  for event,raw in self.db.execute('SELECT event,material FROM memory_round_material').fetchall():
+   self.db.execute('INSERT INTO memory_summary_coverage VALUES(?,?,?,?,?)',(SCOPE,event,'12345678',summary_material.coverage_digest(json.loads(raw)),summary))
+  # A covered legacy input outside the semantic batch still follows the old
+  # merge cleanup path, proving the regression exercises the deletion loop.
+  legacy=summary_material.snapshots([message('legacy'),{'role':'assistant','content':'完整真实回复'}],SCOPE)[0]
+  self.db.execute('INSERT INTO memory_round_material VALUES(?,?,?,?)',(SCOPE,'legacy','12345678',json.dumps(legacy)))
+  self.db.execute('INSERT INTO memory_pending VALUES(?,?,?,?,?,?)',(SCOPE,'12345678','legacy','看这个','完整真实回复',90))
+  self.db.execute('INSERT INTO memory_summary_coverage VALUES(?,?,?,?,?)',(SCOPE,'legacy','12345678',summary_material.coverage_digest(legacy),summary))
+  for i in range(2):
+   self.db.execute("INSERT INTO memory_summaries(scope,text,sources,updated) VALUES(?,?,'[]',1)",(SCOPE,'此前提炼记忆'+str(i)))
+  self.db.commit()
+  originals={table:self.db.execute('SELECT * FROM '+table+' WHERE scope=? AND event<>? ORDER BY event',(SCOPE,'legacy')).fetchall() for table in ('memory_rounds','memory_round_material','memory_pending')}
+  self.mode='failed';await self.run_summary()
+  self.assertEqual(self.metrics['summaryFailures'],1)
+  self.assertIsNotNone(self.db.execute('SELECT 1 FROM memory_round_material WHERE event=?',('legacy',)).fetchone())
+  self.mode='ok';self.db.execute("DELETE FROM memory_reflection_retry WHERE scope='self'");self.db.commit();await self.run_summary()
+  self.assertEqual(self.metrics['bigSummariesSaved'],1)
+  self.assertEqual(self.db.execute('SELECT state FROM memory_semantic_batches WHERE checkpoint_id=?',(checkpoint,)).fetchone()[0],'committed')
+  self.assertEqual(self.checkpoint()[2],'available')
+  for table,before in originals.items():
+   self.assertEqual(self.db.execute('SELECT * FROM '+table+' WHERE scope=? AND event<>? ORDER BY event',(SCOPE,'legacy')).fetchall(),before,table)
+  self.assertIsNone(self.db.execute('SELECT 1 FROM memory_round_material WHERE event=?',('legacy',)).fetchone())
+  self.assertIsNone(self.db.execute('SELECT 1 FROM memory_pending WHERE event=?',('legacy',)).fetchone())
 
 if __name__=='__main__':unittest.main()

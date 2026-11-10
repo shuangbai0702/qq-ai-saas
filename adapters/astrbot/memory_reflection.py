@@ -1123,7 +1123,14 @@ class Reflection:
                             # Release only source material with the exact complete
                             # proof carried by this now-published merge product.
                             from summary_material import coverage_digest,coverage_eligible
+                            from semantic_batch import event_key
+                            # Whole-batch inputs belong to their committed Journal
+                            # replacement; legacy coverage cannot retire them early.
+                            semantic_members={member for (members,) in self.db.execute(
+                                "SELECT members FROM memory_semantic_batches WHERE scope=? AND state='committed'",(merge_scope,))
+                                for member in json.loads(members)}
                             for event,raw in self.db.execute('SELECT event,material FROM memory_round_material WHERE scope=?',(merge_scope,)).fetchall():
+                                if event_key(merge_scope,event) in semantic_members:continue
                                 material=json.loads(raw)
                                 proof=self.db.execute('SELECT digest FROM memory_summary_coverage WHERE scope=? AND event=? AND summary_id=?',(merge_scope,event,identifier)).fetchone()
                                 if not proof or not coverage_eligible(material,merge_scope) or proof[0]!=coverage_digest(material):continue
