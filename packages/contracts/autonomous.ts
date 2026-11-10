@@ -3,6 +3,12 @@ import {z} from 'zod';
 export const AutonomyConfigSchema=z.object({
   mode:z.enum(['passive','active']).default('passive'),
   rollout:z.enum(['shadow','live']).default('live'),
+  activityEnabled:z.boolean().default(true),
+  activityIntervalMinutes:z.number().int().min(5).max(1440).default(30),
+  activityModelCalls:z.number().int().min(1).max(16).default(4),
+  activityToolCalls:z.number().int().min(0).max(64).default(8),
+  activityTokenBudget:z.number().int().min(4000).max(2000000).default(128000),
+  activityExternalActions:z.number().int().min(0).max(4).default(1),
   fatigueEnabled:z.boolean().default(true),
   fatigueWindowMinutes:z.number().int().min(10).max(1440).default(60),
   fatigueRecoveryMinutes:z.number().int().min(5).max(240).default(30),
@@ -27,11 +33,15 @@ export const defaultAutonomyConfig=AutonomyConfigSchema.parse({});
 export const TaskHandoffSchema=z.object({
  id:z.string().uuid(),tenantId:z.string().min(1).max(100),botId:z.string().min(1).max(100),
  generation:z.number().int().nonnegative(),revision:z.number().int().nonnegative(),epoch:z.number().int().positive(),
- eventId:z.string().min(1).max(100),scope:z.string().regex(/^(private|group):[0-9]{5,20}$/),senderId:z.string().regex(/^[0-9]{5,20}$/),
+ eventId:z.string().min(1).max(100),scope:z.string().regex(/^(self|(private|group):[0-9]{5,20})$/),senderId:z.string().regex(/^(0|[0-9]{5,20})$/),
  at:z.number().int().positive(),objective:z.string().min(1).max(1000),delaySeconds:z.number().int().min(0).max(604800),
- kind:z.enum(['message','research']).optional(),origin:z.literal('model').optional(),
+ kind:z.enum(['message','research']).optional(),origin:z.literal('model').optional(),parentActionId:z.string().uuid().optional(),
  agreement:z.object({id:z.string().regex(/^[a-f0-9]{24}$/),revision:z.number().int().positive()}).strict().optional(),
-}).strict();
+}).strict().superRefine((v,ctx)=>{
+ if((v.scope==='self'||v.senderId==='0'||v.parentActionId)&&!(v.origin==='model'&&v.parentActionId&&v.senderId==='0'))ctx.addIssue({code:'custom',path:['scope'],message:'内部任务来源需要真实父动作与服务身份'});
+ if(v.parentActionId&&v.eventId!==v.parentActionId)ctx.addIssue({code:'custom',path:['eventId'],message:'内部来源必须绑定父动作'});
+ if(v.kind==='message'&&v.scope==='self')ctx.addIssue({code:'custom',path:['scope'],message:'消息任务需要真实目的会话'});
+});
 
 // The coordinator constructs one action per due handoff goal; every action,
 // whatever produced it, must satisfy this same contract. evidenceRefs stay

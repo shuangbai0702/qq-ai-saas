@@ -65,10 +65,10 @@ export class AutonomyRepository {
   const parsed=TaskHandoffSchema.safeParse(value);
   if(!parsed.success)return{status:'rejected',reason:'invalid_handoff'};
   const r=parsed.data;
-  if(r.origin==='model'&&r.kind!=='research')return{status:'rejected',reason:'model_handoff_read_only'};
+  if(r.origin==='model'&&r.kind!=='research'&&!r.parentActionId)return{status:'rejected',reason:'model_handoff_read_only'};
   const fingerprint=createHash('sha256').update(JSON.stringify(r)).digest('hex');
   if(r.botId!==bot.bot_id||r.tenantId!==bot.tenant_id||r.epoch!==bot.epoch||r.generation!==bot.generation||r.revision!==bot.revision)return{status:'rejected',reason:'handoff_identity_changed'};
-  if(r.scope.startsWith('private:')&&r.scope!=='private:'+r.senderId)return{status:'rejected',reason:'handoff_scope_mismatch'};
+  if(!r.parentActionId&&r.scope.startsWith('private:')&&r.scope!=='private:'+r.senderId)return{status:'rejected',reason:'handoff_scope_mismatch'};
   if(r.at>Date.now()+60000||r.at<Date.now()-604800000)return{status:'rejected',reason:'handoff_expired'};
   return this.db.transaction(async tx=>{
    const [s]=await tx.query("SELECT s.*,b.generation,b.revision,b.desired_state,b.health,c.config AS bot_config FROM autonomy_settings s JOIN bots b ON b.id=s.bot_id AND b.tenant_id=s.tenant_id JOIN bot_config_revisions c ON c.bot_id=b.id AND c.revision=b.revision WHERE s.bot_id=$1 AND s.tenant_id=$2 AND b.deleted_at IS NULL FOR UPDATE OF s",[r.botId,r.tenantId]);
@@ -77,12 +77,20 @@ export class AutonomyRepository {
    if(existing)return existing.source?.handoffId===r.id&&existing.source?.handoffFingerprint===fingerprint?{status:'accepted',goalId:r.id,notBefore:existing.source.notBefore}:{status:'rejected',reason:'handoff_identity_conflict'};
    // Mode authorizes the durable task executor; proactive only authorizes
    // model-created work. User-accepted reminders keep their separate source.
-   if(r.origin==='model'&&s.bot_config.proactive!==true)return{status:'rejected',reason:'proactive_disabled'};
+   let depth=0;
+   if(r.parentActionId){
+    const [parent]=await tx.query("SELECT a.id,a.goal_id,g.source AS goal_source FROM autonomy_actions a JOIN autonomy_cycles c ON c.id=a.cycle_id AND c.bot_id=a.bot_id AND c.tenant_id=a.tenant_id LEFT JOIN autonomy_goals g ON g.id=a.goal_id AND g.bot_id=a.bot_id AND g.tenant_id=a.tenant_id WHERE a.id=$1 AND a.bot_id=$2 AND a.tenant_id=$3 AND a.epoch=$4 AND c.generation=$5 AND c.config_revision=$6 AND a.status IN ('executing','completed')",[r.parentActionId,r.botId,r.tenantId,r.epoch,r.generation,r.revision]);
+    if(!parent)return{status:'rejected',reason:'parent_action_not_owned_or_settled'};
+    if((await tx.query("SELECT id FROM autonomy_goals WHERE bot_id=$1 AND tenant_id=$2 AND source->>'parentActionId'=$3 LIMIT 1",[r.botId,r.tenantId,r.parentActionId])).length)return{status:'rejected',reason:'parent_continuation_already_registered'};
+    depth=Number(parent.goal_source?.continuationDepth||0)+1;
+    if(depth>8)return{status:'rejected',reason:'continuation_depth_limit'};
+    if(r.delaySeconds<300)return{status:'rejected',reason:'continuation_interval_minimum'};
+   }else if(r.origin==='model'&&s.bot_config.proactive!==true)return{status:'rejected',reason:'proactive_disabled'};
    const [{count}]=await tx.query("SELECT count(*)::int AS count FROM autonomy_goals WHERE bot_id=$1 AND tenant_id=$2 AND status IN ('active','paused_mode')",[r.botId,r.tenantId]);
    if(count>=12)return{status:'rejected',reason:'active_goal_limit'};
    const owner=Boolean(s.bot_config.behavior?.ownerUin&&String(s.bot_config.behavior.ownerUin)===r.senderId);
    const notBefore=r.at+r.delaySeconds*1000;
-   const source={eventId:r.eventId,scope:r.scope,senderId:r.senderId,owner:r.origin==='model'?false:owner,handoffId:r.id,handoffFingerprint:fingerprint,notBefore,kind:r.kind||'message',...(r.origin?{origin:r.origin}:{}),...(r.agreement?{agreement:r.agreement}:{})};
+   const source={eventId:r.eventId,scope:r.scope,senderId:r.senderId,owner:r.origin==='model'?false:owner,handoffId:r.id,handoffFingerprint:fingerprint,notBefore,kind:r.kind||'message',...(r.origin?{origin:r.origin}:{}),...(r.parentActionId?{parentActionId:r.parentActionId,continuationDepth:depth}:{}),...(r.agreement?{agreement:r.agreement}:{})};
    await tx.query("INSERT INTO autonomy_goals(id,bot_id,tenant_id,origin,status,title,reason,progress,success_condition,source) VALUES($1,$2,$3,$4,'active',$5,$6,'',$7,$8)",[r.id,r.botId,r.tenantId,r.origin==='model'?'model':owner?'owner_request':'contact_request',r.objective.slice(0,160),'内层通过授权工具登记，由现有任务账本到期执行',r.objective,JSON.stringify(source)]);
    await tx.query('UPDATE autonomy_settings SET goal_revision=goal_revision+1,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2',[r.botId,r.tenantId]);
    await this.wake(r.tenantId,r.botId,r.epoch,'handoff-received',0,'',tx);
@@ -157,9 +165,8 @@ export class AutonomyRepository {
    }
    const id=randomUUID();
    const wakes=await tx.query('DELETE FROM autonomy_wakes WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND due_at<=now() RETURNING reason,scope',[s.bot_id,s.tenant_id,s.epoch]);
-   // No autonomous-time wakes exist anymore: the platform never re-arms a
-   // sleep timer. Future handoff deadlines, event/config wakes and manual
-   // wakes keep their ownership until the cycle that consumes them.
+   // Consuming a wake is atomic with cycle ownership. Activity is re-armed
+   // separately at a minimum five-minute interval, without a queued backlog.
    await tx.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget) VALUES($1,$2,$3,$4,$5,$6,$7,'thinking',$8)",[id,s.bot_id,s.tenant_id,s.epoch,s.generation,s.revision,owner,JSON.stringify({...config,cycleTokenBudget:tokenLimit,configuredCycleTokenBudget:config.cycleTokenBudget,day:usage.day})]);
    await tx.query("UPDATE autonomy_settings SET lease_owner=$3,lease_until=now()+interval '30 seconds',state='thinking',next_wake_at=(SELECT min(due_at) FROM autonomy_wakes WHERE bot_id=$1),updated_at=now() WHERE bot_id=$1 AND tenant_id=$2",[s.bot_id,s.tenant_id,owner]);
    return{...s,config,tokenLimit,cycleId:id,owner,day:usage.day,wakes};
@@ -186,7 +193,7 @@ export class AutonomyRepository {
  async dueHandoffs(claim:any){
   // Keep disabled model goals intact. Do not manufacture cancellation or lose
   // unresolved effects; receipt reconciliation remains independent of dispatch.
-  return this.db.query(`SELECT * FROM autonomy_goals g WHERE bot_id=$1 AND tenant_id=$2 AND status='active' AND source->>'handoffId' IS NOT NULL AND COALESCE((source->>'notBefore')::double precision,0)<=extract(epoch FROM now())*1000 AND (coalesce(source->>'origin','')<>'model' AND origin<>'model' OR EXISTS(SELECT 1 FROM bots b JOIN bot_config_revisions c ON c.bot_id=b.id AND c.revision=b.revision WHERE b.id=g.bot_id AND b.tenant_id=g.tenant_id AND c.config->>'proactive'='true')) ORDER BY (source->>'notBefore')::double precision,created_at LIMIT 8`,[claim.bot_id,claim.tenant_id]);
+  return this.db.query(`SELECT * FROM autonomy_goals g WHERE bot_id=$1 AND tenant_id=$2 AND status='active' AND source->>'handoffId' IS NOT NULL AND COALESCE((source->>'notBefore')::double precision,0)<=extract(epoch FROM now())*1000 AND (coalesce(source->>'origin','')<>'model' AND origin<>'model' OR source ? 'parentActionId' OR EXISTS(SELECT 1 FROM bots b JOIN bot_config_revisions c ON c.bot_id=b.id AND c.revision=b.revision WHERE b.id=g.bot_id AND b.tenant_id=g.tenant_id AND c.config->>'proactive'='true')) ORDER BY (source->>'notBefore')::double precision,created_at LIMIT 8`,[claim.bot_id,claim.tenant_id]);
  }
  async goalAction(claim:any,goalId:string){
   const [row]=await this.db.query('SELECT id,status,kind,result,(SELECT count(*)::int FROM autonomy_actions a2 WHERE a2.goal_id=a.goal_id AND a2.bot_id=a.bot_id AND a2.tenant_id=a.tenant_id) AS actions FROM autonomy_actions a WHERE a.goal_id=$1 AND a.bot_id=$2 AND a.tenant_id=$3 ORDER BY a.created_at DESC LIMIT 1',[goalId,claim.bot_id,claim.tenant_id]);
@@ -224,6 +231,27 @@ export class AutonomyRepository {
    return{action,evidenceSources,source};
   });
  }
+ async scheduleActivity(bot:any,seconds?:number,replace=false){
+  const config=AutonomyConfigSchema.parse(bot.config);
+  if(config.mode!=='active'||!config.activityEnabled)return;
+  const delay=Math.max(300,Math.min(config.maxSleepSeconds,seconds??config.activityIntervalMinutes*60));
+  await this.db.transaction(async tx=>{
+   await tx.query("INSERT INTO autonomy_wakes(bot_id,tenant_id,dedupe_key,epoch,due_at,reason,scope) SELECT $1,$2,'activity:',$3,now()+($4*interval '1 second'),'activity','' WHERE EXISTS(SELECT 1 FROM autonomy_settings WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND config->>'mode'='active') ON CONFLICT(bot_id,dedupe_key) DO UPDATE SET epoch=excluded.epoch,due_at=CASE WHEN $5 OR autonomy_wakes.epoch<>excluded.epoch THEN excluded.due_at ELSE autonomy_wakes.due_at END",[bot.bot_id,bot.tenant_id,bot.epoch,delay,replace]);
+   await tx.query('UPDATE autonomy_settings SET next_wake_at=(SELECT min(due_at) FROM autonomy_wakes WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3) WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3',[bot.bot_id,bot.tenant_id,bot.epoch]);
+  });
+ }
+ async planActivity(claim:any,usage:any){
+  return this.db.transaction(async tx=>{
+   const [s]=await tx.query("SELECT * FROM autonomy_settings WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND lease_owner=$4 AND lease_until>now() FOR UPDATE",[claim.bot_id,claim.tenant_id,claim.epoch,claim.owner]);
+   if(!s||!AutonomyConfigSchema.parse(s.config).activityEnabled)throw new AutonomyConflict();
+   const [prior]=await tx.query('SELECT id FROM autonomy_actions WHERE cycle_id=$1 AND bot_id=$2 AND tenant_id=$3 AND goal_id IS NULL',[claim.cycleId,claim.bot_id,claim.tenant_id]);
+   if(prior)throw new AutonomyConflict();
+   const action={id:randomUUID(),kind:'research',target:'',objective:'根据当前真实状态自主选择行动或休息'};
+   await tx.query("UPDATE autonomy_cycles SET decision=COALESCE(decision,'{}'::jsonb)||$2::jsonb,usage=$3,state='acting' WHERE id=$1 AND bot_id=$4 AND tenant_id=$5",[claim.cycleId,JSON.stringify({reason:'autonomous_moment',action}),JSON.stringify(usage),claim.bot_id,claim.tenant_id]);
+   await tx.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at) VALUES($1,$2,$3,$4,$5,'research','',$6,'planned',now()+($7*interval '1 second'))",[action.id,claim.cycleId,claim.bot_id,claim.tenant_id,claim.epoch,action.objective,claim.config.cycleSeconds]);
+   return action;
+  });
+ }
  async completeGoal(claim:any,goalId:string,summary:string){
   const rows=await this.db.query("UPDATE autonomy_goals SET status='completed',progress=left($4,1200),updated_at=now() WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND status='active' AND source->>'handoffId'=$1 RETURNING id",[goalId,claim.bot_id,claim.tenant_id,summary||'']);
   return rows.length===1;
@@ -233,7 +261,7 @@ export class AutonomyRepository {
   return rows.length===1;
  }
  async markExecuting(claim:any,id:string){
-  return(await this.db.query("UPDATE autonomy_actions a SET status='executing' WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND cycle_id=$4 AND status='planned' AND expires_at>now() AND EXISTS(SELECT 1 FROM autonomy_goals g WHERE g.id=a.goal_id AND g.bot_id=a.bot_id AND g.tenant_id=a.tenant_id AND g.status='active' AND g.source->>'handoffId'=g.id::text) AND EXISTS(SELECT 1 FROM autonomy_settings s WHERE s.bot_id=a.bot_id AND s.tenant_id=a.tenant_id AND s.epoch=a.epoch AND s.lease_owner=$5 AND s.lease_until>now()) AND NOT EXISTS(SELECT 1 FROM autonomy_actions old WHERE old.bot_id=a.bot_id AND old.tenant_id=a.tenant_id AND old.id<>a.id AND old.kind=a.kind AND old.target=a.target AND old.kind<>'research' AND (old.status='unknown' OR old.status='partial' AND old.result->'effects' @> '[{\"status\":\"unknown\"}]'::jsonb)) RETURNING id",[id,claim.bot_id,claim.tenant_id,claim.cycleId,claim.owner])).length===1;
+  return(await this.db.query("UPDATE autonomy_actions a SET status='executing' WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND cycle_id=$4 AND status='planned' AND expires_at>now() AND (EXISTS(SELECT 1 FROM autonomy_goals g WHERE g.id=a.goal_id AND g.bot_id=a.bot_id AND g.tenant_id=a.tenant_id AND g.status='active' AND g.source->>'handoffId'=g.id::text) OR a.goal_id IS NULL AND a.kind='research' AND EXISTS(SELECT 1 FROM autonomy_cycles activity WHERE activity.id=a.cycle_id AND activity.bot_id=a.bot_id AND activity.tenant_id=a.tenant_id AND activity.decision->>'reason'='autonomous_moment')) AND EXISTS(SELECT 1 FROM autonomy_settings s WHERE s.bot_id=a.bot_id AND s.tenant_id=a.tenant_id AND s.epoch=a.epoch AND s.lease_owner=$5 AND s.lease_until>now()) AND NOT EXISTS(SELECT 1 FROM autonomy_actions old WHERE old.bot_id=a.bot_id AND old.tenant_id=a.tenant_id AND old.id<>a.id AND old.kind=a.kind AND old.target=a.target AND old.kind<>'research' AND (old.status='unknown' OR old.status='partial' AND old.result->'effects' @> '[{\"status\":\"unknown\"}]'::jsonb)) RETURNING id",[id,claim.bot_id,claim.tenant_id,claim.cycleId,claim.owner])).length===1;
  }
  async cancelPlanned(claim:any,id:string,reason:string){await this.db.query("UPDATE autonomy_actions SET status='canceled',result=$5,finished_at=now() WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND cycle_id=$4 AND status='planned'",[id,claim.bot_id,claim.tenant_id,claim.cycleId,JSON.stringify({status:'canceled',summary:reason,effects:[],evidence:[],unfinished:[]})])}
  async feedback(claim:any,id:string,result:any){
@@ -272,15 +300,15 @@ export class AutonomyRepository {
    // charge ledger (actual/estimated/unknown per request); the fault context
    // is merged into the cycle decision JSON without changing any schema.
    const faultJson=JSON.stringify(fault?{fault:{...fault}}:{});
-   const done=await tx.query("UPDATE autonomy_cycles SET state=$2,usage=$3,reason=$4,finished_at=now(),decision=COALESCE(decision,'{}'::jsonb)||$5::jsonb WHERE id=$1 AND bot_id=$6 AND tenant_id=$7 AND finished_at IS NULL RETURNING id",[claim.cycleId,reason==='no_due_work'||reason==='handoff_executed'?'completed':'ended',JSON.stringify(usage),reason,faultJson,claim.bot_id,claim.tenant_id]);
+   const done=await tx.query("UPDATE autonomy_cycles SET state=$2,usage=$3,reason=$4,finished_at=now(),decision=COALESCE(decision,'{}'::jsonb)||$5::jsonb WHERE id=$1 AND bot_id=$6 AND tenant_id=$7 AND finished_at IS NULL RETURNING id",[claim.cycleId,reason==='no_due_work'||reason==='handoff_executed'||reason==='activity_completed'?'completed':'ended',JSON.stringify(usage),reason,faultJson,claim.bot_id,claim.tenant_id]);
    if(!done.length)return;
    await tx.query('UPDATE autonomy_daily_usage SET reserved_tokens=GREATEST(0,reserved_tokens-$3),used_tokens=used_tokens+$4,model_calls=model_calls+$5,tool_calls=tool_calls+$6,external_actions=external_actions+$7 WHERE bot_id=$1 AND tenant_id=$2 AND day=$8',[claim.bot_id,claim.tenant_id,claim.tokenLimit??claim.config.cycleTokenBudget,Math.max(0,usage.tokens),usage.modelCalls,usage.toolCalls,usage.externalActions,claim.day]);
    // No polling wake: the event-driven cycle re-arms 'handoff-due' itself
    // before finishing whenever due work remains. next_wake_at keeps pointing
    // at the nearest future handoff deadline, or nothing until the next
    // accepted handoff / event / config change writes a wake.
-   const sleepState=reason==='waiting_receipt'||reason==='handoff_retry_wait'?'waiting_receipt':reason==='no_due_work'||reason==='handoff_executed'?'sleeping':'backoff';
-   await tx.query("UPDATE autonomy_settings SET lease_owner=NULL,lease_until=NULL,state=$5,last_error=$6,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND lease_owner=$4 RETURNING epoch",[claim.bot_id,claim.tenant_id,claim.epoch,claim.owner,sleepState,reason==='no_due_work'||reason==='handoff_executed'?null:reason]);
+   const sleepState=reason==='waiting_receipt'||reason==='handoff_retry_wait'?'waiting_receipt':reason==='no_due_work'||reason==='handoff_executed'||reason==='activity_completed'?'sleeping':'backoff';
+   await tx.query("UPDATE autonomy_settings SET lease_owner=NULL,lease_until=NULL,state=$5,last_error=$6,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND lease_owner=$4 RETURNING epoch",[claim.bot_id,claim.tenant_id,claim.epoch,claim.owner,sleepState,reason==='no_due_work'||reason==='handoff_executed'||reason==='activity_completed'?null:reason]);
   });
  }
 }

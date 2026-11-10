@@ -24,6 +24,15 @@ class SummaryLearningProducts(unittest.TestCase):
     def product(self,batches):
         return [{'scope':'group:12345','patterns':[{'expression':'有节目效果','situation':'有趣的时候','source_ids':[s['id'] for s in batches[0]['samples']]}]}]
 
+    def test_explicit_replacement_or_deletion_cannot_be_undone_by_legacy_learning(self):
+        batches=self.batches();product=self.product(batches);edited={('group:12345','有节目效果')}
+        self.db.execute("INSERT INTO social_patterns VALUES('group:12345','有节目效果','模型明确替换的新用法','[]',.3,1)")
+        with self.db:self.assertEqual(accept_summary_learning(self.db,batches,product,edited=edited),0)
+        self.assertEqual(self.db.execute('SELECT situation,weight FROM social_patterns').fetchone(),('模型明确替换的新用法',.3))
+        self.db.execute('DELETE FROM social_patterns')
+        with self.db:self.assertEqual(accept_summary_learning(self.db,batches,product,edited=edited),0)
+        self.assertIsNone(self.db.execute('SELECT expression FROM social_patterns').fetchone())
+
     def test_exact_full_batch_keeps_late_samples_and_original_group(self):
         batches=self.batches()
         self.assertEqual(len(batches),1);self.assertEqual(len(batches[0]['samples']),30)

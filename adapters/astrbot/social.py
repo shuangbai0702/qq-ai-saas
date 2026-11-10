@@ -67,7 +67,7 @@ def summary_learning_batches(db,scope,events):
     return [{'scope':channel,'samples':sorted(samples,key=lambda item:item['id'])} for channel,samples in grouped.items()]
 
 
-def accept_summary_learning(db,batches,products,now=None):
+def accept_summary_learning(db,batches,products,now=None,edited=()):
     """Apply model-selected products inside the caller's summary transaction.
 
     The caller fences configuration and material identity before this call.
@@ -92,7 +92,7 @@ def accept_summary_learning(db,batches,products,now=None):
             if not isinstance(pattern,dict) or not isinstance(pattern.get('source_ids'),list):raise ValueError('invalid_summary_style_pattern')
         seen.add(product['scope'])
     store=SocialStore.__new__(SocialStore);store.db=db
-    return sum(store.accept_learning(product['scope'],offered[product['scope']],json.dumps({'patterns':product['patterns']},ensure_ascii=False),now=now,commit=False) for product in products)
+    return sum(store.accept_learning(product['scope'],offered[product['scope']],json.dumps({'patterns':[p for p in product['patterns'] if (product['scope'],p.get('expression')) not in edited]},ensure_ascii=False),now=now,commit=False) for product in products)
 
 def requests_meme(text):
     return bool(re.search(r'(?:发|来|给|看).{0,12}(?:表情包|表情图|收藏表情)|斗图',text))

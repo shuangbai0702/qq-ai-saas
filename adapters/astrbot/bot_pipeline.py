@@ -572,7 +572,11 @@ class BotPipeline:
     def propose_handoff(self,work,identity,request):
         """Durable transfer to the existing PG owner, never a local scheduler."""
         model_research=isinstance(work,Work) and work.source in ('scheduled_contact','owner_contact') and request.get('kind')=='research'
-        if not isinstance(work,Work) or not (work.observes_input or model_research) or not work.ledger_owner or not work.event_id:raise ValueError('handoff_requires_owned_input')
+        internal=isinstance(work,Work) and work.source=='autonomous' and request.get('parentActionId')==work.event_id
+        if internal:
+            row=self.db.execute('SELECT state FROM pipeline_actions WHERE id=?',(work.event_id,)).fetchone()
+            if not row or row[0]!='working' or request.get('kind') not in ('research','message') or request.get('delaySeconds',0)<300 or request.get('agreement'):raise ValueError('invalid_internal_continuation')
+        if not isinstance(work,Work) or not ((work.observes_input or model_research) and work.ledger_owner or internal) or not work.event_id:raise ValueError('handoff_requires_owned_input')
         if work.bot_id!=identity['botId'] or any(work.lease.get(k)!=identity[k] for k in ('tenantId','botId','generation','revision')):raise ValueError('handoff_identity_mismatch')
         stable=json.dumps([identity['tenantId'],identity['botId'],identity['generation'],work.scope,work.subject,work.event_id],separators=(',',':'))
         id=str(uuid.uuid5(uuid.NAMESPACE_URL,'fishbot:handoff:'+stable))
@@ -584,7 +588,7 @@ class BotPipeline:
                 expected_binding=dict(binding) if binding else None
                 if expected_binding and request.get('acceptAgreement'):
                     expected_binding['revision']+=1
-                if any(previous.get(k)!=request.get(k) for k in (('objective','kind','acceptAgreement','runAt') if request.get('runAt') is not None else ('objective','delaySeconds','kind','acceptAgreement','runAt'))) or previous['epoch']!=identity['epoch'] or previous.get('agreement')!=expected_binding:raise ValueError('handoff_identity_conflict')
+                if any(previous.get(k)!=request.get(k) for k in (('objective','kind','acceptAgreement','runAt') if request.get('runAt') is not None else ('objective','delaySeconds','kind','acceptAgreement','runAt'))) or internal and previous.get('scope')!=request.get('scope','self') or previous['epoch']!=identity['epoch'] or previous.get('agreement')!=expected_binding:raise ValueError('handoff_identity_conflict')
                 return {'requestId':id,'state':row[1],'receipt':json.loads(row[2]) if row[2] else None}
             if binding:
                 import agreement_state
@@ -608,7 +612,7 @@ class BotPipeline:
                 when=request['runAt']
                 if type(when) is not int or not at<=when<=at+604800000:raise ValueError('invalid_run_at')
                 request={**request,'delaySeconds':(when-at+999)//1000}
-            value={**identity,'id':id,'eventId':work.event_id,'scope':work.scope,'senderId':work.subject,'at':at,**request,**({'origin':'model'} if model_research else {})}
+            value={**identity,'id':id,'eventId':work.event_id,'scope':'self' if internal else work.scope,'senderId':'0' if internal else work.subject,'at':at,**request,**({'origin':'model'} if model_research or internal else {})}
             self.db.execute("INSERT INTO pipeline_handoffs VALUES(?,?,?,'pending',NULL,?)",(id,identity['epoch'],json.dumps(value,ensure_ascii=False),at/1000))
             if binding:
                 changed=self.db.execute("UPDATE memory_agreements SET handoff_id=?,task_revision=? WHERE id=? AND revision=? AND status='accepted' AND handoff_id IS NULL",(id,binding['revision'],binding['id'],binding['revision']))
@@ -620,12 +624,15 @@ class BotPipeline:
 
     def handoff_catalog(self,work):
         """Only the original human in the original scope can manage a task."""
-        if not isinstance(work,Work) or not work.observes_input or not work.ledger_owner:return []
+        internal=isinstance(work,Work) and work.source=='autonomous' and self.db.execute("SELECT 1 FROM pipeline_actions WHERE id=? AND state='working'",(work.event_id,)).fetchone()
+        if not isinstance(work,Work) or not (work.observes_input and work.ledger_owner or internal):return []
         rows=self.db.execute("SELECT id,data,state,receipt FROM pipeline_handoffs WHERE state IN ('pending','accepted','canceled') ORDER BY at DESC LIMIT 256").fetchall()
         result=[]
         for id,raw,state,receipt in rows:
             data=json.loads(raw)
-            if data.get('origin')=='model' or data.get('scope')!=work.scope or data.get('senderId')!=work.subject:continue
+            if internal:
+                if data.get('origin')!='model' or not data.get('parentActionId') or data.get('senderId')!='0':continue
+            elif data.get('origin')=='model' or data.get('scope')!=work.scope or data.get('senderId')!=work.subject:continue
             if any(data.get(k)!=work.lease.get(k) for k in ('tenantId','botId','generation')):continue
             result.append({'request_id':id,'objective':data['objective'],'state':state,'receipt':json.loads(receipt) if receipt else None})
             if len(result)>=16:break

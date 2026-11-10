@@ -4,8 +4,8 @@ PostgreSQL/Node owns the ledger and wakes: an accepted foreground handoff
 becomes a goal, its due wake dispatches one inner execution directly, and the
 actual result settles the goal. This adapter owns only that bounded model call
 and the current member's existing context, tools and pipeline. There is no
-outer orientation/planning loop and no model-decided sleep; the legacy
-initiative sweep remains the only proactive-contact entry.
+outer orientation/planning loop. Timed activity and model-selected rest use
+the same durable scheduler; owner contact and group participation stay separate.
 """
 import asyncio,hashlib,json,re,time
 from types import SimpleNamespace
@@ -100,7 +100,7 @@ class AutonomousRuntime:
         if p['lease'] is not s:return 'member_replaced'
         if id in self.core.event_bus.stopped_platforms:return 'platform_stopped'
         if p['config']['mode']!='active':return 'mode_changed'
-        if identity.get('_model_origin') and not s['config'].get('proactive'):return 'autonomy_disabled'
+        if identity.get('_model_origin') and not identity.get('_continuation') and not s['config'].get('proactive'):return 'autonomy_disabled'
         if not self.permit_current(p):return 'permit_expired'
         if self.interrupted.get(id)==identity.get('cycleId'):return 'cycle_interrupted'
         for key in ('tenantId','botId','epoch','generation','revision','cycleId'):
@@ -126,7 +126,7 @@ class AutonomousRuntime:
         if not self.valid(id,identity,effect=True):return False
         action=event.get_extra('_hosted_autonomous_action') or {}
         if not self.store(id,self.settings[id]).pipeline.handoff_current(action.get('goalId')):return False
-        if (action.get('requestSource') or {}).get('origin')=='model':return False
+        if (action.get('requestSource') or {}).get('origin')=='model' and not ((action.get('requestSource') or {}).get('parentActionId') and action.get('kind')=='message'):return False
         binding=(action.get('requestSource') or {}).get('agreement')
         if binding:
             import agreement_state
@@ -428,7 +428,42 @@ class AutonomousRuntime:
         result+=inner_tools.features(s,event,st.db,scope,current_task,identity=identity,evidence=Evidence(),memory_current=lambda:current_task() and st.reflection.epoch()==epoch,effect_current=lambda:current_task() and self.effect_current(event))
         if ((event.get_extra('_hosted_autonomous_action') or {}).get('requestSource') or {}).get('origin')=='model':
             result=[tool for tool in result if not getattr(tool,'hosted_effect',False)]
+        result+=self.continuation_tools(id,identity,event,current_task)
         return result
+
+    def continuation_tools(self,id,identity,event,current):
+        """Only the current authenticated action may register its next step."""
+        from astrbot.core.agent.tool import FunctionTool
+        runtime=self;s=self.settings[id];st=self.store(id,s)
+        def check(context):
+            if context.context.event is not event or not current():raise asyncio.CancelledError('stale internal continuation')
+        class Continue(FunctionTool):
+            async def call(self,context,objective,delay_seconds=300,kind='research',target=''):
+                check(context)
+                if not isinstance(objective,str) or not 1<=len(objective.strip())<=1000 or type(delay_seconds) is not int or not 300<=delay_seconds<=604800:return json.dumps({'status':'rejected','reason':'invalid_continuation'})
+                binding={k:identity[k] for k in ('tenantId','botId','generation','revision','epoch')}
+                if kind not in ('research','message') or kind=='research' and target:return json.dumps({'status':'rejected','reason':'invalid_continuation_kind'})
+                if kind=='message' and target not in {c['scope'] for c in runtime.candidates(id)}:return json.dumps({'status':'rejected','reason':'contact_not_currently_allowed'})
+                try:value=st.pipeline.propose_handoff(event.get_extra('_hosted_pipeline'),binding,{'kind':kind,'scope':target or 'self','objective':objective.strip(),'delaySeconds':delay_seconds,'parentActionId':identity['id']})
+                except ValueError as error:return json.dumps({'status':'rejected','reason':str(error)})
+                return json.dumps({**value,'meaning':'后续步骤已持久化交接，pending仍须平台接受；不证明已执行或完成。'},ensure_ascii=False)
+        class Rest(FunctionTool):
+            async def call(self,context,seconds):
+                check(context)
+                maximum=runtime.policies[id]['config']['maxSleepSeconds']
+                if type(seconds) is not int or not 300<=seconds<=maximum:return json.dumps({'status':'rejected','reason':'rest_out_of_range','minimum':300,'maximum':maximum})
+                event.set_extra('_hosted_activity_rest',seconds)
+                return json.dumps({'status':'accepted','nextActivityAfterSeconds':seconds,'meaning':'仅调整下一次通用自主活动；已有任务及真实入站不受影响。'},ensure_ascii=False)
+        class Manage(FunctionTool):
+            async def call(self,context,request_id=''):
+                check(context);work=event.get_extra('_hosted_pipeline')
+                if not request_id:return json.dumps({'tasks':st.pipeline.handoff_catalog(work)},ensure_ascii=False)
+                try:return json.dumps(st.pipeline.cancel_handoff(work,request_id),ensure_ascii=False)
+                except ValueError:return json.dumps({'status':'rejected','reason':'task_not_owned_or_not_available'})
+        tools=[Continue(name='continue_background_task',description='根据本轮真实结果登记一个后续步骤，至少5分钟后执行。research用于研究或行动准备；message仅选当前允许联系人。每个父动作最多一个，同项重试不重复创建。pending仍须平台确认。无需继续时不调用。',parameters={'type':'object','properties':{'objective':{'type':'string','minLength':1,'maxLength':1000},'delay_seconds':{'type':'integer','minimum':300,'maximum':604800},'kind':{'type':'string','enum':['research','message']},'target':{'type':'string','description':'message须选当前allowedContacts完整scope；research留空'}},'required':['objective'],'additionalProperties':False}),Manage(name='manage_autonomous_tasks',description='查看或取消本机器人服务身份创建的后续目标，不能管理人类委托。省略request_id查看；提供真实ID取消。修改先取消旧目标再创建后续步骤，已发生和未知动作不能撤销。',parameters={'type':'object','properties':{'request_id':{'type':'string','maxLength':36}},'additionalProperties':False})]
+        if (event.get_extra('_hosted_autonomous_action') or {}).get('autonomousMoment'):
+            tools.append(Rest(name='rest_until_next_activity',description='自主决定休息及下一次通用活动间隔。不会取消已有目标，不阻止正常聊天或到期任务。至少300秒，最多当前平台maxSleepSeconds。',parameters={'type':'object','properties':{'seconds':{'type':'integer','minimum':300,'maximum':self.policies[id]['config']['maxSleepSeconds']}},'required':['seconds'],'additionalProperties':False}))
+        return tools
 
     def capability_catalog(self,id,contacts):
         from types import SimpleNamespace
@@ -499,10 +534,13 @@ class AutonomousRuntime:
 
     async def execute(self,id,data):
         identity=data['work'];action=data['action'];s=self.settings[id];st=self.store(id,s)
+        moment=action.get('autonomousMoment') is True
+        continuation=bool((action.get('requestSource') or {}).get('parentActionId'))
         model_origin=(action.get('requestSource') or {}).get('origin')=='model'
-        if model_origin and not s['config'].get('proactive'):
+        if moment and not self.policies.get(id,{}).get('config',{}).get('activityEnabled',True):raise PreflightRejected('activity_disabled')
+        if model_origin and not continuation and not s['config'].get('proactive'):
             return {'status':'blocked','summary':'自主模式已关闭，未发起自主研究模型调用','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE)}
-        identity={**identity,'_model_origin':model_origin}
+        identity={**identity,'_model_origin':model_origin,'_continuation':continuation}
         if not self.valid(id,identity):raise PreflightRejected('stale_internal_work')
         p=self.policies[id];kind=action['kind'];target=action.get('target','');candidates=self.candidates(id)
         import agreement_state
@@ -518,7 +556,7 @@ class AutonomousRuntime:
         if previous:
             st.pipeline.bind_internal(None,s,identity,target if kind=='message' else 'self',action['objective'])
             return previous['result'] or {'status':'unknown','summary':'已有动作尚未完整结算；禁止重新执行','effects':previous['effects'],'evidence':[],'unfinished':[action['objective']],'usage':{'modelCalls':0,'toolCalls':0,'tokens':0}}
-        if kind=='message' and action.get('requestSource') and not request:return {'status':'blocked','summary':'原请求回复许可无效或已使用；不能降级为主动发送重试','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE),'contextScope':target}
+        if kind=='message' and action.get('requestSource') and not request and not continuation:return {'status':'blocked','summary':'原请求回复许可无效或已使用；不能降级为主动发送重试','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE),'contextScope':target}
         candidate=next((c for c in candidates if c['scope']==target),None)
         if request:
             row=st.db.execute('SELECT self_id,last_user FROM contacts WHERE scope=?',(target,)).fetchone()
@@ -578,11 +616,12 @@ class AutonomousRuntime:
             # separate findings to a newly admitted outgoing conversation.
             if kind=='message' and prior and prior.get('contextScope')!='self':prior=None
             # The provider hook assembles the same ContextBuilder result once.
-            prompt=json.dumps({'task':action,'priorFeedback':prior},ensure_ascii=False)
+            prompt=json.dumps({'task':action,'priorFeedback':prior,'allowedContacts':self.candidates(id)},ensure_ascii=False)
+            if moment:prompt+='\n现在是一次自主活动时刻。请根据当前状态、记忆、经历、关系、目标及可用工具，自行判断有没有值得做的事情。可以行动、继续或登记后续目标，也可以休息；不必刻意制造任务或消息。最终文字是内部活动记录，不会自动发给任何人。'
             system=s['config'].get('systemPrompt','')+'\n这是平台授权的内部任务，不是主人发来一条新消息。sender=0是服务身份，不拥有主人权限；真实联系人是recipient。仅执行当前任务，工具返回才是实际结果。对话任务最后输出要实际发给目标的一轮自然内容，允许[MEME:真实候选id]及[QQ_BREAK]，不假装已经发送。研究任务返回有证据的结论、未完成事项，不能用虚构检索结果。没有工具能力时如实说明。'
             system+='\n'+bot_pipeline.EXECUTION_DISCLOSURE_POLICY
             if kind=='message':system+='\n本轮聊天任务及固定会话已通过当前初始准入，最终投递仍由公共管线实时校验并记录回执。历史任务的失败不是本轮的发送状态；你的最终内容将作为消息发给当前对象，不要替平台编造投递结果。'
-            if kind=='research':system+='\n本任务为内部研究，最后只输出JSON：{"status":"completed或blocked或partial","summary":"已证实的结果或受阻原因","unfinished":["实际未完成项"]}。这是当前任务步骤的结果，不是长期目标的终态。检索成功但无匹配时，准确报告无匹配；这不表示长期目标已实现。工具拒绝、失败或未执行时必须blocked或partial，不能用通用常识替代任务完成。引用和证据以平台实际工具回执为准。摘要中区分工具实际返回的内容、未经核验的推测与缺失材料；只得到目录、标题、摘要或检索元数据时，不得声称已读取完整内容或验证其中事实，获取具体知识所需的原文或媒体未读取则列入unfinished。'
+            if kind=='research' and not moment:system+='\n本任务为内部研究，最后只输出JSON：{"status":"completed或blocked或partial","summary":"已证实的结果或受阻原因","unfinished":["实际未完成项"]}。这是当前任务步骤的结果，不是长期目标的终态。检索成功但无匹配时，准确报告无匹配；这不表示长期目标已实现。工具拒绝、失败或未执行时必须blocked或partial，不能用通用常识替代任务完成。引用和证据以平台实际工具回执为准。摘要中区分工具实际返回的内容、未经核验的推测与缺失材料；只得到目录、标题、摘要或检索元数据时，不得声称已读取完整内容或验证其中事实，获取具体知识所需的原文或媒体未读取则列入unfinished。'
             result=await self.invoke(id,identity,prompt,system,tools=tools,context=context_object)
             if self.settings.get(id) is s and result['status']=='completed' and kind=='message' and result['text'].strip():
                 from astrbot.api.event import MessageChain
@@ -621,7 +660,7 @@ class AutonomousRuntime:
         # real protocol receipt is evidence too, not an unverified model claim.
         for effect in effects:
             if effect['status']=='confirmed':result['evidence'].append({'source':'qq_protocol_receipt','reference':effect['id']})
-        if kind=='research' and status=='completed':
+        if kind=='research' and not moment and status=='completed':
             try:
                 reported=json_object(result['text'])
                 if reported.get('status') not in ('completed','blocked','partial') or not isinstance(reported.get('summary'),str) or not isinstance(reported.get('unfinished'),list):raise ValueError('invalid_task_feedback')
@@ -647,6 +686,9 @@ class AutonomousRuntime:
             self.metrics[id]['researchResultsLedgered']+=1
         feedback['task']={'kind':kind,'target':target,'objective':action['objective'][:400],'sourceScope':action.get('sourceScope') or (action.get('requestSource') or {}).get('scope'),'outerDecision':action.get('outerDecision')}
         feedback['finishedAt']=int(time.time()*1000)
+        if moment:
+            feedback['autonomousMoment']=True
+            feedback['restSeconds']=event.get_extra('_hosted_activity_rest')
         st.pipeline.finish_internal(work,feedback,action.get('goalId'));st.pipeline.finish(work,self.metrics.setdefault(id,{}))
         return feedback
 

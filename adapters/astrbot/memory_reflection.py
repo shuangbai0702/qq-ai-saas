@@ -1219,7 +1219,10 @@ class Reflection:
                             verify(self.db,scope,materials)
                             if learning_batches:
                                 from social import accept_summary_learning
-                                metrics['patternsLearned']=metrics.get('patternsLearned',0)+accept_summary_learning(self.db,learning_batches,data.get('learning',[]))
+                                # An explicit entry replacement/deletion takes
+                                # precedence over the older learning projection.
+                                edited={(op.get('target',{}).get('scope'),op.get('target',{}).get('expression')) for op in data.get('memory_operations',[]) if isinstance(op,dict) and op.get('kind')=='expression'}
+                                metrics['patternsLearned']=metrics.get('patternsLearned',0)+accept_summary_learning(self.db,learning_batches,data.get('learning',[]),edited=edited)
                             batch=derive_claims(scope,payload,materials,batch_corrections(self.db,scope,[r['event'] for r in payload]),data,strict=True)
                             from summary_material import semantic_claims_product
                             claims=semantic_claims_product(batch)
