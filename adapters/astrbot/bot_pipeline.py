@@ -26,6 +26,17 @@ def delivery_scope(event):
     return 'group:'+str(event.get_group_id()) if event.get_group_id() else 'private:'+str(event.get_sender_id())
 
 
+def protocol_input_scope(raw):
+    """Protocol scope without inventing a message ID for notice/request."""
+    kind=raw.get('post_type','message')
+    if kind=='message':
+        mode=raw.get('message_type')
+        return 'group:'+str(raw['group_id']) if mode=='group' and raw.get('group_id') else 'private:'+str(raw['user_id']) if mode=='private' and raw.get('user_id') else None
+    if kind in ('notice','request') and raw.get('user_id'):
+        return 'group:'+str(raw['group_id']) if raw.get('group_id') else 'private:'+str(raw['user_id'])
+    return None
+
+
 def message_receipt(result):
     """An unwrapped OneBot response must prove a message was accepted."""
     if not isinstance(result,dict) or result.get('retcode',0)!=0 or result.get('status') in ('failed','error'):return None
@@ -433,9 +444,10 @@ class BotPipeline:
         identifier=str(getattr(message,'message_id','') or '')
         raw=getattr(message,'raw_message',None);observed=getattr(message,'timestamp',None)
         identity={k:lease.get(k) for k in ('tenantId','botId','generation','revision')}
-        if not identifier or not isinstance(raw,dict) or str(raw.get('message_id',''))!=identifier or not isinstance(observed,(int,float)) or not math.isfinite(observed) or observed<=0 or any(v is None for v in identity.values()):return False
+        if not identifier or not isinstance(raw,dict) or not isinstance(observed,(int,float)) or not math.isfinite(observed) or observed<=0 or any(v is None for v in identity.values()):return False
+        if raw.get('post_type','message')=='message' and str(raw.get('message_id',''))!=identifier:return False
         if str(raw.get('user_id',''))!=str(event.get_sender_id()):return False
-        raw_scope='group:'+str(raw.get('group_id')) if raw.get('message_type')=='group' else 'private:'+str(raw.get('user_id')) if raw.get('message_type')=='private' else None
+        raw_scope=protocol_input_scope(raw)
         if raw_scope!=scope:return False
         # Match join_active's existing raw-payload fingerprint exactly.
         payload=json.dumps(raw,ensure_ascii=False,sort_keys=True,separators=(',',':'))

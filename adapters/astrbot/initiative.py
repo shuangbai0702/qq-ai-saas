@@ -212,8 +212,10 @@ async def resume_scope_input(core,id,lease,store,settings):
             # Configuration is re-evaluated through the current normal ingress;
             # a revision change never grants the old tool permissions.
             if any(identity.get(k)!=lease.get(k) for k in ('tenantId','botId','generation')):raise ValueError('identity_changed')
-            if str(raw.get('message_id',''))!=event_id or hashlib.sha256(json.dumps(raw,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()!=binding[1]:raise ValueError('payload_changed')
-            original_scope='group:'+str(raw.get('group_id')) if raw.get('message_type')=='group' else 'private:'+str(raw.get('user_id')) if raw.get('message_type')=='private' else None
+            from bot_pipeline import protocol_input_scope
+            if raw.get('post_type','message')=='message' and str(raw.get('message_id',''))!=event_id:raise ValueError('payload_changed')
+            if hashlib.sha256(json.dumps(raw,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()!=binding[1]:raise ValueError('payload_changed')
+            original_scope=protocol_input_scope(raw)
             if original_scope!=scope:raise ValueError('scope_changed')
             if not isinstance(observed_at,(int,float)) or observed_at<=0 or observed_at>time.time()+60:raise ValueError('original_time_invalid')
             # Reuse the durable handoff's existing seven-day acceptance window;
@@ -242,6 +244,9 @@ async def resume_scope_input(core,id,lease,store,settings):
         if not isinstance(observed_at,(int,float)) or observed_at<=0:
             with store.db:store.db.execute("UPDATE pipeline_work_inputs SET status='blocked_evidence' WHERE scope=? AND event=?",(scope,event_id))
             raise ValueError('scope_resume_original_time_missing')
+        # Non-message SDK conversions generate a fresh UUID. Restore only the
+        # retained, authenticated converted identity; keep raw protocol unchanged.
+        if binding and binding[0] and raw.get('post_type') in ('notice','request'):message.message_id=event_id
         message.timestamp=observed_at
         if getattr(getattr(core,'_hosted_stop_fence',None),'quiescing',False):
             with store.db:store.db.execute("UPDATE pipeline_work_inputs SET status='pending' WHERE scope=? AND event=? AND status='queued'",(scope,event_id))

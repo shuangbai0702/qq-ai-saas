@@ -68,6 +68,38 @@ class Recovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(delivered[0].timestamp,e.message_obj.timestamp)
         self.assertEqual(delivered[0].raw_message,e.message_obj.raw_message)
         self.assertEqual(self.input(),'queued')
+    async def test_real_sdk_notification_conversion_and_recovery_keep_original_converted_id(self):
+        from aiocqhttp import Event
+        from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_platform_adapter import AiocqhttpAdapter
+        adapter=object.__new__(AiocqhttpAdapter)
+        raw=Event.from_payload({'post_type':'notice','notice_type':'notify','sub_type':'poke','user_id':12345,'self_id':99999,'target_id':99999,'time':int(time.time())})
+        message=await adapter.convert_message(raw)
+        e=event(message.message_id);e.message_obj=message
+        self.assertTrue(self.p.persist_input(e,self.lease))
+        delivered=[]
+        platform=NS(meta=lambda:NS(id='qq'),convert_message=adapter.convert_message,create_event=lambda m:m,commit_event=delivered.append)
+        self.core.platform_manager.get_insts=lambda:[platform]
+        self.assertTrue(await self.resume())
+        self.assertEqual(delivered[0].message_id,message.message_id)
+        self.assertEqual(delivered[0].raw_message,raw)
+        self.assertNotIn('message_id',raw)
+
+    async def test_nonmessage_recovery_restores_sdk_identity_without_forging_raw_id(self):
+        for kind in ('notice','request'):
+            with self.subTest(kind=kind):
+                self.db.execute('DELETE FROM pipeline_work_inputs')
+                e=event('sdk-'+kind);e.message_obj.raw_message={'post_type':kind,'user_id':'12345','self_id':'99999'}
+                self.assertTrue(self.p.persist_input(e,self.lease))
+                delivered=[]
+                async def convert(raw):return NS(message_id='new-sdk-uuid',timestamp=time.time(),raw_message=raw)
+                platform=NS(meta=lambda:NS(id='qq'),convert_message=convert,create_event=lambda m:m,commit_event=delivered.append)
+                self.core.platform_manager.get_insts=lambda:[platform]
+                with patch.dict(sys.modules,{'aiocqhttp':NS(Event=NS(from_payload=lambda raw:raw))}):
+                    self.assertTrue(await self.resume())
+                self.assertEqual(delivered[0].message_id,'sdk-'+kind)
+                self.assertEqual(delivered[0].raw_message,e.message_obj.raw_message)
+                self.assertNotIn('message_id',delivered[0].raw_message)
+
     async def test_repeated_unstarted_cancellation_is_bounded_and_reported(self):
         e=event();work=self.p.bind(e,self.lease)
         for index in range(5):
