@@ -2,6 +2,7 @@
 import asyncio,contextvars,json,sys,tempfile,unittest
 from pathlib import Path
 from types import SimpleNamespace as NS
+from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/'references/astrbot'),str(ROOT/'adapters/astrbot'),str(ROOT/'tests')]
 from behavior import BehaviorStore
@@ -27,6 +28,14 @@ class AdminCheckpoint(unittest.IsolatedAsyncioTestCase):
     async def force(self):
         result=self.r.force_compress_once(allow_partial=True,administrator='admin-1',request_id='maintenance-'+str(len(self.calls)))
         self.assertTrue(result['started'],result);return await self.r.task
+    async def test_record_uses_one_timestamp_for_round_and_pending(self):
+        m=material.snapshots([message('clock'),{'role':'assistant','content':'已回复'}],'bot_shared')
+        with patch('memory_reflection.time.time',side_effect=iter(range(1000,1100))):
+            self.r.record('bot_shared','12345678',m[0]['event'],'看这个','已回复',materials=m)
+        round_at=self.db.execute('SELECT at FROM memory_rounds').fetchone()[0]
+        pending_at=self.db.execute('SELECT at FROM memory_pending').fetchone()[0]
+        self.assertEqual(round_at,1000)
+        self.assertEqual(pending_at,round_at)
     async def test_auto_and_unauthorized_calls_cannot_waive_35(self):
         self.record(0,30);self.assertFalse(self.r.retry())
         self.assertFalse(self.r.force_compress_once()['started'])

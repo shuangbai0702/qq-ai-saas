@@ -434,6 +434,10 @@ class Reflection:
     def record(self,scope,subject,event,question,answer,now=None,context_through=None,context_messages=None,materials=None):
         if not question.strip() and any(m.get('event')==str(event) for m in materials or []):question='[图片或引用消息，原始观测素材随本轮保存]'
         if self.closed or not question.strip() or not answer.strip() or not event:return
+        # One completed observation has one timestamp across its hot stores.
+        # Sampling again for pending can put this same event past the final
+        # round's cutoff and correctly trigger the collector's conflict fence.
+        now=now or time.time()
         # Redact common secret forms before persisting raw reflection material.
         self.db.execute('INSERT OR IGNORE INTO memory_rounds(scope,subject,event,question,answer,at) VALUES(?,?,?,?,?,?)',(scope,subject,str(event),scrub(question),scrub(answer),now or time.time()))
         from summary_material import remember,confirmed_reply
