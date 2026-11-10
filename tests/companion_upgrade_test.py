@@ -15,12 +15,26 @@ class Upgrades(unittest.IsolatedAsyncioTestCase):
   # The summary contract converged to exactly 35 completed business rounds
   # (B package); a 30-round batch is never scheduled.
   cfg={'memory':True,'memoryAutoCapture':True,'memorySummary':True,'selfDevelopment':True,'naturalConversation':True}
-  for i in range(35):self.store.reflection.record('group:1','11111',str(i),'我搬到了苏州','我喜欢昆曲的水磨腔。')
+  from context_protocol import SOURCE,model_json
+  from summary_material import snapshots
+  from readonly_journal import Prepared,ReadonlyJournal
+  from semantic_runtime import finish_semantic_batches
+  history=[{'role':'system','content':'fixture policy'}]
+  for i in range(35):
+   user={'role':'user','content':SOURCE+model_json({'scope':'group:12345','sender_id':'11111','event_id':str(i)})+'\n我搬到了苏州'}
+   reply={'role':'assistant','content':'我喜欢昆曲的水磨腔。'}
+   history.extend([user,reply])
+   self.store.reflection.record('group:12345','11111',str(i),'我搬到了苏州','我喜欢昆曲的水磨腔。',materials=snapshots([user,reply],'group:12345'))
+  journal=ReadonlyJournal(self.db,'group:12345');journal.serial=1
+  self.assertTrue(journal.commit(Prepared(1,None,history,history,{},1,self.now,'initial')))
+  self.store.model_journals['group:12345']=journal
+  self.store.reflection.checkpoint_callback=lambda scope:finish_semantic_batches(self.store,cfg,scope)
   calls=[]
   async def chat(**kw):
    calls.append(kw);return NS(completion_text=json.dumps({'summary':'11111说自己搬到了苏州，机器人喜欢昆曲。','facts':[{'event':'0','name':'居住城市','value':'苏州','quote':'我搬到了苏州'}],'interests':[{'event':'0','topic':'昆曲','quote':'我喜欢昆曲的水磨腔。'}]}))
-  self.store.reflection.maybe_start('group:1',cfg,NS(text_chat=chat),lambda:True,{},self.var);await self.store.reflection.task
-  self.assertEqual(len(calls),1);self.assertEqual(self.db.execute('SELECT value FROM facts WHERE active=1').fetchall(),[('苏州',)])
+  metrics={}
+  self.store.reflection.maybe_start('group:12345',cfg,NS(text_chat=chat),lambda:True,metrics,self.var);await self.store.reflection.task
+  self.assertEqual(len(calls),1,(metrics,self.db.execute('SELECT * FROM memory_checkpoint_issues').fetchall()));self.assertEqual(self.db.execute('SELECT value FROM facts WHERE active=1').fetchall(),[('苏州',)])
   self.assertEqual(self.db.execute('SELECT topic FROM companion_interests').fetchall(),[('昆曲',)])
   self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1)
   self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],0)

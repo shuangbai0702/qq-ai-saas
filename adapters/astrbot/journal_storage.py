@@ -12,6 +12,161 @@ MIN_MEDIA_CHARS=4096
 
 def dumps(value):return json.dumps(value,ensure_ascii=False,separators=(',',':'))
 
+def referenced_blobs(payload,version=VERSION):
+    """Read blob references without loading the retired image bytes."""
+    if version==1:return set()
+    if version!=VERSION:raise ValueError('journal_snapshot_version')
+    value=json.loads(payload)
+    if not isinstance(value,dict) or not isinstance(value.get('media'),list):raise ValueError('journal_codec_shape')
+    return {ref[1] for ref in value['media']}
+
+def prune_unreferenced_blobs(db,scope,replacement=None,dry_run=False):
+    """Collect only this scope, preserving references in explicit archives."""
+    tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    refs=set()
+    snapshots=[replacement] if replacement is not None else db.execute('SELECT version,payload FROM fishbot_readonly_journals WHERE scope=? AND payload IS NOT NULL',(scope,))
+    for version,payload in snapshots:refs.update(referenced_blobs(payload,version))
+    if 'memory_checkpoint_archives' in tables:
+        for version,payload in db.execute('SELECT version,payload FROM memory_checkpoint_archives WHERE scope=? AND payload IS NOT NULL',(scope,)):
+            refs.update(referenced_blobs(payload,version))
+    if 'fishbot_operator_session_archives' in tables:
+        for raw, in db.execute('SELECT archive FROM fishbot_operator_session_archives WHERE scope=?',(scope,)):
+            snapshot=json.loads(raw)['journal']
+            refs.update(referenced_blobs(snapshot['payload'],snapshot['version']))
+    released=0
+    for digest,size in db.execute('SELECT sha,length(data) FROM fishbot_readonly_journal_blobs WHERE scope=?',(scope,)).fetchall():
+        if digest not in refs:
+            released+=size
+            if not dry_run:db.execute('DELETE FROM fishbot_readonly_journal_blobs WHERE scope=? AND sha=?',(scope,digest))
+    return released
+
+
+def retire_archived_members(db,checkpoint_id):
+    """Erase only successfully retired batch members from recovery copies.
+
+    Runs inside the caller's retirement transaction. Archive authorization,
+    System bytes, uncompressed events and other scoped copies stay intact.
+    """
+    from context_protocol import model_json
+    from semantic_batch import event_key
+    from readonly_journal import semantic_retire_projection
+    row=db.execute("SELECT scope,members FROM memory_semantic_batches WHERE checkpoint_id=? AND state='retired'",(checkpoint_id,)).fetchone()
+    if not row:return 0
+    scope,members=row[0],set(json.loads(row[1]))
+    permit={'semanticBatch':True,'scope':scope,'batchMembers':list(members)}
+    tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    touched=set();changed=0
+
+    def member(channel,event):
+        if event is None:return False
+        channel=channel or scope
+        if channel==scope and event_key(scope,str(event)) in members:return True
+        return scope=='bot_shared' and event_key(scope,model_json([channel,str(event)])) in members
+
+    def raw_row(item,default):
+        if not isinstance(item,dict):return False
+        channel=item.get('source_scope',item.get('sourceScope',item.get('scope',default)))
+        return any(member(channel,item.get(key)) for key in ('source_event','event_id','event'))
+
+    def context(value,default):
+        # Only platform-owned transcript fields are disposable copies.
+        # Facts, summaries, execution outcomes and System contracts survive.
+        if not isinstance(value,dict):return value
+        value=copy.deepcopy(value)
+        for key in ('recent_messages','recent_cross_session_messages','conversation_timeline','ambient_group_messages'):
+            if isinstance(value.get(key),list):value[key]=[item for item in value[key] if not raw_row(item,default)]
+        if isinstance(value.get('dialogue'),dict):
+            for key in ('recent_own_turns','feedback','deliveries'):
+                if isinstance(value['dialogue'].get(key),list):value['dialogue'][key]=[item for item in value['dialogue'][key] if not raw_row(item,default)]
+        if isinstance(value.get('group_round_history'),list):
+            rounds=[]
+            for item in value['group_round_history']:
+                if not isinstance(item,dict):rounds.append(item);continue
+                item=copy.deepcopy(item);channel=item.get('source_scope',default)
+                item['messages']=[message for message in item.get('messages',[]) if not raw_row(message,channel)]
+                if member(channel,item.get('round_event')):
+                    if not item['messages']:continue
+                    item['round_event']=None;item['reply']=None
+                rounds.append(item)
+            value['group_round_history']=rounds
+        return value
+
+    def snapshot(version,payload,key,expected_sha=None):
+        if expected_sha and hashlib.sha256(payload.encode()).hexdigest()!=expected_sha:raise ValueError('archive_snapshot_integrity')
+        def read_blob(channel,digest):
+            blob=db.execute('SELECT data FROM fishbot_readonly_journal_blobs WHERE scope=? AND sha=?',(channel,digest)).fetchone()
+            return blob[0] if blob else None
+        value=json.loads(payload) if version==1 else decode(payload,key,read_blob)
+        if value.get('scope')!=key:raise ValueError('archive_snapshot_scope')
+        original=copy.deepcopy(value);default=json.loads(key);ambiguous_delta=False
+        for field in ('base','wire'):
+            value[field]=semantic_retire_projection(value[field],permit)
+            # Submitted readonly packets can contain copies of the same rows.
+            from context_protocol import READONLY_CURRENT
+            for message in value[field]:
+                text=message.get('content')
+                if message.get('role')=='user' and isinstance(text,str) and text.startswith(READONLY_CURRENT+'\n'):
+                    packet=json.loads(text.split('\n',1)[1]);cleaned=context(packet,default)
+                    # Deltas store set operations with their path and value.
+                    for operation in cleaned.get('readonlyChanges',[]) if isinstance(cleaned,dict) else []:
+                        if isinstance(operation,list) and len(operation)==3 and operation[0]=='set' and isinstance(operation[1],list) and operation[1]:
+                            path=operation[1];wrapped=operation[2]
+                            # A positional partial string edit has no author or
+                            # event identity. Do not guess which old turn owns
+                            # it, or declare the archive clean while keeping it.
+                            if path[0] in ('recent_messages','recent_cross_session_messages','conversation_timeline','ambient_group_messages','group_round_history') and len(path)>1:ambiguous_delta=True
+                            if path[0]=='dialogue' and len(path)>2 and path[1] in ('recent_own_turns','feedback','deliveries'):ambiguous_delta=True
+                            for component in reversed(path):wrapped={component:wrapped}
+                            reduced=context(wrapped,default)
+                            for component in path:reduced=reduced[component]
+                            operation[2]=reduced
+                    if cleaned!=packet:message['content']=READONLY_CURRENT+'\n'+model_json(cleaned)
+        value['state']=context(value.get('state'),default)
+        if value==original:return None
+        if ambiguous_delta:raise ValueError('archive_transcript_delta_identity_missing')
+        encoded,blobs=encode(value)
+        for digest,raw in blobs.items():db.execute('INSERT OR IGNORE INTO fishbot_readonly_journal_blobs(scope,sha,data) VALUES(?,?,?)',(key,digest,raw))
+        touched.add(key)
+        return VERSION,encoded,hashlib.sha256(encoded.encode()).hexdigest()
+
+    db.execute('SAVEPOINT semantic_archive_cleanup')
+    try:
+        if 'memory_checkpoint_archives' in tables:
+            columns={r[1] for r in db.execute('PRAGMA table_info(memory_checkpoint_archives)')}
+            checksum='sha' if 'sha' in columns else 'NULL'
+            for identifier,key,version,payload,sha in db.execute('SELECT rowid,scope,version,payload,'+checksum+' FROM memory_checkpoint_archives WHERE payload IS NOT NULL').fetchall():
+                update=snapshot(version,payload,key,sha)
+                if update:
+                    if 'sha' in columns:db.execute('UPDATE memory_checkpoint_archives SET version=?,payload=?,sha=? WHERE rowid=?',(*update,identifier))
+                    else:db.execute('UPDATE memory_checkpoint_archives SET version=?,payload=? WHERE rowid=?',(*update[:2],identifier))
+                    changed+=1
+        if 'fishbot_operator_session_archives' in tables:
+            updates=[]
+            for identifier,key,encoded,sha in db.execute('SELECT authorization,scope,archive,sha FROM fishbot_operator_session_archives').fetchall():
+                if hashlib.sha256(encoded.encode()).hexdigest()!=sha:raise ValueError('operator_archive_integrity')
+                archive=json.loads(encoded);original=copy.deepcopy(archive);journal=archive['journal']
+                update=snapshot(journal['version'],journal['payload'],key,journal.get('sha'))
+                if update:journal.update(zip(('version','payload','sha'),update))
+                for name,evidence in archive.get('evidence',{}).items():
+                    if name not in ('memory_rounds','memory_round_material','memory_pending','memory_pending_rounds','memory_hold_rounds'):continue
+                    columns=evidence['columns']
+                    if 'event' not in columns:continue
+                    event_index=columns.index('event');scope_index=columns.index('scope') if 'scope' in columns else None
+                    evidence['rows']=[record for record in evidence['rows'] if not member(record[scope_index] if scope_index is not None else json.loads(key),record[event_index])]
+                if archive!=original:
+                    replacement=dumps(archive);updates.append((replacement,hashlib.sha256(replacement.encode()).hexdigest(),identifier));touched.add(key)
+            if updates:
+                triggers=db.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name='fishbot_operator_session_archives'").fetchall()
+                for name,sql in triggers:db.execute('DROP TRIGGER "'+name.replace('"','""')+'"')
+                db.executemany('UPDATE fishbot_operator_session_archives SET archive=?,sha=? WHERE authorization=?',updates)
+                for name,sql in triggers:db.execute(sql)
+                changed+=len(updates)
+        for key in touched:prune_unreferenced_blobs(db,key)
+        db.execute('RELEASE semantic_archive_cleanup')
+        return changed
+    except BaseException:
+        db.execute('ROLLBACK TO semantic_archive_cleanup');db.execute('RELEASE semantic_archive_cleanup');raise
+
 def read_snapshot(db,scope):
     """Read a committed snapshot without creating tables or rewriting data."""
     row=db.execute('SELECT version,payload,sha FROM fishbot_readonly_journals WHERE scope=?',(scope,)).fetchone()

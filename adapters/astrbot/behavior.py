@@ -54,6 +54,9 @@ class BehaviorStore:
         CREATE TABLE IF NOT EXISTS relation_events(scope TEXT,subject TEXT,event TEXT,at REAL,PRIMARY KEY(scope,subject,event));
         CREATE TABLE IF NOT EXISTS relation_evidence(scope TEXT,subject TEXT,event TEXT,delta INTEGER,reason TEXT,quote TEXT,at REAL,PRIMARY KEY(scope,subject,event));
         CREATE TABLE IF NOT EXISTS relation_progress(scope TEXT,subject TEXT,last_gain REAL,day INTEGER,gains INTEGER,PRIMARY KEY(scope,subject));''')
+        relation_columns={row[1] for row in self.db.execute('PRAGMA table_info(relations)')}
+        for name,definition in (('trust','REAL NOT NULL DEFAULT 0'),('impression',"TEXT NOT NULL DEFAULT ''"),('semantic_updated','REAL NOT NULL DEFAULT 0')):
+            if name not in relation_columns:self.db.execute('ALTER TABLE relations ADD COLUMN '+name+' '+definition)
         initiative.initialize(self.db)
         companion_state.initialize(self.db)
         autonomy.recover_unstarted(self.db)
@@ -131,23 +134,13 @@ class BehaviorStore:
         if directed and event and text.strip():
             fresh=self.db.execute('INSERT OR IGNORE INTO relation_events VALUES(?,?,?,?)',(scope,subject,str(event),now)).rowcount==1
         if fresh:
-            progress=self.db.execute('SELECT last_gain,day,gains FROM relation_progress WHERE scope=? AND subject=?',(scope,subject)).fetchone()
-            day=int((now+8*3600)//86400);gains=progress[2] if progress and int((progress[0]+8*3600)//86400)==day else 0
-            positive=emotional_phrase(text,'谢谢|喜欢你|做得好');negative=emotional_phrase(text,'不喜欢你|讨厌你|滚开|闭嘴')
-            interval=60 if positive or negative else 300
-            delta=0
-            if (not progress or now-progress[0]>=interval) and gains<10:
-                delta=-1 if negative else 1
-                affinity=max(-20,min(100,affinity+delta))
-                self.db.execute('INSERT OR REPLACE INTO relation_progress VALUES(?,?,?,?,?)',(scope,subject,now,day,gains+1))
-            self.db.execute('INSERT OR IGNORE INTO relation_evidence VALUES(?,?,?,?,?,?,?)',(scope,subject,str(event),delta,'negative' if negative else 'positive' if positive else 'interaction',text[:200],now))
-            if negative:emotion='有点委屈';expires=now+300
-            elif positive:emotion='开心';expires=now+300
-            elif re.search('什么意思|不明白|搞不懂',text):emotion='困惑';expires=now+300
+            # Observation records an interaction, not a cognitive relationship
+            # judgment. The existing semantic checkpoint owns affinity/trust.
+            self.db.execute('INSERT OR IGNORE INTO relation_evidence VALUES(?,?,?,?,?,?,?)',(scope,subject,str(event),0,'interaction',text[:200],now))
         self.db.execute('DELETE FROM relation_events WHERE at<?',(now-7*86400,))
         self.db.execute('DELETE FROM relation_evidence WHERE at<?',(now-7*86400,))
         if text.strip():
-            self.db.execute('INSERT INTO relations VALUES(?,?,?,?,?,?) ON CONFLICT(scope,subject) DO UPDATE SET affinity=excluded.affinity,emotion=excluded.emotion,expires=excluded.expires,last_seen=excluded.last_seen',(scope,subject,affinity,emotion,expires,now))
+            self.db.execute('INSERT INTO relations(scope,subject,affinity,emotion,expires,last_seen) VALUES(?,?,?,?,?,?) ON CONFLICT(scope,subject) DO UPDATE SET last_seen=excluded.last_seen',(scope,subject,affinity,emotion,expires,now))
         self.db.commit()
         facts=self.memory.recall(scope,subject,text,now) if memory_enabled and project_facts else []
         return {'memory_status':status,'facts':facts,'emotion':emotion,'relationship':'熟悉' if affinity>=5 else '初识','affinity':affinity}
@@ -241,6 +234,8 @@ def install_runtime(core,settings):
     from incoming_media import install as install_incoming_media
     install_incoming_media(AiocqhttpAdapter)
     stores={};metrics={};original_execute=PipelineScheduler.execute;original_send=AiocqhttpMessageEvent.send
+    from semantic_runtime import install_native_retirement_guard
+    install_native_retirement_guard(getattr(core,'conversation_manager',None),stores,settings)
     care=RuntimeCare(stores)
     core._hosted_care=care
     care_timer=asyncio.create_task(care.run())
@@ -452,6 +447,10 @@ def install_runtime(core,settings):
         stores[id].reflection.recapture=journal_recapture(stores[id])
         def learned_checkpoint(scope):
             st=stores[id];cfg=s['config'].get('behavior') or {}
+            if settings.get(id) is s:
+                from semantic_runtime import finish_semantic_batches
+                st.semantic_native=(getattr(core,'conversation_manager',None),id)
+                metrics.setdefault(id,{})['semanticRetirement']=finish_semantic_batches(st,cfg,scope)
             if not cfg.get('styleLearning') or not settings.get(id) is s:return
             scopes=[scope] if scope!='bot_shared' else [r[0] for r in st.db.execute('SELECT scope FROM social_samples GROUP BY scope ORDER BY max(id) DESC')]
             for candidate in scopes:
@@ -616,7 +615,7 @@ def install_runtime(core,settings):
                 st.participation.outgoing(scope,text,subject=subject,event=event_id,persist=remember)
                 autonomy.note_interaction(st.db,s['config'],scope,'',now)
                 autonomy.note_reply(st.db,scope,subject,now)
-                initiative.outgoing(st.db,scope,text,now)
+                initiative.outgoing(st.db,scope,text,now,event=event_id)
                 m=metrics.setdefault(event.get_platform_id(),{});m['ownerRequestedGroupSent']=m.get('ownerRequestedGroupSent',0)+1
             foreground=not event.get_extra('_hosted_internal_work')
             memory_scope=bot_pipeline.delivery_scope(event)
@@ -723,6 +722,16 @@ def install_runtime(core,settings):
         internal=event.get_extra('_hosted_initiative',False);deferred=event.get_extra('_hosted_deferred_group');now=time.time()
         if deferred and (event.get_extra('_hosted_scheduled_generation')!=s.get('generation') or not st.presence.pending_current(deferred,cfg,lambda:current(event))):return
         continuation=bool(event.get_extra('_hosted_scope_continuation'))
+        if not internal and not deferred and not continuation:
+            # Resolve only protocol-bound forwards, before staging NEW Journal
+            # input. Quoted authors never become this Work's sender/authority.
+            if st.shared_context:
+                import shared_context
+                if not shared_context.included(scope,cfg,st.shared_group_limit):
+                    bot_pipeline.stop(event,'outside_shared_group_whitelist','silent');return
+            import forwarded_messages
+            await forwarded_messages.apply(event,live=lambda:current(event))
+            if not current(event):return
         joined=not continuation and not internal and not deferred and subject!=str(event.get_self_id()) and st.pipeline.join_active(event)
         work=event.get_extra('_hosted_pipeline') if continuation else None if joined else st.pipeline.bind(event,s)
         if work is not None and work.status!='received':
@@ -758,7 +767,7 @@ def install_runtime(core,settings):
         elif not internal and not deferred and not continuation:
             if subject!=str(event.get_self_id()) and (cfg.get('behavior') or {}).get('memory',True):
                 st.reflection.incoming(scope,subject,getattr(event.message_obj,'message_id',''),incoming,now,source=message_provenance.capture(event))
-            initiative.incoming(st.db,scope,subject,str(event.get_self_id()),incoming,now,directed=early_directed)
+            initiative.incoming(st.db,scope,subject,str(event.get_self_id()),incoming,now,directed=early_directed,event=getattr(event.message_obj,'message_id',None))
             autonomy.note_interaction(st.db,cfg,scope,subject,now,directed=early_directed)
             event.set_extra('_hosted_interaction_observed',early_directed)
             if subject!=str(event.get_self_id()):companion_state.observe(st.db,cfg,scope,subject,incoming,getattr(event.message_obj,'message_id',''),now,directed=early_directed)
@@ -851,7 +860,7 @@ def install_runtime(core,settings):
         if not deferred and not event.get_extra('_hosted_tool_completion'):st.participation.incoming(scope,subject,incoming,now,directed=directed)
         if not internal and not deferred and directed and not event.get_extra('_hosted_interaction_observed',False):
             autonomy.note_interaction(st.db,cfg,scope,subject,now)
-            initiative.incoming(st.db,scope,subject,str(event.get_self_id()),incoming,now,directed=True)
+            initiative.incoming(st.db,scope,subject,str(event.get_self_id()),incoming,now,directed=True,event=getattr(event.message_obj,'message_id',None))
         semantic=None
         bot_pipeline.stage(event,'admission')
         if group and not internal and (other_target or not (mentioned or continuing or contextual or command)):
@@ -1264,7 +1273,7 @@ def install_runtime(core,settings):
                         if admitted and decision:
                             self.set_extra('_hosted_group_decision',{**decision,'version':active_store.presence.snapshot(scope)[2]})
                         if group:autonomy.note_reply(active_store.db,scope,who,received_at)
-                        initiative.outgoing(active_store.db,scope,'\n'.join(confirmed_text),received_at)
+                        initiative.outgoing(active_store.db,scope,'\n'.join(confirmed_text),received_at,event=work.event_id)
                     self.set_extra('_hosted_final_text','\n'.join(confirmed_text))
                     if rhythm.get('memory',True) and not self.get_extra('_hosted_initiative',False) and not self.get_extra('_hosted_model_error',False):
                         active_store.reflection.confirmed_prefix(scope,str(self.get_sender_id()),getattr(self.message_obj,'message_id',''),'\n'.join(confirmed_text),self.get_extra('_hosted_memory_epoch',-1))
@@ -1306,7 +1315,7 @@ def install_runtime(core,settings):
             if contact:
                 m=metrics.setdefault(id,{});m['autonomousGroupSent']=m.get('autonomousGroupSent',0)+1
                 active_store.db.execute("UPDATE companion_motives SET status='contacted' WHERE scope=? AND subject=? AND status='open'",(scope,contact));active_store.db.commit()
-            initiative.outgoing(active_store.db,scope,text,time.time());metrics.setdefault(id,{}).setdefault('replies',0);metrics[id]['replies']+=1
+            initiative.outgoing(active_store.db,scope,text,time.time(),event=work.event_id if work else None);metrics.setdefault(id,{}).setdefault('replies',0);metrics[id]['replies']+=1
         else:
             m=metrics.setdefault(id,{});m['platformNotices']=m.get('platformNotices',0)+1
         complete_receipts=bool(work and work.planned_messages>0 and work.confirmed_messages==work.planned_messages)
@@ -1479,6 +1488,13 @@ def install_runtime(core,settings):
             'reason':None if retained and success else 'request_submitted_unknown' if retained else 'candidate_or_size_boundary' if success and valid and material_current else 'request_failed' if valid and material_current else 'summary_changed_during_request' if valid else 'authority_changed',
             'resetDetail':prepared.detail,'diagnosticDetail':(getattr(journal,'recovery_error',None) or prepared.retirement_deferred or stage or None),**(prepared.usage or {})})
     async def prepare_chat_payload(self,*args,**kwargs):
+        image_owner=current_message_event.get()
+        if image_owner and image_owner.get_extra('_hosted_lease') is not None:
+            from semantic_media import collect_protocol_originals
+            if not delivery_current(image_owner):raise asyncio.CancelledError('stale_model_image_request')
+            media_store=stores.get(image_owner.get_platform_id())
+            await collect_protocol_originals(image_owner,lambda:delivery_current(image_owner),
+                                             media_store.db if media_store else None,shared=bool(media_store and media_store.shared_context))
         from model_cache import auxiliary_model
         model=auxiliary_model(current_message_event.get(),self)
         if model is not None:
@@ -1523,6 +1539,15 @@ def install_runtime(core,settings):
                 from journal_storage import read_snapshot
                 saved=read_snapshot(owned.db,model_json(work.scope))
                 retained_media=saved.get('base',[]) if saved else None
+        if owned and (memory_capture or foreground and owned.shared_context):
+            if not delivery_current(image_event):raise asyncio.CancelledError('stale_model_image_request')
+            if owned.db.in_transaction:raise ValueError('media_admission_requires_idle_transaction')
+            from semantic_media import register_event
+            # Register original-image consumers before resizing can yield to a
+            # completed older batch's physical media drain.
+            staged_originals=list(image_event.get_extra('_hosted_media_originals') or [])
+            with owned.db:register_event(owned.db,image_event,snapshots(projected,'bot_shared' if owned.shared_context else work.scope))
+            image_event.set_extra('_hosted_media_originals',staged_originals)
         projected=await constrain_messages(projected,image_memo,retained_media)
         # When this projection dropped covered blocks, the journal also needs
         # the constrained full native view: the honest pre-retirement image of
@@ -1544,6 +1569,11 @@ def install_runtime(core,settings):
             raise asyncio.CancelledError('stale_model_image_request')
         if memory_capture:
             captured=snapshots(projected,work.scope,signatures)
+            if owned and not (foreground and owned.shared_context):
+                from semantic_media import register_event
+                register_event(owned.db,image_event,captured)
+                owned.db.commit()
+                image_event.set_extra('_hosted_media_originals',[])
             image_event.set_extra('_hosted_summary_materials',captured)
             materials_acc=getattr(work,'summary_materials',None)
             if isinstance(materials_acc,list):
@@ -1585,6 +1615,9 @@ def install_runtime(core,settings):
                         message_provenance.bind_model_output(owned.db,key,work.scope,work.event_id,work.subject,native_shared,index)
                 signatures={shared_context.event_key(o):digest(m) for m in native_shared if (o:=source(m))}
                 captured=snapshots(native_shared,key,signatures,db=owned.db)
+                from semantic_media import register_event
+                register_event(owned.db,image_event,captured)
+                image_event.set_extra('_hosted_media_originals',[])
                 work.summary_materials.extend(captured)
                 for item in captured:
                     original=source({'role':'user','content':item['text']})

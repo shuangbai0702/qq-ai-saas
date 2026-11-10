@@ -314,15 +314,15 @@ def legacy_policy_eligible(material):
     return True
 
 def legacy_materials(db,scope):
-    # Only already registered old incident material. Bounded retries do not
-    # move the watermark or count these as new rounds.
-    result={};used=0
-    for event,raw in db.execute("SELECT h.event,m.material FROM memory_hold_rounds h JOIN memory_round_material m ON m.scope=h.scope AND m.event=h.event WHERE h.scope=? AND h.created<? AND h.reason NOT IN ('protected','lost') ORDER BY h.created,h.event LIMIT 64",(scope,LEGACY_CUTOFF)):
+    # Previously held hot content joins the next legal batch in full. Its
+    # old Coverage/media classification is not a new retention permission.
+    # Missing material aborts the replacement instead of silently omitting it.
+    result={}
+    for event,raw in db.execute("SELECT h.event,m.material FROM memory_hold_rounds h LEFT JOIN memory_round_material m ON m.scope=h.scope AND m.event=h.event WHERE h.scope=? ORDER BY h.created,h.event",(scope,)):
+        if not raw:raise ValueError('semantic_batch_legacy_material_missing')
         m=json.loads(raw)
-        if not legacy_policy_eligible(m):continue
-        size=len(model_json(model_view({event:m},[])))
-        if used+size>64000:break
-        used+=size;result[event]=m
+        if not valid_material(m,scope) or not m.get('complete'):raise ValueError('semantic_batch_legacy_material_incomplete')
+        result[event]=m
     return result
 
 def offer_legacy_retirements(db,scope,materials,events,summary_id,checkpoint_id):
@@ -541,7 +541,7 @@ def batch_corrections(db,scope,events):
     return result
 
 
-def derive_claims(scope,payload,materials,corrections,data=None):
+def derive_claims(scope,payload,materials,corrections,data=None,*,strict=False):
     """Semantically selected evidence, deterministic corrections and open
     topics. The summary model chooses the statements with real future value
     (facts, changes, relations, agreements) as verbatim quotes; code only
@@ -594,6 +594,7 @@ def derive_claims(scope,payload,materials,corrections,data=None):
         text=evidence_text(event,row,role)
         if quote not in text:continue
         quote=quote.strip()
+        if strict and len(quote)>CLAIM_TEXT:raise ValueError('semantic_claim_output_capacity_exceeded_material_retained')
         material_row=stored.get(event) or {};signature=material_row.get('digest','')
         if role=='user':
             claims.append({'id':claim_identity(scope,event,'human_statement',quote),'text':quote[:CLAIM_TEXT],
@@ -661,6 +662,9 @@ def claim_view(claim):
                 channel,event=json.loads(ref.get('event',''))
                 if re.fullmatch(r'(?:private|group):\d{4,20}',str(channel)):ref.update(scope=channel,event=event)
             except (ValueError,TypeError):pass
+        # Source scope and speaking role are semantic attribution. The raw
+        # protocol event index is not long-term model memory.
+        ref.pop('event',None)
     return view
 
 
@@ -716,6 +720,19 @@ def bound_claim_views(items,budget=1200,query=''):
         if used+size>budget:continue
         item.setdefault('protected_claims',[]).append(view);seen.add(view['id']);used+=size
     return used
+
+
+def semantic_claims_product(claims):
+    """Persist the model's valid selection whole, or retain the input batch.
+
+    Memory selection is lossy and belongs to the model. Storage capacity is
+    checked explicitly rather than silently making a second selection.
+    """
+    if any(not valid_claim(claim) for claim in claims):
+        raise ValueError('semantic_claim_output_invalid_material_retained')
+    if len(claims)>MAX_CLAIMS or len(model_json(claims).encode())>MAX_CLAIMS_BYTES:
+        raise ValueError('semantic_claim_output_capacity_exceeded_material_retained')
+    return claims
 
 
 def fit_claims(claims,budget=None,max_claims=None):
