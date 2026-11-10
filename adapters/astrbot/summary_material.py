@@ -1,7 +1,7 @@
 """Source material and coverage for the existing reflection, not another memory.
 
-Only protocol-bound user envelopes can identify a turn. Original native history
-is retained; covered whole turns are removed from model requests, never from DB.
+Only protocol-bound user envelopes can identify a turn. Successful semantic
+batches replace and retire their original hot content under the batch contract.
 Summaries add a bounded structured claims layer (schema_version=2) derived from
 trusted events, materials and recorded corrections; v1 rows are read as-is.
 """
@@ -47,6 +47,10 @@ def snapshots(messages,scope,signatures=None,db=None):
     """Capture model-observed material, including quoted text, bounded images
     and this system's own complete tool round-trips (version 2)."""
     result=[]
+    def settlement_view(value):
+        # Settlement ledgers may also carry scheduling/explanation metadata.
+        # The material schema records only its existing receipt fields.
+        return {key:value[key] for key in ('status','attempted','confirmed','planned','confirmed_messages') if key in value} if isinstance(value,dict) else value
     owners=None
     if scope=='bot_shared' and db is not None:
         from message_provenance import model_output_owners
@@ -102,8 +106,8 @@ def snapshots(messages,scope,signatures=None,db=None):
         if owners is not None:
             from message_provenance import model_input_settlement
             item['version']=3
-            item['input_settlement']=model_input_settlement(db,scope,identifier)
-            item['native_outputs']=[{'role':following['role'],'owner':owners.get((identifier,offset)),
+            item['input_settlement']=settlement_view(model_input_settlement(db,scope,identifier))
+            item['native_outputs']=[{'role':following['role'],'owner':({**owners[(identifier,offset)],'settlement':settlement_view(owners[(identifier,offset)].get('settlement'))} if owners.get((identifier,offset)) else None),
                 'text':following.get('content') if isinstance(following.get('content'),str) else '\n'.join(p['text'] for p in following.get('content') or [] if isinstance(p,dict) and p.get('type')=='text' and isinstance(p.get('text'),str))}
                 for offset,following in enumerate(block,1) if isinstance(following,dict) and following.get('role') in ('assistant','tool')]
         result.append(item)
@@ -297,6 +301,110 @@ def remember(db,scope,materials):
             if available+len(encoded.encode())>MAX_STORE_BYTES:continue
         # Same immutable event cannot be silently rebound to other content.
         db.execute('INSERT INTO memory_round_material VALUES(?,?,?,?) ON CONFLICT(scope,event) DO UPDATE SET material=excluded.material',(scope,item['event'],item['subject'],encoded));used=available+len(encoded.encode())
+
+
+def recover_archived_materials(db,scope,events):
+    """Recapture exact trusted archive blocks into the existing material store.
+
+    Never reconstruct original input from pending display text. Archive SHA,
+    blob integrity, protocol source and the ordinary snapshots/remember gates
+    remain authoritative. No archive, Journal or transaction is committed here.
+    """
+    import journal_storage
+    from semantic_batch import event_key
+    wanted=set(str(event) for event in events);invalid=0
+    tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    retired=set()
+    if 'memory_semantic_batches' in tables:
+        for raw, in db.execute("SELECT members FROM memory_semantic_batches WHERE scope=? AND state='retired'",(scope,)):
+            retired.update(json.loads(raw))
+    wanted={event for event in wanted if event_key(scope,event) not in retired}
+    def complete(event):
+        row=db.execute('SELECT material FROM memory_round_material WHERE scope=? AND event=?',(scope,event)).fetchone()
+        if not row:return False
+        try:item=json.loads(row[0])
+        except (ValueError,TypeError):return False
+        return valid_material(item,scope) and item.get('complete') is True
+    wanted={event for event in wanted if not complete(event)}
+    initial=set(wanted)
+    if not wanted:return {'recovered':0,'missing':[],'invalid_archives':0}
+
+    def read_blob(channel,digest):
+        row=db.execute('SELECT data FROM fishbot_readonly_journal_blobs WHERE scope=? AND sha=?',(channel,digest)).fetchone()
+        return row[0] if row else None
+    observed={}
+    def recover(key,version,payload,sha):
+        if not isinstance(payload,str) or not isinstance(sha,str) or hashlib.sha256(payload.encode()).hexdigest()!=sha:raise ValueError('recovery_archive_sha')
+        channel=json.loads(key)
+        if channel!='bot_shared' and not re.fullmatch(r'(?:private|group):\d{4,20}',str(channel)):raise ValueError('recovery_archive_scope')
+        if scope!='bot_shared' and channel not in (scope,'bot_shared'):return
+        if type(version) is not int:raise ValueError('recovery_archive_version')
+        if version==1:value=json.loads(payload)
+        elif version==journal_storage.VERSION:value=journal_storage.decode(payload,key,read_blob)
+        else:raise ValueError('recovery_archive_version')
+        if not isinstance(value,dict) or value.get('scope')!=key:raise ValueError('recovery_archive_scope')
+        for field in ('base','wire'):
+            messages=value.get(field)
+            if not isinstance(messages,list) or any(not isinstance(message,dict) or not isinstance(message.get('role'),str) for message in messages):raise ValueError('recovery_archive_messages')
+        # Stage the whole archive before admitting any of its candidates.
+        candidates=[]
+        for field in ('base','wire'):
+            physical={}
+            for message in value[field]:
+                origin=source(message)
+                if origin:
+                    identifier=model_json([origin['scope'],str(origin['event_id'])]) if scope=='bot_shared' else str(origin['event_id'])
+                    physical.setdefault(identifier,[]).append(message)
+            for item in snapshots(value[field],scope,db=db):
+                if item['event'] not in wanted:continue
+                origin=source({'role':'user','content':item['text']})
+                if channel!='bot_shared' and origin['scope']!=channel:continue
+                if 'memory_message_sources' in tables:
+                    binding=db.execute("SELECT data FROM memory_message_sources WHERE scope=? AND event=? AND direction='model'",(scope,item['event'])).fetchone()
+                    if binding:
+                        bound=json.loads(binding[0]);signature=bound.get('input_digest')
+                        if bound.get('sender_id')!=item['subject'] or bound.get('source_scope')!=origin['scope'] or str(bound.get('event_id'))!=str(origin['event_id']):continue
+                    else:signature=None
+                else:signature=None
+                exact=bool(signature and any(digest(message)==item['digest'] and hashlib.sha256(model_json(message).encode()).hexdigest()==signature for message in physical.get(item['event'],[])))
+                candidates.append((item,exact))
+        for item,exact in candidates:observed.setdefault(item['event'],[]).append((item,exact))
+
+    archives=[]
+    if 'memory_checkpoint_archives' in tables:
+        columns={row[1] for row in db.execute('PRAGMA table_info(memory_checkpoint_archives)')}
+        # A legacy row without a checksum is not recovery authority.
+        if {'scope','version','payload','sha'}<=columns:
+            archives.extend(('checkpoint',tuple(row)) for row in db.execute('SELECT scope,version,payload,sha FROM memory_checkpoint_archives WHERE payload IS NOT NULL ORDER BY rowid'))
+        else:invalid+=db.execute('SELECT count(*) FROM memory_checkpoint_archives').fetchone()[0]
+    if 'fishbot_operator_session_archives' in tables:
+        archives.extend(('operator',tuple(row)) for row in db.execute('SELECT scope,archive,sha FROM fishbot_operator_session_archives ORDER BY rowid'))
+    for kind,row in archives:
+        try:
+            if kind=='checkpoint':recover(*row)
+            else:
+                key,raw,sha=row
+                if not isinstance(raw,str) or hashlib.sha256(raw.encode()).hexdigest()!=sha:raise ValueError('recovery_operator_sha')
+                archive=json.loads(raw);journal=archive['journal']
+                if journal.get('scope')!=key:raise ValueError('recovery_operator_scope')
+                recover(key,journal['version'],journal['payload'],journal['sha'])
+        except (ValueError,TypeError,KeyError,IndexError,AttributeError):invalid+=1
+    for event,candidates in observed.items():
+        # An old whole-message input hash is a proof about that representation,
+        # not a veto on unique original material still present in trusted Journals.
+        # Conflicting physical inputs require an exact bound candidate; never
+        # pick a convenient archive merely because it happens to be complete.
+        exact=[item for item,bound in candidates if bound]
+        selected=exact if exact else [item for item,_ in candidates] if len({item['digest'] for item,_ in candidates})==1 else []
+        if not selected:continue
+        def outputs(item):return [{k:v for k,v in output.items() if k!='owner'} for output in item.get('native_outputs',[])]
+        latest=max(selected,key=lambda item:(len(outputs(item)),len(item.get('tools',[])),len(item.get('native_reply') or '')))
+        # Journals may record successively appended outputs. Only prefix
+        # extensions are compatible; divergent replies/tools need investigation.
+        if any(outputs(item)!=outputs(latest)[:len(outputs(item))] or (item.get('tools') or [])!=(latest.get('tools') or [])[:len(item.get('tools') or [])] or not (latest.get('native_reply') or '').startswith(item.get('native_reply') or '') for item in selected):continue
+        if valid_material(latest,scope) and latest.get('complete') is True:remember(db,scope,[latest])
+    missing=sorted(event for event in initial if not complete(event))
+    return {'recovered':len(initial)-len(missing),'missing':missing,'invalid_archives':invalid}
 
 
 # Fixed, explicitly authorized incident cohort. This is not a rolling TTL or

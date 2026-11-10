@@ -150,6 +150,46 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.journal.commit(prepared))
         self.store.model_journals[SCOPE] = self.journal
 
+        # Same evidence shape as semantic_service_inputs_test, with direct and
+        # shared source bindings. These failed wake-ups never reached a model.
+        self.control_events = ['FAILED_INTERNAL_CONTROL_01', 'FAILED_INTERNAL_CONTROL_02']
+        self.control_texts = []
+        self.control_bindings = []
+        for event in self.control_events:
+            question = SOURCE + model_json({
+                'scope': SCOPE, 'sender_id': '12345678', 'event_id': event,
+                'kind': 'platform_service_not_user'}) + '\n[平台内部主动时刻]_' + event
+            binding = {'source_scope': SCOPE, 'event_id': event, 'sender_id': '12345678',
+                       'outputs': [], 'settlement': {'status': 'error', 'attempted': 0,
+                       'confirmed': 0, 'planned': 0, 'confirmed_messages': 0}}
+            self.store.db.execute('INSERT INTO memory_pending VALUES(?,?,?,?,?,?)',
+                                  (SCOPE, '12345678', event, question, '', 110))
+            self.store.db.execute('''INSERT INTO pipeline_events(
+                scope,subject,event,status,source,attempted,confirmed,at)
+                VALUES(?,?,?,'error','owner_contact',0,0,110)''', (SCOPE, '12345678', event))
+            for scope, key in ((SCOPE, event), ('bot_shared', model_json([SCOPE, event]))):
+                self.control_bindings.append((scope, key))
+                self.store.db.execute('INSERT INTO memory_message_sources VALUES(?,?,?,?)',
+                                      (scope, key, 'model', model_json(binding)))
+                self.store.db.execute('INSERT INTO memory_message_sources VALUES(?,?,?,?)',
+                                      (scope, key, 'incoming', '{}'))
+            self.control_texts.append(question)
+        self.store.db.commit()
+        self.control_ledger = self.store.db.execute('SELECT * FROM pipeline_events ORDER BY event').fetchall()
+        self.assertEqual(self.store.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0], 37)
+
+    def assert_failed_controls_discarded(self):
+        db = self.store.db
+        for event in self.control_events:
+            self.assertIsNone(db.execute('SELECT 1 FROM memory_pending WHERE scope=? AND event=?',
+                                         (SCOPE, event)).fetchone(),
+                              (self.metrics, db.execute('SELECT * FROM memory_checkpoint_issues').fetchall()))
+        for scope, event in self.control_bindings:
+            self.assertIsNone(db.execute('SELECT 1 FROM memory_message_sources WHERE scope=? AND event=?',
+                                         (scope, event)).fetchone())
+        self.assertEqual(db.execute('SELECT * FROM pipeline_events ORDER BY event').fetchall(),
+                         self.control_ledger)
+
     async def summarize(self):
         reflection = self.store.reflection
         reflection.binding = (
@@ -168,6 +208,9 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
             for m in messages)
         for original in self.originals + self.events:
             self.assertIn(original, text)
+        wire = json.dumps(messages, ensure_ascii=False)
+        for control in self.control_events + self.control_texts:
+            self.assertNotIn(control, wire)
         images = [p['image_url']['url'] for m in messages
                   if isinstance(m.get('content'), list) for p in m['content']
                   if p.get('type') == 'image_url']
@@ -186,6 +229,7 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
         self.populate()
         await self.summarize()
         self.assert_complete_summary_http()
+        self.assert_failed_controls_discarded()
         self.assertTrue(self.callbacks)
         self.assertTrue(all(scope == SCOPE for scope, _ in self.callbacks))
         # retry() may invoke the idempotent callback again after commit.
@@ -217,6 +261,8 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.requests), 2)
         final = self.requests[1]['messages']
         wire = json.dumps(final, ensure_ascii=False)
+        for control in self.control_events + self.control_texts:
+            self.assertNotIn(control, wire)
         self.assertIn(SUMMARY, wire)
         self.assertIn('更喜欢绘制海边红船', wire)
         self.assertIn('共同绘画让交流更亲近可靠', wire)
@@ -240,13 +286,25 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
     async def test_actual_truncated_http_response_keeps_batch_and_journal_retryable(self):
         self.populate()
         before = copy.deepcopy(self.journal.last.wire)
+        db = self.store.db
+        material_before = db.execute('SELECT * FROM memory_round_material ORDER BY event').fetchall()
+        rounds_before = db.execute('SELECT * FROM memory_rounds ORDER BY event').fetchall()
+        blobs_before = db.execute('SELECT * FROM fishbot_readonly_journal_blobs').fetchall()
+        pending_before = db.execute("SELECT * FROM memory_pending WHERE answer<>'' ORDER BY event").fetchall()
         self.mode = 'length'
         await self.summarize()
         self.assert_complete_summary_http()
+        # The error checkpoint may commit cleanup of proven internal residue;
+        # genuine conversation material must remain byte-for-byte retryable.
+        self.assert_failed_controls_discarded()
         self.assertEqual(self.callbacks, [])
         self.assertEqual(self.journal.last.wire, before)
-        db = self.store.db
         self.assertEqual(db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints').fetchone()[0], 0)
+        self.assertEqual(db.execute('SELECT count(*) FROM memory_semantic_batches').fetchone()[0], 0)
+        self.assertEqual(db.execute('SELECT * FROM memory_round_material ORDER BY event').fetchall(), material_before)
+        self.assertEqual(db.execute('SELECT * FROM memory_rounds ORDER BY event').fetchall(), rounds_before)
+        self.assertEqual(db.execute('SELECT * FROM fishbot_readonly_journal_blobs').fetchall(), blobs_before)
+        self.assertEqual(db.execute('SELECT * FROM memory_pending ORDER BY event').fetchall(), pending_before)
         self.assertEqual(db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0], 35)
         self.assertEqual(db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0], 35)
         self.assertEqual(self.metrics['summaryFailures'], 1)

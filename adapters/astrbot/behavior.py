@@ -414,10 +414,12 @@ def install_runtime(core,settings):
         metrics.setdefault(event.get_platform_id(),{})['lastGroupFreshness']={'scope':scope,'at':time.time(),**{k:decision[k] for k in ('action','reason','checked') if k in decision}}
         return decision
     def journal_recapture(st):
-        """Read-only repair of held rounds' material completeness from the
-        committed journal wire (B package). Same immutable event only: the
-        snapshot is digest-bound, and remember() never downgrades a complete
-        prior proof. Never fabricates evidence for events the journal lacks."""
+        """Recover batch originals from committed active or archived Journals.
+
+        Both normal and administrator reflection use this path. A session
+        rebuild must not strand unprocessed originals in a recovery archive.
+        No Journal is rewritten and missing originals are never fabricated.
+        """
         from context_protocol import source,digest
         from readonly_journal import ReadonlyJournal
         def capture(scope,events):
@@ -426,18 +428,18 @@ def install_runtime(core,settings):
             journal=st.model_journals.get(scope)
             if journal is None or journal.last is None or journal.recovery_error or journal.retired_reason:
                 journal=ReadonlyJournal(st.db,scope)
-            if journal.last is None or journal.recovery_error or journal.retired_reason:return
-            messages=journal.last.base if scope=='bot_shared' else journal.last.wire
+            messages=[] if journal.last is None or journal.recovery_error or journal.retired_reason else journal.last.base if scope=='bot_shared' else journal.last.wire
             signatures={}
             for message in messages:
                 origin=source(message)
                 if origin:
                     identifier=model_json([origin['scope'],str(origin['event_id'])]) if scope=='bot_shared' else str(origin['event_id'])
                     if identifier in wanted:signatures[identifier]=digest(message)
-            if not signatures:return
-            from summary_material import snapshots,remember,register_nonround_images
-            register_nonround_images(st.db,scope,messages,wanted)
-            remember(st.db,scope,snapshots(messages,scope,signatures,db=st.db))
+            from summary_material import snapshots,remember,register_nonround_images,recover_archived_materials
+            if signatures:
+                register_nonround_images(st.db,scope,messages,wanted)
+                remember(st.db,scope,snapshots(messages,scope,signatures,db=st.db))
+            recover_archived_materials(st.db,scope,events)
         return capture
     def store(id,s):
         if id not in stores:
