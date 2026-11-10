@@ -394,12 +394,14 @@ class BotPipeline:
         db.execute('''CREATE TABLE IF NOT EXISTS pipeline_events(scope TEXT,subject TEXT,event TEXT,at REAL,source TEXT,stage TEXT,status TEXT,reason TEXT,attempted INTEGER DEFAULT 0,confirmed INTEGER DEFAULT 0,PRIMARY KEY(scope,subject,event))''')
         db.execute('CREATE INDEX IF NOT EXISTS pipeline_events_by_event ON pipeline_events(event)')
         columns={r[1] for r in db.execute('PRAGMA table_info(pipeline_events)')}
-        for name,kind in (('work_id','TEXT'),('passes','INTEGER DEFAULT 0'),('exit_reason','TEXT')):
+        for name,kind in (('work_id','TEXT'),('passes','INTEGER DEFAULT 0'),('exit_reason','TEXT'),('updated_at','REAL'),('finished_at','REAL')):
             if name not in columns:db.execute('ALTER TABLE pipeline_events ADD COLUMN '+name+' '+kind)
-        db.execute("UPDATE pipeline_events SET status=CASE WHEN status='sending' THEN 'unknown' ELSE 'interrupted' END,reason='runtime_restarted' WHERE status IN ('received','sending') AND NOT EXISTS (SELECT 1 FROM pipeline_scope_work w WHERE w.scope=pipeline_events.scope)");db.commit()
+        # Recovery time is observable; an exited activation's actual finish is
+        # not. Leave finished_at unknown rather than backfilling a false end.
+        db.execute("UPDATE pipeline_events SET status=CASE WHEN status='sending' THEN 'unknown' ELSE 'interrupted' END,reason='runtime_restarted',updated_at=? WHERE status IN ('received','sending') AND NOT EXISTS (SELECT 1 FROM pipeline_scope_work w WHERE w.scope=pipeline_events.scope)",(time.time(),));db.commit()
         # Batch windows live only in this process. A durable group-presence
         # wait can resume, but an old in-memory batch cannot still be waiting.
-        db.execute("UPDATE pipeline_events SET status='interrupted',reason='runtime_restarted' WHERE status='waiting' AND reason='batch_waiting'");db.commit()
+        db.execute("UPDATE pipeline_events SET status='interrupted',reason='runtime_restarted',updated_at=? WHERE status='waiting' AND reason='batch_waiting'",(time.time(),));db.commit()
         # Repair only the exact original admission ledger, not guessed owners
         # of old joined inputs. No model/send/response evidence is invented.
         db.execute("""UPDATE pipeline_work_inputs AS i SET status='deferred'
@@ -455,8 +457,8 @@ class BotPipeline:
 
     def activation_progress(self,work,passes,reason):
         with self.db:
-            self.db.execute('UPDATE pipeline_events SET work_id=?,passes=?,exit_reason=? WHERE scope=? AND subject=? AND event=?',
-                            (work.work_id,passes,reason,work.scope,work.subject,work.event_id))
+            self.db.execute('UPDATE pipeline_events SET work_id=?,passes=?,exit_reason=?,updated_at=? WHERE scope=? AND subject=? AND event=?',
+                            (work.work_id,passes,reason,time.time(),work.scope,work.subject,work.event_id))
 
     def release_work(self,work,release=True):
         from context_protocol import model_json
@@ -697,15 +699,16 @@ class BotPipeline:
             if not self.claim_scope(work):return work
             with self.db:
                 if row:
-                    work.ledger_owner=bool(self.db.execute("UPDATE pipeline_events SET status='received',reason='deferred_admission',source=? WHERE scope=? AND subject=? AND event=? AND status IN ('waiting','silent') AND attempted=0 AND confirmed=0",(source,scope,subject,work.event_id)).rowcount)
+                    work.ledger_owner=bool(self.db.execute("UPDATE pipeline_events SET status='received',reason='deferred_admission',source=?,updated_at=?,finished_at=NULL WHERE scope=? AND subject=? AND event=? AND status IN ('waiting','silent') AND attempted=0 AND confirmed=0",(source,time.time(),scope,subject,work.event_id)).rowcount)
                 else:
-                    work.ledger_owner=bool(self.db.execute("INSERT OR IGNORE INTO pipeline_events(scope,subject,event,at,source,stage,status,reason) VALUES(?,?,?,?,?,'ingress','received','deferred_admission')",(scope,subject,work.event_id,time.time(),source)).rowcount)
+                    now=time.time()
+                    work.ledger_owner=bool(self.db.execute("INSERT OR IGNORE INTO pipeline_events(scope,subject,event,at,source,stage,status,reason,updated_at) VALUES(?,?,?,?,?,'ingress','received','deferred_admission',?)",(scope,subject,work.event_id,now,source,now)).rowcount)
             if not work.ledger_owner:work.stop('duplicate_deferred_admission','duplicate')
             return work
         if not work.event_id:return work
         now=time.time()
         with self.db:
-            work.ledger_owner=bool(self.db.execute("INSERT OR IGNORE INTO pipeline_events(scope,subject,event,at,source,stage,status,reason) VALUES(?,?,?,?,?,'ingress','received','')",(scope,subject,work.event_id,now,source)).rowcount)
+            work.ledger_owner=bool(self.db.execute("INSERT OR IGNORE INTO pipeline_events(scope,subject,event,at,source,stage,status,reason,updated_at) VALUES(?,?,?,?,?,'ingress','received','',?)",(scope,subject,work.event_id,now,source,now)).rowcount)
             # Retain exact recovery evidence while its model input lacks final
             # provenance; a blanket 24h/2048 prune caused irreparable Holds.
             protected="NOT EXISTS (SELECT 1 FROM memory_message_sources m WHERE m.direction='model' AND json_extract(m.data,'$.source_scope')=pipeline_events.scope AND json_extract(m.data,'$.event_id')=pipeline_events.event AND json_extract(m.data,'$.settlement') IS NULL)" if self.db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_message_sources'").fetchone() else '1'
@@ -738,11 +741,16 @@ class BotPipeline:
         # Persist before the network boundary. A crash or timeout cannot turn
         # an unknown external outcome into permission to repeat the request.
         with self.db:
-            self.db.execute("UPDATE pipeline_events SET stage='dispatch',status='sending',attempted=? WHERE scope=? AND subject=? AND event=?",(work.attempted,work.scope,work.subject,work.event_id))
+            self.db.execute("UPDATE pipeline_events SET stage='dispatch',status='sending',attempted=?,updated_at=? WHERE scope=? AND subject=? AND event=?",(work.attempted,time.time(),work.scope,work.subject,work.event_id))
 
     def confirmed(self,work):work.confirmed+=1
 
     def finish(self,work,metrics):
+        """Settle this activation, including waiting, not its permanent Work.
+
+        finished_at is the observed activation return/settlement boundary.
+        Deferred admission clears it before the same event runs again.
+        """
         if work.attempted>work.confirmed:
             work.status='partial' if work.confirmed else 'unknown'
             if not work.reason:work.reason='unconfirmed_protocol_outcome'
@@ -753,13 +761,19 @@ class BotPipeline:
         value={'workId':work.work_id,'activationId':work.event_id,'source':work.source,'stage':work.trace[-1]['stage'],'status':work.status,'reason':work.reason,'protocolAttempts':work.attempted,'protocolConfirmed':work.confirmed,'plannedMessages':work.planned_messages,'confirmedMessages':work.confirmed_messages,'stages':work.trace}
         metrics['lastPipeline']=value
         if work.status=='duplicate' or work.source=='message' and not work.ledger_owner:return
+        finished=time.time()
         with self.db:
-            self.db.execute('UPDATE pipeline_events SET stage=?,status=?,reason=?,attempted=?,confirmed=? WHERE scope=? AND subject=? AND event=?',(value['stage'],work.status,work.reason,work.attempted,work.confirmed,work.scope,work.subject,work.event_id))
+            self.db.execute('UPDATE pipeline_events SET stage=?,status=?,reason=?,attempted=?,confirmed=?,updated_at=?,finished_at=coalesce(finished_at,?) WHERE scope=? AND subject=? AND event=?',(value['stage'],work.status,work.reason,work.attempted,work.confirmed,finished,finished,work.scope,work.subject,work.event_id))
             from shared_context import active
             if active(self.db):
                 import message_provenance
                 message_provenance.settle_model_output(self.db,work)
                 self.release_work(work,release=False)
+        from model_cache import record_diagnostic
+        record_diagnostic(work.lease,{'kind':'pipeline_result','phase':'pipeline','workId':work.event_id,'logicalWorkId':work.work_id,
+            'status':work.status,'reason':work.reason,'durationMs':round((time.monotonic()-work.started)*1000),
+            'diagnosticDetail':json.dumps({'stage':value['stage'],'source':work.source,'finishedAt':finished,
+                'protocolAttempts':work.attempted,'protocolConfirmed':work.confirmed},separators=(',',':'))})
 
 
 def stage(event,name):
