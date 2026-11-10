@@ -52,6 +52,8 @@ def _journals(db,tables):
         for key,raw,sha in db.execute('SELECT scope,archive,sha FROM fishbot_operator_session_archives'):
             if not isinstance(raw,str) or hashlib.sha256(raw.encode()).hexdigest()!=sha:raise ValueError('semantic_collection_archive_integrity')
             value=json.loads(raw)['journal']
+            if value is None:continue
+            if not isinstance(value,dict):raise ValueError('semantic_collection_archive_shape')
             if value.get('scope')!=key:raise ValueError('semantic_collection_archive_scope')
             rows.append((key,value['version'],value['payload'],value['sha']))
     for key,version,payload,sha in rows:
@@ -72,7 +74,7 @@ def _journals(db,tables):
             for message in messages:
                 o=source(message)
                 if o and channel!='bot_shared' and o['scope']!=channel:raise ValueError('semantic_collection_journal_source')
-            yield messages
+            yield messages,value.get('at')
 
 
 def _select(items):
@@ -150,7 +152,7 @@ def _collect(db,cutoff,payload,recapture):
     candidates={};materials={};anchors={};provided={}
     def register(pair,person=None,at=None):
         if not pair or not eligible(pair):return
-        item=candidates.setdefault(pair,{'people':set(),'times':set()})
+        item=candidates.setdefault(pair,{'people':set(),'times':set(),'bounds':set()})
         if person is not None:item['people'].add(str(person))
         if _time(at):item['times'].add(at)
     for row in payload:
@@ -164,18 +166,36 @@ def _collect(db,cutoff,payload,recapture):
             if pair and answer:anchors.setdefault(pair,set()).add(answer)
     if 'memory_hold_rounds' in tables:
         for scope,event in db.execute('SELECT scope,event FROM memory_hold_rounds'):register(identity(scope,event))
-    def capture(item,logical):
+    def capture(item,logical,upper_bound=None):
         if not valid_material(item,logical):raise ValueError('semantic_collection_material_invalid')
         pair=identity(logical,item['event'])
         if not pair or not eligible(pair):return
         o=source({'role':'user','content':item['text']})
         register(pair,item['subject'],o.get('at'))
+        if _time(upper_bound):candidates[pair]['bounds'].add(upper_bound)
         mapped=copy.deepcopy(item);mapped.update(scope='bot_shared',event=model_json(list(pair)))
         materials.setdefault(pair,[]).append(mapped)
     def saved_materials():
         for logical,event,raw in db.execute('SELECT scope,event,material FROM memory_round_material'):
             if logical=='bot_shared' or _channel(logical):capture(json.loads(raw),logical)
     saved_materials()
+    # Operator resets may archive only evidence, with no Journal at all.
+    # This is real material, not a missing checksum or coverage certificate.
+    if 'fishbot_operator_session_archives' in tables:
+        for key,raw,sha in db.execute('SELECT scope,archive,sha FROM fishbot_operator_session_archives'):
+            if hashlib.sha256(raw.encode()).hexdigest()!=sha:raise ValueError('semantic_collection_archive_integrity')
+            channel=json.loads(key)
+            if channel!='bot_shared' and not _channel(channel):continue
+            for name,entry in json.loads(raw).get('evidence',{}).items():
+                if name not in ('memory_rounds','memory_pending','memory_hold_rounds','memory_round_material'):continue
+                columns=entry['columns']
+                for values in entry['rows']:
+                    if len(values)!=len(columns):raise ValueError('semantic_collection_archive_evidence_shape')
+                    row=dict(zip(columns,values));logical=row.get('scope',channel)
+                    if logical!=channel:raise ValueError('semantic_collection_archive_scope')
+                    if name=='memory_round_material':capture(json.loads(row['material']),logical);continue
+                    pair=identity(logical,row['event']);register(pair,row.get('subject'),row.get('at'))
+                    if pair and row.get('answer'):anchors.setdefault(pair,set()).add(row['answer'])
     # Exact model bindings are platform metadata. Mirror only positively bound
     # native identities so shared recapture retains their real receipts/owners.
     if 'memory_message_sources' in tables:
@@ -191,20 +211,31 @@ def _collect(db,cutoff,payload,recapture):
             if old and json.loads(old[0])!=value:raise ValueError('semantic_collection_binding_conflict')
             if not old:db.execute("INSERT INTO memory_message_sources VALUES('bot_shared',?,'model',?)",(key,raw))
     # Discover material-only/archive-only inputs too, including silent images.
-    for messages in _journals(db,tables):
-        for item in snapshots(messages,'bot_shared',db=db):capture(item,'bot_shared')
+    for messages,container_at in _journals(db,tables):
+        # A later timestamped input bounds preceding blocks without inventing
+        # their original occurrence time. Container capture time is also real.
+        upper=container_at if _time(container_at) else None;bounds={}
+        for message in reversed(messages):
+            o=source(message)
+            if not o:continue
+            if _time(o.get('at')):upper=o['at']
+            if _time(upper):bounds[model_json([o['scope'],str(o['event_id'])])]=upper
+        for item in snapshots(messages,'bot_shared',db=db):capture(item,'bot_shared',bounds.get(item['event']))
     wanted=[]
     for pair,item in candidates.items():
-        if not item['times']:raise ValueError('semantic_collection_time_missing')
-        if min(item['times'])<=cutoff<max(item['times']):raise ValueError('semantic_collection_time_conflict')
-        if min(item['times'])<=cutoff:wanted.append(pair)
+        if not item['times'] and not item['bounds']:raise ValueError('semantic_collection_time_missing')
+        if item['times'] and min(item['times'])<=cutoff<max(item['times']):raise ValueError('semantic_collection_time_conflict')
+        if min(item['times'] or item['bounds'])<=cutoff:wanted.append(pair)
     if callable(recapture):
         for logical in sorted(scopes):
             events=[model_json(list(pair)) if logical=='bot_shared' else pair[1] for pair in wanted if logical=='bot_shared' or pair[0]==logical]
             if events:recapture(logical,events)
         saved_materials()
+    missing=sum(not materials.get(pair) for pair in wanted)
+    incomplete=sum(bool(materials.get(pair)) and not any(m.get('complete') is True for m in materials[pair]) for pair in wanted)
+    if missing or incomplete:raise ValueError('semantic_collection_material_missing_or_incomplete:missing='+str(missing)+',incomplete='+str(incomplete))
     output=[]
-    for pair in sorted(wanted,key=lambda p:(min(candidates[p]['times']),p)):
+    for pair in sorted(wanted,key=lambda p:(min(candidates[p]['times'] or candidates[p]['bounds']),p)):
         meta=candidates[pair];item=_select(materials.get(pair,[]))
         if meta['people']!={item['subject']}:raise ValueError('semantic_collection_sender_conflict')
         replies=anchors.get(pair,set())
@@ -213,9 +244,10 @@ def _collect(db,cutoff,payload,recapture):
             reply=next(iter(replies))
             if item.get('reply') and item['reply']!=reply:raise ValueError('semantic_collection_reply_conflict')
             item['reply']=reply
-        key=item['event'];at=min(meta['times']);o=source({'role':'user','content':item['text']})
-        row={'sender_id':item['subject'],'event':key,'user':item['text'],'bot':item.get('reply',''),'at':at,
+        key=item['event'];at=min(meta['times'] or meta['bounds']);o=source({'role':'user','content':item['text']})
+        row={'sender_id':item['subject'],'event':key,'user':item['text'],'bot':item.get('reply',''),'at':o.get('at') if _time(o.get('at')) else None,'observed_before':at,
              'source':{**o,'source_scope':pair[0]}}
+        if row['at'] is not None:row.pop('observed_before')
         if pair in provided and str(provided[pair]['sender_id'])!=item['subject']:raise ValueError('semantic_collection_sender_conflict')
         db.execute('INSERT OR IGNORE INTO memory_pending(scope,subject,event,question,answer,at) VALUES(?,?,?,?,?,?)',
                    ('bot_shared',item['subject'],key,item['text'],item.get('reply',''),at))

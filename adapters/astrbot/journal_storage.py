@@ -32,7 +32,7 @@ def prune_unreferenced_blobs(db,scope,replacement=None,dry_run=False):
     if 'fishbot_operator_session_archives' in tables:
         for raw, in db.execute('SELECT archive FROM fishbot_operator_session_archives WHERE scope=?',(scope,)):
             snapshot=json.loads(raw)['journal']
-            refs.update(referenced_blobs(snapshot['payload'],snapshot['version']))
+            if snapshot is not None:refs.update(referenced_blobs(snapshot['payload'],snapshot['version']))
     released=0
     for digest,size in db.execute('SELECT sha,length(data) FROM fishbot_readonly_journal_blobs WHERE scope=?',(scope,)).fetchall():
         if digest not in refs:
@@ -146,7 +146,7 @@ def retire_archived_members(db,checkpoint_id):
             for identifier,key,encoded,sha in db.execute('SELECT authorization,scope,archive,sha FROM fishbot_operator_session_archives').fetchall():
                 if hashlib.sha256(encoded.encode()).hexdigest()!=sha:raise ValueError('operator_archive_integrity')
                 archive=json.loads(encoded);original=copy.deepcopy(archive);journal=archive['journal']
-                update=snapshot(journal['version'],journal['payload'],key,journal.get('sha'))
+                update=snapshot(journal['version'],journal['payload'],key,journal.get('sha')) if journal is not None else None
                 if update:journal.update(zip(('version','payload','sha'),update))
                 for name,evidence in archive.get('evidence',{}).items():
                     if name not in ('memory_rounds','memory_round_material','memory_pending','memory_pending_rounds','memory_hold_rounds',

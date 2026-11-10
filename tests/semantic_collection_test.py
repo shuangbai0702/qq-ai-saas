@@ -34,6 +34,32 @@ class CollectionTests(unittest.TestCase):
         self.db.execute('INSERT INTO memory_checkpoint_archives VALUES(?,?,?,?)',(key,2,payload,hashlib.sha256(payload.encode()).hexdigest()))
         return payload
     def collect(self,payload=None):return semantic_collection.collect(self.db,'bot_shared',100,payload or [])
+    def test_unknown_occurrence_time_uses_real_later_order_bound_only(self):
+        first=event_message({'scope':self.channel,'sender_id':'12345678','event_id':'unknown-time'},'real old text')
+        self.archive([first,self.message(event='next',at=90)])
+        rows=self.collect();old=next(r for r in rows if 'unknown-time' in r['event'])
+        self.assertIsNone(old['at']);self.assertEqual(old['observed_before'],90)
+        self.assertEqual(len(rows),2)
+
+    def test_future_order_bound_cannot_retire_undated_message(self):
+        first=event_message({'scope':self.channel,'sender_id':'12345678','event_id':'unknown-time'},'real new text')
+        self.archive([first,self.message(event='future',at=150)])
+        self.assertEqual(self.collect(),[])
+
+    def test_operator_evidence_without_journal_is_not_lost(self):
+        self.old();evidence={}
+        for table in ('memory_rounds','memory_round_material'):
+            columns=[r[1] for r in self.db.execute('PRAGMA table_info('+table+')')]
+            rows=self.db.execute('SELECT * FROM '+table).fetchall()
+            evidence[table]={'columns':columns,'rows':rows}
+        self.db.execute('DELETE FROM memory_rounds');self.db.execute('DELETE FROM memory_round_material')
+        self.db.execute('CREATE TABLE fishbot_operator_session_archives(scope,archive,sha)')
+        raw=model_json({'journal':None,'evidence':evidence})
+        self.db.execute('INSERT INTO fishbot_operator_session_archives VALUES(?,?,?)',(model_json(self.channel),raw,hashlib.sha256(raw.encode()).hexdigest()))
+        rows=self.collect();self.assertEqual(len(rows),1);self.assertEqual(rows[0]['sender_id'],'12345678')
+        item=json.loads(self.db.execute("SELECT material FROM memory_round_material WHERE scope='bot_shared'").fetchone()[0])
+        self.assertEqual(len(item['images']),1)
+
     def test_old_scope_under_35_is_full_shared_input_without_new_rounds(self):
         self.old();before=self.db.execute('SELECT * FROM memory_rounds').fetchall()
         rows=self.collect();self.assertEqual(len(rows),1);self.assertEqual(rows[0]['event'],model_json([self.channel,'old']))
