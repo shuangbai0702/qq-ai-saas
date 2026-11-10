@@ -89,7 +89,7 @@ test('config re-enable restores dormant model work without replaying an unknown 
   assert.deepEqual(executed,[]);
   let view=await coordinator.repo.view('tenant','bot-0');
   assert.equal(view.cycles[0].usage.modelCalls,0);
-  assert.equal((await db.query("SELECT count(*)::int AS n FROM autonomy_wakes WHERE bot_id='bot-0'"))[0].n,0,'disabled work consumed its old wake without a model request');
+  assert.equal((await db.query("SELECT count(*)::int AS n FROM autonomy_wakes WHERE bot_id='bot-0' AND reason<>'activity'"))[0].n,0,'disabled work consumed its old wake without a model request');
   await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,goal_id,status,expires_at,result) VALUES($1,$2,'bot-0','tenant',2,'research','','unresolved old task',$3,'unknown',now(),$4)",[actionId,view.cycles[0].id,unknownId,JSON.stringify({effects:[{id:actionId+':0',status:'unknown'}]})]);
   await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) VALUES('bot-0',2,$1)",[JSON.stringify({proactive:true})]);
   await db.query("UPDATE bots SET revision=2 WHERE id='bot-0'");
@@ -281,7 +281,7 @@ test('accepted task result flows back, completes the goal and leaves no polling 
   assert.equal(view.goals[0].status,'completed');assert.equal(view.settings.state,'sleeping');
   assert.equal(view.usage.used_tokens,1200);assert.equal(view.usage.reserved_tokens,0);assert.equal(coordinator.active,undefined);
   assert.equal(view.cycles[0].reason,'handoff_executed');
-  assert.equal(await db.query('SELECT count(*)::int AS n FROM autonomy_wakes WHERE bot_id=$1',['bot-0']).then((r:any)=>r[0].n),0,'event-driven design arms no polling wake after terminal work');
+  assert.equal(await db.query("SELECT count(*)::int AS n FROM autonomy_wakes WHERE bot_id=$1 AND reason<>'activity'",['bot-0']).then((r:any)=>r[0].n),0,'terminal handoff leaves no task retry wake; periodic activity has its own wake');
   // A new supervisor reads durable state only; the completed goal is not re-run.
   const next=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
    if(op==='policy'||op==='snapshot')return{};
@@ -641,7 +641,7 @@ test('two due handoffs execute in one event chain without re-executing the first
   assert.deepEqual(executed.sort(),goals,'both due handoffs ran in bounded succession');
   const view=await coordinator.repo.view('tenant','bot-0');
   assert.equal(view.actions.length,2);assert.equal(view.goals.every((g:any)=>g.status==='completed'),true);
-  assert.equal((await db.query("SELECT count(*)::int AS n FROM autonomy_wakes WHERE bot_id='bot-0'"))[0].n,0,'no polling wake survives settled work');
+  assert.equal((await db.query("SELECT count(*)::int AS n FROM autonomy_wakes WHERE bot_id='bot-0' AND reason<>'activity'"))[0].n,0,'no polling wake survives settled work');
  }finally{await coordinator.stop();await db.close()}
 });
 

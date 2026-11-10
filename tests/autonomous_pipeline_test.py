@@ -70,6 +70,9 @@ async def main():
                 if len(research_requests)==1:return LLMResponse(role='assistant',tools_call_name=['inspect_context'],tools_call_args=[{}],tools_call_ids=['read-1'],usage=TokenUsage(input_other=50,output=10))
                 return LLMResponse(role='assistant',completion_text=json.dumps({'status':'completed','summary':'inspected actual companion context','unfinished':[]}),usage=TokenUsage(input_other=50,output=10))
             message_requests.append(kwargs)
+            if mode=='activity':
+                if len(message_requests)==1:return LLMResponse(role='assistant',tools_call_name=['rest_until_next_activity','continue_background_task'],tools_call_args=[{'seconds':600},{'objective':'继续核对已有研究结果','delay_seconds':300}],tools_call_ids=['rest-choice','next-step'],usage=TokenUsage(input_other=50,output=10))
+                return LLMResponse(role='assistant',completion_text='今天先休息；后续步骤仍待平台确认。',usage=TokenUsage(input_other=50,output=10))
             return LLMResponse(role='assistant',completion_text='第一条[QQ_BREAK]第二条' if bubbles==2 else '[QQ_BREAK]'.join('消息'+str(i+1) for i in range(bubbles)),usage=TokenUsage(input_other=50,output=10))
     bot=CQHttp()
     async def protocol(action,**params):
@@ -97,6 +100,22 @@ async def main():
         identity={k:v for k,v in policy.items() if k in ('tenantId','botId','epoch','generation','revision','cycleId')};identity.update(id=action_id,principal='autonomous-service',capabilities=['contact_owner'],expiresAt=time.time()*1000+30000,budget={'modelCalls':4,'toolCalls':3,'tokens':24000,'seconds':10,'externalActions':4})
         return policy,identity,st
     try:
+        mode='activity';p,w,st=setup('activity');calls.clear();message_requests.clear()
+        p['config'].update(activityEnabled=True,maxSleepSeconds=86400)
+        result=await brain.execute('qq',{'work':w,'action':{'kind':'research','target':'','objective':'自主活动','autonomousMoment':True}})
+        assert result['status']=='completed' and result['restSeconds']==600,result
+        assert len(message_requests)==2 and not calls,result
+        assert not st.model_journals and st.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0]==0,'service work polluted QQ 35-round history'
+        handoff=st.pipeline.pending_handoffs(1)[0]
+        assert handoff['parentActionId']==w['id'] and handoff['eventId']==w['id'] and handoff['senderId']=='0' and handoff['scope']=='self',handoff
+        assert handoff['kind']=='research' and handoff['origin']=='model',handoff
+        assert any('自主活动时刻' in str(r) for r in message_requests),'activity tail absent in actual SDK request'
+        assert all('本次最终结果严格遵循任务的JSON合同' not in str(r) for r in message_requests)
+        assert st.pipeline.internal_result(w['id'])['result']['autonomousMoment'] is True
+        try:await brain.execute('qq',{'work':w,'action':{'kind':'research','target':'','objective':'自主活动','autonomousMoment':True}})
+        except ValueError:pass
+        assert len(message_requests)==2,'duplicate activation called provider again'
+        print('PIPELINE activity actual native SDK tool loop, rest, durable service handoff, duplicate fence and QQ counter isolation passed')
         mode='wrapped_text';p,w,st=setup('wrapped-output');calls.clear()
         result=await brain.execute('qq',{'work':w,'action':{'kind':'message','target':'private:12345678','objective':'reply naturally'}})
         assert result['status']=='completed' and len(calls)==2,result

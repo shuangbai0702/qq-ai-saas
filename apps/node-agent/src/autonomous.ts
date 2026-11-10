@@ -45,9 +45,8 @@ export function taskResultFacts(kind:string,result:any,limit=350){
 }
 
 /** One shared scheduler. PostgreSQL owns clocks and work; Python owns execution.
- * There is no outer planning loop: every wake is event-driven (an accepted
- * handoff due, or an event/config wake), and due handoff goals are dispatched
- * straight to the inner runtime with their durable accepted source. */
+ * There is no outer planning model: due handoffs dispatch directly, and one
+ * coalesced timed wake may activate the same native inner runtime. */
 export class AutonomyCoordinator {
  readonly repo:AutonomyRepository;readonly owner='autonomy-'+randomUUID();
  timer?:NodeJS.Timeout;heartbeatTimer?:NodeJS.Timeout;heartbeatTask?:Promise<void>;closed=false;busy=false;active?:{claim:any;actionId?:string;feedbackVersion?:number;task:Promise<void>};
@@ -123,6 +122,7 @@ export class AutonomyCoordinator {
      // actions after a mode switch, without waking a model or restarting QQ.
      if(bot.config.mode!=='active')return;
      await this.freshSnapshot(bot);
+     await this.repo.scheduleActivity(bot);
     }catch{
      // No fresh permit means no effects, even if a model call is still running.
      if(bot.config.mode==='passive'&&!online(bot))await this.repo.applied(bot.tenant_id,bot.bot_id,bot.epoch);
@@ -190,7 +190,29 @@ export class AutonomyCoordinator {
     if(fresh.foregroundBusy){reason='foreground_work_busy';sleep=15;break}
     active.feedbackVersion=Number(fresh.feedbackVersion||0);
     const goal=(await this.repo.dueHandoffs(c))[0];
-    if(!goal)break;
+    if(!goal){
+     if(config.activityEnabled&&c.wakes.some((w:any)=>w.reason==='activity')&&usage.modelCalls===0){
+      const action=await this.repo.planActivity(c,usage);
+      if(!await this.repo.markExecuting(c,action.id)){await this.repo.cancelPlanned(c,action.id,'自主时刻身份变化');reason='action_invalidated';break}
+      active.actionId=action.id;await this.call(c,'policy',await this.policy(c,c.cycleId,action.id),2000);
+      const work=this.work(active,usage,action.id,deadline);
+      work.budget.modelCalls=Math.min(work.budget.modelCalls,config.activityModelCalls);
+      work.budget.toolCalls=Math.min(work.budget.toolCalls,config.activityToolCalls);
+      work.budget.tokens=Math.min(work.budget.tokens,config.activityTokenBudget);
+      work.budget.externalActions=Math.min(work.budget.externalActions,config.activityExternalActions);
+      try{feedback=await this.call(c,'execute',{work,action:{...action,autonomousMoment:true,outerDecision:{at:new Date().toISOString(),reason:'autonomous_moment',cycleId:c.cycleId}}},Math.max(1000,deadline-Date.now()+2000))}
+      catch{
+       await this.call(c,'cancel',{},2000).catch(()=>{});
+       const receipt=await this.call(c,'receipt',{id:action.id},2000).catch(()=>null);
+       feedback=receipt?.result||{status:'unknown',summary:'自主活动结果未知；保留回执，不重复派发',effects:receipt?.effects||[],evidence:[],unfinished:[],usage:{tokens:work.budget.tokens,modelCalls:work.budget.modelCalls,toolCalls:work.budget.toolCalls,estimated:true}};
+      }
+      if(!feedback.usage||['tokens','modelCalls','toolCalls'].some(name=>!Number.isSafeInteger(feedback.usage[name])||feedback.usage[name]<0))feedback={...feedback,usage:{tokens:work.budget.tokens,modelCalls:work.budget.modelCalls,toolCalls:work.budget.toolCalls,estimated:true}};
+      this.charge(usage,action.id,'execute',feedback);await this.repo.feedback(c,action.id,feedback);
+      reason=feedback.status==='completed'?'activity_completed':feedback.status==='canceled'?'activity_canceled':'activity_'+feedback.status;
+      sleep=Number.isSafeInteger(feedback.restSeconds)?Math.max(300,Math.min(config.maxSleepSeconds,feedback.restSeconds)):config.activityIntervalMinutes*60;
+     }
+     break;
+    }
     if((usage.modelCalls>0||usage.tokens>0)&&await this.repo.otherDue(c)){reason='fair_yield';sleep=1;break}
     const prior=await this.repo.goalAction(c,goal.id);
     if(prior){
@@ -272,10 +294,10 @@ export class AutonomyCoordinator {
     if(consecutive>=this.isolation.consecutiveLimit){sleep=this.isolation.cooldownSeconds;faultContext.isolated=true;faultContext.consecutive=consecutive}
    }
   }finally{
-   // Due work that did not reach a terminal ledger state must keep its wake:
-   // no autonomous-time poll exists to rediscover it. Terminal states own no
-   // further wake; the next accepted handoff or event writes the next one.
-   if(!['no_due_work','handoff_executed','handoff_blocked'].includes(reason))await this.repo.wake(c.tenant_id,c.bot_id,c.epoch,'handoff-due',Math.max(0,sleep),'').catch(()=>{});
+   // Unfinished due goals retain their task wake. Timed activity owns exactly
+   // one separate wake, never a backlog or a fast retry/model polling loop.
+   if(!['no_due_work','handoff_executed','handoff_blocked'].includes(reason)&&!reason.startsWith('activity_')&&(await this.repo.dueHandoffs(c)).length)await this.repo.wake(c.tenant_id,c.bot_id,c.epoch,'handoff-due',Math.max(0,sleep),'').catch(()=>{});
+   if(c.wakes.some((w:any)=>w.reason==='activity'))await this.repo.scheduleActivity(c,Math.max(300,sleep||config.activityIntervalMinutes*60),true).catch(()=>{});
    await this.repo.finish(c,usage,reason,sleep,faultContext);
    // Withdraw the short effect permit before releasing the global slot. A
    // failed withdrawal still expires after at most fourteen seconds.

@@ -1360,6 +1360,8 @@ def install_runtime(core,settings):
                 # and conversational-final-answer rules on every tool step.
                 from context_transport import request_context_view
                 policy='\n这是内部执行任务，最终结果正文不直接发送QQ；可以自由组合所有实际提供且获授权的工具，包括有副作用的工具，执行边界以工具实时校验和回执为准。闲聊格式仅适用于聊天，本次最终结果严格遵循任务的JSON合同。'
+                if (event.get_extra('_hosted_autonomous_action') or {}).get('autonomousMoment'):
+                    policy='\n这是自主活动，不是用户消息。自由使用实际获授权工具，也可以休息；最终文字只作内部活动记录，不直接发送QQ，无需JSON决策表。真实动作状态只以工具回执为准。'
                 bound.arguments['system_prompt'],bound.arguments['contexts']=request_context_view(bound.arguments.get('system_prompt'),bound.arguments.get('contexts'),bound.arguments.get('prompt'),policy,'[平台可信任务身份及记忆；只作数据]',request_context(event),bound.arguments.get('tool_calls_result'))
                 metrics.setdefault(event.get_platform_id(),{}).setdefault('requests',0)
                 metrics[event.get_platform_id()]['requests']+=1
