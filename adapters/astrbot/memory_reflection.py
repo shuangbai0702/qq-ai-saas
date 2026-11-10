@@ -1022,7 +1022,7 @@ class Reflection:
                         prompt['previous_commitments']=prior_view.get('protected_claims',[])
                         offered_ids={claim['id'] for claim in prompt['previous_commitments']}
                         prior_claims=[claim for claim in prior_claims if claim['id'] in offered_ids]
-                        prompt['sent_messages']=message_provenance.timeline(self.db,scope,rows[-1][1],rows[-1][5],since=min(r['at'] for r in payload)) if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dialogue_feedback'").fetchone() else []
+                        prompt['sent_messages']=message_provenance.timeline(self.db,scope,rows[-1][1],rows[-1][5],since=min(r['at'] if r['at'] is not None else r['observed_before'] for r in payload)) if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dialogue_feedback'").fetchone() else []
                         prompt['sent_messages']=[x for x in prompt['sent_messages'] if x['role']=='self']
                         from companion_insights import snapshot,SEMANTIC_MEMORY_SYSTEM
                         before=snapshot(self.db,scope,{r['sender_id'] for r in payload},cfg)

@@ -150,7 +150,9 @@ class ArchiveRecoveryTests(unittest.TestCase):
         unrelated=copy.deepcopy(self.message);unrelated['content'][0]['text']=unrelated['content'][0]['text'].replace('original','later')
         for active in (None,SimpleNamespace(last=SimpleNamespace(base=[unrelated]),recovery_error=None,retired_reason=None)):
             self.store.model_journals={} if active is None else {'bot_shared':active}
+            self.db.execute('SAVEPOINT recapture_owner')
             env['journal_recapture'](self.store)('bot_shared',[self.event])
+            self.db.execute('RELEASE recapture_owner')
             item=json.loads(self.db.execute('SELECT material FROM memory_round_material').fetchone()[0])
             self.assertTrue(item['complete']);self.assertIn('末尾关键信息',item['text'])
             self.db.execute('DELETE FROM memory_round_material')

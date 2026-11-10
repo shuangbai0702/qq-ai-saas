@@ -427,8 +427,12 @@ def install_runtime(core,settings):
             wanted={str(event) for event in events}
             journal=st.model_journals.get(scope)
             if journal is None or journal.last is None or journal.recovery_error or journal.retired_reason:
-                journal=ReadonlyJournal(st.db,scope)
-            messages=[] if journal.last is None or journal.recovery_error or journal.retired_reason else journal.last.base if scope=='bot_shared' else journal.last.wire
+                # Read recovery evidence without constructing a live owner:
+                # initialization runs DDL and can commit the caller's savepoint.
+                from journal_storage import read_snapshot
+                snapshot=read_snapshot(st.db,model_json(scope)) if st.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fishbot_readonly_journals'").fetchone() else None
+                messages=(snapshot.get('base' if scope=='bot_shared' else 'wire',[]) if snapshot else [])
+            else:messages=journal.last.base if scope=='bot_shared' else journal.last.wire
             signatures={}
             for message in messages:
                 origin=source(message)

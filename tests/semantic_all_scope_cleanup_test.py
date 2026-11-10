@@ -94,6 +94,15 @@ class AllScopeCleanup(unittest.TestCase):
             self.assertEqual({tuple(row[:2]) for row in saved['evidence'][table]['rows']},
                              {('bot_shared',self.new),(self.channel,'new'),(self.other,'same-id')},table)
 
+    def test_operator_without_journal_still_retires_exact_evidence(self):
+        self.db.execute('CREATE TABLE fishbot_operator_session_archives(authorization,scope,archive,sha)')
+        archive={'journal':None,'evidence':{table:{'columns':['scope','event','raw'],'rows':list(self.db.execute('SELECT * FROM '+table))} for table in TARGETS}}
+        raw=model_json(archive)
+        self.db.execute('INSERT INTO fishbot_operator_session_archives VALUES(?,?,?,?)',('empty-journal',self.key,raw,hashlib.sha256(raw.encode()).hexdigest()));self.db.commit()
+        with self.db:batch.purge(self.db,1)
+        saved=json.loads(self.db.execute('SELECT archive FROM fishbot_operator_session_archives').fetchone()[0]);self.assertIsNone(saved['journal'])
+        for table in TARGETS:self.assertEqual(len(saved['evidence'][table]['rows']),3)
+
     def test_successful_purge_does_not_commit_the_callers_transaction(self):
         self.assertFalse(self.db.in_transaction)
         batch.purge(self.db,1)
