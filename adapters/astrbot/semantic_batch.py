@@ -268,6 +268,16 @@ def _purge(db,checkpoint_id):
         if scope=='bot_shared':db.execute("UPDATE memory_summaries SET sources='[]'")
         else:db.execute("UPDATE memory_summaries SET sources='[]' WHERE scope=?",(scope,))
     if 'memory_core_notes' in tables:db.execute("UPDATE memory_core_notes SET sources='[]'")
+    if scope=='bot_shared' and 'memory_summary_coverage' in tables:
+        # Old Coverage rows without any remaining hot input are obsolete source
+        # indexes, not semantic memory or a proof needed by whole-batch retirement.
+        for logical,identifier in db.execute('SELECT scope,event FROM memory_summary_coverage').fetchall():
+            channel,event=origin(logical,identifier)
+            identities={(logical,identifier),(channel,event),('bot_shared',model_json([channel,event]))}
+            hot=any(table in tables and any(db.execute('SELECT 1 FROM '+table+' WHERE scope=? AND event=?',pair).fetchone() for pair in identities)
+                    for table in ('memory_rounds','memory_pending','memory_round_material','memory_hold_rounds','pipeline_scope_work'))
+            owned='pipeline_work_inputs' in tables and any(db.execute("SELECT 1 FROM pipeline_work_inputs WHERE scope=? AND event=? AND status='owned'",pair).fetchone() for pair in identities)
+            if not hot and not owned:db.execute('DELETE FROM memory_summary_coverage WHERE scope=? AND event=?',(logical,identifier))
     # Recovery archives obey the same successful exact-batch retirement.
     # They may keep uncompressed evidence and System, never a retired copy.
     import journal_storage
