@@ -1,4 +1,5 @@
-import math,sqlite3,sys,time,unittest
+import math,sqlite3,sys,time,unittest,subprocess
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace as NS
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters'/'astrbot'))
@@ -43,6 +44,29 @@ class Pipeline(unittest.TestCase):
   self.assertEqual(self.db.execute('SELECT status FROM pipeline_events WHERE scope=?',('group:22222',)).fetchone()[0],'unknown')
   allowed=self.bind(group='33333',source={'_hosted_deferred_group':{'event':'101'}});self.assertEqual(allowed.status,'received');self.assertTrue(allowed.observes_input);self.assertTrue(allowed.ledger_owner)
   self.assertEqual(self.db.execute('SELECT status FROM pipeline_events WHERE event=?',('103',)).fetchone()[0],'interrupted')
+ def test_restart_checks_live_owner_without_signalling_and_releases_dead_owner(self):
+  child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+  try:
+   self.db.execute('INSERT INTO pipeline_scope_work(scope,event,subject,runtime,pid) VALUES(?,?,?,?,?)',('group:live','101','12345','old-runtime',child.pid));self.db.commit()
+   with patch('bot_pipeline.os.kill',side_effect=AssertionError('existence check must not signal')):
+    BotPipeline(self.db)
+   self.assertIsNone(child.poll())
+   self.assertEqual(self.db.execute('SELECT pid FROM pipeline_scope_work WHERE scope=?',('group:live',)).fetchone()[0],child.pid)
+   child.terminate();child.wait(5)
+   BotPipeline(self.db)
+   self.assertIsNone(self.db.execute('SELECT pid FROM pipeline_scope_work WHERE scope=?',('group:live',)).fetchone())
+  finally:
+   if child.poll() is None:child.kill();child.wait(5)
+ def test_owner_exits_after_process_lookup_releases_unseen_but_blocks_seen_input(self):
+  self.db.execute('INSERT INTO pipeline_scope_work(scope,event,subject,runtime,pid) VALUES(?,?,?,?,?)',('group:race','101','12345','old-runtime',123456))
+  for event_id,seen in [('unseen',0),('seen',1)]:
+   self.db.execute('INSERT INTO pipeline_work_inputs(scope,event,subject,owner,payload,seen,status,created) VALUES(?,?,?,?,?,?,?,?)',('group:race',event_id,'12345','old-runtime','{}',seen,'owned',time.time()))
+  self.db.commit()
+  with patch('bot_pipeline.psutil.Process',return_value=NS(is_running=lambda:False)):
+   BotPipeline(self.db)
+  self.assertIsNone(self.db.execute('SELECT runtime FROM pipeline_scope_work WHERE scope=?',('group:race',)).fetchone())
+  self.assertEqual(self.db.execute('SELECT status,owner FROM pipeline_work_inputs WHERE event=?',('unseen',)).fetchone(),('pending',None))
+  self.assertEqual(self.db.execute('SELECT status,owner FROM pipeline_work_inputs WHERE event=?',('seen',)).fetchone(),('blocked_unknown',None))
  def test_context_capabilities_preserve_platform_and_peer_ownership(self):
   ctx=ContextBuilder({'sender_id':'12345','owner':False},'real_QQ')
   ctx.contribute('memory',{'state':{'facts':['tea']}})

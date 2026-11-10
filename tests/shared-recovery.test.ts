@@ -25,7 +25,7 @@ test('readiness recovery preserves healthy shared group, including absent member
  f.calls.length=0;f.adapter.request=async()=>({ready:true,generation:3,members:{member:{generation:7,revision:2}}});await f.adapter.recoverReadiness(ctx);assert.deepEqual(f.calls,[],'a member already recovered is not reloaded');
 });
 
-test('unresponsive shared control plane replaces only verified group then delegates all-member restore to existing start',async()=>{
+test('unresponsive shared control plane replaces only verified group then delegates the checked member restore to existing start',async()=>{
  const f=fixture();f.adapter.request=async()=>{throw new Error('fixture timeout')};await f.adapter.recoverReadiness(ctx);
  assert.deepEqual(f.calls,[['stop','group-fixture','ai','shared-readiness-timeout',{pid:123,created:456}],['start']]);
 });

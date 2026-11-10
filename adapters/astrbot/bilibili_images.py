@@ -105,18 +105,30 @@ def tools(settings,event,db,current,identity=None):
             row=db.execute('SELECT url,png FROM bili_image_assets WHERE handle=? AND work=? AND revision=?',(handle,work,revision)).fetchone()
             if not row:return json.dumps({'status':'rejected','code':'image_handle_not_in_work'})
             try:
+                # Avatar PNG keeps its existing contract. The ephemeral model
+                # preview must use downloaded source dimensions, even on reuse.
+                raw=await fetch(row[0])
+                if not current():raise asyncio.CancelledError('stale_image_download')
+                from model_images import constrain_messages,request_memo
+                from PIL import Image
+                import io
+                with Image.open(io.BytesIO(raw)) as source:mime=Image.MIME.get(source.format,'')
+                preview=await constrain_messages([{'role':'tool','content':[{'type':'image_url','image_url':{'url':'data:'+mime+';base64,'+base64.b64encode(raw).decode('ascii')}}]}],request_memo(event))
+                visual=next((p for p in preview[0]['content'] if p.get('type')=='image_url'),None)
+                if visual is None:raise ValueError('model_image_unavailable')
+                model_mime,model_data=visual['image_url']['url'].split(';base64,',1)
+                if not current():raise asyncio.CancelledError('stale_image_decode')
+                live=manifest(settings)
+                if not live or live.get('settingsRevision')!=bridge.get('settingsRevision'):raise asyncio.CancelledError('image_configuration_changed')
                 png=row[1]
                 if not row[1]:
-                    raw=await fetch(row[0])
-                    if not current():raise asyncio.CancelledError('stale_image_download')
-                    live=manifest(settings)
-                    if not live or live.get('settingsRevision')!=bridge.get('settingsRevision'):raise asyncio.CancelledError('image_configuration_changed')
                     from sticker_collection import png_thumbnail
                     png=png_thumbnail(raw,max_bytes=MAX_DOWNLOAD,max_pixels=4194304)
                     if not current():raise asyncio.CancelledError('stale_image_decode')
                     db.execute('UPDATE bili_image_assets SET png=? WHERE handle=? AND work=? AND revision=?',(png,handle,work,revision));prune(db,time.time());db.commit()
                 from mcp.types import CallToolResult,TextContent,ImageContent
-                return CallToolResult(content=[TextContent(type='text',text=json.dumps({'status':'prepared','handle':handle,'meaning':'图片已真实下载并校验，可观察此缩略图，再决定是否将handle交给hosted_qq_avatar；尚未换头像。'},ensure_ascii=False)),ImageContent(type='image',data=base64.b64encode(png).decode('ascii'),mimeType='image/png')])
+                notices=''.join(p.get('text','') for p in preview[0]['content'] if p.get('type')=='text')
+                return CallToolResult(content=[TextContent(type='text',text=json.dumps({'status':'prepared','handle':handle,'meaning':'图片已真实下载并校验，可观察此缩略图，再决定是否将handle交给hosted_qq_avatar；尚未换头像。'+notices},ensure_ascii=False)),ImageContent(type='image',data=model_data,mimeType=model_mime[5:])])
             except asyncio.CancelledError:raise
             except Exception as error:return json.dumps({'status':'rejected','code':'image_prepare_failed','reason':type(error).__name__})
     return [Images(name='hosted_bilibili_image',description='从本轮B站真实搜索、视频详情或UP资料得到的公开封面/头像候选中选图。list列出可信handle；prepare下载并校验一张图片，最多2MiB、最多4百万像素，规范为512像素PNG，缓存1小时。不能下载完整视频或任意地址；prepared不是已更换QQ头像，换头像需调用hosted_qq_avatar并以其回执为准。',parameters={'type':'object','properties':{'operation':{'type':'string','enum':['list','prepare']},'handle':{'type':'string','pattern':'^bi_[a-f0-9]{24}$'}},'required':['operation'],'additionalProperties':False})]

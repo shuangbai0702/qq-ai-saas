@@ -213,7 +213,7 @@ def summary_rows(db,scope,subject='',limit=1000):
 
 
 def summary_item(row,reason=None,db=None):
-    result={'id':row[0],'summary':row[1],'source_events':json.loads(row[2]),'at':row[3],
+    result={'id':row[0],'summary':row[1],'at':row[3],
             'source_scope':row[4],'kind':'conversation_summary_not_verified_facts'}
     if reason:result['recall_reason']=reason
     if db is not None:

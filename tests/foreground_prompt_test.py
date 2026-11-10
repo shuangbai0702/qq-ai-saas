@@ -85,7 +85,8 @@ async def main():
         from astrbot.core.provider.entities import ProviderRequest
         from native_history import LogicalTurnLimiter
         owned=ToolLoopAgentRunner()
-        await owned.reset(provider=NS(provider_config={'id':'fixture','max_context_tokens':100000}),request=ProviderRequest(prompt='fixture',contexts=[]),run_context=ContextWrapper(context=NS(event=event)),tool_executor=NS(),agent_hooks=BaseAgentRunHooks(),enforce_max_turns=30)
+        plugin_context=NS(get_config=lambda **kwargs:{'provider_ltm_settings':{}})
+        await owned.reset(provider=NS(provider_config={'id':'fixture','max_context_tokens':100000}),request=ProviderRequest(prompt='fixture',contexts=[]),run_context=ContextWrapper(context=NS(event=event,context=plugin_context)),tool_executor=NS(),agent_hooks=BaseAgentRunHooks(),enforce_max_turns=30)
         assert isinstance(owned.request_context_manager.truncator,LogicalTurnLimiter)
         assert owned.request_context_manager.config.enforce_max_turns==30 and owned.request_context_manager.config.max_context_tokens==100000
         foreign=ToolLoopAgentRunner()

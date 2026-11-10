@@ -63,16 +63,15 @@ class MemoryPolicy(unittest.TestCase):
     def test_cpu_activity(self):
         s=self.ready();v=self.sample(330);v['cpu']=5
         self.assertEqual(memory.decision(s,v),'waiting-idle')
-    def test_linux_pressure_gate_and_reserve(self):
-        s=self.ready();v=self.sample(330);v['available']=1000*memory.MIB
-        self.assertEqual(memory.decision(s,v),'no-memory-pressure')
-        v['available']=383*memory.MIB;v['at']=331
-        self.assertEqual(memory.decision(s,v),'reserve-protection')
-        v['available']=384*memory.MIB;v['at']=332
-        self.assertEqual(memory.decision(s,v),'reclaim')
-    def test_windows_not_dependent_on_linux_pressure(self):
-        s=self.ready();v=self.sample(330);v.update(platform='win32',available=1000*memory.MIB)
-        self.assertEqual(memory.decision(s,v),'reclaim')
+    def test_shared_pressure_gate_and_reserve_boundaries(self):
+        for platform in ('linux','win32'):
+            with self.subTest(platform=platform):
+                s=self.ready()
+                for at,available,expected in [(330,1000,'no-memory-pressure'),
+                    (331,383,'reserve-protection'),(332,384,'reclaim'),
+                    (333,700,'reclaim'),(334,701,'no-memory-pressure')]:
+                    v=self.sample(at);v.update(platform=platform,available=available*memory.MIB)
+                    self.assertEqual(memory.decision(s,v),expected)
     def test_attempt_cooldown(self):
         s=self.ready();s['nextAllowed']=601
         self.assertEqual(memory.decision(s,self.sample(330)),'cooldown')
@@ -110,9 +109,26 @@ class MemoryPolicy(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             value=dict(at=1,pid=os.getpid(),created=0,active=True)
             (Path(tmp)/'memory-activity.json').write_text(json.dumps(value))
-            self.assertEqual(memory.activity(Path(tmp),2),(1,False))
+            self.assertEqual(memory.activity(Path(tmp),2),(0,False))
+    def test_activity_rejects_bad_time_and_expires_busy_like_linux_controller(self):
+        import psutil
+        with tempfile.TemporaryDirectory() as tmp:
+            created=psutil.Process().create_time();now=created+1000
+            file=Path(tmp)/'memory-activity.json'
+            value=dict(at=now,pid=os.getpid(),created=created,active=True)
+            for invalid in (now+6,created-1,float('nan'),float('inf')):
+                file.write_text(json.dumps({**value,'at':invalid}))
+                self.assertEqual(memory.activity(Path(tmp),now),(0,False))
+            file.write_text(json.dumps({**value,'at':now-119}))
+            self.assertEqual(memory.activity(Path(tmp),now),(now-119,True))
+            file.write_text(json.dumps({**value,'at':now-120}))
+            self.assertEqual(memory.activity(Path(tmp),now),(now-120,False))
+            file.write_text(json.dumps({**value,'created':None}))
+            self.assertEqual(memory.activity(Path(tmp),now),(0,False))
     def test_pid_reuse_refused(self):
         row=dict(pid=os.getpid(),created=0,root=str(ROOT))
+        with self.assertRaises(ValueError):memory.owned(row)
+        row['created']=float('nan')
         with self.assertRaises(ValueError):memory.owned(row)
     def test_linux_missing_swap_falls_back(self):
         with patch.object(memory,'owned'),patch.object(memory.psutil,'swap_memory') as swap:

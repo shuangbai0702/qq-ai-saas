@@ -12,14 +12,22 @@ test('shared native requests held across apply, stop and delete never send stale
  try{
   const auth=await app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(db,2),email:'shared-fence@test.invalid',name:'barrier',password:'shared-fence-123'}});const cookies={fish_session:auth.cookies[0].value};const call=(method:any,url:string,payload?:any)=>app.inject({method,url,payload,cookies});const ids:string[]=[];
   for(let n=0;n<2;n++){const id=(await call('POST','/v1/bots',{name:'barrier'+n,runtimeMode:'shared',protocol:'mock',expectedUin:'9000877'+n,apiKey:'barrier-key-'+n,config:{...defaultConfig,model:'fixture',baseUrl:`http://127.0.0.1:${(server.address()as any).port}/v1`}})).json().id;ids.push(id);await call('POST',`/v1/bots/${id}/actions`,{action:'start',idempotencyKey:'start'})}
-  await wait(async()=>(await db.query('SELECT * FROM bots')).every(b=>b.health?.ai?.ready&&b.health?.protocol?.ready),'ready');
+  await wait(async()=>(await db.query('SELECT * FROM bots')).every(b=>b.health?.protocol?.ready),'protocol ready without SDK slot');
+  assert.equal((await db.query('SELECT * FROM group_members')).length,0,'offline accounts occupy no SDK slots');
   const contexts=await Promise.all(ids.map(async id=>agent.context((await db.query('SELECT * FROM bots WHERE id=$1',[id]))[0])));const mock=agent.protocols.mock as MockProtocolAdapter;
-  const connect=async(n:number)=>{await mock.call(contexts[n],'/transition',{state:'online',uin:contexts[n].expectedUin});await wait(async()=>!!(await mock.call(contexts[n],'/state')as any).connected,'connected')};await connect(0);await connect(1);
+  const connect=async(n:number)=>{await mock.call(contexts[n],'/transition',{state:'online',uin:contexts[n].expectedUin});agent.lastHealth=0;await wait(async()=>!!(await mock.call(contexts[n],'/state')as any).connected,'connected')};await connect(0);await connect(1);
   const actions=async(n:number)=>(await mock.call(contexts[n],'/messages')as any[]).filter(m=>m.action.startsWith('send_'));
   await mock.call(contexts[0],'/message',{text:'HOLD apply'});await wait(async()=>!!hold,'held model');const old=(await call('GET','/v1/bots/'+ids[0])).json();
   const saved=await call('PUT',`/v1/bots/${ids[0]}/config`,{name:'updated',expectedRevision:old.bot.revision,expectedUin:old.bot.expected_uin,config:{...old.config,systemPrompt:'新配置'},apiKey:'barrier-key-updated'});assert.equal(saved.statusCode,200,saved.body);
   await wait(async()=>(await call('GET','/v1/bots/'+ids[0])).json().bot.applied_revision===2,'applied config');reply(hold!);hold=undefined;await connect(0);await sleep(300);assert.equal((await actions(0)).length,0,'old model response after apply');
   await mock.call(contexts[1],'/message',{text:'peer remains healthy'});await wait(async()=>(await actions(1)).length>0,'peer response');
+  const beforeOffline=(await actions(0)).length;
+  await mock.call(contexts[0],'/message',{text:'HOLD offline'});await wait(async()=>!!hold,'held before offline');
+  await mock.call(contexts[0],'/transition',{state:'waiting_scan'});agent.lastHealth=0;
+  await wait(async()=>(await db.query('SELECT group_id FROM bots WHERE id=$1',[ids[0]]))[0].group_id===null,'offline member unloaded without waiting for protocol eviction');
+  assert.equal((await db.query('SELECT * FROM group_members')).length,1,'peer remains loaded');
+  reply(hold!);hold=undefined;await connect(0);await sleep(300);
+  assert.equal((await actions(0)).length,beforeOffline,'late offline model result cannot send after reloading the same generation');
   await mock.call(contexts[0],'/message',{text:'HOLD stop'});await wait(async()=>!!hold,'held before stop');await call('POST',`/v1/bots/${ids[0]}/actions`,{action:'stop',idempotencyKey:'stop'});
   await wait(async()=>(await call('GET','/v1/bots/'+ids[0])).json().bot.observed_state==='stopped','stop ack');reply(hold!);hold=undefined;
   await call('POST',`/v1/bots/${ids[0]}/actions`,{action:'start',idempotencyKey:'resume'});await wait(async()=>(await call('GET','/v1/bots/'+ids[0])).json().bot.health?.ai?.ready,'resume');await connect(0);

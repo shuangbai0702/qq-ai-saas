@@ -24,6 +24,17 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
   return manage(self.store.db,{'action':'list_stickers'})['items']
  async def test_marked_image_enters_inbox_not_reply_candidates(self):
   items=await self.collect();self.assertEqual(len(items),1);self.assertEqual(items[0]['status'],'pending');self.assertFalse(self.c.catalog('group:12345'))
+ async def test_caption_uses_original_image_not_asset_thumbnail(self):
+  from PIL import Image
+  import base64
+  from types import SimpleNamespace as NS
+  out=io.BytesIO();Image.new('RGB',(1024,600),'red').save(out,format='PNG');original=out.getvalue()
+  async def fetch(url):return original
+  item=(await self.collect(fetch=fetch))[0];captured=[]
+  async def caption(**kwargs):captured.append(kwargs);return NS(completion_text='{"suitable":false}')
+  data=self.store.db.execute('SELECT png FROM sticker_inbox WHERE id=?',(item['id'],)).fetchone()[0]
+  await self.c._caption_and_apply(item['id'],'group:12345',data,NS(text_chat=caption),lambda:True,self.metrics)
+  self.assertEqual(base64.b64decode(captured[0]['image_urls'][0].split(',',1)[1]),original)
  async def test_approval_scoped_and_removal_blocks_same_content(self):
   item=(await self.collect())[0];body={'action':'review_sticker','id':item['id'],'expectedVersion':1,'status':'approved','meaning':'轻松开玩笑'}
   self.assertTrue(manage(self.store.db,body)['ok']);self.assertEqual(manage(self.store.db,body)['status'],409)
