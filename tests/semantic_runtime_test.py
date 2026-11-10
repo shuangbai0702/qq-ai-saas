@@ -195,4 +195,28 @@ class RuntimeTests(unittest.TestCase):
         asyncio.run(self.manager.db.update_conversation(cid='own',content=self.base))
         with closing(sqlite3.connect(path)) as db, db:self.assertNotIn('original old',db.execute("SELECT content FROM conversations WHERE conversation_id='own'").fetchone()[0])
 
+    def test_admin_legacy_reset_clears_native_copies_but_keeps_canonical_new_batch_and_other_bot(self):
+        path=self.native();finish_semantic_batches(self.st,{},SCOPE)
+        self.st.shared_context=True
+        self.st.db.execute("INSERT INTO memory_semantic_batches VALUES(2,'bot_shared','shared',?,100,'retired',0,0)",(model_json([event_key('bot_shared',model_json([SCOPE,'old']))]),))
+        self.st.db.execute('CREATE TABLE memory_semantic_discard_audit(checkpoint_id,administrator,request_id)')
+        self.st.db.execute("INSERT INTO memory_semantic_discard_audit VALUES(2,'admin','request')");self.st.db.commit()
+        canonical=copy.deepcopy(self.st.model_journals[SCOPE].last.wire)
+        with closing(sqlite3.connect(path)) as db,db:
+            db.execute('CREATE TABLE platform_message_history(platform_id,created_at,content)')
+            db.executemany('INSERT INTO platform_message_history VALUES(?,?,?)',[('tenant','1970-01-01 00:00:50','old'),('tenant','1970-01-01 00:03:00','new'),('other','1970-01-01 00:00:50','foreign')])
+        result=clean_native_history(self.manager,'tenant',self.st,reset_legacy=True)
+        self.assertTrue(result['legacyReset']);self.assertEqual(result['historyRows'],1)
+        with closing(sqlite3.connect(path)) as db:
+            own=db.execute("SELECT content FROM conversations WHERE conversation_id='own'").fetchone()[0]
+            self.assertNotIn('original',own);self.assertIn('original old',db.execute("SELECT content FROM conversations WHERE conversation_id='other'").fetchone()[0])
+            self.assertEqual(list(db.execute('SELECT content FROM platform_message_history ORDER BY content')),[('foreign',),('new',)])
+        self.assertEqual(self.st.model_journals[SCOPE].last.wire,canonical)
+
+    def test_reset_flag_without_admin_grant_keeps_unprocessed_native_content(self):
+        path=self.native();finish_semantic_batches(self.st,{},SCOPE)
+        result=clean_native_history(self.manager,'tenant',self.st,reset_legacy=True)
+        self.assertFalse(result['legacyReset'])
+        with closing(sqlite3.connect(path)) as db:self.assertIn('original new',db.execute("SELECT content FROM conversations WHERE conversation_id='own'").fetchone()[0])
+
 if __name__=='__main__':unittest.main()

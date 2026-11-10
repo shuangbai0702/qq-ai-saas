@@ -170,13 +170,13 @@ def finish_semantic_batches(st,cfg,scope):
     result['media']=semantic_media.drain(st.db)
     native=getattr(st,'semantic_native',None)
     if native:
-        try:result['native']=clean_native_history(native[0],native[1],st)
+        try:result['native']=clean_native_history(native[0],native[1],st,reset_legacy=bool(result['retired']))
         except (OSError,sqlite3.Error,ValueError,TypeError) as error:result['native']={'result':'pending','reason':type(error).__name__}
     st.semantic_retirement_status=result
     return result
 
 
-def clean_native_history(manager,platform_id,st,cid=None):
+def clean_native_history(manager,platform_id,st,cid=None,*,reset_legacy=False):
     """Update the pinned SDK's actual SQLite rows under one short write lock."""
     path=getattr(getattr(manager,'db',None),'db_path',None)
     if not path or not Path(path).is_file():return {'result':'unavailable','reason':'native_sqlite_not_configured'}
@@ -184,11 +184,22 @@ def clean_native_history(manager,platform_id,st,cid=None):
     for scope,members in st.db.execute("SELECT scope,members FROM memory_semantic_batches WHERE state='retired'"):
         permits.append({'scope':scope,'semanticBatch':True,'batchMembers':json.loads(members)})
     if not permits:return {'result':'clean','conversations':0}
-    changed=0
+    grant=None
+    tables={r[0] for r in st.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if reset_legacy and getattr(st,'shared_context',False) and 'memory_semantic_discard_audit' in tables:
+        grant=st.db.execute("SELECT max(b.cutoff) FROM memory_semantic_batches b JOIN memory_semantic_discard_audit a ON a.checkpoint_id=b.checkpoint_id WHERE b.scope='bot_shared' AND b.state='retired' AND length(a.administrator)>0 AND length(a.request_id)>0").fetchone()[0]
+    if grant is not None:
+        # This is a derived SDK cache reset at a committed shared-Journal
+        # cutover, not deletion of the authoritative new-batch Journal. Never
+        # race an active tool chain or a request staged against that cache.
+        if _journals_busy(st):return {'result':'pending','reason':'native_journal_busy'}
+        if 'pipeline_scope_work' in tables and st.db.execute('SELECT 1 FROM pipeline_scope_work').fetchone():return {'result':'pending','reason':'native_work_active'}
+        if 'pipeline_work_inputs' in tables and st.db.execute("SELECT 1 FROM pipeline_work_inputs WHERE status='owned'").fetchone():return {'result':'pending','reason':'native_input_owned'}
+    changed=0;logged=0
     with closing(sqlite3.connect(Path(path).resolve().as_uri()+'?mode=rw',uri=True,timeout=0.1)) as native, native:
         columns={r[1] for r in native.execute('PRAGMA table_info(conversations)')}
         if not {'conversation_id','platform_id','content','token_usage'}<=columns:return {'result':'unavailable','reason':'native_schema_mismatch'}
-        native.execute('BEGIN IMMEDIATE')
+        native.execute('PRAGMA secure_delete=ON');native.execute('BEGIN IMMEDIATE')
         query='SELECT conversation_id,content FROM conversations WHERE platform_id=?';args=[platform_id]
         if cid is not None:query+=' AND conversation_id=?';args.append(cid)
         for identifier,raw in native.execute(query,args).fetchall():
@@ -197,6 +208,7 @@ def clean_native_history(manager,platform_id,st,cid=None):
             if not isinstance(history,list):raise ValueError('native_history_shape')
             projected=history
             for permit in permits:projected=semantic_retire_projection(projected,permit)
+            if grant is not None:projected=[m for m in projected if m.get('role') in ('system','developer')]
             if projected!=history:
                 # SDK copies of readonly snapshots are disposable at a legal
                 # checkpoint; the new canonical Journal owns the fresh view.
@@ -205,7 +217,14 @@ def clean_native_history(manager,platform_id,st,cid=None):
                 from context_foundation import FOUNDATION_CURRENT
                 projected=[m for m in projected if not (m.get('role')=='user' and isinstance(m.get('content'),str) and m['content'].startswith((READONLY_CURRENT+'\n',EVENT_CONTEXT_CURRENT+'\n',FOUNDATION_CURRENT+'\n')))]
                 native.execute('UPDATE conversations SET content=?,token_usage=0 WHERE conversation_id=? AND platform_id=?',(model_json(projected),identifier,platform_id));changed+=1
-    return {'result':'clean','conversations':changed}
+        if grant is not None:
+            columns={r[1] for r in native.execute('PRAGMA table_info(platform_message_history)')}
+            if {'platform_id','created_at'}<=columns:
+                # Pinned SDK TimestampMixin writes naive UTC, not local time.
+                from datetime import datetime,timezone
+                before=datetime.fromtimestamp(grant,timezone.utc).replace(tzinfo=None).isoformat(sep=' ')
+                logged=native.execute('DELETE FROM platform_message_history WHERE platform_id=? AND created_at<=?',(platform_id,before)).rowcount
+    return {'result':'clean','conversations':changed,'legacyReset':grant is not None,'historyRows':logged}
 
 
 def install_native_retirement_guard(manager,stores,settings):
