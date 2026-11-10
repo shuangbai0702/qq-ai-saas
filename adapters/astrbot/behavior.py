@@ -1998,7 +1998,14 @@ def install_runtime(core,settings):
                 work.status='received';work.reason=''
                 await asyncio.sleep(0)
             return result
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as error:
+            # Provider completion can precede cancellation in a tool or later
+            # pipeline await. Record the actual safe raise site independently
+            # of the already-settled model attempt; never infer who cancelled.
+            from model_cache import record_execution_error
+            owned_event=event.get_extra('_hosted_pipeline_selected_event') or event
+            work=owned_event.get_extra('_hosted_pipeline')
+            record_execution_error(lease,error,phase='pipeline_cancelled',work_id=getattr(work,'event_id',None))
             bot_pipeline.stop(event,'cancelled');raise
         except Exception as error:
             # Bounded raise-site evidence for outer execution failures (R0):
