@@ -24,6 +24,65 @@ def permit(db,checkpoint_id):
     return {'semanticBatch':True,'batchDigest':row[0],'batchMembers':json.loads(row[1]),'batchCutoff':row[2]} if row else {}
 
 
+def discard_failed_service_inputs(db,scope):
+    """Remove proven unsubmitted internal control inputs, never chat material.
+
+    The caller owns the transaction. Missing or conflicting evidence protects
+    the row; no material, round, checkpoint or delivery ledger is fabricated.
+    """
+    from context_protocol import source
+    tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    required={'memory_pending','memory_message_sources','pipeline_events','memory_rounds',
+              'memory_round_material','pipeline_scope_work','pipeline_work_inputs'}
+    if not required<=tables:return 0
+    removed=0
+    for event,subject,question,answer in db.execute('SELECT event,subject,question,answer FROM memory_pending WHERE scope=?',(scope,)).fetchall():
+        if answer:continue
+        origin_source=source({'role':'user','content':question})
+        channel,identifier=origin(scope,event)
+        if not origin_source or origin_source.get('kind')!='platform_service_not_user' or any(
+            str(origin_source.get(key,''))!=str(value) for key,value in
+            (('scope',channel),('event_id',identifier),('sender_id',subject))):continue
+        shared=model_json([channel,identifier]);identities={(channel,identifier),('bot_shared',shared)}
+        if (scope,str(event)) not in identities:continue
+        # The service input speaks as the bot; the owner-contact Work is
+        # addressed to the contact. Those principals need not be identical.
+        ledgers=db.execute('SELECT source,status,attempted,confirmed FROM pipeline_events WHERE scope=? AND event=?',(channel,identifier)).fetchall()
+        if ledgers!=[('owner_contact','error',0,0)]:continue
+        bindings=db.execute("SELECT data FROM memory_message_sources WHERE scope=? AND event=? AND direction='model'",(scope,event)).fetchall()
+        if len(bindings)!=1:continue
+        try:binding=json.loads(bindings[0][0])
+        except (TypeError,ValueError):continue
+        if not isinstance(binding,dict) or 'input_digest' in binding or binding.get('outputs')!=[]:continue
+        if any(str(binding.get(key,''))!=str(value) for key,value in
+               (('source_scope',channel),('event_id',identifier),('sender_id',subject))):continue
+        settlement=binding.get('settlement')
+        if not isinstance(settlement,dict) or settlement.get('status')!='error' or any(
+            type(settlement.get(key)) is not int or settlement[key]!=0
+            for key in ('planned','attempted','confirmed','confirmed_messages')):continue
+        protected=False
+        for logical,key in identities:
+            for other_binding, in db.execute("SELECT data FROM memory_message_sources WHERE scope=? AND event=? AND direction='model'",(logical,key)):
+                try:
+                    if json.loads(other_binding)!=binding:protected=True
+                except (TypeError,ValueError):protected=True
+            for table in ('memory_rounds','memory_round_material','memory_pending_rounds','memory_hold_rounds','pipeline_scope_work'):
+                if table in tables and db.execute('SELECT 1 FROM '+table+' WHERE scope=? AND event=?',(logical,key)).fetchone():protected=True
+            if db.execute("SELECT 1 FROM pipeline_work_inputs WHERE scope=? AND event=? AND status='owned'",(logical,key)).fetchone():protected=True
+            # A real input at either identity must never be removed along with
+            # a service duplicate that happens to reuse its transport key.
+            for other_subject,other_question,other_answer in db.execute('SELECT subject,question,answer FROM memory_pending WHERE scope=? AND event=?',(logical,key)):
+                other=source({'role':'user','content':other_question})
+                if other_answer or str(other_subject)!=str(subject) or not other or other.get('kind')!='platform_service_not_user' or any(
+                    str(other.get(field,''))!=str(value) for field,value in
+                    (('scope',channel),('event_id',identifier),('sender_id',subject))):protected=True
+        if protected:continue
+        for logical,key in identities:
+            removed+=db.execute('DELETE FROM memory_pending WHERE scope=? AND event=?',(logical,key)).rowcount
+            db.execute("DELETE FROM memory_message_sources WHERE scope=? AND event=? AND direction IN ('model','incoming')",(logical,key))
+    return removed
+
+
 def load(db,scope,payload):
     """Complete exact material, all images in the SAME summary model request."""
     from summary_material import valid_material
