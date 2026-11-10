@@ -57,6 +57,22 @@ def system_head(messages):
     while head<len(messages) and isinstance(messages[head],dict) and messages[head].get('role') in ('system','developer'):head+=1
     return head
 
+def semantic_retire_projection(messages,permit):
+    """Remove exact batch member blocks; never infer membership from time."""
+    if not permit or permit.get('semanticBatch') is not True:return copy.deepcopy(messages)
+    from semantic_batch import event_key
+    members=set(permit.get('batchMembers',[]));scope=permit.get('scope')
+    if not isinstance(scope,str) or not members:raise ContextPrefixViolation('semantic_batch_members_missing')
+    result=[];dropping=False
+    for message in messages:
+        if isinstance(message,dict) and message.get('role')=='user':
+            origin=source(message)
+            event=model_json([origin['scope'],str(origin['event_id'])]) if origin and scope=='bot_shared' else str(origin['event_id']) if origin else None
+            dropping=bool(origin and (scope=='bot_shared' or origin['scope']==scope) and event_key(scope,event) in members)
+        if not dropping or isinstance(message,dict) and message.get('role') in ('system','developer'):
+            result.append(copy.deepcopy(message))
+    return result
+
 def tail_extension(old_base,new_messages):
     """Extend the committed non-System tail exactly; System bytes defer.
 
@@ -424,6 +440,9 @@ class ReadonlyJournal:
                 row=self.db.execute('SELECT data FROM fishbot_readonly_journal_blobs WHERE scope=? AND sha=?',(self.scope_key,digest)).fetchone()
                 if row is not None and row[0]!=raw:raise ValueError('journal_blob_integrity')
             blob_total=self.db.execute('SELECT coalesce(sum(length(data)),0) FROM fishbot_readonly_journal_blobs').fetchone()[0]
+            if consume_permit and prepared.reconstruction_permit.get('semanticBatch'):
+                blob_total-=journal_storage.prune_unreferenced_blobs(self.db,self.scope_key,
+                    replacement=(journal_storage.VERSION,payload),dry_run=True)
             new_blobs=[(digest,raw) for digest,raw in blobs.items() if not self.db.execute('SELECT 1 FROM fishbot_readonly_journal_blobs WHERE scope=? AND sha=?',(self.scope_key,digest)).fetchone()]
             existing=self.db.execute('SELECT length(cast(payload AS BLOB)) FROM fishbot_readonly_journals WHERE scope=?',(self.scope_key,)).fetchone()
             used=self.db.execute("SELECT coalesce(sum(length(cast(payload AS BLOB))),0),sum(state='ready') FROM fishbot_readonly_journals WHERE state IN ('ready','retired')").fetchone()
@@ -432,7 +451,7 @@ class ReadonlyJournal:
             # unavailable tombstone already exists; distinguish that from no row.
             next_total=used[0]-((existing[0] or 0) if existing is not None else 0)+len(encoded)+blob_total+sum(len(raw) for _,raw in new_blobs)
             archive_overflow=False;archive_required=False
-            if consume_permit and prepared.reconstruction_permit.get('kind')=='summary_checkpoint':
+            if consume_permit and prepared.reconstruction_permit.get('kind')=='summary_checkpoint' and not prepared.reconstruction_permit.get('semanticBatch'):
                 has_exceptions=self.db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_retirement_exceptions'").fetchone()
                 if has_exceptions and self.last:
                     def event_ids(messages):
@@ -492,18 +511,26 @@ class ReadonlyJournal:
                 def events(messages):
                     return {model_json([o['scope'],str(o['event_id'])]) for m in messages if (o:=source(m))}
                 before=events(self.last.base) if self.last else set();after=events(prepared.base)
+                semantic=prepared.reconstruction_permit.get('semanticBatch') is True
                 self.db.execute('INSERT INTO memory_checkpoint_retirements VALUES(?,?,?,?,?,?,?,?)',
                     (prepared.reconstruction_permit['id'],json.loads(self.scope_key),prepared.reconstruction_permit['requestId'],
-                     model_json(sorted(before-after)),model_json(sorted(before&after)),
+                     model_json({'batchDigest':prepared.reconstruction_permit['batchDigest'],'count':len(before-after)}) if semantic else model_json(sorted(before-after)),
+                     model_json({'count':len(before&after)}) if semantic else model_json(sorted(before&after)),
                      hashlib.sha256(model_json(self.last.wire if self.last else []).encode()).hexdigest(),
                      hashlib.sha256(model_json(prepared.wire).encode()).hexdigest(),time.time()))
-                if 'memory_retirement_exceptions' in tables:
+                if not semantic and 'memory_retirement_exceptions' in tables:
                     for event in before-after:
                         changed=self.db.execute("UPDATE memory_retirement_exceptions SET state='retired' WHERE scope=? AND event=? AND checkpoint_id<=? AND state='offered'",(json.loads(self.scope_key),event,prepared.reconstruction_permit['id'])).rowcount
                         if changed:self.db.execute('DELETE FROM memory_hold_rounds WHERE scope=? AND event=?',(json.loads(self.scope_key),event))
                 prepared.reconstruction_authority.checkpoint_issue(json.loads(self.scope_key),prepared.reconstruction_permit['id'],'retirement',
                     {'retired_events':len(before-after),'retained_events':len(before&after),'result':'partial' if before&after and before-after else 'no_history_retired' if not before-after else 'retired',
-                     'retirement_evidence':'memory_checkpoint_retirements','request_id':prepared.reconstruction_permit['requestId']},resolved=not bool(before&after))
+                     'retirement_evidence':'memory_checkpoint_retirements','request_id':prepared.reconstruction_permit['requestId']},resolved=semantic or not bool(before&after))
+                if semantic:
+                    if 'memory_semantic_batches' in tables:
+                        changed=self.db.execute("UPDATE memory_semantic_batches SET state='retired',completed=? WHERE checkpoint_id=? AND scope=? AND digest=? AND state IN ('committed','retired')",
+                            (time.time(),prepared.reconstruction_permit['id'],json.loads(self.scope_key),prepared.reconstruction_permit['batchDigest'])).rowcount
+                        if changed!=1:raise ContextPrefixViolation('semantic_batch_commit_changed')
+                    journal_storage.prune_unreferenced_blobs(self.db,self.scope_key)
             if model_origin is not None:
                 from message_provenance import bind_model_output
                 bind_model_output(self.db,json.loads(self.scope_key),*model_origin,prepared.base,len(prepared.base)-1)
@@ -562,6 +589,18 @@ class ReadonlyJournal:
         return authority.reserve_context_reconstruction(scope,request_id,summary_ids=summary_ids)
 
     def _validate_partial_retirement(self,permit,authority,scope,old,base):
+        if permit and permit.get('semanticBatch'):
+            retained=semantic_retire_projection(old.base,permit) if old else []
+            # A semantic checkpoint retires its batch only; all other native
+            # blocks remain exact, including unfinished/unknown Work.
+            cursor=system_head(base)
+            for message in retained[system_head(retained):]:
+                while cursor<len(base) and model_json(base[cursor])!=model_json(message):cursor+=1
+                if cursor==len(base):
+                    authority.settle_context_reconstruction(permit,False)
+                    raise ContextPrefixViolation('semantic_checkpoint_retained_material_missing')
+                cursor+=1
+            return
         if not permit or not (permit.get('partialRetirement') or scope=='bot_shared' and permit.get('kind')=='summary_checkpoint'):return
         from summary_material import project_history,coverage
         proofs={e:p for e,p in coverage(self.db,scope).items() if (p.get('version')==3 or not permit.get('partialRetirement') and p.get('version')!=4) or p.get('version')==4 and 0<p.get('policy_checkpoint',0)<=permit.get('id',0)}
@@ -593,6 +632,19 @@ class ReadonlyJournal:
                 unprojected=None,coverage_view=None):
         from context_transport import READONLY_FIELDS,EVENT_CONTEXT_CURRENT
         now=time.time() if now is None else now
+        # SDK native windows can rehydrate a retired batch after restart.
+        # Content-free membership tombstones fence that resurrection before
+        # native-prefix comparison; no Coverage or timestamp inference.
+        if self.db is not None and self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_semantic_batches'").fetchone():
+            scope=reconstruction_scope or json.loads(self.scope_key)
+            members=set()
+            for raw, in self.db.execute("SELECT members FROM memory_semantic_batches WHERE scope=? AND state='retired'",(scope,)):
+                members.update(json.loads(raw))
+            if members:
+                retired={'semanticBatch':True,'scope':scope,'batchMembers':sorted(members)}
+                messages=semantic_retire_projection(messages,retired)
+                if isinstance(unprojected,list):unprojected=semantic_retire_projection(unprojected,retired)
+                if isinstance(coverage_view,list):coverage_view=semantic_retire_projection(coverage_view,retired)
         found=[];malformed=False
         for i,m in enumerate(messages):
             if not isinstance(m,dict):
@@ -819,6 +871,9 @@ class ReadonlyJournal:
                 else:raise ContextReconstructionDenied('A full request-history reconstruction is not authorized by a successful 35-round summary checkpoint.')
             else:
                 reuse=False
+        if reconstruction_permit and reconstruction_permit.get('semanticBatch'):
+            base=semantic_retire_projection(base,reconstruction_permit)
+            messages=semantic_retire_projection(messages,reconstruction_permit)
         if reuse:
             from context_foundation import freeze,execution_view
             state=execution_view(freeze(state,old.state))
@@ -864,6 +919,9 @@ class ReadonlyJournal:
             if reconstruction_permit is None and guarded:
                 raise ContextCapacityExceeded('The append-only request journal reached its configured capacity before an authorized 35-round reconstruction checkpoint.')
             from context_foundation import arrange
+            if reconstruction_permit and reconstruction_permit.get('semanticBatch'):
+                base=semantic_retire_projection(base,reconstruction_permit)
+                messages=semantic_retire_projection(messages,reconstruction_permit)
             wire=arrange(messages,state);reason='history_size_boundary';reuse=False
             usage=history_usage(wire);base_chars=usage['textChars'];detail=history_boundary(usage['textChars'],base_chars,usage['wireChars'],growth_limit=False)
             if detail:
@@ -880,6 +938,37 @@ class ReadonlyJournal:
         stored_authority=copy.deepcopy(event_packet) if event_packets else authority
         return Prepared(self.serial,stamp,base,wire,copy.deepcopy(state),turns,now,reason,group_turn,base_chars,detail,usage,stored_authority,retirement,reconstruction_permit,reconstruction_authority,None,retirement_deferred,False)
 
+    def retire_semantic_batch(self,permit,authority,state,retirement=None,event_authority=None):
+        """Immediately rebuild a settled Journal from a committed summary.
+
+        The owner supplies freshly assembled state, never the old readonly
+        packet. An in-flight staged candidate must settle before this call.
+        This records no provider submission and no external delivery receipt.
+        """
+        if not permit or permit.get('semanticBatch') is not True:raise ValueError('semantic_batch_permit_required')
+        if self.last is None or self._staged is not None or self.recovery_error or self.retired_reason:return False
+        if self.db is None or getattr(authority,'db',None) is not self.db:return False
+        if permit.get('scope')!=json.loads(self.scope_key):raise ContextPrefixViolation('semantic_batch_scope_changed')
+        from context_foundation import arrange,execution_view
+        base=semantic_retire_projection(self.last.base,permit)
+        state=execution_view(copy.deepcopy(state))
+        messages=base+([copy.deepcopy(event_authority)] if event_authority is not None else [])
+        wire=arrange(messages,state);usage=history_usage(wire)
+        if history_boundary(usage['textChars'],usage['textChars'],usage['wireChars'],growth_limit=False):return False
+        self.serial+=1
+        stored_authority=copy.deepcopy(event_authority)
+        if stored_authority is None and self.last.authority is not None:
+            # Keep only the transport contract's presence. The retired event's
+            # sender/ID packet must not survive, and the next real event may
+            # append its own current authority without earning another permit.
+            from context_transport import EVENT_CONTEXT_CURRENT
+            stored_authority={'role':'user','content':EVENT_CONTEXT_CURRENT+'\n'+model_json({
+                'authority':{},'policy':{},'currentGuidance':'','meaning':'已完成语义检查点；下一真实平台事件提供当前身份与现场。'})}
+        candidate=Prepared(self.serial,self.last.stamp,base,wire,state,1,time.time(),'semantic_batch_retirement',
+            None,usage['textChars'],'',usage,stored_authority,retirement,permit,authority)
+        if not self.stage_candidate(candidate):return False
+        return self._accept_staged(candidate)
+
     def commit(self,prepared):
         if prepared.serial!=self.serial:
             self._settle(prepared,False);return False
@@ -890,7 +979,8 @@ class ReadonlyJournal:
         if self._accept_staged(prepared):return True
         atomic=bool(prepared.reconstruction_permit and not prepared.reconstruction_consumed and self.db is not None and getattr(prepared.reconstruction_authority,'db',None) is self.db)
         if prepared.reconstruction_permit and not prepared.reconstruction_consumed and not atomic and not self._settle(prepared,True):return False
-        if not self._persist(prepared,'ready',settle_permit=atomic):
+        semantic=bool(atomic and prepared.reconstruction_permit.get('semanticBatch'))
+        if not self._persist(prepared,'ready',settle_permit=atomic and not semantic,consume_permit=semantic):
             if atomic:self._settle(prepared,False)
             self.last=prepared;self.retired_reason='persistence_unavailable';self._staged=None;return False
         self.last=prepared;self.retired_reason='';self.recovery_error=None;self._staged=None;return True
@@ -933,7 +1023,8 @@ class ReadonlyJournal:
         if self._accept_staged(prepared):return True
         atomic=bool(prepared.reconstruction_permit and not prepared.reconstruction_consumed and self.db is not None and getattr(prepared.reconstruction_authority,'db',None) is self.db)
         if prepared.reconstruction_permit and not prepared.reconstruction_consumed and not atomic and not self._settle(prepared,True):return False
-        if not self._persist(prepared,'ready',settle_permit=atomic):
+        semantic=bool(atomic and prepared.reconstruction_permit.get('semanticBatch'))
+        if not self._persist(prepared,'ready',settle_permit=atomic and not semantic,consume_permit=semantic):
             if atomic:self._settle(prepared,True)
             # Persistence failed: keep the candidate in memory so the next
             # request still extends the possibly-received wire, and say so.

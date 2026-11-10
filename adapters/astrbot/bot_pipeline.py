@@ -122,6 +122,7 @@ def conversation_context(store,cfg,scope,subject,query,now,state=None):
     """Read the existing compressed and pending memory; never copy its storage."""
     from memory_scope import pending_messages
     from message_provenance import timeline
+    from semantic_runtime import filter_retired_context
     enabled=cfg.get('memory',True)
     state=dict(state or {})
     # Ordinary memory belongs to a checkpoint foundation, not query-selected
@@ -135,12 +136,12 @@ def conversation_context(store,cfg,scope,subject,query,now,state=None):
         from memory_reflection import CORE_NOTE_POLICY
         # The canonical shared Journal already contains the real channel
         # messages. Do not reinject person-selected copies or SDK round views.
-        return {'persona_core_note':{'guidance':CORE_NOTE_POLICY,**store.reflection.core_note('bot_shared',subject,owner=str(cfg.get('ownerUin') or ''))},
+        return filter_retired_context(store,scope,{'persona_core_note':{'guidance':CORE_NOTE_POLICY,**store.reflection.core_note('bot_shared',subject,owner=str(cfg.get('ownerUin') or ''))},
                 'memory_foundation':foundation,'state':state,'dialogue':delivery_context(store.db,store.model_journals.get(JOURNAL_SCOPE)),'autonomous_experience':experience_context(store,scope,cfg),
                 'group_round_history':[],'conversation_timeline':[],'recent_messages':[],
                 'recent_cross_session_messages':[],'ambient_group_messages':[],
                 'active_agreements':agreement_state.context_view(store.db,scope,owner=str(cfg.get('ownerUin') or '')) if enabled else [],
-                'cross_scope_guidance':CROSS_SCOPE_GUIDANCE}
+                'cross_scope_guidance':CROSS_SCOPE_GUIDANCE})
     dialogue=store.participation.context(scope,now=now,cfg=cfg)
     if not enabled:dialogue['feedback']=[]
     chronological=timeline(store.db,scope,subject,now) if enabled else []
@@ -157,14 +158,14 @@ def conversation_context(store,cfg,scope,subject,query,now,state=None):
     # current, bounded state projection — never as raw private chat text.
     import agreement_state
     agreements=agreement_state.context_view(store.db,scope,owner=str(cfg.get('ownerUin') or '')) if enabled else []
-    return {'memory_foundation':foundation,'persona_core_note':core,'state':state,'dialogue':dialogue,'autonomous_experience':experience_context(store,scope,cfg),
+    return filter_retired_context(store,scope,{'memory_foundation':foundation,'persona_core_note':core,'state':state,'dialogue':dialogue,'autonomous_experience':experience_context(store,scope,cfg),
             'group_round_history':store.reflection.group_context(scope) if enabled else [],
             'conversation_timeline':chronological,
             'active_agreements':agreements,
             'recent_messages':[item for item in pending if item['source_event'] not in covered],
             'recent_cross_session_messages':pending_messages(store.db,scope,subject,now,people=people,owner=owner) if enabled else [],
             'cross_scope_guidance':CROSS_SCOPE_GUIDANCE,
-            'ambient_group_messages':[item for item in ambient if (item['sender_id'],item['text']) not in observed]}
+            'ambient_group_messages':[item for item in ambient if (item['sender_id'],item['text']) not in observed]})
 
 
 def finish_memory_view(store,shared,cfg,scope,query):

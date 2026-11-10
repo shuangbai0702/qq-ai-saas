@@ -1,0 +1,197 @@
+"""Finish committed semantic checkpoints without waiting for another message."""
+import copy,json,sqlite3,time,uuid
+from dataclasses import replace
+from contextlib import closing
+from pathlib import Path
+from types import SimpleNamespace
+import semantic_batch
+from context_protocol import model_json
+from readonly_journal import ReadonlyJournal,semantic_retire_projection
+
+
+def _retired_members(db):
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_semantic_batches'").fetchone():return {}
+    result={}
+    for scope,raw in db.execute("SELECT scope,members FROM memory_semantic_batches WHERE state='retired'"):
+        result.setdefault(scope,set()).update(json.loads(raw))
+    return result
+
+
+def _retired_row(row,default_scope,members,event_field=None):
+    if not isinstance(row,dict):return False
+    event=row.get(event_field) if event_field else row.get('source_event',row.get('event_id'))
+    if event is None:return False
+    scope=row.get('source_scope',row.get('sourceScope',row.get('scope',default_scope)))
+    if semantic_batch.event_key(scope,event) in members.get(scope,set()):return True
+    shared_event=str(event) if scope=='bot_shared' else model_json([scope,str(event)])
+    return semantic_batch.event_key('bot_shared',shared_event) in members.get('bot_shared',set())
+
+
+def filter_retired_context(st,scope,value):
+    """Filter hot transcript windows only; derived semantic products survive."""
+    members=_retired_members(st.db)
+    if not members:return value
+    result=dict(value)
+    for field in ('recent_messages','recent_cross_session_messages','conversation_timeline','ambient_group_messages'):
+        if isinstance(result.get(field),list):result[field]=[row for row in result[field] if not _retired_row(row,scope,members)]
+    if isinstance(result.get('dialogue'),dict):
+        result['dialogue']=dict(result['dialogue'])
+        for field in ('recent_own_turns','feedback','deliveries'):
+            if isinstance(result['dialogue'].get(field),list):result['dialogue'][field]=[row for row in result['dialogue'][field] if not _retired_row(row,scope,members)]
+    if isinstance(result.get('group_round_history'),list):
+        rounds=[]
+        for original in result['group_round_history']:
+            row=dict(original);origin=row.get('source_scope',scope)
+            row['messages']=[message for message in row.get('messages',[]) if not _retired_row(message,origin,members)]
+            if _retired_row(row,scope,members,'round_event'):
+                if not row['messages']:continue
+                row['round_event']=None;row['reply']=None
+            rounds.append(row)
+        result['group_round_history']=rounds
+    return result
+
+
+def _prune_hot_memory(st):
+    members=_retired_members(st.db)
+    ambient=getattr(getattr(st,'ambient',None),'scopes',{})
+    for scope,rows in list(ambient.items()):
+        kept=[row for row in rows if not _retired_row(row,scope,members)]
+        rows.clear();rows.extend(kept)
+        if not rows:ambient.pop(scope,None)
+    for scope,state in getattr(getattr(st,'participation',None),'scopes',{}).items():
+        if isinstance(state.get('turns'),list):state['turns']=[row for row in state['turns'] if not _retired_row(row,scope,members)]
+
+
+def _execution_current(previous):
+    value=previous.get('execution_experience')
+    if isinstance(value,dict) and value.get('basis')=='memory_foundation.execution_experience':
+        from decision_history import apply_changes
+        value=apply_changes(previous.get('memory_foundation',{}).get('execution_experience',{}),value.get('changes',[]))
+    return copy.deepcopy(value)
+
+
+def _fresh_state(st,cfg,scope,checkpoint,journal):
+    """Read a post-retirement view, rolling back the temporary SQL preview."""
+    import bot_pipeline,execution_memory
+    subject=scope[8:] if scope.startswith('private:') else str(cfg.get('ownerUin') or '0')
+    st.db.execute('SAVEPOINT semantic_state_preview')
+    previous=st.model_journals.get(scope)
+    try:
+        st.db.execute("UPDATE memory_semantic_batches SET state='retired' WHERE checkpoint_id=?",(checkpoint,))
+        semantic_batch.purge(st.db,checkpoint)
+        permit={**semantic_batch.permit(st.db,checkpoint),'scope':scope}
+        st.model_journals[scope]=SimpleNamespace(last=replace(journal.last,base=semantic_retire_projection(journal.last.base,permit)))
+        shared=bot_pipeline.conversation_context(st,cfg,scope,subject,'',time.time())
+        bot_pipeline.finish_memory_view(st,shared,cfg,scope,'')
+        # Never use the old Journal fallback for summaries at a legal cutover.
+        from memory_reflection import summary_foundation
+        shared['memory_foundation']['conversation_summaries']=summary_foundation(st.db,scope,str(cfg.get('ownerUin') or ''))
+        execution=_execution_current(journal.last.state)
+        if execution is not None:shared['execution_experience']=execution_memory.context_projection(execution,shared['memory_foundation'])
+        return copy.deepcopy(filter_retired_context(st,scope,shared))
+    finally:
+        if previous is None:st.model_journals.pop(scope,None)
+        else:st.model_journals[scope]=previous
+        st.db.execute('ROLLBACK TO semantic_state_preview');st.db.execute('RELEASE semantic_state_preview')
+
+
+def _issue(st,scope,checkpoint,reason,resolved=False):
+    with st.db:st.reflection.checkpoint_issue(scope,checkpoint,'semantic_retirement',{'result':reason},resolved=resolved)
+
+
+def finish_semantic_batches(st,cfg,scope):
+    """Synchronous owner callback: reserve, replace, purge, retry safely."""
+    if st.db.in_transaction:return {'result':'transaction_busy'}
+    semantic_batch.initialize(st.db)
+    rows=st.db.execute('''SELECT b.checkpoint_id,b.state,c.state,c.summary_id FROM memory_semantic_batches b
+      JOIN memory_reconstruction_checkpoints c ON c.id=b.checkpoint_id WHERE b.scope=? ORDER BY b.checkpoint_id''',(scope,)).fetchall()
+    result={'retired':0,'pending':0}
+    for checkpoint,batch_state,checkpoint_state,summary_id in rows:
+        if batch_state=='retired':
+            with st.db:semantic_batch.purge(st.db,checkpoint)
+            continue
+        if checkpoint_state!='available':result['pending']+=1;continue
+        journal=st.model_journals.get(scope)
+        if journal is None:
+            journal=ReadonlyJournal(st.db,scope)
+            if journal.last is not None:st.model_journals[scope]=journal
+        if journal.last is None or journal._staged is not None or journal.recovery_error or journal.retired_reason:
+            _issue(st,scope,checkpoint,'journal_busy_or_unavailable');result['pending']+=1;continue
+        permit=None
+        try:
+            state=_fresh_state(st,cfg,scope,checkpoint,journal)
+            permit=st.reflection.reserve_context_reconstruction(scope,'semantic-retire:'+uuid.uuid4().hex,summary_ids=[summary_id],checkpoint_id=checkpoint)
+            if not permit or permit.get('id')!=checkpoint or not permit.get('semanticBatch'):
+                if permit:st.reflection.settle_context_reconstruction(permit,False)
+                _issue(st,scope,checkpoint,'checkpoint_not_reservable');result['pending']+=1;continue
+            if not journal.retire_semantic_batch(permit,st.reflection,state,retirement=st.reflection.reconstruction_stamp(scope)):
+                st.reflection.settle_context_reconstruction(permit,False)
+                _issue(st,scope,checkpoint,'journal_replace_refused');result['pending']+=1;continue
+            with st.db:semantic_batch.purge(st.db,checkpoint)
+            _issue(st,scope,checkpoint,'retired',resolved=True);result['retired']+=1
+        except Exception as error:
+            # No HTTP exists on this path. Refund only a still-reserved permit;
+            # consumed permits remain bound to their durable replacement.
+            if permit:
+                row=st.db.execute('SELECT state FROM memory_reconstruction_checkpoints WHERE id=?',(permit['id'],)).fetchone()
+                if row and row[0]=='reserved':st.reflection.settle_context_reconstruction(permit,False)
+            _issue(st,scope,checkpoint,'error:'+type(error).__name__);result['pending']+=1
+    import semantic_media
+    _prune_hot_memory(st)
+    result['media']=semantic_media.drain(st.db)
+    native=getattr(st,'semantic_native',None)
+    if native:
+        try:result['native']=clean_native_history(native[0],native[1],st)
+        except (OSError,sqlite3.Error,ValueError,TypeError) as error:result['native']={'result':'pending','reason':type(error).__name__}
+    st.semantic_retirement_status=result
+    return result
+
+
+def clean_native_history(manager,platform_id,st,cid=None):
+    """Update the pinned SDK's actual SQLite rows under one short write lock."""
+    path=getattr(getattr(manager,'db',None),'db_path',None)
+    if not path or not Path(path).is_file():return {'result':'unavailable','reason':'native_sqlite_not_configured'}
+    permits=[]
+    for scope,members in st.db.execute("SELECT scope,members FROM memory_semantic_batches WHERE state='retired'"):
+        permits.append({'scope':scope,'semanticBatch':True,'batchMembers':json.loads(members)})
+    if not permits:return {'result':'clean','conversations':0}
+    changed=0
+    with closing(sqlite3.connect(Path(path).resolve().as_uri()+'?mode=rw',uri=True,timeout=0.1)) as native, native:
+        columns={r[1] for r in native.execute('PRAGMA table_info(conversations)')}
+        if not {'conversation_id','platform_id','content','token_usage'}<=columns:return {'result':'unavailable','reason':'native_schema_mismatch'}
+        native.execute('BEGIN IMMEDIATE')
+        query='SELECT conversation_id,content FROM conversations WHERE platform_id=?';args=[platform_id]
+        if cid is not None:query+=' AND conversation_id=?';args.append(cid)
+        for identifier,raw in native.execute(query,args).fetchall():
+            if raw is None:continue
+            history=json.loads(raw)
+            if not isinstance(history,list):raise ValueError('native_history_shape')
+            projected=history
+            for permit in permits:projected=semantic_retire_projection(projected,permit)
+            if projected!=history:
+                # SDK copies of readonly snapshots are disposable at a legal
+                # checkpoint; the new canonical Journal owns the fresh view.
+                from context_protocol import READONLY_CURRENT
+                from context_transport import EVENT_CONTEXT_CURRENT
+                from context_foundation import FOUNDATION_CURRENT
+                projected=[m for m in projected if not (m.get('role')=='user' and isinstance(m.get('content'),str) and m['content'].startswith((READONLY_CURRENT+'\n',EVENT_CONTEXT_CURRENT+'\n',FOUNDATION_CURRENT+'\n')))]
+                native.execute('UPDATE conversations SET content=?,token_usage=0 WHERE conversation_id=? AND platform_id=?',(model_json(projected),identifier,platform_id));changed+=1
+    return {'result':'clean','conversations':changed}
+
+
+def install_native_retirement_guard(manager,stores,settings):
+    """A late SDK save is cleaned after its actual asynchronous DB commit."""
+    db=getattr(manager,'db',None)
+    if db is None or not hasattr(db,'update_conversation') or getattr(db,'_semantic_retirement_guard',False):return
+    original=db.update_conversation
+    async def update(*args,**kwargs):
+        value=await original(*args,**kwargs)
+        platform=getattr(value,'platform_id',None)
+        st=stores.get(platform);setting=settings.get(platform)
+        if manager.db is db and st is not None and setting is not None and not getattr(st.reflection,'closed',False):
+            try:
+                clean_native_history(manager,platform,st,getattr(value,'conversation_id',None))
+            except (OSError,sqlite3.Error,ValueError,TypeError) as error:
+                st.semantic_native_status={'result':'pending','reason':type(error).__name__}
+        return value
+    db.update_conversation=update;db._semantic_retirement_guard=True

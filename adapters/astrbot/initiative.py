@@ -26,12 +26,15 @@ def initialize(db):
     db.execute('CREATE TABLE IF NOT EXISTS initiative_pauses(scope TEXT PRIMARY KEY,until REAL)')
     db.execute('CREATE TABLE IF NOT EXISTS initiative_schedule(scope TEXT PRIMARY KEY,anchor REAL,minimum INTEGER,maximum INTEGER,due REAL)')
     db.executescript('''CREATE TABLE IF NOT EXISTS contacts(scope TEXT PRIMARY KEY,subject TEXT,self_id TEXT,last_user REAL,last_bot REAL DEFAULT 0,last_attempt REAL DEFAULT 0,unanswered INTEGER DEFAULT 0,opted_out INTEGER DEFAULT 0,last_text TEXT DEFAULT '',last_output TEXT DEFAULT '');''')
+    columns={r[1] for r in db.execute('PRAGMA table_info(contacts)')}
+    for column in ('last_user_event','last_bot_event'):
+        if column not in columns:db.execute('ALTER TABLE contacts ADD COLUMN '+column+' TEXT')
 
-def incoming(db,scope,subject,self_id,text,now,directed=True):
+def incoming(db,scope,subject,self_id,text,now,directed=True,*,event=None):
     # Chat is evidence for the existing model calls. A quoted refusal, goodbye
     # or a bystander's wording cannot permanently disable an entire session.
     # opted_out is retained for explicit operator controls and legacy review.
-    db.execute('INSERT INTO contacts(scope,subject,self_id,last_user,last_text,opted_out) VALUES(?,?,?,?,?,0) ON CONFLICT(scope) DO UPDATE SET subject=excluded.subject,self_id=excluded.self_id,last_user=excluded.last_user,last_text=excluded.last_text,unanswered=CASE WHEN ? THEN 0 ELSE contacts.unanswered END',(scope,subject,self_id,now,text[:500],int(directed)))
+    db.execute('INSERT INTO contacts(scope,subject,self_id,last_user,last_text,last_user_event,opted_out) VALUES(?,?,?,?,?,?,0) ON CONFLICT(scope) DO UPDATE SET subject=excluded.subject,self_id=excluded.self_id,last_user=excluded.last_user,last_text=excluded.last_text,last_user_event=excluded.last_user_event,unanswered=CASE WHEN ? THEN 0 ELSE contacts.unanswered END',(scope,subject,self_id,now,text[:500],str(event) if event is not None else None,int(directed)))
     if directed:
         db.execute('DELETE FROM initiative_pauses WHERE scope=?',(scope,))
     db.execute('DELETE FROM initiative_pauses WHERE until<=?',(now,))
@@ -41,8 +44,8 @@ def paused(db,scope,now):
     row=db.execute('SELECT until FROM initiative_pauses WHERE scope=?',(scope,)).fetchone()
     return bool(row and row[0]>now)
 
-def outgoing(db,scope,text,now):
-    db.execute('UPDATE contacts SET last_bot=?,last_output=? WHERE scope=?',(now,text[:500],scope));db.commit()
+def outgoing(db,scope,text,now,*,event=None):
+    db.execute('UPDATE contacts SET last_bot=?,last_output=?,last_bot_event=? WHERE scope=?',(now,text[:500],str(event) if event is not None else None,scope));db.commit()
 
 def sweep_reason(db,cfg,now):
     """Transparent reason for a proactive sweep that produced nothing (D7.1).

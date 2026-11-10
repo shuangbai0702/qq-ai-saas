@@ -1,4 +1,4 @@
-"""Bounded model-only image copies. QQ media and persistent originals stay intact."""
+"""Bounded model copies with trusted ownership records for batch originals."""
 import asyncio,base64,io,json,os,re,tempfile,warnings
 from pathlib import Path
 
@@ -48,7 +48,17 @@ def install_sdk_preparation():
                 with Image.open(io.BytesIO(raw)) as image:mime=Image.MIME.get(image.format,'')
                 value='data:'+mime+';base64,'+base64.b64encode(raw).decode('ascii');details={}
                 limited=await _limited(value,details)
-                original_path=str(source.path);source.detach()
+                original_path=str(source.path)
+                # Only resolver-owned cleanup paths grant deletion authority.
+                # Borrowed local files, persistent stickers and path notices do
+                # not. Stage identity evidence on this event; BehaviorStore
+                # binds it to actual captured model material before submission.
+                from semantic_media import owned_record
+                from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
+                originals=list(event.get_extra('_hosted_media_originals') or [])
+                originals.extend(owned_record(file,get_astrbot_temp_path(),[value,limited]) for file in source.cleanup_paths)
+                event.set_extra('_hosted_media_originals',originals)
+                source.detach()
             # The SDK owns returned working files through its existing event
             # tracker. No background write can outlive publication/cancellation.
             output_dir=Path(output_dir);output_dir.mkdir(parents=True,exist_ok=True)

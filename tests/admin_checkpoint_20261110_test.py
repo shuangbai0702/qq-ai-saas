@@ -22,8 +22,8 @@ class AdminCheckpoint(unittest.IsolatedAsyncioTestCase):
         return NS(completion_text='持续记忆' if '最多1500' in kw['system_prompt'] else json.dumps({'summary':'真实经历'}))
     def record(self,start,count):
         for i in range(start,start+count):
-            event=str(i);m=material.snapshots([message(event)],'bot_shared')
-            self.r.record('bot_shared','12345678',event,'看这个','已回复',materials=m)
+            event=str(i);m=material.snapshots([message(event),{'role':'assistant','content':'已回复'}],'bot_shared')
+            self.r.record('bot_shared','12345678',m[0]['event'],'看这个','已回复',materials=m)
     async def force(self):
         result=self.r.force_compress_once(allow_partial=True,administrator='admin-1',request_id='maintenance-'+str(len(self.calls)))
         self.assertTrue(result['started'],result);return await self.r.task
@@ -60,7 +60,10 @@ class AdminCheckpoint(unittest.IsolatedAsyncioTestCase):
         self.record(0,70);await self.force();await asyncio.sleep(0)
         self.assertEqual(len(self.calls),1)
         self.assertEqual(self.db.execute('SELECT round_count FROM memory_reconstruction_checkpoints').fetchall(),[(35,)])
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
+        # No Journal replacement callback is installed in this fixture. The
+        # first batch must stay on disk until replacement actually succeeds.
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],70)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds WHERE id>(SELECT summary_watermark FROM memory_reflection_progress WHERE scope=?)',('bot_shared',)).fetchone()[0],35)
     async def test_third_small_rollup_preserves_partial_authorization(self):
         for i in range(3):self.db.execute("INSERT INTO memory_summaries(scope,text,sources,updated) VALUES('private:99999','其他私聊','[]',0)")
         self.db.commit()
