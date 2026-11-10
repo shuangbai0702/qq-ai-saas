@@ -170,8 +170,14 @@ def finish_semantic_batches(st,cfg,scope):
     result['media']=semantic_media.drain(st.db)
     native=getattr(st,'semantic_native',None)
     if native:
-        try:result['native']=clean_native_history(native[0],native[1],st,reset_legacy=bool(result['retired']))
+        legacy=None
+        if st.db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_semantic_discard_audit'").fetchone():
+            legacy=st.db.execute("SELECT b.checkpoint_id FROM memory_semantic_batches b JOIN memory_semantic_discard_audit a ON a.checkpoint_id=b.checkpoint_id WHERE b.scope='bot_shared' AND b.state='retired' ORDER BY b.cutoff DESC LIMIT 1").fetchone()
+            if legacy and st.db.execute("SELECT 1 FROM memory_checkpoint_issues WHERE scope='bot_shared' AND checkpoint_id=? AND kind='native_legacy_cleanup' AND status='resolved'",(legacy[0],)).fetchone():legacy=None
+        try:result['native']=clean_native_history(native[0],native[1],st,reset_legacy=bool(legacy))
         except (OSError,sqlite3.Error,ValueError,TypeError) as error:result['native']={'result':'pending','reason':type(error).__name__}
+        if legacy:
+            with st.db:st.reflection.checkpoint_issue('bot_shared',legacy[0],'native_legacy_cleanup',result['native'],resolved=result['native'].get('result')=='clean')
     st.semantic_retirement_status=result
     return result
 
