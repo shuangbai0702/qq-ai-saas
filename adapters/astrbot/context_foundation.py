@@ -65,6 +65,20 @@ def freeze(state,previous):
     return result
 
 
+def execution_view(state):
+    """Lossless display overlay against the actual checkpoint-owned basis."""
+    foundation=state.get('memory_foundation')
+    if not isinstance(foundation,dict) or 'execution_experience' not in foundation or 'execution_experience' not in state:return state
+    from decision_history import changes,apply_changes
+    basis=foundation['execution_experience'];current=state['execution_experience']
+    operations=changes(basis,current)
+    if apply_changes(basis,operations)!=current:raise ValueError('execution_projection_mismatch')
+    result=copy.deepcopy(state)
+    result['execution_experience']={'basis':'memory_foundation.execution_experience','changes':operations,
+        'meaning':'当前执行经历以上述固定基础为底，按顺序应用本项changes中的set/remove；每次从基础重新应用，不累计旧changes。空changes表示与基础相同。'}
+    return result
+
+
 def live_companion(value):
     """Open conversational matters remain immediate; mood is not an authority."""
     if not isinstance(value,dict):return value
@@ -85,6 +99,7 @@ def arrange(messages,state):
         if message.get('role')=='user' and isinstance(content,str) and content.startswith(READONLY_CURRENT+'\n'):
             import json
             data=json.loads(content.split('\n',1)[1]);data.pop('memory_foundation',None)
+            if 'execution_experience' in state and 'execution_experience' in data:data['execution_experience']=copy.deepcopy(state['execution_experience'])
             message['content']=READONLY_CURRENT+'\n'+model_json(data)
     summaries=foundation.get('conversation_summaries',[])
     big=[row for row in summaries if row.get('level')=='big']
