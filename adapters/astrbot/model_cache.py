@@ -33,7 +33,7 @@ def loaded_build():
     """One startup attestation of loaded functions, not merely files on disk."""
     import marshal,sys,types
     rows={}
-    for name,function in (('context_transport','request_context_view'),('model_cache','begin_attempt'),
+    for name,function in (('context_transport','request_context_view'),('model_egress','GuardedTransport.handle_async_request'),('model_cache','begin_attempt'),
                           ('qq_actions','execute'),('tool_outcome','project'),('bot_pipeline','operation_source'),
                           ('decision_history','AppendHistory.prepare'),('behavior','install_runtime'),
                             ('autonomous_runtime','AutonomousRuntime.snapshot'),('readonly_journal','ReadonlyJournal.prepare'),
@@ -41,7 +41,7 @@ def loaded_build():
                             ('tool_outcome','structured'),('group_freshness','response_coverage'),
                             ('memory_scope','pending_messages'),('memory_scope','retained_context_visible'),
                             ('agreement_state','context_view'),('bot_pipeline','conversation_context'),
-                            ('memory_reflection','Reflection.recent'),('shared_context','compose'),
+                            ('memory_reflection','Reflection.recent'),('memory_reflection','Reflection.retry'),('summary_material','register_nonround_images'),('shared_context','compose'),
                             ('shared_context','Writer.acquire'),('readonly_journal','ReadonlyJournal.append_completion')):
         module=sys.modules.get(name);target=module
         for part in function.split('.'):target=getattr(target,part,None)
@@ -90,7 +90,7 @@ def _record_diagnostic(lease, record):
              # boundary; without these entries the fields were silently dropped
              # and "observed" coverage was overstated (E package audit).
              'layoutVersion','journalScopeKind','committedPrefixMessages','committedPrefixSha','permitKind','candidateAppendChars',
-             'logicalWorkId','activationId','userPrefixChars','userChars','referenceChars','referenceSha','userPrefixKnown','mediaStatus','imageId','endpointSha')
+             'logicalWorkId','activationId','userPrefixChars','userChars','referenceChars','referenceSha','userPrefixKnown','mediaStatus','imageId','endpointSha','readTimeoutSeconds','poolTimeoutSeconds','writeTimeoutSeconds','connectTimeoutSeconds')
     row={key:value for key,value in record.items() if key in allowed and (value is None or type(value) in (str,int,float,bool))}
     # A long diagnostic must not erase the request's identity and outcome.
     # These fields contain only program metadata; never serialize exceptions.

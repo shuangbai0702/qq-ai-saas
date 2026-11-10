@@ -204,7 +204,7 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         async def chat(**kw):
             data=json.loads(kw['prompt']);calls.append(data)
             if 'images' in data:return NS(completion_text=json.dumps({'images':[{'id':r['id'],'observation':'红茶图片，无法判断人物身份'} for r in data['images']]}))
-            return NS(completion_text=json.dumps({'summary':'图中有红茶，引用来自其他人。'}))
+            return NS(completion_text=json.dumps({'summary':'图中有红茶，引用来自其他人。','retire_media_events':[r['event'] for r in data['observed_requests']]}))
         self.start(chat);await self.drain()
         self.assertEqual(len(calls),2);self.assertEqual(len(calls[0]['images']),1)
         self.assertEqual(len(material.coverage(self.db,SCOPE)),35)

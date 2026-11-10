@@ -7,6 +7,17 @@ from context_transport import decision_request,memory_context_view
 import autonomy_test as fixture
 
 
+def logical(request):
+    result={}
+    def merge(target, value):
+        for key,item in value.items():
+            if isinstance(item,dict) and isinstance(target.get(key),dict):merge(target[key],item)
+            else:target[key]=item
+    for message in request.get('contexts',[]):merge(result,json.loads(message['content']))
+    merge(result,json.loads(request['prompt']))
+    return result
+
+
 def resolve(data,pointer):
     for part in pointer.lstrip('/').split('/'):
         part=part.replace('~1','/').replace('~0','~')
@@ -19,13 +30,14 @@ class AuxiliaryView(unittest.TestCase):
         payload={'memory':{'facts':[{'text':'first person'}],
                    'memory_foundation':{'conversation_summaries':[{'summary':'stable history'}]}},
                  'current_time':'first'}
-        first=decision_request(payload,'review',reference_first=True)['prompt']
+        first=decision_request(payload,'review',reference_first=True)
         changed=copy.deepcopy(payload);changed['memory']['facts']=[{'text':'another person'}];changed['current_time']='later'
-        second=decision_request(changed,'review',reference_first=True)['prompt']
-        self.assertLess(first.index('memory_foundation'),first.index('facts'))
-        self.assertEqual(first[:first.index('facts')],second[:second.index('facts')])
-        self.assertIn('another person',second)
-        self.assertIn('later',second)
+        second=decision_request(changed,'review',reference_first=True)
+        self.assertEqual(first['contexts'],second['contexts'])
+        self.assertIn('stable history',first['contexts'][0]['content'])
+        self.assertNotIn('facts',first['contexts'][0]['content'])
+        self.assertIn('another person',second['prompt'])
+        self.assertIn('later',second['prompt'])
 
     def summary(self):
         return {'id':3,'summary':'完整的人物关系与经历正文','source_events':['event-'+str(i) for i in range(1200)],
@@ -38,7 +50,7 @@ class AuxiliaryView(unittest.TestCase):
                 memory={'memory_foundation':{'conversation_summaries':[summary]},'state':{'conversation_summaries':[summary]},
                         'cross_scope_deliveries':[{'source_events':list(summary['source_events'])}]}
                 payload={envelope:memory} if outer is None else {outer:{envelope:memory}}
-                before=copy.deepcopy(payload);view=json.loads(decision_request(payload,'duty')['prompt'])
+                before=copy.deepcopy(payload);view=logical(decision_request(payload,'duty'))
                 self.assertEqual(payload,before)
                 actual=(view[outer] if outer else view)[envelope]
                 for root in ('memory_foundation','state'):
@@ -48,13 +60,13 @@ class AuxiliaryView(unittest.TestCase):
                     self.assertEqual({k:v for k,v in row.items() if not k.startswith('source_events')},
                                      {k:v for k,v in summary.items() if k!='source_events'})
                 self.assertEqual(actual['cross_scope_deliveries'],memory['cross_scope_deliveries'])
-                self.assertEqual(json.loads(decision_request(view,'duty')['prompt']),view)
+                self.assertEqual(logical(decision_request(view,'duty')),view)
         self.assertEqual(memory_context_view({'memory_foundation':{'conversation_summaries':[summary]}})['memory_foundation']['conversation_summaries'][0]['source_events_count'],1200)
     def test_short_unknown_or_malformed_provenance_is_unchanged(self):
         for values,kind in [(['one']*6,'conversation_summary_not_verified_facts'),([1]*8,'conversation_summary_not_verified_facts'),(['one']*8,'tool_receipt')]:
             row={**self.summary(),'source_events':values,'kind':kind}
             payload={'memory':{'memory_foundation':{'conversation_summaries':[row]}}}
-            self.assertEqual(json.loads(decision_request(payload,'duty')['prompt']),payload)
+            self.assertEqual(logical(decision_request(payload,'duty')),payload)
     def test_reference_prefix_stable_dynamic_fresh_and_system_unchanged(self):
         payload={'persona':'persona','owner_id':'12345','scope':'private:12345',
                  'memory':{'memory_foundation':{'conversation_summaries':[self.summary()]},'facts':[{'value':'tea'}],
@@ -63,15 +75,16 @@ class AuxiliaryView(unittest.TestCase):
         changed=copy.deepcopy(payload);changed.update(current_time='two',companion={'mood':'two'})
         changed['memory']['active_agreements'][0]['version']=2
         second=decision_request(changed,'duty',reference_first=True)
-        a,b=json.loads(first['prompt']),json.loads(second['prompt'])
+        a,b=logical(first),logical(second)
         self.assertEqual(list(a),['reference','context','changes'])
         self.assertEqual(a['reference'],b['reference'])
-        self.assertEqual(first['prompt'].split(',"context":')[0],second['prompt'].split(',"context":')[0])
+        self.assertEqual(first['contexts'],second['contexts'])
         self.assertEqual(b['changes']['memory']['active_agreements'][0]['version'],2)
         self.assertEqual(b['changes']['current_time'],'two')
         self.assertEqual(first['system_prompt'],decision_request(payload,'duty')['system_prompt'])
         changed['memory']['facts'][0]['value']='new fact'
-        self.assertNotEqual(a['reference'],json.loads(decision_request(changed,'duty',reference_first=True)['prompt'])['reference'])
+        self.assertEqual(first['contexts'],decision_request(changed,'duty',reference_first=True)['contexts'])
+        self.assertEqual(logical(decision_request(changed,'duty',reference_first=True))['changes']['memory']['facts'][0]['value'],'new fact')
     def test_owner_windows_reference_exact_events_and_preserve_metadata(self):
         row={'source_scope':'private:12345','source_event':'one','sender_id':'12345','text':'真实长正文。'*80,'at':42}
         payload={'scope':'private:12345','owner_memory':{'recent_private':[row],'recent_uncompressed':[{**row,'kind':'uncompressed','attention':'[important]'}]}}
@@ -110,7 +123,7 @@ class AuxiliaryEntries(unittest.IsolatedAsyncioTestCase):
             result=await self.store.presence.evaluate(scope,self.cfg,'same',self.provider,[row],{},
                          {'timeline':timeline},lambda:True,self.metrics,self.event,self.now)
         self.assertTrue(result[0].reply)
-        view=json.loads(self.provider.calls[0]['prompt']);attention=view['changes']['attention']['timeline']
+        view=logical(self.provider.calls[0]);attention=view['changes']['attention']['timeline']
         self.assertEqual(len(attention),4)
         self.assertTrue(all('text' in item for item in attention)) # full row differs from 300-char incoming truncation
         self.assertEqual(view['changes']['messages'][0]['images'],['one'])

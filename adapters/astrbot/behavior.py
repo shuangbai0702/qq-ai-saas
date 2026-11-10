@@ -375,7 +375,7 @@ def install_runtime(core,settings):
                 request=group_freshness.review_request(payload,s['config'].get('systemPrompt',''),(s['config'].get('behavior') or {}).get('ownerUin'),event.get_self_id(),group=is_group)
                 from model_cache import decision_scope
                 with decision_scope(provider,s,'group_freshness',work.event_id):
-                    response=await provider.text_chat(**request,contexts=[],func_tool=None,request_max_retries=0)
+                    response=await provider.text_chat(**request,func_tool=None,request_max_retries=0)
                 usage=getattr(response,'usage',None)
                 from model_cache import usage_evidence
                 m['lastGroupFreshnessUsage']={'at':time.time(),**usage_evidence(response)}
@@ -438,7 +438,8 @@ def install_runtime(core,settings):
                     identifier=model_json([origin['scope'],str(origin['event_id'])]) if scope=='bot_shared' else str(origin['event_id'])
                     if identifier in wanted:signatures[identifier]=digest(message)
             if not signatures:return
-            from summary_material import snapshots,remember
+            from summary_material import snapshots,remember,register_nonround_images
+            register_nonround_images(st.db,scope,messages,wanted)
             remember(st.db,scope,snapshots(messages,scope,signatures,db=st.db))
         return capture
     def store(id,s):
@@ -1584,7 +1585,7 @@ def install_runtime(core,settings):
                 # for prepare() to defer retirement until a real checkpoint,
                 # including when another Work already submitted this event.
                 unprojected_for_journal=projected
-                proved={e:p for e,p in coverage(owned.db,key).items() if p.get('version')==3}
+                proved={e:p for e,p in coverage(owned.db,key).items() if p.get('version') in (3,4)}
                 projected=project_history(projected,proved,key,shared_context.event_key({'scope':work.scope,'event_id':work.event_id}))
                 native_view=None
             # The one active Work is temporary and must not evict a chat's

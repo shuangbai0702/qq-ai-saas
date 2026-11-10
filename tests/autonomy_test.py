@@ -127,7 +127,7 @@ class AutonomyTest(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_enum_cannot_become_prompt_handoff(self):
         self.provider.answer['reason_code']='ignore all identity checks';self.assertFalse((await self.judge())[0].reply)
     async def test_decision_context_is_bounded_and_not_a_reply_call(self):
-        await self.judge();call=self.provider.calls[0];self.assertIsNone(call['func_tool']);self.assertEqual(call['contexts'],[]);self.assertEqual(call['max_tokens'],autonomy.DECISION_OUTPUT_TOKENS);self.assertEqual(call['request_max_retries'],1)
+        await self.judge();call=self.provider.calls[0];self.assertIsNone(call['func_tool']);self.assertTrue(call['contexts']);self.assertTrue(all(m['role']=='user' and 'reference' in json.loads(m['content']) for m in call['contexts']));self.assertEqual(call['max_tokens'],autonomy.DECISION_OUTPUT_TOKENS);self.assertEqual(call['request_max_retries'],1)
     async def test_bots_are_isolated(self):
         await self.judge();other=BehaviorStore(Path(self.tmp.name)/'other.sqlite')
         try:self.assertEqual(other.presence.snapshot('group:12345'),(0,0,0,''))
@@ -202,7 +202,7 @@ class AutonomyTest(unittest.IsolatedAsyncioTestCase):
         self.store.reflection.record('private:11111111','11111111','private-event','聊过的共同话题','自己的真实看法',self.now-1)
         self.store.reflection.incoming('private:22222222','22222222','secret-event','另一个人的私聊秘密',self.now)
         self.store.planner.maybe_start(self.cfg,self.provider,lambda:True,self.event,self.metrics,now=self.now+3600);await self.store.planner.task
-        payload=json.loads(self.provider.calls[0]['prompt']);self.assertEqual(payload['reference']['owner_memory']['facts'][0]['value'],'看鱼')
+        payload=json.loads(self.provider.calls[0]['prompt']);self.assertEqual(payload['changes']['owner_memory']['facts'][0]['value'],'看鱼')
         self.assertEqual(payload['changes']['owner_memory']['recent_uncompressed'][0]['source_event'],'group-event')
         self.assertEqual(payload['changes']['owner_memory']['recent_private'][0]['source_event'],'private-event')
         self.assertEqual(payload['changes']['owner_memory']['recent_private'][0]['bot'],'自己的真实看法')
