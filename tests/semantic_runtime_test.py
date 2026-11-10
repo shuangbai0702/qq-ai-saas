@@ -47,6 +47,65 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.st.db.execute('SELECT state FROM memory_reconstruction_checkpoints').fetchone()[0],'available')
         journal._staged=None
         self.assertEqual(finish_semantic_batches(self.st,{},SCOPE)['retired'],1)
+    def scoped_journal(self,scope,db=None):
+        journal=ReadonlyJournal(db or self.st.db,scope);journal.serial=1
+        foreign={'role':'user','content':SOURCE+model_json({'scope':'group:87654321','sender_id':'12345678','event_id':'old'})+'\nforeign old'}
+        messages=copy.deepcopy(self.base)+[foreign]
+        state={'recent_messages':[{'scope':SCOPE,'event_id':'old','text':'old raw'},
+                                   {'scope':SCOPE,'event_id':'new','text':'new raw'}]}
+        prepared=Prepared(1,None,messages,messages,state,1,time.time(),'initial')
+        self.assertTrue(journal.commit(prepared));self.st.model_journals[scope]=journal
+        return journal
+    def test_all_scope_cache_adopts_exact_disk_projection_and_fences_late_candidate(self):
+        import journal_storage
+        from dataclasses import replace
+        other=self.scoped_journal('group:12345')
+        late=replace(other.last,serial=other.serial)
+        result=finish_semantic_batches(self.st,{},SCOPE)
+        self.assertEqual(result['retired'],1,result)
+        self.assertIs(self.st.model_journals['group:12345'],other)
+        self.assertNotIn('original old',model_json(other.last.wire))
+        self.assertIn('original new',model_json(other.last.wire));self.assertIn('foreign old',model_json(other.last.wire))
+        self.assertEqual(other.last.wire[0],self.base[0])
+        persisted=journal_storage.read_snapshot(self.st.db,model_json('group:12345'))
+        self.assertEqual(other.last.wire,persisted['wire']);self.assertEqual(other.last.state,persisted['state'])
+        self.assertFalse(other.commit(late))
+        self.assertNotIn('original old',model_json(journal_storage.read_snapshot(self.st.db,model_json('group:12345'))))
+    def test_other_scope_staged_candidate_defers_entire_retirement(self):
+        other=self.scoped_journal('group:12345')
+        self.assertTrue(other.stage_candidate(other.last));serial=other.serial
+        result=finish_semantic_batches(self.st,{},SCOPE)
+        self.assertEqual(result['pending'],1,result);self.assertEqual(result['retired'],0)
+        self.assertEqual(other.serial,serial);self.assertEqual(other._staged,serial)
+        self.assertIn('original old',model_json(other.last.wire))
+        self.assertTrue(self.st.db.execute("SELECT 1 FROM memory_pending WHERE event='old'").fetchone())
+        self.assertTrue(other.commit(other.last))
+        self.assertEqual(finish_semantic_batches(self.st,{},SCOPE)['retired'],1)
+        self.assertNotIn('original old',model_json(other.last.wire))
+    def test_foreign_store_journal_is_untouched(self):
+        from behavior import BehaviorStore
+        foreign_store=BehaviorStore(self.root/'foreign.sqlite')
+        try:
+            foreign=self.scoped_journal('group:12345',foreign_store.db)
+            before=copy.deepcopy(foreign.last);serial=foreign.serial
+            self.assertEqual(finish_semantic_batches(self.st,{},SCOPE)['retired'],1)
+            self.assertEqual(foreign.last,before);self.assertEqual(foreign.serial,serial)
+        finally:foreign_store.close()
+    def test_original_scope_prepare_applies_shared_tombstone_before_native_comparison(self):
+        from dataclasses import replace
+        from context_protocol import READONLY_CURRENT
+        journal=self.st.model_journals[SCOPE]
+        clean=[self.base[0],self.base[-1]]
+        journal.last=replace(journal.last,base=copy.deepcopy(clean),wire=copy.deepcopy(clean))
+        self.st.db.execute("INSERT INTO memory_semantic_batches VALUES(2,'bot_shared','digest',?,0,'retired',0,0)",
+                           (model_json([event_key('bot_shared',model_json([SCOPE,'old']))]),));self.st.db.commit()
+        foreign={'role':'user','content':SOURCE+model_json({'scope':'group:12345','sender_id':'12345678','event_id':'old'})+'\nforeign old'}
+        incoming=copy.deepcopy(self.base)+[foreign,{'role':'user','content':READONLY_CURRENT+'\n'+model_json(journal.last.state)}]
+        native=copy.deepcopy(incoming);before=copy.deepcopy(incoming)
+        prepared=journal.prepare(incoming,None,reconstruction_scope=SCOPE,unprojected=native)
+        self.assertNotIn('original old',model_json(prepared.base));self.assertNotIn('old reply',model_json(prepared.wire))
+        self.assertIn('original new',model_json(prepared.wire));self.assertIn('foreign old',model_json(prepared.wire))
+        self.assertEqual(prepared.wire[0],self.base[0]);self.assertEqual(incoming,before)
     def test_retirement_removes_exact_raw_evidence_and_keeps_other_events_and_state(self):
         import quote_reply,shared_context
         db=self.st.db;quote_reply.initialize(db);shared_context.initialize(db)
@@ -82,8 +141,9 @@ class RuntimeTests(unittest.TestCase):
         db.execute('INSERT INTO fishbot_shared_inputs(scope,event,message,created) VALUES(?,?,?,0)',(channel,old,'raw owned input'))
         db.execute("INSERT INTO pipeline_work_inputs(scope,event,subject,status,created) VALUES(?,?,?,'owned',0)",(channel,old,'12345678'))
         db.commit()
-        with db:self.assertTrue(semantic_batch.purge(db,2))
-        self.assertFalse(db.execute("SELECT 1 FROM pipeline_quote_sources WHERE handle='retired-quote'").fetchone())
+        with self.assertRaisesRegex(ValueError,'semantic_batch_input_still_owned'):
+            with db:semantic_batch.purge(db,2)
+        self.assertTrue(db.execute("SELECT 1 FROM pipeline_quote_sources WHERE handle='retired-quote'").fetchone())
         self.assertTrue(db.execute('SELECT 1 FROM fishbot_shared_inputs WHERE scope=? AND event=?',(channel,old)).fetchone())
         with db:db.execute("UPDATE pipeline_work_inputs SET status='settled' WHERE scope=? AND event=?",(channel,old))
         with db:self.assertTrue(semantic_batch.purge(db,2))

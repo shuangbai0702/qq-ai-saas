@@ -151,6 +151,19 @@ def commit(db,scope,checkpoint_id,materials,cutoff):
 
 def purge(db,checkpoint_id):
     """After the replacement Journal commits, release exact batch rows."""
+    # Keep transaction ownership with the caller even when this is its first
+    # mutation: releasing an outermost SQLite savepoint would otherwise commit.
+    if not db.in_transaction:db.execute('BEGIN')
+    db.execute('SAVEPOINT semantic_batch_purge')
+    try:
+        result=_purge(db,checkpoint_id)
+        db.execute('RELEASE semantic_batch_purge')
+        return result
+    except BaseException:
+        db.execute('ROLLBACK TO semantic_batch_purge');db.execute('RELEASE semantic_batch_purge');raise
+
+
+def _purge(db,checkpoint_id):
     row=db.execute("SELECT scope,members FROM memory_semantic_batches WHERE checkpoint_id=? AND state='retired'",(checkpoint_id,)).fetchone()
     if not row:return False
     scope,members=row[0],set(json.loads(row[1]))
@@ -158,9 +171,11 @@ def purge(db,checkpoint_id):
     contact_columns={r[1] for r in db.execute('PRAGMA table_info(contacts)')} if 'contacts' in tables else set()
     events=set()
     targets=('memory_pending','memory_round_material','memory_pending_rounds','memory_hold_rounds','memory_summary_coverage','memory_summary_unresolved','memory_media_retirement_choices','memory_rounds','memory_message_sources')
-    for table in targets:
+    for table in (*targets,'pipeline_scope_work','pipeline_work_inputs'):
         if table in tables:
-            events.update(str(r[0]) for r in db.execute('SELECT event FROM '+table+' WHERE scope=?',(scope,)) if event_key(scope,r[0]) in members)
+            for channel,identifier in db.execute('SELECT scope,event FROM '+table+(' WHERE scope=?' if scope!='bot_shared' else ''),(scope,) if scope!='bot_shared' else ()):
+                event=model_json([channel,str(identifier)]) if scope=='bot_shared' and channel!=scope else str(identifier)
+                if event_key(scope,event) in members:events.add(event)
     # These exact source copies may outlive the hot memory rows (including a
     # retry after an older version purged them). Recover only hashed members.
     for table,column in (('relation_evidence','event'),('relation_events','event'),('companion_seen','event'),
@@ -183,6 +198,15 @@ def purge(db,checkpoint_id):
         for channel,identifier in db.execute('SELECT scope,'+column+' FROM contacts WHERE '+column+' IS NOT NULL'+(' AND scope=?' if scope!='bot_shared' else ''),(scope,) if scope!='bot_shared' else ()):
             event=model_json([channel,str(identifier)]) if scope=='bot_shared' else str(identifier)
             if event_key(scope,event) in members:events.add(event)
+    # Recheck both identities under this cleanup transaction. A Work can have
+    # acquired the source after summary loading; no subset may be erased then.
+    for event in events:
+        identities={(scope,event),origin(scope,event)}
+        for channel,identifier in identities:
+            if 'pipeline_scope_work' in tables and db.execute('SELECT 1 FROM pipeline_scope_work WHERE scope=? AND event=?',(channel,identifier)).fetchone():
+                raise ValueError('semantic_batch_work_still_active')
+            if 'pipeline_work_inputs' in tables and db.execute("SELECT 1 FROM pipeline_work_inputs WHERE scope=? AND event=? AND status='owned'",(channel,identifier)).fetchone():
+                raise ValueError('semantic_batch_input_still_owned')
     # Snapshot uniqueness before any pending rows leave; iteration order must
     # not turn an ambiguous shared timestamp into apparently unique evidence.
     legacy_contacts=set()
@@ -201,7 +225,9 @@ def purge(db,checkpoint_id):
             db.execute("UPDATE contacts SET last_text='',last_user_event=NULL WHERE scope=? AND last_user_event=?",(channel,identifier))
             db.execute("UPDATE contacts SET last_output='',last_bot_event=NULL WHERE scope=? AND last_bot_event=?",(channel,identifier))
         for table in targets:
-            if table in tables:db.execute('DELETE FROM '+table+' WHERE scope=? AND event=?',(scope,event))
+            if table in tables:
+                for logical,key in {(scope,event),(channel,identifier)}:
+                    db.execute('DELETE FROM '+table+' WHERE scope=? AND event=?',(logical,key))
         if 'memory_message_sources' in tables:db.execute('DELETE FROM memory_message_sources WHERE scope=? AND event=?',(scope,event))
         channel,identifier=origin(scope,event)
         # Exact hot copies in their original conversation, never a TTL sweep.
@@ -234,8 +260,10 @@ def purge(db,checkpoint_id):
         if 'memory_agreements' in tables:
             db.execute('UPDATE memory_agreements SET source_event=? WHERE source_scope=? AND source_event=?',('semantic:'+event_key(channel,identifier),channel,identifier))
     # Original ID lists are no longer model memory or checkpoint dependencies.
-    db.execute("UPDATE memory_summaries SET sources='[]' WHERE scope=?",(scope,))
-    db.execute("UPDATE memory_core_notes SET sources='[]'")
+    if 'memory_summaries' in tables:
+        if scope=='bot_shared':db.execute("UPDATE memory_summaries SET sources='[]'")
+        else:db.execute("UPDATE memory_summaries SET sources='[]' WHERE scope=?",(scope,))
+    if 'memory_core_notes' in tables:db.execute("UPDATE memory_core_notes SET sources='[]'")
     # Recovery archives obey the same successful exact-batch retirement.
     # They may keep uncompressed evidence and System, never a retired copy.
     import journal_storage

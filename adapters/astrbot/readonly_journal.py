@@ -637,11 +637,11 @@ class ReadonlyJournal:
         # native-prefix comparison; no Coverage or timestamp inference.
         if self.db is not None and self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_semantic_batches'").fetchone():
             scope=reconstruction_scope or json.loads(self.scope_key)
-            members=set()
-            for raw, in self.db.execute("SELECT members FROM memory_semantic_batches WHERE scope=? AND state='retired'",(scope,)):
-                members.update(json.loads(raw))
-            if members:
-                retired={'semanticBatch':True,'scope':scope,'batchMembers':sorted(members)}
+            by_scope={}
+            for batch_scope,raw in self.db.execute("SELECT scope,members FROM memory_semantic_batches WHERE scope IN (?,'bot_shared') AND state='retired'",(scope,)):
+                by_scope.setdefault(batch_scope,set()).update(json.loads(raw))
+            for batch_scope,members in by_scope.items():
+                retired={'semanticBatch':True,'scope':batch_scope,'batchMembers':sorted(members)}
                 messages=semantic_retire_projection(messages,retired)
                 if isinstance(unprojected,list):unprojected=semantic_retire_projection(unprojected,retired)
                 if isinstance(coverage_view,list):coverage_view=semantic_retire_projection(coverage_view,retired)
