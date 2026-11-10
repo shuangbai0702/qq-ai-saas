@@ -153,6 +153,8 @@ def run(file, data, connection=None):
         elif action == 'reset_relation':
             old=db.execute('SELECT last_seen FROM relations WHERE scope=? AND subject=?',(scope,data['subject'])).fetchone()
             if not old or old[0]!=data['expectedLastSeen']:return {'error':'关系状态已变化，请刷新后重试','status':409}
+            from memory_operation_audit import forget as forget_operation_audit
+            forget_operation_audit(db,scope,data['subject'],relations_only=True)
             db.execute('DELETE FROM relations WHERE scope=? AND subject=?',(scope,data['subject']))
             if 'relation_progress' in tables:
                 db.execute('DELETE FROM relation_progress WHERE scope=? AND subject=?',(scope,data['subject']))

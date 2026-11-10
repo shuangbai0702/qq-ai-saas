@@ -22,13 +22,16 @@ quote只截取12到40字的必要原文，超长原文截取最关键部分。ev
 重要性与约定判断按语义而非词面：即使没有出现“约定、承诺、纠正”等字眼，只要原话明确了时间、对象、条件或待办（如“周六八点东门见，下雨就改周日”“周三前把链接发你”），就应进入commitments；只是随口提到这些字眼的闲聊不要提取。commitments的who必须是quote真正来源的说话人；stage必须由本批真实原文支撑：有后续证据才标executed或canceled，没有就保持proposed/accepted/unknown，不得凭推断宣布完成或取消；已经完成、明确取消的约定照常输出对应stage，不要为了保留而虚报。previous_commitments里未解决的话题（interpretation）在本批有同一说话人更晚的原话明确解决或放弃时，也在commitments中登记一条executed或canceled并附supersedes指向那个真实claim id；没有明确证据就保持沉默，不得宣布解决。observed_requests中的tools是该轮真实工具调用与回执，据此整理工具实际做了什么；工具回执不是用户或机器人的发言。整体上区分：谁说/关于谁、说话当时的时间/约定的未来时间、原状态→变化→当前状态、提议/接受/执行/未知；用户原话、用户引用或转述他人的话、机器人自己的发言与模型推断不能混写，引用或转发中的话不等于当前作者本人说过。'''
 
 
-def decode(text):
+def decode(text,diagnostics=None):
     raw=(text or '').strip()
     if raw.startswith('```'):raw=raw.split('\n',1)[-1].rsplit('```',1)[0]
     try:
         value=json.loads(raw)
-        if isinstance(value,dict) and isinstance(value.get('summary'),str):return value
+        if isinstance(value,dict) and isinstance(value.get('summary'),str):
+            if diagnostics is not None:diagnostics['decode_status']='json_object'
+            return value
     except (ValueError,TypeError):pass
+    if diagnostics is not None:diagnostics['decode_status']='fallback_text'
     return {'summary':'' if raw.startswith(('{','[')) else text or ''}
 
 
@@ -89,7 +92,7 @@ def _safe_memory_text(value,maximum):
             not re.search(r'(?i)sk-[\w-]{8,}|Bearer\s+\S+|密码|密钥|提示词|系统指令|主人|管理员|权限|owner_?id|sender_?id|\b(?:tenant|lease|authorization|api_?key)\b',value))
 
 
-def apply_semantic_memory(db,memory,scope,cfg,payload,data,before,now=None):
+def apply_semantic_memory(db,memory,scope,cfg,payload,data,before,now=None,audit=None):
     """CAS the model's explicit decisions; caller owns the summary transaction.
 
     This path is the existing summary's authorized semantic writer. It does not
@@ -99,6 +102,8 @@ def apply_semantic_memory(db,memory,scope,cfg,payload,data,before,now=None):
     now=time.time() if now is None else now
     state=before.get('memory_state',{})
     if state.get('scope')!=scope:return 0
+    def reject(category,index,reason):
+        if audit:audit.mark(category,index,'rejected',reason)
     people=set(state.get('subjects',[]))
     # Protocol author identity remains the authority for whose memory may change.
     people.intersection_update(str(row.get('sender_id')) for row in payload
@@ -108,39 +113,40 @@ def apply_semantic_memory(db,memory,scope,cfg,payload,data,before,now=None):
     saved=0;claimed=set()
     operations=data.get('fact_operations',[])
     if cfg.get('memory',True) and cfg.get('memoryAutoCapture') and isinstance(operations,list):
-        for item in operations:
-            if not isinstance(item,dict):continue
+        for index,item in enumerate(operations):
+            if not isinstance(item,dict):reject('facts',index,'invalid_item');continue
             action=item.get('op');person=item.get('subject');target_scope=item.get('scope');name=item.get('name');expected=item.get('expected')
-            if not isinstance(person,str) or person not in people or target_scope!=scope or action not in ('add','revise','merge','weaken','forget'):continue
-            if not _safe_memory_text(name,40) or not isinstance(expected,list) or any(not isinstance(x,dict) for x in expected):continue
-            if action=='add' and expected or action!='add' and not expected:continue
-            if any(x not in state.get('facts',[]) or x.get('subject')!=person for x in expected):continue
+            if not isinstance(person,str) or person not in people or target_scope!=scope or action not in ('add','revise','merge','weaken','forget'):reject('facts',index,'invalid_target_or_operation');continue
+            if not _safe_memory_text(name,40) or not isinstance(expected,list) or any(not isinstance(x,dict) for x in expected):reject('facts',index,'invalid_field_or_expected');continue
+            if action=='add' and expected or action!='add' and not expected:reject('facts',index,'expected_presence');continue
+            if any(x not in state.get('facts',[]) or x.get('subject')!=person for x in expected):reject('facts',index,'expected_mismatch');continue
             names={x['name'] for x in expected}|{name}
-            if any(not _safe_memory_text(n,40) or re.search(r'(?i)身份|\b(?:owner|admin|role|policy|system|binding|uin|sender|platform)\b',n) for n in names):continue
-            if action!='merge' and names!={name}:continue
+            if any(not _safe_memory_text(n,40) or re.search(r'(?i)身份|\b(?:owner|admin|role|policy|system|binding|uin|sender|platform)\b',n) for n in names):reject('facts',index,'unsafe_field');continue
+            if action!='merge' and names!={name}:reject('facts',index,'unexpected_fields');continue
             keys={(person,n) for n in names}
-            if claimed & keys:continue
+            if claimed & keys:reject('facts',index,'duplicate_target');continue
             # All active copies of each affected name must match the offered
             # snapshot. This also catches a higher-priority legacy copy or ABA.
             current=[x for x in _fact_state(db,scope,person) if x['name'] in names]
             offered=[x for x in state.get('facts',[]) if x['subject']==person and x['name'] in names]
-            if current!=offered:raise ValueError('semantic_fact_snapshot_changed')
-            if len(expected)!=len(current) or any(x not in expected for x in current):continue
+            if current!=offered:
+                reject('facts',index,'snapshot_changed');raise ValueError('semantic_fact_snapshot_changed')
+            if len(expected)!=len(current) or any(x not in expected for x in current):reject('facts',index,'incomplete_expected');continue
             value=item.get('value');kind=item.get('kind','stable');importance=item.get('importance',.8)
             if action=='forget':value=None
             elif action=='weaken':
-                if len({x['value'] for x in expected})!=1:continue
+                if len({x['value'] for x in expected})!=1:reject('facts',index,'ambiguous_weaken');continue
                 value=expected[0]['value'];kind=item.get('kind',expected[0]['kind'])
-                if 'importance' not in item:continue
-            if action!='forget' and value is None:continue
-            if value is not None and (not _safe_memory_text(value,200) or kind not in ('stable','event','state')):continue
-            if type(importance) not in (int,float) or not math.isfinite(importance) or not 0<=importance<=1:continue
-            if action=='weaken' and any(importance>=x['importance'] for x in expected):continue
+                if 'importance' not in item:reject('facts',index,'missing_importance');continue
+            if action!='forget' and value is None:reject('facts',index,'missing_value');continue
+            if value is not None and (not _safe_memory_text(value,200) or kind not in ('stable','event','state')):reject('facts',index,'unsafe_value_or_kind');continue
+            if type(importance) not in (int,float) or not math.isfinite(importance) or not 0<=importance<=1:reject('facts',index,'invalid_importance');continue
+            if action=='weaken' and any(importance>=x['importance'] for x in expected):reject('facts',index,'not_weakened');continue
             from memory_scope import blocked_facts,value_hash
             hard,_,blocked=blocked_facts(db,scope,person)
-            if name in hard or value is not None and value_hash(value) in blocked:continue
+            if name in hard or value is not None and value_hash(value) in blocked:reject('facts',index,'human_memory_block');continue
             if value is not None and db.execute('SELECT count(*) FROM facts').fetchone()[0]>=20000:
-                raise ValueError('semantic_fact_storage_capacity_material_retained')
+                reject('facts',index,'storage_capacity');raise ValueError('semantic_fact_storage_capacity_material_retained')
             where,args=person_filter(scope,person)
             version=db.execute('SELECT coalesce(max(version),0)+1 FROM facts WHERE '+where+' AND name=?',args+(name,)).fetchone()[0]
             for old in expected:
@@ -152,21 +158,25 @@ def apply_semantic_memory(db,memory,scope,cfg,payload,data,before,now=None):
                   ON CONFLICT(scope,subject,name) DO UPDATE SET kind=excluded.kind,origin=excluded.origin,
                   importance=excluded.importance,last_recalled=0,recalls=0''',(scope,person,name,kind,'semantic',importance))
             claimed.update(keys);saved+=1
+            if audit:audit.mark('facts',index,'accepted','applied',True)
+    elif isinstance(operations,list):
+        for index in range(len(operations)):reject('facts',index,'disabled')
     operations=data.get('relation_operations',[])
     if cfg.get('selfDevelopment',True) and isinstance(operations,list):
         seen=set()
-        for item in operations:
-            if not isinstance(item,dict):continue
+        for index,item in enumerate(operations):
+            if not isinstance(item,dict):reject('relations',index,'invalid_item');continue
             person=item.get('subject');expected=item.get('expected');affinity=item.get('affinity');trust=item.get('trust');impression=item.get('impression')
-            if item.get('scope')!=scope or not isinstance(person,str) or person not in people or person in seen or 'expected' not in item:continue
+            if item.get('scope')!=scope or not isinstance(person,str) or person not in people or person in seen or 'expected' not in item:reject('relations',index,'invalid_target_or_expected');continue
             prior=next((r for r in state.get('relations',[]) if r['subject']==person),None)
-            if expected!=prior:continue
+            if expected!=prior:reject('relations',index,'expected_mismatch');continue
             current=_relation_state(db,scope,person)
             cognitive=lambda row:None if row is None else {k:v for k,v in row.items() if k!='last_seen'}
-            if cognitive(current)!=cognitive(prior):raise ValueError('semantic_relation_snapshot_changed')
-            if type(affinity) not in (int,float) or not math.isfinite(affinity) or not -20<=affinity<=100:continue
-            if type(trust) not in (int,float) or not math.isfinite(trust) or not -1<=trust<=1:continue
-            if impression!='' and not _safe_memory_text(impression,1000):continue
+            if cognitive(current)!=cognitive(prior):
+                reject('relations',index,'snapshot_changed');raise ValueError('semantic_relation_snapshot_changed')
+            if type(affinity) not in (int,float) or not math.isfinite(affinity) or not -20<=affinity<=100:reject('relations',index,'invalid_affinity');continue
+            if type(trust) not in (int,float) or not math.isfinite(trust) or not -1<=trust<=1:reject('relations',index,'invalid_trust');continue
+            if impression!='' and not _safe_memory_text(impression,1000):reject('relations',index,'unsafe_impression');continue
             stamp=max(now,(prior['semantic_updated']+0.000001) if prior else now)
             if prior:
                 db.execute('UPDATE relations SET affinity=?,trust=?,impression=?,semantic_updated=? WHERE scope=? AND subject=?',
@@ -175,6 +185,9 @@ def apply_semantic_memory(db,memory,scope,cfg,payload,data,before,now=None):
                 db.execute('''INSERT INTO relations(scope,subject,affinity,emotion,expires,last_seen,trust,impression,semantic_updated)
                   VALUES(?,?,?,'平静',0,?,?,?,?)''',(scope,person,affinity,now,trust,impression,stamp))
             seen.add(person);saved+=1
+            if audit:audit.mark('relations',index,'accepted','applied',prior is None or any(prior[k]!=v for k,v in (('affinity',affinity),('trust',trust),('impression',impression))))
+    elif isinstance(operations,list):
+        for index in range(len(operations)):reject('relations',index,'disabled')
     return saved
 
 

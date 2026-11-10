@@ -149,6 +149,8 @@ class ScopedMemory:
             importance=1.0 if name in ('称呼','生日') else 0.8
             self.db.execute("INSERT INTO fact_metadata(scope,subject,name,kind,origin,importance) VALUES(?,?,?,'stable','explicit',?) ON CONFLICT(scope,subject,name) DO UPDATE SET origin='explicit',importance=excluded.importance,last_recalled=0,recalls=0",(scope,subject,name,importance))
         record_correction(self.db,scope,subject,name,old_value,event,quote,now)
+        from memory_operation_audit import forget as forget_operation_audit
+        forget_operation_audit(self.db,scope,subject)
         return '已按本人证据纠正资料'
 
     def recall(self,scope,subject,query,now,limit=8,budget=1600):

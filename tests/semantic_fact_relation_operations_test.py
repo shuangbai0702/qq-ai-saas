@@ -1,5 +1,6 @@
 """Existing summary writer's explicit semantic decisions, with SQLite CAS fences."""
 import contextvars
+import asyncio
 import copy
 import json
 from pathlib import Path
@@ -12,6 +13,8 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
 from behavior import BehaviorStore
 from companion_insights import apply_semantic_memory, snapshot
 from memory_scope import fact_rows
+from memory_operation_audit import Audit,forget as forget_audit
+from unittest.mock import patch
 
 SCOPE='bot_shared'
 PERSON='12345678'
@@ -180,9 +183,85 @@ class SemanticFactRelationOperations(unittest.TestCase):
         self.assertEqual(local['relation_history'],[])
         self.assertEqual(snapshot(self.db,SCOPE,{PERSON},{'memoryAutoCapture':False,'selfDevelopment':False})['memory_state']['writable'],{'facts':False,'relations':False})
 
+    def test_audit_records_rejections_omission_and_changes_without_values(self):
+        before=self.before()
+        data={'fact_operations':[self.operation(before,'add','爱好',value='秘密绘画偏好')],
+              'relation_operations':[self.relation_operation(before,trust=2)]}
+        audit=Audit(SCOPE,0,'summary',data,{PERSON})
+        with self.db:
+            self.assertEqual(apply_semantic_memory(self.db,self.store.memory,SCOPE,CFG,self.payload,data,before,now=100,audit=audit),1)
+            audit.persist(self.db,'committed','transaction_committed',checkpoint_id=7,summary_id=9)
+        self.assertEqual(audit.counts['facts']['accepted'],1)
+        self.assertEqual(audit.counts['relations']['rejected'],1)
+        self.assertTrue(audit.counts['core_note']['omitted'])
+        rows=self.db.execute('SELECT category,decision,reason,changed FROM memory_operation_audit_details ORDER BY category').fetchall()
+        self.assertEqual(rows,[('facts','accepted','applied',1),('relations','rejected','invalid_trust',0)])
+        audit_rows=str(self.db.execute('SELECT * FROM memory_operation_audit_details').fetchall())
+        self.assertNotIn('秘密绘画偏好',audit_rows);self.assertNotIn('爱好',audit_rows)
+        self.assertNotIn('real-batch-event',audit_rows)
+        self.store.memory.observe('private:'+PERSON,PERSON,'忘记:爱好','forget-audit',101)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_operation_audit_details').fetchone()[0],0)
+        self.assertEqual(self.db.execute('SELECT state FROM memory_operation_audits').fetchone(),('committed',))
+        self.assertEqual(self.db.execute('SELECT scope,checkpoint_id,summary_id,through_round_id FROM memory_operation_audits').fetchone(),('',None,None,None))
+
+    def test_audit_malformed_disabled_core_and_management_forget(self):
+        before=self.before();data={'fact_operations':{},'relation_operations':[self.relation_operation(before)],'core_note':{'text':'秘密核心文本','events':['unknown']}}
+        audit=Audit(SCOPE,0,'summary',data,{PERSON})
+        with self.db:
+            apply_semantic_memory(self.db,self.store.memory,SCOPE,{**CFG,'selfDevelopment':False},self.payload,data,before,audit=audit)
+            self.store.reflection.update_core_note(data,self.store.reflection.core_note(),self.payload,[],SCOPE,audit=audit)
+            audit.persist(self.db,'committed','transaction_committed',summary_id=3)
+        self.assertEqual([audit.details[k]['reason'] for k in (('facts',0),('relations',0),('core_note',0))],['invalid_container','disabled','unknown_event'])
+        forget_audit(self.db,summary_id=3)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_operation_audit_details').fetchone()[0],0)
+
+    def test_core_note_acceptance_has_no_text_in_audit(self):
+        data={'core_note':{'text':'持续认真交流','events':['real-batch-event']}}
+        audit=Audit(SCOPE,0,'summary',data,{PERSON})
+        with self.db:
+            self.assertEqual(self.store.reflection.update_core_note(data,self.store.reflection.core_note(),self.payload,[],SCOPE,audit=audit),1)
+            audit.persist(self.db,'committed','transaction_committed')
+        self.assertEqual(self.db.execute('SELECT category,decision,changed FROM memory_operation_audit_details').fetchone(),('core_note','accepted',1))
+        from memory_reflection import invalidate
+        invalidate(self.db,'private:'+PERSON,PERSON)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_operation_audit_details').fetchone()[0],0)
+
+    def test_management_forget_and_relation_reset_clear_audit_details(self):
+        from data_admin import run
+        path=Path(self.temp.name)/'behavior.sqlite'
+        before=self.before();data={'fact_operations':[self.operation(before,'add','爱好',value='绘画')],
+                                  'relation_operations':[self.relation_operation(before)]}
+        audit=Audit(SCOPE,0,'summary',data,{PERSON})
+        with self.db:
+            apply_semantic_memory(self.db,self.store.memory,SCOPE,CFG,self.payload,data,before,now=100,audit=audit)
+            audit.persist(self.db,'committed','transaction_committed')
+        self.assertTrue(run(path,{'action':'reset_relation','scope':SCOPE,'subject':PERSON,'expectedLastSeen':100},self.db)['ok'])
+        self.assertEqual(self.db.execute('SELECT category FROM memory_operation_audit_details').fetchall(),[('facts',)])
+        self.assertTrue(run(path,{'action':'forget_fact','scope':SCOPE,'subject':PERSON,'name':'爱好','expectedVersion':1},self.db)['ok'])
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_operation_audit_details').fetchone()[0],0)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_operation_audits').fetchone()[0],1)
+
 
 class SemanticReflectionOperations(unittest.IsolatedAsyncioTestCase):
     async def test_same_real_35_round_summary_updates_existing_memory_then_purges_without_natural_chat(self):
+        await self.run_batch()
+
+    async def test_checkpoint_failure_rolls_back_changes_but_keeps_decision_receipt(self):
+        await self.run_batch(fail=True)
+
+    async def test_forget_during_model_await_cannot_recreate_audit_targets(self):
+        await self.run_batch(forget=True)
+
+    async def test_bad_json_has_decode_receipt_and_no_committed_changes(self):
+        await self.run_batch(malformed=True)
+
+    async def test_provider_failure_is_unknown_output_not_model_omission(self):
+        await self.run_batch(provider_failure=True)
+
+    async def test_reflection_close_records_cancellation_without_late_targets(self):
+        await self.run_batch(close=True)
+
+    async def run_batch(self,fail=False,forget=False,malformed=False,provider_failure=False,close=False):
         from context_protocol import SOURCE,model_json
         from readonly_journal import Prepared,ReadonlyJournal
         from semantic_runtime import finish_semantic_batches
@@ -217,6 +296,10 @@ class SemanticReflectionOperations(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(existing['facts'][0]['value'],'红茶')
                     self.assertEqual(existing['relation_history'][0]['affinity'],17)
                     self.assertIn('existing_memory.fact',kw['system_prompt'])
+                    if close:store.reflection.close();await asyncio.sleep(0)
+                    if provider_failure:raise RuntimeError('test provider unavailable')
+                    if malformed:return NS(completion_text='{"summary": broken JSON')
+                    if forget:store.memory.observe('private:'+PERSON,PERSON,'忘记:饮料偏好','forgot-while-awaiting',136);db.commit()
                     return NS(completion_text=json.dumps({'summary':'近期口味改为咖啡；相互交流认真而可靠。',
                         'fact_operations':[{'op':'revise','scope':SCOPE,'subject':PERSON,'name':'饮料偏好',
                                             'expected':existing['facts'],'value':'咖啡','importance':.9}],
@@ -224,8 +307,29 @@ class SemanticReflectionOperations(unittest.IsolatedAsyncioTestCase):
                                                 'affinity':36,'trust':.8,'impression':'交流认真可靠，逐渐亲近。'}]},ensure_ascii=False))
                 metrics={};reflection=store.reflection
                 reflection.binding=(cfg,NS(text_chat=chat),lambda:True,metrics,contextvars.ContextVar('semantic_reflection',default=None))
-                self.assertTrue(reflection.retry());await reflection.task
+                with patch('semantic_batch.commit',side_effect=RuntimeError('forced_test_rollback')) if fail else patch('semantic_batch.commit',wraps=__import__('semantic_batch').commit):
+                    self.assertTrue(reflection.retry())
+                    if close:
+                        with self.assertRaises(asyncio.CancelledError):await reflection.task
+                    else:await reflection.task
                 self.assertEqual(len(calls),1)
+                audit_row=db.execute('SELECT checkpoint_id,summary_id,state,counts FROM memory_operation_audits').fetchone()
+                if fail or forget or malformed or provider_failure or close:
+                    self.assertIsNone(audit_row[0]);self.assertIsNone(audit_row[1])
+                    self.assertEqual(audit_row[2],'discarded' if forget else 'rolled_back')
+                    self.assertEqual(db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints').fetchone()[0],0)
+                    self.assertEqual(db.execute('SELECT count(*) FROM relations WHERE scope=?',(SCOPE,)).fetchone()[0],0)
+                    if malformed or provider_failure or close:
+                        self.assertEqual(db.execute('SELECT count(*) FROM memory_operation_audit_details').fetchone()[0],0)
+                        decode_status=db.execute('SELECT decode_status FROM memory_operation_audits').fetchone()[0]
+                        self.assertEqual(decode_status,'not_received' if provider_failure or close else 'fallback_text')
+                        self.assertIsNone(json.loads(audit_row[3])['relations']['omitted'])
+                    elif forget:self.assertEqual(db.execute('SELECT count(*) FROM memory_operation_audit_details').fetchone()[0],0)
+                    else:
+                        self.assertEqual(json.loads(audit_row[3])['relations']['accepted'],1)
+                        self.assertEqual(fact_rows(db,SCOPE,PERSON)[0][1],'红茶')
+                    return
+                self.assertEqual(audit_row[:3],(db.execute('SELECT id FROM memory_reconstruction_checkpoints').fetchone()[0],db.execute('SELECT id FROM memory_summaries').fetchone()[0],'committed'))
                 self.assertEqual(metrics.get('semanticMemoryUpdates'),2)
                 self.assertEqual([(r[0],r[1]) for r in fact_rows(db,SCOPE,PERSON)],[('饮料偏好','咖啡')])
                 self.assertEqual(db.execute('SELECT affinity,trust,impression FROM relations WHERE scope=?',(SCOPE,)).fetchone(),(36,.8,'交流认真可靠，逐渐亲近。'))

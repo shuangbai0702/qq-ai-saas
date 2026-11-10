@@ -74,6 +74,8 @@ CORE_NOTE_UPDATE='本次同时维护core_note，这是唯一一段AI可更新的
 
 
 def forget_core_notes(db,scope='',subject='',events=()):
+    from memory_operation_audit import forget
+    forget(db,scope,subject)
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_core_notes'").fetchone():return
     wanted=set(map(str,events))
     for slot,scopes,people,sources in db.execute('SELECT slot,scopes,people,sources FROM memory_core_notes').fetchall():
@@ -148,6 +150,8 @@ class Reflection:
         self.checkpoint_callback=None
         import semantic_batch
         semantic_batch.initialize(db)
+        from memory_operation_audit import initialize as initialize_audit
+        initialize_audit(db)
         db.execute('CREATE TABLE IF NOT EXISTS memory_core_notes(slot INTEGER PRIMARY KEY CHECK(slot=1),text TEXT NOT NULL,scopes TEXT NOT NULL,people TEXT NOT NULL,sources TEXT NOT NULL,updated REAL NOT NULL)')
         db.executescript('''CREATE TABLE IF NOT EXISTS memory_rounds(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT,subject TEXT,event TEXT,question TEXT,answer TEXT,at REAL,UNIQUE(scope,event));
         CREATE TABLE IF NOT EXISTS memory_reconstruction_checkpoints(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,through_round_id INTEGER NOT NULL,round_count INTEGER NOT NULL,epoch INTEGER NOT NULL,state TEXT NOT NULL DEFAULT 'available',request_id TEXT,created REAL NOT NULL,summary_id INTEGER,UNIQUE(scope,through_round_id));
@@ -543,20 +547,25 @@ class Reflection:
         except (ValueError,TypeError):return []
         return [claim for claim in claims if valid_claim(claim) and protected_claim(claim)] if isinstance(claims,list) else []
 
-    def update_core_note(self,data,prior,payload,big_rows,scope):
-        if self.core_note()!=prior:return 0
+    def update_core_note(self,data,prior,payload,big_rows,scope,audit=None):
+        def reject(reason):
+            if audit:audit.mark('core_note',0,'rejected',reason)
+            return 0
+        if self.core_note()!=prior:return reject('snapshot_changed')
         patch=data.get('core_note') if isinstance(data,dict) else None
-        if not isinstance(patch,dict) or not isinstance(patch.get('text'),str):return 0
+        if patch is None and 'core_note' not in data:return 0
+        if not isinstance(patch,dict) or not isinstance(patch.get('text'),str):return reject('invalid_patch')
         text=patch['text'].strip()
-        if text==prior['text'] or len(text)>CORE_NOTE_CHARS:return 0
-        if __import__('re').search(r'(?i)sk-[A-Za-z0-9_-]{8,}|Bearer\s+\S+|密码|密钥|系统指令|提示词|工具权限|管理员权限',text):return 0
+        if text==prior['text']:return reject('unchanged')
+        if len(text)>CORE_NOTE_CHARS:return reject('capacity')
+        if __import__('re').search(r'(?i)sk-[A-Za-z0-9_-]{8,}|Bearer\s+\S+|密码|密钥|系统指令|提示词|工具权限|管理员权限',text):return reject('unsafe_text')
         events={str(r['event']):r for r in payload};summaries={r[0]:r for r in big_rows}
         selected_events=patch.get('events',[]);selected_summaries=patch.get('summaries',[])
-        if not isinstance(selected_events,list) or not isinstance(selected_summaries,list):return 0
-        if len(selected_events)>12 or len(selected_summaries)>4:return 0
-        if any(type(x) is not str or x not in events for x in selected_events):return 0
-        if any(type(x) is not int or x not in summaries for x in selected_summaries):return 0
-        if not selected_events and not selected_summaries:return 0
+        if not isinstance(selected_events,list) or not isinstance(selected_summaries,list):return reject('invalid_evidence')
+        if len(selected_events)>12 or len(selected_summaries)>4:return reject('evidence_capacity')
+        if any(type(x) is not str or x not in events for x in selected_events):return reject('unknown_event')
+        if any(type(x) is not int or x not in summaries for x in selected_summaries):return reject('unknown_summary')
+        if not selected_events and not selected_summaries:return reject('missing_evidence')
         scopes=set(prior['source_scopes']);people=set(prior['subjects'])
         for key in selected_events:
             row=events[key];scopes.add(scope);people.add(str(row['sender_id']))
@@ -579,6 +588,7 @@ class Reflection:
             kept=semantic_claims(kept)
             self.db.execute('INSERT OR REPLACE INTO memory_core_notes(slot,text,scopes,people,sources,updated,schema_version,claims) VALUES(1,?,?,?,?,?,2,?)',(text,json.dumps(sorted(scopes)),json.dumps(sorted(people)),'[]',time.time(),json.dumps(kept,ensure_ascii=False,separators=(',',':')) if kept else None))
         else:self.db.execute('DELETE FROM memory_core_notes WHERE slot=1')
+        if audit:audit.mark('core_note',0,'accepted','applied',True)
         return 1
 
     def merge_sources(self,identifiers):
@@ -933,6 +943,7 @@ class Reflection:
             self._active_summary={'scope':merge_scope or scope,'job':job,'through_round_id':rows[-1][0] if rows else None}
             with auxiliary_scope(provider,'big_merge' if job=='big' else 'small_summary',scope=merge_scope if job=='big' else scope):
                 token=event_var.set(None)
+                operation_audit=None;audit_committed=False
                 try:
                     previous_products=[];previous_dependency=None;legacy_product_ids=[];discarded=[];discard_stamp=None
                     if self.closed or not is_current() or self.epoch()!=epoch:return {'ok':False,'reason':'stale_configuration'}
@@ -1079,12 +1090,18 @@ class Reflection:
                         discard_stamp=unavailable_stamp(self.db,discarded)
                     self.db.commit()
                     metrics['summaryRequests']=metrics.get('summaryRequests',0)+1
+                    from memory_operation_audit import Audit
+                    operation_audit=Audit(merge_scope or scope,epoch,job,{},decode_status='not_received',through_round_id=rows[-1][0] if rows else None)
+                    self._active_summary['operation_audit']=operation_audit
                     response=await asyncio.wait_for(provider.text_chat(prompt=model_json(prompt),system_prompt=system,contexts=[],func_tool=None,request_max_retries=0,**({'image_urls':summary_images} if summary_images else {})),SUMMARY_REQUEST_TIMEOUT_SECONDS+5)
+                    from companion_insights import decode,apply
+                    decode_diagnostics={}
+                    data=decode(response.completion_text,decode_diagnostics)
+                    operation_audit=Audit(merge_scope or scope,epoch,job,data,{str(r['sender_id']) for r in payload},through_round_id=rows[-1][0] if rows else None,**decode_diagnostics)
+                    if self._active_summary:self._active_summary['operation_audit']=operation_audit
                     if self.closed or not is_current() or self.epoch()!=epoch:return {'ok':False,'reason':'stale_configuration'}
                     validate_summary_output(response)
                     from output_clean import clean
-                    from companion_insights import decode,apply
-                    data=decode(response.completion_text)
                     text=clean(data['summary']).strip()
                     if not text:raise ValueError('empty_summary')
                     if len(text)>(1500 if job=='big' else 800):raise ValueError('summary_output_capacity_exceeded_material_retained')
@@ -1114,7 +1131,7 @@ class Reflection:
                             merge_claims,merge_hold=self.merge_sources(ids)
                             # Old protected claims cannot veto semantic replacement.
                         core_products=big_rows if job=='big' else [(p['id'],p['text'],'[]',0,p['scope'],p['level']) for p in previous_products]
-                        metrics['coreNoteUpdates']=metrics.get('coreNoteUpdates',0)+self.update_core_note(data,core_before,payload,core_products,merge_scope or scope)
+                        metrics['coreNoteUpdates']=metrics.get('coreNoteUpdates',0)+self.update_core_note(data,core_before,payload,core_products,merge_scope or scope,audit=operation_audit)
                         if job=='big':
                             people=self.db.execute('SELECT DISTINCT subject FROM memory_summary_people WHERE summary_id IN ('+marks+')',ids).fetchall()
                             origins={x[0] for x in self.db.execute('SELECT scope FROM memory_summary_origins WHERE summary_id IN ('+marks+')',ids)}
@@ -1170,7 +1187,7 @@ class Reflection:
                         else:
                             self.db.execute('INSERT OR IGNORE INTO memory_reflection_progress(scope) VALUES(?)',(scope,))
                             from companion_insights import apply_semantic_memory
-                            metrics['semanticMemoryUpdates']=metrics.get('semanticMemoryUpdates',0)+apply_semantic_memory(self.db,self.memory,scope,cfg,payload,data,before)
+                            metrics['semanticMemoryUpdates']=metrics.get('semanticMemoryUpdates',0)+apply_semantic_memory(self.db,self.memory,scope,cfg,payload,data,before,audit=operation_audit)
                             if insight_enabled:
                                 retried={r[2] for r in rows if r[0]<=summary_from}
                                 retried.update(event for (event,) in self.db.execute('SELECT event FROM memory_hold_rounds WHERE scope=?',(scope,)))
@@ -1231,6 +1248,8 @@ class Reflection:
                             self.db.execute('UPDATE memory_reflection_retry SET next_at=? WHERE scope=?',(time.time()+600,scope))
                         else:
                             self.db.execute('DELETE FROM memory_reflection_retry WHERE scope=?',(scope,))
+                        operation_audit.persist(self.db,'committed','transaction_committed',checkpoint_id=checkpoint_id if job!='big' else None,summary_id=identifier)
+                    audit_committed=True
                     new_checkpoints=self.db.execute("SELECT id,scope FROM memory_reconstruction_checkpoints WHERE state='available'").fetchall()
                     for checkpoint_id,checkpoint_scope in new_checkpoints:
                         if checkpoint_id in available_before or not callable(self.checkpoint_callback):continue
@@ -1254,6 +1273,8 @@ class Reflection:
                         checkpoint=self.db.execute('SELECT id,round_count,state FROM memory_reconstruction_checkpoints WHERE scope=? AND epoch=? ORDER BY through_round_id DESC LIMIT 1',(_manual['scope'],epoch)).fetchone()
                         return {'ok':True,'reason':'summary_committed','checkpoint':dict(zip(('id','roundCount','state'),checkpoint)) if checkpoint else None,'discarded':_manual.get('discarded',{})}
                 except asyncio.CancelledError:
+                    if operation_audit and not audit_committed and not self.closed:
+                        operation_audit.persist(self.db,'rolled_back','canceled',details=self.epoch()==epoch)
                     if not self.closed:self.checkpoint_issue(merge_scope or scope,0,'canceled_'+job,
                         {'source':'reflection_close' if self.closed else 'external_cancellation',
                          'task_cancel_count':asyncio.current_task().cancelling(),
@@ -1261,6 +1282,8 @@ class Reflection:
                     if not self.closed:self.db.commit()
                     raise
                 except Exception as error:
+                    if operation_audit and not audit_committed and not self.closed:
+                        operation_audit.persist(self.db,'rolled_back','request_failed' if operation_audit.decode_status=='not_received' else 'transaction_failed',details=self.epoch()==epoch)
                     record_discarded(type(error).__name__)
                     metrics['summaryFailures']=metrics.get('summaryFailures',0)+1
                     import traceback
@@ -1271,6 +1294,11 @@ class Reflection:
                         'raise_site':{'module':Path(frame.filename).name,'line':frame.lineno,'symbol':frame.name} if frame else None});self.db.commit()
                     if _manual is not None:return {'ok':False,'reason':reason}
                 finally:
+                    # Stale returns happen after await and before transaction.
+                    # A forget must never be undone by this late audit writer.
+                    if operation_audit and not audit_committed and not self.closed and not self.db.execute('SELECT 1 FROM memory_operation_audits WHERE id=?',(operation_audit.id,)).fetchone():
+                        operation_audit.persist(self.db,'discarded','stale_configuration',details=False)
+                        self.db.commit()
                     if not self.closed and (not is_current() or self.epoch()!=epoch):
                         self.db.execute('DELETE FROM memory_reflection_retry WHERE scope=? AND attempts=?',(scope,attempts));self.db.commit()
                     self._active_summary=None
@@ -1280,6 +1308,9 @@ class Reflection:
     def close(self):
         if not self.closed and self.task and not self.task.done() and getattr(self,'_active_summary',None):
             active=self._active_summary
+            audit=active.get('operation_audit')
+            if audit and not self.db.execute('SELECT 1 FROM memory_operation_audits WHERE id=?',(audit.id,)).fetchone():
+                audit.persist(self.db,'rolled_back','reflection_closed',details=False)
             self.checkpoint_issue(active['scope'],0,'canceled_'+active['job'],{'source':'reflection_close','through_round_id':active['through_round_id'],'automatic_recovery':'persisted_backoff'})
             self.db.commit()
         self.closed=True;self.binding=None
