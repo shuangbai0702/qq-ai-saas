@@ -261,7 +261,10 @@ class SemanticReflectionOperations(unittest.IsolatedAsyncioTestCase):
     async def test_reflection_close_records_cancellation_without_late_targets(self):
         await self.run_batch(close=True)
 
-    async def run_batch(self,fail=False,forget=False,malformed=False,provider_failure=False,close=False):
+    async def test_same_checkpoint_can_replace_core_note_and_update_other_memory_together(self):
+        await self.run_batch(core=True)
+
+    async def run_batch(self,fail=False,forget=False,malformed=False,provider_failure=False,close=False,core=False):
         from context_protocol import SOURCE,model_json
         from readonly_journal import Prepared,ReadonlyJournal
         from semantic_runtime import finish_semantic_batches
@@ -296,6 +299,9 @@ class SemanticReflectionOperations(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(existing['facts'][0]['value'],'红茶')
                     self.assertEqual(existing['relation_history'][0]['affinity'],17)
                     self.assertIn('existing_memory.fact',kw['system_prompt'])
+                    if core:
+                        self.assertIn('性格表现、表达习惯',kw['system_prompt'])
+                        self.assertIn('不是每次只追加',kw['system_prompt'])
                     if close:store.reflection.close();await asyncio.sleep(0)
                     if provider_failure:raise RuntimeError('test provider unavailable')
                     if malformed:return NS(completion_text='{"summary": broken JSON')
@@ -304,7 +310,8 @@ class SemanticReflectionOperations(unittest.IsolatedAsyncioTestCase):
                         'fact_operations':[{'op':'revise','scope':SCOPE,'subject':PERSON,'name':'饮料偏好',
                                             'expected':existing['facts'],'value':'咖啡','importance':.9}],
                         'relation_operations':[{'scope':SCOPE,'subject':PERSON,'expected':None,
-                                                'affinity':36,'trust':.8,'impression':'交流认真可靠，逐渐亲近。'}]},ensure_ascii=False))
+                                                'affinity':36,'trust':.8,'impression':'交流认真可靠，逐渐亲近。'}],
+                        **({'core_note':{'text':'喜欢直率交流，表达简短；愿意坦诚提出分歧。','events':[prompt['turns'][0]['event']]}} if core else {})},ensure_ascii=False))
                 metrics={};reflection=store.reflection
                 reflection.binding=(cfg,NS(text_chat=chat),lambda:True,metrics,contextvars.ContextVar('semantic_reflection',default=None))
                 with patch('semantic_batch.commit',side_effect=RuntimeError('forced_test_rollback')) if fail else patch('semantic_batch.commit',wraps=__import__('semantic_batch').commit):
@@ -331,6 +338,9 @@ class SemanticReflectionOperations(unittest.IsolatedAsyncioTestCase):
                     return
                 self.assertEqual(audit_row[:3],(db.execute('SELECT id FROM memory_reconstruction_checkpoints').fetchone()[0],db.execute('SELECT id FROM memory_summaries').fetchone()[0],'committed'))
                 self.assertEqual(metrics.get('semanticMemoryUpdates'),2)
+                if core:
+                    self.assertEqual(store.reflection.core_note()['text'],'喜欢直率交流，表达简短；愿意坦诚提出分歧。')
+                    self.assertEqual(metrics.get('coreNoteUpdates'),1)
                 self.assertEqual([(r[0],r[1]) for r in fact_rows(db,SCOPE,PERSON)],[('饮料偏好','咖啡')])
                 self.assertEqual(db.execute('SELECT affinity,trust,impression FROM relations WHERE scope=?',(SCOPE,)).fetchone(),(36,.8,'交流认真可靠，逐渐亲近。'))
                 self.assertEqual(db.execute('SELECT affinity FROM relations WHERE scope=?',('private:'+PERSON,)).fetchone(),(17,))

@@ -28,15 +28,15 @@ class Planner:
         if self.closed or not current() or b.get('enabled',True) is False or not (cfg.get('proactive') or b.get('ownerContactEnabled',autonomy.BEHAVIOR_DEFAULTS['ownerContactEnabled'])) or not provider:return
         # A broken credential must not turn every planning sweep into another
         # doomed request; per-bot backoff resumes on the next config apply (C).
-        if autonomy.auth_paused(lease,'companion_plan'):return
         # Quiet hours block actions, not the local clock established on enable.
         autonomy.owner_state(self.db,cfg,now)
         if quiet(cfg,now) or self.task and not self.task.done():return
         if b.get('dailyProactiveLimit',10)<=0 or b.get('hourlyInterjectionLimit',20)<=0:return
         owner=autonomy.owner_check_candidate(self.db,cfg,now)
-        if owner:
+        if owner and not autonomy.auth_paused(lease,'owner_contact'):
             self.start_owner(cfg,provider,current,event_var,metrics,owner,now,lease=lease)
             return
+        if autonomy.auth_paused(lease,'companion_plan'):return
         if not cfg.get('proactive') or not b.get('proactiveModelSchedule'):return
         send_day=datetime.fromtimestamp(now,timezone(timedelta(hours=8))).date().isoformat()
         sent=self.db.execute('SELECT coalesce(sum(count),0) FROM deliveries WHERE day=?',(send_day,)).fetchone()[0]
@@ -87,7 +87,7 @@ class Planner:
                     metrics['planRequests']=metrics.get('planRequests',0)+1
                     memory_version=decision_version(self.db,scope)
                     recent=[{'sender_id':r[0],'text':r[1][:180],'at':r[2],'source_event':r[3],'source_scope':scope} for r in self.db.execute('SELECT subject,question,at,event FROM memory_pending WHERE scope=? ORDER BY at DESC LIMIT 8',(scope,))] if b.get('memory',True) else []
-                    result=await asyncio.wait_for(provider.text_chat(**decision_request({'persona':str(cfg.get('systemPrompt') or ''),'owner_id':str(b.get('ownerUin') or ''),'scope':scope,'memory':decision_memory(self.db,cfg,scope,subject,now),'companion':companion_state.context(self.db,cfg,scope,now),'current_time':datetime.fromtimestamp(now,timezone(timedelta(hours=8))).isoformat(),'last_user_text':candidate[4],'last_bot_text':candidate[5],'last_user_at':candidate[1],'last_bot_at':candidate[2] or None,'idle_seconds':max(0,int(now-anchor)),'recent_received':recent,'cooldown_base_seconds':autonomy.cooldown_base(cfg,scope,'plan'),'unanswered':candidate[6],'contact_subject':subject,'eligible_members':members},SYSTEM+autonomy.COOLDOWN_SYSTEM+' 群聊可额外输出contact_subject，从eligible_members的真实subject中选择最适合延续兴趣或未完话题的人；不能选择列表外的人。无需为了联系而强造话题，联系理由不成立就contact=false。',reference_first=True),func_tool=None),15)
+                    result=await asyncio.wait_for(provider.text_chat(**decision_request({'persona':str(cfg.get('systemPrompt') or ''),'owner_id':str(b.get('ownerUin') or ''),'scope':scope,'memory':decision_memory(self.db,cfg,scope,subject,now,subjects=[m['subject'] for m in members]),'companion':companion_state.context(self.db,cfg,scope,now),'current_time':datetime.fromtimestamp(now,timezone(timedelta(hours=8))).isoformat(),'last_user_text':candidate[4],'last_bot_text':candidate[5],'last_user_at':candidate[1],'last_bot_at':candidate[2] or None,'idle_seconds':max(0,int(now-anchor)),'recent_received':recent,'cooldown_base_seconds':autonomy.cooldown_base(cfg,scope,'plan'),'unanswered':candidate[6],'contact_subject':subject,'eligible_members':members},SYSTEM+autonomy.COOLDOWN_SYSTEM+' 群聊可额外输出contact_subject，从eligible_members的真实subject中选择最适合延续兴趣或未完话题的人；不能选择列表外的人。无需为了联系而强造话题，联系理由不成立就contact=false。',reference_first=True),func_tool=None),15)
                     if self.closed or not current():discarded('runtime_replaced');return
                     metrics['lastPlanUsage']={'at':time.time(),**usage_evidence(result)}
                     reason=stale_reason(time.time(),started=True)
@@ -176,9 +176,10 @@ class Planner:
                     if not latest or latest[0]!=owner or latest[2][2:5]!=contact[2:5] or paused(self.db,scope,time.time()) or quiet(cfg,time.time()):
                         metrics['lastOwnerDecision']={'at':now,'contact':False,'reason':'conversation_changed'}
                         discarded('conversation_changed');result_record('conversation_changed');return
+                    if metrics['lastOwnerUsage'].get('finishReason')=='length':raise ValueError('owner_output_truncated')
                     data=autonomy.parse_object(result.completion_text)
                     autonomy.model_cooldown(data)
-                    if type(data.get('contact')) is not bool or not isinstance(data.get('topic'),str):raise ValueError('Invalid owner decision')
+                    if type(data.get('contact')) is not bool or not isinstance(data.get('topic'),str) or 'reason' in data and (not isinstance(data['reason'],str) or len(data['reason'])>240):raise ValueError('Invalid owner decision')
                     topic=data['topic'].strip()[:80];allowed=bool(data['contact'] and topic)
                     with self.db:
                         changed=self.db.execute('UPDATE autonomy_owner SET allowed=?,topic=? WHERE owner=? AND checked=? AND version=?',(int(allowed),topic,owner,now,state[2])).rowcount
@@ -193,7 +194,7 @@ class Planner:
                     if autonomy.failure_class(error)=='auth':autonomy.note_auth_failure(lease,'owner_contact')
                     if not self.closed and current():
                         metrics['ownerDecisionFailures']=metrics.get('ownerDecisionFailures',0)+1
-                        metrics['lastOwnerDecision']={'at':now,'contact':False,'reason':type(error).__name__}
+                        metrics['lastOwnerDecision']={'at':now,'contact':None,'status':'failed','reason':str(error) if str(error)=='owner_output_truncated' else type(error).__name__,'failureClass':autonomy.failure_class(error)}
                         result_record('timeout' if isinstance(error,TimeoutError) else 'error:'+type(error).__name__)
                 finally:autonomy.decision_token_limit.reset(limit_token);event_var.reset(token)
         self.task=asyncio.create_task(run())

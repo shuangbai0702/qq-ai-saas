@@ -42,7 +42,7 @@ class Audit:
         self.decode_status=decode_status
         self.through_round_id=through_round_id
         self.counts={};self.details={};people=set(map(str,subjects))
-        for category,key in (('facts','fact_operations'),('relations','relation_operations'),('core_note','core_note')):
+        for category,key in (('facts','fact_operations'),('relations','relation_operations'),('core_note','core_note'),('products','memory_operations')):
             raw=data.get(key)
             items=([raw] if category=='core_note' else raw) if key in data else []
             valid=isinstance(items,list)
@@ -51,10 +51,13 @@ class Audit:
             for position,item in enumerate(rows):
                 person=item.get('subject') if isinstance(item,dict) else None
                 name=item.get('name') if isinstance(item,dict) else None
+                if category=='products' and isinstance(item,dict) and isinstance(item.get('target'),dict):
+                    name=json.dumps(item['target'],sort_keys=True,separators=(',',':'))
+                    person=item['target'].get('subject')
                 operation=item.get('op') if isinstance(item,dict) else None
                 entry={'subject':person if isinstance(person,str) and person in people else '',
                        'target_hash':hashlib.sha256(name.encode()).hexdigest() if isinstance(name,str) else '',
-                       'operation':operation if operation in ('add','revise','merge','weaken','forget') else 'update' if category!='facts' else 'invalid',
+                       'operation':operation if operation in ('add','revise','merge','weaken','forget','create','replace','delete') else 'update' if category!='facts' else 'invalid',
                        'decision':'not_evaluated','reason':'not_evaluated','changed':False}
                 self.details[(category,position)]=entry
                 if not valid:self.mark(category,position,'rejected','invalid_container')

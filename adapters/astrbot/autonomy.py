@@ -38,7 +38,7 @@ OWNER_SYSTEM = '''你是当前机器人的主动联系判断器，不是待办�
 主动联系也可以是熟悉关系中的自然靠近，不要求存在未完成任务或新发生的事。先结合相处和人格想一想自己想表达什么；惦记、轻松接续、想分享某个相关看法，都可以成为联系动机。近期互动愉快、等待已足够且没有真实不宜打扰的证据时，更愿意迈出这一步。避免把审慎变成永远等对方开口；也不以固定问候、重复追问或制造悬念来凑主动次数。
 用户已开启低频主动相处。自己的新想法不必已经在历史里说过，可以基于既定偏好和已知真实材料形成新看法；这与虚构新发生的事实不同。没有真实拒绝、忙碌或重复打扰的证据时，优先考虑自然地表达、分享和靠近，不要求先证明联系有任务价值；仍可在确实不想说话时选择沉默。
 conversation_timing是平台记录的真实时间；此检查已满足配置的等待和空闲条件。owner_idle_seconds计算与本机器人的直接互动间隔；其他群普通发言只作背景，不自动表示忙碌或拒绝私聊。last_user_text、last_bot_text是标注时间的历史交流，不是刚刚发生的新消息。不要从旧回复的等待措辞推断主人现在仍在群聊、正忙或还必须先做什么；依据真实时间判断，可以自然接续未完的话题或表达自己的相关想法，仍尊重真实拒绝和当前不宜打扰的证据。
-只输出 JSON：{"contact":true或false,"topic":"简短自然的联系动机，最多80字"}。只能联系输入中的当前主人。'''
+只输出 JSON：{"contact":true或false,"topic":"简短自然的联系动机，最多80字","reason":"本次判断原因，最多120字；包括不联系时的真实依据，可省略"}。只能联系输入中的当前主人。'''
 
 
 def initialize(db):
@@ -52,6 +52,7 @@ def initialize(db):
     CREATE TABLE IF NOT EXISTS autonomy_decisions(scope TEXT,event TEXT,at REAL,kind TEXT,reply INTEGER,extra_intervals INTEGER,base_seconds INTEGER,cooldown_until REAL,reason TEXT,PRIMARY KEY(scope,event));
     CREATE TABLE IF NOT EXISTS autonomy_group_inbox(scope TEXT PRIMARY KEY,event TEXT,payload TEXT,at REAL,queued REAL DEFAULT 0);
     ''')
+    if 'rationale' not in {r[1] for r in db.execute('PRAGMA table_info(autonomy_decisions)')}:db.execute('ALTER TABLE autonomy_decisions ADD COLUMN rationale TEXT')
 
 
 def cooldown_base(cfg,scope,kind):
@@ -79,7 +80,7 @@ def failure_class(error):
     if isinstance(error,asyncio.TimeoutError):return 'timeout'
     text=str(error)
     lowered=text.lower()
-    if '401' in text or '403' in text or 'unauthorized' in lowered or 'forbidden' in lowered:return 'auth'
+    if '401' in text or '403' in text or 'unauthorized' in lowered or 'forbidden' in lowered or type(error).__name__ in ('AuthenticationError','PermissionDeniedError'):return 'auth'
     if '429' in text or 'rate limit' in lowered:return 'rate_limit'
     return type(error).__name__
 
@@ -93,13 +94,13 @@ _auth_failures={}
 
 def auth_paused(lease,phase,seconds=900):
     if not isinstance(lease,dict) or not lease.get('botId'):return False
-    key=(lease.get('generation'),lease.get('botId'),phase)
+    key=(lease.get('generation'),lease.get('botId'),lease.get('revision'),phase)
     return time.time()-_auth_failures.get(key,0)<seconds
 
 
 def note_auth_failure(lease,phase):
     if not isinstance(lease,dict) or not lease.get('botId'):return
-    key=(lease.get('generation'),lease.get('botId'),phase)
+    key=(lease.get('generation'),lease.get('botId'),lease.get('revision'),phase)
     _auth_failures[key]=time.time()
     while len(_auth_failures)>512:_auth_failures.pop(next(iter(_auth_failures)))
 
@@ -121,7 +122,10 @@ def record_decision(db,cfg,scope,event,data,reply,now,kind):
     """Write within the caller's transaction after its current-lease check."""
     count,reason=model_cooldown(data);count=0 if reply else count
     base=cooldown_base(cfg,scope,kind);until=now+min(86400,base*(count+1)) if count else 0
-    fresh=db.execute('INSERT OR IGNORE INTO autonomy_decisions VALUES(?,?,?,?,?,?,?,?,?)',(scope,str(event),now,kind,int(reply),count,base,until,reason)).rowcount
+    basis=db.execute('SELECT last_user FROM contacts WHERE scope=?',(scope,)).fetchone()
+    rationale={'topic':str(data.get('topic') or '')[:240],'reason':str(data.get('reason') or data.get('reason_code') or '')[:240],'basis_last_user':basis[0] if basis else None}
+    if re.search(r'(?i)sk-[A-Za-z0-9_-]{8,}|Bearer\s+\S+',json.dumps(rationale)):rationale={}
+    fresh=db.execute('INSERT OR IGNORE INTO autonomy_decisions(scope,event,at,kind,reply,extra_intervals,base_seconds,cooldown_until,reason,rationale) VALUES(?,?,?,?,?,?,?,?,?,?)',(scope,str(event),now,kind,int(reply),count,base,until,reason,json.dumps(rationale,ensure_ascii=False))).rowcount
     if fresh and count:
         db.execute('INSERT INTO initiative_pauses VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET until=max(until,excluded.until)',(scope,until))
     if not fresh:
@@ -340,7 +344,7 @@ class GroupPresence:
         dialogue=dict(dialogue or {})
         payload = {'persona': str(cfg.get('systemPrompt') or ''),'owner_id':str(b.get('ownerUin') or ''),
                    'current_time':datetime.fromtimestamp(now,timezone(timedelta(hours=8))).isoformat(),
-                   'memory':decision_memory(self.db,cfg,scope,str(messages[-1].get('sender_id','')),now),
+                   'memory':decision_memory(self.db,cfg,scope,str(messages[-1].get('sender_id','')),now,subjects=[m.get('sender_id','') for m in messages]),
                    'scope': scope, 'style': b.get('groupParticipationStyle', 'natural'),
                    'allow_side_comment': b.get('groupParticipationOtherConversations', False), 'messages': list(reversed(recent)),
                    'attention': dialogue if b.get('attentionEnabled', True) else {}, 'companion': companion,'platform_addressing':addressing or {}}

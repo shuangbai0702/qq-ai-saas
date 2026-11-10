@@ -155,6 +155,7 @@ def run(file, data, connection=None):
             if not old or old[0]!=data['expectedLastSeen']:return {'error':'关系状态已变化，请刷新后重试','status':409}
             from memory_operation_audit import forget as forget_operation_audit
             forget_operation_audit(db,scope,data['subject'],relations_only=True)
+            if 'rationale' in {r[1] for r in db.execute('PRAGMA table_info(autonomy_decisions)')}:db.execute('UPDATE autonomy_decisions SET rationale=NULL')
             db.execute('DELETE FROM relations WHERE scope=? AND subject=?',(scope,data['subject']))
             if 'relation_progress' in tables:
                 db.execute('DELETE FROM relation_progress WHERE scope=? AND subject=?',(scope,data['subject']))
@@ -168,7 +169,7 @@ def run(file, data, connection=None):
             # cannot grant or revoke platform permission.
             db.execute('UPDATE contacts SET opted_out=1 WHERE scope=?', (scope,))
             if 'autonomy_decisions' in tables:
-                at=time.time();db.execute("INSERT INTO autonomy_decisions VALUES(?,?,?,'operator',0,0,0,0,'manual_pause')",(scope,'operator:'+str(at),at))
+                at=time.time();db.execute("INSERT INTO autonomy_decisions(scope,event,at,kind,reply,extra_intervals,base_seconds,cooldown_until,reason) VALUES(?,?,?,'operator',0,0,0,0,'manual_pause')",(scope,'operator:'+str(at),at))
         else:
             return {'error': '不支持的数据操作', 'status': 400}
         db.commit()
