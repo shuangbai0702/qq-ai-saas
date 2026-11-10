@@ -133,5 +133,45 @@ class AllScopeCleanup(unittest.TestCase):
         self.assertEqual(storage.read_snapshot(self.db,self.key)['wire'],self.messages)
         self.assertEqual(self.db.execute('SELECT sources FROM memory_core_notes').fetchone()[0],'["old source"]')
 
+    def legacy_archive(self,created=50,grant=True):
+        self.db.execute('UPDATE memory_semantic_batches SET cutoff=100')
+        self.db.execute('CREATE TABLE fishbot_operator_session_archives(authorization PRIMARY KEY,scope,archive,sha,created)')
+        self.db.execute('CREATE TABLE memory_semantic_discard_audit(checkpoint_id,administrator,request_id,missing_count,incomplete_count,conflict_count,created)')
+        value={'scope':self.key,'base':[self.system,{'role':'user','content':'UNBOUND ORIGINAL'}],
+               'wire':[self.system,{'role':'user','content':'UNBOUND ORIGINAL'}],'state':{'raw':'OLD CACHE'}}
+        payload,_=storage.encode(value)
+        archive={'journal':{'version':2,'payload':payload,'sha':hashlib.sha256(payload.encode()).hexdigest()},
+                 'sdkConversations':[['OLD NATIVE HISTORY']],
+                 'evidence':{'dialogue_feedback':{'columns':['event'],'rows':[['unbound']]}}}
+        raw=model_json(archive)
+        self.db.execute('INSERT INTO fishbot_operator_session_archives VALUES(?,?,?,?,?)',('archive',self.key,raw,hashlib.sha256(raw.encode()).hexdigest(),created))
+        if grant:self.db.execute("INSERT INTO memory_semantic_discard_audit VALUES(1,'administrator','request',0,0,0,1)")
+        self.db.commit()
+
+    def test_admin_loss_grant_cleans_old_unbound_archives_and_native_copies(self):
+        self.legacy_archive()
+        with self.db:batch.purge(self.db,1)
+        raw,sha=self.db.execute('SELECT archive,sha FROM fishbot_operator_session_archives').fetchone()
+        self.assertEqual(hashlib.sha256(raw.encode()).hexdigest(),sha)
+        self.assertNotIn('UNBOUND ORIGINAL',raw);self.assertNotIn('OLD NATIVE HISTORY',raw);self.assertNotIn('OLD CACHE',raw)
+        archive=json.loads(raw);journal=archive['journal'];value=storage.decode(journal['payload'],self.key,lambda *_:None)
+        self.assertEqual(value['wire'],[self.system]);self.assertEqual(value['base'],[self.system])
+        self.assertEqual(archive['evidence']['dialogue_feedback']['rows'],[])
+
+    def test_default_and_new_archive_do_not_gain_loss_permission(self):
+        self.legacy_archive(grant=False)
+        with self.db:batch.purge(self.db,1)
+        self.assertIn('UNBOUND ORIGINAL',self.db.execute('SELECT archive FROM fishbot_operator_session_archives').fetchone()[0])
+        self.db.execute("INSERT INTO memory_semantic_discard_audit VALUES(1,'administrator','request',0,0,0,1)")
+        self.db.execute('UPDATE fishbot_operator_session_archives SET created=101');self.db.commit()
+        with self.db:batch.purge(self.db,1)
+        self.assertIn('UNBOUND ORIGINAL',self.db.execute('SELECT archive FROM fishbot_operator_session_archives').fetchone()[0])
+
+    def test_owned_input_blocks_unbound_archive_disposal(self):
+        self.legacy_archive()
+        self.db.execute("INSERT INTO pipeline_work_inputs VALUES(?,'unbound','owned','real input')",(self.channel,));self.db.commit()
+        with self.assertRaisesRegex(ValueError,'semantic_archive_input_still_owned'):batch.purge(self.db,1)
+        self.assertIn('UNBOUND ORIGINAL',self.db.execute('SELECT archive FROM fishbot_operator_session_archives').fetchone()[0])
+
 
 if __name__=='__main__':unittest.main()

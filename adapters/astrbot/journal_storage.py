@@ -143,14 +143,43 @@ def retire_archived_members(db,checkpoint_id):
                     changed+=1
         if 'fishbot_operator_session_archives' in tables:
             updates=[]
-            for identifier,key,encoded,sha in db.execute('SELECT authorization,scope,archive,sha FROM fishbot_operator_session_archives').fetchall():
+            columns={r[1] for r in db.execute('PRAGMA table_info(fishbot_operator_session_archives)')}
+            created='created' if 'created' in columns else 'NULL'
+            grant=None
+            if scope=='bot_shared' and 'memory_semantic_discard_audit' in tables:
+                grant=db.execute('SELECT b.cutoff FROM memory_semantic_batches b JOIN memory_semantic_discard_audit a ON a.checkpoint_id=b.checkpoint_id WHERE b.checkpoint_id=? AND length(a.administrator)>0 AND length(a.request_id)>0',(checkpoint_id,)).fetchone()
+            for identifier,key,encoded,sha,captured in db.execute('SELECT authorization,scope,archive,sha,'+created+' FROM fishbot_operator_session_archives').fetchall():
                 if hashlib.sha256(encoded.encode()).hexdigest()!=sha:raise ValueError('operator_archive_integrity')
                 archive=json.loads(encoded);original=copy.deepcopy(archive);journal=archive['journal']
                 update=snapshot(journal['version'],journal['payload'],key,journal.get('sha')) if journal is not None else None
                 if update:journal.update(zip(('version','payload','sha'),update))
+                # Legacy operator snapshots can contain native SDK history or
+                # unbound messages that no longer have an event identity. Only
+                # an explicit administrator loss grant permits discarding this
+                # old diagnostic copy whole; ordinary retirement stays exact.
+                discard_legacy=bool(grant and type(captured) in (int,float) and 0<captured<=grant[0])
+                if discard_legacy:
+                    channel=json.loads(key)
+                    for logical in {scope,channel}:
+                        if 'pipeline_scope_work' in tables and db.execute('SELECT 1 FROM pipeline_scope_work WHERE scope=?',(logical,)).fetchone():raise ValueError('semantic_archive_work_still_active')
+                        if 'pipeline_work_inputs' in tables and db.execute("SELECT 1 FROM pipeline_work_inputs WHERE scope=? AND status='owned'",(logical,)).fetchone():raise ValueError('semantic_archive_input_still_owned')
+                    if journal is not None:
+                        def blob(channel,digest):
+                            row=db.execute('SELECT data FROM fishbot_readonly_journal_blobs WHERE scope=? AND sha=?',(channel,digest)).fetchone()
+                            return row[0] if row else None
+                        value=json.loads(journal['payload']) if journal['version']==1 else decode(journal['payload'],key,blob)
+                        for field in ('base','wire'):value[field]=[m for m in value[field] if m.get('role') in ('system','developer')]
+                        value['state']={}
+                        payload,blobs=encode(value)
+                        for digest,raw in blobs.items():db.execute('INSERT OR IGNORE INTO fishbot_readonly_journal_blobs(scope,sha,data) VALUES(?,?,?)',(key,digest,raw))
+                        journal.update(version=VERSION,payload=payload,sha=hashlib.sha256(payload.encode()).hexdigest())
+                    archive.pop('sdkConversations',None);archive.pop('sdkPreference',None)
+                    archive['retirement']={'checkpoint':checkpoint_id,'mode':'administrator_discard_unavailable'}
                 for name,evidence in archive.get('evidence',{}).items():
                     if name not in ('memory_rounds','memory_round_material','memory_pending','memory_pending_rounds','memory_hold_rounds',
-                                    'memory_summary_coverage','memory_summary_unresolved','memory_media_retirement_choices','memory_message_sources'):continue
+                                    'memory_summary_coverage','memory_summary_unresolved','memory_media_retirement_choices','memory_message_sources','dialogue_feedback'):continue
+                    if discard_legacy:
+                        evidence['rows']=[];continue
                     columns=evidence['columns']
                     if 'event' not in columns:continue
                     event_index=columns.index('event');scope_index=columns.index('scope') if 'scope' in columns else None
