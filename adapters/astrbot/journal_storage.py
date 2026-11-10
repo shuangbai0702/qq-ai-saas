@@ -98,32 +98,23 @@ def retire_archived_members(db,checkpoint_id):
             return blob[0] if blob else None
         value=json.loads(payload) if version==1 else decode(payload,key,read_blob)
         if value.get('scope')!=key:raise ValueError('archive_snapshot_scope')
-        original=copy.deepcopy(value);default=json.loads(key);ambiguous_delta=False
+        original=copy.deepcopy(value);default=json.loads(key)
         for field in ('base','wire'):
             value[field]=semantic_retire_projection(value[field],permit)
-            # Submitted readonly packets can contain copies of the same rows.
-            from context_protocol import READONLY_CURRENT
-            for message in value[field]:
-                text=message.get('content')
-                if message.get('role')=='user' and isinstance(text,str) and text.startswith(READONLY_CURRENT+'\n'):
-                    packet=json.loads(text.split('\n',1)[1]);cleaned=context(packet,default)
-                    # Deltas store set operations with their path and value.
-                    for operation in cleaned.get('readonlyChanges',[]) if isinstance(cleaned,dict) else []:
-                        if isinstance(operation,list) and len(operation)==3 and operation[0]=='set' and isinstance(operation[1],list) and operation[1]:
-                            path=operation[1];wrapped=operation[2]
-                            # A positional partial string edit has no author or
-                            # event identity. Do not guess which old turn owns
-                            # it, or declare the archive clean while keeping it.
-                            if path[0] in ('recent_messages','recent_cross_session_messages','conversation_timeline','ambient_group_messages','group_round_history') and len(path)>1:ambiguous_delta=True
-                            if path[0]=='dialogue' and len(path)>2 and path[1] in ('recent_own_turns','feedback','deliveries'):ambiguous_delta=True
-                            for component in reversed(path):wrapped={component:wrapped}
-                            reduced=context(wrapped,default)
-                            for component in path:reduced=reduced[component]
-                            operation[2]=reduced
-                    if cleaned!=packet:message['content']=READONLY_CURRENT+'\n'+model_json(cleaned)
         value['state']=context(value.get('state'),default)
+        if default==scope or value!=original:
+            # Submitted context packets are derived presentation caches, including
+            # positional deltas that cannot identify a turn on their own. A legal
+            # batch cutover discards these packets whole, as native cleanup does;
+            # original nonmember messages and filtered state remain authoritative.
+            from context_protocol import READONLY_CURRENT
+            from context_transport import EVENT_CONTEXT_CURRENT
+            from context_foundation import FOUNDATION_CURRENT
+            prefixes=tuple(header+'\n' for header in (READONLY_CURRENT,EVENT_CONTEXT_CURRENT,FOUNDATION_CURRENT))
+            for field in ('base','wire'):
+                value[field]=[message for message in value[field] if not (
+                    message.get('role')=='user' and isinstance(message.get('content'),str) and message['content'].startswith(prefixes))]
         if value==original:return None
-        if ambiguous_delta:raise ValueError('archive_transcript_delta_identity_missing')
         encoded,blobs=encode(value)
         for digest,raw in blobs.items():db.execute('INSERT OR IGNORE INTO fishbot_readonly_journal_blobs(scope,sha,data) VALUES(?,?,?)',(key,digest,raw))
         touched.add(key)

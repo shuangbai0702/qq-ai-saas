@@ -6,6 +6,8 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
 import journal_storage as storage
 from context_protocol import SOURCE,READONLY_CURRENT,model_json
 from semantic_batch import event_key
+from context_transport import EVENT_CONTEXT_CURRENT
+from context_foundation import FOUNDATION_CURRENT
 
 
 class SemanticArchiveCleanup(unittest.TestCase):
@@ -73,13 +75,30 @@ class SemanticArchiveCleanup(unittest.TestCase):
         self.assertEqual(self.db.execute('SELECT count(*) FROM fishbot_readonly_journal_blobs').fetchone()[0],2)
         with self.assertRaises(sqlite3.IntegrityError):self.db.execute("UPDATE fishbot_operator_session_archives SET archive='bad'")
 
-    def test_partial_transcript_delta_without_event_identity_fails_closed(self):
+    def test_identityless_delta_and_other_derived_packets_are_removed_whole(self):
         value=copy.deepcopy(self.value)
-        value['wire'].insert(1,{'role':'user','content':READONLY_CURRENT+'\n'+model_json({'readonlyChanges':[['set',['recent_messages',0,'text'],'ambiguous text']]})})
+        developer={'role':'developer','content':READONLY_CURRENT+'\nkeep exact developer instruction'}
+        foreign=copy.deepcopy(self.new);foreign['content'][0]['text']=foreign['content'][0]['text'].replace(self.scope,'group:67890')
+        packets=[{'role':'user','content':prefix+'\n'+model_json({'readonlyChanges':[['set',['recent_messages',0,'text'],'ambiguous old raw text']]})} for prefix in (READONLY_CURRENT,EVENT_CONTEXT_CURRENT,FOUNDATION_CURRENT)]
+        for field in ('base','wire'):value[field]=[self.system,developer,*packets,self.old,{'role':'assistant','content':'old answer'},self.new,foreign]
         payload=self.encode(value)
         self.db.execute('UPDATE memory_checkpoint_archives SET payload=?,sha=?',(payload,self.sha(payload)))
-        with self.assertRaisesRegex(ValueError,'delta_identity_missing'):storage.retire_archived_members(self.db,1)
-        self.assertEqual(self.db.execute('SELECT payload FROM memory_checkpoint_archives').fetchone()[0],payload)
+        with self.db:self.assertEqual(storage.retire_archived_members(self.db,1),2)
+        saved=self.decode(self.db.execute('SELECT payload FROM memory_checkpoint_archives').fetchone()[0])
+        for field in ('base','wire'):self.assertEqual(saved[field],[self.system,developer,self.new,foreign])
+        self.assertNotIn('ambiguous old raw text',model_json(saved))
+        self.assertEqual(saved['state']['recent_messages'],[self.state['recent_messages'][1]])
+        self.assertEqual(saved['state']['facts'],self.state['facts'])
+
+    def test_unrelated_scope_archive_is_unchanged(self):
+        foreign=copy.deepcopy(self.value);foreign_key=model_json('group:67890');foreign['scope']=foreign_key
+        for field in ('base','wire'):
+            foreign[field]=[{'role':'user','content':READONLY_CURRENT+'\n'+model_json({'readonlyChanges':[['set',['recent_messages',0,'text'],'foreign raw']]})}]
+        foreign['state']={}
+        payload=model_json(foreign)
+        self.db.execute('INSERT INTO memory_checkpoint_archives VALUES(2,?,1,?,?)',(foreign_key,payload,self.sha(payload)))
+        with self.db:storage.retire_archived_members(self.db,1)
+        self.assertEqual(self.db.execute('SELECT payload,sha FROM memory_checkpoint_archives WHERE checkpoint_id=2').fetchone(),(payload,self.sha(payload)))
 
     def test_legacy_inline_snapshot_becomes_clean_version_two(self):
         payload=model_json(self.value)
