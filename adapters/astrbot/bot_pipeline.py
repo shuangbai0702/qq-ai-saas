@@ -59,7 +59,8 @@ def decision_version(db,scope):
     # only on the old destination's correction rows. No message bodies copied.
     blocks=db.execute('SELECT b.scope,b.subject,b.name,b.revision FROM memory_blocks b ORDER BY b.scope,b.subject,b.name').fetchall()
     epoch=db.execute('SELECT epoch FROM memory_reflection_control WHERE id=1').fetchone()[0]
-    return (epoch,agreements_stamp(db,scope),blocks)
+    relations=db.execute('SELECT scope,subject,affinity,trust,impression,semantic_updated,last_seen FROM relations ORDER BY scope,subject').fetchall()
+    return (epoch,agreements_stamp(db,scope),blocks,hashlib.sha256(json.dumps(relations,ensure_ascii=False,separators=(',',':')).encode()).hexdigest())
 
 
 def decision_conversation(store,cfg,scope,subject,now):
@@ -86,7 +87,7 @@ def relevant_people(db,scope,subject,now,owner='',timeline=None):
     return list(dict.fromkeys(str(p) for p in people if shared_person(scope,str(p))))[:16]
 
 
-def decision_memory(db,cfg,scope,subject,now,recent=True):
+def decision_memory(db,cfg,scope,subject,now,recent=True,subjects=()):
     """Small projection of existing authoritative, audience-filtered memory.
 
     No extraction, second store or extra model call. Current messages and the
@@ -104,6 +105,11 @@ def decision_memory(db,cfg,scope,subject,now,recent=True):
     result={'facts':[fact_item(r,subject,'decision_context') for r in fact_rows(db,scope,subject,limit=3)],
             'active_agreements':context_view(db,scope,owner=owner),
             'cross_scope_guidance':CROSS_SCOPE_GUIDANCE}
+    from memory_scope import valid_scope,shared_person
+    participants={str(subject),*(str(x) for x in subjects)}
+    result['relations']=[{'source_scope':r[0],'subject':r[1],'affinity':r[2],'emotion':r[3],'emotion_expires':r[4],'observed_at':r[5],'trust':r[6],'impression':r[7],'semantic_updated':r[8]}
+        for r in db.execute('SELECT scope,subject,affinity,emotion,expires,last_seen,trust,impression,semantic_updated FROM relations ORDER BY scope,subject')
+        if valid_scope(r[0]) and shared_person(r[0],r[1]) and (r[0]==scope or r[1] in participants)]
     if recent:result['recent_cross_session_messages']=shared_recent(db,8) if unified else pending_messages(db,scope,subject,now,limit=6,budget=1600,people=people,owner=owner)
     if unified:
         from shared_context import delivery_view
@@ -123,6 +129,15 @@ def decision_memory(db,cfg,scope,subject,now,recent=True):
             if 'feedback' not in receipt:continue
             feedback.append({k:v for k,v in receipt.items() if k not in ('confirmed_text','text_complete')})
         if feedback:result['current_scope_feedback']=feedback
+    # The existing decision ledger carries model opinions, never live facts or
+    # a second dialogue history. Fresh interactions may invalidate the opinion.
+    result['recent_autonomous_decisions']=[]
+    for at,kind,reply,reason,raw in db.execute('SELECT at,kind,reply,reason,rationale FROM autonomy_decisions WHERE scope=? AND at>? ORDER BY at DESC LIMIT 4',(scope,now-86400)):
+        if not raw:continue
+        try:detail=json.loads(raw)
+        except (ValueError,TypeError):continue
+        result['recent_autonomous_decisions'].append({'at':at,'kind':kind,'chose_contact':bool(reply),'cooldown_reason':reason,**detail})
+    result['decision_continuity_guidance']='近期判断是当时的模型意见，不是当前事实、授权或固定结论；结合时间及之后的真实互动修正，不机械继承。'
     if cfg.get('memorySummary',True):
         from context_foundation import summaries
         result['memory_foundation']={'conversation_summaries':summaries(db,'bot_shared' if unified else scope,owner)}
