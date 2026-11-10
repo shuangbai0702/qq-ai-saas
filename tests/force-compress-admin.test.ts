@@ -1,0 +1,32 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import Fastify from 'fastify';
+import {registerBehaviorData} from '../apps/control-api/src/behavior-data.js';
+
+test('compression requires server administrator role and forwards only server actor through runtime fencing',async t=>{
+ const app=Fastify();t.after(()=>app.close());
+ app.setErrorHandler((e:any,_req,reply)=>reply.code(e.statusCode||400).send({error:e.message}));
+ app.addHook('onRequest',async req=>{req.user={id:'real-session-admin',email:'test',name:'test',tenant_id:'tenant',is_admin:req.headers['x-test-role']==='admin'}});
+ const id='11111111-1111-4111-8111-111111111111',requestId='22222222-2222-4222-8222-222222222222';
+ let posts:any[]=[];let inspected=true;
+ const original=globalThis.fetch;t.after(()=>{globalThis.fetch=original});
+ globalThis.fetch=(async(url:any,init:any)=>{posts.push({url,headers:init.headers,body:JSON.parse(init.body)});return new Response(JSON.stringify({ok:true,state:'running'}),{status:200})}) as typeof fetch;
+ const audits:any[]=[];
+ const db={query:async(sql:string,args:any[])=>{if(sql.startsWith('SELECT'))return[{id,tenant_id:'target-tenant',desired_state:'running',runtime_mode:'shared',group_id:'group',generation:3,applied_revision:9}];audits.push({sql,args});return[]}};
+ const agent={host:{inspect:async()=>inspected},context:async()=>({aiPort:100,token:'member-token'}),shared:{group:async()=>({health_port:12345,token:'group-token',generation:5})}};
+ registerBehaviorData(app,'.',async()=>({id}),agent as any,db as any);
+ const url=`/v1/admin/bots/${id}/force-compress`,payload={requestId,allowPartial:true};
+ assert.equal((await app.inject({method:'POST',url,payload:{...payload,is_admin:true}})).statusCode,403);
+ assert.equal((await app.inject({method:'POST',url,headers:{'x-test-role':'admin'},payload:{...payload,administrator:'forged'}})).statusCode,400);
+ assert.equal((await app.inject({method:'POST',url:`/v1/bots/${id}/behavior-data`,payload:{action:'admin_force_compress',...payload,administrator:'forged'}})).statusCode,400);
+ assert.equal(posts.length,0);
+ assert.equal((await app.inject({method:'POST',url,headers:{'x-test-role':'admin'},payload})).statusCode,200);
+ assert.equal(posts[0].body.administrator,'real-session-admin');assert.equal(posts[0].body.allowPartial,true);
+ assert.equal(audits.length,1);assert.equal(audits[0].args[0],'target-tenant');assert.equal(audits[0].args[1],id);
+ assert.deepEqual(JSON.parse(audits[0].args[2]),{requestId,allowPartial:true,actorId:'real-session-admin'});
+ assert.equal(posts[0].headers['X-Member-Revision'],'9');assert.equal(posts[0].headers['X-Group-Generation'],'5');
+ assert.equal(posts[0].url,`http://127.0.0.1:12345/members/${id}/behavior-data`);
+ inspected=false;
+ assert.equal((await app.inject({method:'POST',url,headers:{'x-test-role':'admin'},payload})).statusCode,409);
+ assert.equal(posts.length,1,'maintenance cannot fall back to an offline process');
+});

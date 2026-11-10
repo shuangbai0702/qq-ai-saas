@@ -111,6 +111,18 @@ class NullHoldRecovery(unittest.IsolatedAsyncioTestCase):
         self.barrier.set();await task
         self.assertEqual(self.db.execute('SELECT state FROM memory_reconstruction_checkpoints').fetchone()[0],'consumed')
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_hold_rounds').fetchone()[0],1)
+    async def test_manual_repair_configuration_change_is_not_success(self):
+        cp=await self.original_batch();self.bind_complete();self.barrier=asyncio.Event()
+        current=True
+        self.r.binding=({'memorySummary':True,'naturalConversation':False},NS(text_chat=self.chat),lambda:current,self.metrics,self.var)
+        self.assertTrue(self.r.force_compress_once()['started'])
+        for _ in range(40):
+            await asyncio.sleep(0)
+            if len(self.calls)>=2:break
+        self.assertEqual(len(self.calls),2)
+        current=False;self.barrier.set();result=await self.r.task
+        self.assertFalse(result['ok'])
+        self.assertEqual(self.db.execute('SELECT state FROM memory_reconstruction_checkpoints WHERE id=?',(cp[0],)).fetchone()[0],'pending_coverage')
     async def test_later_big_merge_carries_consumed_checkpoint_without_new_credit(self):
         for start in (0,35,70):
             for i in range(start,start+35):
