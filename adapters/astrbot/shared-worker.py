@@ -81,6 +81,8 @@ async def main():
     from behavior import install_runtime
     behavior_settings={}
     behavior=install_runtime(core,behavior_settings)
+    stop_fence=worker_lifecycle.StopFence(lambda:behavior['activity']())
+    core._hosted_stop_fence=stop_fence
     # Remove only disposable profile metadata after crash; histories and facts remain.
     for conf_id in list(core.astrbot_config_mgr.confs):
         if conf_id!='default':await core.astrbot_config_mgr.delete_conf(conf_id)
@@ -144,7 +146,15 @@ async def main():
             allowed=set(m.get('groups',[]))
             if allowed and message.group_id and str(message.group_id) not in allowed:return
             if m['modelConfigured'] and 'provider-'+id not in core.provider_manager.inst_map:return
+            try:
+                retained=behavior['retain_ingress'](id,platform.create_event(message))
+            except Exception as error:
+                errors[id]='Ingress retention failed'
+                worker_lifecycle.record('ingress_retention_failed',member=id,reason=type(error).__name__)
+                return  # Never execute a real QQ input without durable evidence.
+            if not retained:return
             m['events']+=1
+            if stop_fence.quiescing:return
             await original(message)
         platform.handle_msg=gated
         core.event_bus.stopped_platforms.discard(id)
@@ -155,8 +165,11 @@ async def main():
         if request.method!='GET' and request.headers.get('X-Group-Generation')!=str(manifest['generation']):raise web.HTTPConflict()
         return await handler(request)
     async def health(request):
-        return web.json_response({'ready':True,'pid':os.getpid(),'generation':manifest['generation'],'capacity':manifest['capacity'],'members':{id:{'generation':m['generation'],'revision':m['revision'],'events':m['events'],'modelConfigured':m['modelConfigured']} for id,m in members.items()},'metrics':behavior['metrics'],'memberErrors':errors,'startedAt':started,'activity':behavior['activity']()})
+        activity=behavior['activity']()
+        if lock.locked():activity={**activity,'idle':False}
+        return web.json_response({'ready':True,'pid':os.getpid(),'generation':manifest['generation'],'capacity':manifest['capacity'],'members':{id:{'generation':m['generation'],'revision':m['revision'],'events':m['events'],'modelConfigured':m['modelConfigured']} for id,m in members.items()},'metrics':behavior['metrics'],'memberErrors':errors,'startedAt':started,'activity':activity,'stopFence':True,'quiescing':stop_fence.quiescing})
     async def put(request):
+        if stop_fence.quiescing:raise web.HTTPConflict(reason='Worker preparing to stop')
         id=request.match_info['id']
         try:
             body=await request.json()
@@ -164,6 +177,7 @@ async def main():
         except (ValueError,TypeError,RecursionError):
             raise web.HTTPBadRequest(reason='Invalid member configuration') from None
         async with lock:
+            if stop_fence.quiescing:raise web.HTTPConflict(reason='Worker preparing to stop')
             current=members.get(id)
             stamp=(body['generation'],body['revision'])
             if current:
@@ -183,6 +197,7 @@ async def main():
     async def remove(request):
         id=request.match_info['id'];generation=int(request.headers.get('X-Member-Generation','-1'))
         async with lock:
+            if stop_fence.quiescing:raise web.HTTPConflict(reason='Worker preparing to stop')
             if id in members and generation<members[id]['generation']:raise web.HTTPConflict()
             await unload(id,request.query.get('permanent')=='true')
             old=tombstones.get(id,(-1,-1));tombstones[id]=(max(generation,old[0]),old[1])
@@ -190,15 +205,27 @@ async def main():
     async def manage_data(request):
         id=request.match_info['id']
         async with lock:
+            if stop_fence.quiescing:raise web.HTTPConflict(reason='Worker preparing to stop')
             m=members.get(id)
             if not m or request.headers.get('X-Member-Generation')!=str(m['generation']) or request.headers.get('X-Member-Revision')!=str(m['revision']):raise web.HTTPConflict()
-            return web.json_response(behavior['manage'](id,await request.json()))
+            data=await request.json()
+            if stop_fence.quiescing:raise web.HTTPConflict(reason='Worker preparing to stop')
+            return web.json_response(behavior['manage'](id,data))
     async def autonomous_work(request):
+        if stop_fence.quiescing:raise web.HTTPConflict(reason='Worker preparing to stop')
         id=request.match_info['id'];m=members.get(id)
         if not m or request.headers.get('X-Member-Generation')!=str(m['generation']) or request.headers.get('X-Member-Revision')!=str(m['revision']):raise web.HTTPConflict()
-        try:return web.json_response(await behavior['autonomous'](id,request.match_info['operation'],await request.json()))
+        data=await request.json()
+        if stop_fence.quiescing:raise web.HTTPConflict(reason='Worker preparing to stop')
+        try:return web.json_response(await behavior['autonomous'](id,request.match_info['operation'],data))
         except (ValueError,KeyError,TypeError):raise web.HTTPConflict(reason='Autonomous work invalid or stale') from None
-    app=web.Application(middlewares=[auth],client_max_size=131072);app.router.add_post('/members/{id}/autonomous/{operation}',autonomous_work);app.router.add_post('/members/{id}/behavior-data',manage_data);app.router.add_get('/health',health);app.router.add_put('/members/{id}',put);app.router.add_delete('/members/{id}',remove)
+    async def prepare_stop(request):
+        if lock.locked() or not stop_fence.request_if_idle():raise web.HTTPConflict(reason='Worker has active native work')
+        return web.json_response({'prepared':True,'quiescing':True,'pid':os.getpid()})
+    async def cancel_stop(request):
+        stop_fence.cancel()
+        return web.json_response({'prepared':False,'quiescing':False,'pid':os.getpid()})
+    app=web.Application(middlewares=[auth],client_max_size=131072);app.router.add_post('/prepare-stop',prepare_stop);app.router.add_post('/cancel-stop',cancel_stop);app.router.add_post('/members/{id}/autonomous/{operation}',autonomous_work);app.router.add_post('/members/{id}/behavior-data',manage_data);app.router.add_get('/health',health);app.router.add_put('/members/{id}',put);app.router.add_delete('/members/{id}',remove)
     runner=web.AppRunner(app);await runner.setup();await web.TCPSite(runner,'127.0.0.1',manifest['healthPort']).start()
     task=asyncio.create_task(core.start());stop=asyncio.Event()
     worker_lifecycle.install_shutdown(stop)

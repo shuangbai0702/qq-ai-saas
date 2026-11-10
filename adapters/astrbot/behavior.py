@@ -236,7 +236,7 @@ def install_runtime(core,settings):
     stores={};metrics={};original_execute=PipelineScheduler.execute;original_send=AiocqhttpMessageEvent.send
     from semantic_runtime import install_native_retirement_guard
     install_native_retirement_guard(getattr(core,'conversation_manager',None),stores,settings)
-    care=RuntimeCare(stores)
+    care=RuntimeCare(stores,stop_requested=lambda:bool(getattr(getattr(core,'_hosted_stop_fence',None),'quiescing',False)))
     core._hosted_care=care
     care_timer=asyncio.create_task(care.run())
     def setting(event):return settings.get(event.get_platform_id())
@@ -2105,7 +2105,22 @@ def install_runtime(core,settings):
             # transient atmosphere after removing it from learned hints.
             st.ambient.scopes.pop(data.get('scope',''),None)
         return result
-    runtime={'manage':manage,'stores':stores,'metrics':metrics,'release':release,'close':close,'autonomous':brain.handle,'drain':brain.drain,'activity':lambda:care.status(core),'settle_work_round':settle_work_round}
+    def retain_ingress(id,event):
+        """Durably retain protocol input before any SDK preparation await."""
+        lease=settings.get(id)
+        if lease is None or event.get_platform_id()!=id:raise ValueError('ingress_member_unavailable')
+        if str(event.get_sender_id())==str(event.get_self_id()):return False
+        st=store(id,lease);pipeline=st.pipeline
+        if not pipeline.persist_input(event,lease):raise ValueError('ingress_original_evidence_invalid')
+        scope=bot_pipeline.delivery_scope(event);identifier=str(event.message_obj.message_id)
+        with st.db:
+            # The native SDK queue owns this delivery for thirty seconds.
+            # Existing recovery handles an interrupted enqueue after that;
+            # no new timer or ingestion authority is introduced.
+            accepted=bool(st.db.execute("UPDATE pipeline_work_inputs SET status='queued',retry_at=? WHERE scope=? AND event=? AND status='pending'",(time.time()+30,scope,identifier)).rowcount)
+        care.stamp(st.root)
+        return accepted
+    runtime={'manage':manage,'stores':stores,'metrics':metrics,'release':release,'close':close,'autonomous':brain.handle,'drain':brain.drain,'activity':lambda:care.status(core),'settle_work_round':settle_work_round,'retain_ingress':retain_ingress}
     from model_cache import loaded_build
     runtime['build']=loaded_build()
     print('FISHBOT_RUNTIME_BUILD '+model_json(runtime['build']),flush=True)

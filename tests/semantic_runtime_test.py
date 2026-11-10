@@ -41,6 +41,47 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn('original new',model_json(journal.last.wire))
         self.assertEqual(self.st.db.execute('SELECT count(*) FROM memory_pending WHERE event=?',('old',)).fetchone()[0],0)
         self.assertEqual(self.st.db.execute('SELECT state FROM memory_semantic_batches').fetchone()[0],'retired')
+    def test_retirement_publishes_full_readonly_basis_before_future_deltas(self):
+        from context_protocol import READONLY_CURRENT
+        from decision_history import apply_changes
+        self.assertEqual(finish_semantic_batches(self.st,{},SCOPE)['retired'],1)
+        journal=self.st.model_journals[SCOPE]
+        packets=[json.loads(m['content'].split('\n',1)[1]) for m in journal.last.wire if isinstance(m.get('content'),str) and m['content'].startswith(READONLY_CURRENT+'\n')]
+        self.assertEqual(len(packets),1)
+        self.assertNotIn('readonlyChanges',packets[0])
+        self.assertEqual(packets[0]['execution_experience'],journal.last.state['execution_experience'])
+        self.assertNotIn('memory_foundation',packets[0])
+        self.assertNotIn('original old',model_json(packets))
+
+    def test_legacy_missing_basis_is_repaired_only_by_append_once(self):
+        from context_protocol import READONLY_CURRENT
+        from context_transport import request_context_view
+        from decision_history import apply_changes
+        journal=ReadonlyJournal()
+        state={'autonomous_experience':{'actions':[]},'execution_experience':{'status':'current'}}
+        native=[{'role':'user','content':'first'}]
+        system,tail=request_context_view('fixed',native,None,'policy','guidance',model_json(state))
+        first=journal.prepare([{'role':'system','content':system}]+tail,'same')
+        self.assertTrue(journal.commit(first))
+        # Reproduce the old retired representation: metadata survived, its
+        # readonly body did not. Existing malformed deltas must remain exact.
+        journal.last.wire[:]=[m for m in journal.last.wire if not (isinstance(m.get('content'),str) and m['content'].startswith(READONLY_CURRENT+'\n'))]
+        journal.last.wire.append({'role':'user','content':READONLY_CURRENT+'\n'+model_json({'readonlyChanges':[['set',['autonomous_experience','actions'],[]]]})})
+        before=copy.deepcopy(journal.last.wire)
+        native.extend([{'role':'assistant','content':'answer'},{'role':'user','content':'next'}])
+        system,tail=request_context_view('fixed',native,None,'policy','guidance',model_json(state))
+        second=journal.prepare([{'role':'system','content':system}]+tail,'same')
+        self.assertEqual(second.wire[:len(before)],before)
+        added=[json.loads(m['content'].split('\n',1)[1]) for m in second.wire[len(before):] if isinstance(m.get('content'),str) and m['content'].startswith(READONLY_CURRENT+'\n')]
+        self.assertEqual(len(added),1)
+        self.assertEqual(added[0]['readonlyChanges'][0][:2],['set',[]])
+        self.assertEqual(apply_changes({},added[0]['readonlyChanges']),second.state)
+        self.assertTrue(journal.commit(second))
+        native.extend([{'role':'assistant','content':'answer 2'},{'role':'user','content':'third'}])
+        system,tail=request_context_view('fixed',native,None,'policy','guidance',model_json(state))
+        third=journal.prepare([{'role':'system','content':system}]+tail,'same')
+        self.assertEqual(third.wire[:len(second.wire)],second.wire)
+        self.assertNotIn('readonlyChanges',model_json(third.wire[len(second.wire):]))
     def test_busy_candidate_keeps_permit_available_and_retry_finishes(self):
         journal=self.st.model_journals[SCOPE];journal._staged=1
         self.assertEqual(finish_semantic_batches(self.st,{},SCOPE)['pending'],1)

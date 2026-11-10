@@ -8,6 +8,28 @@ import sys
 import time
 
 
+class StopFence:
+    """An owner-controlled admission fence on the worker's event loop.
+
+    Checking native activity and closing admission share a synchronous call.
+    Ingress still persists to the existing queue while fenced; only the
+    ProcessHost owner stops/replaces the process. No timer or task is added.
+    """
+    def __init__(self,activity):
+        self.activity=activity
+        self.quiescing=False
+
+    def request_if_idle(self):
+        if self.quiescing:return True
+        status=self.activity()
+        if not isinstance(status,dict) or status.get('idle') is not True:return False
+        self.quiescing=True
+        return True
+
+    def cancel(self):
+        self.quiescing=False
+
+
 def record(event, **fields):
     print('FISHBOT_WORKER_LIFECYCLE '+json.dumps({'at':time.time(),'pid':os.getpid(),'event':event,**fields}),file=sys.stderr,flush=True)
 
