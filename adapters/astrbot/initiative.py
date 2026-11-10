@@ -169,14 +169,30 @@ def split_text(text,limit=4):
 
 async def resume_scope_input(core,id,lease,store,settings):
     """Resume one durable unprocessed ingress, never an unknown external effect."""
+    # Native admission can await protocol preparation before bind creates its
+    # ledger row. Its queue/task still owns that delivery; a retry deadline is
+    # not permission to enqueue it again while that owner is alive.
+    queue=getattr(core,'event_queue',None)
+    if queue is not None and queue.qsize()>0:return False
+    for task,event in getattr(getattr(core,'event_bus',None),'_pending_tasks',{}).items():
+        if not task.done() and event.get_platform_id()==id:return False
     # Protocol redelivery may already have a terminal original Work. Reconcile
     # only queue bookkeeping; never manufacture a response or replay effects.
     with store.db:
+        store.db.execute("""UPDATE pipeline_work_inputs AS i SET status='pending',owner=NULL
+          WHERE i.status IN ('queued','owned') AND i.identity IS NOT NULL
+          AND NOT EXISTS(SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope)
+          AND EXISTS(SELECT 1 FROM pipeline_events e WHERE e.scope=i.scope AND e.subject=i.subject AND e.event=i.event
+            AND e.execution_started=0 AND e.attempted=0 AND e.confirmed=0
+            AND e.status IN ('blocked','interrupted') AND e.reason IN ('cancelled','runtime_restarted'))""")
         store.db.execute("""UPDATE pipeline_work_inputs AS i SET status=CASE WHEN EXISTS
           (SELECT 1 FROM pipeline_events e WHERE e.scope=i.scope AND e.subject=i.subject AND e.event=i.event
-           AND e.status IN ('sent','silent','superseded','blocked','error','interrupted','combined') AND e.attempted=e.confirmed)
+           AND e.status IN ('sent','silent','superseded','combined') AND e.attempted=e.confirmed)
           THEN 'settled_duplicate' ELSE 'blocked_unknown' END
-          WHERE i.status='queued' AND NOT EXISTS (SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope)
+          WHERE i.status IN ('pending','queued') AND NOT EXISTS (SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope)
+          AND NOT EXISTS(SELECT 1 FROM pipeline_events e WHERE e.scope=i.scope AND e.subject=i.subject AND e.event=i.event
+            AND e.execution_started=0 AND e.attempted=0 AND e.confirmed=0
+            AND e.status IN ('blocked','interrupted') AND e.reason IN ('cancelled','runtime_restarted') AND i.identity IS NOT NULL)
           AND EXISTS (SELECT 1 FROM pipeline_events e WHERE e.scope=i.scope AND e.subject=i.subject AND e.event=i.event)""")
         store.db.execute("""UPDATE pipeline_work_inputs AS i SET retry_count=coalesce(retry_count,0)+1,
           status=CASE WHEN coalesce(retry_count,0)>=4 THEN 'blocked_recovery' ELSE 'pending' END
@@ -188,6 +204,26 @@ async def resume_scope_input(core,id,lease,store,settings):
     row=store.db.execute("SELECT scope,event,payload,observed_at,retry_count FROM pipeline_work_inputs i WHERE status='pending' AND coalesce(retry_at,0)<=? AND NOT EXISTS (SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope) ORDER BY created LIMIT 1",(time.time(),)).fetchone()
     if not row:return False
     scope,event_id,payload,observed_at,retries=row
+    binding=store.db.execute('SELECT identity,payload_sha FROM pipeline_work_inputs WHERE scope=? AND event=?',(scope,event_id)).fetchone()
+    if binding and binding[0]:
+        import hashlib
+        try:
+            identity=json.loads(binding[0]);raw=json.loads(payload)
+            # Configuration is re-evaluated through the current normal ingress;
+            # a revision change never grants the old tool permissions.
+            if any(identity.get(k)!=lease.get(k) for k in ('tenantId','botId','generation')):raise ValueError('identity_changed')
+            if str(raw.get('message_id',''))!=event_id or hashlib.sha256(json.dumps(raw,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()!=binding[1]:raise ValueError('payload_changed')
+            original_scope='group:'+str(raw.get('group_id')) if raw.get('message_type')=='group' else 'private:'+str(raw.get('user_id')) if raw.get('message_type')=='private' else None
+            if original_scope!=scope:raise ValueError('scope_changed')
+            if not isinstance(observed_at,(int,float)) or observed_at<=0 or observed_at>time.time()+60:raise ValueError('original_time_invalid')
+            # Reuse the durable handoff's existing seven-day acceptance window;
+            # retain expired evidence as a visible unresolved issue, not done.
+            blocked='blocked_expired' if observed_at<time.time()-604800 else None
+        except (ValueError,TypeError,AttributeError):blocked='blocked_evidence'
+        if blocked:
+            with store.db:store.db.execute('UPDATE pipeline_work_inputs SET status=? WHERE scope=? AND event=?',(blocked,scope,event_id))
+            store.reflection.checkpoint_issue('bot_shared',0,'input_recovery:'+scope+':'+event_id,{'scope':scope,'event':event_id,'reason':blocked,'state':blocked,'external_replay':False})
+            return False
     platform=next((p for p in core.platform_manager.get_insts() if p.meta().id==id),None)
     if not platform or settings.get(id) is not lease or id in core.event_bus.stopped_platforms:return False
     from aiocqhttp import Event
@@ -207,6 +243,9 @@ async def resume_scope_input(core,id,lease,store,settings):
             with store.db:store.db.execute("UPDATE pipeline_work_inputs SET status='blocked_evidence' WHERE scope=? AND event=?",(scope,event_id))
             raise ValueError('scope_resume_original_time_missing')
         message.timestamp=observed_at
+        if getattr(getattr(core,'_hosted_stop_fence',None),'quiescing',False):
+            with store.db:store.db.execute("UPDATE pipeline_work_inputs SET status='pending' WHERE scope=? AND event=? AND status='queued'",(scope,event_id))
+            return False
         platform.commit_event(platform.create_event(message))
         return True
     except BaseException as error:
@@ -228,13 +267,16 @@ def start(core,settings,store,metrics):
         from astrbot.core.message.components import Plain
         while True:
             await asyncio.sleep(5)
+            if getattr(getattr(core,'_hosted_stop_fence',None),'quiescing',False):continue
             for id,s in list(settings.items()):
                 try:
                     brain=getattr(core,'_hosted_autonomous',None)
                     from bilibili_tools import resume_completion
                     st=store(id,s)
                     if await resume_scope_input(core,id,s,st,settings):continue
+                    if getattr(getattr(core,'_hosted_stop_fence',None),'quiescing',False):break
                     if not st.active and await resume_completion(core,id,s,st,settings):continue
+                    if getattr(getattr(core,'_hosted_stop_fence',None),'quiescing',False):break
                     if brain and brain.owns(id):continue
                     cfg=s['config']
                     b=cfg.get('behavior') or {}
@@ -243,7 +285,7 @@ def start(core,settings,store,metrics):
                     if st.active:continue
                     provider=core.provider_manager.inst_map.get('provider-'+id) or (core.provider_manager.inst_map.get('platform-model') if len(settings)==1 else None)
                     from astrbot.core.platform.astr_message_event import current_message_event
-                    live=lambda sid=id,lease=s:settings.get(sid) is lease and sid not in core.event_bus.stopped_platforms
+                    live=lambda sid=id,lease=s:settings.get(sid) is lease and sid not in core.event_bus.stopped_platforms and not getattr(getattr(core,'_hosted_stop_fence',None),'quiescing',False)
                     pending=st.presence.pending(cfg,provider,live,time.time()) if live() else None
                     if pending:
                         platform=next((p for p in core.platform_manager.get_insts() if p.meta().id==id),None)

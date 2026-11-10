@@ -882,6 +882,20 @@ class ReadonlyJournal:
             state=execution_view(freeze(state,old.state))
             operations=changes(old.state,state)
             if apply_changes(old.state,operations)!=state:raise ValueError('readonly_projection_mismatch')
+            # Legacy semantic retirement persisted metadata but omitted its
+            # first full readonly packet. Never edit that submitted prefix:
+            # append one explicit current-object reset before more deltas.
+            has_basis=False
+            for message in old.wire:
+                content=message.get('content')
+                if not isinstance(content,str) or not content.startswith(READONLY_CURRENT+'\n'):continue
+                packet=json.loads(content.split('\n',1)[1])
+                if 'readonlyChanges' not in packet or any(op[0]=='set' and op[1]==[] for op in packet.get('readonlyChanges',[])):
+                    has_basis=True;break
+            if state and not has_basis:
+                reset=copy.deepcopy(state)
+                reset.pop('memory_foundation',None) # Already visible as fixed regions.
+                operations=[['set',[],reset]]
             if retirement_deferred:
                 # The stored base must stay byte-consistent with the committed
                 # wire: deferred System/retirement changes are not adopted.
@@ -956,6 +970,7 @@ class ReadonlyJournal:
         base=semantic_retire_projection(self.last.base,permit)
         state=execution_view(copy.deepcopy(state))
         messages=base+([copy.deepcopy(event_authority)] if event_authority is not None else [])
+        messages.append({'role':'user','content':READONLY_CURRENT+'\n'+model_json(state)})
         wire=arrange(messages,state);usage=history_usage(wire)
         if history_boundary(usage['textChars'],usage['textChars'],usage['wireChars'],growth_limit=False):return False
         self.serial+=1

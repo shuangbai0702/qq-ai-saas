@@ -345,6 +345,7 @@ class Work:
     confirmed_reply_parts:list=field(default_factory=list)
     confirmed_media_kinds:list=field(default_factory=list)
     summary_materials:list=field(default_factory=list)
+    on_stage:object=field(default=None,repr=False)
 
     @property
     def work_id(self):
@@ -358,6 +359,7 @@ class Work:
 
     def stage(self,name):
         if name not in STAGES:raise ValueError('Unknown bot pipeline stage')
+        if self.on_stage:self.on_stage(name)
         if not self.trace or self.trace[-1]['stage']!=name:
             self.trace.append({'stage':name,'ms':round((time.monotonic()-self.started)*1000)})
             self.trace[:]=self.trace[-16:]
@@ -376,7 +378,7 @@ class BotPipeline:
           scope TEXT,event TEXT,subject TEXT,owner TEXT,payload TEXT,seen INTEGER DEFAULT 0,
           status TEXT,created REAL,PRIMARY KEY(scope,event))''')
         columns={r[1] for r in db.execute('PRAGMA table_info(pipeline_work_inputs)')}
-        for name,kind in (('observed_at','REAL'),('retry_count','INTEGER DEFAULT 0'),('retry_at','REAL DEFAULT 0'),('payload_sha','TEXT')):
+        for name,kind in (('observed_at','REAL'),('retry_count','INTEGER DEFAULT 0'),('retry_at','REAL DEFAULT 0'),('payload_sha','TEXT'),('identity','TEXT')):
             if name not in columns:db.execute('ALTER TABLE pipeline_work_inputs ADD COLUMN '+name+' '+kind)
         for scope,owner,pid in db.execute('SELECT scope,runtime,pid FROM pipeline_scope_work').fetchall():
             # os.kill(pid, 0) terminates processes on Windows. A read-only
@@ -394,7 +396,7 @@ class BotPipeline:
         db.execute('''CREATE TABLE IF NOT EXISTS pipeline_events(scope TEXT,subject TEXT,event TEXT,at REAL,source TEXT,stage TEXT,status TEXT,reason TEXT,attempted INTEGER DEFAULT 0,confirmed INTEGER DEFAULT 0,PRIMARY KEY(scope,subject,event))''')
         db.execute('CREATE INDEX IF NOT EXISTS pipeline_events_by_event ON pipeline_events(event)')
         columns={r[1] for r in db.execute('PRAGMA table_info(pipeline_events)')}
-        for name,kind in (('work_id','TEXT'),('passes','INTEGER DEFAULT 0'),('exit_reason','TEXT'),('updated_at','REAL'),('finished_at','REAL')):
+        for name,kind in (('work_id','TEXT'),('passes','INTEGER DEFAULT 0'),('exit_reason','TEXT'),('updated_at','REAL'),('finished_at','REAL'),('execution_started','INTEGER')):
             if name not in columns:db.execute('ALTER TABLE pipeline_events ADD COLUMN '+name+' '+kind)
         # Recovery time is observable; an exited activation's actual finish is
         # not. Leave finished_at unknown rather than backfilling a false end.
@@ -402,6 +404,11 @@ class BotPipeline:
         # Batch windows live only in this process. A durable group-presence
         # wait can resume, but an old in-memory batch cannot still be waiting.
         db.execute("UPDATE pipeline_events SET status='interrupted',reason='runtime_restarted',updated_at=? WHERE status='waiting' AND reason='batch_waiting'",(time.time(),));db.commit()
+        db.execute("""UPDATE pipeline_work_inputs AS i SET status='blocked_unknown',owner=NULL
+          WHERE i.identity IS NOT NULL AND i.status='owned'
+          AND NOT EXISTS(SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope)
+          AND EXISTS(SELECT 1 FROM pipeline_events e WHERE e.scope=i.scope AND e.subject=i.subject AND e.event=i.event
+            AND coalesce(e.execution_started,1)<>0)""");db.commit()
         # Repair only the exact original admission ledger, not guessed owners
         # of old joined inputs. No model/send/response evidence is invented.
         db.execute("""UPDATE pipeline_work_inputs AS i SET status='deferred'
@@ -415,6 +422,39 @@ class BotPipeline:
         db.execute("UPDATE pipeline_action_effects SET state='unknown' WHERE state='dispatching'")
         db.execute("UPDATE pipeline_actions SET state='interrupted' WHERE state='working'");db.commit()
         db.execute('CREATE TABLE IF NOT EXISTS pipeline_handoffs(id TEXT PRIMARY KEY,epoch INTEGER NOT NULL,data TEXT NOT NULL,state TEXT NOT NULL,receipt TEXT,at REAL NOT NULL)');db.commit()
+
+    def persist_input(self,event,lease):
+        """Retain an authenticated original before admission; no second queue.
+
+        Future native ingress gates may call this same synchronous boundary.
+        Missing/changed payload or identity cannot acquire recovery permission.
+        """
+        scope=delivery_scope(event);message=event.message_obj
+        identifier=str(getattr(message,'message_id','') or '')
+        raw=getattr(message,'raw_message',None);observed=getattr(message,'timestamp',None)
+        identity={k:lease.get(k) for k in ('tenantId','botId','generation','revision')}
+        if not identifier or not isinstance(raw,dict) or str(raw.get('message_id',''))!=identifier or not isinstance(observed,(int,float)) or not math.isfinite(observed) or observed<=0 or any(v is None for v in identity.values()):return False
+        if str(raw.get('user_id',''))!=str(event.get_sender_id()):return False
+        raw_scope='group:'+str(raw.get('group_id')) if raw.get('message_type')=='group' else 'private:'+str(raw.get('user_id')) if raw.get('message_type')=='private' else None
+        if raw_scope!=scope:return False
+        # Match join_active's existing raw-payload fingerprint exactly.
+        payload=json.dumps(raw,ensure_ascii=False,sort_keys=True,separators=(',',':'))
+        digest=hashlib.sha256(payload.encode()).hexdigest();binding=json.dumps(identity,sort_keys=True,separators=(',',':'))
+        with self.db:
+            old=self.db.execute('SELECT payload_sha,identity FROM pipeline_work_inputs WHERE scope=? AND event=?',(scope,identifier)).fetchone()
+            if old:
+                try:prior=json.loads(old[1]) if old[1] else {}
+                except (ValueError,TypeError):return False
+                return old[0]==digest and all(prior.get(k)==identity.get(k) for k in ('tenantId','botId','generation'))
+            self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,subject,owner,payload,status,created,observed_at,payload_sha,identity) VALUES(?,?,?,NULL,?,'pending',?,?,?,?)",(scope,identifier,str(event.get_sender_id()),payload,time.time(),observed,digest,binding))
+        return True
+
+    def execution_boundary(self,work,name):
+        # observe starts background learning/tool preparation before the main
+        # model_tools stage. Conservatively revoke recovery before any of it.
+        if name=='ingress':return
+        with self.db:
+            self.db.execute('UPDATE pipeline_events SET execution_started=1,stage=?,updated_at=? WHERE scope=? AND subject=? AND event=? AND execution_started=0',(name,time.time(),work.scope,work.subject,work.event_id))
 
     def join_active(self,event):
         """Durable ingress ownership, not another Work or model history."""
@@ -707,8 +747,13 @@ class BotPipeline:
             return work
         if not work.event_id:return work
         now=time.time()
+        recoverable=source=='message' and self.persist_input(event,lease)
         with self.db:
-            work.ledger_owner=bool(self.db.execute("INSERT OR IGNORE INTO pipeline_events(scope,subject,event,at,source,stage,status,reason,updated_at) VALUES(?,?,?,?,?,'ingress','received','',?)",(scope,subject,work.event_id,now,source,now)).rowcount)
+            # Only explicitly unstarted, authenticated queue redispatch can
+            # reactivate a cancelled root. Old rows have NULL, never permission.
+            if recoverable:
+                work.ledger_owner=bool(self.db.execute("UPDATE pipeline_events SET status='received',reason='input_recovery',stage='ingress',finished_at=NULL,updated_at=? WHERE scope=? AND subject=? AND event=? AND execution_started=0 AND attempted=0 AND confirmed=0 AND status IN ('blocked','interrupted') AND reason IN ('cancelled','runtime_restarted') AND EXISTS(SELECT 1 FROM pipeline_work_inputs i WHERE i.scope=pipeline_events.scope AND i.event=pipeline_events.event AND i.status='queued')",(now,scope,subject,work.event_id)).rowcount)
+            work.ledger_owner=bool(self.db.execute("INSERT OR IGNORE INTO pipeline_events(scope,subject,event,at,source,stage,status,reason,updated_at,execution_started) VALUES(?,?,?,?,?,'ingress','received','',?,?)",(scope,subject,work.event_id,now,source,now,0 if recoverable else None)).rowcount) or work.ledger_owner
             # Retain exact recovery evidence while its model input lacks final
             # provenance; a blanket 24h/2048 prune caused irreparable Holds.
             protected="NOT EXISTS (SELECT 1 FROM memory_message_sources m WHERE m.direction='model' AND json_extract(m.data,'$.source_scope')=pipeline_events.scope AND json_extract(m.data,'$.event_id')=pipeline_events.event AND json_extract(m.data,'$.settlement') IS NULL)" if self.db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_message_sources'").fetchone() else '1'
@@ -720,8 +765,12 @@ class BotPipeline:
             # A queued redelivery whose original Work already ended cannot
             # remain queued forever, nor gain a fresh execution permission.
             with self.db:
-                self.db.execute("UPDATE pipeline_work_inputs SET status=CASE WHEN EXISTS (SELECT 1 FROM pipeline_events e WHERE e.scope=? AND e.subject=? AND e.event=? AND e.status IN ('sent','silent','superseded','blocked','error','interrupted','combined') AND e.attempted=e.confirmed) THEN 'settled_duplicate' ELSE 'blocked_unknown' END WHERE scope=? AND event=? AND status IN ('pending','queued')",(scope,subject,work.event_id,scope,work.event_id))
-        else:self.claim_scope(work)
+                self.db.execute("UPDATE pipeline_work_inputs SET status=CASE WHEN EXISTS (SELECT 1 FROM pipeline_events e WHERE e.scope=? AND e.subject=? AND e.event=? AND e.status IN ('sent','silent','superseded','combined') AND e.attempted=e.confirmed) THEN 'settled_duplicate' ELSE 'blocked_unknown' END WHERE scope=? AND event=? AND status IN ('pending','queued')",(scope,subject,work.event_id,scope,work.event_id))
+        else:
+            self.claim_scope(work)
+            if recoverable:
+                with self.db:self.db.execute("UPDATE pipeline_work_inputs SET status='owned',owner=? WHERE scope=? AND event=? AND status IN ('pending','queued')",(work.event_id,scope,work.event_id))
+                work.on_stage=lambda name:self.execution_boundary(work,name)
         if work.ledger_owner:
             self.activation_progress(work,0,'activated')
         return work
@@ -764,6 +813,9 @@ class BotPipeline:
         finished=time.time()
         with self.db:
             self.db.execute('UPDATE pipeline_events SET stage=?,status=?,reason=?,attempted=?,confirmed=?,updated_at=?,finished_at=coalesce(finished_at,?) WHERE scope=? AND subject=? AND event=?',(value['stage'],work.status,work.reason,work.attempted,work.confirmed,finished,finished,work.scope,work.subject,work.event_id))
+            if work.status=='blocked' and work.reason=='cancelled' and work.attempted==work.confirmed==0:
+                self.db.execute("UPDATE pipeline_work_inputs SET status=CASE WHEN coalesce(retry_count,0)>=4 THEN 'blocked_recovery' ELSE 'pending' END,owner=NULL,retry_count=coalesce(retry_count,0)+1,retry_at=? WHERE scope=? AND event=? AND identity IS NOT NULL AND EXISTS(SELECT 1 FROM pipeline_events e WHERE e.scope=pipeline_work_inputs.scope AND e.event=pipeline_work_inputs.event AND e.execution_started=0)",(finished+15,work.scope,work.event_id))
+            self.db.execute("UPDATE pipeline_work_inputs SET status=?,owner=NULL WHERE scope=? AND event=? AND identity IS NOT NULL AND status='owned'",('settled' if work.status in ('sent','silent','superseded','combined') else 'blocked_unknown',work.scope,work.event_id))
             from shared_context import active
             if active(self.db):
                 import message_provenance

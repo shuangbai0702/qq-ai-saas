@@ -52,7 +52,8 @@ class RuntimeCare:
         pending=sum(not task.done() for task in tasks)
         active=sum(self.busy(store) for store in self.stores.values())
         return {'queued':queued,'pending':pending,'busyMembers':active,
-                'idle':queued==0 and pending==0 and active==0,
+                'idle':queued==0 and pending==0 and active==0 and not self.maintenance_active,
+                'maintenanceActive':self.maintenance_active,
                 'lastActivity':self.last_activity}
 
     def track(self, store, task):
@@ -63,13 +64,15 @@ class RuntimeCare:
             if store in self.stores.values(): self.stamp(store.root)
         task.add_done_callback(completed)
 
-    def __init__(self, stores):
+    def __init__(self, stores,stop_requested=lambda:False):
+        self.stop_requested=stop_requested
         self.stores, self.last_activity, self.closed = stores, time.time(), False
         self.created = psutil.Process().create_time()
         self.last_gc = self.last_activity
         self.trimmed_activity = None
         self.failures = 0
         self.favorite_reconciler = None
+        self.maintenance_active=False
     def stamp(self, root):
         if self.closed: return
         self.last_activity = time.time()
@@ -114,10 +117,15 @@ class RuntimeCare:
     async def run(self):
         while not self.closed:
             await asyncio.sleep(60)
+            if self.stop_requested():continue
             try:
                 for st in list(self.stores.values()):
                     if self.busy(st):self.stamp(st.root)
-                if self.favorite_reconciler:await self.favorite_reconciler()
+                if self.favorite_reconciler:
+                    self.maintenance_active=True
+                    try:await self.favorite_reconciler()
+                    finally:self.maintenance_active=False
+                if self.stop_requested():continue
                 # Existing process-wide maintenance clock, one bounded summary
                 # at a time. Persisted rounds/retry state survive a restart.
                 for st in list(self.stores.values()):
