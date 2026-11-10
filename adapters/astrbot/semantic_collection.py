@@ -1,0 +1,232 @@
+"""Collect one bot's exact hot inventory into its existing shared batch.
+
+The caller owns the transaction and the 35 completed-round anchor. Mirrored
+pending/material rows are inputs, never new rounds or permission assertions.
+"""
+import copy,hashlib,json,math,re
+from context_protocol import model_json,source
+from semantic_batch import event_key,origin,discard_failed_service_inputs
+from summary_material import snapshots,valid_material,remember
+
+
+def _channel(value):
+    return isinstance(value,str) and re.fullmatch(r'(?:private:\d{5,20}|group:\d{4,20})',value) is not None
+
+
+def _time(value):
+    return type(value) in (int,float) and math.isfinite(value) and value>0
+
+
+def previous_summaries(db):
+    """Full bot-local semantic products, with no original event ID indexes."""
+    from memory_scope import valid_scope
+    from summary_material import summary_claims,claim_view
+    result=[]
+    for identifier,scope,text,level in db.execute("SELECT s.id,s.scope,s.text,coalesce(l.kind,'small') FROM memory_summaries s LEFT JOIN memory_summary_levels l ON l.id=s.id ORDER BY s.id"):
+        if not valid_scope(scope):continue
+        origins=[r[0] for r in db.execute('SELECT scope FROM memory_summary_origins WHERE summary_id=? ORDER BY scope',(identifier,))] or [scope]
+        if not all(valid_scope(x) for x in origins):raise ValueError('semantic_collection_summary_origin_unknown')
+        people=[r[0] for r in db.execute('SELECT subject FROM memory_summary_people WHERE summary_id=? ORDER BY subject',(identifier,))]
+        claims=[]
+        for claim in summary_claims(db,identifier):
+            view=claim_view(claim)
+            for key in ('delivery','protected'):
+                if key in claim:view[key]=claim[key]
+            claims.append(view)
+        result.append({'id':identifier,'scope':scope,'text':text,'level':level,'source_scopes':origins,'subjects':people,'claims':claims})
+    return result
+
+
+def _journals(db,tables):
+    """Validate transport containers before exposing their original blocks."""
+    import journal_storage
+    rows=[]
+    for table in ('fishbot_readonly_journals','memory_checkpoint_archives'):
+        if table not in tables:continue
+        columns={r[1] for r in db.execute('PRAGMA table_info('+table+')')}
+        if not {'scope','version','payload','sha'}<=columns:
+            if db.execute('SELECT 1 FROM '+table+' LIMIT 1').fetchone():raise ValueError('semantic_collection_journal_integrity')
+            continue
+        rows.extend(db.execute('SELECT scope,version,payload,sha FROM '+table+' WHERE payload IS NOT NULL'))
+    if 'fishbot_operator_session_archives' in tables:
+        for key,raw,sha in db.execute('SELECT scope,archive,sha FROM fishbot_operator_session_archives'):
+            if not isinstance(raw,str) or hashlib.sha256(raw.encode()).hexdigest()!=sha:raise ValueError('semantic_collection_archive_integrity')
+            value=json.loads(raw)['journal']
+            if value.get('scope')!=key:raise ValueError('semantic_collection_archive_scope')
+            rows.append((key,value['version'],value['payload'],value['sha']))
+    for key,version,payload,sha in rows:
+        channel=json.loads(key)
+        if channel!='bot_shared' and not _channel(channel):continue
+        if not isinstance(payload,str) or hashlib.sha256(payload.encode()).hexdigest()!=sha:raise ValueError('semantic_collection_journal_integrity')
+        def blob(scope,digest):
+            row=db.execute('SELECT data FROM fishbot_readonly_journal_blobs WHERE scope=? AND sha=?',(scope,digest)).fetchone()
+            return row[0] if row else None
+        if version==1:value=json.loads(payload)
+        elif version==journal_storage.VERSION:value=journal_storage.decode(payload,key,blob)
+        else:raise ValueError('semantic_collection_journal_version')
+        if not isinstance(value,dict) or value.get('scope')!=key:raise ValueError('semantic_collection_journal_scope')
+        for field in ('base','wire'):
+            messages=value.get(field)
+            if not isinstance(messages,list):raise ValueError('semantic_collection_journal_messages')
+            # A private/group container cannot assert another channel's input.
+            for message in messages:
+                o=source(message)
+                if o and channel!='bot_shared' and o['scope']!=channel:raise ValueError('semantic_collection_journal_source')
+            yield messages
+
+
+def _select(items):
+    """Compatible captures may extend an append-only block, never replace it."""
+    complete=[m for m in items if m.get('complete') is True]
+    if not complete:raise ValueError('semantic_collection_material_missing_or_incomplete')
+    def raw_outputs(m):return [{k:v for k,v in x.items() if k!='owner'} for x in m.get('native_outputs',[])]
+    best=max(complete,key=lambda m:(len(raw_outputs(m)),len(m.get('tools') or []),len(m.get('native_reply') or ''),m.get('version',0)))
+    for m in items:
+        if any(m.get(k)!=best.get(k) for k in ('text','images','subject','digest')):raise ValueError('semantic_collection_material_conflict')
+        for field in ('reply','native_reply'):
+            a=m.get(field) or '';b=best.get(field) or ''
+            if a and b and not b.startswith(a):raise ValueError('semantic_collection_material_conflict')
+        if (m.get('tools') or [])!=(best.get('tools') or [])[:len(m.get('tools') or [])]:raise ValueError('semantic_collection_material_conflict')
+        outputs=raw_outputs(m)
+        if outputs!=raw_outputs(best)[:len(outputs)]:raise ValueError('semantic_collection_material_conflict')
+        if m.get('version',0)>=3 and best.get('version',0)>=3:
+            if m.get('input_settlement') and best.get('input_settlement') and m['input_settlement']!=best['input_settlement']:raise ValueError('semantic_collection_settlement_conflict')
+            for a,b in zip(m.get('native_outputs',[]),best.get('native_outputs',[])):
+                if a.get('owner') and b.get('owner') and a['owner']!=b['owner']:raise ValueError('semantic_collection_owner_conflict')
+    result=copy.deepcopy(best)
+    if result.get('version',0)>=3:
+        for m in items:
+            if m.get('input_settlement') and not result.get('input_settlement'):result['input_settlement']=copy.deepcopy(m['input_settlement'])
+            for old,new in zip(m.get('native_outputs',[]),result.get('native_outputs',[])):
+                if old.get('owner') and not new.get('owner'):new['owner']=copy.deepcopy(old['owner'])
+    replies={m['reply'] for m in items if m.get('reply')}
+    if len(replies)>1:raise ValueError('semantic_collection_reply_conflict')
+    if replies:result['reply']=replies.pop()
+    return result
+
+
+def collect(db,scope,cutoff,payload,recapture=None):
+    """Return complete canonical inputs through cutoff; never commit or mint rounds.
+
+    Every candidate needs real material. Unknown chronology/ownership or
+    conflicting physical captures abort instead of silently losing a pool.
+    Already retired source/shared identities cannot be resurrected by archives.
+    """
+    if scope!='bot_shared':return payload
+    if not _time(cutoff):raise ValueError('semantic_collection_cutoff')
+    # Releasing the outermost SQLite savepoint commits it. Keep an explicit
+    # caller-owned transaction even when invoked on an otherwise idle store.
+    if not db.in_transaction:db.execute('BEGIN')
+    db.execute('SAVEPOINT semantic_collection')
+    try:
+        result=_collect(db,cutoff,payload,recapture)
+        db.execute('RELEASE semantic_collection')
+        return result
+    except BaseException:
+        db.execute('ROLLBACK TO semantic_collection');db.execute('RELEASE semantic_collection');raise
+
+
+def _collect(db,cutoff,payload,recapture):
+    tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    retired=set()
+    if 'memory_semantic_batches' in tables:
+        for scope,raw in db.execute("SELECT scope,members FROM memory_semantic_batches WHERE state='retired'"):
+            retired.update((scope,x) for x in json.loads(raw))
+    def identity(scope,event):
+        channel,identifier=origin(scope,str(event))
+        if not _channel(channel):return None
+        return channel,str(identifier)
+    def eligible(pair):
+        channel,event=pair;key=model_json([channel,event])
+        if (channel,event_key(channel,event)) in retired or ('bot_shared',event_key('bot_shared',key)) in retired:return False
+        for logical,identifier in ((channel,event),('bot_shared',key)):
+            if 'pipeline_scope_work' in tables and db.execute('SELECT 1 FROM pipeline_scope_work WHERE scope=? AND event=?',(logical,identifier)).fetchone():return False
+            if 'pipeline_work_inputs' in tables and db.execute("SELECT 1 FROM pipeline_work_inputs WHERE scope=? AND event=? AND status='owned'",(logical,identifier)).fetchone():return False
+        return True
+    scopes={'bot_shared'}
+    for table in ('memory_rounds','memory_pending','memory_hold_rounds','memory_round_material'):
+        if table in tables:scopes.update(r[0] for r in db.execute('SELECT DISTINCT scope FROM '+table) if _channel(r[0]))
+    for scope in sorted(scopes):discard_failed_service_inputs(db,scope)
+    candidates={};materials={};anchors={};provided={}
+    def register(pair,person=None,at=None):
+        if not pair or not eligible(pair):return
+        item=candidates.setdefault(pair,{'people':set(),'times':set()})
+        if person is not None:item['people'].add(str(person))
+        if _time(at):item['times'].add(at)
+    for row in payload:
+        pair=identity('bot_shared',row['event'])
+        register(pair,row['sender_id'],row['at'])
+        if pair:provided[pair]=copy.deepcopy(row)
+    for table in ('memory_rounds','memory_pending'):
+        if table not in tables:continue
+        for scope,person,event,question,answer,at in db.execute('SELECT scope,subject,event,question,answer,at FROM '+table):
+            pair=identity(scope,event);register(pair,person,at)
+            if pair and answer:anchors.setdefault(pair,set()).add(answer)
+    if 'memory_hold_rounds' in tables:
+        for scope,event in db.execute('SELECT scope,event FROM memory_hold_rounds'):register(identity(scope,event))
+    def capture(item,logical):
+        if not valid_material(item,logical):raise ValueError('semantic_collection_material_invalid')
+        pair=identity(logical,item['event'])
+        if not pair or not eligible(pair):return
+        o=source({'role':'user','content':item['text']})
+        register(pair,item['subject'],o.get('at'))
+        mapped=copy.deepcopy(item);mapped.update(scope='bot_shared',event=model_json(list(pair)))
+        materials.setdefault(pair,[]).append(mapped)
+    def saved_materials():
+        for logical,event,raw in db.execute('SELECT scope,event,material FROM memory_round_material'):
+            if logical=='bot_shared' or _channel(logical):capture(json.loads(raw),logical)
+    saved_materials()
+    # Exact model bindings are platform metadata. Mirror only positively bound
+    # native identities so shared recapture retains their real receipts/owners.
+    if 'memory_message_sources' in tables:
+        for logical,event,raw in db.execute("SELECT scope,event,data FROM memory_message_sources WHERE direction='model'").fetchall():
+            if not _channel(logical):continue
+            pair=identity(logical,event)
+            if not pair or pair not in candidates or not eligible(pair):continue
+            value=json.loads(raw)
+            if (value.get('source_scope'),str(value.get('event_id')))!=(pair[0],pair[1]):raise ValueError('semantic_collection_binding_conflict')
+            if str(value.get('sender_id')) not in candidates[pair]['people']:raise ValueError('semantic_collection_binding_conflict')
+            key=model_json(list(pair))
+            old=db.execute("SELECT data FROM memory_message_sources WHERE scope='bot_shared' AND event=? AND direction='model'",(key,)).fetchone()
+            if old and json.loads(old[0])!=value:raise ValueError('semantic_collection_binding_conflict')
+            if not old:db.execute("INSERT INTO memory_message_sources VALUES('bot_shared',?,'model',?)",(key,raw))
+    # Discover material-only/archive-only inputs too, including silent images.
+    for messages in _journals(db,tables):
+        for item in snapshots(messages,'bot_shared',db=db):capture(item,'bot_shared')
+    wanted=[]
+    for pair,item in candidates.items():
+        if not item['times']:raise ValueError('semantic_collection_time_missing')
+        if min(item['times'])<=cutoff<max(item['times']):raise ValueError('semantic_collection_time_conflict')
+        if min(item['times'])<=cutoff:wanted.append(pair)
+    if callable(recapture):
+        for logical in sorted(scopes):
+            events=[model_json(list(pair)) if logical=='bot_shared' else pair[1] for pair in wanted if logical=='bot_shared' or pair[0]==logical]
+            if events:recapture(logical,events)
+        saved_materials()
+    output=[]
+    for pair in sorted(wanted,key=lambda p:(min(candidates[p]['times']),p)):
+        meta=candidates[pair];item=_select(materials.get(pair,[]))
+        if meta['people']!={item['subject']}:raise ValueError('semantic_collection_sender_conflict')
+        replies=anchors.get(pair,set())
+        if len(replies)>1:raise ValueError('semantic_collection_reply_conflict')
+        if replies:
+            reply=next(iter(replies))
+            if item.get('reply') and item['reply']!=reply:raise ValueError('semantic_collection_reply_conflict')
+            item['reply']=reply
+        key=item['event'];at=min(meta['times']);o=source({'role':'user','content':item['text']})
+        row={'sender_id':item['subject'],'event':key,'user':item['text'],'bot':item.get('reply',''),'at':at,
+             'source':{**o,'source_scope':pair[0]}}
+        if pair in provided and str(provided[pair]['sender_id'])!=item['subject']:raise ValueError('semantic_collection_sender_conflict')
+        db.execute('INSERT OR IGNORE INTO memory_pending(scope,subject,event,question,answer,at) VALUES(?,?,?,?,?,?)',
+                   ('bot_shared',item['subject'],key,item['text'],item.get('reply',''),at))
+        previous=db.execute('SELECT subject FROM memory_pending WHERE scope=? AND event=?',('bot_shared',key)).fetchone()
+        if previous[0]!=item['subject']:raise ValueError('semantic_collection_sender_conflict')
+        remember(db,'bot_shared',[item])
+        saved=db.execute('SELECT material FROM memory_round_material WHERE scope=? AND event=?',('bot_shared',key)).fetchone()
+        if not saved or not valid_material(json.loads(saved[0]),'bot_shared') or not json.loads(saved[0]).get('complete'):raise ValueError('semantic_collection_material_store_failed')
+        # remember refuses conflicting immutable captures. Verify rather than
+        # silently accepting its earlier representation as the complete batch.
+        stored=json.loads(saved[0])
+        if any(stored.get(k)!=item.get(k) for k in ('text','images','digest','subject','tools','native_reply','native_outputs','input_settlement','reply')):raise ValueError('semantic_collection_material_store_conflict')
+        output.append(row)
+    return output

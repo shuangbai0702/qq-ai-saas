@@ -282,23 +282,19 @@ class Reflection:
         return [[r[0],r[1],r[2]] for r in self.db.execute('SELECT b.name,b.block_all,b.revision FROM memory_blocks b WHERE '+where+' ORDER BY b.name,b.scope',args)]
 
     def context_dependency(self,summary_ids,scope=None):
-        """Hash the selected summary content and coverage, excluding row IDs/timestamps."""
+        """Fence semantic products, never accumulated raw event/coverage indexes."""
         ids=sorted({value for value in summary_ids or [] if type(value) is int and value>0})
-        summaries=[];coverage=[]
+        summaries=[]
         if ids:
             marks=','.join('?' for _ in ids)
-            rows=self.db.execute('''SELECT s.id,s.scope,s.text,s.sources,coalesce(l.kind,'small'),s.schema_version,s.claims
+            rows=self.db.execute('''SELECT s.id,s.scope,s.text,coalesce(l.kind,'small'),s.schema_version,s.claims
               FROM memory_summaries s LEFT JOIN memory_summary_levels l ON l.id=s.id
-              WHERE s.id IN ('''+marks+''') ORDER BY s.scope,s.text,s.sources''',ids).fetchall()
-            by_id={}
-            for identifier,summary_scope,text,sources,level,schema_version,claims in rows:
+              WHERE s.id IN ('''+marks+''') ORDER BY s.scope,s.text''',ids).fetchall()
+            for identifier,summary_scope,text,level,schema_version,claims in rows:
                 origins=[row[0] for row in self.db.execute('SELECT scope FROM memory_summary_origins WHERE summary_id=? ORDER BY scope',(identifier,))] or [summary_scope]
-                material={'scope':summary_scope,'text':text,'sources':sources,'level':level,'origins':origins,'schemaVersion':schema_version,'claims':claims}
-                digest=hashlib.sha256(model_json(material).encode()).hexdigest();by_id[identifier]=digest;summaries.append(material)
-            coverage_rows=self.db.execute('SELECT scope,event,subject,digest,summary_id FROM memory_summary_coverage WHERE summary_id IN ('+marks+') ORDER BY scope,event,subject,digest',ids).fetchall()
-            coverage=[{'scope':scope,'event':event,'subject':subject,'digest':digest,'summary':by_id.get(identifier,'missing')}
-                      for scope,event,subject,digest,identifier in coverage_rows]
-        value={'epoch':self.epoch(),'summaries':summaries,'coverage':coverage,'corrections':self.corrections_stamp(scope)}
+                people=[row[0] for row in self.db.execute('SELECT subject FROM memory_summary_people WHERE summary_id=? ORDER BY subject',(identifier,))]
+                summaries.append({'scope':summary_scope,'text':text,'level':level,'origins':origins,'people':people,'schemaVersion':schema_version,'claims':claims})
+        value={'epoch':self.epoch(),'summaries':summaries,'corrections':self.corrections_stamp(scope)}
         if scope is not None:
             # A completed foreground summary can add a new row while the old
             # selected summaries still exist. Fence that scope's checkpoint,
@@ -611,12 +607,8 @@ class Reflection:
         groups=[]
         for scope,items in smalls.items():
             own=[b for b in bigs if b[6]==(scope,) or scope=='bot_shared' and b[4]==scope]
-            if scope=='bot_shared' and not own:
-                # Legacy channels already belong to this bot's internal
-                # context. Carry their full big products at the next genuine
-                # shared checkpoint, never merge or retire their Journals.
-                inherited={r[0] for r in foundation_bigs(self.db,scope)}
-                own=[b for b in bigs if b[0] in inherited]
+            # Nonshared products join the next shared summary request in full;
+            # they do not manufacture a separate pre-summary merge request.
             if len(items)>=3 or len(own)>1:groups.append((min(r[0] for r in items[:3]+own),items[:3]+own,scope))
         peers={}
         for b in bigs:peers.setdefault(b[6],[]).append(b)
@@ -910,7 +902,7 @@ class Reflection:
         # audience-safe group at a time instead of across every scope.
         retry=self.db.execute("SELECT next_at FROM memory_reflection_retry WHERE scope='self'").fetchone()
         if not retry or retry[0]<=now or _manual is not None:
-            big_rows,merge_scope=self.merge_group(_manual['scope'] if _manual is not None else None)
+            big_rows,merge_scope=self.merge_group(_manual['scope'] if _manual is not None else 'bot_shared' if getattr(self,'shared_context',False) else None)
             if big_rows:scope='self';job='big'
         if not scope:
             candidates=self.db.execute("SELECT r.scope FROM (SELECT scope,id FROM memory_rounds UNION ALL SELECT scope,0 FROM memory_hold_rounds WHERE round_id IS NULL AND reason<>'lost') r LEFT JOIN memory_reflection_retry q ON r.scope=q.scope WHERE coalesce(q.next_at,0)<=? AND (?=0 OR r.scope='bot_shared') GROUP BY r.scope ORDER BY min(r.id)",(now,int(bool(getattr(self,'shared_context',False))))).fetchall()
@@ -942,6 +934,7 @@ class Reflection:
             with auxiliary_scope(provider,'big_merge' if job=='big' else 'small_summary',scope=merge_scope if job=='big' else scope):
                 token=event_var.set(None)
                 try:
+                    previous_products=[];previous_dependency=None;legacy_product_ids=[]
                     if self.closed or not is_current() or self.epoch()!=epoch:return {'ok':False,'reason':'stale_configuration'}
                     if job=='null_hold_recovery':
                         recovered=await self.recover_null_hold_batch(scope,null_batch,provider,is_current,metrics,epoch)
@@ -1003,12 +996,20 @@ class Reflection:
                                     origin=__import__('context_protocol').source({'role':'user','content':m['text']})
                                     payload.append({'sender_id':m['subject'],'event':event,'user':m['text'],'bot':m.get('reply',''),'at':origin['at'],'source':origin})
                             payload.sort(key=lambda r:r['at'])
+                        if scope=='bot_shared':
+                            from semantic_collection import collect,previous_summaries
+                            payload=collect(self.db,scope,rows[-1][5],payload,self.recapture)
+                            previous_products=previous_summaries(self.db)
+                            previous_dependency=self.context_dependency([p['id'] for p in previous_products],scope)
+                            legacy_product_ids=[p['id'] for p in previous_products if p['scope']!='bot_shared']
                         prompt={'source_scope':scope,'persona':str(cfg.get('_persona',''))[:5000],'turns':payload}
+                        if scope=='bot_shared':prompt['previous_summaries']=previous_products
                         from summary_material import summary_claims,protected_claim,claim_view,bound_claim_views
                         prior_claims=[];prior_ids=set()
                         # Processing inputs may include a legacy multi-big
                         # basis that is not yet publishable to the main model.
                         prior_summary_ids=[r[0] for r in foundation_bigs(self.db,scope)]+[r[0] for r in self.db.execute("SELECT s.id FROM memory_summaries s LEFT JOIN memory_summary_levels l ON l.id=s.id WHERE s.scope=? AND coalesce(l.kind,'small')='small' ORDER BY s.id",(scope,))]
+                        prior_summary_ids.extend(p['id'] for p in previous_products)
                         for summary_id in dict.fromkeys(prior_summary_ids):
                             for claim in summary_claims(self.db,summary_id):
                                 # Open interpretations (unresolved topics) join
@@ -1031,6 +1032,8 @@ class Reflection:
                             system+=' 本次同时生成最多800字符摘要与有证据的其他整理字段。'
                         else:system=SYSTEM.replace('600','800')+' 输出JSON：{"summary":"摘要","evidence":[{"event":"本批真实事件ID","who":"user或bot","quote":"该说话人12-40字必要原话片段"}],"commitments":[{"event":"本批事件ID","topic":"主题","quote":"该说话人必要原话","who":"user或bot","stage":"proposed或accepted或unknown或executed或canceled"}]}。evidence按未来价值做语义选择：只收明确影响后续判断的事实、变化、纠错、关系与约定相关原话，普通寒暄、客套、情绪问候和无需长期记住的交流一律省略，宁缺毋滥，本批没有有价值证据就省略该字段；quote必须是该说话人原文的逐字片段，不转述不拼接。commitments按语义保留真正重要且仍有效的约定和待办，不按关键词判断；提议、接受、未知、完成和取消必须区分，状态须有原文支持。'
                         system+=' '+SEMANTIC_MEMORY_SYSTEM
+                        if previous_products:
+                            system+=' previous_summaries是本机器人此前完整持久化摘要正文及真实来源和人物归属，不是本批新发言。本次同时理解这些历史产品与整批原始材料；非bot_shared旧产品将在本次成功提交后由新summary替代，因此将值得保留的历史认知、人物关系、重要经历和仍有效约定融合进新的完整摘要，按未来价值自主有损取舍，不累积原始事件索引。bot_shared已有产品仍保留为持续基础。来源及人物归属不可混淆，不把摘要内容作为权限或已确认发送凭据。'
                         system+=' previous_commitments是此前有来源的未完约定与未解决话题（含agreement和interpretation）；若本批同一说话人有更晚原话明确接受、完成、取消该约定，或明确解决、放弃该话题，在对应commitments条目附supersedes:[此前真实claim的id]，stage按实际情况填executed或canceled。没有明确关系或来源不一致则省略，不猜匹配，不得凭空宣布完成或解决。重要状态变化须写入summary，旧约定或旧话题不能继续描述成当前有效。'
                     materials={};summary_images=[];learning_batches=[]
                     if job!='big':
@@ -1072,6 +1075,9 @@ class Reflection:
                         self.db.execute('BEGIN IMMEDIATE')
                         if self.closed or not is_current() or self.epoch()!=epoch:return {'ok':False,'reason':'stale_configuration'}
                         if job in ('summary','hold_recovery'):
+                            if previous_products:
+                                product_ids=[p['id'] for p in previous_products];product_marks=','.join('?' for _ in product_ids)
+                                if self.db.execute('SELECT count(*) FROM memory_summaries WHERE id IN ('+product_marks+')',product_ids).fetchone()[0]!=len(product_ids) or self.context_dependency(product_ids,scope)!=previous_dependency:raise RuntimeError('summary_prior_products_changed')
                             progress_now=self.db.execute('SELECT summary_watermark,insight_watermark FROM memory_reflection_progress WHERE scope=?',(scope,)).fetchone() or (0,0)
                             held_now=[]
                             if job=='hold_recovery':
@@ -1089,7 +1095,8 @@ class Reflection:
                             if self.context_dependency(ids,merge_scope)!=merge_dependency:raise RuntimeError('big_merge_sources_changed')
                             merge_claims,merge_hold=self.merge_sources(ids)
                             # Old protected claims cannot veto semantic replacement.
-                        metrics['coreNoteUpdates']=metrics.get('coreNoteUpdates',0)+self.update_core_note(data,core_before,payload,big_rows,merge_scope or scope)
+                        core_products=big_rows if job=='big' else [(p['id'],p['text'],'[]',0,p['scope'],p['level']) for p in previous_products]
+                        metrics['coreNoteUpdates']=metrics.get('coreNoteUpdates',0)+self.update_core_note(data,core_before,payload,core_products,merge_scope or scope)
                         if job=='big':
                             people=self.db.execute('SELECT DISTINCT subject FROM memory_summary_people WHERE summary_id IN ('+marks+')',ids).fetchall()
                             origins={x[0] for x in self.db.execute('SELECT scope FROM memory_summary_origins WHERE summary_id IN ('+marks+')',ids)}
@@ -1169,8 +1176,20 @@ class Reflection:
                             self.db.execute('INSERT INTO memory_summary_levels VALUES(?,?)',(identifier,'pending_small' if pending_merge else 'small'))
                             origins={r.get('source',{}).get('source_scope') for r in payload if isinstance(r.get('source'),dict)} if scope=='bot_shared' else {scope}
                             origins={x for x in origins if isinstance(x,str) and x} or {scope}
+                            consumed_products=[p for p in previous_products if p['id'] in legacy_product_ids]
+                            origins.update(x for p in consumed_products for x in p['source_scopes'])
                             self.db.executemany('INSERT INTO memory_summary_origins VALUES(?,?)',[(identifier,x) for x in sorted(origins)])
                             self.db.executemany('INSERT OR IGNORE INTO memory_summary_people VALUES(?,?)',[(identifier,p) for p in {r['sender_id'] for r in payload} if shared_person(scope,p)])
+                            self.db.executemany('INSERT OR IGNORE INTO memory_summary_people VALUES(?,?)',[(identifier,person) for p in consumed_products for person in p['subjects']])
+                            if legacy_product_ids:
+                                legacy_marks=','.join('?' for _ in legacy_product_ids)
+                                # This replaces semantic products only. Exact hot
+                                # material retirement still awaits Journal commit.
+                                for table in ('memory_retirement_exceptions','memory_media_retirement_choices'):
+                                    self.db.execute('UPDATE '+table+' SET summary_id=? WHERE summary_id IN ('+legacy_marks+')',(identifier,*legacy_product_ids))
+                                self.db.execute("UPDATE memory_reconstruction_checkpoints SET summary_id=?,state=CASE WHEN state='pending_merge' THEN CASE WHEN pending_events IS NULL THEN 'available' ELSE 'pending_coverage' END ELSE state END WHERE summary_id IN ("+legacy_marks+')',(identifier,*legacy_product_ids))
+                                self.db.execute('DELETE FROM memory_vectors WHERE summary_id IN ('+legacy_marks+')',legacy_product_ids)
+                                self.db.execute('DELETE FROM memory_summaries WHERE id IN ('+legacy_marks+')',legacy_product_ids)
                             new_rows=[r for r in rows if r[0]>summary_from]
                             admin_partial=bool(_manual is not None and _manual['allow_partial'] and 0<len(new_rows)<35)
                             if not (summary_rounds==35 and (len(new_rows)==35 or admin_partial)):

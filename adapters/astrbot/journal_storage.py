@@ -42,7 +42,7 @@ def prune_unreferenced_blobs(db,scope,replacement=None,dry_run=False):
 
 
 def retire_archived_members(db,checkpoint_id):
-    """Erase only successfully retired batch members from recovery copies.
+    """Erase successfully retired members from active and recovery copies.
 
     Runs inside the caller's retirement transaction. Archive authorization,
     System bytes, uncompressed events and other scoped copies stay intact.
@@ -91,7 +91,7 @@ def retire_archived_members(db,checkpoint_id):
             value['group_round_history']=rounds
         return value
 
-    def snapshot(version,payload,key,expected_sha=None):
+    def snapshot(version,payload,key,expected_sha=None,*,active=False):
         if expected_sha and hashlib.sha256(payload.encode()).hexdigest()!=expected_sha:raise ValueError('archive_snapshot_integrity')
         def read_blob(channel,digest):
             blob=db.execute('SELECT data FROM fishbot_readonly_journal_blobs WHERE scope=? AND sha=?',(channel,digest)).fetchone()
@@ -102,7 +102,8 @@ def retire_archived_members(db,checkpoint_id):
         for field in ('base','wire'):
             value[field]=semantic_retire_projection(value[field],permit)
         value['state']=context(value.get('state'),default)
-        if default==scope or value!=original:
+        fresh_canonical=active and default==scope and value==original
+        if not fresh_canonical and (scope=='bot_shared' or default==scope or value!=original):
             # Submitted context packets are derived presentation caches, including
             # positional deltas that cannot identify a turn on their own. A legal
             # batch cutover discards these packets whole, as native cleanup does;
@@ -122,6 +123,15 @@ def retire_archived_members(db,checkpoint_id):
 
     db.execute('SAVEPOINT semantic_archive_cleanup')
     try:
+        if 'fishbot_readonly_journals' in tables:
+            columns={r[1] for r in db.execute('PRAGMA table_info(fishbot_readonly_journals)')}
+            checksum='sha' if 'sha' in columns else 'NULL'
+            for key,version,payload,sha in db.execute('SELECT scope,version,payload,'+checksum+' FROM fishbot_readonly_journals WHERE payload IS NOT NULL').fetchall():
+                update=snapshot(version,payload,key,sha,active=True)
+                if update:
+                    if 'sha' in columns:db.execute('UPDATE fishbot_readonly_journals SET version=?,payload=?,sha=? WHERE scope=?',(*update,key))
+                    else:db.execute('UPDATE fishbot_readonly_journals SET version=?,payload=? WHERE scope=?',(*update[:2],key))
+                    changed+=1
         if 'memory_checkpoint_archives' in tables:
             columns={r[1] for r in db.execute('PRAGMA table_info(memory_checkpoint_archives)')}
             checksum='sha' if 'sha' in columns else 'NULL'
@@ -139,7 +149,8 @@ def retire_archived_members(db,checkpoint_id):
                 update=snapshot(journal['version'],journal['payload'],key,journal.get('sha'))
                 if update:journal.update(zip(('version','payload','sha'),update))
                 for name,evidence in archive.get('evidence',{}).items():
-                    if name not in ('memory_rounds','memory_round_material','memory_pending','memory_pending_rounds','memory_hold_rounds'):continue
+                    if name not in ('memory_rounds','memory_round_material','memory_pending','memory_pending_rounds','memory_hold_rounds',
+                                    'memory_summary_coverage','memory_summary_unresolved','memory_media_retirement_choices','memory_message_sources'):continue
                     columns=evidence['columns']
                     if 'event' not in columns:continue
                     event_index=columns.index('event');scope_index=columns.index('scope') if 'scope' in columns else None
