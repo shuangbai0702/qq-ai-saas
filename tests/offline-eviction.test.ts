@@ -125,8 +125,8 @@ test('login during destruction waits for owner lock and starts after cleanup',as
 
 test('shared eviction detaches only its member using the owning transaction',async t=>{
  const f=await fixture(t);await f.db.query("UPDATE bots SET runtime_mode='shared' WHERE id=$1",[f.id]);f.agent.shared.probe=async()=>({alive:true,ready:true});
- let detached='';f.agent.shared.stop=async(id,permanent,tx)=>{assert.equal(permanent,false);assert.ok(tx);detached=id};
- const command=await f.claim();await f.agent.execute(command);assert.equal(detached,f.id);
+ let detached='',offlineDetaches=0;f.agent.shared.stop=async(id,permanent=false,tx)=>{assert.equal(permanent,false);if(tx){assert.ok(tx);detached=id}else offlineDetaches++};
+ const command=await f.claim();assert.ok(offlineDetaches>0,'offline SDK slots release before protocol eviction grace');assert.ok(command);await f.agent.execute(command);assert.equal(detached,f.id);
 });
 
 test('expired or canceled QR releases AI as well and never enters automatic recovery',async t=>{

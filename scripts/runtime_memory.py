@@ -1,6 +1,7 @@
 """Owned-process idle reclamation; advice is not a memory quota."""
 import ctypes
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -14,7 +15,7 @@ MIB = 1048576
 def owned(row):
     process = psutil.Process(int(row['pid']))
     root = os.path.normcase(os.path.abspath(row['root']))
-    if row.get('created') is None or abs(process.create_time()-float(row['created'])) >= .01:
+    if row.get('created') is None or not math.isfinite(float(row['created'])) or abs(process.create_time()-float(row['created'])) >= .01:
         raise ValueError('lifetime-mismatch')
     if not any((v := os.path.normcase(os.path.abspath(arg))) == root or v.startswith(root+os.sep) for arg in process.cmdline()):
         raise ValueError('owner-mismatch')
@@ -150,9 +151,9 @@ def decision(state, sample, idle=60):
     if now-epoch < idle: return 'waiting-idle'
     if state.get('trimmedEpoch') == epoch: return 'already-reclaimed'
     if now < state['nextAllowed']: return 'cooldown'
-    reserve = 384*MIB if sample.get('platform') == 'linux' else 192*MIB
-    if sample['available'] < reserve: return 'reserve-protection'
-    if sample.get('platform') == 'linux' and sample['available'] > max(512*MIB, sample['total']*.35):
+    # Native reclaim APIs differ; the safety/pressure policy does not.
+    if sample['available'] < 384*MIB: return 'reserve-protection'
+    if sample['available'] > max(512*MIB, sample['total']*.35):
         return 'no-memory-pressure'
     return 'reclaim'
 
@@ -162,11 +163,15 @@ def activity(root, now):
     for file in [root/'memory-activity.json', root/'ai/memory-activity.json']:
         try:
             value = json.loads(file.read_text())
-            seen = max(seen, min(float(value['at']), now))
-            if value.get('active'):
-                source = psutil.Process(int(value['pid']))
-                busy |= abs(source.create_time()-float(value['created'])) < .01
-        except (OSError, ValueError, KeyError, psutil.Error): pass
+            stamp, created = float(value['at']), float(value['created'])
+            if not math.isfinite(stamp) or not math.isfinite(created) or stamp > now+5 or stamp < created:
+                continue
+            source = psutil.Process(int(value['pid']))
+            if abs(source.create_time()-created) >= .01:
+                continue
+            seen = max(seen, min(stamp, now))
+            busy |= value.get('active') is True and now-stamp < 120
+        except (OSError, ValueError, KeyError, TypeError, OverflowError, psutil.Error): pass
     return seen, busy
 
 

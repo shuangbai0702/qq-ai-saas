@@ -382,7 +382,7 @@ class Wiring(unittest.IsolatedAsyncioTestCase):
                 event=NS(get_platform_id=lambda:'fixture',get_extra=lambda k,d=None:extra.get(k,d),set_extra=lambda k,v:extra.__setitem__(k,v))
                 token=current_message_event.set(event)
                 try:
-                    async def identity_images(messages):return messages
+                    async def identity_images(messages,memo=None,retained=None):return messages
                     from context_transport import EVENT_CONTEXT_CURRENT
                     from context_protocol import model_json
                     event_packet={'role':'user','content':EVENT_CONTEXT_CURRENT+'\n'+model_json({'authority':{'identity':{'sender_id':'12345678'}},'policy':'fixed policy','currentGuidance':'current guidance','meaning':'platform event data'})}
@@ -489,8 +489,9 @@ class Wiring(unittest.IsolatedAsyncioTestCase):
                     extra.pop('_hosted_group_round_history')
                 finally:current_message_event.reset(token)
                 lease={'config':{}};settings['fixture']=lease
-                event=NS(get_platform_id=lambda:'fixture',get_extra=lambda k,d=None:lease if k=='_hosted_lease' else d)
-                async def replaced(messages):settings.clear();return messages
+                stale_extras={'_hosted_lease':lease}
+                event=NS(get_platform_id=lambda:'fixture',get_extra=lambda k,d=None:stale_extras.get(k,d),set_extra=lambda k,v:stale_extras.__setitem__(k,v))
+                async def replaced(messages,memo=None,retained=None):settings.clear();return messages
                 token=current_message_event.set(event)
                 try:
                     with patch('model_images.constrain_messages',replaced):

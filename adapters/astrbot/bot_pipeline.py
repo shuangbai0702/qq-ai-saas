@@ -5,6 +5,7 @@ second ingress, invent a sender, or own the QQ transport or a bot's database.
 """
 from dataclasses import dataclass,field
 import hashlib,json,math,time,uuid,os
+import psutil
 
 
 STAGES=('ingress','observe','admission','context','model_tools','output_plan','dispatch','commit')
@@ -377,12 +378,17 @@ class BotPipeline:
         for name,kind in (('observed_at','REAL'),('retry_count','INTEGER DEFAULT 0'),('retry_at','REAL DEFAULT 0'),('payload_sha','TEXT')):
             if name not in columns:db.execute('ALTER TABLE pipeline_work_inputs ADD COLUMN '+name+' '+kind)
         for scope,owner,pid in db.execute('SELECT scope,runtime,pid FROM pipeline_scope_work').fetchall():
-            try:os.kill(pid,0)
-            except ProcessLookupError:
+            # os.kill(pid, 0) terminates processes on Windows. A read-only
+            # status probe preserves live owners on both supported platforms.
+            try:
+                process=psutil.Process(pid)
+                if not process.is_running() or process.status()==psutil.STATUS_ZOMBIE:
+                    raise psutil.NoSuchProcess(pid)
+            except psutil.NoSuchProcess:
                 db.execute('DELETE FROM pipeline_scope_work WHERE scope=? AND runtime=?',(scope,owner))
                 db.execute("UPDATE pipeline_work_inputs SET status='pending',owner=NULL WHERE scope=? AND status='owned' AND seen=0",(scope,))
                 db.execute("UPDATE pipeline_work_inputs SET status='blocked_unknown',owner=NULL WHERE scope=? AND status='owned'",(scope,))
-            except PermissionError:pass  # A live process which we cannot signal still owns it.
+            except psutil.AccessDenied:pass  # An inaccessible live process still owns it.
         db.execute("UPDATE pipeline_work_inputs SET status='pending' WHERE status='queued' AND NOT EXISTS (SELECT 1 FROM pipeline_scope_work w WHERE w.scope=pipeline_work_inputs.scope)")
         db.execute('''CREATE TABLE IF NOT EXISTS pipeline_events(scope TEXT,subject TEXT,event TEXT,at REAL,source TEXT,stage TEXT,status TEXT,reason TEXT,attempted INTEGER DEFAULT 0,confirmed INTEGER DEFAULT 0,PRIMARY KEY(scope,subject,event))''')
         db.execute('CREATE INDEX IF NOT EXISTS pipeline_events_by_event ON pipeline_events(event)')

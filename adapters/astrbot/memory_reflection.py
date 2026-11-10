@@ -162,9 +162,26 @@ class Reflection:
         # later batches, protects their evidence from quota cleanups, and blocks
         # reconstruction permits while evidence inside the range is uncarried.
         db.execute('CREATE TABLE IF NOT EXISTS memory_hold_rounds(scope TEXT,event TEXT,round_id INTEGER,reason TEXT,created REAL,PRIMARY KEY(scope,event))')
+        # Only live unresolved inputs need membership beyond Coverage. This is
+        # a repair fence, not an accumulating source list on summary products.
+        db.executescript('''CREATE TABLE IF NOT EXISTS memory_summary_unresolved(
+          scope TEXT,event TEXT,summary_id INTEGER,digest TEXT,
+          PRIMARY KEY(scope,event,summary_id));
+        CREATE TRIGGER IF NOT EXISTS memory_summary_unresolved_deleted AFTER DELETE ON memory_summaries BEGIN
+          DELETE FROM memory_summary_unresolved WHERE summary_id=OLD.id; END;
+        CREATE TRIGGER IF NOT EXISTS memory_summary_unresolved_released AFTER DELETE ON memory_hold_rounds BEGIN
+          DELETE FROM memory_summary_unresolved WHERE scope=OLD.scope AND event=OLD.event; END;''')
+        # Legacy products remain byte-for-byte intact. Import only their still
+        # held, captured inputs; never copy the historical source accumulation.
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_round_material'").fetchone():
+            db.execute('''INSERT OR IGNORE INTO memory_summary_unresolved
+              SELECT h.scope,h.event,s.id,json_extract(m.material,'$.digest')
+              FROM memory_hold_rounds h JOIN memory_round_material m ON m.scope=h.scope AND m.event=h.event
+              JOIN memory_summaries s ON s.scope=h.scope
+              JOIN json_each(s.sources) e ON CAST(e.value AS TEXT)=h.event''')
         checkpoint_columns={row[1] for row in db.execute('PRAGMA table_info(memory_reconstruction_checkpoints)')}
         if 'summary_id' not in checkpoint_columns:db.execute('ALTER TABLE memory_reconstruction_checkpoints ADD COLUMN summary_id INTEGER')
-        # Bounded pending-coverage proof: the exact events a real 35-round
+        # Pending-coverage proof: the exact events a real 35-round
         # batch completed but could not yet prove covered. Old code ignores
         # the column; 'pending_coverage' state is never an available license.
         if 'pending_events' not in checkpoint_columns:db.execute('ALTER TABLE memory_reconstruction_checkpoints ADD COLUMN pending_events TEXT')
@@ -527,7 +544,7 @@ class Reflection:
         for key in selected_events:
             row=events[key];scopes.add(scope);people.add(str(row['sender_id']));sources.add(key)
         for key in selected_summaries:
-            row=summaries[key];sources.update(map(str,json.loads(row[2])))
+            row=summaries[key]
             origins=[x[0] for x in self.db.execute('SELECT scope FROM memory_summary_origins WHERE summary_id=?',(key,))]
             scopes.update(origins or [row[4]])
             people.update(x[0] for x in self.db.execute('SELECT subject FROM memory_summary_people WHERE summary_id=?',(key,)))
@@ -657,9 +674,14 @@ class Reflection:
             item=json.loads(raw[0])
             from summary_material import media_retirement_allowed
             if item.get('version',0)<3 or not coverage_eligible(item,scope) or not media_retirement_allowed(self.db,scope,event,item):continue
-            # Only an original published product explicitly carrying this
-            # source is eligible; no text similarity or timestamp inference.
-            summary=self.db.execute("SELECT s.id FROM memory_summaries s LEFT JOIN memory_summary_levels l ON l.id=s.id WHERE s.scope=? AND coalesce(l.kind,'small')<>'pending_small' AND EXISTS (SELECT 1 FROM json_each(s.sources) WHERE value=?) ORDER BY s.id DESC LIMIT 1",(scope,event)).fetchone()
+            # Exact live repair membership or an existing Coverage row proves
+            # this product read the input; summary prose/source lists do not.
+            summary=self.db.execute("""SELECT s.id FROM memory_summaries s LEFT JOIN memory_summary_levels l ON l.id=s.id
+              WHERE s.scope=? AND coalesce(l.kind,'small')<>'pending_small' AND (
+                EXISTS (SELECT 1 FROM memory_summary_unresolved u WHERE u.summary_id=s.id AND u.scope=? AND u.event=? AND u.digest=?)
+                OR EXISTS (SELECT 1 FROM memory_summary_coverage c WHERE c.summary_id=s.id AND c.scope=? AND c.event=?
+                  AND (c.digest=? OR c.digest LIKE 'v1:'||?||':%' OR c.digest LIKE 'v2:'||?||':%' OR c.digest LIKE 'v3:'||?||':%')))
+              ORDER BY s.id DESC LIMIT 1""",(scope,scope,event,item['digest'],scope,event,*([item['digest']]*4))).fetchone()
             if not summary:continue
             self.db.execute('INSERT INTO memory_summary_coverage VALUES(?,?,?,?,?) ON CONFLICT(scope,event) DO UPDATE SET subject=excluded.subject,digest=excluded.digest,summary_id=excluded.summary_id',(scope,event,item['subject'],coverage_digest(item),summary[0]))
             self.db.execute("DELETE FROM memory_hold_rounds WHERE scope=? AND event=? AND reason='uncovered'",(scope,event));repaired+=1
@@ -702,10 +724,10 @@ class Reflection:
             if not isinstance(pending,list):continue
             summary=self.db.execute("SELECT s.id,s.text,s.sources,s.claims,coalesce(l.kind,'small') FROM memory_summaries s LEFT JOIN memory_summary_levels l ON l.id=s.id WHERE s.id=? AND s.scope=?",(checkpoint[1],scope)).fetchone()
             if not summary or summary[4] not in ('small','big'):continue
-            try:sources=json.loads(summary[2])
-            except (ValueError,TypeError):continue
-            if not isinstance(sources,list):continue
-            selected=[r for r in ready if r[2] in pending and r[2] in sources]
+            selected=[r for r in ready if r[2] in pending and self.db.execute('''SELECT 1 FROM memory_summary_unresolved u
+                JOIN memory_round_material m ON m.scope=u.scope AND m.event=u.event
+                WHERE u.scope=? AND u.event=? AND u.summary_id=? AND u.digest=json_extract(m.material,'$.digest')''',
+                (scope,r[2],summary[0])).fetchone()]
             if not selected:continue
             # A producer must prove final Work ownership/settlement. Legacy
             # native-only captures cannot be repaired by physical adjacency.
@@ -731,7 +753,7 @@ class Reflection:
         materials,observations=await enrich(self.db,scope,[r[2] for r in rows],provider,live,metrics)
         payload=[{'sender_id':r[1],'event':r[2],'user':r[3] or materials[r[2]]['text'],'bot':r[4] or '', 'at':r[5] or 0,'source':message_provenance.get(self.db,scope,r[2])} for r in rows]
         prior=json.loads(summary[3]) if summary[3] else []
-        prompt={'source_scope':scope,'original_summary':summary[1],'original_sources':json.loads(summary[2]),'protected_evidence':[claim_view(c) for c in prior], 'turns':payload,
+        prompt={'source_scope':scope,'original_summary':summary[1],'protected_evidence':[claim_view(c) for c in prior], 'turns':payload,
                 'observed_requests':model_view(materials,payload),'image_observations':observations}
         from output_clean import memory_projection
         prompt=memory_projection(prompt)
@@ -901,7 +923,7 @@ class Reflection:
                         asyncio.get_running_loop().call_soon(self.retry)
                         return
                     if job=='big':
-                        prompt={'source_scope':'bot_shared_background','summaries':[{'id':r[0],'text':r[1],'sources':json.loads(r[2]),'source_scopes':[x[0] for x in self.db.execute('SELECT scope FROM memory_summary_origins WHERE summary_id=?',(r[0],))] or [r[4]],'level':r[5]} for r in big_rows]}
+                        prompt={'source_scope':'bot_shared_background','summaries':[{'id':r[0],'text':r[1],'source_scopes':[x[0] for x in self.db.execute('SELECT scope FROM memory_summary_origins WHERE summary_id=?',(r[0],))] or [r[4]],'level':r[5]} for r in big_rows]}
                         # The merge model must see the structured protected evidence,
                         # not guess it back from prose: current agreements,
                         # corrections and open topics with their real status.
@@ -940,7 +962,7 @@ class Reflection:
                                   WHERE m.scope=p.scope AND m.event=p.event AND r.id<=?)
                                   OR EXISTS (SELECT 1 FROM memory_hold_rounds h
                                   WHERE h.scope=p.scope AND h.event=p.event AND h.reason<>'lost'))
-                                ORDER BY p.at,p.rowid LIMIT 600''',(scope,rows[-1][5],scope,rows[-1][0])).fetchall()
+                                ORDER BY p.at,p.rowid''',(scope,rows[-1][5],scope,rows[-1][0])).fetchall()
                             merged={r['event']:r for r in payload}
                             for person,event,question,answer,at in pending:
                                 merged.setdefault(event,{'sender_id':person,'event':event,'user':question,'bot':answer,'at':at,'source':message_provenance.get(self.db,scope,event)})
@@ -1033,10 +1055,10 @@ class Reflection:
                             people=self.db.execute('SELECT DISTINCT subject FROM memory_summary_people WHERE summary_id IN ('+marks+')',ids).fetchall()
                             origins={x[0] for x in self.db.execute('SELECT scope FROM memory_summary_origins WHERE summary_id IN ('+marks+')',ids)}
                             origins.update(r[4] for r in big_rows if not self.db.execute('SELECT 1 FROM memory_summary_origins WHERE summary_id=?',(r[0],)).fetchone())
-                            sources=list(dict.fromkeys(x for r in big_rows for x in json.loads(r[2])))
                             # The merged row carries the inherited claims (protected
                             # first, parents traceable) regardless of prose length.
-                            identifier=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated,schema_version,claims) VALUES(?,?,?,?,2,?)',(merge_scope,text,json.dumps(sources),time.time(),json.dumps(merge_claims,ensure_ascii=False,separators=(',',':')) if merge_claims else None)).lastrowid
+                            identifier=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated,schema_version,claims) VALUES(?,?,?,?,2,?)',(merge_scope,text,'[]',time.time(),json.dumps(merge_claims,ensure_ascii=False,separators=(',',':')) if merge_claims else None)).lastrowid
+                            self.db.execute('INSERT OR IGNORE INTO memory_summary_unresolved SELECT scope,event,?,digest FROM memory_summary_unresolved WHERE summary_id IN ('+marks+')',(identifier,*ids))
                             self.db.execute("INSERT INTO memory_summary_levels VALUES(?,'big')",(identifier,))
                             self.db.executemany('INSERT INTO memory_summary_origins VALUES(?,?)',[(identifier,x) for x in origins])
                             self.db.executemany('INSERT OR IGNORE INTO memory_summary_people VALUES(?,?)',[(identifier,p[0]) for p in people])
@@ -1089,7 +1111,7 @@ class Reflection:
                             # bounded business projection for their own scope.
                             import agreement_state
                             metrics['agreementsPromoted']=metrics.get('agreementsPromoted',0)+agreement_state.promote_from_claims(self.db,scope,claims)
-                            identifier=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated,schema_version,claims) VALUES(?,?,?,?,2,?)',(scope,text,json.dumps([r['event'] for r in payload]),time.time(),json.dumps(claims,ensure_ascii=False,separators=(',',':')) if claims else None)).lastrowid
+                            identifier=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated,schema_version,claims) VALUES(?,?,?,?,2,?)',(scope,text,'[]',time.time(),json.dumps(claims,ensure_ascii=False,separators=(',',':')) if claims else None)).lastrowid
                             count=self.db.execute("SELECT count(*) FROM memory_summaries s LEFT JOIN memory_summary_levels l ON l.id=s.id WHERE s.scope=? AND coalesce(l.kind,'small')<>'big'",(scope,)).fetchone()[0]
                             # A legacy multi-big basis must be consolidated
                             # before this first shared checkpoint is published.
@@ -1119,6 +1141,8 @@ class Reflection:
                             # coverage proof; the rest is kept and the conflict
                             # reported (D4.5), never silently dropped.
                             holds=uncarried_events(batch,{c['id'] for c in claims})|{event for event in materials if event not in covered}
+                            self.db.executemany('INSERT INTO memory_summary_unresolved VALUES(?,?,?,?)',
+                                [(scope,event,identifier,materials[event]['digest']) for event in holds if event in materials])
                             self.db.executemany('DELETE FROM memory_pending WHERE scope=? AND event=? AND subject=? AND question=? AND answer=?',[(scope,r['event'],r['sender_id'],r['user'],r['bot']) for r in payload if r['event'] not in holds and not pending_merge])
                             self.db.executemany("DELETE FROM memory_round_material WHERE scope=? AND event=? AND json_extract(material,'$.digest')=?",[(scope,event,m['digest']) for event,m in materials.items() if event not in holds and not pending_merge])
                             if holds:metrics['summaryReleaseHolds']=metrics.get('summaryReleaseHolds',0)+len(holds)
@@ -1163,7 +1187,7 @@ class Reflection:
                                 # its evidence; promotion permits only independently
                                 # proven retirement, retaining unproven blocks.
                                 waiting=[str(r[0]) for r in self.db.execute('SELECT event FROM memory_hold_rounds WHERE scope=? AND (round_id IS NULL OR round_id<=?) ORDER BY event',(scope,rows[-1][0]))]
-                                pending=list(dict.fromkeys(waiting+[str(event) for event in holds]))[:64]
+                                pending=list(dict.fromkeys(waiting+[str(event) for event in holds]))
                                 state='pending_merge' if pending_merge else 'available' if not pending else 'pending_coverage'
                                 self.db.execute('INSERT OR IGNORE INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,created,summary_id,pending_events) VALUES(?,?,35,?,?,?,?,?)',
                                                 (scope,rows[-1][0],epoch,state,time.time(),identifier,json.dumps(pending,ensure_ascii=False) if pending else None))

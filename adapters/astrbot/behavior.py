@@ -228,6 +228,8 @@ def install_runtime(core,settings):
         return installed['runtime']
     from tenant_tools import install as install_tool_guards
     install_tool_guards(settings)
+    from model_images import install_sdk_preparation
+    install_sdk_preparation()
     from astrbot.core.pipeline.scheduler import PipelineScheduler
     from astrbot.core.pipeline.waking_check.stage import WakingCheckStage
     from astrbot.core.platform.astr_message_event import current_message_event
@@ -1511,7 +1513,17 @@ def install_runtime(core,settings):
         if foreground and owned and owned.shared_context:
             import shared_context
             projected=shared_context.current_view(projected,work.scope,work.event_id,service=work.source not in ('message','deferred_group'))
-        projected=await constrain_messages(projected)
+        from model_images import request_memo
+        image_memo=request_memo(image_event)
+        retained_media=None
+        if foreground and owned and not owned.shared_context:
+            existing=owned.model_journals.get(work.scope)
+            if existing is not None and existing.last is not None:retained_media=existing.last.base
+            elif owned.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fishbot_readonly_journals'").fetchone():
+                from journal_storage import read_snapshot
+                saved=read_snapshot(owned.db,model_json(work.scope))
+                retained_media=saved.get('base',[]) if saved else None
+        projected=await constrain_messages(projected,image_memo,retained_media)
         # When this projection dropped covered blocks, the journal also needs
         # the constrained full native view: the honest pre-retirement image of
         # the same source. It is built by the same deterministic per-message
@@ -1520,7 +1532,7 @@ def install_runtime(core,settings):
         # next legal checkpoint instead of replacing committed history).
         unprojected_for_journal=None
         if memory_capture and native_view is not None and len(native_view)>len(projected):
-            unprojected_for_journal=await constrain_messages(native_view)
+            unprojected_for_journal=await constrain_messages(native_view,image_memo,retained_media)
         fence=image_event.get_extra('_hosted_context_fence') if foreground else None
         if fence:
             owner,context_epoch,ids,scope,dependency=fence
@@ -1559,7 +1571,7 @@ def install_runtime(core,settings):
                 projected=normalized['messages']
                 current_native=shared_context.native_tail(projected,work.scope,work.event_id)[0] if work.source in ('message','deferred_group') else None
                 additions=shared_context.queued(owned.db,setting(image_event)['config'],journal,owned.shared_group_limit,current=(work.scope,str(work.event_id),current_native) if current_native else None)
-                additions=await constrain_messages(additions)
+                additions=await constrain_messages(additions,image_memo)
                 projected=shared_context.refresh_deliveries(projected,owned.db,journal)
                 projected,tools_seen=shared_context.compose(journal,projected,work.scope,work.event_id,additions,image_event.get_extra('_hosted_shared_tools'),service=work.source not in ('message','deferred_group'),self_id=image_event.get_self_id(),input_digest=image_event.get_extra('_hosted_shared_input_digest'))
                 image_event.set_extra('_hosted_shared_tools',tools_seen)

@@ -27,7 +27,7 @@ async def main():
         current=True;calls=[];extras={'_hosted_internal_work':{'id':'work-1','kind':'research','principal':'autonomous-service'},'_hosted_autonomous_action':{'kind':'research'}}
         async def login():return {'user_id':'90000000'}
         async def avatar(**kwargs):calls.append(kwargs);return {}
-        event=NS(get_group_id=lambda:'',get_extra=lambda k,d=None:extras.get(k,d),get_sender_id=lambda:'0',get_self_id=lambda:'90000000',get_messages=lambda:[],message_obj=NS(message_id='stable-work-1'),bot=NS(get_login_info=login,set_qq_avatar=avatar))
+        event=NS(get_group_id=lambda:'',get_extra=lambda k,d=None:extras.get(k,d),set_extra=lambda k,v:extras.__setitem__(k,v),get_sender_id=lambda:'0',get_self_id=lambda:'90000000',get_messages=lambda:[],message_obj=NS(message_id='stable-work-1'),bot=NS(get_login_info=login,set_qq_avatar=avatar))
         context=NS(context=NS(event=event));bridge={'settingsRevision':1,'allowAutonomous':True,'operations':[{'operation':'search'}]}
         with patch('bilibili_tools.manifest',side_effect=lambda _:json.loads(json.dumps(bridge))):
             import bilibili_tools
@@ -41,7 +41,16 @@ async def main():
                 prepared=await tool.call(context,operation='prepare',handle=handle)
             data=json.loads(prepared.content[0].text)
             assert data['status']=='prepared' and prepared.content[1].type=='image'
-            assert base64.b64decode(prepared.content[1].data)==db.execute('SELECT png FROM bili_image_assets WHERE handle=?',(handle,)).fetchone()[0]
+            assert base64.b64decode(prepared.content[1].data)==png,'small model preview changed source bytes'
+            with Image.open(io.BytesIO(db.execute('SELECT png FROM bili_image_assets WHERE handle=?',(handle,)).fetchone()[0])) as avatar_asset:
+                assert avatar_asset.size==(80,40)
+            avatar_before=db.execute('SELECT png FROM bili_image_assets WHERE handle=?',(handle,)).fetchone()[0]
+            for edge,expected in [(1025,512),(1024,328),(512,512),(511,256),(256,256)]:
+                original=io.BytesIO();Image.new('RGB',(edge,200),'green').save(original,format='PNG')
+                async def tier_download(url):return original.getvalue()
+                with patch.object(images,'fetch',tier_download):preview=await tool.call(context,operation='prepare',handle=handle)
+                with Image.open(io.BytesIO(base64.b64decode(preview.content[1].data))) as model_copy:assert max(model_copy.size)==expected
+                assert db.execute('SELECT png FROM bili_image_assets WHERE handle=?',(handle,)).fetchone()[0]==avatar_before,'model preview modified QQ avatar asset'
             qqtool=next(t for t in qq_actions.tools(event,settings['config'],db,lambda:current,settings) if t.name=='hosted_qq_avatar')
             assert '已确认该操作' in await qqtool.call(context,image_handle=handle)
             assert len(calls)==1 and calls[0]['file'].startswith('base64://')

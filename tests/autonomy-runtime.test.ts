@@ -20,8 +20,8 @@ test('native SDK: whitelist entry, refreshed clocks, owner timer, stale decision
   let raw='';for await(const b of req)raw+=b;const body=JSON.parse(raw),system=body.messages.filter((m:any)=>m.role==='system').map((m:any)=>m.content).join('\n');
   const selected=body.messages.map((m:any)=>typeof m.content==='string'?m.content:JSON.stringify(m.content)).join('\n').match(/"id"\s*:\s*"(bf_[a-f0-9]{16})"/)?.[1];const meme=selected?'[MEME:'+selected+']':'';const kind=system.includes('判断是否以当前人格自然加入群聊')?'group':system.includes('你是当前机器人的主动联系判断器')?'owner':'reply';calls.push({kind,body});let answer=JSON.stringify(nativeMessages(body).at(-1)).includes('proactive_moment')?'刚想到我们之前聊的那个话题，想听听你的近况。':'接着聊。'+meme;
   if(kind==='group'){
-   const silent=JSON.parse(nativeMessages(body).at(-1).content).messages.at(-1).text.includes('SILENT_TOPIC');
-   const other=JSON.parse(nativeMessages(body).at(-1).content).messages.at(-1).text.includes('OTHER_TARGET_QUESTION');
+   const silent=JSON.parse(nativeMessages(body).at(-1).content).changes.messages.at(-1).text.includes('SILENT_TOPIC');
+   const other=JSON.parse(nativeMessages(body).at(-1).content).changes.messages.at(-1).text.includes('OTHER_TARGET_QUESTION');
    answer=JSON.stringify({reply:!silent,target:other?'other':'open',participation:other?'side':'open',information:'substantive',interest:'strong',reason_code:'shared_interest',confidence:'high',cooldown_intervals:silent?1:0,cooldown_reason:silent?'busy':'none'});
   }
   if(kind==='owner'){
@@ -37,9 +37,9 @@ test('native SDK: whitelist entry, refreshed clocks, owner timer, stale decision
   const auth=await current.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(current.db),email:'autonomy@fixture.invalid',password:'autonomy-fixture-123',name:'自主行为验收'}});const cookies={fish_session:auth.cookies[0].value};
   const config={...defaultConfig,baseUrl:`http://127.0.0.1:${(model.address()as any).port}/v1`,model:'autonomy-fixture',proactive:true,behavior:{...defaultConfig.behavior!,groupParticipationEnabled:true,groupParticipationGroups:['778899','889900','990011','991122'],groupParticipationIntervalMinutes:10,groupParticipationStyle:'active',ownerContactEnabled:true,ownerUin:'11111111',ownerContactIntervalMinutes:15,ownerContactIdleMinutes:5,ownerContactDailyChecks:12,proactiveModelSchedule:false,autonomousGroupContact:false,proactiveChance:0,proactiveIntervalSeconds:60,quietStart:0,quietEnd:0,typingSimulation:false,typoEnabled:false,splitMessages:false,burstDebounceMs:800,styleLearning:false,memorySummary:false,memeEnabled:true,fatigueEnabled:false}};
   const created=await current.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'自主行为验收',protocol:'mock',runtimeMode:'shared',expectedUin:'90007661',apiKey:'autonomy-fixture-key',config}});assert.equal(created.statusCode,201,created.body);const id=created.json().id;
-  await current.app.inject({method:'POST',url:`/v1/bots/${id}/actions`,cookies,payload:{action:'start',idempotencyKey:'start'}});await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.ai?.ready,'AI ready');
+  await current.app.inject({method:'POST',url:`/v1/bots/${id}/actions`,cookies,payload:{action:'start',idempotencyKey:'start'}});await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.protocol?.ready,'protocol ready');
   const ctx=await current.agent.context((await current.db.query('SELECT * FROM bots WHERE id=$1',[id]))[0]),mock=current.agent.protocols.mock as MockProtocolAdapter;
-  await mock.call(ctx,'/transition',{state:'online',uin:'90007661'});await until(async()=>!!(await mock.call(ctx,'/state')as any).connected,'QQ connected');
+  await mock.call(ctx,'/transition',{state:'online',uin:'90007661'});await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.ai?.ready,'AI ready');await until(async()=>!!(await mock.call(ctx,'/state')as any).connected,'QQ connected');
   const actions=async()=>(await mock.call(ctx,'/messages')as any[]).filter(x=>x.action.startsWith('send_'));
   // A protocol ACK precedes reply bookkeeping. Wait for the actual runtime
   // idle mark before testing a new unsolicited entry against its global gate.
@@ -74,13 +74,13 @@ test('native SDK: whitelist entry, refreshed clocks, owner timer, stale decision
   assert.equal((await actions()).filter(x=>x.action==='send_private_msg').length,1,'late owner decision cannot interrupt fresh group interaction');
   await advanceOwner();await until(async()=>(await actions()).filter(x=>x.action==='send_private_msg').length===2,'next timer checks again and delivers once');assert.equal(ownerCalls(),2);
   await sleep(5500);assert.equal(ownerCalls(),2,'5-second poll is not repeated model evaluation');assert.equal((await actions()).filter(x=>x.action==='send_private_msg').length,2,'unanswered owner is not chased');
-  for(const call of calls.filter(x=>x.kind==='owner'))assert.ok(JSON.parse(nativeMessages(call.body).at(-1).content).owner_memory.recent_private.some((x:any)=>x.user==='主人先正常聊一句'),'timer judgment receives actual private history despite having no native chat contexts');
-  assert.equal(JSON.parse(nativeMessages(calls.find(x=>x.kind==='group')!.body).at(-1).content).style,'active','configured participation style reaches the group decision model');
+  for(const call of calls.filter(x=>x.kind==='owner'))assert.ok(JSON.parse(nativeMessages(call.body).at(-1).content).changes.owner_memory.recent_private.some((x:any)=>x.user==='主人先正常聊一句'),'timer judgment receives actual private history despite having no native chat contexts');
+  assert.equal(JSON.parse(nativeMessages(calls.find(x=>x.kind==='group')!.body).at(-1).content).changes.style,'active','configured participation style reaches the group decision model');
   const beforeAddressing=groupCalls(),beforeAddressingSends=(await actions()).length;
   await message('990011','SELF_RELATED_TO_OTHER 这个话题也和机器人有关','22222222','33333333');
   await message('990011','','22222222');
   await until(async()=>(await actions()).length===beforeAddressingSends+1,'model can admit a relevant topic despite an @ to another person');
-  const addressed=calls.filter(x=>x.kind==='group').at(-1)!;assert.equal(JSON.parse(nativeMessages(addressed.body).at(-1).content).platform_addressing.mentions_other,true);
+  const addressed=calls.filter(x=>x.kind==='group').at(-1)!;assert.equal(JSON.parse(nativeMessages(addressed.body).at(-1).content).changes.platform_addressing.mentions_other,true);
   await message('991122','OTHER_TARGET_QUESTION 这是只说给另一个人的','22222222','33333333');await until(async()=>groupCalls()===beforeAddressing+2,'other-person addressing reaches the semantic model');await sleep(400);
   assert.equal((await actions()).length,beforeAddressingSends+1,'disabled side comments still prevent joining somebody else’s conversation');
   for(const call of calls)assert.equal(call.body.max_tokens,call.kind==='reply'?undefined:2048,'actual SDK HTTP payload uses the structured-decision budget without changing normal replies');
