@@ -7,6 +7,9 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/'references/astrbot'),str(ROOT/'adapters/astrbot')]
 import summary_material as material
 from behavior import BehaviorStore
+from semantic_batch import event_key
+from semantic_runtime import finish_semantic_batches
+from readonly_journal import ReadonlyJournal,Prepared
 
 SCOPE='private:12345678'
 def message(event='1',scope=SCOPE,image=False):
@@ -61,8 +64,10 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.store=BehaviorStore(Path(self.tmp.name)/'behavior.sqlite');self.db=self.store.db
         self.var=contextvars.ContextVar('summary_test',default=None)
+        self.journal=ReadonlyJournal(self.db,SCOPE)
+        self.store.model_journals[SCOPE]=self.journal
     def tearDown(self):self.store.close();self.tmp.cleanup()
-    async def test_unselected_old_hold_is_preserved_without_reinjection(self):
+    async def test_old_hold_joins_complete_batch_without_counting_as_new_round(self):
         self.add()
         held=material.snapshots([message('old-held')],SCOPE)[0]
         self.db.execute('INSERT INTO memory_pending VALUES(?,?,?,?,?,?)',(SCOPE,'12345678','old-held',held['text'],'',0))
@@ -74,11 +79,15 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
             return NS(completion_text=json.dumps({'summary':'本批经历'}))
         self.start(chat);await self.drain()
         self.assertTrue(seen)
-        self.assertFalse(any(row['event']=='old-held' for row in seen[0]['turns']))
-        self.assertEqual(len(seen[0]['turns']),35)
+        self.assertTrue(any(row['event']=='old-held' for row in seen[0]['turns']))
+        self.assertEqual(len(seen[0]['turns']),36)
         self.assertIsNotNone(self.db.execute('SELECT material FROM memory_round_material WHERE event=?',('old-held',)).fetchone())
         self.assertEqual(self.db.execute('SELECT reason FROM memory_hold_rounds WHERE event=?',('old-held',)).fetchone()[0],'uncovered')
         self.assertEqual(self.db.execute('SELECT round_count FROM memory_reconstruction_checkpoints').fetchone()[0],35)
+        self.assert_member('old-held')
+        self.finish()
+        self.assertIsNone(self.db.execute('SELECT material FROM memory_round_material WHERE event=?',('old-held',)).fetchone())
+        self.assertIsNone(self.db.execute('SELECT reason FROM memory_hold_rounds WHERE event=?',('old-held',)).fetchone())
     def add(self,image=False,start=0):
         for i in range(start,start+35):
             msg=message(str(i),image=image)
@@ -91,7 +100,24 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
             if self.store.reflection.task is task:break
     def start(self,chat):
         return self.store.reflection.maybe_start(SCOPE,{'memory':True,'memorySummary':True,'summaryRounds':35},NS(text_chat=chat),lambda:True,{},self.var)
-    async def test_success_coverage_persists_rollup_and_forget(self):
+    def assert_member(self,event):
+        rows=self.db.execute('SELECT members FROM memory_semantic_batches WHERE scope=?',(SCOPE,)).fetchall()
+        self.assertTrue(any(event_key(SCOPE,event) in json.loads(raw) for raw, in rows),event)
+        self.assertEqual(material.coverage(self.db,SCOPE),{},'semantic replacement uses a batch permit, never per-event Coverage')
+    def finish(self):
+        history=[{'role':'system','content':'unchanged tenant System'}]
+        for event,raw in self.db.execute('SELECT event,material FROM memory_round_material WHERE scope=? ORDER BY rowid',(SCOPE,)):
+            item=json.loads(raw);history.append({'role':'user','content':item['text']})
+            if item.get('native_reply') or item.get('reply'):history.append({'role':'assistant','content':item.get('native_reply') or item['reply']})
+        current=message('not-compressed-current');history.append(current)
+        self.journal.serial+=1
+        prepared=Prepared(self.journal.serial,None,copy.deepcopy(history),copy.deepcopy(history),{},1,time.time(),'fixture')
+        self.assertTrue(self.journal._persist(prepared));self.journal.last=prepared
+        result=finish_semantic_batches(self.store,{},SCOPE)
+        self.assertEqual(result['pending'],0,result)
+        self.assertEqual(self.journal.last.base[0],history[0]);self.assertIn(current,self.journal.last.base)
+        return result
+    async def test_success_batch_permits_persist_rollup_retirement_and_forget(self):
         prompts=[]
         async def chat(**kw):
             prompts.append(json.loads(kw['prompt']));return NS(completion_text='长期背景：12345678喜欢红茶' if '最多1500' in kw['system_prompt'] else json.dumps({'summary':'引用中其他人喜欢红茶，不是12345678。'}))
@@ -100,13 +126,16 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
             if start==0:self.start(chat)
             else:self.store.reflection.retry()
             await self.drain()
-        self.assertEqual(len(material.coverage(self.db,SCOPE)),105)
-        self.assertEqual(set(material.coverage(self.db,SCOPE,['0','104','unknown'])),{'0','104'})
+            self.finish()
+        batches=self.db.execute('SELECT members,state FROM memory_semantic_batches').fetchall()
+        self.assertEqual(len(batches),3);self.assertTrue(all(len(json.loads(raw))==35 and state=='retired' for raw,state in batches))
+        self.assert_member('0');self.assert_member('104')
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],0)
         self.assertIn('其他人',prompts[0]['observed_requests'][0]['text'])
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1)
         self.store.close();self.store=BehaviorStore(Path(self.tmp.name)/'behavior.sqlite');self.db=self.store.db
-        self.assertEqual(len(material.coverage(self.db,SCOPE)),105)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM memory_semantic_batches WHERE state='retired'").fetchone()[0],3)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],0)
         from memory_reflection import invalidate
         invalidate(self.db,SCOPE,'12345678');self.db.commit()
         self.assertEqual(material.coverage(self.db,SCOPE),{})
@@ -114,13 +143,14 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_only_exact_successful_35_round_summary_mints_single_use_permit(self):
         async def summarize(**kw):return NS(completion_text=json.dumps({'summary':'35轮已成功整理的真实摘要'}))
         for index in range(35):
-            self.store.reflection.record(SCOPE,'12345678',f'checkpoint-{index}',f'真实问题{index}',f'已确认回复{index}')
+            self.store.reflection.record(SCOPE,'12345678',f'checkpoint-{index}',f'真实问题{index}',f'已确认回复{index}',materials=material.snapshots([message(f'checkpoint-{index}')],SCOPE))
         self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=summarize),lambda:True,{},self.var))
         await self.drain()
         row=self.db.execute('SELECT round_count,state,summary_id FROM memory_reconstruction_checkpoints WHERE scope=?',(SCOPE,)).fetchone()
         self.assertEqual(row[:2],(35,'available'));self.assertIsNotNone(row[2])
         permit=self.store.reflection.reserve_context_reconstruction(SCOPE,'failed-candidate',[row[2]])
         self.assertIsNotNone(permit);self.assertTrue(self.store.reflection.settle_context_reconstruction(permit,False))
+        self.assertTrue(permit['semanticBatch']);self.assertEqual(len(permit['batchMembers']),35)
         retry=self.store.reflection.reserve_context_reconstruction(SCOPE,'successful-candidate',[row[2]])
         self.assertIsNotNone(retry);self.assertTrue(self.store.reflection.settle_context_reconstruction(retry,True))
         self.assertEqual(self.db.execute('SELECT state FROM memory_reconstruction_checkpoints WHERE scope=?',(SCOPE,)).fetchone()[0],'consumed')
@@ -133,7 +163,7 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         async def summarize(**kw):
             entered.set();await release.wait()
             return NS(completion_text=json.dumps({'summary':'本会话35轮完成的新摘要'}))
-        for index in range(35):self.store.reflection.record(SCOPE,'12345678',f'fence-{index}','真实问题','已确认答复')
+        for index in range(35):self.store.reflection.record(SCOPE,'12345678',f'fence-{index}','真实问题','已确认答复',materials=material.snapshots([message(f'fence-{index}')],SCOPE))
         before=self.store.reflection.context_dependency([],SCOPE)
         unrelated=self.store.reflection.context_dependency([],'private:87654321')
         self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=summarize),lambda:True,{},self.var))
@@ -171,14 +201,16 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         async def summarize(**kw):return NS(completion_text=json.dumps({'summary':'ordinary summary'}))
         # The converged contract: a 30-round batch is not even scheduled, and
         # it certainly never mints (B package).
-        for index in range(30):self.store.reflection.record(SCOPE,'12345678',f'ordinary-{index}',f'真问题{index}',f'已确认{index}')
+        for index in range(30):self.store.reflection.record(SCOPE,'12345678',f'ordinary-{index}',f'真问题{index}',f'已确认{index}',materials=material.snapshots([message(f'ordinary-{index}')],SCOPE))
         self.assertFalse(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':30,'naturalConversation':False},NS(text_chat=summarize),lambda:True,{},self.var))
         await self.drain()
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints').fetchone()[0],0)
-        for index in range(35):self.store.reflection.record(SCOPE,'12345678',f'failed-{index}',f'问题{index}',f'回复{index}')
-        async def fail(**kw):raise RuntimeError('offline fixture failure')
+        for index in range(35):self.store.reflection.record(SCOPE,'12345678',f'failed-{index}',f'问题{index}',f'回复{index}',materials=material.snapshots([message(f'failed-{index}')],SCOPE))
+        calls=[]
+        async def fail(**kw):calls.append(kw);raise RuntimeError('offline fixture failure')
         self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=fail),lambda:True,{},self.var))
         await self.drain()
+        self.assertEqual(len(calls),1)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints').fetchone()[0],0)
     async def test_failed_vision_keeps_rounds_and_no_coverage(self):
         self.add(image=True)
@@ -196,27 +228,35 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         self.start(chat);await self.drain()
         self.assertIn('old',{r['event'] for r in prompts[0]['turns']})
         self.assertIn('old',{r['event'] for r in prompts[0]['observed_requests']})
-        self.assertEqual(len(material.coverage(self.db,SCOPE)),36)
+        self.assert_member('old')
+        self.assertEqual(len(json.loads(self.db.execute('SELECT members FROM memory_semantic_batches').fetchone()[0])),36)
+        self.finish()
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],0)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],0)
     async def test_deduplicated_vision_and_late_epoch(self):
-        self.add(image=True);calls=[]
+        self.add(image=True);calls=[];images=[]
         async def chat(**kw):
-            data=json.loads(kw['prompt']);calls.append(data)
-            if 'images' in data:return NS(completion_text=json.dumps({'images':[{'id':r['id'],'observation':'红茶图片，无法判断人物身份'} for r in data['images']]}))
-            return NS(completion_text=json.dumps({'summary':'图中有红茶，引用来自其他人。','retire_media_events':[r['event'] for r in data['observed_requests']]}))
+            data=json.loads(kw['prompt']);calls.append(data);images.append(kw.get('image_urls',[]))
+            return NS(completion_text=json.dumps({'summary':'图中有红茶，引用来自其他人。'}))
         self.start(chat);await self.drain()
-        self.assertEqual(len(calls),2);self.assertEqual(len(calls[0]['images']),1)
-        self.assertEqual(len(material.coverage(self.db,SCOPE)),35)
+        self.assertEqual(len(calls),1);self.assertEqual(images[0],['data:image/png;base64,YQ=='])
+        self.assertEqual(len(calls[0]['images']),1)
+        self.assertEqual(len(calls[0]['images'][0]['events']),35)
+        self.assert_member('0');self.finish()
         self.add(image=True,start=35)
         entered=asyncio.Event();release=asyncio.Event()
         async def delayed(**kw):entered.set();await release.wait();return await chat(**kw)
         self.store.reflection.binding=None;self.start(delayed)
         await entered.wait()
-        from memory_reflection import invalidate
-        invalidate(self.db,SCOPE,'12345678');self.db.commit();release.set()
-        with self.assertRaises(asyncio.CancelledError):await self.drain()
+        # Advance only the configuration epoch. Explicit forgetting also
+        # deletes source material and would mask whether a stale job kept it.
+        self.db.execute('UPDATE memory_reflection_control SET epoch=epoch+1 WHERE id=1');self.db.commit();release.set()
+        # A stale unified summary result is discarded before its transaction;
+        # cancellation is an implementation detail, not retirement evidence.
+        await self.drain()
         self.assertEqual(material.coverage(self.db,SCOPE),{})
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_semantic_batches').fetchone()[0],1)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],35)
     def test_redaction_and_budget_never_create_false_proof(self):
         msg=message();msg['content'][1]['text']='key sk-abcdefghijklmnop'
         self.store.reflection.record(SCOPE,'12345678','1','q','a',materials=material.snapshots([msg],SCOPE))
@@ -233,7 +273,9 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         self.start(chat);await self.drain()
         captured=next(r for r in prompts[0]['observed_requests'] if r['event']=='long')
         self.assertEqual(captured['confirmed_reply'],long_reply)
-        self.assertIn('long',material.coverage(self.db,SCOPE))
+        self.assert_member('long');self.finish()
+        self.assertIsNone(self.db.execute("SELECT 1 FROM memory_round_material WHERE event='long'").fetchone())
+        self.assertIsNotNone(self.db.execute("SELECT 1 FROM memory_round_material WHERE event='134'").fetchone())
 
     async def test_stale_before_background_start_never_calls_provider(self):
         self.add();calls=[];current=True
@@ -257,7 +299,7 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls,[]);self.assertEqual(material.coverage(self.db,SCOPE),{})
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
 
-    async def test_native_view_and_confirmed_delivery_are_distinct_and_both_covered(self):
+    async def test_native_view_and_confirmed_delivery_are_distinct_in_complete_batch(self):
         old=message('native-difference')
         self.store.reflection.record(SCOPE,'12345678','native-difference','看这个','协议实际投递文本',materials=material.snapshots([old],SCOPE))
         native=[old,{'role':'assistant','content':'模型历史原文，包含后续被格式处理的内容'}]
@@ -272,9 +314,9 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(turn['bot'],'协议实际投递文本')
         self.assertNotIn('confirmed_reply',captured,'identical delivered text is provided once in turns')
         self.assertEqual(captured['native_reply'],native[1]['content'])
-        proof=material.coverage(self.db,SCOPE);current=message('new')
-        self.assertEqual(material.project_history(native+[current],proof,SCOPE,'new'),[current])
-        changed=copy.deepcopy(native);changed[1]['content']='摘要之后才出现的新内容'
-        self.assertEqual(material.project_history(changed+[current],proof,SCOPE,'new'),changed+[current])
+        self.assert_member('native-difference');self.finish()
+        self.assertNotIn(native[1],self.journal.last.base)
+        self.assertIsNone(self.db.execute("SELECT 1 FROM memory_round_material WHERE event='native-difference'").fetchone())
+        self.assertIsNotNone(self.db.execute("SELECT 1 FROM memory_round_material WHERE event='134'").fetchone())
 
 if __name__=='__main__':unittest.main()
