@@ -18,6 +18,7 @@ class AdminCheckpoint(unittest.IsolatedAsyncioTestCase):
         self.calls.append(json.loads(kw['prompt']))
         if self.mode=='fail':raise RuntimeError('provider unavailable')
         if self.mode=='stale':self.current=False
+        if self.mode=='truncated':return NS(completion_text='{"summary":"看似完整但上游标明被截断"}',raw_completion=NS(choices=[NS(message=NS(content=''),finish_reason='length')]))
         return NS(completion_text='持续记忆' if '最多1500' in kw['system_prompt'] else json.dumps({'summary':'真实经历'}))
     def record(self,start,count):
         for i in range(start,start+count):
@@ -82,5 +83,10 @@ class AdminCheckpoint(unittest.IsolatedAsyncioTestCase):
         self.record(0,70);await self.force()
         self.assertFalse(self.r.force_compress_once(allow_partial=True,administrator='admin-1',request_id='maintenance-0')['started'])
         self.assertEqual(len(self.calls),1)
+    async def test_even_parseable_truncated_output_cannot_mint_coverage(self):
+        self.record(0,30);self.mode='truncated';result=await self.force()
+        self.assertEqual(result,{'ok':False,'reason':'SummaryOutputTruncated'})
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],0)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],30)
 
 if __name__=='__main__':unittest.main()

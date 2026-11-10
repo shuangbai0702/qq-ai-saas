@@ -6,6 +6,8 @@ derives administrator from the authenticated session, never a browser field.
 import re
 import time
 
+ADMIN_COMPRESSION_OUTPUT_TOKENS=16384
+
 
 def manage(store,data,care):
     status_only=data.get('action')=='admin_force_compress_status'
@@ -24,7 +26,14 @@ def manage(store,data,care):
     if care.busy(store):return {'error':'机器人正在处理工作，请稍后重试','status':409}
     if len(jobs)>=32:return {'error':'本次运行维护请求已达上限','status':429}
     reflection=store.reflection
-    result=reflection.force_compress_once('bot_shared',allow_partial=data['allowPartial'],administrator=administrator,request_id=request_id)
+    from autonomy import decision_token_limit
+    limit_token=decision_token_limit.set(ADMIN_COMPRESSION_OUTPUT_TOKENS)
+    try:
+        # create_task inside force_compress_once inherits this request budget;
+        # the API caller and unrelated foreground tasks keep their own context.
+        result=reflection.force_compress_once('bot_shared',allow_partial=data['allowPartial'],administrator=administrator,request_id=request_id)
+    finally:
+        decision_token_limit.reset(limit_token)
     job={'ok':True,'requestId':request_id,'state':'running' if result.get('started') else 'not_started','startedAt':time.time(),**result}
     jobs[request_id]=job
     if not result.get('started'):return dict(job)
