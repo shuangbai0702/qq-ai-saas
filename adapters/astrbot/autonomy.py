@@ -347,7 +347,7 @@ class GroupPresence:
         with auxiliary_scope(provider,'group_presence',event_id,scope):
             started = time.monotonic(); token = event_var.set(None); limit_token = decision_token_limit.set(DECISION_OUTPUT_TOKENS)
             try:
-                result = await asyncio.wait_for(provider.text_chat(**decision_request(payload,GROUP_SYSTEM+COOLDOWN_SYSTEM,reference_first=True), contexts=[], func_tool=None, max_tokens=DECISION_OUTPUT_TOKENS, request_max_retries=1), b.get('groupDecisionTimeoutSeconds', 10))
+                result = await asyncio.wait_for(provider.text_chat(**decision_request(payload,GROUP_SYSTEM+COOLDOWN_SYSTEM,reference_first=True), func_tool=None, max_tokens=DECISION_OUTPUT_TOKENS, request_max_retries=1), b.get('groupDecisionTimeoutSeconds', 10))
                 data=parse_object(result.completion_text)
                 model_cooldown(data)  # Validate legacy fields before discarding.
                 # Group timing is program-owned; tolerate old model fields

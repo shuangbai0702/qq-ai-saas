@@ -11,6 +11,7 @@ from context_protocol import READONLY_CURRENT,model_json,source
 from decision_history import changes,apply_changes,summaries,history_usage,history_boundary,MAX_RETAINED_WIRE_CHARS,MAX_RETAINED_TEXT_CHARS
 
 MAX_PERSISTED_JOURNAL_BYTES=16*1024*1024
+MAX_CHECKPOINT_ARCHIVE_BYTES=64*1024*1024
 MAX_PERSISTED_JOURNALS=64
 MAX_JOURNAL_TOMBSTONES=4096
 
@@ -430,12 +431,23 @@ class ReadonlyJournal:
             # SELECT length(payload) returns a row whose value may be NULL when an
             # unavailable tombstone already exists; distinguish that from no row.
             next_total=used[0]-((existing[0] or 0) if existing is not None else 0)+len(encoded)+blob_total+sum(len(raw) for _,raw in new_blobs)
+            archive_overflow=False;archive_required=False
+            if consume_permit and prepared.reconstruction_permit.get('kind')=='summary_checkpoint':
+                has_exceptions=self.db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_retirement_exceptions'").fetchone()
+                if has_exceptions and self.last:
+                    def event_ids(messages):
+                        return {model_json([o['scope'],str(o['event_id'])]) for m in messages if (o:=source(m))}
+                    retiring=event_ids(self.last.base)-event_ids(prepared.base)
+                    archive_required=any(self.db.execute("SELECT 1 FROM memory_retirement_exceptions WHERE scope=? AND event=? AND checkpoint_id<=? AND state='offered'",(json.loads(self.scope_key),event,prepared.reconstruction_permit['id'])).fetchone() for event in retiring)
+                has_archives=self.db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_checkpoint_archives'").fetchone()
+                archive_bytes=self.db.execute('SELECT coalesce(sum(length(cast(payload AS BLOB))),0) FROM memory_checkpoint_archives').fetchone()[0] if has_archives else 0
+                archive_overflow=archive_required and archive_bytes+((existing[0] or 0) if existing else 0)>MAX_CHECKPOINT_ARCHIVE_BYTES
             count=self.db.execute('SELECT count(*) FROM fishbot_readonly_journals').fetchone()[0]
             # Account for UTF-8 snapshot bytes and all retained scoped blobs.
             # A wire-character limit is not its storage-byte limit.
             # The existing per-bot total still bounds every row and all scopes.
             allowed=(next_total<=MAX_PERSISTED_JOURNAL_BYTES and
-                     (existing is not None or (used[1] or 0)<MAX_PERSISTED_JOURNALS) and (existing is not None or count<MAX_JOURNAL_TOMBSTONES) and not overflow)
+                     (existing is not None or (used[1] or 0)<MAX_PERSISTED_JOURNALS) and (existing is not None or count<MAX_JOURNAL_TOMBSTONES) and not overflow and not archive_overflow)
             if not allowed:
                 if not tombstone:self.db.rollback()
                 else:
@@ -446,7 +458,18 @@ class ReadonlyJournal:
                     else:
                         self.db.execute("INSERT INTO fishbot_readonly_journals(scope,version,state,payload,sha,updated) VALUES(?,1,'unavailable',NULL,NULL,?) ON CONFLICT(scope) DO UPDATE SET version=1,state='unavailable',payload=NULL,sha=NULL,updated=excluded.updated",(self.scope_key,time.time()))
                     self.db.commit()
-                self.recovery_error='journal_storage_capacity';self._last_persist_error=self.recovery_error;return False
+                self.recovery_error='checkpoint_archive_capacity' if archive_overflow else 'journal_storage_capacity';self._last_persist_error=self.recovery_error;return False
+            if archive_required:
+                # Immutable recovery archive, not another active history. Blob
+                # references keep their original bytes; no historical rewrite.
+                # Only exceptional legacy retirement needs this full snapshot;
+                # ordinary proven checkpoints must not accumulate another log.
+                self.db.execute('''CREATE TABLE IF NOT EXISTS memory_checkpoint_archives(
+                  checkpoint_id INTEGER PRIMARY KEY,scope TEXT NOT NULL,version INTEGER,
+                  state TEXT,payload TEXT,sha TEXT,archived REAL NOT NULL)''')
+                self.db.execute('''INSERT INTO memory_checkpoint_archives
+                  SELECT ?,scope,version,state,payload,sha,? FROM fishbot_readonly_journals WHERE scope=?''',
+                  (prepared.reconstruction_permit['id'],time.time(),self.scope_key))
             for digest,raw in new_blobs:
                 self.db.execute('INSERT INTO fishbot_readonly_journal_blobs(scope,sha,data) VALUES(?,?,?)',(self.scope_key,digest,raw))
             self.db.execute("INSERT INTO fishbot_readonly_journals(scope,version,state,payload,sha,updated) VALUES(?,?,?,?,?,?) ON CONFLICT(scope) DO UPDATE SET version=excluded.version,state=excluded.state,payload=excluded.payload,sha=excluded.sha,updated=excluded.updated",
@@ -474,6 +497,10 @@ class ReadonlyJournal:
                      model_json(sorted(before-after)),model_json(sorted(before&after)),
                      hashlib.sha256(model_json(self.last.wire if self.last else []).encode()).hexdigest(),
                      hashlib.sha256(model_json(prepared.wire).encode()).hexdigest(),time.time()))
+                if 'memory_retirement_exceptions' in tables:
+                    for event in before-after:
+                        changed=self.db.execute("UPDATE memory_retirement_exceptions SET state='retired' WHERE scope=? AND event=? AND checkpoint_id<=? AND state='offered'",(json.loads(self.scope_key),event,prepared.reconstruction_permit['id'])).rowcount
+                        if changed:self.db.execute('DELETE FROM memory_hold_rounds WHERE scope=? AND event=?',(json.loads(self.scope_key),event))
                 prepared.reconstruction_authority.checkpoint_issue(json.loads(self.scope_key),prepared.reconstruction_permit['id'],'retirement',
                     {'retired_events':len(before-after),'retained_events':len(before&after),'result':'partial' if before&after and before-after else 'no_history_retired' if not before-after else 'retired',
                      'retirement_evidence':'memory_checkpoint_retirements','request_id':prepared.reconstruction_permit['requestId']},resolved=not bool(before&after))
@@ -535,9 +562,9 @@ class ReadonlyJournal:
         return authority.reserve_context_reconstruction(scope,request_id,summary_ids=summary_ids)
 
     def _validate_partial_retirement(self,permit,authority,scope,old,base):
-        if not permit or not permit.get('partialRetirement'):return
+        if not permit or not (permit.get('partialRetirement') or scope=='bot_shared' and permit.get('kind')=='summary_checkpoint'):return
         from summary_material import project_history,coverage
-        proofs={e:p for e,p in coverage(self.db,scope).items() if p.get('version')==3}
+        proofs={e:p for e,p in coverage(self.db,scope).items() if (p.get('version')==3 or not permit.get('partialRetirement') and p.get('version')!=4) or p.get('version')==4 and 0<p.get('policy_checkpoint',0)<=permit.get('id',0)}
         retained=project_history(old.base,proofs,scope,'',protect_latest=False) if old else []
         cursor=0
         for message in retained:

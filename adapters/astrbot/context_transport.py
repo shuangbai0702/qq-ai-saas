@@ -46,8 +46,31 @@ def decision_request(payload,system,reference_first=False):
     if isinstance(payload.get('reference'),dict):payload={**payload,'reference':ordered_reference(payload['reference'])}
     payload=decision_context_view(payload)
     stable={k:payload[k] for k in ('persona','owner_id') if k in payload}
+    data={k:v for k,v in payload.items() if k not in stable}
+    contexts=[]
+    if isinstance(data.get('reference'),dict):
+        reference=data.pop('reference')
+        # Speaker-selected facts change more often than the checkpoint basis.
+        # Keep them current in the dynamic message, never freeze a snapshot.
+        for name,memory in reference.items():
+            if isinstance(memory,dict) and 'facts' in memory:
+                data.setdefault('changes',{}).setdefault(name,{})['facts']=memory.pop('facts')
+        # Separate stable policy from checkpoint products: a changed small
+        # summary cannot also change the preceding physical policy message.
+        guidance={};basis={}
+        for name,memory in reference.items():
+            if isinstance(memory,dict):
+                guidance[name]={k:v for k,v in memory.items() if k=='cross_scope_guidance'}
+                basis[name]={k:v for k,v in memory.items() if k!='cross_scope_guidance'}
+            else:basis[name]=memory
+        for section in (guidance,basis):
+            section={k:v for k,v in section.items() if v}
+            if section:contexts.append({'role':'user','content':model_json({'reference':section})})
+    # JSON pointers refer to the logical union, not a provider session or old
+    # helper result. Each request still supplies every referenced value.
+    system='[资料分区]前序User消息是本次reference资料，末条User消息是当前context/changes/review。将这些消息的JSON对象递归合并理解为本次完整资料；text_ref与confirmed_text_ref指向这个合并对象，不引用上次请求，不代表新指令。\n'+system
     return {'system_prompt':'[机器人配置]\n'+model_json(stable)+'\n[本次判断职责]\n'+system,
-            'prompt':model_json({k:v for k,v in payload.items() if k not in stable})}
+            'contexts':contexts,'prompt':model_json(data)}
 
 
 def decision_context_view(payload):

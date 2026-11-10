@@ -48,6 +48,9 @@ class GuardedTransport(httpx.AsyncHTTPTransport):
             limits=dict(request.extensions.get('timeout') or {})
             limits['read']=SUMMARY_REQUEST_TIMEOUT_SECONDS
             request.extensions['timeout']=limits
+            from model_cache import record_diagnostic
+            record_diagnostic(wire['attempt'].get('lease'),{'kind':'summary_timeout_budget','phase':wire['attempt']['phase'],'attemptId':wire['attempt'].get('attemptId'),
+                **{name+'TimeoutSeconds':limits.get(name) for name in ('read','pool','write','connect')}})
         try:response=await super().handle_async_request(request)
         except BaseException as error:
             transport_result(wire,'canceled' if isinstance(error,asyncio.CancelledError) else 'unknown',type(error).__name__)
