@@ -173,5 +173,15 @@ class AllScopeCleanup(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'semantic_archive_input_still_owned'):batch.purge(self.db,1)
         self.assertIn('UNBOUND ORIGINAL',self.db.execute('SELECT archive FROM fishbot_operator_session_archives').fetchone()[0])
 
+    def test_obsolete_coverage_index_leaves_but_new_hot_input_proof_survives(self):
+        self.db.execute('INSERT INTO memory_summary_coverage VALUES(?,?,?)',(self.channel,'orphan-proof','obsolete proof'))
+        self.db.execute("INSERT INTO pipeline_work_inputs VALUES(?,'owned-proof','owned','actual input')",(self.channel,))
+        self.db.execute('INSERT INTO memory_summary_coverage VALUES(?,?,?)',(self.channel,'owned-proof','protected proof'))
+        self.db.commit()
+        with self.db:batch.purge(self.db,1)
+        self.assertIsNone(self.db.execute("SELECT 1 FROM memory_summary_coverage WHERE event='orphan-proof'").fetchone())
+        self.assertIsNotNone(self.db.execute("SELECT 1 FROM memory_summary_coverage WHERE event='owned-proof'").fetchone())
+        self.assertIsNotNone(self.db.execute("SELECT 1 FROM memory_summary_coverage WHERE event='new'").fetchone())
+
 
 if __name__=='__main__':unittest.main()
