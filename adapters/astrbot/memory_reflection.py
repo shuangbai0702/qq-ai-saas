@@ -2,7 +2,7 @@
 Inspired by LivingMemory's ten-round reflection and source/revision fencing.
 Summaries are conversation evidence, never verified profile facts or instructions.
 """
-from model_cache import auxiliary_scope,adopted,discarded,SUMMARY_REQUEST_TIMEOUT_SECONDS
+from model_cache import auxiliary_scope,adopted,discarded as record_discarded,SUMMARY_REQUEST_TIMEOUT_SECONDS
 import asyncio,json,time,hashlib
 from pathlib import Path
 import message_provenance
@@ -860,19 +860,19 @@ class Reflection:
             return False
         return True
 
-    def force_compress_once(self,scope='bot_shared',*,allow_partial=False,administrator=None,request_id=None):
+    def force_compress_once(self,scope='bot_shared',*,allow_partial=False,administrator=None,request_id=None,discard_unavailable=False):
         """Trusted maintenance caller only; never forge business rounds.
 
         The API authenticates the administrator. A partial checkpoint records
         that authorization separately; Coverage and audience fences still apply.
         """
         if scope!='bot_shared':return {'started':False,'reason':'unsupported_scope'}
-        if allow_partial and (not isinstance(administrator,str) or not administrator.strip() or not isinstance(request_id,str) or not request_id.strip()):
+        if (allow_partial or discard_unavailable) and (not isinstance(administrator,str) or not administrator.strip() or not isinstance(request_id,str) or not request_id.strip()):
             raise PermissionError('administrator_authorization_required')
         if request_id and self.db.execute('SELECT checkpoint_id FROM memory_checkpoint_admin_overrides WHERE request_id=?',(request_id,)).fetchone():
             return {'started':False,'reason':'request_already_committed'}
         if self.task and not self.task.done():return {'started':False,'reason':'busy'}
-        manual={'scope':scope,'allow_partial':allow_partial,'administrator':administrator,'request_id':request_id,'summary_done':False}
+        manual={'scope':scope,'allow_partial':allow_partial,'administrator':administrator,'request_id':request_id,'summary_done':False,'discard_unavailable':bool(discard_unavailable)}
         started=self.retry(_manual=manual)
         return {'started':bool(started),'reason':'started' if started else 'no_eligible_material'}
 
@@ -934,7 +934,7 @@ class Reflection:
             with auxiliary_scope(provider,'big_merge' if job=='big' else 'small_summary',scope=merge_scope if job=='big' else scope):
                 token=event_var.set(None)
                 try:
-                    previous_products=[];previous_dependency=None;legacy_product_ids=[]
+                    previous_products=[];previous_dependency=None;legacy_product_ids=[];discarded=[];discard_stamp=None
                     if self.closed or not is_current() or self.epoch()!=epoch:return {'ok':False,'reason':'stale_configuration'}
                     if job=='null_hold_recovery':
                         recovered=await self.recover_null_hold_batch(scope,null_batch,provider,is_current,metrics,epoch)
@@ -998,11 +998,17 @@ class Reflection:
                             payload.sort(key=lambda r:r['at'])
                         if scope=='bot_shared':
                             from semantic_collection import collect,previous_summaries
-                            payload=collect(self.db,scope,rows[-1][5],payload,self.recapture)
+                            payload=collect(self.db,scope,rows[-1][5],payload,self.recapture,discard_unavailable=bool(_manual and _manual.get('discard_unavailable')))
+                            discarded=getattr(payload,'discarded',[])
+                            if discarded:
+                                from semantic_collection import unavailable_stamp
+                                discard_stamp=unavailable_stamp(self.db,discarded)
                             previous_products=previous_summaries(self.db)
                             previous_dependency=self.context_dependency([p['id'] for p in previous_products],scope)
                             legacy_product_ids=[p['id'] for p in previous_products if p['scope']!='bot_shared']
                         prompt={'source_scope':scope,'persona':str(cfg.get('_persona',''))[:5000],'turns':payload}
+                        if discarded:
+                            prompt['incomplete_material']=[{k:v for k,v in item.items() if k!='images'} for item in discarded]
                         if scope=='bot_shared':prompt['previous_summaries']=previous_products
                         from summary_material import summary_claims,protected_claim,claim_view,bound_claim_views
                         prior_claims=[];prior_ids=set()
@@ -1022,7 +1028,7 @@ class Reflection:
                         prompt['previous_commitments']=prior_view.get('protected_claims',[])
                         offered_ids={claim['id'] for claim in prompt['previous_commitments']}
                         prior_claims=[claim for claim in prior_claims if claim['id'] in offered_ids]
-                        prompt['sent_messages']=message_provenance.timeline(self.db,scope,rows[-1][1],rows[-1][5],since=min(r['at'] if r['at'] is not None else r['observed_before'] for r in payload)) if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dialogue_feedback'").fetchone() else []
+                        prompt['sent_messages']=message_provenance.timeline(self.db,scope,rows[-1][1],rows[-1][5],since=min((r['at'] if r['at'] is not None else r['observed_before'] for r in payload),default=rows[-1][5])) if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dialogue_feedback'").fetchone() else []
                         prompt['sent_messages']=[x for x in prompt['sent_messages'] if x['role']=='self']
                         from companion_insights import snapshot,SEMANTIC_MEMORY_SYSTEM
                         before=snapshot(self.db,scope,{r['sender_id'] for r in payload},cfg)
@@ -1040,7 +1046,16 @@ class Reflection:
                         if callable(self.recapture):self.recapture(scope,[r['event'] for r in payload])
                         from semantic_batch import load
                         from summary_material import model_view
-                        materials,summary_images,image_bindings=load(self.db,scope,payload)
+                        materials,summary_images,image_bindings=load(self.db,scope,payload,allow_empty=bool(discarded))
+                        if discarded:
+                            for item in discarded:
+                                for image in item['images']:
+                                    if image not in summary_images:
+                                        summary_images.append(image)
+                                        image_bindings.append({'id':hashlib.sha256(image.encode()).hexdigest(),'position':len(summary_images),'events':[item['event']]})
+                                    else:
+                                        image_bindings[summary_images.index(image)]['events'].append(item['event'])
+                            system+=' incomplete_material仅包含确实仍存在的片段和图片；missing部分未提供，绝不声称看过或猜测补全。管理员已授权本批成功后丢弃不可恢复部分；仅理解可见材料并提炼，缺失不是人物事实。'
                         prompt['observed_requests']=model_view(materials,payload)
                         prompt['images']=image_bindings
                         if cfg.get('styleLearning'):
@@ -1059,6 +1074,9 @@ class Reflection:
                     # Recapture repairs the durable input inventory, not memory
                     # products. Finish it before awaiting the model; never hold
                     # its write transaction across HTTP or nest product BEGIN.
+                    if discarded:
+                        from semantic_collection import unavailable_stamp
+                        discard_stamp=unavailable_stamp(self.db,discarded)
                     self.db.commit()
                     metrics['summaryRequests']=metrics.get('summaryRequests',0)+1
                     response=await asyncio.wait_for(provider.text_chat(prompt=model_json(prompt),system_prompt=system,contexts=[],func_tool=None,request_max_retries=0,**({'image_urls':summary_images} if summary_images else {})),SUMMARY_REQUEST_TIMEOUT_SECONDS+5)
@@ -1201,7 +1219,11 @@ class Reflection:
                             checkpoint_id=self.db.execute('SELECT last_insert_rowid()').fetchone()[0]
                             if _manual is not None and _manual['allow_partial']:
                                 self.db.execute('INSERT INTO memory_checkpoint_admin_overrides VALUES(?,?,?,?)',(checkpoint_id,_manual['administrator'],_manual['request_id'],time.time()))
-                            media_release=commit_batch(self.db,scope,checkpoint_id,materials,rows[-1][5])
+                            if discarded:
+                                from semantic_collection import unavailable_stamp
+                                if unavailable_stamp(self.db,discarded)!=discard_stamp:raise RuntimeError('semantic_discard_material_changed')
+                            media_release=commit_batch(self.db,scope,checkpoint_id,materials,rows[-1][5],discarded=discarded,administrator=_manual.get('administrator') if _manual else None,request_id=_manual.get('request_id') if _manual else None)
+                            if discarded:_manual['discarded']={kind:sum(item['missing']==kind for item in discarded) for kind in ('full_original','incomplete_original','conflicting_originals')}
                             metrics['semanticMediaUntracked']=media_release.get('untracked',0)
                             metrics['summariesSaved']=metrics.get('summariesSaved',0)+1
                             holds=set()
@@ -1230,7 +1252,7 @@ class Reflection:
                     else:asyncio.get_running_loop().call_soon(self.retry)
                     if _manual is not None:
                         checkpoint=self.db.execute('SELECT id,round_count,state FROM memory_reconstruction_checkpoints WHERE scope=? AND epoch=? ORDER BY through_round_id DESC LIMIT 1',(_manual['scope'],epoch)).fetchone()
-                        return {'ok':True,'reason':'summary_committed','checkpoint':dict(zip(('id','roundCount','state'),checkpoint)) if checkpoint else None}
+                        return {'ok':True,'reason':'summary_committed','checkpoint':dict(zip(('id','roundCount','state'),checkpoint)) if checkpoint else None,'discarded':_manual.get('discarded',{})}
                 except asyncio.CancelledError:
                     if not self.closed:self.checkpoint_issue(merge_scope or scope,0,'canceled_'+job,
                         {'source':'reflection_close' if self.closed else 'external_cancellation',
@@ -1239,7 +1261,7 @@ class Reflection:
                     if not self.closed:self.db.commit()
                     raise
                 except Exception as error:
-                    discarded(type(error).__name__)
+                    record_discarded(type(error).__name__)
                     metrics['summaryFailures']=metrics.get('summaryFailures',0)+1
                     import traceback
                     frames=traceback.extract_tb(error.__traceback__)

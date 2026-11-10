@@ -107,7 +107,26 @@ def _select(items):
     return result
 
 
-def collect(db,scope,cutoff,payload,recapture=None):
+class Collected(list):
+    def __init__(self,rows=(),discarded=()):
+        super().__init__(rows);self.discarded=list(discarded)
+
+
+def unavailable_stamp(db,discarded):
+    """CAS actual raw evidence; this hash is not model memory or coverage."""
+    tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    values=[]
+    for item in discarded:
+        pair=origin('bot_shared',item['event'])
+        for logical,event in (pair,('bot_shared',item['event'])):
+            for table in ('memory_pending','memory_rounds','memory_round_material','memory_hold_rounds','memory_message_sources'):
+                if table in tables:values.append([table,logical,event,list(db.execute('SELECT * FROM '+table+' WHERE scope=? AND event=?',(logical,event)))])
+    for table in ('memory_checkpoint_archives','fishbot_operator_session_archives'):
+        if table in tables:values.append([table,list(db.execute('SELECT scope,sha FROM '+table+' ORDER BY rowid'))])
+    return hashlib.sha256(model_json(values).encode()).hexdigest()
+
+
+def collect(db,scope,cutoff,payload,recapture=None,*,discard_unavailable=False):
     """Return complete canonical inputs through cutoff; never commit or mint rounds.
 
     Every candidate needs real material. Unknown chronology/ownership or
@@ -121,14 +140,14 @@ def collect(db,scope,cutoff,payload,recapture=None):
     if not db.in_transaction:db.execute('BEGIN')
     db.execute('SAVEPOINT semantic_collection')
     try:
-        result=_collect(db,cutoff,payload,recapture)
+        result=_collect(db,cutoff,payload,recapture,discard_unavailable)
         db.execute('RELEASE semantic_collection')
         return result
     except BaseException:
         db.execute('ROLLBACK TO semantic_collection');db.execute('RELEASE semantic_collection');raise
 
 
-def _collect(db,cutoff,payload,recapture):
+def _collect(db,cutoff,payload,recapture,discard_unavailable=False):
     tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     retired=set()
     if 'memory_semantic_batches' in tables:
@@ -149,7 +168,7 @@ def _collect(db,cutoff,payload,recapture):
     for table in ('memory_rounds','memory_pending','memory_hold_rounds','memory_round_material'):
         if table in tables:scopes.update(r[0] for r in db.execute('SELECT DISTINCT scope FROM '+table) if _channel(r[0]))
     for scope in sorted(scopes):discard_failed_service_inputs(db,scope)
-    candidates={};materials={};anchors={};provided={}
+    candidates={};materials={};anchors={};provided={};snippets={}
     def register(pair,person=None,at=None):
         if not pair or not eligible(pair):return
         item=candidates.setdefault(pair,{'people':set(),'times':set(),'bounds':set()})
@@ -163,6 +182,7 @@ def _collect(db,cutoff,payload,recapture):
         if table not in tables:continue
         for scope,person,event,question,answer,at in db.execute('SELECT scope,subject,event,question,answer,at FROM '+table):
             pair=identity(scope,event);register(pair,person,at)
+            if pair and eligible(pair):snippets.setdefault(pair,set()).add(question)
             if pair and answer:anchors.setdefault(pair,set()).add(answer)
     if 'memory_hold_rounds' in tables:
         for scope,event in db.execute('SELECT scope,event FROM memory_hold_rounds'):register(identity(scope,event))
@@ -195,6 +215,7 @@ def _collect(db,cutoff,payload,recapture):
                     if logical!=channel:raise ValueError('semantic_collection_archive_scope')
                     if name=='memory_round_material':capture(json.loads(row['material']),logical);continue
                     pair=identity(logical,row['event']);register(pair,row.get('subject'),row.get('at'))
+                    if pair and eligible(pair) and row.get('question'):snippets.setdefault(pair,set()).add(row['question'])
                     if pair and row.get('answer'):anchors.setdefault(pair,set()).add(row['answer'])
     # Exact model bindings are platform metadata. Mirror only positively bound
     # native identities so shared recapture retains their real receipts/owners.
@@ -233,16 +254,37 @@ def _collect(db,cutoff,payload,recapture):
         saved_materials()
     missing=sum(not materials.get(pair) for pair in wanted)
     incomplete=sum(bool(materials.get(pair)) and not any(m.get('complete') is True for m in materials[pair]) for pair in wanted)
-    if missing or incomplete:raise ValueError('semantic_collection_material_missing_or_incomplete:missing='+str(missing)+',incomplete='+str(incomplete))
-    output=[]
+    if (missing or incomplete) and not discard_unavailable:raise ValueError('semantic_collection_material_missing_or_incomplete:missing='+str(missing)+',incomplete='+str(incomplete))
+    output=Collected()
+    def offer_unavailable(pair,captures,reason):
+        texts=set(snippets.get(pair,set()))
+        texts.update(m['text'] for m in captures if m.get('text'))
+        output.discarded.append({'event':model_json(list(pair)),'source_scope':pair[0],
+            'sender_ids':sorted(candidates[pair]['people']),'missing':reason,
+            'available_text':sorted(texts),'available_reply':sorted(anchors.get(pair,set())),
+            'images':sorted({image for m in captures for image in m.get('images',[])})})
     for pair in sorted(wanted,key=lambda p:(min(candidates[p]['times'] or candidates[p]['bounds']),p)):
-        meta=candidates[pair];item=_select(materials.get(pair,[]))
+        captures=materials.get(pair,[])
+        if not any(m.get('complete') is True for m in captures):
+            # Explicitly incomplete evidence never acquires a forged complete
+            # material/coverage row. It is offered as available fragments only.
+            offer_unavailable(pair,captures,'full_original' if not captures else 'incomplete_original')
+            continue
+        meta=candidates[pair]
+        try:item=_select(captures)
+        except ValueError:
+            if not discard_unavailable:raise
+            offer_unavailable(pair,captures,'conflicting_originals');continue
         if meta['people']!={item['subject']}:raise ValueError('semantic_collection_sender_conflict')
         replies=anchors.get(pair,set())
-        if len(replies)>1:raise ValueError('semantic_collection_reply_conflict')
+        if len(replies)>1:
+            if not discard_unavailable:raise ValueError('semantic_collection_reply_conflict')
+            offer_unavailable(pair,captures,'conflicting_originals');continue
         if replies:
             reply=next(iter(replies))
-            if item.get('reply') and item['reply']!=reply:raise ValueError('semantic_collection_reply_conflict')
+            if item.get('reply') and item['reply']!=reply:
+                if not discard_unavailable:raise ValueError('semantic_collection_reply_conflict')
+                offer_unavailable(pair,captures,'conflicting_originals');continue
             item['reply']=reply
         key=item['event'];at=min(meta['times'] or meta['bounds']);o=source({'role':'user','content':item['text']})
         row={'sender_id':item['subject'],'event':key,'user':item['text'],'bot':item.get('reply',''),'at':o.get('at') if _time(o.get('at')) else None,'observed_before':at,

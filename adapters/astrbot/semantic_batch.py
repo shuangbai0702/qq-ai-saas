@@ -85,7 +85,7 @@ def discard_failed_service_inputs(db,scope):
     return removed
 
 
-def load(db,scope,payload):
+def load(db,scope,payload,*,allow_empty=False):
     """Complete exact material, all images in the SAME summary model request."""
     from summary_material import valid_material
     materials={};images={};bindings={}
@@ -105,7 +105,7 @@ def load(db,scope,payload):
         materials[event]=item
         for image in item.get('images',[]):
             key=hashlib.sha256(image.encode()).hexdigest();images.setdefault(key,image);bindings.setdefault(key,[]).append(event)
-    if not materials:raise ValueError('semantic_batch_empty')
+    if not materials and not allow_empty:raise ValueError('semantic_batch_empty')
     return materials,list(images.values()),[{'id':key,'position':i+1,'events':bindings[key]} for i,key in enumerate(images)]
 
 
@@ -138,14 +138,18 @@ def semantic_claims(claims):
     return result
 
 
-def commit(db,scope,checkpoint_id,materials,cutoff):
+def commit(db,scope,checkpoint_id,materials,cutoff,*,discarded=(),administrator=None,request_id=None):
     """Called in the successful memory transaction; failures roll back all rows."""
     initialize(db);verify(db,scope,materials)
-    members=sorted(event_key(scope,event) for event in materials)
+    if discarded and (not administrator or not request_id):raise PermissionError('administrator_authorization_required')
+    members=sorted({event_key(scope,event) for event in materials}|{event_key(scope,item['event']) for item in discarded})
     signature=hashlib.sha256(model_json({'scope':scope,'members':members,'materials':[materials[e]['digest'] for e in sorted(materials)]}).encode()).hexdigest()
     db.execute('INSERT INTO memory_semantic_batches VALUES(?,?,?,?,?,?,?,NULL)',(checkpoint_id,scope,signature,model_json(members),cutoff,'committed',time.time()))
+    if discarded:
+        db.execute('CREATE TABLE IF NOT EXISTS memory_semantic_discard_audit(checkpoint_id INTEGER PRIMARY KEY,administrator TEXT NOT NULL,request_id TEXT NOT NULL,missing_count INTEGER NOT NULL,incomplete_count INTEGER NOT NULL,conflict_count INTEGER NOT NULL,created REAL NOT NULL)')
+        db.execute('INSERT INTO memory_semantic_discard_audit VALUES(?,?,?,?,?,?,?)',(checkpoint_id,administrator,request_id,sum(x['missing']=='full_original' for x in discarded),sum(x['missing']=='incomplete_original' for x in discarded),sum(x['missing']=='conflicting_originals' for x in discarded),time.time()))
     import semantic_media
-    media=semantic_media.retire_batch(db,[image for m in materials.values() for image in m.get('images',[])],checkpoint_id,members,scope=scope)
+    media=semantic_media.retire_batch(db,[image for m in [*materials.values(),*discarded] for image in m.get('images',[])],checkpoint_id,members,scope=scope)
     return media
 
 

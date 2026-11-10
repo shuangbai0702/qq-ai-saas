@@ -46,6 +46,11 @@ class CompressionAdmin(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manage(self.store,self.data,self.care)['status'],409)
         self.assertEqual(self.calls,[])
 
+    async def test_discard_unavailable_is_explicit_boolean_and_forwarded(self):
+        self.assertEqual(manage(self.store,{**self.data,'discardUnavailable':'true'},self.care)['status'],400)
+        manage(self.store,{**self.data,'discardUnavailable':True},self.care)
+        self.assertTrue(self.calls[0][1]['discard_unavailable'])
+
     async def test_cancelled_operation_is_reported(self):
         manage(self.store,self.data,self.care)
         self.reflection.task.cancel()
