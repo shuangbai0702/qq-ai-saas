@@ -219,4 +219,18 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(result['legacyReset'])
         with closing(sqlite3.connect(path)) as db:self.assertIn('original new',db.execute("SELECT content FROM conversations WHERE conversation_id='own'").fetchone()[0])
 
+    def test_native_cleanup_failure_retries_without_another_summary_and_then_stops_resetting(self):
+        from unittest.mock import patch
+        self.native();finish_semantic_batches(self.st,{},SCOPE);self.st.shared_context=True
+        self.st.db.execute("INSERT INTO memory_semantic_batches VALUES(2,'bot_shared','shared',?,100,'retired',0,0)",(model_json([event_key('bot_shared',model_json([SCOPE,'old']))]),))
+        self.st.db.execute('CREATE TABLE memory_semantic_discard_audit(checkpoint_id,administrator,request_id)')
+        self.st.db.execute("INSERT INTO memory_semantic_discard_audit VALUES(2,'admin','request')");self.st.db.commit()
+        self.st.semantic_native=(self.manager,'tenant')
+        with patch('semantic_runtime.clean_native_history',side_effect=sqlite3.OperationalError('locked')):
+            self.assertEqual(finish_semantic_batches(self.st,{},SCOPE)['native']['result'],'pending')
+        self.assertEqual(self.st.db.execute("SELECT status FROM memory_checkpoint_issues WHERE kind='native_legacy_cleanup'").fetchone(),('open',))
+        self.assertTrue(finish_semantic_batches(self.st,{},SCOPE)['native']['legacyReset'])
+        self.assertEqual(self.st.db.execute("SELECT status FROM memory_checkpoint_issues WHERE kind='native_legacy_cleanup'").fetchone(),('resolved',))
+        self.assertFalse(finish_semantic_batches(self.st,{},SCOPE)['native']['legacyReset'])
+
 if __name__=='__main__':unittest.main()
