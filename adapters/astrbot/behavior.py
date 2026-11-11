@@ -1612,7 +1612,10 @@ def install_runtime(core,settings):
                 additions=shared_context.queued(owned.db,setting(image_event)['config'],journal,owned.shared_group_limit,current=(work.scope,str(work.event_id),current_native) if current_native else None)
                 additions=await constrain_messages(additions,image_memo)
                 projected=shared_context.refresh_deliveries(projected,owned.db,journal)
-                projected,tools_seen=shared_context.compose(journal,projected,work.scope,work.event_id,additions,image_event.get_extra('_hosted_shared_tools'),service=work.source not in ('message','deferred_group'),self_id=image_event.get_self_id(),input_digest=image_event.get_extra('_hosted_shared_input_digest'))
+                from system_contract import request_identity
+                system_adoption=journal.checkpoint_system_boundary(key) and owned.system_contract.transition_available(
+                    projected,setting(image_event).get('systemChangePermitId'),request_identity(),scope=key)
+                projected,tools_seen=shared_context.compose(journal,projected,work.scope,work.event_id,additions,image_event.get_extra('_hosted_shared_tools'),service=work.source not in ('message','deferred_group'),self_id=image_event.get_self_id(),input_digest=image_event.get_extra('_hosted_shared_input_digest'),system_transition_authorized=system_adoption)
                 image_event.set_extra('_hosted_shared_tools',tools_seen)
                 from context_transport import READONLY_CURRENT,EVENT_CONTEXT_CURRENT
                 native_shared=[m for m in projected if not (m.get('role')=='user' and isinstance(m.get('content'),str) and m['content'].startswith((READONLY_CURRENT+'\n',EVENT_CONTEXT_CURRENT+'\n')))]
