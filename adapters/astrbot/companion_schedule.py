@@ -137,7 +137,7 @@ class Planner:
             self.db.execute('DELETE FROM autonomy_owner_checks WHERE rowid NOT IN (SELECT rowid FROM autonomy_owner_checks ORDER BY rowid DESC LIMIT 128)')
         async def run():
             with auxiliary_scope(provider,'owner_contact',None,scope):
-                token=event_var.set(None);limit_token=autonomy.decision_token_limit.set(autonomy.DECISION_OUTPUT_TOKENS)
+                token=event_var.set(None);limit_token=autonomy.decision_token_limit.set(autonomy.OWNER_DECISION_OUTPUT_TOKENS)
                 started=time.monotonic()
                 def result_record(status):
                     if self.closed or not current():return
@@ -167,7 +167,7 @@ class Planner:
                     # Background owner checks are not time-sensitive group admission.
                     # Allow the configured chat provider to finish; real conversation
                     # or configuration changes still invalidate the result below.
-                    result=await asyncio.wait_for(provider.text_chat(**decision_request({'owner_id':owner,'persona':str(cfg.get('systemPrompt') or ''),'scope':scope,'companion':companion_state.context(self.db,cfg,scope,now),'owner_memory':memory,'conversation_timing':timing,'cooldown_base_seconds':autonomy.cooldown_base(cfg,scope,'owner'),'last_user_text':contact[7][:500],'last_bot_text':contact[8][:500],'current_time':datetime.fromtimestamp(now,timezone(timedelta(hours=8))).isoformat()},autonomy.OWNER_SYSTEM+autonomy.COOLDOWN_SYSTEM,reference_first=True),func_tool=None,max_tokens=autonomy.DECISION_OUTPUT_TOKENS,request_max_retries=1),60)
+                    result=await asyncio.wait_for(provider.text_chat(**decision_request({'owner_id':owner,'persona':str(cfg.get('systemPrompt') or ''),'scope':scope,'companion':companion_state.context(self.db,cfg,scope,now),'owner_memory':memory,'conversation_timing':timing,'cooldown_base_seconds':autonomy.cooldown_base(cfg,scope,'owner'),'last_user_text':contact[7][:500],'last_bot_text':contact[8][:500],'current_time':datetime.fromtimestamp(now,timezone(timedelta(hours=8))).isoformat()},autonomy.OWNER_SYSTEM+autonomy.COOLDOWN_SYSTEM,reference_first=True),func_tool=None,max_tokens=autonomy.OWNER_DECISION_OUTPUT_TOKENS,request_max_retries=1),60)
                     if self.closed or not current():discarded('runtime_replaced');return
                     metrics['lastOwnerUsage']={'at':time.time(),**usage_evidence(result)}
                     if decision_version(self.db,scope)!=memory_version:
