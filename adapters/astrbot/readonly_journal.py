@@ -1008,8 +1008,12 @@ class ReadonlyJournal:
             if operations:
                 packet={'readonlyChanges':operations}
                 if use_b:
-                    packet=encode_readonly(old.state,state,operations,pool)
-                    if decode_readonly(old.state,packet,copy.deepcopy(pool))!=state:raise ValueError('reading_increment_mismatch')
+                    # The legacy missing-hot-basis repair intentionally omits
+                    # the separately visible fixed foundation from its root.
+                    # Verify that exact wire view; durable metadata stays full.
+                    wire_state=apply_changes(old.state,operations)
+                    packet=encode_readonly(old.state,wire_state,operations,pool)
+                    if decode_readonly(old.state,packet,copy.deepcopy(pool))!=wire_state:raise ValueError('reading_increment_mismatch')
                     if packet!={'readonlyChanges':operations}:define_reading()
                 wire.append({'role':'user','content':READONLY_CURRENT+'\n'+memory_json(packet)})
         else:
