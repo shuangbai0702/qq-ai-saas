@@ -68,6 +68,11 @@ class Audit:
         count=self.counts[category];count[entry['decision']]-=1;count[decision]+=1
         entry.update(decision=decision,reason=reason,changed=bool(changed))
 
+    def product(self,category,decision,reason,changed=False):
+        # Aggregate product receipt has no text, values or original source IDs.
+        self.counts[category]={'proposed':1,'accepted':int(decision=='accepted'),'rejected':int(decision=='rejected'),'not_evaluated':0,'omitted':False,'malformed':False}
+        self.details[(category,0)]={'subject':'','target_hash':'','operation':'update','decision':decision,'reason':reason,'changed':changed}
+
     def persist(self,db,state,reason,checkpoint_id=None,summary_id=None,details=True):
         initialize(db)
         db.execute('INSERT INTO memory_operation_audits VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',

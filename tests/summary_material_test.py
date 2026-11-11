@@ -290,13 +290,22 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         self.add();item=json.loads(self.db.execute('SELECT material FROM memory_round_material LIMIT 1').fetchone()[0])
         self.assertTrue(material.valid_material(item,SCOPE))
         legacy=dict(item);legacy.pop('version');self.assertTrue(material.valid_material(legacy,SCOPE))
-        for key,value in [('complete','yes'),('version',2),('subject','87654321'),('scope','group:55555'),('images',['file:///private/file']),('digest','not-a-digest'),('native_reply',22),('unexpected','hidden unhandled content')]:
+        for key,value in [('complete','yes'),('version',2),('version',999),('subject','87654321'),('scope','group:55555'),('images',['file:///private/file']),('digest','not-a-digest'),('native_reply',22),('unexpected','hidden unhandled content')]:
             invalid={**item,key:value};self.assertFalse(material.valid_material(invalid,SCOPE))
-        event=item['event'];self.db.execute('UPDATE memory_round_material SET material=? WHERE scope=? AND event=?',(json.dumps({**item,'version':2}),SCOPE,event));self.db.commit()
+        # Unknown capture formats cannot become trusted complete originals.
+        # Their scope-bound pending fragments can still enter a lawful batch.
+        event=item['event'];self.db.execute('UPDATE memory_round_material SET material=? WHERE scope=? AND event=?',(json.dumps({**item,'version':999}),SCOPE,event));self.db.commit()
         calls=[]
-        async def chat(**kw):calls.append(kw);return NS(completion_text='must not be called')
+        async def chat(**kw):calls.append(kw);return NS(completion_text=json.dumps({'summary':'按现存片段整理，原文格式不可读取'}))
         self.start(chat);await self.drain()
-        self.assertEqual(calls,[]);self.assertEqual(material.coverage(self.db,SCOPE),{})
+        self.assertEqual(len(calls),1);self.assertEqual(material.coverage(self.db,SCOPE),{})
+        prompt=json.loads(calls[0]['prompt'])
+        self.assertEqual(len(prompt['turns']),34)
+        missing=next(row for row in prompt['incomplete_material'] if row['event']==event)
+        self.assertEqual(missing['missing'],'incomplete_original')
+        self.assertEqual(missing['sender_ids'],['12345678'])
+        self.assertEqual(missing['available_text'],['看这个'])
+        self.assert_member(event)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
 
     async def test_native_view_and_confirmed_delivery_are_distinct_in_complete_batch(self):
