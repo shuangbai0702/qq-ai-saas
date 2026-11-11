@@ -72,9 +72,9 @@ class Recovery(unittest.IsolatedAsyncioTestCase):
         from aiocqhttp import Event
         from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_platform_adapter import AiocqhttpAdapter
         adapter=object.__new__(AiocqhttpAdapter)
-        raw=Event.from_payload({'post_type':'notice','notice_type':'notify','sub_type':'poke','user_id':12345,'self_id':99999,'target_id':99999,'time':int(time.time())})
+        raw=Event.from_payload({'post_type':'notice','notice_type':'group_increase','sub_type':'approve','group_id':55555,'operator_id':12345,'user_id':12345,'self_id':99999,'time':int(time.time())})
         message=await adapter.convert_message(raw)
-        e=event(message.message_id);e.message_obj=message
+        e=event(message.message_id);e.message_obj=message;e.get_group_id=lambda:'55555'
         self.assertTrue(self.p.persist_input(e,self.lease))
         delivered=[]
         platform=NS(meta=lambda:NS(id='qq'),convert_message=adapter.convert_message,create_event=lambda m:m,commit_event=delivered.append)
@@ -83,6 +83,25 @@ class Recovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(delivered[0].message_id,message.message_id)
         self.assertEqual(delivered[0].raw_message,raw)
         self.assertNotIn('message_id',raw)
+
+    def test_pokes_recalls_and_typing_never_enter_or_join_chat_work(self):
+        from bot_pipeline import is_transport_notification
+        for kind,sub in [('notify','poke'),('notify','input_status'),('group_recall',None),('friend_recall',None)]:
+            with self.subTest(kind=kind,sub=sub):
+                e=event();e.message_obj.raw_message.update(post_type='notice',notice_type=kind,sub_type=sub)
+                self.assertTrue(is_transport_notification(e.message_obj.raw_message))
+                self.assertFalse(self.p.persist_input(e,self.lease))
+                self.assertFalse(self.p.join_active(e))
+        self.assertEqual(self.db.execute('SELECT count(*) FROM pipeline_work_inputs').fetchone()[0],0)
+
+    def test_legacy_unexecuted_notices_retire_without_touching_chat_or_unknown_effects(self):
+        for name,raw in [('poke',{'post_type':'notice','notice_type':'notify','sub_type':'poke'}),('recall',{'post_type':'notice','notice_type':'group_recall'}),('chat',{'post_type':'message','message':'hello'})]:
+            self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,subject,payload,status,created) VALUES('private:12345',?,'12345',?,'pending',?)",(name,json.dumps(raw),time.time()))
+        self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,subject,payload,status,created) VALUES('private:12345','uncertain','12345',?,'blocked_unknown',?)",(json.dumps({'post_type':'notice','notice_type':'notify','sub_type':'poke'}),time.time()))
+        self.p.retire_transport_notifications()
+        rows=dict(self.db.execute('SELECT event,status FROM pipeline_work_inputs'))
+        self.assertEqual(rows,{'poke':'settled_notification','recall':'settled_notification','chat':'pending','uncertain':'blocked_unknown'})
+        self.assertEqual(self.db.execute("SELECT count(*) FROM pipeline_work_inputs WHERE event IN ('poke','recall') AND payload IS NOT NULL").fetchone()[0],0)
 
     async def test_nonmessage_recovery_restores_sdk_identity_without_forging_raw_id(self):
         for kind in ('notice','request'):
