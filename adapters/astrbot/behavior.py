@@ -2112,6 +2112,7 @@ def install_runtime(core,settings):
         lease=settings.get(id)
         if lease is None or event.get_platform_id()!=id:raise ValueError('ingress_member_unavailable')
         if str(event.get_sender_id())==str(event.get_self_id()):return False
+        if bot_pipeline.is_transport_notification(getattr(event.message_obj,'raw_message',None)):return False
         st=store(id,lease);pipeline=st.pipeline
         if not pipeline.persist_input(event,lease):raise ValueError('ingress_original_evidence_invalid')
         scope=bot_pipeline.delivery_scope(event);identifier=str(event.message_obj.message_id)
