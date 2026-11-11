@@ -22,10 +22,10 @@ decision_token_limit = contextvars.ContextVar('hosted_decision_token_limit', def
 # This bounds BOTH hidden reasoning and the structured decision. Production
 # 256-token owner checks ended with finish_reason=length and incomplete JSON.
 # It is a ceiling, not a target; no retry or extra request is introduced.
-DECISION_OUTPUT_TOKENS=2048
+DECISION_OUTPUT_TOKENS=8192
 # Background owner decisions have a 60-second deadline and may spend tokens
 # reasoning over long-term memory before producing their short JSON result.
-# Keep their headroom separate from latency-sensitive group admission.
+# Keep the owner limit explicit even while both decisions use the same ceiling.
 OWNER_DECISION_OUTPUT_TOKENS=8192
 
 COOLDOWN_SYSTEM = '''可额外输出cooldown_reason（none、busy、social_distance、topic_complete、no_motive之一）。只根据真实交流判断是否需要空间；没有新话题通常为none或no_motive，不代表被讨厌。区分引用、玩笑、明确拒绝以及后来恢复交流，不把一个人的态度当整个群的意见。愿意本次发言时使用none。疲劳、恢复、热聊窗口及等待时长由程序管理，不需要计算。'''
