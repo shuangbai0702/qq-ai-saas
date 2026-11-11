@@ -27,8 +27,14 @@ def delivery_scope(event):
 
 
 def is_transport_notification(raw):
-    """OneBot typing status is transport activity, never a chat Work input."""
-    return isinstance(raw,dict) and raw.get('post_type')=='notice' and raw.get('notice_type')=='notify' and raw.get('sub_type')=='input_status'
+    """These protocol notices never count as pending conversational input.
+
+    Pokes retain their existing dedicated handler; neither they nor recalls
+    should make a chat Work replan or be replayed as an unanswered message.
+    """
+    return isinstance(raw,dict) and raw.get('post_type')=='notice' and (
+        raw.get('notice_type') in ('group_recall','friend_recall') or
+        raw.get('notice_type')=='notify' and raw.get('sub_type') in ('input_status','poke'))
 
 
 def protocol_input_scope(raw):

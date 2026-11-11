@@ -728,6 +728,7 @@ def install_runtime(core,settings):
         id=event.get_platform_id();st=store(id,s);group=str(event.get_group_id() or '');subject=str(event.get_sender_id());scope='group:'+group if group else 'private:'+subject
         if group and cfg.get('groups') and group not in cfg['groups']:return
         if await poke(event,cfg,st.db,lambda:current(event)):return
+        if bot_pipeline.is_transport_notification(getattr(event.message_obj,'raw_message',None)):return
         internal=event.get_extra('_hosted_initiative',False);deferred=event.get_extra('_hosted_deferred_group');now=time.time()
         if deferred and (event.get_extra('_hosted_scheduled_generation')!=s.get('generation') or not st.presence.pending_current(deferred,cfg,lambda:current(event))):return
         continuation=bool(event.get_extra('_hosted_scope_continuation'))
