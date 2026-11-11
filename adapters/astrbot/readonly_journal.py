@@ -6,7 +6,7 @@ their own business authority; this Journal owns the exact submitted sequence.
 """
 import copy,hashlib,json,time,uuid
 import journal_storage
-from dataclasses import dataclass
+from dataclasses import dataclass,replace
 from context_protocol import READONLY_CURRENT,model_json,source
 from memory_model_view import memory_json
 from decision_history import changes,apply_changes,summaries,history_usage,history_boundary,MAX_RETAINED_WIRE_CHARS,MAX_RETAINED_TEXT_CHARS
@@ -630,7 +630,7 @@ class ReadonlyJournal:
 
     def prepare(self,messages,stamp,now=None,group_turn=None,reconstruction_authority=None,reconstruction_scope=None,
                 retirement=None,strict=False,compact_policy=False,guarded=True,retained_validator=None,
-                unprojected=None,coverage_view=None):
+                unprojected=None,coverage_view=None,system_transition_authorized=False):
         from context_transport import READONLY_FIELDS,EVENT_CONTEXT_CURRENT
         now=time.time() if now is None else now
         # SDK native windows can rehydrate a retired batch after restart.
@@ -694,6 +694,23 @@ class ReadonlyJournal:
         else:
             event_index=None;authority=None;excluded=set(() if index is None else (index,))
         base=copy.deepcopy([m for i,m in enumerate(messages) if i not in excluded]);old=self.last
+        if old and system_transition_authorized and self.db is not None and reconstruction_scope:
+            head=system_head(old.base);new_head=system_head(base)
+            tables={r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            # The synchronous checkpoint replacement has not been submitted:
+            # its base has only System and its timestamp lies inside the exact
+            # committed retirement transaction. After any new model turn this
+            # window closes. A config-save System permit is still mandatory.
+            boundary=bool(head and head==len(old.base) and
+                {'memory_semantic_batches','memory_reconstruction_checkpoints'}<=tables and
+                self.db.execute('''SELECT 1 FROM memory_semantic_batches b
+                  JOIN memory_reconstruction_checkpoints c ON c.id=b.checkpoint_id
+                  WHERE b.scope=? AND b.state='retired' AND c.state='consumed'
+                    AND c.created<=? AND b.completed>=? LIMIT 1''',
+                  (reconstruction_scope,old.at,old.at)).fetchone())
+            if boundary and old.base!=base[:new_head]:
+                old=replace(old,base=copy.deepcopy(base[:new_head]),
+                    wire=copy.deepcopy(base[:new_head])+copy.deepcopy(old.wire[system_head(old.wire):]))
         summary_changed=bool(old and summaries(old.state)!=summaries(state))
         retirement_changed=bool(old and old.retirement!=retirement)
         can_defer_retirement=bool(retirement_changed and guarded and strict and self.db is not None
