@@ -60,7 +60,7 @@ export async function openDatabase(dataRoot:string,url?:string):Promise<Sql>{
     const inner:Sql={query:async(sql,params)=>(await pglite.query<any>(sql,params)).rows,transaction:async(fn)=>pglite.transaction(async tx=>fn({...inner,query:async(sql,params)=>(await tx.query<any>(sql,params)).rows})),close:()=>pglite.close()};
     db={query:(sql,params)=>serial(()=>inner.query(sql,params)),transaction:fn=>serial(()=>inner.transaction(fn)),close:()=>serial(()=>inner.close())};
   }
-  const versionsExpected=['001','002','003','004','005','006','007','008','009','010','011'];
+  const versionsExpected=['001','002','003','004','005','006','007','008','009','010','011','012'];
   if(process.env.DB_AUTO_MIGRATE==='false'){
     let versions:string[];
     try{versions=(await db.query<{version:string}>('SELECT version FROM schema_migrations ORDER BY version')).map(x=>x.version)}catch{throw new Error('Database schema is missing; run the explicit migration command')}
@@ -68,7 +68,7 @@ export async function openDatabase(dataRoot:string,url?:string):Promise<Sql>{
   }else await db.transaction(async tx=>{
     if(url)await tx.query('SELECT pg_advisory_xact_lock(18435, 1)');
     await tx.query('CREATE TABLE IF NOT EXISTS schema_migrations(version TEXT PRIMARY KEY,applied_at TIMESTAMPTZ DEFAULT now())');
-    for(const [version,file] of [['001','001_initial.sql'],['002','002_runtime_groups.sql'],['003','003_invitations.sql'],['004','004_bot_quotas.sql'],['005','005_qq_binding_kinds.sql'],['006','006_autonomous_lifecycle.sql'],['007','007_shared_autonomous_policy.sql'],['008','008_inner_owned_capabilities.sql'],['009','009_bilibili_tools.sql'],['010','010_bilibili_media_jobs.sql'],['011','011_outer_context_cycles.sql']])if(!(await tx.query('SELECT version FROM schema_migrations WHERE version=$1',[version])).length){
+    for(const [version,file] of [['001','001_initial.sql'],['002','002_runtime_groups.sql'],['003','003_invitations.sql'],['004','004_bot_quotas.sql'],['005','005_qq_binding_kinds.sql'],['006','006_autonomous_lifecycle.sql'],['007','007_shared_autonomous_policy.sql'],['008','008_inner_owned_capabilities.sql'],['009','009_bilibili_tools.sql'],['010','010_bilibili_media_jobs.sql'],['011','011_outer_context_cycles.sql'],['012','012_external_action_budget.sql']])if(!(await tx.query('SELECT version FROM schema_migrations WHERE version=$1',[version])).length){
       const sql=await readFile(fileURLToPath(new URL('./migrations/'+file,import.meta.url)),'utf8');
       for(const statement of sql.split(';').filter(x=>x.trim()))await tx.query(statement);
       await tx.query('INSERT INTO schema_migrations(version) VALUES($1)',[version]);

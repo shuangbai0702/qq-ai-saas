@@ -1,11 +1,15 @@
 import {spawn,execFile, type ChildProcess} from 'node:child_process';import {mkdir,readFile,writeFile,appendFile,rm,stat,readdir,rename} from 'node:fs/promises';import path from 'node:path';
 import {redact} from '../../../packages/shared/security.js';
 import {StringDecoder} from 'node:string_decoder';
+import {AsyncLocalStorage} from 'node:async_hooks';
 const stopIntents=new WeakMap<ChildProcess,string>();
 export class ProcessHost {
   children=new Map<string,ChildProcess>(); secrets=new Map<string,string[]>(); logWrites=new Map<string,Promise<void>>();
   constructor(public root:string,public python:string){}
-  private inspection?:Map<string,any>;
+  private inspectionContext=new AsyncLocalStorage<{snapshot?:Map<string,any>}>();
+  private get inspection(){return this.inspectionContext.getStore()?.snapshot}
+  private set inspection(value:Map<string,any>|undefined){const owner=this.inspectionContext.getStore();if(owner)owner.snapshot=value}
+  withInspection<T>(run:()=>Promise<T>){return this.inspectionContext.run({},run)}
   private lastMemorySweep=0;
   private memorySweep?:Promise<void>;
   memoryStatus=new Map<string,unknown>();

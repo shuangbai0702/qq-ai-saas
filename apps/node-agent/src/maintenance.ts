@@ -12,6 +12,9 @@ import {SharedAstrBotAdapter} from '../../../adapters/astrbot/shared.js';
 import {redact} from '../../../packages/shared/security.js';
 import {FavoriteMaintenance} from './favorite-maintenance.js';
 
+// Old live Agents may predate the bounded operation lanes.
+const controlBusy=(agent:NodeAgent)=>agent.controlIdle?!agent.controlIdle():agent.busy;
+
 /** Refresh only trusted frontend configuration transport; retain all owners. */
 export async function installForegroundContextRuntime(agent:NodeAgent,release:string){
  if(!/^[a-f0-9]{64}$/.test(release)||agent.closed)throw new Error('Invalid foreground release');
@@ -23,8 +26,8 @@ export async function installForegroundContextRuntime(agent:NodeAgent,release:st
  const children=[...agent.host.children].map(([id,child])=>({id,child,pid:child.pid}));
  try{
   const deadline=Date.now()+20000;
-  while(agent.busy&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
-  if(agent.busy||agent.closed)throw new Error('Agent did not reach foreground maintenance boundary');
+  while(controlBusy(agent)&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
+  if(controlBusy(agent)||agent.closed)throw new Error('Agent did not reach foreground maintenance boundary');
   prototype.context=NodeAgent.prototype.context;
   agent.ai.applyConfig=AstrBotAdapter.prototype.applyConfig;
   agent.shared.attach=SharedAstrBotAdapter.prototype.attach;
@@ -46,8 +49,8 @@ export async function installFavoriteRuntime(agent:NodeAgent,release:string){
  const children=[...agent.host.children].map(([id,child])=>({id,child,pid:child.pid}));
  let installed:FavoriteMaintenance|undefined;
  try{
-  const deadline=Date.now()+20000;while(agent.busy&&Date.now()<deadline)await new Promise(r=>setTimeout(r,20));
-  if(agent.busy||agent.closed)throw new Error('Agent did not reach a favorite maintenance boundary');
+  const deadline=Date.now()+20000;while(controlBusy(agent)&&Date.now()<deadline)await new Promise(r=>setTimeout(r,20));
+  if(controlBusy(agent)||agent.closed)throw new Error('Agent did not reach a favorite maintenance boundary');
   await previous?.stop();installed=new FavoriteMaintenance(agent.db,agent.root,agent.key);
   for(const owned of children)if(agent.host.children.get(owned.id)!==owned.child||owned.child.pid!==owned.pid||owned.child.exitCode!==null)throw new Error('Protocol owner changed during favorite maintenance');
   live.favorites=installed;hooks.current=installed;
@@ -74,8 +77,8 @@ export async function installAutonomousRuntime(agent:NodeAgent,release:string){
  const children=[...agent.host.children].map(([id,child])=>({id,child,pid:child.pid}));
  try{
   const deadline=Date.now()+20000;
-  while(agent.busy&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
-  if(agent.busy||agent.closed)throw new Error('Agent did not reach a maintenance boundary');
+  while(controlBusy(agent)&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
+  if(controlBusy(agent)||agent.closed)throw new Error('Agent did not reach a maintenance boundary');
   await old.autonomy?.stop();
   // These functions are bundled with the release, so an already loaded ESM
   // cache cannot silently reinstall yesterday's attach/provision/start code.
@@ -118,8 +121,8 @@ export async function installBilibiliRuntime(agent:NodeAgent,release:string){
  const children=[...agent.host.children].map(([id,child])=>({id,child,pid:child.pid}));
  let installed:InstanceType<typeof BilibiliExecutor>|undefined;
  try{
-  const deadline=Date.now()+20000;while(agent.busy&&Date.now()<deadline)await new Promise(r=>setTimeout(r,20));
-  if(agent.busy||agent.closed)throw new Error('Agent did not reach a Bilibili maintenance boundary');
+  const deadline=Date.now()+20000;while(controlBusy(agent)&&Date.now()<deadline)await new Promise(r=>setTimeout(r,20));
+  if(controlBusy(agent)||agent.closed)throw new Error('Agent did not reach a Bilibili maintenance boundary');
   await previous?.stop();installed=new BilibiliExecutor(agent.db,agent.root,agent.key);await installed.recover();
   await installed.publishBridges();live.bilibili=installed;
   // Calling an existing native tick is harmless: executor mutex/nextRun prevent

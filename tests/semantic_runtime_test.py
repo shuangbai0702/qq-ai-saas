@@ -291,11 +291,12 @@ class RuntimeTests(unittest.TestCase):
             db.execute('CREATE TABLE platform_message_history(platform_id,created_at,content)')
             db.executemany('INSERT INTO platform_message_history VALUES(?,?,?)',[('tenant','1970-01-01 00:00:50','old'),('tenant','1970-01-01 00:03:00','new'),('other','1970-01-01 00:00:50','foreign')])
         result=clean_native_history(self.manager,'tenant',self.st,reset_legacy=True)
-        self.assertTrue(result['legacyReset']);self.assertEqual(result['historyRows'],1)
+        self.assertTrue(result['legacyReset']);self.assertEqual(result['historyRows'],0)
+        self.assertEqual(result['result'],'pending');self.assertEqual(result['unresolvedHistoryRows'],2)
         with closing(sqlite3.connect(path)) as db:
             own=db.execute("SELECT content FROM conversations WHERE conversation_id='own'").fetchone()[0]
             self.assertNotIn('original',own);self.assertIn('original old',db.execute("SELECT content FROM conversations WHERE conversation_id='other'").fetchone()[0])
-            self.assertEqual(list(db.execute('SELECT content FROM platform_message_history ORDER BY content')),[('foreign',),('new',)])
+            self.assertEqual(list(db.execute('SELECT content FROM platform_message_history ORDER BY content')),[('foreign',),('new',),('old',)])
         self.assertEqual(self.st.model_journals[SCOPE].last.wire,canonical)
 
     def test_reset_flag_without_admin_grant_keeps_unprocessed_native_content(self):
@@ -317,5 +318,214 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(finish_semantic_batches(self.st,{},SCOPE)['native']['legacyReset'])
         self.assertEqual(self.st.db.execute("SELECT status FROM memory_checkpoint_issues WHERE kind='native_legacy_cleanup'").fetchone(),('resolved',))
         self.assertFalse(finish_semantic_batches(self.st,{},SCOPE)['native']['legacyReset'])
+
+class NativeMessageRetirementTests(unittest.TestCase):
+    setUp=RuntimeTests.setUp
+    tearDown=RuntimeTests.tearDown
+    native=RuntimeTests.native
+
+    def content(self,event='old',scope=SCOPE,role='user'):
+        return {'type':role,'message':[{'type':'plain','text':'same raw original'}],
+                '_fishbot_source':{'scope':scope,'event_id':event}}
+
+    def prepare(self):
+        path=self.native()
+        with closing(sqlite3.connect(path)) as db,db:
+            db.execute('CREATE TABLE platform_message_history(id INTEGER PRIMARY KEY,platform_id,user_id,content)')
+        async def insert(platform_id,user_id,content,**kwargs):
+            with closing(sqlite3.connect(path)) as db,db:
+                ident=db.execute('INSERT INTO platform_message_history(platform_id,user_id,content) VALUES(?,?,?)',(platform_id,user_id,model_json(content))).lastrowid
+            return NS(id=ident,platform_id=platform_id,user_id=user_id,content=content)
+        async def get(platform_id,user_id,**kwargs):
+            with closing(sqlite3.connect(path)) as db:
+                return [NS(id=i,content=json.loads(raw)) for i,raw in db.execute('SELECT id,content FROM platform_message_history WHERE platform_id=? AND user_id=?',(platform_id,user_id))]
+        self.manager.db.insert_platform_message_history=insert
+        self.manager.db.get_platform_message_history=get
+        self.insert=insert
+        self.path=path
+        return path
+
+    def event(self,identifier='old',scope=SCOPE,work=None):
+        from astrbot.core.platform.astr_message_event import current_message_event
+        return current_message_event,NS(message_obj=NS(message_id=identifier),unified_msg_origin='umo',
+            get_platform_id=lambda:'tenant',get_group_id=lambda:scope[6:] if scope.startswith('group:') else '',
+            get_sender_id=lambda:scope[8:] if scope.startswith('private:') else 'sender',
+            get_extra=lambda name:work if name=='_hosted_pipeline' else None)
+
+    def test_ordinary_checkpoint_exact_rows_keep_same_text_new_event_scope_and_bot(self):
+        self.prepare()
+        async def seed():
+            for platform,content in [('tenant',self.content()),('tenant',self.content(role='bot')),
+                    ('tenant',self.content('new')),('tenant',self.content(scope='group:other')),
+                    ('other',self.content())]:
+                await self.insert(platform,'umo',content)
+        asyncio.run(seed());self.st.semantic_native=(self.manager,'tenant')
+        result=finish_semantic_batches(self.st,{},SCOPE)
+        self.assertEqual(result['native']['result'],'clean',result)
+        self.assertEqual(result['native']['historyRows'],2)
+        with closing(sqlite3.connect(self.path)) as db:
+            rows=[(p,json.loads(raw)['_fishbot_source']) for p,raw in db.execute('SELECT platform_id,content FROM platform_message_history')]
+        self.assertEqual(len(rows),3)
+        self.assertIn(('tenant',{'scope':SCOPE,'event_id':'new'}),rows)
+        self.assertIn(('tenant',{'scope':'group:other','event_id':'old'}),rows)
+        self.assertIn(('other',{'scope':SCOPE,'event_id':'old'}),rows)
+
+    def test_unproven_legacy_rows_remain_pending_and_are_not_returned_to_tools(self):
+        self.prepare();legacy={'type':'user','message':[{'type':'plain','text':'legacy raw'}]}
+        asyncio.run(self.insert('tenant','umo',legacy));finish_semantic_batches(self.st,{},SCOPE)
+        result=clean_native_history(self.manager,'tenant',self.st)
+        self.assertEqual(result['result'],'pending');self.assertEqual(result['unresolvedHistoryRows'],1)
+        install_native_retirement_guard(self.manager,{'tenant':self.st},{'tenant':{}})
+        rows=asyncio.run(self.manager.db.get_platform_message_history('tenant','umo'))
+        self.assertEqual(rows,[])
+        with closing(sqlite3.connect(self.path)) as db:self.assertEqual(db.execute('SELECT count(*) FROM platform_message_history').fetchone()[0],1)
+
+    def test_input_and_work_output_late_insert_cannot_revive_retired_batch(self):
+        for role in ('user','bot'):
+            with self.subTest(role=role):
+                if hasattr(self,'path'):
+                    # New store/native fixture for each independent ordering.
+                    self.tearDown();self.setUp()
+                self.prepare()
+                async def scenario():
+                    started=asyncio.Event();release=asyncio.Event()
+                    async def delayed(*args,**kwargs):
+                        started.set();await release.wait()
+                        return await self.insert(*args,**kwargs)
+                    self.manager.db.insert_platform_message_history=delayed
+                    install_native_retirement_guard(self.manager,{'tenant':self.st},{'tenant':{}})
+                    var,event=self.event('different' if role=='bot' else 'old',work=NS(scope=SCOPE,event_id='old') if role=='bot' else None)
+                    token=var.set(event)
+                    try:task=asyncio.create_task(self.manager.db.insert_platform_message_history(platform_id='tenant',user_id='umo',content={'type':role,'message':[{'type':'plain','text':'late raw'}]}))
+                    finally:var.reset(token)
+                    await started.wait()
+                    self.assertEqual(finish_semantic_batches(self.st,{},SCOPE)['retired'],1)
+                    release.set();self.assertIsNone(await task)
+                    with closing(sqlite3.connect(self.path)) as db:self.assertEqual(db.execute('SELECT count(*) FROM platform_message_history').fetchone()[0],0)
+                asyncio.run(scenario())
+
+    def test_already_retired_insert_is_rejected_before_native_write(self):
+        self.prepare();finish_semantic_batches(self.st,{},SCOPE)
+        async def unexpected(**kwargs):raise AssertionError('native insert must not run')
+        self.manager.db.insert_platform_message_history=unexpected
+        install_native_retirement_guard(self.manager,{'tenant':self.st},{'tenant':{}})
+        var,event=self.event();token=var.set(event)
+        try:
+            result=asyncio.run(self.manager.db.insert_platform_message_history(platform_id='tenant',user_id='umo',content=self.content()))
+            self.assertIsNone(result)
+        finally:var.reset(token)
+
+    def test_query_started_before_retirement_filters_after_await_even_if_delete_fails(self):
+        self.prepare();asyncio.run(self.insert('tenant','umo',self.content()))
+        async def scenario():
+            started=asyncio.Event();release=asyncio.Event();original=self.manager.db.get_platform_message_history
+            async def delayed(*args,**kwargs):
+                rows=await original(*args,**kwargs);started.set();await release.wait();return rows
+            self.manager.db.get_platform_message_history=delayed
+            install_native_retirement_guard(self.manager,{'tenant':self.st},{'tenant':{}})
+            task=asyncio.create_task(self.manager.db.get_platform_message_history('tenant','umo'))
+            await started.wait()
+            self.st.semantic_native=(self.manager,'tenant')
+            from unittest.mock import patch
+            with patch('semantic_runtime.clean_native_history',side_effect=sqlite3.OperationalError('locked')):
+                result=finish_semantic_batches(self.st,{},SCOPE)
+            self.assertEqual(result['native']['result'],'pending')
+            self.assertEqual(self.st.db.execute("SELECT status FROM memory_checkpoint_issues WHERE kind='native_history_cleanup'").fetchone()[0],'open')
+            release.set();self.assertEqual(await task,[])
+            self.assertEqual(finish_semantic_batches(self.st,{},SCOPE)['native']['result'],'clean')
+            self.assertEqual(self.st.db.execute("SELECT status FROM memory_checkpoint_issues WHERE kind='native_history_cleanup'").fetchone()[0],'resolved')
+            self.assertEqual(self.st.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1)
+        asyncio.run(scenario())
+
+    def test_late_insert_delete_failure_is_pending_and_retry_does_not_resummarize(self):
+        self.prepare()
+        async def scenario():
+            started=asyncio.Event();release=asyncio.Event()
+            async def delayed(*args,**kwargs):
+                started.set();await release.wait();return await self.insert(*args,**kwargs)
+            self.manager.db.insert_platform_message_history=delayed
+            install_native_retirement_guard(self.manager,{'tenant':self.st},{'tenant':{}})
+            var,event=self.event();token=var.set(event)
+            try:task=asyncio.create_task(self.manager.db.insert_platform_message_history('tenant','umo',self.content()))
+            finally:var.reset(token)
+            await started.wait();finish_semantic_batches(self.st,{},SCOPE)
+            from unittest.mock import patch
+            with patch('semantic_runtime.clean_native_history',side_effect=sqlite3.OperationalError('locked')):
+                release.set()
+                with self.assertRaisesRegex(ValueError,'native_history_cleanup_pending'):await task
+            self.assertEqual(self.st.semantic_native_status['result'],'pending')
+            self.assertEqual(await self.manager.db.get_platform_message_history('tenant','umo'),[])
+            self.st.semantic_native=(self.manager,'tenant')
+            self.assertEqual(finish_semantic_batches(self.st,{},SCOPE)['native']['historyRows'],1)
+            self.assertEqual(self.st.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1)
+        asyncio.run(scenario())
+
+    def test_caller_metadata_cannot_override_real_new_event_identity(self):
+        self.prepare();finish_semantic_batches(self.st,{},SCOPE)
+        install_native_retirement_guard(self.manager,{'tenant':self.st},{'tenant':{}})
+        var,event=self.event('new');token=var.set(event)
+        try:row=asyncio.run(self.manager.db.insert_platform_message_history('tenant','umo',self.content('old')))
+        finally:var.reset(token)
+        self.assertEqual(row.content['_fishbot_source'],{'scope':SCOPE,'event_id':'new'})
+        self.assertEqual(len(asyncio.run(self.manager.db.get_platform_message_history('tenant','umo'))),1)
+
+    def test_shared_batch_tombstone_uses_original_scope_and_event(self):
+        self.prepare();scope='group:one'
+        members=[event_key('bot_shared',model_json([scope,'42']))]
+        self.st.db.execute("UPDATE memory_semantic_batches SET scope='bot_shared',members=?,state='retired'",(model_json(members),));self.st.db.commit()
+        asyncio.run(self.insert('tenant','umo',self.content('42',scope)))
+        asyncio.run(self.insert('tenant','umo',self.content('42','group:two')))
+        result=clean_native_history(self.manager,'tenant',self.st)
+        self.assertEqual(result['historyRows'],1)
+        with closing(sqlite3.connect(self.path)) as db:
+            self.assertEqual(json.loads(db.execute('SELECT content FROM platform_message_history').fetchone()[0])['_fishbot_source']['scope'],'group:two')
+
+    def test_real_sdk_database_manager_and_history_tool_exclude_full_35_round_batch(self):
+        from astrbot.core.db.sqlite import SQLiteDatabase
+        from astrbot.core.platform_message_history_mgr import PlatformMessageHistoryManager
+        from astrbot.core.tools.message_tools import GetGroupMessageHistoryTool
+        from astrbot.core.platform.message_type import MessageType
+        from astrbot.core.message.components import Plain
+        from astrbot.core.message.message_event_result import MessageChain
+        async def scenario():
+            native=SQLiteDatabase(str(self.root/'real-native.db'))
+            await native.initialize()
+            try:
+                manager=NS(db=native)
+                history=PlatformMessageHistoryManager(native)
+                scope='group:one'
+                for index in range(35):
+                    for role in ('user','bot'):
+                        content=self.content(str(index),scope,role)
+                        content['message'][0]['text']='retired raw '+str(index)
+                        await history.insert('tenant','umo',content,max_messages=100)
+                fresh=self.content('new',scope);fresh['message'][0]['text']='new batch retained'
+                await history.insert('tenant','umo',fresh,max_messages=100)
+                members=[event_key('bot_shared',model_json([scope,str(i)])) for i in range(35)]
+                self.st.db.execute("UPDATE memory_semantic_batches SET scope='bot_shared',members=?,state='retired'",(model_json(members),));self.st.db.commit()
+                install_native_retirement_guard(manager,{'tenant':self.st},{'tenant':{}})
+                result=clean_native_history(manager,'tenant',self.st)
+                self.assertEqual(result['historyRows'],70,result)
+                self.assertEqual(result['result'],'clean')
+                # The real manager serializes a chain, while the DB wrapper
+                # derives its identity from the actual SDK event ContextVar.
+                var,event=self.event('later',scope=scope)
+                token=var.set(event)
+                try:
+                    await history.insert_message_chain('tenant','umo',MessageChain(chain=[Plain(text='later chain retained')]),'user')
+                finally:var.reset(token)
+                event.get_message_type=lambda:MessageType.GROUP_MESSAGE
+                sdk=NS(message_history_manager=history,get_config=lambda **kw:{'provider_ltm_settings':{'group_message_history_enable':True,'group_message_history_max_cnt':100}})
+                context=NS(context=NS(event=event,context=sdk))
+                output=await GetGroupMessageHistoryTool().call(context)
+                self.assertNotIn('retired raw',output)
+                self.assertIn('new batch retained',output)
+                self.assertIn('later chain retained',output)
+                with closing(sqlite3.connect(native.db_path)) as db:
+                    rows=db.execute('SELECT content FROM platform_message_history').fetchall()
+                    self.assertEqual(len(rows),2)
+                    self.assertNotIn('retired raw',str(rows))
+            finally:await native.engine.dispose()
+        asyncio.run(scenario())
 
 if __name__=='__main__':unittest.main()

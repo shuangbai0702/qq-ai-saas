@@ -287,6 +287,34 @@ class AutonomyTest(unittest.IsolatedAsyncioTestCase):
         initiative.release_unstarted(self.db,item,'timer');initiative.release_unstarted(self.db,item,'timer')
         self.assertEqual(self.db.execute('SELECT unanswered FROM contacts').fetchone()[0],0)
         self.assertEqual(self.db.execute('SELECT count FROM deliveries').fetchone()[0],0)
+    def test_scheduler_setup_failure_releases_only_stages_already_reserved(self):
+        self.contact();item={'scope':'private:11111111','last_user':self.now-10000,'reserved_at':self.now}
+        with patch.object(initiative,'reserve',side_effect=RuntimeError('contact reservation failed')):
+            with self.assertRaises(RuntimeError):initiative.acquire_initiative_reservation(self.db,item,'timer-setup',self.cfg,self.now)
+        self.assertEqual(self.db.execute("SELECT state FROM autonomy_sends WHERE event='timer-setup'").fetchone()[0],'released')
+        self.assertEqual(self.db.execute('SELECT unanswered FROM contacts').fetchone()[0],0)
+        self.assertEqual(self.db.execute('SELECT count FROM deliveries').fetchone(),None)
+    def test_commit_failure_refunds_only_when_queue_proves_event_was_not_inserted(self):
+        self.contact();item={'scope':'private:11111111','last_user':self.now-10000,'reserved_at':self.now}
+        key='timer-commit-before';event=object()
+        self.assertTrue(initiative.acquire_initiative_reservation(self.db,item,key,self.cfg,self.now))
+        class BeforeQueue:
+            _event_queue=types.SimpleNamespace(_queue=[])
+            def commit_event(self,event):raise RuntimeError('rejected before put')
+        with self.assertRaises(RuntimeError):initiative.commit_reserved_event(BeforeQueue(),event,self.db,item,key,True)
+        self.assertEqual(self.db.execute('SELECT unanswered FROM contacts').fetchone()[0],0)
+        self.assertEqual(self.db.execute('SELECT count FROM deliveries').fetchone()[0],0)
+        self.assertEqual(self.db.execute('SELECT state FROM autonomy_sends WHERE event=?',(key,)).fetchone()[0],'released')
+
+        key='timer-commit-after';event=object()
+        self.assertTrue(initiative.acquire_initiative_reservation(self.db,item,key,self.cfg,self.now+1))
+        class AfterQueue:
+            def __init__(self):self._event_queue=types.SimpleNamespace(_queue=[])
+            def commit_event(self,event):self._event_queue._queue.append(event);raise RuntimeError('observer failed after put')
+        with self.assertRaises(RuntimeError):initiative.commit_reserved_event(AfterQueue(),event,self.db,item,key,True)
+        self.assertEqual(self.db.execute('SELECT unanswered FROM contacts').fetchone()[0],1)
+        self.assertEqual(self.db.execute('SELECT count FROM deliveries').fetchone()[0],1)
+        self.assertEqual(self.db.execute('SELECT state FROM autonomy_sends WHERE event=?',(key,)).fetchone()[0],'pending')
     def test_dispatched_unknown_timer_is_not_refunded(self):
         self.contact();item={'scope':'private:11111111','last_user':self.now-10000,'reserved_at':self.now}
         self.assertTrue(autonomy.reserve_send(self.db,item['scope'],'timer',self.cfg,self.now));self.assertTrue(initiative.reserve(self.db,self.cfg,item,self.now))

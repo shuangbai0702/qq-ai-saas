@@ -1,3 +1,4 @@
+import {externalCount} from '../../../packages/database/external-action-budget.js';
 import {randomUUID} from 'node:crypto';
 import type {Sql} from '../../../packages/database/index.js';
 import {AutonomyRepository,AutonomyConflict} from '../../../packages/database/autonomous.js';
@@ -207,7 +208,8 @@ export class AutonomyCoordinator {
        feedback=receipt?.result||{status:'unknown',summary:'自主活动结果未知；保留回执，不重复派发',effects:receipt?.effects||[],evidence:[],unfinished:[],usage:{tokens:work.budget.tokens,modelCalls:work.budget.modelCalls,toolCalls:work.budget.toolCalls,estimated:true}};
       }
       if(!feedback.usage||['tokens','modelCalls','toolCalls'].some(name=>!Number.isSafeInteger(feedback.usage[name])||feedback.usage[name]<0))feedback={...feedback,usage:{tokens:work.budget.tokens,modelCalls:work.budget.modelCalls,toolCalls:work.budget.toolCalls,estimated:true}};
-      this.charge(usage,action.id,'execute',feedback);await this.repo.feedback(c,action.id,feedback);
+      feedback=await this.repo.withExternalEffects(c,action.id,feedback);
+      this.charge(usage,action.id,'execute',feedback);usage.externalActions=await externalCount(this.db,c.cycleId);await this.repo.feedback(c,action.id,feedback);
       reason=feedback.status==='completed'?'activity_completed':feedback.status==='canceled'?'activity_canceled':'activity_'+feedback.status;
       sleep=Number.isSafeInteger(feedback.restSeconds)?Math.max(300,Math.min(config.maxSleepSeconds,feedback.restSeconds)):config.activityIntervalMinutes*60;
      }
@@ -269,7 +271,8 @@ export class AutonomyCoordinator {
      const known=(name:string,fallback:number)=>Number.isSafeInteger(reported[name])&&reported[name]>=0?reported[name]:Math.max(0,fallback);
      feedback.usage={tokens:known('tokens',tokenBudget-usage.tokens),modelCalls:known('modelCalls',config.cycleModelCalls-usage.modelCalls),toolCalls:known('toolCalls',config.cycleToolCalls-usage.toolCalls),estimated:true};
     }
-    this.charge(usage,action.id,'execute',feedback);await this.repo.feedback(c,action.id,feedback);
+    feedback=await this.repo.withExternalEffects(c,action.id,feedback);
+    this.charge(usage,action.id,'execute',feedback);usage.externalActions=await externalCount(this.db,c.cycleId);await this.repo.feedback(c,action.id,feedback);
     // The settled result decides the goal's ledger state immediately: a
     // delivered reply completes the accepted handoff, a final refusal frees
     // its slot, an uncertain effect waits for its authoritative receipt.

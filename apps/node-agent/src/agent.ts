@@ -39,6 +39,19 @@ import {ProcessHost} from './process-host.js';import {AstrBotAdapter} from '../.
 export class NodeAgent {
  host:ProcessHost;ai:AstrBotAdapter;shared:SharedAstrBotAdapter;protocols:Record<string,ProtocolAdapter>;busy=false;closed=false;timer?:NodeJS.Timeout;lastHealth=0;
  private releaseLease?:(()=>Promise<void>);
+ private operations=new Map<string,Promise<void>>();
+ private healthMembers=new Set<string>();
+ private sharedOperation=false;
+ private healthTask?:Promise<void>;
+ controlIdle(){return !this.busy&&this.operations.size===0&&!this.healthTask}
+ private launch(botId:string,shared:boolean,run:()=>Promise<void>){
+  if(this.closed||this.operations.has(botId)||this.healthMembers.has(botId)||this.operations.size>=4||shared&&this.sharedOperation)return false;
+  if(shared)this.sharedOperation=true;
+  const task=Promise.resolve().then(run).catch(error=>console.error('agent operation:',redact(String(error)))).finally(()=>{
+   this.operations.delete(botId);if(shared)this.sharedOperation=false;
+  });
+  this.operations.set(botId,task);return true;
+ }
  autonomy:AutonomyCoordinator;
  bilibili:BilibiliExecutor;
  favorites:FavoriteMaintenance;
@@ -59,7 +72,12 @@ export class NodeAgent {
    // Old releases retained stopped memberships indefinitely. Do not erase
    // bookkeeping until the old worker acknowledges unload (or is proven gone).
    const inactive=await this.db.query("SELECT b.id,b.deleted_at FROM group_members m JOIN bots b ON b.id=m.bot_id WHERE b.deleted_at IS NOT NULL OR b.desired_state<>'running' OR m.desired_state<>'running'");
-   for(const bot of inactive)try{await this.shared.stop(bot.id,!!bot.deleted_at)}catch(error){await this.log(bot,'共享成员清理等待确认：'+(error as Error).message)}
+   for(const bot of inactive){
+    if(this.operations.has(bot.id)||this.healthMembers.has(bot.id)||this.sharedOperation)continue;
+    this.sharedOperation=true;this.healthMembers.add(bot.id);
+    try{await this.shared.stop(bot.id,!!bot.deleted_at)}catch(error){await this.log(bot,'共享成员清理等待确认：'+(error as Error).message)}
+    finally{this.sharedOperation=false;this.healthMembers.delete(bot.id)}
+   }
  }
  async log(bot:any,text:string){const root=path.join(this.root,'bots',bot.id);await mkdir(root,{recursive:true});const file=path.join(root,'runtime.log');try{if((await stat(file)).size>2*1024*1024)await writeFile(file,'[platform] log rotated\n')}catch{};await appendFile(file,`[platform ${new Date().toISOString()}] ${redact(text)}\n`)}
  async begin():Promise<void>{await mkdir(this.root,{recursive:true});this.releaseLease=await acquireLease(this.root,'agent');try{await writeFile(path.join(this.root,'agent.lock'),String(process.pid));
@@ -68,7 +86,7 @@ export class NodeAgent {
    await this.bilibili.recover();
    this.timer=setInterval(()=>void this.tick().catch(e=>console.error('agent tick:',redact(String(e)))),500);this.timer.unref();await this.tick();this.autonomy.start();}catch(error){if(this.timer)clearInterval(this.timer);await rm(path.join(this.root,'agent.lock'),{force:true});await this.releaseLease?.();this.releaseLease=undefined;throw error}
  }
- async shutdown(){if(this.closed)return;this.closed=true;if(this.timer)clearInterval(this.timer);await this.favorites?.stop();await this.bilibili.stop();await this.autonomy.stop();while(this.busy)await new Promise(r=>setTimeout(r,20));let failure:unknown;
+ async shutdown(){if(this.closed)return;this.closed=true;if(this.timer)clearInterval(this.timer);await this.favorites?.stop();await this.bilibili.stop();await this.autonomy.stop();while(this.busy)await new Promise(r=>setTimeout(r,20));await Promise.allSettled([...this.operations.values(),...(this.healthTask?[this.healthTask]:[])]);let failure:unknown;
   try{for(const bot of await this.db.query('SELECT * FROM bots WHERE deleted_at IS NULL')){await this.aiFor(bot).stop(bot.id).catch(e=>{failure??=e});await this.protocols[bot.protocol].stop(bot.id).catch(e=>{failure??=e})}}catch(e){failure??=e}
   finally{try{
    // Database failure must not leave a shared group or QQ child alive. These
@@ -80,11 +98,11 @@ export class NodeAgent {
  async tick(){if(this.busy||this.closed)return;this.busy=true;try{
    this.bilibili.tick();
    this.favorites?.tick();
-   const [command]=await this.db.query("SELECT * FROM commands WHERE status='pending' ORDER BY created_at LIMIT 1");
-   if(command)await this.execute(command);
+   const commands=await this.db.query("SELECT c.*,b.runtime_mode FROM commands c JOIN bots b ON b.id=c.bot_id WHERE c.status='pending' ORDER BY c.created_at LIMIT 32");
+   for(const command of commands)this.launch(command.bot_id,command.runtime_mode==='shared',()=>this.execute(command));
    const sessions=await this.db.query("SELECT s.*,b.protocol,b.expected_uin,b.tenant_id FROM login_sessions s JOIN bots b ON b.id=s.bot_id WHERE s.state NOT IN ('online','expired','canceled','failed') AND b.deleted_at IS NULL");
-   for(const session of sessions)await this.pollLogin(session);
-   if(Date.now()-this.lastHealth>4000){this.lastHealth=Date.now();await this.health()}
+   for(const session of sessions)this.launch(session.bot_id,true,()=>this.pollLogin(session));
+   if(!this.healthTask&&Date.now()-this.lastHealth>4000){this.lastHealth=Date.now();this.healthTask=this.health().catch(error=>console.error('agent health:',redact(String(error)))).finally(()=>{this.healthTask=undefined})}
  }finally{this.busy=false}}
  async execute(command:any){await this.db.query("UPDATE commands SET status='processing' WHERE id=$1",[command.id]);let ctx:RuntimeContext|undefined;
  try{const [bot]=await this.db.query('SELECT * FROM bots WHERE id=$1',[command.bot_id]);if(!bot||bot.deleted_at||bot.generation!==command.generation){await this.db.query("UPDATE commands SET status='superseded',finished_at=now() WHERE id=$1",[command.id]);return}
@@ -190,12 +208,13 @@ export class NodeAgent {
    }else{await this.db.query("UPDATE login_sessions SET state=$2,qr=$3,message=$4,sequence=sequence+1 WHERE id=$1 AND generation=$5 AND state NOT IN ('online','expired','canceled','failed') AND (state IS DISTINCT FROM $2 OR qr IS DISTINCT FROM $3)",[session.id,s.state,s.qr||null,s.message||null,session.generation])}}
    catch(e:any){if(e.code==='23505'||e.message.includes('不一致')||e.message.includes('可信')){await this.db.query("UPDATE login_sessions SET state='failed',message=$2,qr=NULL,sequence=sequence+1 WHERE id=$1 AND state NOT IN ('online','expired','canceled','failed')",[session.id,e.code==='23505'?'此QQ已绑定其他机器人':e.message]);await this.protocols[bot.protocol].stop(bot.id)}/* transient request failures retain state until timeout */}
  }
- async health(){await this.host.beginInspection();try{await this.reconcileSharedMembers();const selected=await this.db.query("SELECT b.* FROM bots b WHERE b.deleted_at IS NULL AND (b.desired_state='running' OR (b.desired_state='offline' AND b.observed_state!='offline') OR b.health->'ai'->>'alive'='true' OR b.health->'protocol'->>'alive'='true' OR EXISTS (SELECT 1 FROM login_sessions s WHERE s.bot_id=b.id AND s.state NOT IN ('online','expired','canceled','failed'))) ORDER BY b.created_at,b.id");const running=new Set(selected.filter(b=>b.desired_state==='running').map(b=>b.id));for(const id of this.recovery.keys())if(!running.has(id))this.recovery.delete(id);for(const bot of selected){try{
+ async health(){return this.host.withInspection(()=>this.healthSnapshot())}
+ async healthSnapshot(){await this.host.beginInspection();try{await this.reconcileSharedMembers();const selected=await this.db.query("SELECT b.* FROM bots b WHERE b.deleted_at IS NULL AND (b.desired_state='running' OR (b.desired_state='offline' AND b.observed_state!='offline') OR b.health->'ai'->>'alive'='true' OR b.health->'protocol'->>'alive'='true' OR EXISTS (SELECT 1 FROM login_sessions s WHERE s.bot_id=b.id AND s.state NOT IN ('online','expired','canceled','failed'))) ORDER BY b.created_at,b.id");const running=new Set(selected.filter(b=>b.desired_state==='running').map(b=>b.id));for(const id of this.recovery.keys())if(!running.has(id))this.recovery.delete(id);for(const bot of selected){if(this.operations.has(bot.id))continue;this.healthMembers.add(bot.id);try{
        if(bot.desired_state==='offline'){await this.db.query("UPDATE commands SET status='pending',error=NULL WHERE bot_id=$1 AND generation=$2 AND kind='evict-offline' AND status='failed' AND finished_at<now()-interval '30 seconds'",[bot.id,bot.generation]);continue}
        const ctx=await this.context(bot);const protocol=await this.protocols[bot.protocol].getHealth(ctx);
        if(protocol.online){try{const uin=await this.protocols[bot.protocol].queryIdentity(ctx);const [identityOwner]=await this.db.query('SELECT generation,deleted_at FROM bots WHERE id=$1',[bot.id]);if(!identityOwner||identityOwner.deleted_at||identityOwner.generation!==bot.generation)continue;if(!uin||!/^\d{5,20}$/.test(uin)||(ctx.expectedUin&&ctx.expectedUin!==uin))throw Object.assign(new Error('恢复会话的QQ身份不匹配'),{identityConflict:true});await this.db.transaction(async tx=>{const [owner]=await tx.query('SELECT generation,deleted_at,desired_state,expected_uin FROM bots WHERE id=$1 FOR UPDATE',[bot.id]);if(!owner||owner.deleted_at||owner.desired_state==='deleting'||owner.generation!==bot.generation)return;const [binding]=await tx.query('SELECT qq_uin FROM qq_bindings WHERE bot_id=$1',[bot.id]);const pinned=binding?.qq_uin||owner.expected_uin;if(pinned&&pinned!==uin)throw Object.assign(new Error('QQ身份不一致，换号需删除机器人后重新创建'),{identityConflict:true});await tx.query("INSERT INTO qq_bindings(bot_id,qq_uin,binding_kind) VALUES($1,$2,$3) ON CONFLICT(bot_id) DO UPDATE SET qq_uin=$2,binding_kind=$3",[bot.id,uin,bot.protocol==='mock'?'mock':'real'])})}catch(e){if(!(e as any).identityConflict&&(e as any).code!=='23505')throw e;const [identityOwner]=await this.db.query('SELECT generation,deleted_at FROM bots WHERE id=$1',[bot.id]);if(!identityOwner||identityOwner.deleted_at||identityOwner.generation!==bot.generation)continue;await this.protocols[bot.protocol].stop(bot.id);protocol.online=false;protocol.alive=false;protocol.ready=false;protocol.detail='QQ身份冲突，已停止协议进程';await this.log(bot,protocol.detail)}}
        const aiNeeded=bot.runtime_mode!=='shared'||!!protocol.online;
-       if(bot.runtime_mode==='shared'&&(bot.desired_state!=='running'||!aiNeeded))await this.shared.stop(bot.id);
+       if(bot.runtime_mode==='shared'&&(bot.desired_state!=='running'||!aiNeeded)){if(this.sharedOperation)continue;this.sharedOperation=true;try{await this.shared.stop(bot.id)}finally{this.sharedOperation=false}}
        const ai=aiNeeded?await this.aiFor(bot).probe(ctx):{alive:false,ready:false,detail:'QQ离线，未占用共享SDK成员位'};
        const [login]=await this.db.query("SELECT id FROM login_sessions WHERE bot_id=$1 AND state NOT IN ('online','expired','canceled','failed')",[bot.id]);
        const [pending]=await this.db.query("SELECT id FROM commands WHERE bot_id=$1 AND status IN ('pending','processing')",[bot.id]);
@@ -234,5 +253,5 @@ export class NodeAgent {
          }
         }else{retry.healthySince=0;await decision('awaiting-readiness')}
        }else this.recovery.delete(bot.id);
-   }catch(e){await this.log(bot,(e as Error).message)}}}finally{this.host.endInspection()}}
+   }catch(e){await this.log(bot,(e as Error).message)}finally{this.healthMembers.delete(bot.id)}}}finally{this.host.endInspection()}}
 }

@@ -369,7 +369,7 @@ class SocialContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.st.db.execute('SELECT count(*) FROM sticker_originals').fetchone()[0],1)
     async def test_data_pages_and_restored_rhythm_keep_real_records(self):
         now=time.time()
-        self.st.db.executemany('INSERT INTO relations VALUES(?,?,?,?,?,?)',[('group:55555',str(100000+i),i%4,'平静',0,now-i) for i in range(105)]);self.st.db.commit()
+        self.st.db.executemany('INSERT INTO relations(scope,subject,affinity,emotion,expires,last_seen) VALUES(?,?,?,?,?,?)',[('group:55555',str(100000+i),i%4,'平静',0,now-i) for i in range(105)]);self.st.db.commit()
         one=admin(self.path,{'action':'list','page':0});two=admin(self.path,{'action':'list','page':1})
         self.assertEqual(one['pagination']['totals']['relations'],105);self.assertEqual(len(one['relations']),100);self.assertEqual(len(two['relations']),5)
         self.st.participation.outgoing('group:55555','第一条',now-80,subject='12345678',event='first');self.st.participation.outgoing('group:55555','第二条',now-20,subject='12345678',event='second')

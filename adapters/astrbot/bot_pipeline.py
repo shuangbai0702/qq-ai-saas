@@ -9,6 +9,7 @@ import psutil
 
 
 STAGES=('ingress','observe','admission','context','model_tools','output_plan','dispatch','commit')
+RECOVERABLE_ADMISSION_REASONS=('group_waiting','group_presence_busy_deferred','autonomous_owner_observing','group_model_silent_or_stale','auth_backoff')
 
 def operation_source(event):
     """Stable trusted origin, not a caller/model supplied idempotency key."""
@@ -46,6 +47,28 @@ def protocol_input_scope(raw):
     if kind in ('notice','request') and raw.get('user_id'):
         return 'group:'+str(raw['group_id']) if raw.get('group_id') else 'private:'+str(raw['user_id'])
     return None
+
+
+def raw_mentions_self(raw,self_id):
+    """Recover only an explicit protocol @; reply authors require SDK lookup."""
+    parts=raw.get('message') if isinstance(raw,dict) else None
+    return bool(self_id and isinstance(parts,list) and any(
+        isinstance(part,dict) and part.get('type')=='at' and
+        str((part.get('data') or {}).get('qq',''))==str(self_id) for part in parts))
+
+
+def addressed_to_self(event):
+    """Use converted SDK authors for replies and authenticated raw @ segments."""
+    raw=getattr(getattr(event,'message_obj',None),'raw_message',None)
+    get_self=getattr(event,'get_self_id',None)
+    self_id=str((get_self() if callable(get_self) else raw.get('self_id') if isinstance(raw,dict) else '') or '')
+    getter=getattr(event,'get_messages',None)
+    if self_id and callable(getter):
+        from astrbot.core.message.components import At,Reply
+        if any(isinstance(part,At) and str(part.qq)==self_id or
+               isinstance(part,Reply) and str(part.sender_id or '')==self_id
+               for part in getter()):return True
+    return raw_mentions_self(raw,self_id)
 
 
 def message_receipt(result):
@@ -415,7 +438,7 @@ class BotPipeline:
           scope TEXT,event TEXT,subject TEXT,owner TEXT,payload TEXT,seen INTEGER DEFAULT 0,
           status TEXT,created REAL,PRIMARY KEY(scope,event))''')
         columns={r[1] for r in db.execute('PRAGMA table_info(pipeline_work_inputs)')}
-        for name,kind in (('observed_at','REAL'),('retry_count','INTEGER DEFAULT 0'),('retry_at','REAL DEFAULT 0'),('payload_sha','TEXT'),('identity','TEXT')):
+        for name,kind in (('observed_at','REAL'),('retry_count','INTEGER DEFAULT 0'),('retry_at','REAL DEFAULT 0'),('payload_sha','TEXT'),('identity','TEXT'),('addressed_self','INTEGER')):
             if name not in columns:db.execute('ALTER TABLE pipeline_work_inputs ADD COLUMN '+name+' '+kind)
         for scope,owner,pid in db.execute('SELECT scope,runtime,pid FROM pipeline_scope_work').fetchall():
             # os.kill(pid, 0) terminates processes on Windows. A read-only
@@ -463,23 +486,28 @@ class BotPipeline:
         self.resume_deferred_mentions()
 
     def resume_deferred_mentions(self):
-        # A joined explicit @ has not received a main-model decision merely
+        # A joined trusted @/reply has not received a main-model decision merely
         # because its parent ambient Work chose to wait at admission.
-        rows=self.db.execute("""SELECT i.scope,i.event,i.payload FROM pipeline_work_inputs i
+        reasons=','.join('?' for _ in RECOVERABLE_ADMISSION_REASONS)
+        rows=self.db.execute(f"""SELECT i.scope,i.event,i.subject,i.payload,i.addressed_self FROM pipeline_work_inputs i
           JOIN pipeline_events p ON p.scope=i.scope AND p.event=i.owner
-          WHERE i.status='deferred' AND i.seen=0 AND i.identity IS NOT NULL
+          WHERE i.status='deferred' AND i.scope LIKE 'group:%' AND i.seen=0 AND i.identity IS NOT NULL
+          AND (i.addressed_self=1 OR i.addressed_self IS NULL)
           AND p.stage='admission' AND p.attempted=0 AND p.confirmed=0
-          AND p.reason IN ('group_waiting','group_presence_busy_deferred','autonomous_owner_observing','group_model_silent_or_stale')
+          AND p.status IN ('waiting','silent') AND p.reason IN ({reasons})
           AND NOT EXISTS(SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope)
-          AND NOT EXISTS(SELECT 1 FROM pipeline_events own WHERE own.scope=i.scope AND own.event=i.event)""").fetchall()
+          AND NOT EXISTS(SELECT 1 FROM pipeline_events own WHERE own.scope=i.scope AND own.event=i.event)""",RECOVERABLE_ADMISSION_REASONS).fetchall()
         with self.db:
-            for scope,event,payload in rows:
+            for scope,event,subject,payload,addressed in rows:
                 try:raw=json.loads(payload)
                 except (ValueError,TypeError):continue
                 parts=raw.get('message');self_id=str(raw.get('self_id') or '')
-                if raw.get('post_type')!='message' or protocol_input_scope(raw)!=scope or not self_id or not isinstance(parts,list):continue
-                if not any(isinstance(x,dict) and x.get('type')=='at' and str((x.get('data') or {}).get('qq'))==self_id for x in parts):continue
-                self.db.execute("UPDATE pipeline_work_inputs SET status='pending',owner=NULL,retry_at=0 WHERE scope=? AND event=? AND status='deferred'",(scope,event))
+                if raw.get('post_type','message')!='message' or str(raw.get('message_id',''))!=event or str(raw.get('user_id',''))!=str(subject) or protocol_input_scope(raw)!=scope or not self_id or not isinstance(parts,list):continue
+                if addressed is None:
+                    addressed=int(raw_mentions_self(raw,self_id))
+                    self.db.execute('UPDATE pipeline_work_inputs SET addressed_self=? WHERE scope=? AND event=? AND addressed_self IS NULL',(addressed,scope,event))
+                if not addressed:continue
+                self.db.execute("UPDATE pipeline_work_inputs SET status='pending',owner=NULL,retry_at=0 WHERE scope=? AND event=? AND status='deferred' AND seen=0 AND addressed_self=1",(scope,event))
 
     def retire_transport_notifications(self):
         # Repair old queue bookkeeping only when no live scope owns it and
@@ -517,13 +545,16 @@ class BotPipeline:
         # Match join_active's existing raw-payload fingerprint exactly.
         payload=json.dumps(raw,ensure_ascii=False,sort_keys=True,separators=(',',':'))
         digest=hashlib.sha256(payload.encode()).hexdigest();binding=json.dumps(identity,sort_keys=True,separators=(',',':'))
+        addressed=int(addressed_to_self(event))
         with self.db:
             old=self.db.execute('SELECT payload_sha,identity FROM pipeline_work_inputs WHERE scope=? AND event=?',(scope,identifier)).fetchone()
             if old:
                 try:prior=json.loads(old[1]) if old[1] else {}
                 except (ValueError,TypeError):return False
-                return old[0]==digest and all(prior.get(k)==identity.get(k) for k in ('tenantId','botId','generation'))
-            self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,subject,owner,payload,status,created,observed_at,payload_sha,identity) VALUES(?,?,?,NULL,?,'pending',?,?,?,?)",(scope,identifier,str(event.get_sender_id()),payload,time.time(),observed,digest,binding))
+                valid=old[0]==digest and all(prior.get(k)==identity.get(k) for k in ('tenantId','botId','generation'))
+                if valid and addressed:self.db.execute('UPDATE pipeline_work_inputs SET addressed_self=1 WHERE scope=? AND event=?',(scope,identifier))
+                return valid
+            self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,subject,owner,payload,status,created,observed_at,payload_sha,identity,addressed_self) VALUES(?,?,?,NULL,?,'pending',?,?,?,?,?)",(scope,identifier,str(event.get_sender_id()),payload,time.time(),observed,digest,binding,addressed))
         return True
 
     def execution_boundary(self,work,name):
@@ -543,14 +574,15 @@ class BotPipeline:
         if not identifier:raise ValueError('scope_input_event_missing')
         raw=getattr(event.message_obj,'raw_message',{})
         signature=hashlib.sha256(json.dumps(raw,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
-        existing=self.db.execute('SELECT payload,payload_sha,status FROM pipeline_work_inputs WHERE scope=? AND event=?',(scope,identifier)).fetchone()
+        existing=self.db.execute('SELECT payload,payload_sha,status,addressed_self FROM pipeline_work_inputs WHERE scope=? AND event=?',(scope,identifier)).fetchone()
         if existing:
             previous=existing[1] or (hashlib.sha256(json.dumps(json.loads(existing[0]),ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest() if existing[0] else None)
             if previous!=signature:raise ValueError('scope_input_redelivery_evidence_changed')
             if existing[2] not in ('owned','pending','queued','deferred'):return False
+        addressed=int(addressed_to_self(event))
         if owner[0]==identifier:return False  # A redelivery is not another input to its own Work.
         with self.db:
-            self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,subject,owner,payload,status,created,observed_at,payload_sha) VALUES(?,?,?,?,?,'owned',?,?,?) ON CONFLICT(scope,event) DO UPDATE SET owner=excluded.owner,status='owned' WHERE pipeline_work_inputs.status IN ('pending','queued','deferred')",(scope,identifier,str(event.get_sender_id()),owner[0],json.dumps(raw,ensure_ascii=False),time.time(),float(event.message_obj.timestamp),signature))
+            self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,subject,owner,payload,status,created,observed_at,payload_sha,addressed_self) VALUES(?,?,?,?,?,'owned',?,?,?,?) ON CONFLICT(scope,event) DO UPDATE SET owner=excluded.owner,status='owned',addressed_self=CASE WHEN coalesce(pipeline_work_inputs.addressed_self,0)=1 OR excluded.addressed_self=1 THEN 1 ELSE 0 END WHERE pipeline_work_inputs.status IN ('pending','queued','deferred')",(scope,identifier,str(event.get_sender_id()),owner[0],json.dumps(raw,ensure_ascii=False),time.time(),float(event.message_obj.timestamp),signature,addressed))
         return True
 
     def seen_inputs(self,work,messages):
@@ -587,7 +619,7 @@ class BotPipeline:
             # Admission waiting is not an uncertain external operation. Leave
             # these inputs to the existing presence inbox / next real ingress,
             # rather than replaying them immediately or claiming a response.
-            deferred=work.scope.startswith('group:') and work.attempted==work.confirmed==0 and work.reason in ('group_waiting','group_presence_busy_deferred','autonomous_owner_observing','group_model_silent_or_stale','auth_backoff')
+            deferred=work.scope.startswith('group:') and work.attempted==work.confirmed==0 and work.reason in RECOVERABLE_ADMISSION_REASONS
             for identifier,subject,seen in self.db.execute("SELECT event,subject,seen FROM pipeline_work_inputs WHERE scope=? AND owner=? AND status='owned'",(work.scope,work.event_id)).fetchall():
                 # Inclusion in a request is not a completed business decision:
                 # a stale/dropped draft must leave its questions pending.
@@ -882,6 +914,16 @@ class BotPipeline:
         # an unknown external outcome into permission to repeat the request.
         with self.db:
             self.db.execute("UPDATE pipeline_events SET stage='dispatch',status='sending',attempted=?,updated_at=? WHERE scope=? AND subject=? AND event=?",(work.attempted,time.time(),work.scope,work.subject,work.event_id))
+
+    @staticmethod
+    def retract_pre_dispatch(db,work,attempt):
+        """Remove exactly one latest attempt only after a proven pre-dispatch rejection."""
+        if not isinstance(work,Work) or work.attempted!=attempt or work.confirmed!=attempt-1:return False
+        previous=attempt;current=attempt-1
+        with db:
+            changed=db.execute('UPDATE pipeline_events SET attempted=?,updated_at=? WHERE scope=? AND subject=? AND event=? AND attempted=?',(current,time.time(),work.scope,work.subject,work.event_id,previous)).rowcount
+        if changed:work.attempted=current
+        return bool(changed)
 
     def confirmed(self,work):work.confirmed+=1
 

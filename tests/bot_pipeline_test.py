@@ -34,6 +34,11 @@ class Pipeline(unittest.TestCase):
   self.p.sending(partial);partial.stop('TimeoutError','error');self.p.finish(partial,{})
   self.assertEqual(partial.status,'partial');self.assertEqual(partial.attempted,2);self.assertEqual(partial.confirmed,1)
   self.assertNotIn('TimeoutError',str(metrics['lastPipeline']['stages']))
+ def test_predispatch_retraction_cannot_remove_a_later_bubble_attempt(self):
+  work=self.bind();self.p.sending(work);self.p.sending(work);self.p.confirmed(work)
+  self.assertFalse(self.p.retract_pre_dispatch(self.db,work,1))
+  self.assertEqual((work.attempted,work.confirmed),(2,1))
+  self.assertEqual(self.db.execute('SELECT attempted FROM pipeline_events WHERE event=?',(work.event_id,)).fetchone()[0],2)
  def test_restart_and_deferred_input_cannot_resend_uncertain_output(self):
   unknown=self.bind(group='22222');self.p.sending(unknown)
   waiting=self.bind(group='33333');waiting.stop('group_waiting','waiting');self.p.finish(waiting,{})

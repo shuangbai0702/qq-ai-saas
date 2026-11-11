@@ -82,7 +82,8 @@ class Ingress(unittest.IsolatedAsyncioTestCase):
         rows={event:(status,payload) for event,status,payload in self.db.execute('SELECT event,status,payload FROM pipeline_work_inputs')}
         self.assertEqual(rows['typing'],('settled_notification',None))
         self.assertEqual(rows['unknown'][0],'blocked_unknown')
-        for event in ('chat','executed','poke'):
+        self.assertEqual(rows['poke'],('settled_notification',None))
+        for event in ('chat','executed'):
             self.assertEqual(rows[event][0],'pending');self.assertIsNotNone(rows[event][1])
 
     async def test_quiescing_retains_input_without_sdk_call_and_restart_can_recover_it(self):

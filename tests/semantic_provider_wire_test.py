@@ -224,7 +224,18 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
         self.store.memory.remember(SCOPE, '12345678', '绘画偏好', '旧偏好水彩', 'old-explicit', 1)
         self.store.db.execute('''INSERT INTO relations(scope,subject,affinity,emotion,expires,last_seen,trust,impression)
                                 VALUES(?,?,7,'平静',0,1,.1,'早期交流仍在互相了解')''', (SCOPE, '12345678'))
-        self.store.db.commit()
+        # Existing scheduled work and its independent safety ledger must keep
+        # exact persisted bytes across a real 35-round summary and retirement.
+        db=self.store.db
+        db.execute('INSERT INTO initiative_schedule VALUES(?,?,?,?,?)',(SCOPE,100,3600,7200,2000000000))
+        db.execute('''INSERT INTO memory_agreements(id,revision,topic,detail,speaker,participants,source_scope,source_event,audiences,status,due,created,updated,handoff_id,task_revision,evidence)
+                      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                   ('future-agreement',3,'未来提醒','保持原已授权详情','12345678','["12345678"]',SCOPE,'prior-authorized-event','["private:12345678"]','accepted','2030-01-01T08:00:00+08:00',1,2,'future-handoff',3,'[{"kind":"trusted_authorization"}]'))
+        db.execute('INSERT INTO pipeline_handoffs VALUES(?,?,?,?,?,?)',('future-handoff',0,'{"runAt":"2030-01-01T08:00:00+08:00","revision":3}','accepted','{"id":"persisted-task"}',2))
+        db.execute('INSERT INTO pipeline_action_effects VALUES(?,?,?,?,?,?,?)',('prior-task',1,'send_private_msg','12345678','unknown','{"status":"unknown","attempt":"do-not-replay"}',3))
+        protected_tables=('initiative_schedule','memory_agreements','pipeline_handoffs','pipeline_action_effects')
+        protected={table:db.execute('SELECT * FROM '+table+' ORDER BY 1').fetchall() for table in protected_tables}
+        db.commit()
         self.semantic_operations = True
         self.populate()
         await self.summarize()
@@ -236,6 +247,8 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum(result['retired'] for _, result in self.callbacks), 1, self.callbacks)
         db = self.store.db
         self.assertEqual(db.execute('SELECT state FROM memory_semantic_batches').fetchone()[0], 'retired')
+        for table,original in protected.items():
+            self.assertEqual(db.execute('SELECT * FROM '+table+' ORDER BY 1').fetchall(),original,table+' must remain byte exact')
         self.assertEqual(db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0], 0)
         self.assertEqual(db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0], 0)
         self.assertEqual(db.execute('SELECT count(*) FROM fishbot_readonly_journal_blobs').fetchone()[0], 0)

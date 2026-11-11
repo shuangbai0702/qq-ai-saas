@@ -147,7 +147,7 @@ async def main():
             if allowed and message.group_id and str(message.group_id) not in allowed:return
             if m['modelConfigured'] and 'provider-'+id not in core.provider_manager.inst_map:return
             try:
-                retained=behavior['retain_ingress'](id,platform.create_event(message))
+                retained=getattr(message,'_hosted_ingress_retained',False) or behavior['retain_ingress'](id,platform.create_event(message))
             except Exception as error:
                 errors[id]='Ingress retention failed'
                 worker_lifecycle.record('ingress_retention_failed',member=id,reason=type(error).__name__)
@@ -157,6 +157,13 @@ async def main():
             if stop_fence.quiescing:return
             await original(message)
         platform.handle_msg=gated
+        from native_ingress import bind as bind_ingress
+        def raw_allowed(raw):
+            return (members.get(id) is member and id not in core.event_bus.stopped_platforms
+                and (not member.get('uin') or str(raw.get('self_id'))==str(member['uin']))
+                and (not member.get('groups') or not raw.get('group_id') or str(raw['group_id']) in set(member['groups']))
+                and (not member['modelConfigured'] or 'provider-'+id in core.provider_manager.inst_map))
+        bind_ingress(platform,lambda raw:behavior['acquire_raw_ingress'](id,raw),raw_allowed,lambda:stop_fence.quiescing)
         core.event_bus.stopped_platforms.discard(id)
         errors.pop(id,None)
     @web.middleware

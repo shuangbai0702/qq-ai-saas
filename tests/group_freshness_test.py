@@ -60,6 +60,86 @@ class Freshness(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result['status'],'not_sent');self.assertEqual(sent,[])
             self.assertEqual(db.execute('SELECT state FROM group_message_attempts').fetchone()[0],'not_sent')
         finally:db.close()
+    async def test_group_tool_predispatch_rejection_retracts_only_current_bubble(self):
+        import group_actions
+        from bot_pipeline import BotPipeline
+        db=sqlite3.connect(':memory:');extra={};entered=asyncio.Event();release=asyncio.Event();dispatched=[]
+        event=NS(get_extra=lambda key,default=None:extra.get(key,default),set_extra=lambda key,value:extra.update({key:value}),
+            get_sender_id=lambda:'11111',get_self_id=lambda:'99999',get_group_id=lambda:'12345',get_platform_id=lambda:'qq',
+            message_obj=NS(message_id='same-scope-work',timestamp=time.time(),raw_message={'post_type':'message','message_type':'group','message_id':'same-scope-work','self_id':'99999','user_id':'11111','group_id':'12345','message':[]}))
+        pipeline=BotPipeline(db);work=pipeline.bind(event,{'tenantId':'tenant','botId':'bot','generation':1,'revision':1})
+        calls=0
+        async def send_group_msg(**params):
+            nonlocal calls
+            calls+=1
+            if calls==2:
+                entered.set();await release.wait()
+            guard_dispatch(event,NS(freshness=self.f),lambda:True,'send_group_msg',params)
+            dispatched.append(params);return {'message_id':str(calls)}
+        event.bot=NS(send_group_msg=send_group_msg)
+        async def access(*args,**kwargs):return None
+        async def review(scope,text,confirmed=''):
+            extra['_hosted_freshness_cursors']={scope:self.f.cursor(scope)}
+            return {'action':'keep'}
+        try:
+            with patch.object(group_actions,'group_access',access):
+                task=asyncio.create_task(group_actions.send(event,{'behavior':{'ownerUin':'11111','splitMessages':True}},db,'12345','第一条\n\n第二条','',lambda:True,lambda *args:None,review=review))
+                await entered.wait();self.f.observe('group:12345','new','33333','刚到的新消息');release.set()
+                result=json.loads(await task)
+            pipeline.finish(work,{})
+            self.assertEqual(result['status'],'partial')
+            self.assertEqual(len(dispatched),1)
+            self.assertEqual((work.attempted,work.confirmed,work.confirmed_messages),(1,1,1))
+            self.assertEqual(work.status,'partial')
+            self.assertEqual(db.execute('SELECT attempted,confirmed,status FROM pipeline_events').fetchone(),(1,1,'partial'))
+        finally:db.close()
+    async def test_same_scope_not_sent_does_not_finish_work_as_unknown(self):
+        import group_actions
+        from bot_pipeline import BotPipeline
+        db=sqlite3.connect(':memory:');extra={};entered=asyncio.Event();release=asyncio.Event();dispatched=[]
+        event=NS(get_extra=lambda key,default=None:extra.get(key,default),set_extra=lambda key,value:extra.update({key:value}),
+            get_sender_id=lambda:'11111',get_self_id=lambda:'99999',get_group_id=lambda:'12345',get_platform_id=lambda:'qq',
+            message_obj=NS(message_id='single-scope-work',timestamp=time.time(),raw_message={'post_type':'message','message_type':'group','message_id':'single-scope-work','self_id':'99999','user_id':'11111','group_id':'12345','message':[]}))
+        pipeline=BotPipeline(db);work=pipeline.bind(event,{'tenantId':'tenant','botId':'bot','generation':1,'revision':1})
+        async def access(*args,**kwargs):return None
+        async def review(scope,text,confirmed=''):
+            extra['_hosted_freshness_cursors']={scope:self.f.cursor(scope)}
+            return {'action':'keep'}
+        async def send_group_msg(**params):
+            entered.set();await release.wait();guard_dispatch(event,NS(freshness=self.f),lambda:True,'send_group_msg',params)
+            dispatched.append(params);return {'message_id':'never'}
+        event.bot=NS(send_group_msg=send_group_msg)
+        try:
+            with patch.object(group_actions,'group_access',access):
+                task=asyncio.create_task(group_actions.send(event,{'behavior':{'ownerUin':'11111'}},db,'12345','单条文本','',lambda:True,lambda *args:None,review=review))
+                await entered.wait();self.f.observe('group:12345','single-new','33333','新消息');release.set()
+                result=json.loads(await task)
+            pipeline.finish(work,{})
+            pipeline.release_work(work)
+            self.assertEqual(result['status'],'not_sent')
+            self.assertEqual(dispatched,[])
+            self.assertNotEqual(work.status,'unknown')
+            self.assertEqual((work.attempted,work.confirmed),(0,0))
+            self.assertEqual(db.execute('SELECT state FROM group_message_attempts').fetchone()[0],'not_sent')
+            self.assertEqual(db.execute('SELECT status,attempted,confirmed FROM pipeline_events').fetchone(),('silent',0,0))
+        finally:db.close()
+    async def test_group_tool_timeout_remains_unknown(self):
+        import group_actions
+        from bot_pipeline import BotPipeline
+        db=sqlite3.connect(':memory:');extra={};event=NS(get_extra=lambda key,default=None:extra.get(key,default),set_extra=lambda key,value:extra.update({key:value}),
+            get_sender_id=lambda:'11111',get_self_id=lambda:'99999',get_group_id=lambda:'12345',get_platform_id=lambda:'qq',
+            message_obj=NS(message_id='timeout-work',timestamp=time.time(),raw_message={'post_type':'message','message_type':'group','message_id':'timeout-work','self_id':'99999','user_id':'11111','group_id':'12345','message':[]}))
+        pipeline=BotPipeline(db);work=pipeline.bind(event,{'tenantId':'tenant','botId':'bot','generation':1,'revision':1})
+        async def access(*args,**kwargs):return None
+        async def review(*args):return {'action':'keep'}
+        async def send_group_msg(**params):raise asyncio.TimeoutError()
+        event.bot=NS(send_group_msg=send_group_msg)
+        try:
+            with patch.object(group_actions,'group_access',access):
+                await group_actions.send(event,{'behavior':{'ownerUin':'11111'}},db,'12345','还没收到回执','',lambda:True,lambda *args:None,review=review)
+            pipeline.finish(work,{})
+            self.assertEqual((work.attempted,work.confirmed,work.status),(1,0,'unknown'))
+        finally:db.close()
     async def test_failed_review_with_new_arrivals_must_retry_before_fallback(self):
         self.f.observe('group:12345','2','22222','补充')
         async def fail(data):

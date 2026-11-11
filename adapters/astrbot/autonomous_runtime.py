@@ -641,13 +641,15 @@ class AutonomousRuntime:
             # drain() keeps this original store alive until the task returns.
             # Only settle its immutable action; never write a replacement
             # member's memory, metrics or relationship state.
-            effects=st.pipeline.internal_result(identity['id'])['effects']
+            import external_action_budget
+            effects=await external_action_budget.effects(s,identity,st.pipeline.internal_result(identity['id'])['effects'])
             status='partial' if any(e['status']=='confirmed' for e in effects) else 'unknown' if effects else 'canceled'
             feedback={'status':status,'summary':'成员已卸载；原动作回执已保留，未派发部分已撤销。','stopReason':'member_unloaded','effects':effects,'evidence':result['evidence'],'unfinished':['核对原任务剩余部分；不得重复已经确认的操作。'] if effects else [action['objective']],'usage':result['usage'],'contextScope':scope,'toolResults':result.get('toolResults',[]),'checkpoints':result.get('checkpoints',[])}
             if kind=='message':feedback['response']='' if event.get_extra('_hosted_final_reply_suppressed') else result['text'][:1600]
             st.pipeline.finish_internal(work,feedback)
             return feedback
-        effects=st.pipeline.internal_result(identity['id'])['effects']
+        import external_action_budget
+        effects=await external_action_budget.effects(s,identity,st.pipeline.internal_result(identity['id'])['effects'])
         status='canceled' if failure=='task_canceled' else 'blocked' if failure else result['status']
         if any(e['status']=='unknown' for e in effects):status='partial' if any(e['status']=='confirmed' for e in effects) else 'unknown'
         elif (failure or result['status']!='completed') and any(e['status']=='confirmed' for e in effects):status='partial'

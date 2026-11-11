@@ -168,7 +168,10 @@ class ReserveFallbackTests(unittest.IsolatedAsyncioTestCase):
         try:
             async def summarize(**kw):return NS(completion_text=json.dumps({'summary':'35轮完成后的真实摘要'}))
             var=contextvars.ContextVar('t',default=None)
-            for index in range(35):store.reflection.record(SCOPE,'12345678',f'fb-{index}',f'真实问题{index}',f'真实回复{index}')
+            for index in range(35):
+                event=f'fb-{index}';reply=f'真实回复{index}'
+                rows=material.snapshots([sourced(event,f'真实问题{index}'),{'role':'assistant','content':reply}],SCOPE)
+                store.reflection.record(SCOPE,'12345678',event,f'真实问题{index}',reply,materials=rows)
             self.assertTrue(store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=summarize),lambda:True,{},var))
             for _ in range(8):await asyncio.sleep(0)
             if store.reflection.task:await asyncio.wait_for(store.reflection.task,5)
@@ -189,46 +192,36 @@ class PendingCoverageTests(unittest.IsolatedAsyncioTestCase):
     async def drain(self):
         for _ in range(8):await asyncio.sleep(0)
 
-    async def test_completed_35_rounds_with_hold_wait_as_pending_then_promote(self):
-        # An older genuinely unavailable source must register a waiting
-        # checkpoint, never erase the proof of 35 new completed rounds.
-        self.db.execute('INSERT INTO memory_hold_rounds VALUES(?,?,NULL,?,?)',(SCOPE,'older-lost-source','lost',time.time()))
+    async def test_completed_35_rounds_use_real_material_and_honest_missing_source_without_coverage(self):
+        # A shared legal batch includes recoverable fragments and explicit loss;
+        # old Hold/Coverage cannot manufacture credit or block it forever.
+        scope='bot_shared';calls=[];metrics={}
+        self.store.reflection.shared_context=True
+        self.db.execute('INSERT INTO memory_hold_rounds VALUES(?,?,NULL,?,?)',(SCOPE,'older-lost-source','lost',time.time()-100))
+        self.db.execute('INSERT INTO memory_pending VALUES(?,?,?,?,?,?)',(SCOPE,'12345678','older-lost-source','surviving fragment','',time.time()-100))
         self.db.commit()
-        async def summarize(**kw):return NS(completion_text=json.dumps({'summary':'35轮真实摘要，其中一个话题未完成','motives':[{'event':'held-0','topic':'未完成的约定话题','quote':'明天继续聊这个约定','status':'open'}]}))
-        for index in range(35):self.store.reflection.record(SCOPE,'12345678',f'held-{index}',f'真实问题{index}',f'已确认回复{index}')
-        self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=summarize),lambda:True,{},self.var))
-        await self.drain()
-        row=self.db.execute('SELECT state,pending_events,round_count FROM memory_reconstruction_checkpoints WHERE scope=?',(SCOPE,)).fetchone()
-        if row is None:
-            # The model quote did not match evidence, so no protected hold
-            # remained: the batch minted a plain available checkpoint.
-            row=self.db.execute('SELECT state,pending_events,round_count FROM memory_reconstruction_checkpoints WHERE scope=?',(SCOPE,)).fetchone()
-        self.assertIsNotNone(row,'35 completed rounds must always mint their checkpoint row')
-        self.assertEqual(row[2],35)
-        self.assertEqual(row[0],'pending_coverage')
-        if row[0]=='pending_coverage':
-            pending=json.loads(row[1])
-            self.assertTrue(pending)
-            # Pending state is not a license and does not retire wire.
-            stamp_before=self.store.reflection.reconstruction_stamp(SCOPE)
-            self.assertIsNone(self.store.reflection.reserve_context_reconstruction(SCOPE,'waiter',[]))
-            # A later batch carries complete coverage for the held events.
-            identifier=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated,schema_version) VALUES(?,?,?,?,2)',(SCOPE,'补齐覆盖的真实后续摘要','[]',time.time())).lastrowid
-            for event in pending:
-                self.db.execute('INSERT INTO memory_summary_coverage(scope,event,subject,digest,summary_id) VALUES(?,?,?,?,?)',(SCOPE,str(event),'12345678','v1:'+'0'*64+':'+'0'*64,identifier))
-            self.db.execute("DELETE FROM memory_hold_rounds WHERE scope=?",(SCOPE,))
-            self.db.commit()
-            # Even when the stored waiting list is bounded, an additional
-            # unresolved hold in this checkpoint's range still blocks minting.
-            self.db.execute('INSERT INTO memory_hold_rounds VALUES(?,?,1,?,?)',(SCOPE,'unlisted-held-event','lost',time.time()));self.db.commit()
-            self.store.reflection._promote_pending_checkpoints(SCOPE);self.db.commit()
-            self.assertEqual(self.db.execute('SELECT state FROM memory_reconstruction_checkpoints WHERE scope=?',(SCOPE,)).fetchone()[0],'pending_coverage')
-            self.db.execute('DELETE FROM memory_hold_rounds WHERE scope=? AND event=?',(SCOPE,'unlisted-held-event'));self.db.commit()
-            self.store.reflection._promote_pending_checkpoints(SCOPE);self.db.commit()
-            state=self.db.execute('SELECT state FROM memory_reconstruction_checkpoints WHERE scope=?',(SCOPE,)).fetchone()[0]
-            self.assertEqual(state,'available')
-            permit=self.store.reflection.reserve_context_reconstruction(SCOPE,'promoted-request',[identifier])
-            self.assertIsNotNone(permit)
+        async def summarize(**kw):
+            calls.append(kw)
+            return NS(completion_text=json.dumps({'summary':'35轮真实摘要，已明确此前来源部分缺失'}))
+        for index in range(35):
+            event=f'held-{index}';reply=f'已确认回复{index}'
+            rows=material.snapshots([sourced(event,f'真实问题{index}'),{'role':'assistant','content':reply}],scope)
+            self.store.reflection.record(scope,'12345678',rows[0]['event'],f'真实问题{index}',reply,materials=rows)
+        self.assertTrue(self.store.reflection.maybe_start(scope,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=summarize),lambda:True,metrics,self.var))
+        await self.store.reflection.task
+        row=self.db.execute('SELECT id,state,pending_events,round_count FROM memory_reconstruction_checkpoints WHERE scope=?',(scope,)).fetchone()
+        self.assertIsNotNone(row,(metrics,self.db.execute("SELECT * FROM memory_checkpoint_issues").fetchall()));self.assertEqual(row[1:],('available',None,35))
+        self.assertEqual(len(calls),1)
+        self.assertIn('surviving fragment',calls[0]['prompt'])
+        self.assertIn('missing部分未提供',calls[0]['system_prompt'])
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summary_coverage').fetchone()[0],0)
+        self.assertIsNotNone(self.db.execute('SELECT 1 FROM memory_pending WHERE event=?',('older-lost-source',)).fetchone(),'Journal must replace before material purge')
+        permit=self.store.reflection.reserve_context_reconstruction(scope,'whole-batch-request',[])
+        self.assertIsNotNone(permit);self.assertTrue(permit['semanticBatch'])
+        self.assertTrue(self.store.reflection.settle_context_reconstruction(permit,True))
+        self.store.reflection._promote_pending_checkpoints(scope);self.db.commit()
+        self.assertEqual(self.db.execute('SELECT state FROM memory_reconstruction_checkpoints WHERE id=?',(row[0],)).fetchone()[0],'consumed')
+        self.assertIsNone(self.store.reflection.reserve_context_reconstruction(scope,'never-reactivate',[]))
 
 class ClaimSelectionTests(unittest.TestCase):
     def setUp(self):

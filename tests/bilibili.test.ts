@@ -1,3 +1,4 @@
+import {qqExternalBudget,externalCount,biliWorkEffects} from '../packages/database/external-action-budget.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,rm,readFile} from 'node:fs/promises';
@@ -541,4 +542,68 @@ test('platform access requires login or explicit anonymous permission and never 
  // A new binding cannot change the identity of an already queued anonymous Work.
  await f.db.query("INSERT INTO bilibili_accounts(bot_id,tenant_id,uid,label,secret) VALUES($1,$2,'123','test account',$3)",[f.id,f.bot.tenant_id,f.broker.seal(f.bot.tenant_id,f.id,f.credential)]);
  await assert.rejects(()=>f.repo.validate(anonymous),/账号已变化/);
+});
+
+
+test('autonomous QQ and Bili reserve one shared cycle budget before dispatch; late unknown is irrevocable',async t=>{
+ const f=await fixture(t),cycle='budget-cycle',work='budget-work';
+ await f.db.query("UPDATE bilibili_settings SET config=jsonb_set(config,'{allowAutonomous}','true') WHERE bot_id=$1",[f.id]);
+ await f.db.query("INSERT INTO autonomy_settings(bot_id,tenant_id,epoch,config) VALUES($1,$2,1,'{\"mode\":\"active\"}')",[f.id,f.bot.tenant_id]);
+ await f.db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget) VALUES($1,$2,$3,1,1,1,'fixture','acting','{\"cycleExternalActions\":0,\"day\":\"fixture\"}')",[cycle,f.id,f.bot.tenant_id]);
+ await f.db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at) VALUES($1,$2,$3,$4,1,'research','','budget','executing',now()+interval '1 hour')",[work,cycle,f.id,f.bot.tenant_id]);
+ await f.db.query('UPDATE autonomy_cycles SET generation=$2,config_revision=$3 WHERE id=$1',[cycle,f.bot.generation,f.bot.revision]);
+ const qq=(logical:string,phase:any='reserve')=>qqExternalBudget(f.db,f.bot,{workId:work,epoch:1,logicalActionId:logical,phase});
+ const row=await f.repo.admit(f.bot,f.call('like',{bvid:'BV1xx411c7mD',value:true},{workId:work,authority:'autonomous',senderId:undefined,epoch:1}));
+ const job=await f.repo.claim('budget-owner');
+ await assert.rejects(()=>qq('qq-0'),/external_action_budget/);
+ await assert.rejects(()=>f.repo.beginDispatch(job,new AbortController().signal),/external_action_budget/);
+ assert.equal((await f.repo.get(f.bot.tenant_id,f.id,row.id)).state,'claimed');
+ assert.equal(await externalCount(f.db,cycle),0);
+ await f.db.query("UPDATE autonomy_cycles SET budget=jsonb_set(budget,'{cycleExternalActions}','1') WHERE id=$1",[cycle]);
+ // Controlled transaction barriers: abort or expire the lease after the
+ // cycle reservation check, before beginDispatch returns a dispatch permit.
+ for(const fault of ['abort','expire'] as const){
+  const controller=new AbortController();
+  const guarded=new ToolEffects({...f.db,transaction:fn=>f.db.transaction(tx=>fn({...tx,query:async(sql,params)=>{
+   if(fault==='expire'&&sql.startsWith("UPDATE tool_effects SET state='dispatching'"))await tx.query("UPDATE tool_effects SET lease_until=clock_timestamp()-interval '1 second' WHERE id=$1",[job.id]);
+   const rows=await tx.query(sql,params);
+   if(fault==='abort'&&sql.includes('AS total'))controller.abort();
+   return rows;
+  }}))});
+  assert.equal(await guarded.beginDispatch(job,controller.signal),false);
+  assert.equal(await externalCount(f.db,cycle),0,'no reservation for a proven unstarted dispatch');
+  await f.db.query("UPDATE tool_effects SET lease_until=now()+interval '1 hour' WHERE id=$1",[job.id]);
+ }
+ const race=await Promise.allSettled([qq('qq-1'),f.repo.beginDispatch(job,new AbortController().signal)]);
+ assert.equal(race.filter(r=>r.status==='fulfilled').length,1,'one physical dispatch can win QQ+Bili concurrency');
+ assert.equal(await externalCount(f.db,cycle),1);
+ if(race[0].status==='fulfilled'){
+  await qq('qq-1');assert.equal(await externalCount(f.db,cycle),1,'same logical output is billed once');
+  await qq('qq-1','released');assert.equal(await externalCount(f.db,cycle),0,'proven pre-dispatch stop releases');
+  assert.equal(await f.repo.beginDispatch(job,new AbortController().signal),true);
+ }
+ await f.repo.finish(job,{schemaVersion:'fishbot.tool-result.v1',actionId:row.id,execution:'failed',receipt:{status:'unknown'},usage:{modelRequests:0,costStatus:'unknown'},versions:{adapter:'fixture'}});
+ await assert.rejects(()=>qq('after-unknown'),/external_action_budget/);
+ assert.equal((await biliWorkEffects(f.db,f.id,f.bot.tenant_id,work))[0].status,'unknown');
+ await f.db.query("UPDATE autonomy_cycles SET finished_at=now(),usage='{\"externalActions\":1}' WHERE id=$1",[cycle]);
+ await assert.rejects(()=>qq('late-new'),/已失效/);
+ await f.db.query("INSERT INTO autonomy_daily_usage(bot_id,tenant_id,day,external_actions) VALUES($1,$2,'fixture',1)",[f.id,f.bot.tenant_id]);
+ await f.repo.finish(job,{schemaVersion:'fishbot.tool-result.v1',actionId:row.id,execution:'completed',receipt:{status:'confirmed'},usage:{modelRequests:0,costStatus:'actual'},versions:{adapter:'fixture'}});
+ assert.equal((await biliWorkEffects(f.db,f.id,f.bot.tenant_id,work))[0].status,'confirmed','late original owner can settle unknown without dispatch');
+ assert.equal((await f.db.query("SELECT external_actions FROM autonomy_daily_usage WHERE bot_id=$1 AND day='fixture'",[f.id]))[0].external_actions,1);
+ assert.equal(await externalCount(f.db,cycle),1);
+});
+
+test('QQ unknown cannot be refunded or billed twice across replay and late receipt',async t=>{
+ const f=await fixture(t),cycle='qq-cycle',work='qq-work';
+ await f.db.query("INSERT INTO autonomy_settings(bot_id,tenant_id,epoch,config) VALUES($1,$2,1,'{\"mode\":\"active\"}')",[f.id,f.bot.tenant_id]);
+ await f.db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget) VALUES($1,$2,$3,1,1,1,'fixture','acting','{\"cycleExternalActions\":1,\"day\":\"fixture\"}')",[cycle,f.id,f.bot.tenant_id]);
+ await f.db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at) VALUES($1,$2,$3,$4,1,'research','','budget','executing',now()+interval '1 hour')",[work,cycle,f.id,f.bot.tenant_id]);
+ await f.db.query('UPDATE autonomy_cycles SET generation=$2,config_revision=$3 WHERE id=$1',[cycle,f.bot.generation,f.bot.revision]);
+ const update=(phase:any)=>qqExternalBudget(f.db,f.bot,{workId:work,epoch:1,logicalActionId:'same',phase});
+ await update('reserve');await update('unknown');await update('released');await update('reserve');
+ assert.equal(await externalCount(f.db,cycle),1);
+ await f.db.query("UPDATE autonomy_cycles SET finished_at=now(),usage='{\"externalActions\":1}' WHERE id=$1",[cycle]);
+ assert.equal((await update('confirmed')).status,'confirmed');
+ assert.equal(await externalCount(f.db,cycle),1);
 });

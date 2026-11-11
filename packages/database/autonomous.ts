@@ -1,3 +1,4 @@
+import {externalCount,biliWorkEffects} from './external-action-budget.js';
 import {createHash,randomUUID} from 'node:crypto';
 import type {Sql} from './index.js';
 import {ExecutionMemory} from './execution-memory.js';
@@ -175,10 +176,10 @@ export class AutonomyRepository {
  private async recover(s:any,tx:Sql){
   const lost=await tx.query("SELECT * FROM autonomy_cycles WHERE bot_id=$1 AND tenant_id=$2 AND finished_at IS NULL FOR UPDATE",[s.bot_id,s.tenant_id]);
   for(const cycle of lost){
-   const reserved=cycle.budget.cycleTokenBudget;
+   const reserved=cycle.budget.cycleTokenBudget,externalActions=await externalCount(tx,cycle.id);
    // No returned usage after a crash is charged conservatively, not refunded.
-   await tx.query('UPDATE autonomy_daily_usage SET reserved_tokens=GREATEST(0,reserved_tokens-$3),used_tokens=used_tokens+$3 WHERE bot_id=$1 AND tenant_id=$2 AND day=$4',[s.bot_id,s.tenant_id,reserved,cycle.budget.day]);
-   await tx.query("UPDATE autonomy_cycles SET state='interrupted',reason='lease_expired',finished_at=now() WHERE id=$1",[cycle.id]);
+   await tx.query('UPDATE autonomy_daily_usage SET reserved_tokens=GREATEST(0,reserved_tokens-$3),used_tokens=used_tokens+$3,external_actions=external_actions+$5 WHERE bot_id=$1 AND tenant_id=$2 AND day=$4',[s.bot_id,s.tenant_id,reserved,cycle.budget.day,externalActions]);
+   await tx.query("UPDATE autonomy_cycles SET state='interrupted',reason='lease_expired',finished_at=now(),usage=jsonb_set(usage,'{externalActions}',$2::jsonb) WHERE id=$1",[cycle.id,JSON.stringify(externalActions)]);
    await tx.query("UPDATE autonomy_actions SET status=CASE WHEN status='executing' THEN 'unknown' ELSE 'canceled' END,finished_at=now() WHERE cycle_id=$1 AND status IN ('planned','executing')",[cycle.id]);
   }
  }
@@ -265,7 +266,14 @@ export class AutonomyRepository {
  }
  async cancelPlanned(claim:any,id:string,reason:string){await this.db.query("UPDATE autonomy_actions SET status='canceled',result=$5,finished_at=now() WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND cycle_id=$4 AND status='planned'",[id,claim.bot_id,claim.tenant_id,claim.cycleId,JSON.stringify({status:'canceled',summary:reason,effects:[],evidence:[],unfinished:[]})])}
  async feedback(claim:any,id:string,result:any){
+  result=await this.withExternalEffects(claim,id,result);
   await this.db.query("UPDATE autonomy_actions SET status=$5,result=$6,receipt=$7,finished_at=now() WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND cycle_id=$4 AND status IN ('executing','unknown','partial')",[id,claim.bot_id,claim.tenant_id,claim.cycleId,result.status,JSON.stringify(result),JSON.stringify(result.effects||[])]);
+ }
+ async withExternalEffects(claim:any,id:string,result:any){
+  const bili=await biliWorkEffects(this.db,claim.bot_id,claim.tenant_id,id);
+  const effects=[...(result.effects||[]).filter((e:any)=>e.source!=='bilibili'),...bili];
+  const uncertain=effects.some((e:any)=>e.status==='unknown');
+  return{...result,effects,...(uncertain?{status:effects.some((e:any)=>e.status==='confirmed')?'partial':'unknown'}:{})};
  }
  async unconfirmed(tenantId:string,botId:string){
   // A finalized cycle can still have an executing row after a lost feedback
@@ -299,6 +307,8 @@ export class AutonomyRepository {
    // The usage JSON keeps its historical totals and now also carries the
    // charge ledger (actual/estimated/unknown per request); the fault context
    // is merged into the cycle decision JSON without changing any schema.
+   await tx.query('SELECT id FROM autonomy_cycles WHERE id=$1 FOR UPDATE',[claim.cycleId]);
+   usage={...usage,externalActions:await externalCount(tx,claim.cycleId)};
    const faultJson=JSON.stringify(fault?{fault:{...fault}}:{});
    const done=await tx.query("UPDATE autonomy_cycles SET state=$2,usage=$3,reason=$4,finished_at=now(),decision=COALESCE(decision,'{}'::jsonb)||$5::jsonb WHERE id=$1 AND bot_id=$6 AND tenant_id=$7 AND finished_at IS NULL RETURNING id",[claim.cycleId,reason==='no_due_work'||reason==='handoff_executed'||reason==='activity_completed'?'completed':'ended',JSON.stringify(usage),reason,faultJson,claim.bot_id,claim.tenant_id]);
    if(!done.length)return;
