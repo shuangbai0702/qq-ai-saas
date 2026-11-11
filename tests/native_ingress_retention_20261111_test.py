@@ -62,6 +62,29 @@ class Ingress(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNotNone(row);self.assertNotIn('message_id',__import__('json').loads(row[1]))
         self.assertEqual(len(self.executed),2)
 
+    async def test_typing_status_never_joins_work_or_enters_recovery_queue(self):
+        self.db.execute('INSERT INTO pipeline_scope_work VALUES(?,?,?,?,?)',('private:12345','100','12345',self.pipeline.runtime,123))
+        for status in ('对方正在输入...',''):
+            self.message.raw_message={'post_type':'notice','notice_type':'notify','sub_type':'input_status','user_id':'12345','status_text':status}
+            await self.gate(self.message)
+            self.assertFalse(self.pipeline.join_active(self.create(self.message)))
+            self.assertFalse(self.pipeline.persist_input(self.create(self.message),self.lease))
+        self.assertFalse(self.executed);self.assertFalse(self.errors)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM pipeline_work_inputs').fetchone()[0],0)
+
+    async def test_restart_reconciles_only_unexecuted_typing_notifications(self):
+        import json
+        typing={'post_type':'notice','notice_type':'notify','sub_type':'input_status','user_id':'12345'}
+        for event,raw,status in [('typing',typing,'blocked_recovery'),('chat',self.raw,'pending'),('unknown',typing,'blocked_unknown'),('executed',typing,'pending'),('poke',{**typing,'sub_type':'poke'},'pending')]:
+            self.db.execute('INSERT INTO pipeline_work_inputs(scope,event,payload,status,created) VALUES(?,?,?,?,?)',('private:12345',event,json.dumps(raw),status,time.time()))
+        self.db.execute("INSERT INTO pipeline_events(scope,event,subject,status,attempted) VALUES('private:12345','executed','12345','unknown',1)")
+        self.db.commit();bot_pipeline.BotPipeline(self.db)
+        rows={event:(status,payload) for event,status,payload in self.db.execute('SELECT event,status,payload FROM pipeline_work_inputs')}
+        self.assertEqual(rows['typing'],('settled_notification',None))
+        self.assertEqual(rows['unknown'][0],'blocked_unknown')
+        for event in ('chat','executed','poke'):
+            self.assertEqual(rows[event][0],'pending');self.assertIsNotNone(rows[event][1])
+
     async def test_quiescing_retains_input_without_sdk_call_and_restart_can_recover_it(self):
         self.assertTrue(self.fence.request_if_idle())
         await self.gate(self.message)

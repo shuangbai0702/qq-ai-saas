@@ -26,6 +26,11 @@ def delivery_scope(event):
     return 'group:'+str(event.get_group_id()) if event.get_group_id() else 'private:'+str(event.get_sender_id())
 
 
+def is_transport_notification(raw):
+    """OneBot typing status is transport activity, never a chat Work input."""
+    return isinstance(raw,dict) and raw.get('post_type')=='notice' and raw.get('notice_type')=='notify' and raw.get('sub_type')=='input_status'
+
+
 def protocol_input_scope(raw):
     """Protocol scope without inventing a message ID for notice/request."""
     kind=raw.get('post_type','message')
@@ -448,6 +453,24 @@ class BotPipeline:
         db.execute("UPDATE pipeline_action_effects SET state='unknown' WHERE state='dispatching'")
         db.execute("UPDATE pipeline_actions SET state='interrupted' WHERE state='working'");db.commit()
         db.execute('CREATE TABLE IF NOT EXISTS pipeline_handoffs(id TEXT PRIMARY KEY,epoch INTEGER NOT NULL,data TEXT NOT NULL,state TEXT NOT NULL,receipt TEXT,at REAL NOT NULL)');db.commit()
+        self.retire_transport_notifications()
+
+    def retire_transport_notifications(self):
+        # Repair old queue bookkeeping only when no live scope owns it and
+        # no execution was ever registered. Never reclassify unknown effects,
+        # actual chat, or already-committed model/Journal representations.
+        rows=self.db.execute("""SELECT scope,event,payload FROM pipeline_work_inputs i
+          WHERE status IN ('pending','queued','owned','blocked_recovery') AND payload IS NOT NULL
+          AND NOT EXISTS(SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope)
+          AND NOT EXISTS(SELECT 1 FROM pipeline_events e WHERE e.scope=i.scope AND e.event=i.event)""").fetchall()
+        has_issues=self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_checkpoint_issues'").fetchone()
+        with self.db:
+            for scope,event,payload in rows:
+                try:raw=json.loads(payload)
+                except (TypeError,ValueError):continue
+                if not is_transport_notification(raw):continue
+                self.db.execute("UPDATE pipeline_work_inputs SET status='settled_notification',payload=NULL,owner=NULL WHERE scope=? AND event=?",(scope,event))
+                if has_issues:self.db.execute("UPDATE memory_checkpoint_issues SET status='resolved',updated=? WHERE kind=? AND status='open'",(time.time(),'input_recovery:'+scope+':'+event))
 
     def persist_input(self,event,lease):
         """Retain an authenticated original before admission; no second queue.
@@ -458,6 +481,7 @@ class BotPipeline:
         scope=delivery_scope(event);message=event.message_obj
         identifier=str(getattr(message,'message_id','') or '')
         raw=getattr(message,'raw_message',None);observed=getattr(message,'timestamp',None)
+        if is_transport_notification(raw):return False
         identity={k:lease.get(k) for k in ('tenantId','botId','generation','revision')}
         if not identifier or not isinstance(raw,dict) or not isinstance(observed,(int,float)) or not math.isfinite(observed) or observed<=0 or any(v is None for v in identity.values()):return False
         if raw.get('post_type','message')=='message' and str(raw.get('message_id',''))!=identifier:return False
@@ -485,6 +509,7 @@ class BotPipeline:
 
     def join_active(self,event):
         """Durable ingress ownership, not another Work or model history."""
+        if is_transport_notification(getattr(event.message_obj,'raw_message',None)):return False
         scope=delivery_scope(event)
         owner=self.db.execute('SELECT event FROM pipeline_scope_work WHERE scope=?',(scope,)).fetchone()
         if not owner:return False
