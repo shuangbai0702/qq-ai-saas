@@ -14,7 +14,7 @@ from datetime import datetime,timezone,timedelta
 from output_clean import clean as clean_internal,prepare_history,normalize_image_markers,without_image_markers
 from message_layout import without_boundaries
 from runtime_care import Ambient,RuntimeCare
-from chat_rhythm import typing_delay,conversational_typo,poke
+from chat_rhythm import conversational_typo,poke
 from memory_reflection import Reflection
 from companion_schedule import Planner
 from participation import Participation
@@ -1045,6 +1045,7 @@ def install_runtime(core,settings):
             return
         from model_cache import record_diagnostic
         record_diagnostic(s,{'kind':'output_candidate','phase':'foreground','workId':getattr(self.get_extra('_hosted_pipeline'),'event_id',None),
+            'durationMs':round((time.monotonic()-self.get_extra('_hosted_provider_return_at'))*1000) if self.get_extra('_hosted_provider_return_at') is not None else None,
             'diagnosticDetail':json.dumps({'components':[type(c).__name__ for c in message.chain],
                 'continuation':bool(self.get_extra('_hosted_scope_continuation')),'freshness_rendering':bool(self.get_extra('_hosted_freshness_rendering'))})})
         social=store(id,s).social
@@ -1154,13 +1155,14 @@ def install_runtime(core,settings):
         planned=[];delays=[]
         for index,part in enumerate(parts):
             if voice_bytes and not chain:continue
-            delays.append(typing_delay(text if part is None else part,rhythm)+(rhythm.get('sendIntervalMs',800)/1000 if index else 0))
+            # Preserve model-chosen bubbles, without artificial typing/pacing.
+            delays.append(0)
             outgoing=copy.copy(message)
             outgoing.chain=chain if part is None else ([x for x in chain if isinstance(x,(At,Reply))] if index==0 else [])+[Plain(part)]+([x for x in chain if isinstance(x,(Face,Image))] if index==len(parts)-1 else [])
             planned.append(outgoing)
         if voice_bytes:
             outgoing=copy.copy(message);outgoing.chain=[Record.fromBase64(base64.b64encode(voice_bytes).decode())]
-            planned.append(outgoing);delays.append(rhythm.get('sendIntervalMs',800)/1000)
+            planned.append(outgoing);delays.append(0)
             metrics.setdefault(id,{})['lastVoiceDecision']={'choice':voice_choice,'at':time.time()}
         plan=bot_pipeline.OutputPlan(tuple(planned),tuple(delays),trailing_media=bool(voice_bytes));work=self.get_extra('_hosted_pipeline')
         if work:work.planned_messages+=len(plan.messages)
@@ -1809,6 +1811,7 @@ def install_runtime(core,settings):
             if foreground:suppress_separate_reasoning(response,e)
             sanitize_new_response(response,e)
             finish_attempt('completed',response)
+            response_finished=time.monotonic()
             settle_journal(e,True)
             record_shared_completion(system_store,e,response)
             keep_writer=bool(getattr(response,'tools_call_names',None))
@@ -1821,6 +1824,12 @@ def install_runtime(core,settings):
                 if not e.get_extra('_hosted_internal_work'):
                     from astrbot.core import logger
                     logger.info('FISHBOT_MODEL_USAGE '+model_json({'botId':e.get_platform_id(),'phase':'foreground','eventId':str(getattr(e.message_obj,'message_id','')),'scope':bot_pipeline.delivery_scope(e),**m['lastCall']}))
+            if e:
+                from model_cache import record_diagnostic
+                record_diagnostic(lease,{'kind':'provider_handoff','phase':'foreground' if foreground else 'inner_execution',
+                    'workId':getattr(e.get_extra('_hosted_pipeline'),'event_id',None),
+                    'durationMs':round((time.monotonic()-response_finished)*1000)})
+                e.set_extra('_hosted_provider_return_at',time.monotonic())
             return response
         except Exception as error:
             finish_attempt('failed',reason=type(error).__name__)
