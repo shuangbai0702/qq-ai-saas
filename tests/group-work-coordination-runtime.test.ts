@@ -17,7 +17,7 @@ test('real SDK queues adjacent Work through confirmed settlement and skips only 
   }
   if(body.messages.some((m:any)=>m.role==='system'&&m.content.includes('你是群聊发送前复核器'))){
    const data=JSON.parse(nativeMessages(body).at(-1).content);reviews.push(data);
-   answer=JSON.stringify({action:'keep',responded_events:data.latest_messages.filter((m:any)=>m.text.includes('EXTRA_A')).map((m:any)=>m.event)});
+   answer=JSON.stringify({action:'keep',responded_events:data.review.latest_messages.filter((m:any)=>m.text.includes('EXTRA_A')).map((m:any)=>m.event)});
   }else{
    const data=platformContext(body),text=JSON.stringify(nativeMessages(body).at(-1));
    const label=text.includes('FIRST_A')?'FIRST_A':text.includes('OTHER_C')?'OTHER_C':'UNEXPECTED_B';
@@ -33,9 +33,10 @@ test('real SDK queues adjacent Work through confirmed settlement and skips only 
   const config={...defaultConfig,baseUrl:`http://127.0.0.1:${(model.address()as any).port}/v1`,model:'coordination',proactive:false,behavior:{...defaultConfig.behavior!,ownerUin:'12345678',groupParticipationEnabled:false,naturalConversation:true,followupSeconds:0,followupReplyProbability:0,typingSimulation:false,typoEnabled:false,splitMessages:false,burstDebounceMs:0,styleLearning:false,memorySummary:false,memeEnabled:false,fatigueEnabled:false}};
   const created=await current.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'协调验收',protocol:'mock',runtimeMode:'shared',expectedUin:'90008873',apiKey:'coordination-fixture',config}});assert.equal(created.statusCode,201,created.body);const id=created.json().id;
   await current.app.inject({method:'POST',url:`/v1/bots/${id}/actions`,cookies,payload:{action:'start',idempotencyKey:'start'}});
-  await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.ai?.ready,'AI ready');
+  await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.protocol?.ready,'protocol ready');
   const ctx=await current.agent.context((await current.db.query('SELECT * FROM bots WHERE id=$1',[id]))[0]),mock=current.agent.protocols.mock as MockProtocolAdapter;
   await mock.call(ctx,'/transition',{state:'online',uin:'90008873'});await until(async()=>!!(await mock.call(ctx,'/state')as any).connected,'QQ connected');
+  await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.ai?.ready,'AI ready');
   const state=async(sql:string)=>JSON.parse((await promisify(execFile)(process.env.FISHBOT_PYTHON||'python',['-B','-c','import sqlite3,sys,json;d=sqlite3.connect(sys.argv[1]);print(json.dumps(d.execute(sys.argv[2]).fetchall()))',path.join(root,'bots',id,'behavior.sqlite'),sql],{windowsHide:true})).stdout);
   await mock.call(ctx,'/message',{group:'778180',sender:'12345678',mention:true,messageId:84000,text:'FIRST_A'});
   await until(async()=>waiting.has('FIRST_A'),'first generation held');
@@ -48,7 +49,7 @@ test('real SDK queues adjacent Work through confirmed settlement and skips only 
   assert.deepEqual(await state("SELECT status,reason FROM pipeline_events WHERE event='84001'"),[['silent','confirmed_event_coverage']]);
   const timeline=requests[1].data.conversation_timeline;
   assert.ok(timeline.some((x:any)=>x.role==='self'&&x.text.includes('已回答甲')&&x.recipient_id==='12345678'&&x.receipt==='confirmed'&&x.message_ids.length),'queued Work sees reply confirmed after its own ingress');
-  assert.ok(reviews[0].conversation.timeline.some((x:any)=>x.sender_id==='87654321'&&x.source_event==='84002'),'review sees bounded authoritative multi-person timeline');
+  assert.ok(reviews[0].context.conversation.timeline.some((x:any)=>x.sender_id==='87654321'&&x.source_event==='84002'),'review sees bounded authoritative multi-person timeline');
   assert.equal((await mock.call(ctx,'/messages')as any[]).filter(x=>x.action==='send_group_msg').length,2,'independent question survives coverage of another sender event');
   // A new event during context assembly must not be hidden by a later cursor
   // snapshot. Hold the real opt-in meme embedding HTTP request before main

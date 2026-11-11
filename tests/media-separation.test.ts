@@ -1,7 +1,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {execFile} from 'node:child_process';import {promisify} from 'node:util';import path from 'node:path';import {mkdtemp,readFile} from 'node:fs/promises';
 import {createApp} from '../apps/control-api/src/app.js';import {issueTestInvite} from './helpers/invitations.js';
 const python=path.resolve(`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`),exec=promisify(execFile);
-test('chat sticker collector: opt-in, metadata, limits, late completion, scoped approval and separate gallery',async()=>{const r=await exec(python,['tests/media_separation_test.py'],{windowsHide:true});assert.match(r.stderr,/Ran 11 tests/);assert.match(r.stderr,/OK/)});
+test('chat sticker collector: opt-in, metadata, limits, late completion, scoped approval and separate gallery',async()=>{const r=await exec(python,['tests/media_separation_test.py'],{windowsHide:true});assert.match(r.stderr,/Ran 12 tests/);assert.match(r.stderr,/OK/)});
 test('native SDK captures unmentioned stickers and routes only approved scoped images',async()=>{const r=await exec(python,['tests/sticker_native_test.py'],{windowsHide:true});assert.match(r.stdout,/PASS native unmentioned sticker capture/)});
 test('separate gallery and sticker review use real ownership, version checks and persistence',async()=>{
  const current=await createApp({root:await mkdtemp(path.resolve('.local/media-separation-')),agent:false});

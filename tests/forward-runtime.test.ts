@@ -1,0 +1,48 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import path from 'node:path';
+import {mkdtemp,readFile} from 'node:fs/promises';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import {createApp} from '../apps/control-api/src/app.js';
+import {defaultConfig} from '../packages/contracts/index.js';
+import {MockProtocolAdapter} from '../adapters/mock/index.js';
+import {permitModelFixture} from './helpers/model-fixture.js';
+import {issueTestInvite} from './helpers/invitations.js';
+const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));
+async function until(fn:()=>Promise<boolean>,label:string){for(let i=0;i<300;i++){if(await fn())return;await sleep(100)}throw Error(label)}
+
+test('real SDK sends attributed ordered forward nodes to Provider wire without changing ingress authority',{timeout:120000},async t=>{
+ const requests:any[]=[];
+ const model=http.createServer(async(req,res)=>{let raw='';for await(const c of req)raw+=c;const body=JSON.parse(raw);requests.push(body);res.setHeader('Content-Type','application/json');res.end(JSON.stringify({id:'forward-fixture',model:body.model,choices:[{index:0,message:{role:'assistant',content:'forward fixture acknowledgement'},finish_reason:'stop'}]}))});
+ await new Promise<void>(r=>model.listen(0,'127.0.0.1',r));permitModelFixture(model);t.after(()=>model.close());
+ const root=await mkdtemp(path.resolve('.local/forward-runtime-')),current=await createApp({root});t.after(()=>current.app.close());
+ const auth=await current.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(current.db),email:'forward@test.invalid',name:'forward',password:'forward-fixture-123'}}),cookies={fish_session:auth.cookies[0].value};
+ const config={...defaultConfig,proactive:false,baseUrl:`http://127.0.0.1:${(model.address()as any).port}/v1`,model:'forward-fixture',behavior:{...defaultConfig.behavior!,ownerUin:'12345678',groupParticipationEnabled:false,ownerContactEnabled:false,autonomousGroupContact:false,proactiveModelSchedule:false,selfDevelopment:false,typingSimulation:false,typoEnabled:false,splitMessages:false,burstDebounceMs:0,styleLearning:false,memorySemantic:false,memeEnabled:false,fatigueEnabled:false}};
+ const created=await current.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'forward',protocol:'mock',runtimeMode:'shared',expectedUin:'90008875',apiKey:'forward-fixture-key',config}});assert.equal(created.statusCode,201,created.body);const id=created.json().id;
+ await promisify(execFile)(process.env.FISHBOT_PYTHON||'python',['-B','-c',`import sys,json;sys.path.insert(0,'adapters/astrbot');from behavior import BehaviorStore;from shared_context import activate_authorized;s=BehaviorStore(sys.argv[1]);activate_authorized(s.db,json.loads(sys.argv[2]),{},'fixture-forward-shared','a'*40);s.close()`,path.join(root,'bots',id,'behavior.sqlite'),JSON.stringify(config)],{windowsHide:true});
+ await current.app.inject({method:'POST',url:`/v1/bots/${id}/actions`,cookies,payload:{action:'start',idempotencyKey:'start'}});
+ await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.protocol?.ready,'protocol ready');
+ const ctx=await current.agent.context((await current.db.query('SELECT * FROM bots WHERE id=$1',[id]))[0]),mock=current.agent.protocols.mock as MockProtocolAdapter;
+ await mock.call(ctx,'/transition',{state:'online',uin:'90008875'});
+ await until(async()=>!!(await mock.call(ctx,'/state')as any).connected,'connected');
+ await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.ai?.ready,'AI ready');
+ const forwards={outer:{messages:[{sender:{user_id:22345678,nickname:'Quoted A'},time:1700000001,message_id:101,message_type:'group',group_id:778180,message:[{type:'text',data:{text:'FORWARD_FIRST'}},{type:'reply',data:{id:'100'}}]},{sender:{user_id:32345678,nickname:'Quoted B'},time:1700000002,message_id:102,message:[{type:'forward',data:{id:'inner'}}]}]},inner:{messages:[{sender:{user_id:42345678,nickname:'Quoted C'},time:1700000003,message:[{type:'text',data:{text:'FORWARD_NESTED'}}]}]}};
+ await mock.call(ctx,'/message',{sender:'12345678',messageId:92001,text:'',segments:[{type:'forward',data:{id:'outer'}}],forwardMessages:forwards});
+ await until(async()=>requests.length>0,'Provider forward request');
+ const wire=JSON.stringify(requests[0].messages);
+ for(const marker of ['FORWARD_FIRST','FORWARD_NESTED','22345678','32345678','1700000001','1700000002','778180','"reply"'])assert.ok(wire.includes(marker.replaceAll('"','\\"'))||wire.includes(marker),marker);
+ assert.ok(wire.indexOf('FORWARD_FIRST')<wire.indexOf('FORWARD_NESTED'));
+ const actions=await mock.call(ctx,'/messages')as any[];assert.equal(actions.filter(a=>a.action==='get_forward_msg').length,2);
+ await until(async()=>actions.some(a=>a.action.startsWith('send_'))||(await mock.call(ctx,'/messages')as any[]).some(a=>a.action.startsWith('send_')),'confirmed send');
+ const output=(await mock.call(ctx,'/messages')as any[]).find(a=>a.action.startsWith('send_'));assert.equal(String(output.params.user_id),'12345678');
+ const settled=async()=>{await until(async()=>{try{return JSON.parse(await readFile(path.join(root,'bots',id,'memory-activity.json'),'utf8')).active===false}catch{return false}},'Work settlement')};
+ await settled();
+ const first=structuredClone(requests[0].messages);
+ await mock.call(ctx,'/message',{sender:'12345678',messageId:92002,text:'AFTER_FORWARD'});
+ await until(async()=>requests.length===2,'following model request');await settled();
+ assert.deepEqual(requests[1].messages.slice(0,first.length),first,'previously submitted forward wire remains exact in the canonical Journal');
+ const result=await promisify(execFile)(process.env.FISHBOT_PYTHON||'python',['-B','-c',`import sqlite3,sys,json;d=sqlite3.connect(sys.argv[1]);print(json.dumps(d.execute("SELECT scope,count(*) FROM memory_rounds GROUP BY scope").fetchall()))`,path.join(root,'bots',id,'behavior.sqlite')],{windowsHide:true});
+ assert.deepEqual(JSON.parse(result.stdout),[['bot_shared',2]],'forward nodes are quoted material, not additional business rounds');
+});

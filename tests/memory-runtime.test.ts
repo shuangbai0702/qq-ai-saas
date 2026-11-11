@@ -11,9 +11,10 @@ test('native shared SDK shares same-QQ long-term profiles across conversations w
  try{
   const auth=await current.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(current.db,2),email:'memory-native@test.invalid',name:'记忆运行测试',password:'memory-native-123'}});const cookies={fish_session:auth.cookies[0].value};const ids:string[]=[];
   for(let i=0;i<2;i++){const result=await current.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'资料'+i,runtimeMode:'shared',protocol:'mock',expectedUin:'9000888'+i,apiKey:'synthetic-memory-'+i,config:{...defaultConfig,baseUrl:`http://127.0.0.1:${(server.address()as any).port}/v1`,model:'memory-fixture',behavior:{memory:true,memoryAutoCapture:true,memorySummary:false,ownerUin:i===0?'12345678':''}}}});assert.equal(result.statusCode,201,result.body);ids.push(result.json().id);await current.app.inject({method:'POST',url:`/v1/bots/${result.json().id}/actions`,cookies,payload:{action:'start',idempotencyKey:'start'}})}
-  await wait(async()=>(await current.db.query('SELECT * FROM bots')).every(b=>b.health?.ai?.ready&&b.health?.protocol?.ready));
+  await wait(async()=>(await current.db.query('SELECT * FROM bots')).every(b=>b.health?.protocol?.ready));
   const contexts=await Promise.all(ids.map(async id=>current.agent.context((await current.db.query('SELECT * FROM bots WHERE id=$1',[id]))[0])));const mock=current.agent.protocols.mock as MockProtocolAdapter;
   for(const ctx of contexts){await mock.call(ctx,'/transition',{state:'online',uin:ctx.expectedUin});await wait(async()=>!!(await mock.call(ctx,'/state')as any).connected)}
+  await wait(async()=>(await current.db.query('SELECT * FROM bots')).every(b=>b.health?.ai?.ready));
   let requests=0;
   async function send(index:number,text:string,extra:Record<string,unknown>={}){
    const ctx=contexts[index];const before=((await mock.call(ctx,'/messages'))as any[]).filter(x=>x.action.startsWith('send_')).length;

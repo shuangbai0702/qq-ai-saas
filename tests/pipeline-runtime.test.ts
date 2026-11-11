@@ -21,9 +21,10 @@ test('native pipeline owns inbound identity, duplicate suppression and self-mess
   const registered=await current.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(current.db),email:'pipeline@fixture.invalid',password:'pipeline-fixture-123',name:'管线验收'}}),cookies={fish_session:registered.cookies[0].value};
   const config={...defaultConfig,baseUrl:`http://127.0.0.1:${(model.address()as any).port}/v1`,model:'pipeline-fixture',proactive:false,behavior:{...defaultConfig.behavior!,ownerUin:'12345678',groupParticipationEnabled:false,typingSimulation:false,typoEnabled:false,splitMessages:false,burstDebounceMs:0,styleLearning:false,memorySummary:false,memeEnabled:false,fatigueEnabled:false}};
   const created=await current.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'管线验收',protocol:'mock',runtimeMode:'shared',expectedUin:'90008771',apiKey:'pipeline-fixture-key',config}});assert.equal(created.statusCode,201,created.body);const id=created.json().id;
-  await current.app.inject({method:'POST',url:`/v1/bots/${id}/actions`,cookies,payload:{action:'start',idempotencyKey:'start'}});await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.ai?.ready,'AI ready');
+  await current.app.inject({method:'POST',url:`/v1/bots/${id}/actions`,cookies,payload:{action:'start',idempotencyKey:'start'}});await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.protocol?.ready,'protocol ready');
   const ctx=await current.agent.context((await current.db.query('SELECT * FROM bots WHERE id=$1',[id]))[0]),mock=current.agent.protocols.mock as MockProtocolAdapter;
   await mock.call(ctx,'/transition',{state:'online',uin:'90008771'});await until(async()=>!!(await mock.call(ctx,'/state')as any).connected,'QQ connected');
+  await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.ai?.ready,'AI ready');
   const sends=async()=>(await mock.call(ctx,'/messages')as any[]).filter(x=>x.action.startsWith('send_'));
   const inbound=(group?:string,sender='12345678')=>mock.call(ctx,'/message',{...(group?{group,mention:true}:{}),sender,messageId:81001,text:'同一条真实入站'});
   await inbound();await until(async()=>(await sends()).length===1,'first private reply');

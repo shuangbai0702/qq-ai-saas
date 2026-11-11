@@ -70,7 +70,7 @@ class ModelCooldown(unittest.IsolatedAsyncioTestCase):
         self.p.answer.update(reply=True,target='bot',participation='direct',interest='strong',reason_code='direct_request')
         addressing={'mentions_other':True,'replies_to_other':True,'self_id':'99999999'}
         self.assertTrue((await self.group(addressing=addressing))[0].reply)
-        self.assertEqual(json.loads(self.p.calls[0]['prompt'])['platform_addressing'],addressing)
+        self.assertEqual(json.loads(self.p.calls[0]['prompt'])['changes']['platform_addressing'],addressing)
         self.p.answer.update(target='other',participation='side')
         blocked=await self.group('other',self.now+900,addressing=addressing)
         self.assertFalse(blocked[0].reply);self.assertEqual(blocked[0].source,'policy')

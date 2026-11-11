@@ -102,10 +102,10 @@ class StableCatalog(unittest.IsolatedAsyncioTestCase):
         try:
             for subject,group,completion in [('12345678','',False),('22345678','55555',False),('12345678','',True),('22345678','55555',True)]:
                 event,scope=self.event(subject,group,completion)
-                event.get_platform_id=lambda:'bot';event.get_sender_name=lambda:'fixture'
+                event.get_platform_id=lambda:'bot';event.get_sender_name=lambda:'fixture';event.unified_msg_origin=scope
                 request=ProviderRequest(prompt='real request',system_prompt='FIXED_SYSTEM',contexts=[],func_tool=ToolSet(tools=[Native(name='send_message_to_user',description='fixed native send',parameters={'type':'object','properties':{}})]))
                 runner=ToolLoopAgentRunner()
-                await runner.reset(provider=NS(provider_config={'id':'fixture'}),request=request,run_context=NS(context=NS(event=event)),tool_executor=NS(),agent_hooks=NS())
+                await runner.reset(provider=NS(provider_config={'id':'fixture'}),request=request,run_context=NS(context=NS(event=event,context=NS(get_config=lambda **kwargs:{}))),tool_executor=NS(),agent_hooks=NS())
                 wire=json.dumps(request.func_tool.openai_schema(),ensure_ascii=False,separators=(',',':'))
                 self.assertEqual(request.system_prompt,'FIXED_SYSTEM')
                 if expected is None:expected=wire

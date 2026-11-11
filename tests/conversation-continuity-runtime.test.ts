@@ -22,8 +22,9 @@ for(const mode of ['passive','active'] as const)test(`native SDK ${mode}: privat
  const config={...defaultConfig,groups:['55555'],baseUrl:`http://127.0.0.1:${(server.address()as any).port}/v1`,model:'continuity-fixture',proactive:false,behavior:{...defaultConfig.behavior,bilibiliSearchEnabled:true,ownerUin:'11111111',qqProfile:false,qzone:false,naturalConversation:false,groupParticipationEnabled:false,memeEnabled:false,memory:true,memoryAutoCapture:false,memorySummary:true,memorySemantic:false,dailySummaryLimit:0,typingSimulation:false,typoEnabled:false,splitMessages:true,sendIntervalMs:300,burstDebounceMs:0,followupSeconds:0,styleLearning:false,attentionEnabled:false,fatigueEnabled:false}};
  const made=await call('POST','/v1/bots',{name:'临时记忆与真实艾特',runtimeMode:'shared',protocol:'mock',expectedUin:'90006001',config,apiKey:'continuity-fixture-key'});assert.equal(made.statusCode,201,made.body);const id=made.json().id;
  const bili=await call('GET',`/v1/bots/${id}/bilibili`);assert.equal((await call('PUT',`/v1/bots/${id}/bilibili`,{expectedRevision:bili.json().revision,config:{enabled:true,allowAnonymous:true,scopes:['public.read']}})).statusCode,200);
- await call('POST',`/v1/bots/${id}/actions`,{action:'start',idempotencyKey:'start'});await wait(async()=>(await call('GET',`/v1/bots/${id}`)).json().bot.health?.ai?.ready,'AI ready');
+ await call('POST',`/v1/bots/${id}/actions`,{action:'start',idempotencyKey:'start'});await wait(async()=>(await call('GET',`/v1/bots/${id}`)).json().bot.health?.protocol?.ready,'protocol ready');
  const [record]=await db.query('SELECT * FROM bots WHERE id=$1',[id]),ctx=await agent.context(record),mock=agent.protocols.mock as MockProtocolAdapter;await mock.call(ctx,'/transition',{state:'online',uin:'90006001'});await wait(async()=>!!(await mock.call(ctx,'/state')as any).connected,'protocol online');
+ await wait(async()=>(await call('GET',`/v1/bots/${id}`)).json().bot.health?.ai?.ready,'AI ready');
  if(mode==='active'){
   // Exercise the actual active foreground without scheduling unrelated model work.
   await agent.autonomy.stop();

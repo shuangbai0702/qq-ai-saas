@@ -52,19 +52,20 @@ test('automatic recovery preserves healthy QQ and AI components while manual res
  const cookies={fish_session:auth.cookies[0].value};
  for(const mode of ['dedicated','shared']){
   const created=await app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'组件恢复-'+mode,protocol:'mock',runtimeMode:mode}});assert.equal(created.statusCode,201,created.body);const botId=created.json().id;
-  await db.query("UPDATE bots SET desired_state='running',generation=7 WHERE id=$1",[botId]);
+  await db.query("UPDATE bots SET desired_state='running',generation=7,expected_uin='90123456' WHERE id=$1",[botId]);
   let aiReady=false,protocolAlive=false,failAI=false,failProtocol=false;const calls:{action:string;botId:string}[]=[];const ai=mode==='shared'?agent.shared:agent.ai;
   ai.probe=async()=>({alive:aiReady,ready:aiReady});
   ai.start=async ctx=>{calls.push({action:'ai-start',botId:ctx.botId});if(failAI)throw new Error('fixture AI unavailable');aiReady=true};
   ai.stop=async(id:string)=>{calls.push({action:'ai-stop',botId:id});aiReady=false};
+  agent.protocols.mock.queryIdentity=async()=> '90123456';
   agent.protocols.mock.getHealth=async()=>({alive:protocolAlive,ready:protocolAlive,online:protocolAlive});
   agent.protocols.mock.beginLogin=async ctx=>{calls.push({action:'protocol-start',botId:ctx.botId});if(failProtocol)throw new Error('fixture protocol unavailable');protocolAlive=true};
   agent.protocols.mock.stop=async id=>{calls.push({action:'protocol-stop',botId:id});protocolAlive=false};
   const cases=[
    {ai:false,protocol:true,automatic:true,actions:['ai-start'],status:'completed'},
    {ai:true,protocol:false,automatic:true,actions:['protocol-start'],status:'completed'},
-   {ai:false,protocol:false,automatic:true,actions:['ai-start','protocol-start'],status:'completed'},
-   {ai:true,protocol:true,automatic:false,actions:['ai-stop','protocol-stop','ai-start','protocol-start'],status:'completed'},
+   {ai:false,protocol:false,automatic:true,actions:mode==='shared'?['protocol-start','ai-start']:['ai-start','protocol-start'],status:'completed'},
+   {ai:true,protocol:true,automatic:false,actions:mode==='shared'?['ai-stop','protocol-stop','protocol-start','ai-start']:['ai-stop','protocol-stop','ai-start','protocol-start'],status:'completed'},
    {ai:true,protocol:true,automatic:true,actions:[],status:'superseded'},
    {ai:false,protocol:true,automatic:true,actions:['ai-start'],status:'failed',failAI:true},
    {ai:true,protocol:false,automatic:true,actions:['protocol-start'],status:'failed',failProtocol:true},
