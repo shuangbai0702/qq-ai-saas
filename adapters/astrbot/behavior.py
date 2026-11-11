@@ -14,7 +14,7 @@ from datetime import datetime,timezone,timedelta
 from output_clean import clean as clean_internal,prepare_history,normalize_image_markers,without_image_markers
 from message_layout import without_boundaries
 from runtime_care import Ambient,RuntimeCare
-from chat_rhythm import conversational_typo,poke
+from chat_rhythm import typing_delay,conversational_typo,poke
 from memory_reflection import Reflection
 from companion_schedule import Planner
 from participation import Participation
@@ -1155,14 +1155,13 @@ def install_runtime(core,settings):
         planned=[];delays=[]
         for index,part in enumerate(parts):
             if voice_bytes and not chain:continue
-            # Preserve model-chosen bubbles, without artificial typing/pacing.
-            delays.append(0)
+            delays.append(typing_delay(text if part is None else part,rhythm)+(rhythm.get('sendIntervalMs',0)/1000 if index else 0))
             outgoing=copy.copy(message)
             outgoing.chain=chain if part is None else ([x for x in chain if isinstance(x,(At,Reply))] if index==0 else [])+[Plain(part)]+([x for x in chain if isinstance(x,(Face,Image))] if index==len(parts)-1 else [])
             planned.append(outgoing)
         if voice_bytes:
             outgoing=copy.copy(message);outgoing.chain=[Record.fromBase64(base64.b64encode(voice_bytes).decode())]
-            planned.append(outgoing);delays.append(0)
+            planned.append(outgoing);delays.append(rhythm.get('sendIntervalMs',0)/1000)
             metrics.setdefault(id,{})['lastVoiceDecision']={'choice':voice_choice,'at':time.time()}
         plan=bot_pipeline.OutputPlan(tuple(planned),tuple(delays),trailing_media=bool(voice_bytes));work=self.get_extra('_hosted_pipeline')
         if work:work.planned_messages+=len(plan.messages)

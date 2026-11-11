@@ -6,7 +6,23 @@ import {BotConfigSchema,defaultConfig} from '../packages/contracts/index.js';
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {AutonomyControls} from '../apps/web/src/autonomy-controls.js';
+import {RhythmControls} from '../apps/web/src/plugin-controls.js';
 import {readFile} from 'node:fs/promises';
+
+test('reply pacing defaults off, remains configurable and accepts zero interval',()=>{
+ const config=BotConfigSchema.parse({...defaultConfig,behavior:{}});
+ assert.equal(config.behavior!.typingSimulation,false);
+ assert.equal(config.behavior!.sendIntervalMs,0);
+ const enabled=BotConfigSchema.parse({...config,behavior:{...config.behavior,typingSimulation:true,sendIntervalMs:800}});
+ assert.equal(enabled.behavior!.typingSimulation,true);assert.equal(enabled.behavior!.sendIntervalMs,800);
+ assert.equal(BotConfigSchema.safeParse({...config,behavior:{sendIntervalMs:-1}}).success,false);
+ const html=renderToStaticMarkup(createElement(RhythmControls,{config,onChange:()=>{}}));
+ assert.match(html,/aria-label="自然打字停顿"/);assert.match(html,/aria-label="气泡发送间隔"/);
+ for(const label of ['自然打字停顿','气泡发送间隔']){
+  const input=html.match(new RegExp('<input[^>]*aria-label="'+label+'"[^>]*>'))?.[0];
+  assert.ok(input);assert.doesNotMatch(input,/checked=/);
+ }
+});
 
 test('group, owner and quiet defaults share the runtime contract and preserve explicit overrides',()=>{
  const parsed=BotConfigSchema.parse({...defaultConfig,behavior:{}}).behavior!;
