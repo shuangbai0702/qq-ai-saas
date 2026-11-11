@@ -1020,7 +1020,10 @@ class Reflection:
                             payload.sort(key=lambda r:r['at'])
                         if scope=='bot_shared':
                             from semantic_collection import collect,previous_summaries
-                            payload=collect(self.db,scope,rows[-1][5],payload,self.recapture,discard_unavailable=bool(_manual and _manual.get('discard_unavailable')))
+                            # Normal and administrator-triggered checkpoints use
+                            # the same recovery: offer every real fragment and
+                            # explicitly label originals that cannot be restored.
+                            payload=collect(self.db,scope,rows[-1][5],payload,self.recapture,discard_unavailable=True)
                             discarded=getattr(payload,'discarded',[])
                             if discarded:
                                 from semantic_collection import unavailable_stamp
@@ -1077,7 +1080,7 @@ class Reflection:
                                         image_bindings.append({'id':hashlib.sha256(image.encode()).hexdigest(),'position':len(summary_images),'events':[item['event']]})
                                     else:
                                         image_bindings[summary_images.index(image)]['events'].append(item['event'])
-                            system+=' incomplete_material仅包含确实仍存在的片段和图片；missing部分未提供，绝不声称看过或猜测补全。管理员已授权本批成功后丢弃不可恢复部分；仅理解可见材料并提炼，缺失不是人物事实。'
+                            system+=' incomplete_material仅包含尽力回采后确实仍存在的片段和图片；missing部分未提供，绝不声称看过或猜测补全。仅理解可见材料并提炼，缺失不是人物事实；本批产物成功提交并替换Journal后，现存热材料一并退休。'
                         prompt['observed_requests']=model_view(materials,payload)
                         prompt['images']=image_bindings
                         if cfg.get('styleLearning'):
@@ -1270,7 +1273,10 @@ class Reflection:
                                 from semantic_collection import unavailable_stamp
                                 if unavailable_stamp(self.db,discarded)!=discard_stamp:raise RuntimeError('semantic_discard_material_changed')
                             media_release=commit_batch(self.db,scope,checkpoint_id,materials,rows[-1][5],discarded=discarded,administrator=_manual.get('administrator') if _manual else None,request_id=_manual.get('request_id') if _manual else None)
-                            if discarded:_manual['discarded']={kind:sum(item['missing']==kind for item in discarded) for kind in ('full_original','incomplete_original','conflicting_originals')}
+                            if discarded:
+                                recovery_counts={kind:sum(item['missing']==kind for item in discarded) for kind in ('full_original','incomplete_original','conflicting_originals')}
+                                metrics['semanticMaterialRecovery']={'checkpointId':checkpoint_id,**recovery_counts}
+                                if _manual is not None:_manual['discarded']=recovery_counts
                             metrics['semanticMediaUntracked']=media_release.get('untracked',0)
                             metrics['summariesSaved']=metrics.get('summariesSaved',0)+1
                             holds=set()

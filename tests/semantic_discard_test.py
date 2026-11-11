@@ -1,4 +1,4 @@
-"""Explicit administrator loss authorization; actual Provider wire and rollback."""
+"""Shared recovery at legal checkpoints; actual Provider wire and rollback."""
 import contextvars,json,sys,unittest
 from pathlib import Path
 from types import SimpleNamespace as NS
@@ -13,9 +13,9 @@ class DiscardTests(unittest.IsolatedAsyncioTestCase):
     asyncSetUp=Fixture.asyncSetUp
     asyncTearDown=Fixture.asyncTearDown
 
-    def prepare(self):
+    def prepare(self,count=2):
         db=self.store.db;r=self.store.reflection;r.shared_context=True;r.checkpoint_callback=None
-        for i in range(2):
+        for i in range(count):
             msg=event_message({'scope':'private:12345678','sender_id':'12345678','event_id':str(i),'at':100+i},'actual complete text')
             material=summary_material.snapshots([msg,{'role':'assistant','content':'sent'}],'bot_shared')
             r.record('bot_shared','12345678',material[0]['event'],'display','sent',now=100+i,materials=material)
@@ -40,9 +40,24 @@ class DiscardTests(unittest.IsolatedAsyncioTestCase):
         with db:semantic_batch.purge(db,cp)
         self.assertIsNone(db.execute("SELECT 1 FROM memory_pending WHERE scope='group:55555'").fetchone())
 
-    async def test_ordinary_admin_force_does_not_discard(self):
+    async def test_ordinary_admin_force_uses_shared_material_recovery(self):
         r,db=self.prepare();r.force_compress_once(allow_partial=True,administrator='admin',request_id='strict')
-        result=await r.task;self.assertFalse(result['ok']);self.assertEqual(self.requests,[])
+        result=await r.task;self.assertTrue(result['ok'],result);self.assertEqual(len(self.requests),1)
+        self.assertIn('ACTUAL_REMAINING_FRAGMENT',model_json(self.requests[0]['messages']))
+        self.assertEqual(result['discarded']['full_original'],1)
+
+    async def test_normal_35_round_checkpoint_recovers_without_admin_or_extra_call(self):
+        r,db=self.prepare(35);self.assertTrue(r.retry());await r.task
+        self.assertEqual(len(self.requests),1)
+        wire=model_json(self.requests[0]['messages'])
+        self.assertIn('ACTUAL_REMAINING_FRAGMENT',wire);self.assertIn('full_original',wire)
+        self.assertIn('missing部分未提供',wire);self.assertNotIn('管理员已授权',wire)
+        self.assertEqual(db.execute('SELECT round_count FROM memory_reconstruction_checkpoints').fetchone(),(35,))
+        self.assertEqual(db.execute('SELECT administrator,missing_count FROM memory_semantic_discard_audit').fetchone(),('automatic:35_round_checkpoint',1))
+        self.assertIsNotNone(db.execute("SELECT 1 FROM memory_pending WHERE scope='group:55555'").fetchone(),'keep material until Journal replacement')
+
+    async def test_normal_recovery_does_not_bypass_35_round_boundary(self):
+        r,db=self.prepare(34);self.assertFalse(r.retry());self.assertEqual(self.requests,[])
         self.assertIsNone(db.execute('SELECT 1 FROM memory_semantic_batches').fetchone())
 
     async def test_loss_requires_administrator_and_failed_model_keeps_everything(self):
