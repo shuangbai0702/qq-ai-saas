@@ -87,7 +87,6 @@ def effect_units(effects):
 def decision_version(db,scope):
     """Fence mutable memory/agreements without granting Journal retirement."""
     from agreement_state import agreements_stamp
-    from memory_scope import person_filter
     if not db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_reflection_control'").fetchone():return None
     # Cross-scope corrections may affect this request; a stamp must not depend
     # only on the old destination's correction rows. No message bodies copied.

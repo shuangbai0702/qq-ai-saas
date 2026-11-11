@@ -5,7 +5,7 @@ Only known platform envelopes and exact attributed events can be compacted.
 """
 import copy,json,re,time
 from datetime import datetime,timezone,timedelta
-from context_protocol import SOURCE,TRUSTED_CURRENT,READONLY_CURRENT,source,image_notice,model_json
+from context_protocol import SOURCE,READONLY_CURRENT,source,image_notice,model_json
 from memory_model_view import memory_json
 
 
@@ -267,8 +267,6 @@ def request_context_view(system,contexts,prompt,policy,current_rules,context,too
         # The provider appends tool results after contexts. Keep them adjacent
         # to their assistant tool-call message by inserting before that call.
         position=max((i for i,m in enumerate(history) if isinstance(m,dict) and m.get('role')=='assistant' and m.get('tool_calls')),default=len(history))
-    elif prompt is None:
-        position=len(history)
     else:position=len(history)
     if not isinstance(data,dict):authority={'opaqueContext':context}
     # The event's source time is historical evidence, not the current clock.
@@ -452,12 +450,11 @@ def summary_provenance_view(context):
 
 def memory_context_view(context):
     """Share exact event bodies, retain distinct state/recipient/receipt metadata."""
-    result=social_context_view(context);seen={};changed=False
+    result=social_context_view(context);seen={}
     summary_provenance_view(result)
     identity=result.get('identity') or {};environment=result.get('conversation_environment') or {}
     scope=identity.get('scope') or environment.get('scope','')
     def body(row,path,field='text',default_scope='',role='member',event=None,author=None):
-        nonlocal changed
         if not isinstance(row,dict) or not isinstance(row.get(field),str) or len(row[field])<80:return
         source=row.get('source_scope') or default_scope;identifier=event or row.get('source_event') or row.get('event_id')
         speaker=author or row.get('sender_id') or row.get('subject')
@@ -465,7 +462,7 @@ def memory_context_view(context):
         key=(source,str(identifier),role,str(speaker) if role=='member' else '',row[field])
         if key in seen:
             # A reference longer than its original body provides no benefit.
-            if len(seen[key])+20<len(row[field]):row[field+'_ref']=seen[key];del row[field];changed=True
+            if len(seen[key])+20<len(row[field]):row[field+'_ref']=seen[key];del row[field]
         else:seen[key]=path+'/'+field
     for i,round in enumerate(result.get('group_round_history',[])):
         for j,row in enumerate(round.get('messages',[])):body(row,f'/group_round_history/{i}/messages/{j}',default_scope=round.get('source_scope',''))

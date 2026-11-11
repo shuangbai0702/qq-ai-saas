@@ -424,7 +424,6 @@ def install_runtime(core,settings):
         No Journal is rewritten and missing originals are never fabricated.
         """
         from context_protocol import source,digest
-        from readonly_journal import ReadonlyJournal
         def capture(scope,events):
             if scope=='bot_shared':message_provenance.recover_model_settlements(st.db,scope)
             wanted={str(event) for event in events}
@@ -567,7 +566,7 @@ def install_runtime(core,settings):
             if action in ('get_group_info','get_group_member_info','get_group_member_list') and str(params.get('group_id')) not in allowed:raise asyncio.CancelledError('internal group read denied')
             result=await action_original(self,action,**params)
             return [row for row in result if str(row.get('group_id')) in allowed] if action=='get_group_list' and isinstance(result,list) else result
-        work=event.get_extra('_hosted_pipeline');intent=event.get_extra('_hosted_autonomous_action') or {}
+        work=event.get_extra('_hosted_pipeline')
         # Capability authorization belongs to the inner tools and current
         # feature settings, not the outer planner's task label.
         granted=qq_actions.allowed(event,s['config']);permitted=set()

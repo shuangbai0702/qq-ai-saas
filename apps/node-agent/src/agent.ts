@@ -2,8 +2,8 @@ import {FavoriteMaintenance} from './favorite-maintenance.js';
 import {BotConfigSchema} from '../../../packages/contracts/index.js';
 import {acquireLease} from '../../../packages/database/lease.js';
 import {observeOffline,evictionDue,offlineGrace} from './offline-policy.js';
-import path from 'node:path';import {mkdir,appendFile,readFile,writeFile,rm,open,stat,readdir,rename} from 'node:fs/promises';import {randomBytes,randomUUID} from 'node:crypto';
-import type {Sql} from '../../../packages/database/index.js';import {decrypt,redact} from '../../../packages/shared/security.js';import {terminalLogin,type RuntimeContext,type ProtocolAdapter,type LoginSnapshot} from '../../../packages/contracts/index.js';
+import path from 'node:path';import {mkdir,appendFile,readFile,writeFile,rm,stat,readdir,rename} from 'node:fs/promises';import {randomUUID} from 'node:crypto';
+import type {Sql} from '../../../packages/database/index.js';import {decrypt,redact} from '../../../packages/shared/security.js';import {terminalLogin,type RuntimeContext,type ProtocolAdapter} from '../../../packages/contracts/index.js';
 
 /** Single serialized heartbeat writer for one Agent process.
  * Overlapping tick writes queue on one chain; every snapshot carries a
@@ -39,6 +39,7 @@ import {ProcessHost} from './process-host.js';import {AstrBotAdapter} from '../.
 export class NodeAgent {
  host:ProcessHost;ai:AstrBotAdapter;shared:SharedAstrBotAdapter;protocols:Record<string,ProtocolAdapter>;busy=false;closed=false;timer?:NodeJS.Timeout;lastHealth=0;
  private releaseLease?:(()=>Promise<void>);
+ private shutdownTask?:Promise<void>;
  private operations=new Map<string,Promise<void>>();
  private healthMembers=new Set<string>();
  private sharedOperation=false;
@@ -86,21 +87,28 @@ export class NodeAgent {
    await this.bilibili.recover();
    this.timer=setInterval(()=>void this.tick().catch(e=>console.error('agent tick:',redact(String(e)))),500);this.timer.unref();await this.tick();this.autonomy.start();}catch(error){if(this.timer)clearInterval(this.timer);await rm(path.join(this.root,'agent.lock'),{force:true});await this.releaseLease?.();this.releaseLease=undefined;throw error}
  }
- async shutdown(){if(this.closed)return;this.closed=true;if(this.timer)clearInterval(this.timer);await this.favorites?.stop();await this.bilibili.stop();await this.autonomy.stop();while(this.busy)await new Promise(r=>setTimeout(r,20));await Promise.allSettled([...this.operations.values(),...(this.healthTask?[this.healthTask]:[])]);let failure:unknown;
+ shutdown(){return this.shutdownTask??=this.shutdownOnce()}
+ private async shutdownOnce(){this.closed=true;if(this.timer)clearInterval(this.timer);let failure:unknown;
+  // All owners must get a chance to settle before children and the lease go.
+  // A failed maintenance stop must not bypass the remaining shutdown path.
+  for(const owner of [this.favorites,this.bilibili,this.autonomy])try{await owner?.stop()}catch(e){failure??=e}
+  while(this.busy)await new Promise(r=>setTimeout(r,20));await Promise.allSettled([...this.operations.values(),...(this.healthTask?[this.healthTask]:[])]);
   try{for(const bot of await this.db.query('SELECT * FROM bots WHERE deleted_at IS NULL')){await this.aiFor(bot).stop(bot.id).catch(e=>{failure??=e});await this.protocols[bot.protocol].stop(bot.id).catch(e=>{failure??=e})}}catch(e){failure??=e}
   finally{try{
    // Database failure must not leave a shared group or QQ child alive. These
    // on-disk records are verified by ProcessHost against PID creation and cwd.
-   const dirs=await readdir(path.join(this.root,'bots')).catch(e=>{if(e.code==='ENOENT')return[];throw e});for(const id of dirs)for(const kind of ['ai','protocol'])await this.host.stop(id,kind).catch(e=>{failure??=e});
-  }finally{try{await rm(path.join(this.root,'agent.lock'),{force:true})}finally{const release=this.releaseLease;this.releaseLease=undefined;await release?.()}}}
+   const dirs=await readdir(path.join(this.root,'bots')).catch(e=>{if(e.code==='ENOENT')return[];throw e});for(const id of dirs)for(const kind of ['ai','protocol'])try{await this.host.stop(id,kind)}catch(e){failure??=e};
+  }catch(e){failure??=e}finally{if(!failure){await rm(path.join(this.root,'agent.lock'),{force:true});await this.releaseLease?.();this.releaseLease=undefined}}}
   if(failure)throw failure;
  }
  async tick(){if(this.busy||this.closed)return;this.busy=true;try{
    this.bilibili.tick();
    this.favorites?.tick();
    const commands=await this.db.query("SELECT c.*,b.runtime_mode FROM commands c JOIN bots b ON b.id=c.bot_id WHERE c.status='pending' ORDER BY c.created_at LIMIT 32");
+   if(this.closed)return;
    for(const command of commands)this.launch(command.bot_id,command.runtime_mode==='shared',()=>this.execute(command));
    const sessions=await this.db.query("SELECT s.*,b.protocol,b.expected_uin,b.tenant_id FROM login_sessions s JOIN bots b ON b.id=s.bot_id WHERE s.state NOT IN ('online','expired','canceled','failed') AND b.deleted_at IS NULL");
+   if(this.closed)return;
    for(const session of sessions)this.launch(session.bot_id,true,()=>this.pollLogin(session));
    if(!this.healthTask&&Date.now()-this.lastHealth>4000){this.lastHealth=Date.now();this.healthTask=this.health().catch(error=>console.error('agent health:',redact(String(error)))).finally(()=>{this.healthTask=undefined})}
  }finally{this.busy=false}}

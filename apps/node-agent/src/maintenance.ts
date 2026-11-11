@@ -12,6 +12,8 @@ import {SharedAstrBotAdapter} from '../../../adapters/astrbot/shared.js';
 import {redact} from '../../../packages/shared/security.js';
 import {FavoriteMaintenance} from './favorite-maintenance.js';
 
+// Shutdown stays with the canonical Agent, which dynamically owns all three
+// maintenance workers in the verified deployment baseline.
 // Old live Agents may predate the bounded operation lanes.
 const controlBusy=(agent:NodeAgent)=>agent.controlIdle?!agent.controlIdle():agent.busy;
 
@@ -43,7 +45,7 @@ export async function installFavoriteRuntime(agent:NodeAgent,release:string){
  if(!/^[a-f0-9]{64}$/.test(release)||agent.closed)throw new Error('Invalid favorite maintenance release');
  const marker=Symbol.for('fishbot.favorite.maintenance'),live=agent as any;
  if(live[marker]?.release===release&&!live.favorites?.closed)return{unchanged:true,pid:process.pid,release};
- const timer=agent.timer,originalTick=agent.tick,originalShutdown=agent.shutdown,previous=live.favorites;
+ const timer=agent.timer,originalTick=agent.tick,previous=live.favorites;
  const existing=live[marker]?.hooks,hooks=existing??{current:previous};
  if(timer)clearInterval(timer);agent.timer=undefined;
  const children=[...agent.host.children].map(([id,child])=>({id,child,pid:child.pid}));
@@ -56,11 +58,10 @@ export async function installFavoriteRuntime(agent:NodeAgent,release:string){
   live.favorites=installed;hooks.current=installed;
   if(!existing){
    agent.tick=async()=>{await originalTick.call(agent);if(!agent.closed)hooks.current.tick()};
-   agent.shutdown=async()=>{await hooks.current.stop();return originalShutdown.call(agent)};
   }
   live[marker]={release,at:Date.now(),hooks};
   return{pid:process.pid,release,preservedChildren:children.map(({id,pid})=>({id,pid}))};
- }catch(error){await installed?.stop();live.favorites=previous;hooks.current=previous;agent.tick=originalTick;agent.shutdown=originalShutdown;if(previous)previous.closed=false;throw error}
+ }catch(error){await installed?.stop();live.favorites=previous;hooks.current=previous;agent.tick=originalTick;if(previous)previous.closed=false;throw error}
  finally{if(timer&&!agent.closed){agent.timer=setInterval(()=>void agent.tick().catch(error=>console.error('agent tick:',redact(String(error)))),500);agent.timer.unref()}}
 }
 
@@ -72,7 +73,7 @@ export async function installAutonomousRuntime(agent:NodeAgent,release:string){
  const timer=agent.timer;if(timer)clearInterval(timer);agent.timer=undefined;
  let installed:AutonomyCoordinator|undefined;
  const prototype=Object.getPrototypeOf(agent);
- const old={start:agent.host.start,apply:agent.ai.applyConfig,attach:agent.shared.attach,health:prototype.health,context:prototype.context,autonomy:agent.autonomy,shutdown:previous?.originalShutdown||agent.shutdown};
+ const old={start:agent.host.start,apply:agent.ai.applyConfig,attach:agent.shared.attach,health:prototype.health,context:prototype.context,autonomy:agent.autonomy};
  const wasAutonomyRunning=!old.autonomy.closed&&Boolean(old.autonomy.timer);
  const children=[...agent.host.children].map(([id,child])=>({id,child,pid:child.pid}));
  try{
@@ -88,13 +89,12 @@ export async function installAutonomousRuntime(agent:NodeAgent,release:string){
   prototype.health=NodeAgent.prototype.health;
   prototype.context=NodeAgent.prototype.context;
   installed=new AutonomyCoordinator(agent.db,runtimeClient(agent.db));agent.autonomy=installed;
-  agent.shutdown=async()=>{await agent.autonomy.stop();return old.shutdown.call(agent)};
   for(const owned of children){if(agent.host.children.get(owned.id)!==owned.child||owned.child.pid!==owned.pid||owned.child.exitCode!==null)throw new Error('A child owner changed during maintenance')}
-  live[marker]={release,originalShutdown:old.shutdown,at:new Date().toISOString()};
+  live[marker]={release,at:new Date().toISOString()};
   installed.start();
   return{pid:process.pid,release,preservedChildren:children.map(({id,pid})=>({id,pid})),coordinator:installed.owner};
  }catch(error){
-  await installed?.stop();agent.host.start=old.start;agent.ai.applyConfig=old.apply;agent.shared.attach=old.attach;prototype.health=old.health;prototype.context=old.context;agent.shutdown=old.shutdown;
+  await installed?.stop();agent.host.start=old.start;agent.ai.applyConfig=old.apply;agent.shared.attach=old.attach;prototype.health=old.health;prototype.context=old.context;
   // stop() has settled the old active Work before replacement. On failure,
   // restore the previous scheduler only if it was running; never replay a Work.
   if(old.autonomy){agent.autonomy=old.autonomy;if(wasAutonomyRunning&&!agent.closed){old.autonomy.closed=false;old.autonomy.start()}}
@@ -112,9 +112,9 @@ export async function installBilibiliRuntime(agent:NodeAgent,release:string){
  const marker=Symbol.for('fishbot.bilibili.maintenance'),live=agent as any;
  if(live[marker]?.release===release&&!live.bilibili?.stopped)return{unchanged:true,pid:process.pid,release};
  const {BilibiliExecutor}=await import('./bilibili/executor.js');
- const timer=agent.timer,originalTick=agent.tick,originalShutdown=agent.shutdown,previous=live.bilibili;
+ const timer=agent.timer,originalTick=agent.tick,previous=live.bilibili;
  // Reuse one mutable owner across releases. Repeated maintenance must not
- // retain every old executor through another tick/shutdown wrapper each time.
+ // retain every old executor through another tick wrapper each time.
  const existingHooks=live[marker]?.hooks;
  const hooks=existingHooks??{current:previous};
  if(timer)clearInterval(timer);agent.timer=undefined;
@@ -130,10 +130,9 @@ export async function installBilibiliRuntime(agent:NodeAgent,release:string){
   hooks.current=installed;
   if(!existingHooks){
    agent.tick=async()=>{await originalTick.call(agent);if(!agent.closed)hooks.current.tick()};
-   agent.shutdown=async()=>{await hooks.current.stop();return originalShutdown.call(agent)};
   }
   for(const owned of children)if(agent.host.children.get(owned.id)!==owned.child||owned.child.pid!==owned.pid||owned.child.exitCode!==null)throw new Error('Runtime owner changed during Bilibili maintenance');
   live[marker]={release,at:Date.now(),hooks};return{pid:process.pid,release,preservedChildren:children.map(({id,pid})=>({id,pid})),autonomousCoordinator:agent.autonomy.owner};
- }catch(error){await installed?.stop();hooks.current=previous;agent.tick=originalTick;agent.shutdown=originalShutdown;live.bilibili=previous;if(previous)previous.stopped=false;throw error}
+ }catch(error){await installed?.stop();hooks.current=previous;agent.tick=originalTick;live.bilibili=previous;if(previous)previous.stopped=false;throw error}
  finally{if(timer&&!agent.closed){agent.timer=setInterval(()=>void agent.tick().catch(error=>console.error('agent tick:',redact(String(error)))),500);agent.timer.unref()}}
 }

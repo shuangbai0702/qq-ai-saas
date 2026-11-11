@@ -1,6 +1,6 @@
 import {withFavoriteIndex} from '../../../packages/shared/qq-favorite-index.js';
-import type {FastifyInstance} from 'fastify';import {readFile,writeFile,mkdir,rename,rm,readdir,lstat} from 'node:fs/promises';import path from 'node:path';import {createHash,randomUUID} from 'node:crypto';import {execFile} from 'node:child_process';import {z} from 'zod';
-import type {FavoriteAnnotation} from './qq-favorite-semantics.js';
+import type {FastifyInstance} from 'fastify';import {readFile,writeFile,mkdir,rename,rm,readdir,lstat} from 'node:fs/promises';import path from 'node:path';import {createHash,randomUUID} from 'node:crypto';import {z} from 'zod';
+import type {FavoriteAnnotation} from '../../../packages/shared/qq-favorite-semantics.js';
 type Bot={id:string;protocol:string;qq_uin?:string;generation:number;desired_state:string;health?:any};
 type Item={id:string;file:string;mime:string;meaning:string;avoid:string;enabled:boolean;animated:boolean;manual?:boolean;semantic?:FavoriteAnnotation;semanticStatus?:'ready'|'uncertain'|'pending'|'failed'|'raw_text';rawText?:string;rawSource?:string;semanticAttempts?:number;semanticFailures?:number;semanticRetryAt?:number;contentHash?:string;lastVisionError?:string;semanticWaitReason?:string;semanticWaitMs?:number;queuedAt?:number};
 type Index={account:string;enabled:boolean;syncedAt?:string;items:Item[];failed?:number;limitReached?:boolean};

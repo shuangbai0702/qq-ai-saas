@@ -10,12 +10,12 @@ import {getBotQuota} from './bot-quota.js';
 import {probeModel} from '../../../packages/shared/model-probe.js';
 import {registerSocialMedia} from './social-media.js';
 import {registerQQFavorites} from './qq-favorites.js';
-import {createFavoriteCaptioner} from './qq-favorite-semantics.js';
+import {createFavoriteCaptioner} from '../../../packages/shared/qq-favorite-semantics.js';
 import {registerInvitations} from './invitations.js';
 import {registerModelCatalog} from './model-catalog.js';
 import Fastify from 'fastify';import cookie from '@fastify/cookie';import rateLimit from '@fastify/rate-limit';import serveStatic from '@fastify/static';import {z} from 'zod';
 import {randomBytes,randomUUID} from 'node:crypto';import path from 'node:path';import os from 'node:os';import {mkdir,readFile,access} from 'node:fs/promises';import QRCode from 'qrcode';
-import {openDatabase,configuredDatabaseUrl,type Sql} from '../../../packages/database/index.js';import {hashPassword,verifyPassword,digest,loadKey,encrypt,redact} from '../../../packages/shared/security.js';import {defaultConfig,BotConfigSchema,ProtocolSchema,personas,terminalLogin,LoginStates} from '../../../packages/contracts/index.js';import {NodeAgent} from '../../node-agent/src/agent.js';import {MockProtocolAdapter} from '../../../adapters/mock/index.js';
+import {openDatabase,configuredDatabaseUrl,type Sql} from '../../../packages/database/index.js';import {hashPassword,verifyPassword,digest,loadKey,encrypt,redact} from '../../../packages/shared/security.js';import {defaultConfig,BotConfigSchema,ProtocolSchema,personas,terminalLogin} from '../../../packages/contracts/index.js';import {NodeAgent} from '../../node-agent/src/agent.js';import {MockProtocolAdapter} from '../../../adapters/mock/index.js';
 declare module 'fastify'{interface FastifyRequest{user?:{id:string;email:string;name:string;is_admin:boolean;tenant_id:string}}}
 const modelKeyInput=z.string().trim().max(4096).regex(/^[^\s\x00-\x1f\x7f]*$/,'Key 不能包含空格或控制字符').optional();
 export async function createApp(options:{root?:string;databaseUrl?:string;agent?:boolean;logger?:boolean}={}){

@@ -1,5 +1,5 @@
 import {AdminNav} from './admin-nav';
-import React,{useState,useEffect,useRef,useCallback} from 'react';import {Plus,Copy,Shield,Loader2} from 'lucide-react';import {api} from './api';
+import {useState,useEffect,useRef,useCallback} from 'react';import {Plus,Copy,Shield,Loader2} from 'lucide-react';import {api} from './api';
 const statuses:Record<string,string>={active:'可用',used:'已用完',expired:'已过期',revoked:'已撤销'};
 export function InvitationAdmin({onError}:{onError:(s:string)=>void}){
  const [items,setItems]=useState<any[]>([]),[note,setNote]=useState(''),[days,setDays]=useState(7),[uses,setUses]=useState(1),[botLimit,setBotLimit]=useState(1),[busy,setBusy]=useState(false),[created,setCreated]=useState(''),[feedback,setFeedback]=useState('');const mounted=useRef(false),sequence=useRef(0);

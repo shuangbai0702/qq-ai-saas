@@ -4,7 +4,7 @@ import {execFileSync} from 'node:child_process';
 import {mkdtemp,readFile,mkdir,writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import Fastify from 'fastify';
-import {createFavoriteCaptioner,parseFavoriteAnnotation} from '../apps/control-api/src/qq-favorite-semantics.js';
+import {createFavoriteCaptioner,parseFavoriteAnnotation} from '../packages/shared/qq-favorite-semantics.js';
 import {registerQQFavorites} from '../apps/control-api/src/qq-favorites.js';
 import {encrypt} from '../packages/shared/security.js';
 
