@@ -13,9 +13,10 @@ test('real shared AstrBot sees unmentioned group atmosphere without extra infere
   const config={...defaultConfig,baseUrl:`http://127.0.0.1:${(server.address() as any).port}/v1`,model:'ambient-fixture',groups:['777777','888888'],behavior:{...defaultConfig.behavior,followupSeconds:0,randomReplyProbability:0,burstDebounceMs:0,socialAwareness:true,styleLearning:false}};
   const r=await current.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'群聊氛围',runtimeMode:'shared',protocol:'mock',config,apiKey:'synthetic-ambient-key'}});assert.equal(r.statusCode,201,r.body);const id=r.json().id;
   await current.app.inject({method:'POST',url:`/v1/bots/${id}/actions`,cookies,payload:{action:'start',idempotencyKey:'ambient-start'}});
-  await until(async()=>{const[b]=await current.db.query('SELECT * FROM bots WHERE id=$1',[id]);return !!b.health?.ai?.ready},'shared ready');
+  await until(async()=>{const[b]=await current.db.query('SELECT * FROM bots WHERE id=$1',[id]);return !!b.health?.protocol?.ready},'protocol ready');
   const[b]=await current.db.query('SELECT * FROM bots WHERE id=$1',[id]);const ctx=await current.agent.context(b);const mock=current.agent.protocols.mock as MockProtocolAdapter;
   await mock.call(ctx,'/transition',{state:'online',uin:'90003331'});await until(async()=>!!(await mock.call(ctx,'/state') as any).connected,'OneBot connected');
+  await until(async()=>{const[b]=await current.db.query('SELECT * FROM bots WHERE id=$1',[id]);return !!b.health?.ai?.ready},'shared ready');
   const activity=async()=>readFile(path.join(ctx.root,'memory-activity.json'),'utf8').catch(()=>'missing');const beforeActivity=await activity();
   await mock.call(ctx,'/message',{text:'OTHER_GROUP_ATMOSPHERE',group:'888888',sender:'12345670',mention:false});
   await mock.call(ctx,'/message',{text:'UNMENTIONED_ATMOSPHERE_A',group:'777777',sender:'12345671',mention:false});

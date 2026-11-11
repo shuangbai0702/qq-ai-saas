@@ -44,9 +44,10 @@ test('native group preflight keeps, replaces and drops delayed drafts with true 
   const config={...defaultConfig,baseUrl:`http://127.0.0.1:${(model.address()as any).port}/v1`,model:'freshness-fixture',proactive:false,behavior:{...defaultConfig.behavior!,groupParticipationEnabled:false,followupSeconds:0,randomReplyProbability:0,quietStart:0,quietEnd:0,ownerContactEnabled:false,typingSimulation:false,typoEnabled:false,splitMessages:true,sendIntervalMs:1200,burstDebounceMs:0,styleLearning:false,memorySummary:false,memeEnabled:false,fatigueEnabled:false}};
   const created=await current.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'群发送复核验收',protocol:'mock',runtimeMode:'shared',expectedUin:'90008773',apiKey:'freshness-fixture-key',config}});assert.equal(created.statusCode,201,created.body);const id=created.json().id;
   await current.app.inject({method:'POST',url:`/v1/bots/${id}/actions`,cookies,payload:{action:'start',idempotencyKey:'start'}});
-  await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.ai?.ready,'AI ready');
+  await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.protocol?.ready,'protocol ready');
   const ctx=await current.agent.context((await current.db.query('SELECT * FROM bots WHERE id=$1',[id]))[0]),mock=current.agent.protocols.mock as MockProtocolAdapter;
   await mock.call(ctx,'/transition',{state:'online',uin:'90008773'});await until(async()=>!!(await mock.call(ctx,'/state')as any).connected,'QQ connected');
+  await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.ai?.ready,'AI ready');
   const sends=async()=>(await mock.call(ctx,'/messages')as any[]).filter(x=>x.action==='send_group_msg');
   const state=async(sql:string)=>JSON.parse((await promisify(execFile)(python,['-B','-c','import sqlite3,sys,json;d=sqlite3.connect(sys.argv[1]);print(json.dumps(d.execute(sys.argv[2]).fetchall()))',path.join(root,'bots',id,'behavior.sqlite'),sql],{windowsHide:true})).stdout);
   for(const [index,label] of ['REPLACE','KEEP','DROP','FALLBACK'].entries()){

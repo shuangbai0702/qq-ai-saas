@@ -1,5 +1,7 @@
 """Backup failure boundaries and retention; real restore is checked on Linux."""
 import importlib.util
+import hashlib
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -16,15 +18,23 @@ class BackupTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for stamp in ['001', '002', '003']:
-                for suffix in ['.dump', '.json']:
-                    (root / ('fishbot-pg-' + stamp + suffix)).write_text('backup')
+                stamp = '20261110T041500' + stamp.zfill(6) + 'Z'
+                (root / ('fishbot-pg-' + stamp + '.dump')).write_bytes(b'backup')
+                (root / ('fishbot-pg-' + stamp + '.json')).write_text(json.dumps(dict(format=backup.FORMAT, createdAt=stamp, bytes=6, sha256=hashlib.sha256(b'backup').hexdigest())))
             (root / 'fishbot-pg-000.dump').write_text('unpaired')
             (root / 'manual.dump').write_text('manual')
+            (root / 'fishbot-pg-20261109T041500000000Z.dump').write_text('foreign')
+            (root / 'fishbot-pg-20261109T041500000000Z.json').write_text('{}')
+            legacy='20261108T041500000000Z'
+            (root / ('fishbot-pg-'+legacy+'.dump')).write_bytes(b'backup')
+            (root / ('fishbot-pg-'+legacy+'.json')).write_text(json.dumps(dict(createdAt=legacy,database='live',bytes=6,sha256=hashlib.sha256(b'backup').hexdigest(),restoreCheck=None,scope=backup.SCOPE)))
             backup.prune(root, 2)
-            self.assertFalse((root / 'fishbot-pg-001.dump').exists())
-            self.assertTrue((root / 'fishbot-pg-002.dump').exists())
+            self.assertFalse((root / 'fishbot-pg-20261110T041500000001Z.dump').exists())
+            self.assertTrue((root / 'fishbot-pg-20261110T041500000002Z.dump').exists())
             self.assertTrue((root / 'fishbot-pg-000.dump').exists())
             self.assertTrue((root / 'manual.dump').exists())
+            self.assertTrue((root / 'fishbot-pg-20261109T041500000000Z.dump').exists())
+            self.assertFalse((root / ('fishbot-pg-'+legacy+'.dump')).exists(),'valid previous Docker-script metadata remains covered by retention')
 
     def test_failed_restore_drops_only_new_verification_database(self):
         calls = []
@@ -42,7 +52,6 @@ class BackupTest(unittest.TestCase):
         self.assertTrue(created.startswith('fishbot_backup_check_'))
         self.assertEqual(calls[-1], ['docker', 'exec', 'pg', 'dropdb', '-U', 'owner', created])
 
-    @unittest.skipUnless(__import__('os').name == 'posix', 'Linux host flock required')
     def test_failed_dump_does_not_publish_or_prune(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

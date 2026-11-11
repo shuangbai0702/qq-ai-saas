@@ -1,6 +1,6 @@
-/** Bounded media primitives. Deliberately not exposed to Agent tools until the
- * Linux delegated cgroup and durable continuation gates are satisfied. */
-import {spawn,execFile} from 'node:child_process';
+/** Bounded media primitives with common Guard gates and owned OS process trees. */
+import {spawn} from 'node:child_process';
+import os from 'node:os';
 import {createWriteStream} from 'node:fs';
 import {mkdtemp,mkdir,rm,stat,readFile,access,rmdir} from 'node:fs/promises';
 import {Transform,Readable} from 'node:stream';
@@ -35,12 +35,13 @@ export async function streamToFile(stream:Readable,file:string,max:number,signal
  let bytes=0;try{await pipeline(stream,new Transform({transform(chunk,_e,cb){bytes+=chunk.length;if(bytes>max)cb(new BiliError('media_too_large','下载超过额度'));else cb(null,chunk)}}),createWriteStream(file,{flags:'wx',mode:0o600}),{signal});return bytes}catch(e){await rm(file,{force:true});throw e}
 }
 export async function mediaAdmission(guardRoot:string,cgroupRoot:string){
- if(process.platform!=='linux')return;
- const heartbeat=await stat(path.join(guardRoot,'guard-heartbeat'));await access(path.join(guardRoot,'armed'));
- if(Date.now()-heartbeat.mtimeMs>10000)throw new BiliError('guard_unavailable','内存Guard心跳过期');
+ if(!['linux','win32'].includes(process.platform))throw new BiliError('media_platform_unsupported','媒体任务不支持当前平台');
+ let heartbeat;try{heartbeat=await stat(path.join(guardRoot,'guard-heartbeat'));await access(path.join(guardRoot,'armed'))}catch{throw new BiliError('guard_unavailable','内存Guard尚未就绪')}
+ if(!heartbeat.isFile()||Date.now()-heartbeat.mtimeMs>10000||heartbeat.mtimeMs>Date.now()+5000)throw new BiliError('guard_unavailable','内存Guard心跳过期');
  try{await access(path.join(guardRoot,'disabled'));throw new BiliError('guard_disabled','内存Guard已禁用')}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e}
- const info=await readFile('/proc/meminfo','utf8'),available=Number(/^MemAvailable:\s+(\d+)/m.exec(info)?.[1]||0)*1024;
+ const available=process.platform==='win32'?os.freemem():Number(/^MemAvailable:\s+(\d+)/m.exec(await readFile('/proc/meminfo','utf8'))?.[1]||0)*1024;
  if(available<576*1024*1024)throw new BiliError('resource_wait','可用内存不足，媒体任务暂缓');
+ if(process.platform!=='linux')return;
  if(!path.isAbsolute(cgroupRoot)||cgroupRoot==='/sys/fs/cgroup')throw new BiliError('media_cgroup_required','必须配置专属媒体cgroup委派目录');
  await access(path.join(cgroupRoot,'cgroup.procs'),2);
 }
@@ -55,11 +56,13 @@ export async function managedProcess(executable:string,args:string[],options:{cw
   // ID, fail before spawn and never enter its cleanup/kill path.
   await mkdir(group);ownedGroup=group;
  }
- const command=process.platform==='linux'?process.execPath:executable;
- const argv=process.platform==='linux'?[process.env.FISHBOT_MEDIA_LAUNCHER||path.resolve('scripts/media-launcher.mjs'),options.cgroupRoot!,options.jobId!,executable,...args]:args;
- const signal=AbortSignal.any([options.signal,AbortSignal.timeout(options.timeoutMs)]),child=spawn(command,argv,{cwd:options.cwd,detached:process.platform==='linux',windowsHide:true,stdio:['ignore','pipe','pipe'],env:{PATH:process.env.PATH,SystemRoot:process.env.SystemRoot}});
+ if(!['linux','win32'].includes(process.platform))throw new BiliError('media_platform_unsupported','媒体任务不支持当前平台');
+ const command=process.platform==='linux'?process.execPath:path.resolve(process.env.ASTRBOT_PYTHON||'references/astrbot/.venv/Scripts/python.exe');
+ const argv=process.platform==='linux'?[process.env.FISHBOT_MEDIA_LAUNCHER||path.resolve('scripts/media-launcher.mjs'),options.cgroupRoot!,options.jobId!,executable,...args]:['-B',path.resolve('scripts/media-windows-job.py'),path.resolve(executable),...args];
+ const signal=AbortSignal.any([options.signal,AbortSignal.timeout(options.timeoutMs)]),child=spawn(command,argv,{cwd:options.cwd,detached:process.platform==='linux',windowsHide:true,stdio:['pipe','pipe','pipe'],env:{PATH:process.env.PATH,SystemRoot:process.env.SystemRoot,PYTHONIOENCODING:'utf-8'}});
+ child.stdin.on('error',()=>{});
  let output='',errors='',closed=false,overflow=false,killer:NodeJS.Timeout|undefined;
- const kill=()=>{if(closed||!child.pid)return;if(process.platform==='win32')execFile('taskkill',['/PID',String(child.pid),'/T','/F'],{windowsHide:true},error=>{if(error&&!closed)child.kill('SIGKILL')});else{try{process.kill(-child.pid,'SIGTERM')}catch{}}killer??=setTimeout(()=>{if(!closed&&child.pid)try{if(process.platform==='win32')child.kill('SIGKILL');else process.kill(-child.pid,'SIGKILL')}catch{}},2000);killer.unref()};
+ const kill=()=>{if(closed||!child.pid)return;if(process.platform==='win32')child.stdin.end();else{try{process.kill(-child.pid,'SIGTERM')}catch{}}killer??=setTimeout(()=>{if(!closed&&child.pid)try{if(process.platform==='win32')child.kill('SIGKILL');else process.kill(-child.pid,'SIGKILL')}catch{}},2000);killer.unref()};
  const max=options.maxOutput??65536;
  child.stdout.on('data',chunk=>{if(Buffer.byteLength(output)+chunk.length>max){overflow=true;kill();return}output+=chunk.toString('utf8')});
  child.stderr.on('data',chunk=>{if(errors.length<4096)errors+=chunk.toString('utf8').slice(0,4096-errors.length)});

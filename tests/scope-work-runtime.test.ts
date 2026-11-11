@@ -79,10 +79,11 @@ test('real SDK keeps one active Work per Scope, absorbs bursts and hands off onl
    "import sys,json;sys.path.insert(0,'adapters/astrbot');from behavior import BehaviorStore;from shared_context import activate_authorized;s=BehaviorStore(sys.argv[1]);activate_authorized(s.db,json.loads(sys.argv[2]),{},'fixture-scope-work-shared','a'*40);s.close()",
    path.join(root,'bots',id,'behavior.sqlite'),JSON.stringify(config)],{windowsHide:true});
   await current.app.inject({method:'POST',url:`/v1/bots/${id}/actions`,cookies,payload:{action:'start',idempotencyKey:'start'}});
-  await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.ai?.ready,'AI ready');
+  await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.protocol?.ready,'protocol ready');
   const ctx=await current.agent.context((await current.db.query('SELECT * FROM bots WHERE id=$1',[id]))[0]),mock=current.agent.protocols.mock as MockProtocolAdapter;
   await mock.call(ctx,'/transition',{state:'online',uin:'90008874'});
   await until(async()=>!!(await mock.call(ctx,'/state')as any).connected,'QQ connected');
+  await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.ai?.ready,'AI ready');
   const state=async(sql:string)=>JSON.parse((await promisify(execFile)(process.env.FISHBOT_PYTHON||'python',['-B','-c',
    'import sqlite3,sys,json;d=sqlite3.connect(sys.argv[1]);print(json.dumps(d.execute(sys.argv[2]).fetchall()))',path.join(root,'bots',id,'behavior.sqlite'),sql],{windowsHide:true})).stdout);
   assert.deepEqual(await state("SELECT state FROM fishbot_shared_context WHERE id=1"),[['active']]);

@@ -29,9 +29,10 @@ test('native SDK: multiple speakers, semantic silence, bounded calls and per-bot
   const create=async(name:string,uin:string)=>{
    const r=await current.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name,protocol:'mock',runtimeMode:'shared',expectedUin:uin,apiKey:'natural-runtime-key',config}});assert.equal(r.statusCode,201,r.body);const id=r.json().id;
    await current.app.inject({method:'POST',url:`/v1/bots/${id}/actions`,cookies,payload:{action:'start',idempotencyKey:'start'}});
-   await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.ai?.ready,'AI ready');
+   await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.protocol?.ready,'protocol ready');
    const ctx=await current.agent.context((await current.db.query('SELECT * FROM bots WHERE id=$1',[id]))[0]);const mock=current.agent.protocols.mock as MockProtocolAdapter;
    await mock.call(ctx,'/transition',{state:'online',uin});await until(async()=>!!(await mock.call(ctx,'/state')as any).connected,'QQ connected');
+   await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.ai?.ready,'AI ready');
    return {id,ctx,mock,actions:async()=>(await mock.call(ctx,'/messages')as any[]).filter(x=>x.action==='send_group_msg')};
   };
   const a=await create('自然甲','90008881');
