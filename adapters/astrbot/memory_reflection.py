@@ -918,7 +918,7 @@ class Reflection:
         if configured!=DEFAULT_SUMMARY_ROUNDS:
             metrics['summaryRoundsIncompatible']=metrics.get('summaryRoundsIncompatible',0)+1
         insight_enabled=self.memory is not None and cfg.get('naturalConversation',True)
-        now=time.time();scope=None;job=None;rows=[];big_rows=[];summary_from=None;merge_scope=None;null_batch=None
+        now=time.time();scope=None;job=None;rows=[];big_rows=[];summary_from=None;merge_scope=None
         # Mandatory rollup runs before the next ordinary reflection, one
         # audience-safe group at a time instead of across every scope.
         retry=self.db.execute("SELECT next_at FROM memory_reflection_retry WHERE scope='self'").fetchone()
@@ -931,15 +931,10 @@ class Reflection:
             for (candidate,) in candidates:
                 if _manual is not None and (candidate!=_manual['scope'] or _manual['summary_done']):continue
                 progress=self.db.execute('SELECT summary_watermark,insight_watermark FROM memory_reflection_progress WHERE scope=?',(candidate,)).fetchone() or (0,0)
-                null_batch=None
-                if null_batch:
-                    scope=candidate;job='null_hold_recovery';break
-                # Retry held evidence alongside 35 NEW rounds. Re-reading an
-                # old round cannot earn another checkpoint round.
-                held=[]
+                # Only new completed rounds earn the next checkpoint.
                 batch=self.db.execute('SELECT id,subject,event,question,answer,at FROM memory_rounds WHERE scope=? AND id>? ORDER BY id LIMIT ?',(candidate,progress[0],summary_rounds)).fetchall()
                 if len(batch)>=summary_rounds or (batch and _manual is not None and _manual['allow_partial']):
-                    scope=candidate;job='summary';rows=held+batch;summary_from=progress[0];break
+                    scope=candidate;job='summary';rows=batch;summary_from=progress[0];break
         if not scope:
             # Persist lost-state discovery even when no new batch is due;
             # leave no open write transaction for the next foreground request.
@@ -958,12 +953,6 @@ class Reflection:
                 try:
                     previous_products=[];previous_dependency=None;legacy_product_ids=[];discarded=[];discard_stamp=None
                     if self.closed or not is_current() or self.epoch()!=epoch:return {'ok':False,'reason':'stale_configuration'}
-                    if job=='null_hold_recovery':
-                        recovered=await self.recover_null_hold_batch(scope,null_batch,provider,is_current,metrics,epoch)
-                        if not recovered:return {'ok':False,'reason':'existing_batch_not_committed'}
-                        adopted('hold_recovery_committed')
-                        if _manual is None:asyncio.get_running_loop().call_soon(self.retry)
-                        return {'ok':True,'reason':'existing_batch_repaired','checkpointId':null_batch[0][0]}
                     if job=='big':
                         prompt={'source_scope':'bot_shared_background','summaries':[{'id':r[0],'text':r[1],'source_scopes':[x[0] for x in self.db.execute('SELECT scope FROM memory_summary_origins WHERE summary_id=?',(r[0],))] or [r[4]],'level':r[5]} for r in big_rows]}
                         # The merge model must see the structured protected evidence,

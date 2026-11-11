@@ -41,6 +41,12 @@ async def main():
             platform.handle_msg=gated
     from behavior import install_runtime
     behavior=install_runtime(core,{'qq':{'root':str(root.parent),'tenantId':manifest.get('tenantId'),'botId':manifest.get('botId',root.parent.name),'config':manifest.get('config',{}),'generation':manifest['generation'],'revision':manifest['revision'],'systemChangePermitId':manifest.get('systemChangePermitId'),'expectedUin':manifest.get('expectedUin','')}})
+    from native_ingress import bind as bind_ingress
+    for platform in core.platform_manager.get_insts():
+        if hasattr(platform,'convert_message'):
+            bind_ingress(platform,lambda raw:behavior['acquire_raw_ingress']('qq',raw),
+                lambda raw:(not manifest.get('expectedUin') or str(raw.get('self_id'))==str(manifest['expectedUin']))
+                and (not allowed or not raw.get('group_id') or str(raw['group_id']) in allowed))
     stop=asyncio.Event()
     async def health(request):
         if request.headers.get('Authorization')!='Bearer '+manifest['token']:raise web.HTTPUnauthorized()

@@ -1,3 +1,4 @@
+import {lockExternalCycle,checkExternalCapacity,settleCycleExternal} from './external-action-budget.js';
 import {randomUUID} from 'node:crypto';
 import type {Sql} from './index.js';
 import {digest} from '../shared/security.js';
@@ -107,10 +108,19 @@ export class ToolEffects {
   // State transitions belong to the ledger. An expired owner cannot dispatch
   // merely because recovery has not reclaimed its row yet.
   const [fresh]=await tx.query('SELECT * FROM tool_effects WHERE id=$1 AND lease_owner=$2 FOR UPDATE',[job.id,job.lease_owner]);
-  if(!fresh||fresh.state!=='claimed')return false;
+  if(!fresh||fresh.state!=='claimed'||+new Date(fresh.lease_until)<=Date.now())return false;
   await this.validate(fresh,undefined,tx);
   if(signal.aborted)return false;
-  const rows=await tx.query("UPDATE tool_effects SET state='dispatching',updated_at=now() WHERE id=$1 AND lease_owner=$2 AND state='claimed' AND lease_until>clock_timestamp() RETURNING id",[job.id,job.lease_owner]);
+  const reserve=fresh.authority==='autonomous'&&biliOperations[fresh.operation as keyof typeof biliOperations].write;
+  if(reserve){
+   const cycle=await lockExternalCycle(tx,{id:fresh.bot_id,tenant_id:fresh.tenant_id},fresh.work_id,fresh.mode_epoch);
+   if(!fresh.budget_reserved)await checkExternalCapacity(tx,cycle);
+  }
+  if(signal.aborted)return false;
+  // Reservation and dispatch transition commit together. An expired lease
+  // cannot leave behind a reservation for a proven unstarted platform call.
+  const rows=await tx.query("UPDATE tool_effects SET state='dispatching',budget_reserved=budget_reserved OR $3,updated_at=now() WHERE id=$1 AND lease_owner=$2 AND state='claimed' AND lease_until>clock_timestamp() RETURNING id",[job.id,job.lease_owner,reserve]);
+  if(signal.aborted&&rows.length)throw toolConflict('工具派发已取消'); // rolls back before returning any dispatch permit
   return rows.length>0;
  })}
  async renew(job:any){
@@ -121,7 +131,10 @@ export class ToolEffects {
   if(!rows.length)throw toolConflict('工具租约已失效');
  }
  async finish(job:any,result:ToolResult){return this.db.transaction(async tx=>{
-  const rows=await tx.query("UPDATE tool_effects SET state=$3,result=$4,completion_state=CASE WHEN operation='analyze' AND origin_scope<>'' THEN 'pending' ELSE completion_state END,lease_until=NULL,updated_at=now() WHERE id=$1 AND lease_owner=$2 AND state IN ('claimed','dispatching') RETURNING id",[job.id,job.lease_owner,result.receipt.status==='unknown'?'unknown':result.execution==='canceled'?'canceled':'finished',JSON.stringify(result)]);
+  const [original]=await tx.query('SELECT * FROM tool_effects WHERE id=$1 FOR UPDATE',[job.id]);
+  const cycle=original?.budget_reserved?await lockExternalCycle(tx,{id:job.bot_id,tenant_id:job.tenant_id},job.work_id,job.mode_epoch,false):null;
+  const rows=await tx.query("UPDATE tool_effects SET state=$3,result=$4,completion_state=CASE WHEN operation='analyze' AND origin_scope<>'' THEN 'pending' ELSE completion_state END,lease_until=NULL,updated_at=now() WHERE id=$1 AND lease_owner=$2 AND state IN ('claimed','dispatching','unknown') RETURNING id",[job.id,job.lease_owner,result.receipt.status==='unknown'?'unknown':result.execution==='canceled'?'canceled':'finished',JSON.stringify(result)]);
+  if(cycle)await settleCycleExternal(tx,cycle);
   if(rows.length&&job.authority==='autonomous'&&job.operation==='analyze'){
    // Wake the existing outer owner, never introduce a Bilibili scheduler.
    await tx.query("INSERT INTO autonomy_wakes(bot_id,tenant_id,dedupe_key,epoch,due_at,reason) SELECT bot_id,tenant_id,$3,epoch,now(),'tool-completed' FROM autonomy_settings WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$4 AND config->>'mode'='active' ON CONFLICT(bot_id,dedupe_key) DO NOTHING",[job.bot_id,job.tenant_id,'bilibili:'+job.id,job.mode_epoch]);

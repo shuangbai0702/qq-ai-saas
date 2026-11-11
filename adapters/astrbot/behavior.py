@@ -589,14 +589,34 @@ def install_runtime(core,settings):
         logical=work.event_id+':message:'+target if action in ('send_private_msg','send_group_msg') else work.event_id+':'+str(len(effects))
         proposed=effects+[{'id':logical,'logicalActionId':logical,'status':'dispatching'}]
         if bot_pipeline.effect_units(proposed)>identity['budget'].get('externalActions',0):raise WorkBudgetExceeded('external_action_budget')
-        # No await between the final epoch/permit check and the network call.
-        sequence=st.pipeline.internal_effect(work,action,target)
+        import external_action_budget
+        await external_action_budget.update(s,identity,logical,'reserve')
+        # Reservation may outlive cancellation or an IPC timeout. Only this
+        # proven pre-dispatch branch can release it; a network await cannot.
+        try:
+            if not brain.effect_current(event) or stores.get(id) is not st:
+                raise asyncio.CancelledError('internal effect revoked after reservation')
+            if action in ('send_private_msg','send_group_msg'):
+                group_freshness.guard_dispatch(event,st,lambda:delivery_current(event),action,params)
+            sequence=st.pipeline.internal_effect(work,action,target)
+        except BaseException:
+            await external_action_budget.settle(s,identity,logical,'released')
+            raise
         if action=='add_custom_face':
             event.set_extra('_hosted_favorite_verifier',lambda proof:st.pipeline.internal_receipt(work,sequence,proof) if stores.get(id) is st else None)
             st.db.execute('UPDATE qq_favorite_writes SET action=?,sequence=? WHERE account=? AND md5=?',(work.event_id,sequence,str(event.get_self_id()),event.get_extra('_hosted_favorite_md5')));st.db.commit()
-        result=await action_original(self,action,**params)
-        if action=='add_custom_face':return result # confirmed only by QQ favorite detail readback
-        receipt=note_message_receipt(event,result,action,params) if action in ('send_private_msg','send_group_msg') else 'onebot_ack'
+        try:result=await action_original(self,action,**params)
+        except BaseException:
+            await external_action_budget.settle(s,identity,logical,'unknown')
+            raise
+        if action=='add_custom_face':
+            await external_action_budget.settle(s,identity,logical,'unknown')
+            return result # confirmed only by QQ favorite detail readback
+        try:receipt=note_message_receipt(event,result,action,params) if action in ('send_private_msg','send_group_msg') else 'onebot_ack'
+        except BaseException:
+            await external_action_budget.settle(s,identity,logical,'unknown')
+            raise
+        await external_action_budget.settle(s,identity,logical,'confirmed')
         # Settle the already-dispatched effect in its original store while
         # unload drains it. A new settings lease revokes future sends, not an
         # authoritative receipt for an effect that already happened.
@@ -758,9 +778,7 @@ def install_runtime(core,settings):
         if not internal and not deferred and not continuation:
             import quote_reply
             quote_reply.observe(st.db,event,s,scope)
-        mentioned=any(isinstance(c,At) and str(c.qq)==str(event.get_self_id()) for c in event.get_messages())
-        quoted_bot=any(isinstance(c,Reply) and str(c.sender_id)==str(event.get_self_id()) for c in event.get_messages())
-        mentioned=mentioned or quoted_bot
+        mentioned=bot_pipeline.addressed_to_self(event) or bool(event.get_extra('_hosted_recovered_addressed_self',False))
         other_target=any(isinstance(c,At) and str(c.qq)!=str(event.get_self_id()) for c in event.get_messages()) and not mentioned
         incoming=''.join(c.text for c in event.get_messages() if isinstance(c,Plain))
         if not internal and not deferred and not continuation and (group or subject!=str(event.get_self_id())):
@@ -1689,7 +1707,12 @@ def install_runtime(core,settings):
                                          unprojected=unprojected_for_journal,coverage_view=native_view,
                                          system_transition_authorized=system_transition_authorized)
                 if prepared:prepared.validation_dependency=dependency
+                if prepared:
+                    from readonly_journal import capacity_evidence
+                    metrics.setdefault(image_event.get_platform_id(),{})['contextCapacity']={**capacity_evidence(prepared.usage),'candidate':True}
             except BaseException as error:
+                if getattr(error,'capacity',None):
+                    metrics.setdefault(image_event.get_platform_id(),{})['contextCapacity']={**error.capacity,'candidateRejected':True}
                 if foreground and journal.last is None:owned.model_journals.pop(key,None)
                 from model_cache import record_diagnostic
                 evidence=model_json(owned.reflection and journal.refusal_evidence() or {})[:1024]
@@ -2147,7 +2170,16 @@ def install_runtime(core,settings):
             accepted=bool(st.db.execute("UPDATE pipeline_work_inputs SET status='queued',retry_at=? WHERE scope=? AND event=? AND status='pending'",(time.time()+30,scope,identifier)).rowcount)
         care.stamp(st.root)
         return accepted
-    runtime={'manage':manage,'stores':stores,'metrics':metrics,'release':release,'close':close,'autonomous':brain.handle,'drain':brain.drain,'activity':lambda:care.status(core),'settle_work_round':settle_work_round,'retain_ingress':retain_ingress}
+    def acquire_raw_ingress(id,raw):
+        from native_ingress import RawInput
+        event=RawInput(id,raw)
+        if not retain_ingress(id,event):return None
+        st=stores[id];st.ingress+=1;care.stamp(st.root)
+        def completed():
+            st.ingress-=1
+            care.stamp(st.root)
+        return completed
+    runtime={'manage':manage,'stores':stores,'metrics':metrics,'release':release,'close':close,'autonomous':brain.handle,'drain':brain.drain,'activity':lambda:care.status(core),'settle_work_round':settle_work_round,'retain_ingress':retain_ingress,'acquire_raw_ingress':acquire_raw_ingress}
     from model_cache import loaded_build
     runtime['build']=loaded_build()
     print('FISHBOT_RUNTIME_BUILD '+model_json(runtime['build']),flush=True)

@@ -1,3 +1,4 @@
+import {qqExternalBudget} from '../packages/database/external-action-budget.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,rm} from 'node:fs/promises';
@@ -154,7 +155,7 @@ test('four receipt-bearing bubbles consume one versioned logical chat action and
  const db=await fixture();const goalId='2c9a1bd2-2a4b-4a35-9f7b-1c2d3e4f5a6c';
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
-  if(op==='execute')return{status:'completed',actionUnitVersion:2,summary:'four bubbles actually confirmed by fixture protocol',effects:Array.from({length:4},(_,n)=>({id:body.work.id+':'+n,logicalActionId:body.work.id+':message:private:12345678',method:'send_private_msg',target:'private:12345678',status:'confirmed',receipt:'real-fixture-'+n})),evidence:[],unfinished:[],usage};
+  if(op==='execute'){await qqExternalBudget(db,{id:body.work.botId,tenant_id:body.work.tenantId},{workId:body.work.id,epoch:body.work.epoch,logicalActionId:body.work.id+':message:private:12345678',phase:'reserve'});return{status:'completed',actionUnitVersion:2,summary:'four bubbles actually confirmed by fixture protocol',effects:Array.from({length:4},(_,n)=>({id:body.work.id+':'+n,logicalActionId:body.work.id+':message:private:12345678',method:'send_private_msg',target:'private:12345678',status:'confirmed',receipt:'real-fixture-'+n})),evidence:[],unfinished:[],usage};}
   throw Error(op);
  });
  try{
@@ -319,7 +320,7 @@ test('an uncertain effect is recorded once and never re-dispatched by a later wa
  const db=await fixture();const goalId='8c9a1bd2-2a4b-4a35-9f7b-1c2d3e4f5a6c';let executions=0;
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
-  if(op==='execute'){executions++;return{status:'unknown',summary:'unconfirmed actual effect',effects:[{id:body.work.id+':0',status:'unknown'}],evidence:[],unfinished:['verify'],usage}}
+  if(op==='execute'){executions++;await qqExternalBudget(db,{id:body.work.botId,tenant_id:body.work.tenantId},{workId:body.work.id,epoch:body.work.epoch,logicalActionId:body.work.id+':0',phase:'reserve'});return{status:'unknown',summary:'unconfirmed actual effect',effects:[{id:body.work.id+':0',status:'unknown'}],evidence:[],unfinished:['verify'],usage}}
   throw Error(op);
  });
  try{

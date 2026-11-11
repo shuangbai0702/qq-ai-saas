@@ -244,10 +244,14 @@ test('expired lease recovers pending effects as unknown and conservatively settl
   const goalId=randomUUID();await handoffGoal(db,'a','ta',goalId);
   const c=await repo.claim('old-node');
   const out=await repo.planHandoff(c,(await repo.view('ta','a')).goals[0],{});await repo.markExecuting(c,out.action.id);
+  // A pre-dispatch reservation survives the process crash as unknown cost.
+  await db.query('UPDATE autonomy_actions SET external_effects=$2 WHERE id=$1',[out.action.id,JSON.stringify({'fixture-effect':{status:'reserved'}})]);
   await db.query("UPDATE autonomy_settings SET lease_until=now()-interval '1 second' WHERE bot_id='a'");
   await repo.wake('ta','a',2,'recovery',0);const restored=await repo.claim('new-node');assert.ok(restored);
   assert.equal((await db.query('SELECT status FROM autonomy_actions WHERE id=$1',[out.action.id]))[0].status,'unknown');
   assert.equal((await repo.view('ta','a')).usage.used_tokens,c.config.cycleTokenBudget);
+  assert.equal((await repo.view('ta','a')).usage.external_actions,1);
+  assert.equal((await db.query('SELECT usage FROM autonomy_cycles WHERE id=$1',[c.cycleId]))[0].usage.externalActions,1);
   assert.equal(await repo.renew(c),false);
  }finally{await db.close()}
 });

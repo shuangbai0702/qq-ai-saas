@@ -10,6 +10,27 @@ from decision_history import history_usage,MAX_RETAINED_TEXT_CHARS,MAX_RETAINED_
 from readonly_journal import ReadonlyJournal,ContextCapacityExceeded,ContextReconstructionDenied
 
 class PrivateCapacityEmergencyTests(unittest.TestCase):
+    def test_34_round_capacity_warning_and_rejection_never_rewrite_prefix(self):
+        from readonly_journal import capacity_evidence
+        journal=ReadonlyJournal();base=[{'role':'system','content':'stable identity'}]
+        for round_number in range(34):
+            base.append({'role':'user','content':'round '+str(round_number)+'x'*12000})
+            candidate=journal.prepare(base+[{'role':'user','content':READONLY_CURRENT+'\n'+model_json({'state':{'round':round_number}})}],1,now=round_number+1)
+            if journal.last:self.assertEqual(candidate.wire[:len(journal.last.wire)],journal.last.wire)
+            self.assertIsNone(candidate.reconstruction_permit)
+            self.assertTrue(journal.commit(candidate))
+            base.append({'role':'assistant','content':'real response'})
+        before=model_json(journal.last.wire)
+        warning=capacity_evidence(history_usage(journal.last.wire))
+        self.assertEqual(warning['state'],'warning')
+        self.assertFalse(warning['historyRewriteAllowed'])
+        with self.assertRaises(ContextCapacityExceeded) as error:
+            journal.prepare(base+[{'role':'user','content':'y'*200000},
+                {'role':'user','content':READONLY_CURRENT+'\n'+model_json({'state':{}})}],1,now=35)
+        self.assertEqual(error.exception.capacity['state'],'exhausted')
+        self.assertEqual(model_json(journal.last.wire),before)
+        self.assertEqual(journal.last.turns,34)
+
     def test_old_capacity_can_append_and_restart_without_a_permit(self):
         with sqlite3.connect(':memory:') as db:
             journal=ReadonlyJournal(db,'private:12345678')

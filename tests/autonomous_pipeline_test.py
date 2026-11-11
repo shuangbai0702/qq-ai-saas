@@ -19,6 +19,15 @@ from autonomous_runtime import evidence_limits
 
 
 async def main():
+    # Protocol fixture has no control API. Keep this SDK/output regression
+    # isolated; real shared-budget transactions are covered by bilibili.test.ts.
+    import external_action_budget
+    budget_calls=[]
+    async def budget_boundary(settings,identity,logical,phase):
+        assert identity.get('cycleId') and logical and phase in ('reserve','released','unknown','confirmed')
+        budget_calls.append((identity['id'],logical,phase))
+        return {'reserved':phase!='released','status':phase}
+    external_action_budget.update=budget_boundary
     # The fixture constructs Core directly. Production initializes this shared
     # SDK database before platform startup; do the same before concurrent sends.
     from astrbot.core import db_helper
@@ -591,6 +600,8 @@ async def main():
         result=await brain.handle('qq','execute',{'work':w,'action':data['action']})
         assert result['status']=='unknown' and len(calls)==1,result
         assert result['effects'][0]['status']=='unknown',result
+        phases=[phase for wid,logical,phase in budget_calls if wid==w['id']]
+        assert phases==['reserve','unknown'],phases
         assert st.db.execute('SELECT count FROM deliveries').fetchone()[0]==1,'unknown was incorrectly refunded'
         print('PIPELINE missing message ID stays unknown; no second bubble passed')
 

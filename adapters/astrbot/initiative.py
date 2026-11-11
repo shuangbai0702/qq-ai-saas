@@ -164,6 +164,42 @@ def release_unstarted(db,item,key):
             db.execute('UPDATE deliveries SET count=max(0,count-1) WHERE scope=? AND day=? AND last_sent=?',(scope,day,at))
             if item.get('contact_subject'):db.execute('UPDATE companion_members SET unanswered=max(0,unanswered-1) WHERE scope=? AND subject=? AND attempt=?',(scope,item['contact_subject'],at))
 
+
+def event_was_queued(platform,event):
+    """Prove a synchronous commit exception happened before Queue.put_nowait."""
+    queue=getattr(platform,'_event_queue',None)
+    entries=getattr(queue,'_queue',None)
+    return None if entries is None else any(value is event for value in entries)
+
+
+def release_unstarted_handoff(db,item,key,contact_reserved):
+    """Return only reservation stages that are known to have been acquired."""
+    if contact_reserved:release_unstarted(db,item,key)
+    else:autonomy.settle_send(db,key,'released')
+
+
+def acquire_initiative_reservation(db,item,key,cfg,now):
+    """Acquire send budget then contact quotas, unwinding only acquired stages."""
+    if not autonomy.reserve_send(db,item['scope'],key,cfg,now):return False
+    item['reserved_at']=now
+    try:
+        if not reserve(db,cfg,item,now):
+            autonomy.settle_send(db,key,'released')
+            return False
+    except BaseException:
+        release_unstarted_handoff(db,item,key,False)
+        raise
+    return True
+
+
+def commit_reserved_event(platform,event,db,item,key,contact_reserved):
+    """Transfer a reservation only after synchronous queue acceptance."""
+    try:platform.commit_event(event)
+    except BaseException:
+        if event_was_queued(platform,event) is False:
+            release_unstarted_handoff(db,item,key,contact_reserved)
+        raise
+
 def split_text(text,limit=4):
     return split_messages(text,limit)
 
@@ -204,7 +240,7 @@ async def resume_scope_input(core,id,lease,store,settings):
     row=store.db.execute("SELECT scope,event,payload,observed_at,retry_count FROM pipeline_work_inputs i WHERE status='pending' AND coalesce(retry_at,0)<=? AND NOT EXISTS (SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope) ORDER BY created LIMIT 1",(time.time(),)).fetchone()
     if not row:return False
     scope,event_id,payload,observed_at,retries=row
-    binding=store.db.execute('SELECT identity,payload_sha FROM pipeline_work_inputs WHERE scope=? AND event=?',(scope,event_id)).fetchone()
+    binding=store.db.execute('SELECT identity,payload_sha,addressed_self FROM pipeline_work_inputs WHERE scope=? AND event=?',(scope,event_id)).fetchone()
     if binding and binding[0]:
         import hashlib
         try:
@@ -232,7 +268,8 @@ async def resume_scope_input(core,id,lease,store,settings):
     with store.db:
         if not store.db.execute("UPDATE pipeline_work_inputs SET status='queued',retry_at=? WHERE scope=? AND event=? AND status='pending'",(time.time()+30,scope,event_id)).rowcount:return False
     try:
-        raw=Event.from_payload(json.loads(payload));message=await asyncio.wait_for(platform.convert_message(raw),5)
+        raw=Event.from_payload(json.loads(payload));convert_retained=getattr(platform,'convert_retained_message',None) or platform.convert_message
+        message=await asyncio.wait_for(convert_retained(raw),5)
         if message is None or settings.get(id) is not lease:raise RuntimeError('scope_resume_stale')
         # The SDK conversion stamps replay time. Reuse the first trusted
         # observation instead; redelivery must not change protocol identity.
@@ -251,7 +288,9 @@ async def resume_scope_input(core,id,lease,store,settings):
         if getattr(getattr(core,'_hosted_stop_fence',None),'quiescing',False):
             with store.db:store.db.execute("UPDATE pipeline_work_inputs SET status='pending' WHERE scope=? AND event=? AND status='queued'",(scope,event_id))
             return False
-        platform.commit_event(platform.create_event(message))
+        event=platform.create_event(message)
+        if binding and binding[2]==1:event.set_extra('_hosted_recovered_addressed_self',True)
+        platform.commit_event(event)
         return True
     except BaseException as error:
         cancelled=isinstance(error,asyncio.CancelledError)
@@ -274,6 +313,7 @@ def start(core,settings,store,metrics):
             await asyncio.sleep(5)
             if getattr(getattr(core,'_hosted_stop_fence',None),'quiescing',False):continue
             for id,s in list(settings.items()):
+                reservation=None;send_reservation_owned=False;contact_reservation_owned=False;commit_started=False;handoff_event=None;item=None;st=None;platform=None
                 try:
                     brain=getattr(core,'_hosted_autonomous',None)
                     from bilibili_tools import resume_completion
@@ -298,7 +338,8 @@ def start(core,settings,store,metrics):
                         raw=Event.from_payload(json.loads(pending['payload']))
                         online=await asyncio.wait_for(platform.bot.get_status(self_id=str(raw.self_id)),3)
                         if not online.get('online') or not live() or st.active:continue
-                        msg=await asyncio.wait_for(platform.convert_message(raw),5)
+                        convert_retained=getattr(platform,'convert_retained_message',None) or platform.convert_message
+                        msg=await asyncio.wait_for(convert_retained(raw),5)
                         if not msg or not live() or st.active or not st.presence.claim(pending,cfg,provider,live,time.time()):continue
                         event=platform.create_event(msg);event.set_extra('_hosted_deferred_group',pending);event.set_extra('_hosted_scheduled_generation',s['generation'])
                         platform.commit_event(event)
@@ -330,25 +371,34 @@ def start(core,settings,store,metrics):
                     now=time.time()
                     if quiet(cfg,now):continue
                     reservation=str(s.get('generation'))+'/timer/'+str(uuid.uuid4())
-                    if not autonomy.reserve_send(st.db,item['scope'],reservation,cfg,now):continue
-                    if not reserve(st.db,cfg,item,now):
-                        autonomy.settle_send(st.db,reservation,'released');continue
+                    if not acquire_initiative_reservation(st.db,item,reservation,cfg,now):continue
+                    send_reservation_owned=True
+                    contact_reservation_owned=True
                     group=item['scope'].startswith('group:');target=item['scope'].split(':',1)[1]
                     prompt=PROACTIVE_PROMPT
                     if item.get('topic'):prompt+='\n机器人联系规划选择的话题（不是对方发言，不能据此声称对方提过）：'+json.dumps(item['topic'],ensure_ascii=False)
                     raw=Event.from_payload({'time':int(now),'self_id':int(item['self_id']),'post_type':'message','message_type':'group' if group else 'private','sub_type':'normal' if group else 'friend','message_id':uuid.uuid4().int%(2**31),'user_id':int(item['subject']),'message':[{'type':'text','data':{'text':prompt}}],'raw_message':prompt,'sender':{'user_id':int(item['subject']),'nickname':'已授权会话'},**({'group_id':int(target)} if group else {})})
                     msg=AstrBotMessage();msg.type=MessageType.GROUP_MESSAGE if group else MessageType.FRIEND_MESSAGE;msg.self_id=item['self_id'];msg.session_id=target;msg.message_id=str(raw['message_id']);msg.sender=MessageMember(user_id=item['subject'],nickname='已授权会话');msg.message=[Plain(prompt)];msg.message_str=prompt;msg.timestamp=int(now);msg.raw_message=raw
                     if group:msg.group=Group(group_id=target)
-                    event=platform.create_event(msg);event.set_extra('_hosted_contact_subject',item.get('contact_subject'));event.set_extra('_hosted_contact_seen',item.get('contact_seen'));event.set_extra('_hosted_initiative',True);event.set_extra('_hosted_topic_origin',{'kind':'model_selected_topic','actor_id':str(item['self_id']),'recipient_id':str(item.get('contact_subject') or item['subject']),'is_user_statement':False});event.set_extra('_hosted_scheduled_generation',s['generation']);event.set_extra('_hosted_last_user',item['last_user']);event.set_extra('_hosted_previous_output',item['last_output'])
-                    item['reserved_at']=now
-                    event.set_extra('_hosted_timer_item',item)
-                    event.set_extra('_hosted_autonomy_reservation',reservation)
-                    if item.get('owner_contact'):event.set_extra('_hosted_owner_contact',item)
-                    platform.commit_event(event);m=metrics.setdefault(id,{})
+                    handoff_event=platform.create_event(msg);handoff_event.set_extra('_hosted_contact_subject',item.get('contact_subject'));handoff_event.set_extra('_hosted_contact_seen',item.get('contact_seen'));handoff_event.set_extra('_hosted_initiative',True);handoff_event.set_extra('_hosted_topic_origin',{'kind':'model_selected_topic','actor_id':str(item['self_id']),'recipient_id':str(item.get('contact_subject') or item['subject']),'is_user_statement':False});handoff_event.set_extra('_hosted_scheduled_generation',s['generation']);handoff_event.set_extra('_hosted_last_user',item['last_user']);handoff_event.set_extra('_hosted_previous_output',item['last_output'])
+                    handoff_event.set_extra('_hosted_timer_item',item)
+                    handoff_event.set_extra('_hosted_autonomy_reservation',reservation)
+                    if item.get('owner_contact'):handoff_event.set_extra('_hosted_owner_contact',item)
+                    commit_started=True
+                    commit_reserved_event(platform,handoff_event,st.db,item,reservation,contact_reservation_owned)
+                    send_reservation_owned=False;contact_reservation_owned=False;m=metrics.setdefault(id,{})
                     if item.get('contact_subject'):m['autonomousGroupAttempts']=m.get('autonomousGroupAttempts',0)+1
                     m['proactiveAttempts']=m.get('proactiveAttempts',0)+1
-                except asyncio.CancelledError:raise
-                except Exception:
+                except (asyncio.CancelledError,Exception) as error:
+                    queued=event_was_queued(platform,handoff_event) if commit_started and handoff_event is not None else False
+                    if send_reservation_owned and queued is False:
+                        if not commit_started:
+                            try:
+                                release_unstarted_handoff(st.db,item,reservation,contact_reservation_owned)
+                            except Exception:
+                                m=metrics.setdefault(id,{});m['proactiveReservationReleaseErrors']=m.get('proactiveReservationReleaseErrors',0)+1
+                        send_reservation_owned=False;contact_reservation_owned=False
+                    if isinstance(error,asyncio.CancelledError):raise
                     # No content/errors from other tenants enter shared logs.
                     m=metrics.setdefault(id,{});m['proactiveSchedulerErrors']=m.get('proactiveSchedulerErrors',0)+1
     return asyncio.create_task(sweep())

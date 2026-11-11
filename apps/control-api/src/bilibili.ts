@@ -1,3 +1,4 @@
+import {qqExternalBudget,biliWorkEffects} from '../../../packages/database/external-action-budget.js';
 import type {FastifyInstance} from 'fastify';
 import {z} from 'zod';
 import {randomUUID} from 'node:crypto';
@@ -58,6 +59,8 @@ export function registerBilibili(app:FastifyInstance,db:Sql,key:Buffer,owned:(re
  // Separate audience from user sessions and Agent->worker group credentials.
  const runtime=async(req:any)=>{const [b]=await db.query('SELECT * FROM bots WHERE id=$1 AND deleted_at IS NULL',[req.params.id]);const token=String(req.headers.authorization||'').replace(/^Bearer /,'');if(!b||!verifyBridge(key,b,token))throw toolConflict('工具运行身份无效',401);return b};
  registerExecutionMemory(app,db,runtime);
+ app.post<{Params:{id:string}}>('/internal/v1/bots/:id/external-action-budget',async req=>{const b=await runtime(req),v=z.object({workId:z.string().min(1).max(200),epoch:z.number().int().positive(),logicalActionId:z.string().min(1).max(300),phase:z.enum(['reserve','confirmed','unknown','released'])}).strict().parse(req.body);return qqExternalBudget(db,b,v)});
+ app.post<{Params:{id:string}}>('/internal/v1/bots/:id/external-effects',async req=>{const b=await runtime(req),v=z.object({workId:z.string().min(1).max(200)}).strict().parse(req.body);return{effects:await biliWorkEffects(db,b.id,b.tenant_id,v.workId)}});
  app.post<{Params:{id:string}}>('/internal/v1/bots/:id/tools/completion',async req=>{const b=await runtime(req);return{completion:await repo.completion(b)}});
  app.post<{Params:{id:string}}>('/internal/v1/bots/:id/tools/completion-ack',async req=>{const b=await runtime(req),v=z.object({id:z.string().uuid(),owner:z.string().uuid(),status:z.enum(['done','unknown'])}).strict().parse(req.body);return repo.acknowledgeCompletion(b,v.id,v.owner,v.status)});
  app.post<{Params:{id:string}}>('/internal/v1/bots/:id/tools/cancel-work',async req=>{const b=await runtime(req),v=z.object({workId:z.string().min(1).max(200),stepId:z.string().min(1).max(200)}).strict().parse(req.body);return repo.cancelWork(b,v.workId,v.stepId)});

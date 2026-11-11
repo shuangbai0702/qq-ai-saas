@@ -17,9 +17,25 @@ MAX_PERSISTED_JOURNALS=64
 MAX_JOURNAL_TOMBSTONES=4096
 
 class ContextReconstructionDenied(RuntimeError):pass
-class ContextCapacityExceeded(RuntimeError):pass
+class ContextCapacityExceeded(RuntimeError):
+    """A rejected NEW candidate never authorizes mutation of submitted history."""
+    def __init__(self,message,*,usage=None):
+        self.capacity=capacity_evidence(usage) if usage else {}
+        super().__init__(message+((' capacity='+model_json(self.capacity)) if self.capacity else ''))
 class ContextRecoveryUnavailable(RuntimeError):pass
 class ContextPrefixViolation(RuntimeError):pass
+
+
+def capacity_evidence(usage):
+    text=usage['textChars'];wire=usage['wireChars']
+    ratio=max(text/MAX_RETAINED_TEXT_CHARS,wire/MAX_RETAINED_WIRE_CHARS)
+    return {'state':'exhausted' if ratio>=1 else 'warning' if ratio>=0.8 else 'ready',
+            'textChars':text,'wireChars':wire,
+            'textLimit':MAX_RETAINED_TEXT_CHARS,'wireLimit':MAX_RETAINED_WIRE_CHARS,
+            'textHeadroom':max(0,MAX_RETAINED_TEXT_CHARS-text),
+            'wireHeadroom':max(0,MAX_RETAINED_WIRE_CHARS-wire),
+            'recovery':'authorized_admin_force_compress',
+            'historyRewriteAllowed':False}
 
 # Pinned AstrBot utils/image_input.py adds this exact temporary TextPart to a
 # new montage, but deliberately omits it from saved native conversation data.
@@ -673,7 +689,7 @@ class ReadonlyJournal:
         usage=history_usage(old.wire)
         return {'journalState':'retired:'+self.retired_reason if self.retired_reason else 'ready',
                 'recoveryError':self.recovery_error or '','refusal':self._last_refusal_reason,
-                'view':getattr(self,'_last_view_evidence',{}),'baseChars':old.base_chars,
+                'view':getattr(self,'_last_view_evidence',{}),'baseChars':old.base_chars,'capacity':capacity_evidence(usage),
                 'persistenceError':self._last_persist_error,
                 'textChars':usage['textChars'],'wireChars':usage['wireChars'],'turns':old.turns,
                 'addedTextHeadroom':max(0,MAX_RETAINED_TEXT_CHARS-usage['textChars']),
@@ -1030,7 +1046,7 @@ class ReadonlyJournal:
                 request_id=request_identity()
                 reconstruction_permit=self._reservation(reconstruction_authority,reconstruction_scope,request_id,summary_ids)
             if reconstruction_permit is None and guarded:
-                raise ContextCapacityExceeded('The append-only request journal reached its configured capacity before an authorized 35-round reconstruction checkpoint.')
+                raise ContextCapacityExceeded('The append-only request journal reached its configured capacity before an authorized 35-round reconstruction checkpoint. Existing history is unchanged; an authenticated administrator may request compression.',usage=usage)
             from context_foundation import arrange
             if reconstruction_permit and reconstruction_permit.get('semanticBatch'):
                 base=semantic_retire_projection(base,reconstruction_permit)
@@ -1039,7 +1055,7 @@ class ReadonlyJournal:
             usage=history_usage(wire);base_chars=usage['textChars'];detail=history_boundary(usage['textChars'],base_chars,usage['wireChars'],growth_limit=False)
             if detail:
                 if reconstruction_permit:reconstruction_authority.settle_context_reconstruction(reconstruction_permit,False)
-                raise ContextCapacityExceeded('The current complete request exceeds the configured bounded context capacity.')
+                raise ContextCapacityExceeded('The current complete request exceeds the configured bounded context capacity. Reject oversized NEW material before submission; never trim committed messages.',usage=usage)
         # Both retirement-driven and capacity-driven reservations must keep
         # every unproven native block byte-for-byte, including media/tools.
         self._validate_partial_retirement(reconstruction_permit,reconstruction_authority,reconstruction_scope,old,base)

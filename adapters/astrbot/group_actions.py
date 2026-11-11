@@ -166,7 +166,7 @@ async def send(event,cfg,db,group,text,mention,current,on_sent,include_prepared_
         db.execute('DELETE FROM group_message_attempts WHERE at<?',(time.time()-7*86400,))
     from message_layout import split_messages,without_boundaries
     parts=split_messages(text) if (cfg.get('behavior') or {}).get('splitMessages',False) and text else [without_boundaries(text)]
-    receipts=[];confirmed_parts=[];inflight=False;settled=False
+    receipts=[];confirmed_parts=[];inflight=False;work_attempt=None;settled=False
     # One source-event reservation owns the whole plan. Confirmed prefixes and
     # uncertain tails survive cancellation/restart without replaying any bubble.
     from bot_pipeline import Work
@@ -208,6 +208,7 @@ async def send(event,cfg,db,group,text,mention,current,on_sent,include_prepared_
                 event.set_extra('_hosted_tool_sticker',None);event.set_extra('_hosted_meme_sent',True)
             if reply_work:
                 reply_work.attempted+=1
+                work_attempt=reply_work.attempted
                 with db:db.execute("UPDATE pipeline_events SET stage='dispatch',status='sending',attempted=? WHERE scope=? AND subject=? AND event=?",(reply_work.attempted,reply_work.scope,reply_work.subject,reply_work.event_id))
             persist('unknown');inflight=True
             result=await asyncio.wait_for(event.bot.send_group_msg(group_id=int(group),message=wire),15)
@@ -219,6 +220,7 @@ async def send(event,cfg,db,group,text,mention,current,on_sent,include_prepared_
             persist()
             if reply_work:
                 reply_work.confirmed+=1;reply_work.confirmed_messages+=1
+                work_attempt=None
                 if part:reply_work.confirmed_reply_parts.append(part)
                 if has_image:reply_work.confirmed_media_kinds.append('image')
             if not current():return finish(state_committed=False,meaning='QQ已确认原消息；配置已变化，停止剩余消息，不向新会话回写或再次发送。')
@@ -226,6 +228,9 @@ async def send(event,cfg,db,group,text,mention,current,on_sent,include_prepared_
             if has_image:social.image_sent('group:'+group,prepared['id'])
         return finish(message_id=receipts[-1],image=bool(prepared),meaning='QQ已逐条返回消息编号，已向指定群发送'+('并真实艾特所选成员。' if mention else '。'))
     except PreDispatchRejected as error:
+        if reply_work and inflight:
+            from bot_pipeline import BotPipeline
+            BotPipeline.retract_pre_dispatch(db,reply_work,work_attempt)
         persist();return finish(reason=str(error),meaning='发送前会话或配置已变化；当前及剩余消息未向QQ提交，保留此前逐条回执。')
     except asyncio.CancelledError:
         tail='unknown' if inflight else 'not_sent';persist(tail);finish(tail);raise
