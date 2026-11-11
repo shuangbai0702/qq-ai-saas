@@ -13,10 +13,11 @@ _semaphore=None
 
 
 def target_edge(longest):
-    """Choose once from source dimensions, including the exact 512 exception."""
+    """Choose once from original dimensions; never upscale small sources."""
     if longest>1024:return 512
-    if longest>512:return 328
-    if 256<longest<512:return 256
+    if longest>=512:return 256
+    if longest>256:return 192
+    if longest>=128:return 128
     return longest
 
 
@@ -102,7 +103,7 @@ def limit_data_url(value,details=None,legacy=False):
                 data=_extract_animation_montage_sync(image,edge)
                 if not legacy:
                     # SDK divides the FINAL cap across three cells, flooring
-                    # each cell (512 -> 510, 328 -> 327). Correct that rounding
+                    # each cell (512 -> 510, 256 -> 255). Correct that rounding
                     # on the final montage, preserving the source aspect ratio.
                     scale=edge/max(display_size)
                     size=tuple(max(1,round(dimension*scale)) for dimension in display_size)

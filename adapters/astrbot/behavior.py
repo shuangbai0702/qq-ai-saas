@@ -1377,6 +1377,7 @@ def install_runtime(core,settings):
             # A cold-entry semantic decision already supplied its own permit.
             from participation import MODEL_GUIDANCE
             current_rules=(MODEL_GUIDANCE if conversation.get('conversation_candidate') and not event.get_extra('_hosted_group_decision') else '')
+            current_rules+='\n[引用习惯]私聊非必要不引用，直接回复；群聊非必要不引用，需要明确对象时优先@。仅确需指向某条原话时使用引用回复。\n'
             if len(conversation.get('recent_burst',[]))>1:
                 current_rules+='\n[合并群聊输入]\nrecent_burst是一段收集窗口内的真实消息，按每条的sender_id、mentions和reply_to辨认作者与对象。这是一轮聊天行动，综合决定哪些内容值得回应，不逐条确认，也不为每个发言者重复生成一套回复；消息分条规则限制的是这一轮总量，不随人数相乘。\n'
             protocol=brain.foreground_prompt(event.get_platform_id(),event)
