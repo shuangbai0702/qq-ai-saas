@@ -3,6 +3,7 @@ from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
 from behavior import BehaviorStore
 from initiative import incoming,candidates
+import autonomy
 from data_admin import run
 
 class ConfigurationTests(unittest.TestCase):
@@ -38,14 +39,14 @@ class ConfigurationTests(unittest.TestCase):
  def test_cooldown_does_not_consume_approved_interjection_quota(self):
   cfg={'trigger':'mention','behavior':{'cooldownSeconds':60,'quietStart':0,'quietEnd':0,'randomReplyProbability':.2,'dailyProactiveLimit':3}}
   self.store.last['group:12345']=200
-  self.assertFalse(self.store.eligible(cfg,'group:12345','12345',False,'聊天',205,rng=lambda:0))
+  self.assertFalse(self.store.eligible(cfg,'group:12345','12345',False,'聊天',205))
   self.assertEqual(self.store.db.execute('SELECT count(*) FROM deliveries').fetchone()[0],0)
-  self.assertTrue(self.store.eligible(cfg,'group:12345','12345',True,'聊天',260,rng=lambda:0))
-  self.assertTrue(self.store.reserve_interjection('group:12345',cfg,260))
+  self.assertTrue(self.store.eligible(cfg,'group:12345','12345',True,'聊天',260))
+  self.assertTrue(autonomy.reserve_send(self.store.db,'group:12345','configuration-test',cfg,260))
   self.assertEqual(self.store.db.execute('SELECT count(*) FROM autonomy_sends WHERE state!="released"').fetchone()[0],1)
   self.assertEqual(self.store.db.execute('SELECT count(*) FROM deliveries').fetchone()[0],0)
  def test_enabling_proactive_does_not_implicitly_enable_interjections(self):
-  self.assertFalse(self.store.eligible({'proactive':True,'behavior':{'randomReplyProbability':0}},'group:12345','12345',False,'聊天',200,rng=lambda:.01))
+  self.assertFalse(self.store.eligible({'proactive':True,'behavior':{'randomReplyProbability':0}},'group:12345','12345',False,'聊天',200))
  def test_clear_learning_allows_learning_from_new_samples(self):
   scope='group:12345';self.store.db.execute('INSERT INTO social_patterns VALUES(?,?,?,?,?,?)',(scope,'有节目效果','轻松玩笑','[1,2]',1,time.time()));self.store.db.execute('INSERT INTO social_pattern_blocks VALUES(?,?)',(scope,'有节目效果'));self.store.db.commit()
   run(self.file,{'action':'clear_learning','scope':scope})

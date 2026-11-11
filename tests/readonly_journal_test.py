@@ -69,8 +69,8 @@ class JournalTests(unittest.TestCase):
     def test_failed_and_late_work_cannot_replace_new_journal(self):
         first=self.first();a=self.j.prepare(self.base+[packet(self.state)],('tenant','bot',1),now=2)
         b=self.j.prepare(self.base+[packet(self.state)],('tenant','bot',1),now=3)
-        self.assertFalse(self.j.commit(a));self.j.discard(a);self.assertIs(self.j.last,first)
-        self.j.commit(b);self.j.discard(b);self.assertIs(self.j.last,b,'discarding a settled candidate must not erase committed history')
+        self.assertFalse(self.j.commit(a));self.j.abort_candidate(a);self.assertIs(self.j.last,first)
+        self.j.commit(b);self.j.abort_candidate(b);self.assertIs(self.j.last,b,'discarding a settled candidate must not erase committed history')
     def test_abort_is_not_retirement_and_late_abort_cannot_clear_new_success(self):
         first=self.first();failed=self.j.prepare(self.base+[packet(self.state)],('tenant','bot',1),now=2)
         self.assertTrue(self.j.abort_candidate(failed));self.assertIs(self.j.last,first)

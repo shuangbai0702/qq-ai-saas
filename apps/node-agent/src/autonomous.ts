@@ -13,12 +13,12 @@ export type UsageCharge={requestId:string;kind:string;source:'actual'|'estimated
 type Usage={tokens:number;modelCalls:number;toolCalls:number;externalActions:number;conservative?:boolean;charges?:UsageCharge[]};
 type RuntimeCall=(bot:any,operation:string,body:unknown,timeoutMs?:number)=>Promise<any>;
 const emptyUsage=():Usage=>({tokens:0,modelCalls:0,toolCalls:0,externalActions:0});
-function online(bot:any){return bot.desired_state==='running'&&runtimeStatus(bot).online}
+function online(bot:any){return runtimeStatus(bot).online}
 function cycleTokens(claim:any):number{return claim.tokenLimit??claim.config.cycleTokenBudget}
 
 export type FaultClass='auth'|'rate_limit'|'protocol'|'network'|'contract'|'identity'|'decision'|'unknown';
 /** Deterministic failure classes stay separated so one broken account never
- * reads as model idleness and isolation can key on provider/model/config. */
+ * reads as model idleness; fault details stay with their cycle ledger. */
 export function classifyFault(error:unknown):{reason:string;faultClass:FaultClass}{
  const issues=(error as any)?.issues;
  if(Array.isArray(issues))return{reason:'decision_contract:'+issues.slice(0,4).map((issue:any)=>issue.path.join('.')+':'+issue.code).join(','),faultClass:'decision'};
@@ -54,10 +54,7 @@ export class AutonomyCoordinator {
  private policyCursor=0;
  private policySerial=0;
  private events=new Map<string,number>();private sampled=new Map<string,{at:number;revision:number}>();
- // Optional bounded isolation for persistent deterministic faults. Undefined
- // by default: the existing 30-second error backoff stays the only behavior.
- readonly isolation?:{consecutiveLimit:number;cooldownSeconds:number};
- constructor(public db:Sql,private call:RuntimeCall,isolation?:{consecutiveLimit:number;cooldownSeconds:number}){this.repo=new AutonomyRepository(db);this.isolation=isolation}
+ constructor(public db:Sql,private call:RuntimeCall){this.repo=new AutonomyRepository(db)}
  start(){if(this.timer||this.closed)return;this.timer=setInterval(()=>void this.tick().catch(()=>{}),5000);this.timer.unref();this.heartbeatTimer=setInterval(()=>void this.heartbeat(),4000);this.heartbeatTimer.unref();void this.tick().catch(()=>{})}
  async heartbeat(){
   if(this.closed||this.heartbeatTask||!this.active)return;
@@ -136,7 +133,7 @@ export class AutonomyCoordinator {
     // Unreturned model usage is deliberately charged at the reserved ceiling.
     // Due handoff work keeps a wake so a later cycle can rediscover it.
     await this.repo.wake(claim.tenant_id,claim.bot_id,claim.epoch,'handoff-due',30,'').catch(()=>{});
-    await this.repo.finish(claim,{tokens:cycleTokens(claim),modelCalls:claim.config.cycleModelCalls,toolCalls:0,externalActions:0},'runtime_unavailable',30).catch(()=>{});
+    await this.repo.finish(claim,{tokens:cycleTokens(claim),modelCalls:claim.config.cycleModelCalls,toolCalls:0,externalActions:0},'runtime_unavailable').catch(()=>{});
    }).finally(()=>{if(this.active===active)this.active=undefined});
   }finally{this.busy=false}
  }
@@ -290,18 +287,12 @@ export class AutonomyCoordinator {
    // A failed request is an explicit error backoff, never a model rest choice.
    sleep=30;
    faultContext={class:fault.faultClass,configRevision:c.revision,epoch:c.epoch,generation:c.generation,at:Date.now()};
-   // Optional bounded isolation for persistent deterministic faults. Without
-   // the option the existing short error backoff stays exactly as it was.
-   if(this.isolation&&['auth','protocol','contract'].includes(fault.faultClass)){
-    const consecutive=await this.repo.consecutiveFaults(c.tenant_id,c.bot_id,fault.faultClass);
-    if(consecutive>=this.isolation.consecutiveLimit){sleep=this.isolation.cooldownSeconds;faultContext.isolated=true;faultContext.consecutive=consecutive}
-   }
   }finally{
    // Unfinished due goals retain their task wake. Timed activity owns exactly
    // one separate wake, never a backlog or a fast retry/model polling loop.
    if(!['no_due_work','handoff_executed','handoff_blocked'].includes(reason)&&!reason.startsWith('activity_')&&(await this.repo.dueHandoffs(c)).length)await this.repo.wake(c.tenant_id,c.bot_id,c.epoch,'handoff-due',Math.max(0,sleep),'').catch(()=>{});
    if(c.wakes.some((w:any)=>w.reason==='activity'))await this.repo.scheduleActivity(c,Math.max(300,sleep||config.activityIntervalMinutes*60),true).catch(()=>{});
-   await this.repo.finish(c,usage,reason,sleep,faultContext);
+   await this.repo.finish(c,usage,reason,faultContext);
    // Withdraw the short effect permit before releasing the global slot. A
    // failed withdrawal still expires after at most fourteen seconds.
    const [latest]=await this.db.query('SELECT s.*,b.generation,b.revision FROM autonomy_settings s JOIN bots b ON b.id=s.bot_id WHERE s.bot_id=$1 AND s.tenant_id=$2',[c.bot_id,c.tenant_id]);

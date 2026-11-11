@@ -2,6 +2,8 @@
 
 日期：2026-10-28。工作区：`D:\MYCODE\APP\fishbot\qq-ai-saas`。
 
+2026-11-12 退役说明：本文保留当时的实验记录。`social-live.mjs`、`qq-pair-lab.mjs` 及同批 Round3/记忆实测脚本已随极致整洁工程退役，文中的旧命令不再是维护入口。当前回归使用 `tests/social.test.ts`、`tests/qq-favorites.test.ts` 及共享 Worker 的 SDK 隔离用例；真实生产验证须重新确认身份和当次授权，不复用历史双账号实验配置。
+
 依据：用户“学习别人说话、用的表情包、社交氛围、研究发图时机”，以及后续“直接优化好，不用一直问”。源码调查见 [social-learning-and-meme-timing.md](social-learning-and-meme-timing.md)。
 
 ## 实际进入产品的能力

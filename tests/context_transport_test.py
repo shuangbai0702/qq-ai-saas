@@ -201,56 +201,31 @@ class SnapshotLayout(unittest.TestCase):
             'execution_experience':{'experiences':[],'sampledAt':100,'future_field':{'keep':True}},
             'recent_messages':[message()], 'future_field':None}
 
-    def test_lossless_disjoint_split_without_source_mutation(self):
-        from context_transport import split_context_snapshot
+    def test_actual_request_keeps_complete_current_snapshot_and_stable_system(self):
+        from context_transport import request_context_view,EVENT_CONTEXT_CURRENT
+        from context_protocol import READONLY_CURRENT
+        def snapshot(history):
+            packets={m['content'].split('\n',1)[0]:json.loads(m['content'].split('\n',1)[1])
+                for m in history if m.get('role')=='user' and isinstance(m.get('content'),str)
+                and m['content'].startswith((EVENT_CONTEXT_CURRENT+'\n',READONLY_CURRENT+'\n'))}
+            return {**packets[EVENT_CONTEXT_CURRENT]['authority'],**packets.get(READONLY_CURRENT,{})}
         raw=self.snapshot();before=copy.deepcopy(raw)
-        background,current=map(json.loads,split_context_snapshot(json.dumps(raw)))
-        def merge(target,patch):
-            for key,value in patch.items():
-                if isinstance(value,dict) and isinstance(target.get(key),dict):merge(target[key],value)
-                else:target[key]=value
-        merge(current,background)
-        self.assertEqual(current,before);self.assertEqual(raw,before)
-        self.assertNotIn('identity',background);self.assertNotIn('permissions',background)
-
-    def test_fresh_identity_and_observation_do_not_churn_background(self):
-        from context_transport import split_context_snapshot
-        raw=self.snapshot();background,_=split_context_snapshot(json.dumps(raw))
+        system,history=request_context_view('人格',[],None,'策略','规则',json.dumps(raw))
+        first=snapshot(history)
+        self.assertEqual({k:first[k] for k in raw},raw)
+        self.assertEqual(raw,before)
         raw['identity']['owner']=True;raw['permissions']['send']=True
-        raw['autonomous_experience']['sampledAt']=200;raw['execution_experience']['sampledAt']=200
-        raw['state']['observed_at']=200
-        next_background,current=split_context_snapshot(json.dumps(raw));current=json.loads(current)
-        self.assertEqual(background,next_background);self.assertTrue(current['identity']['owner'])
-        self.assertTrue(current['permissions']['send']);self.assertEqual(current['state']['observed_at'],200)
-        self.assertEqual(current['autonomous_experience']['sampledAt'],200)
-
-    def test_edits_and_forgetting_immediately_change_background(self):
-        from context_transport import split_context_snapshot
-        raw=self.snapshot();before,_=split_context_snapshot(json.dumps(raw))
         raw['persona_core_note']['text']='纠正后的便签';raw['state']['conversation_summaries']=[]
-        after,_=split_context_snapshot(json.dumps(raw));self.assertNotEqual(before,after)
-        self.assertEqual(json.loads(after)['state']['conversation_summaries'],[])
-        del raw['persona_core_note'];after,_=split_context_snapshot(json.dumps(raw))
-        self.assertNotIn('persona_core_note',json.loads(after))
+        raw['autonomous_experience']['actions'].append({'status':'unknown','evidence':None})
+        same,next_history=request_context_view('人格',[],None,'策略','规则',json.dumps(raw))
+        current=snapshot(next_history)
+        self.assertEqual(same,system)
+        self.assertEqual({k:current[k] for k in raw},raw)
+        self.assertEqual(snapshot(history),first,'an already-built request never changes')
 
-    def test_live_decisions_receipts_and_query_candidates_never_churn_background(self):
-        from context_transport import request_context_view,split_context_snapshot
-        raw=self.snapshot()
-        raw['state']['conversation_summaries'][0]['recall_reason']='rolling_background'
-        background,_=split_context_snapshot(json.dumps(raw))
-        system,_=request_context_view('人格',[],None,'策略','规则',json.dumps(raw))
-        raw['autonomous_experience']['decisions']=[{'cycle':'new','choice':'wait'}]
-        raw['autonomous_experience']['actions'].append({'status':'confirmed','evidence':'真实回执'})
-        raw['execution_experience']['experiences']=[{'id':'new','status':'completed'}]
-        after,current=split_context_snapshot(json.dumps(raw))
-        self.assertEqual(background,after)
-        self.assertEqual(json.loads(current)['execution_experience'],raw['execution_experience'])
-        changed,history=request_context_view('人格',[],None,'策略','规则',json.dumps(raw))
-        self.assertEqual(system,changed);self.assertIn('真实回执',history[-1]['content'])
-        raw['state']['conversation_summaries'].append({'summary':'只匹配当前话题','recall_reason':'model_semantic_candidate'})
-        after,current=split_context_snapshot(json.dumps(raw))
-        self.assertNotIn('state',json.loads(after))
-        self.assertEqual(json.loads(current)['state']['conversation_summaries'],raw['state']['conversation_summaries'])
+
+
+
 
     def test_tool_adjacency_and_direct_result_fallback(self):
         from context_transport import request_context_view
@@ -300,10 +275,6 @@ class SnapshotLayout(unittest.TestCase):
         self.assertEqual(system,same);self.assertEqual(a[:-2],b[:len(a)-2]);self.assertEqual(a[-2],b[-2])
         self.assertEqual(b[:-2],native_next);self.assertNotEqual(a[-1],b[-1]);self.assertEqual(native,[first])
 
-    def test_unknown_contexts_preserve_contract(self):
-        from context_transport import split_context_snapshot
-        for raw in ('opaque','[]','null','{"state":{"conversation_summaries":"future"}}'):
-            self.assertEqual(split_context_snapshot(raw),(None,raw))
 
     def test_readonly_fields_do_not_move_identity_permissions_or_future_authority(self):
         from context_transport import request_context_view

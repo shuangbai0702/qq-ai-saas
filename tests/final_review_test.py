@@ -176,38 +176,7 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
         stored=next(c for c in material.summary_claims(self.db,1) if c['id']==old['id'])
         self.assertEqual(stored['status'],'superseded');self.assertFalse(material.protected_claim(stored))
 
-    async def test_rolling_claims_share_one_actual_recall_budget(self):
-        from semantic_context import recall
-        for i in range(3):
-            payload=[{'event':str(i),'sender_id':PERSON,'user':'东门'+str(i)+'条件'*90,'bot':'好','at':i}]
-            claims=material.derive_claims(SCOPE,payload,{},[],{'commitments':[{'event':str(i),'topic':'东门约定','quote':payload[0]['user'],'who':'user','stage':'accepted'}]})
-            identifier=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated,schema_version,claims) VALUES(?,?,?,?,2,?)',(SCOPE,'简短背景','[]',i,json.dumps(claims))).lastrowid
-            self.db.execute("INSERT INTO memory_summary_levels VALUES(?,'small')",(identifier,))
-        self.db.commit()
-        _,summaries=recall(self.store,SCOPE,PERSON,'东门',{'memorySummary':True},lambda:True,{})
-        attached=[c for item in summaries for c in item.get('protected_claims',[])]
-        self.assertTrue(attached)
-        self.assertLessEqual(len(json.dumps(attached,ensure_ascii=False,separators=(',',':'))),1200)
-        self.assertEqual(len(attached),len({c['id'] for c in attached}))
 
-    async def test_final_memory_view_keeps_same_scope_query_hit_outside_rolling(self):
-        from bot_pipeline import conversation_context,finish_memory_view
-        ids=[]
-        for i in range(5):
-            row={'event':str(i),'sender_id':PERSON,'user':'罕见的东门安排' if i==0 else '重要事项'+str(i),'bot':'好','at':i}
-            claims=material.derive_claims(SCOPE,[row],{},[],{'commitments':[{'event':str(i),'topic':'重要事项','quote':row['user'],'who':'user','stage':'accepted'}]})
-            identifier=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated,schema_version,claims) VALUES(?,?,?,?,2,?)',(SCOPE,'当前安排'+str(i),'[]',i,json.dumps(claims))).lastrowid
-            self.db.execute("INSERT INTO memory_summary_levels VALUES(?,'small')",(identifier,));ids.append(identifier)
-        self.db.commit()
-        from memory_scope import summary_item
-        old=summary_item(self.db.execute('SELECT id,text,sources,updated,scope FROM memory_summaries WHERE id=?',(ids[0],)).fetchone(),'scoped_bm25',db=self.db)
-        shared=conversation_context(self.store,{'memorySummary':True},SCOPE,PERSON,'东门',time.time())
-        shared['state']['conversation_summaries']=[old]
-        finish_memory_view(self.store,shared,{'memorySummary':True},SCOPE,'东门')
-        attached=shared['state']['conversation_summaries']
-        self.assertIn(ids[0],{item['id'] for item in attached})
-        self.assertEqual(attached[0]['id'],ids[0])
-        self.assertTrue(any('东门' in claim['text'] for item in attached for claim in item.get('protected_claims',[])))
 
     async def test_accepted_handoff_survives_epoch_edit_and_long_delay(self):
         from bot_pipeline import BotPipeline,Work

@@ -64,8 +64,20 @@ class BehaviorStore:
         self.reflection=Reflection(self.db)
         self.reflection.shared_context=self.shared_context
         self.reflection.memory=self.memory
-        from memory_search import MemorySearch
-        self.search=MemorySearch(self.db)
+        # Retire the unused BM25 prototype and its raw-text derived index.
+        # Authoritative facts, corrections and checkpoint foundations stay put.
+        secure_delete=self.db.execute('PRAGMA secure_delete').fetchone()[0]
+        try:
+            self.db.execute('PRAGMA secure_delete=ON')
+            self.db.execute('SAVEPOINT retire_candidate_index')
+            try:
+                for trigger in ('search_fact_changed','search_fact_deleted','search_summary_deleted','search_summary_changed'):
+                    self.db.execute('DROP TRIGGER IF EXISTS '+trigger)
+                self.db.execute('DROP TABLE IF EXISTS memory_search')
+            except BaseException:
+                self.db.execute('ROLLBACK TO retire_candidate_index');raise
+            finally:self.db.execute('RELEASE retire_candidate_index')
+        finally:self.db.execute('PRAGMA secure_delete='+str(secure_delete))
         companion_state.bootstrap_members(self.db)
         self.planner=Planner(self.db)
         self.participation=Participation(self.db)
@@ -144,15 +156,12 @@ class BehaviorStore:
         self.db.commit()
         facts=self.memory.recall(scope,subject,text,now) if memory_enabled and project_facts else []
         return {'memory_status':status,'facts':facts,'emotion':emotion,'relationship':'熟悉' if affinity>=5 else '初识','affinity':affinity}
-    def eligible(self,cfg,scope,group,mentioned,text,now=None,rng=random.random):
+    def eligible(self,cfg,scope,group,mentioned,text,now=None):
         now=time.time() if now is None else now;b=cfg.get('behavior') or {}
         if group and cfg.get('groups') and group not in cfg['groups']:return False
         if now-self.last.get(scope,-1e12)<b.get('cooldownSeconds',0):return False
         if group and not mentioned and not text.startswith('/'):return False
         self.last[scope]=now;return True
-    def reserve_interjection(self,scope,cfg,now=None):
-        event='legacy-'+str(now if now is not None else time.time())+'-'+scope
-        return autonomy.reserve_send(self.db,scope,event,cfg,now)
     def close(self):
         probe=getattr(self,'_model_probe_task',None)
         if probe and not probe.done():probe.cancel()
@@ -480,7 +489,6 @@ def install_runtime(core,settings):
         assembly.contribute('delivery',{'recipient':{'scope':scope,'owner':bool(subject and subject==str(b.get('ownerUin') or ''))},'task':event.get_extra('_hosted_autonomous_action')})
         assembly.contribute('companion',{'companion':context_foundation.live_companion(companion_state.context(st.db,s['config'],scope,now,objective))})
         shared=bot_pipeline.conversation_context(st,b,scope,subject,objective,now)
-        bot_pipeline.finish_memory_view(st,shared,b,scope,objective)
         shared['execution_experience']=execution_memory.context_projection(event.get_extra('_hosted_execution_memory',{'status':'not_loaded'}),shared['memory_foundation'])
         assembly.contribute('memory',{'execution_memory_guidance':execution_memory.GUIDANCE})
         assembly.contribute('memory',{key:shared[key] for key in ('memory_foundation','state','recent_messages','recent_cross_session_messages','conversation_timeline','autonomous_experience','execution_experience','group_round_history','active_agreements')})
@@ -996,7 +1004,6 @@ def install_runtime(core,settings):
                 if not current(event):return
                 assembly.contribute('social',{'social':social_context})
             assembly.contribute('memory',{'execution_memory_guidance':execution_memory.GUIDANCE})
-            bot_pipeline.finish_memory_view(st,shared,b,scope,event.get_message_str())
             event.set_extra('_hosted_group_round_history',bool(shared.get('group_round_history')))
             if scope.startswith('group:'):
                 history=shared.get('group_round_history') or []
@@ -1480,7 +1487,7 @@ def install_runtime(core,settings):
                    and owned.model_journals.get(key) is journal and owned.reflection.epoch()==epoch)
             material_current=owned.reflection.context_dependency(visible_summary_ids(prepared.state))==prepared.retirement
             if success and valid:retained=journal.commit(prepared);settled_state='commit'
-            elif valid and material_current and submitted_unknown:retained=journal.retain_submitted(prepared,stage);settled_state='submitted_unknown_retained'
+            elif valid and material_current and submitted_unknown:retained=journal.retain_submitted(prepared);settled_state='submitted_unknown_retained'
             elif valid and material_current:journal.abort_candidate(prepared)
             else:journal.retire_committed(prepared,'authority_changed');settled_state='retire'
         else:
@@ -1494,7 +1501,7 @@ def install_runtime(core,settings):
                 # Release only this stale candidate's permit. The replacement
                 # store and its committed prefix remain untouched; a staged
                 # candidate row survives for the replacement store to load.
-                if submitted_unknown:retained=journal.retain_submitted(prepared,stage);settled_state='submitted_unknown_retained'
+                if submitted_unknown:retained=journal.retain_submitted(prepared);settled_state='submitted_unknown_retained'
                 else:journal.abort_candidate(prepared)
             if same_owner and latest:
                 if owned.reflection.epoch()!=epoch:
@@ -1503,7 +1510,7 @@ def install_runtime(core,settings):
                 elif submitted_unknown:
                     # A possibly-received request keeps its tail even when the
                     # summary dependency moved during the request.
-                    retained=journal.retain_submitted(prepared,stage);settled_state='submitted_unknown_retained'
+                    retained=journal.retain_submitted(prepared);settled_state='submitted_unknown_retained'
                 elif success and valid:
                     # The round provably happened (user got a reply): commit it
                     # even when the summary dependency moved mid-request. An

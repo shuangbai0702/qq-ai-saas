@@ -4,6 +4,7 @@ test('health freshness rejects stale, future, missing and cleared runtime flags'
  const now=Date.now(),bot={desired_state:'running',health:{sampledAt:new Date(now).toISOString(),protocol:{online:true},ai:{ready:true,alive:true}}};assert.equal(runtimeStatus(bot,now).online,true);
  for(const sampledAt of [new Date(now-90001).toISOString(),new Date(now+5001).toISOString(),''])assert.equal(runtimeStatus({...bot,health:{...bot.health,sampledAt}},now).online,false);
  assert.equal(runtimeStatus({...bot,desired_state:'offline'},now).aiReady,false);assert.equal(runtimeStatus({...bot,desired_state:'stopped'},now).online,false);assert.equal(runtimeStatus({desired_state:'running',health:{}},now).online,false);
+ for(const desired_state of ['starting','unknown','',undefined]){const status=runtimeStatus({...bot,desired_state},now);assert.equal(status.online,false);assert.equal(status.aiReady,false);assert.equal(status.aiAlive,false)}
  assert.equal(defaultConfig.behavior?.qqFaces,false,'new users must not emit native QQ faces');
 });
 test('HTTP errors are actionable, mutation failures are not retried, caller cancellation stays cancellation',async()=>{

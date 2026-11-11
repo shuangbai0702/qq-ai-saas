@@ -39,5 +39,4 @@ export class NapCatAdapter implements ProtocolAdapter{
  getCapabilities(){return ['qr','text','image','record','onebot-reverse-ws','private-management-api']}
  async getHealth(ctx:RuntimeContext){const p=await this.host.inspect(ctx.botId,'protocol');try{const s=await this.getLoginState(ctx);return{alive:!!p,ready:!!p,online:!!p&&s.state==='online',pid:p?.pid,rssBytes:p?.rssBytes,memoryPolicy:p?.memoryPolicy,mode:'real',loginState:s.state,detail:s.message}}catch(e){return{alive:!!p,ready:false,online:false,pid:p?.pid,rssBytes:p?.rssBytes,memoryPolicy:p?.memoryPolicy,mode:'real',detail:(e as Error).message}}}
  async stop(id:string){this.credentials.delete(id);this.resumeAttempts.delete(id);await this.host.stop(id,'protocol')}
- async exportSessionRef(ctx:RuntimeContext){return path.join(ctx.root,'qq')}
 }

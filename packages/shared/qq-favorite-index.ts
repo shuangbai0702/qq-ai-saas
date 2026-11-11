@@ -15,5 +15,5 @@ export async function readFavoriteIndex(root:string,id:string):Promise<any>{
 export async function writeFavoriteIndex(root:string,id:string,value:unknown){
  const directory=favoriteDirectory(root,id),target=path.join(directory,'index.json'),temp=target+'.'+randomUUID()+'.tmp';
  await mkdir(directory,{recursive:true});
- try{await writeFile(temp,JSON.stringify(value),{flag:'wx',mode:0o600});await rename(temp,target)}finally{await rm(temp,{force:true})}
+ try{await writeFile(temp,JSON.stringify(value),{flag:'wx',mode:0o600});for(let attempt=0;;attempt++){try{await rename(temp,target);break}catch(e:any){if(process.platform!=='win32'||!['EPERM','EACCES','EBUSY'].includes(e.code)||attempt>=4)throw e;await new Promise(r=>setTimeout(r,25*(attempt+1)))}}}finally{await rm(temp,{force:true})}
 }

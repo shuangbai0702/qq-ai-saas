@@ -210,27 +210,6 @@ def social_context_view(context):
     return result
 
 
-def split_context_snapshot(context):
-    """Order the current snapshot, never cache or freeze memory/permissions.
-
-    Only core notes and canonical rolling summaries are stable background.
-    Live decisions, receipts and query-selected records remain fresh data.
-    Keep the original object paths, lists and values; only split disjoint fields.
-    Unknown/opaque contexts retain the original request contract.
-    """
-    if not isinstance(context,str):return None,context
-    try:data=json.loads(context)
-    except (ValueError,TypeError):return None,context
-    if not isinstance(data,dict):return None,context
-    background={}
-    note=data.get('persona_core_note')
-    if isinstance(note,dict) and isinstance(note.get('text'),str):background['persona_core_note']=data.pop('persona_core_note')
-    state=data.get('state')
-    if isinstance(state,dict):
-        summaries=state.get('conversation_summaries')
-        if isinstance(summaries,list) and all(isinstance(row,dict) and row.get('recall_reason')=='rolling_background' for row in summaries):
-            background['state']={'conversation_summaries':state.pop('conversation_summaries')}
-    return (model_json(background),model_json(data)) if background else (None,context)
 
 
 def request_context_view(system,contexts,prompt,policy,current_rules,context,tool_results=None,incremental_policy=False):

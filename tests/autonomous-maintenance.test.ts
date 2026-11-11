@@ -43,7 +43,7 @@ test('Bilibili maintenance keeps current coordinator and child owners, and rolls
  try{
   await agent.host.start('media-fixture','protocol',process.execPath,[script],childRoot,process.env);
   const child=agent.host.children.get('media-fixture:protocol')!,coordinator=agent.autonomy,originalPid=child.pid;
-  const canonicalShutdown=agent.shutdown;const first=await installBilibiliRuntime(agent,'b'.repeat(64));assert.equal(agent.shutdown,canonicalShutdown);assert.equal(first.pid,process.pid);assert.equal(agent.autonomy,coordinator);assert.equal(agent.host.children.get('media-fixture:protocol'),child);assert.equal(child.pid,originalPid);assert.equal(child.exitCode,null);
+  const canonicalShutdown=agent.shutdown,canonicalTick=agent.tick;const first=await installBilibiliRuntime(agent,'b'.repeat(64));assert.equal(agent.shutdown,canonicalShutdown);assert.equal(agent.tick,canonicalTick);assert.equal(first.pid,process.pid);assert.equal(agent.autonomy,coordinator);assert.equal(agent.host.children.get('media-fixture:protocol'),child);assert.equal(child.pid,originalPid);assert.equal(child.exitCode,null);
   const installed=agent.bilibili;assert.equal((await installBilibiliRuntime(agent,'b'.repeat(64))).unchanged,true);assert.equal(agent.bilibili,installed);
   const firstTick=agent.tick,firstShutdown=agent.shutdown;
   const query=db.query.bind(db);db.query=async(sql:any,args?:any)=>{if(String(sql).includes('tool_service_cooldowns'))throw Error('fixture database interruption');return query(sql,args)};
@@ -56,9 +56,7 @@ test('Bilibili maintenance keeps current coordinator and child owners, and rolls
    assert.equal(agent.shutdown,firstShutdown,'reinstall stacked another shutdown wrapper');
   }
   const current=agent.bilibili;let activeTicks=0;current.tick=()=>{activeTicks++};
-  // Current native tick already calls Bilibili; the existing maintenance hook
-  // also covers older cached ticks. The executor mutex gates that fixed pair.
-  await agent.tick();assert.equal(activeTicks,2,'releases must not grow the native-plus-maintenance tick chain');
+  await agent.tick();assert.equal(activeTicks,1,'canonical tick owns exactly one current Bilibili admission');
   await new Promise(r=>setTimeout(r,150));await agent.host.logWrites.get('media-fixture');assert.match(await readFile(path.join(childRoot,'runtime.log'),'utf8'),/bili-pipe-alive/);
  }finally{await agent.bilibili.stop();await agent.autonomy.stop();await agent.host.stop('media-fixture','protocol');await db.close()}
 });

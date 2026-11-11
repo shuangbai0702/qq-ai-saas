@@ -8,7 +8,7 @@ function fixture(){
  const group={id:'group-fixture',generation:3};let process:any={pid:123,created:456};const calls:any[]=[];
  const db:any={query:async(sql:string)=>sql.startsWith('SELECT generation,revision')?[{generation:7,revision:2,desired_state:'running'}]:[],transaction:async(fn:any)=>fn(db)};
  const host:any={endInspection:()=>{},inspect:async()=>process,stop:async(...args:any[])=>{calls.push(['stop',...args]);process=null}};
- const adapter=new SharedAstrBotAdapter(db,host,{} as any,'','',async()=>ctx);adapter.group=async()=>({...group});
+ const adapter=new SharedAstrBotAdapter(db,host,{} as any,'','');adapter.group=async()=>({...group});
  adapter.start=async received=>{assert.equal(received,ctx);calls.push(['start'])};
  return{adapter,host,db,group,calls,setProcess:(value:any)=>{process=value}};
 }

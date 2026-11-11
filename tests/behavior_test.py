@@ -2,6 +2,10 @@ import sys,tempfile,unittest,time
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
 from behavior import BehaviorStore,clean_text
+def reserve(store,scope,cfg,now):
+ import autonomy
+ return autonomy.reserve_send(store.db,scope,scope+'/test/'+str(now),cfg,now)
+
 class BehaviorTests(unittest.TestCase):
  def setUp(self):self.temp=tempfile.TemporaryDirectory();self.file=Path(self.temp.name)/'memory.db';self.s=BehaviorStore(self.file)
  def tearDown(self):self.s.close();self.temp.cleanup()
@@ -48,30 +52,30 @@ class BehaviorTests(unittest.TestCase):
  def test_rolling_hour_limit_persists_across_groups_and_isolates_bots(self):
   cfg={'behavior':{'hourlyInterjectionLimit':20}}
   for i in range(20):
-   self.assertTrue(self.s.reserve_interjection('group:a',cfg,1000+i))
+   self.assertTrue(reserve(self.s,'group:a',cfg,1000+i))
    self.s.db.execute("UPDATE autonomy_sends SET state='sent' WHERE at=?",(1000+i,));self.s.db.commit()
-  self.assertFalse(self.s.reserve_interjection('group:a',cfg,1021))
-  self.assertFalse(self.s.reserve_interjection('group:b',cfg,1021))
+  self.assertFalse(reserve(self.s,'group:a',cfg,1021))
+  self.assertFalse(reserve(self.s,'group:b',cfg,1021))
   self.s.close();self.s=BehaviorStore(self.file)
-  self.assertFalse(self.s.reserve_interjection('group:a',cfg,4599))
-  self.assertTrue(self.s.reserve_interjection('group:a',cfg,4600))
-  self.assertFalse(self.s.reserve_interjection('group:a',cfg,4600.1))
+  self.assertFalse(reserve(self.s,'group:a',cfg,4599))
+  self.assertTrue(reserve(self.s,'group:a',cfg,4600))
+  self.assertFalse(reserve(self.s,'group:a',cfg,4600.1))
   other=BehaviorStore(Path(self.temp.name)/'other.db')
-  try:self.assertTrue(other.reserve_interjection('group:a',cfg,1021))
+  try:self.assertTrue(reserve(other,'group:a',cfg,1021))
   finally:other.close()
  def test_approved_group_entry_not_blocked_by_timer_daily_budget(self):
   cfg={'trigger':'mention','behavior':{'quietStart':0,'quietEnd':0,'randomReplyProbability':.2,'dailyProactiveLimit':0}}
-  self.assertTrue(self.s.eligible(cfg,'group:a','123',True,'聊天',now=1000,rng=lambda:0))
-  self.assertFalse(self.s.reserve_interjection('group:a',{'behavior':{'hourlyInterjectionLimit':0}},1000))
+  self.assertTrue(self.s.eligible(cfg,'group:a','123',True,'聊天',now=1000))
+  self.assertFalse(reserve(self.s,'group:a',{'behavior':{'hourlyInterjectionLimit':0}},1000))
   self.assertTrue(self.s.eligible(cfg,'group:a','123',True,'你好',now=1001))
- def test_unmentioned_silence(self):self.assertFalse(self.s.eligible({'trigger':'mention'},'g','123',False,'路过',now=100,rng=lambda:1))
+ def test_unmentioned_silence(self):self.assertFalse(self.s.eligible({'trigger':'mention'},'g','123',False,'路过',now=100))
  def test_private_and_mention(self):self.assertTrue(self.s.eligible({'trigger':'mention'},'p','',False,'你好',now=100));self.assertTrue(self.s.eligible({'trigger':'mention'},'g','123',True,'你好',now=100))
  def test_whitelist(self):self.assertFalse(self.s.eligible({'trigger':'all','groups':['456']},'g','123',True,'你好',now=100))
  def test_cooldown(self):
   c={'trigger':'all','behavior':{'cooldownSeconds':10}};self.assertTrue(self.s.eligible(c,'g','123',True,'a',now=100));self.assertFalse(self.s.eligible(c,'g','123',True,'b',now=101));self.assertTrue(self.s.eligible(c,'g','123',True,'c',now=111))
  def test_legacy_random_never_bypasses_semantic_entry(self):
   # Legacy probability cannot wake a cold group at either hour.
-  c={'trigger':'mention','behavior':{'randomReplyProbability':0.2}};self.assertFalse(self.s.eligible(c,'g','123',False,'a',now=16*3600,rng=lambda:0));self.assertFalse(self.s.eligible(c,'g','123',False,'a',now=24*3600,rng=lambda:0))
+  c={'trigger':'mention','behavior':{'randomReplyProbability':0.2}};self.assertFalse(self.s.eligible(c,'g','123',False,'a',now=16*3600));self.assertFalse(self.s.eligible(c,'g','123',False,'a',now=24*3600))
  def test_silence_marker(self):
   # Deployed marker contract is exact-match only: a standalone [NO_REPLY]
   # silences the reply; prose that merely mentions the marker must reach the
