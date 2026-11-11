@@ -2,7 +2,7 @@ import {behaviorDefaults} from './behavior-defaults.js';
 export {behaviorDefaults,behaviorDefaultsVersion} from './behavior-defaults.js';
 import {fishSocialPreset} from './fish-social-preset.js';
 export {applyFishSocialPreset,fishSocialPreset} from './fish-social-preset.js';
-import {fishPrompt} from './fish-persona.js';
+import {fishPrompt,quoteReplyPolicy} from './fish-persona.js';
 export {fishPrompt} from './fish-persona.js';
 import { z } from 'zod';
 export const LoginStates = ['created','starting','qr_ready','waiting_scan','waiting_confirm','verification_required','authenticating','online','expired','canceled','failed'] as const;
@@ -36,5 +36,5 @@ export interface ProtocolAdapter {
   queryIdentity(ctx:RuntimeContext):Promise<string|null>;getCapabilities():string[];
   getHealth(ctx:RuntimeContext):Promise<Health>;stop(botId:string):Promise<void>;exportSessionRef(ctx:RuntimeContext):Promise<string>;
 }
-export const personas=[{id:'dafeiyu',name:'大肥鱼',description:'嘴硬心软 · 简短自然 · 群聊伙伴',prompt:fishPrompt},{id:'helpful',name:'温和助手',description:'耐心清楚 · 准确回答',prompt:'你是一位温和、清楚、可靠的聊天伙伴。简短回答，依据真实上下文，不编造记忆。'},{id:'custom',name:'自定义角色',description:'自由设定你的聊天伙伴',prompt:'请用自然、友好的中文交流，尊重真实信息与对话边界。'}];
+export const personas=[{id:'dafeiyu',name:'大肥鱼',description:'嘴硬心软 · 简短自然 · 群聊伙伴',prompt:fishPrompt},{id:'helpful',name:'温和助手',description:'耐心清楚 · 准确回答',prompt:'你是一位温和、清楚、可靠的聊天伙伴。简短回答，依据真实上下文，不编造记忆。\n'+quoteReplyPolicy},{id:'custom',name:'自定义角色',description:'自由设定你的聊天伙伴',prompt:'请用自然、友好的中文交流，尊重真实信息与对话边界。\n'+quoteReplyPolicy}];
 export const defaultConfig:BotConfig=BotConfigSchema.parse({personaId:'dafeiyu',systemPrompt:fishPrompt,provider:'deepseek',baseUrl:'https://api.deepseek.com/v1',model:'deepseek-chat',trigger:'mention',groups:[],...fishSocialPreset});
