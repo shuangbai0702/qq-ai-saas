@@ -130,12 +130,16 @@ class JournalTests(unittest.TestCase):
         update=json.loads(second.wire[-1]['content'].split('\n',1)[1])
         self.assertTrue(second.wire[-1]['content'].startswith(EVENT_CONTEXT_CURRENT+'\n'))
         self.assertNotIn('policy',update)
-        self.assertEqual(update['authority']['identity'],'speaker-2')
+        previous=json.loads(first.authority['content'].split('\n',1)[1])
+        restored=apply_changes(previous,update['eventChanges']) if 'eventChanges' in update else {**previous,**update}
+        self.assertEqual(restored,json.loads(latest['content'].split('\n',1)[1]))
         self.assertTrue(self.j.commit(second))
         base+=[{'role':'assistant','content':'second reply'},{'role':'user','content':'another'}]
         third=self.j.prepare(base+[event_packet('speaker-3',policy='changed-policy'),packet(self.state)],'binding',now=3,strict=True,compact_policy=True)
         update=json.loads(third.wire[-1]['content'].split('\n',1)[1])
-        self.assertEqual(update['policy'],'changed-policy')
+        restored=apply_changes(restored,update['eventChanges']) if 'eventChanges' in update else {**restored,**update}
+        self.assertEqual(restored,json.loads(third.authority['content'].split('\n',1)[1]))
+        self.assertEqual(restored['policy'],'changed-policy')
         self.assertEqual(third.wire[:len(second.wire)],second.wire)
 
     def test_35_turn_policy_compaction_preserves_every_prefix_and_complete_state(self):
