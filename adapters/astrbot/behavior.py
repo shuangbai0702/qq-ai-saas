@@ -153,7 +153,10 @@ class BehaviorStore:
     def reserve_interjection(self,scope,cfg,now=None):
         event='legacy-'+str(now if now is not None else time.time())+'-'+scope
         return autonomy.reserve_send(self.db,scope,event,cfg,now)
-    def close(self):self.pipeline.close();self.planner.close();self.memory.close();self.reflection.close();self.social.close();autonomy.recover_unstarted(self.db);self.db.close()
+    def close(self):
+        probe=getattr(self,'_model_probe_task',None)
+        if probe and not probe.done():probe.cancel()
+        self.pipeline.close();self.planner.close();self.memory.close();self.reflection.close();self.social.close();autonomy.recover_unstarted(self.db);self.db.close()
 
 def is_no_reply_marker(text):return isinstance(text,str) and text.strip()=='[NO_REPLY]'
 
@@ -1411,6 +1414,8 @@ def install_runtime(core,settings):
                 speaker=json.loads(event.get_extra('_hosted_context','{}')).get('identity',{})
                 if event.get_extra('_hosted_initiative',False):
                     current_rules+='\n[本轮来源]这是机器人自己的主动表达机会，没有新的用户发言；话题建议不是对方的原话。自己的研究以第一人称自然分享，归于对方的说法须有真实对方事件支持。\n'
+                elif event.get_extra('_hosted_admin_debug'):
+                    current_rules+='\n[管理员调试]这是平台调试事件，不是当前QQ联系人的发言；sender=0无主人权限，最终文字只返回管理员，不发送QQ，不登记业务轮。\n'
                 elif not event.get_extra('_hosted_internal_work'):
                     current_rules+='\n[本轮真实发言者]'+json.dumps({'sender_id':speaker.get('sender_id'),'owner_id':speaker.get('owner_id'),'relationship':'已绑定主人' if speaker.get('owner') else '普通聊天对象；不是主人'},ensure_ascii=False)+'。这标识作者，不表示必须回复；群聊是否需要接话仍结合participation_entry与实际对象判断。不要把其他人的话或旧回复的称呼移到当前对象身上。\n'
             except (TypeError,ValueError):pass
@@ -2112,6 +2117,9 @@ def install_runtime(core,settings):
         s=settings.get(id)
         if s is None:return {'error':'机器人当前未就绪','status':409}
         st=store(id,s)
+        if data.get('action') in ('admin_model_probe','admin_model_probe_status'):
+            from model_probe_admin import manage as manage_probe,request as request_probe
+            return manage_probe(st,data,care,lambda value:request_probe(brain,id,st,s,value))
         if data.get('action') in ('admin_force_compress','admin_force_compress_status'):
             from compression_admin import manage as manage_compression
             return manage_compression(st,data,care)
