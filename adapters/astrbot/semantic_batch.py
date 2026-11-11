@@ -188,7 +188,7 @@ def _purge(db,checkpoint_id):
                 if event_key(scope,event) in members:events.add(event)
     # These exact source copies may outlive the hot memory rows (including a
     # retry after an older version purged them). Recover only hashed members.
-    for table,column in (('relation_evidence','event'),('relation_events','event'),('companion_seen','event'),
+    for table,column in (('social_samples','event'),('dialogue_feedback','event'),('relation_evidence','event'),('relation_events','event'),('companion_seen','event'),
                          ('companion_signals','event'),('pipeline_quote_sources','message'),('fishbot_shared_inputs','event')):
         if table not in tables:continue
         query='SELECT scope,'+column+' FROM '+table

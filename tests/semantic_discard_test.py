@@ -60,6 +60,20 @@ class DiscardTests(unittest.IsolatedAsyncioTestCase):
         r,db=self.prepare(34);self.assertFalse(r.retry());self.assertEqual(self.requests,[])
         self.assertIsNone(db.execute('SELECT 1 FROM memory_semantic_batches').fetchone())
 
+    async def test_orphan_pool_is_model_input_then_whole_batch_purge_protects_future(self):
+        r,db=self.prepare()
+        db.execute("INSERT INTO social_samples(scope,event,subject,text,created) VALUES('group:55555','orphan','87654321','ORPHAN_REAL_TEXT',50)")
+        db.execute("INSERT INTO social_samples(scope,event,subject,text,created) VALUES('group:55555','future','87654321','NEW_BATCH_KEEP',500)")
+        db.commit();r.force_compress_once(allow_partial=True,administrator='admin',request_id='orphan')
+        outcome=await r.task;self.assertTrue(outcome['ok'],outcome)
+        wire=model_json(self.requests[0]['messages']);self.assertIn('ORPHAN_REAL_TEXT',wire);self.assertNotIn('NEW_BATCH_KEEP',wire)
+        checkpoint=outcome['checkpoint']['id']
+        with db:
+            db.execute("UPDATE memory_semantic_batches SET state='retired' WHERE checkpoint_id=?",(checkpoint,))
+            semantic_batch.purge(db,checkpoint)
+        self.assertIsNone(db.execute("SELECT 1 FROM social_samples WHERE event='orphan'").fetchone())
+        self.assertIsNotNone(db.execute("SELECT 1 FROM social_samples WHERE event='future'").fetchone())
+
     async def test_loss_requires_administrator_and_failed_model_keeps_everything(self):
         r,db=self.prepare()
         with self.assertRaises(PermissionError):r.force_compress_once(discard_unavailable=True)

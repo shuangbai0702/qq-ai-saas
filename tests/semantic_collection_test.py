@@ -34,6 +34,18 @@ class CollectionTests(unittest.TestCase):
         self.db.execute('INSERT INTO memory_checkpoint_archives VALUES(?,?,?,?)',(key,2,payload,hashlib.sha256(payload.encode()).hexdigest()))
         return payload
     def collect(self,payload=None):return semantic_collection.collect(self.db,'bot_shared',100,payload or [])
+    def test_orphan_observation_pools_join_existing_batch_without_forged_original(self):
+        self.db.execute("INSERT INTO social_samples(scope,event,subject,text,created) VALUES('group:55555','sample-only','87654321','ACTUAL_ORPHAN_TEXT',50)")
+        self.db.execute("INSERT INTO companion_seen VALUES('private:12345678','seen-only',60)")
+        calls=[]
+        rows=semantic_collection.collect(self.db,'bot_shared',100,[],lambda scope,events:calls.append((scope,events)),discard_unavailable=True)
+        self.assertEqual(len(rows),0);self.assertEqual(len(rows.discarded),2)
+        self.assertIn('ACTUAL_ORPHAN_TEXT',model_json(rows.discarded))
+        self.assertIn('group:55555',{scope for scope,events in calls})
+        before=semantic_collection.unavailable_stamp(self.db,rows.discarded)
+        self.db.execute("UPDATE social_samples SET text='NEW_RECOVERED_TEXT' WHERE event='sample-only'")
+        self.assertNotEqual(before,semantic_collection.unavailable_stamp(self.db,rows.discarded))
+        self.assertIsNone(self.db.execute('SELECT 1 FROM memory_round_material').fetchone())
     def test_unknown_occurrence_time_uses_real_later_order_bound_only(self):
         first=event_message({'scope':self.channel,'sender_id':'12345678','event_id':'unknown-time'},'real old text')
         self.archive([first,self.message(event='next',at=90)])
@@ -198,10 +210,13 @@ class SharedCollectionProviderWire(unittest.IsolatedAsyncioTestCase):
         for digest,raw in blobs.items():db.execute('INSERT INTO fishbot_readonly_journal_blobs VALUES(?,?,?)',(value['scope'],digest,raw))
         db.execute('INSERT INTO memory_checkpoint_archives VALUES(?,?,?,?)',(value['scope'],2,encoded,hashlib.sha256(encoded.encode()).hexdigest()))
         db.execute('INSERT INTO memory_summaries(scope,text,sources,updated) VALUES(?,?,?,?)',('group:55555','LEGACY_SUMMARY_BODY_FULL','["OBSOLETE_SOURCE_INDEX"]',60));db.commit()
+        db.execute("INSERT INTO social_samples(scope,event,subject,text,created) VALUES('group:55555','orphan-sample','87654321','ACTUAL_ORPHAN_SAMPLE_NOT_A_COMPLETE_ORIGINAL',55)")
+        db.commit()
         await self.summarize();self.assertEqual(len(self.requests),1)
         wire=model_json(self.requests[0]['messages']);self.assertIn(original,wire);self.assertIn('LEGACY_SUMMARY_BODY_FULL',wire);self.assertNotIn('OBSOLETE_SOURCE_INDEX',wire)
         images=[p['image_url']['url'] for m in self.requests[0]['messages'] if isinstance(m.get('content'),list) for p in m['content'] if p.get('type')=='image_url']
         self.assertEqual(images,[self.image])
+        self.assertIn('ACTUAL_ORPHAN_SAMPLE_NOT_A_COMPLETE_ORIGINAL',wire)
         self.assertEqual(db.execute('SELECT round_count FROM memory_reconstruction_checkpoints').fetchone()[0],35)
 
 
