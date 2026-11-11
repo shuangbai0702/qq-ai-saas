@@ -69,7 +69,8 @@ class Delivery(unittest.IsolatedAsyncioTestCase):
     async def test_unknown_partial_drop_and_missing_evidence_never_become_success(self):
         for n,(status,proof,complete,attempts,expected) in enumerate([
                 ('unknown',False,False,1,'unknown'),('partial',True,False,2,'partial'),
-                ('superseded',False,False,0,'not_sent'),('sent',False,True,1,'unknown')]):
+                ('superseded',False,False,0,'not_sent'),('silent',False,False,0,'not_sent'),
+                ('silent',False,False,1,'unknown'),('sent',False,True,1,'unknown')]):
             self.append('group:55555',str(n));self.settle('group:55555',str(n),status,proof=proof,complete=complete,attempted=attempts)
             row=shared.delivery_view(self.db,self.journal)[-1]
             self.assertEqual(row['delivery'],expected)

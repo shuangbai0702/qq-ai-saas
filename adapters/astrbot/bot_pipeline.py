@@ -840,7 +840,12 @@ class BotPipeline:
         with self.db:
             owned=self.db.execute('INSERT OR IGNORE INTO pipeline_scope_work VALUES(?,?,?,?,?)',(work.scope,work.event_id,work.subject,self.runtime,os.getpid())).rowcount
             work.scope_owner=bool(owned)
-            if owned:self.db.execute("UPDATE pipeline_work_inputs SET status='owned',owner=?,seen=0 WHERE scope=? AND status IN ('pending','queued','deferred')",(work.event_id,work.scope))
+            if owned:
+                # A legacy index without its protocol payload cannot become a
+                # new model input. Keep it visibly blocked for recovery, rather
+                # than making every live Work replan forever over an empty row.
+                self.db.execute("UPDATE pipeline_work_inputs SET status='blocked_recovery',owner=NULL WHERE scope=? AND status IN ('pending','queued','deferred') AND payload IS NULL",(work.scope,))
+                self.db.execute("UPDATE pipeline_work_inputs SET status='owned',owner=?,seen=0 WHERE scope=? AND status IN ('pending','queued','deferred') AND payload IS NOT NULL",(work.event_id,work.scope))
         if not owned:work.stop('scope_work_owned_elsewhere','blocked')
         return bool(owned)
 
