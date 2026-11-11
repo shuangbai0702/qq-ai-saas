@@ -17,6 +17,7 @@ from astrbot.core.platform.message_type import MessageType
 from astrbot.core.message.components import Plain,At
 from astrbot.core.pipeline.scheduler import PipelineScheduler
 from behavior import install_runtime
+QUOTE_RULE='[引用习惯]私聊非必要不引用，直接回复；群聊非必要不引用，需要明确对象时优先@。仅确需指向某条原话时使用引用回复。'
 
 async def main():
     requests=[];pipeline_requests=[]
@@ -44,9 +45,10 @@ async def main():
             assert any(t.name=='propose_background_task' for t in tools)==active
             assert [t.name for t in tools]==(['propose_background_task','cancel_background_task'] if active else []),'durable delegation must not itself grant execution permissions'
             token=current_message_event.set(event)
-            try:await ProviderOpenAIOfficial.text_chat(NS(),prompt=event.get_message_str(),system_prompt='original persona',contexts=[])
+            try:await ProviderOpenAIOfficial.text_chat(NS(),prompt=event.get_message_str(),system_prompt='original persona\n'+QUOTE_RULE,contexts=[])
             finally:current_message_event.reset(token)
             system=requests[-1]['system']
+            assert system.count(QUOTE_RULE)==1,'configured quote preference must retain its System role'
             from context_transport import EVENT_CONTEXT_CURRENT
             current_packet=next(json.loads(m['content'].split('\n',1)[1]) for m in requests[-1]['contexts'] if isinstance(m.get('content'),str) and m['content'].startswith(EVENT_CONTEXT_CURRENT+'\n'))
             policy=current_packet['policy']
@@ -67,7 +69,7 @@ async def main():
             assert CHAT_SEMANTIC_GUARD not in policy,'stable guard duplicated into event policy'
             event.set_extra('_hosted_context',json.dumps({'conversation_candidate':True}))
             token=current_message_event.set(event)
-            try:await ProviderOpenAIOfficial.text_chat(NS(),prompt='candidate',system_prompt='original persona',contexts=[])
+            try:await ProviderOpenAIOfficial.text_chat(NS(),prompt='candidate',system_prompt='original persona\n'+QUOTE_RULE,contexts=[])
             finally:current_message_event.reset(token)
             candidate_system=requests[-1]['system'];marker='[群聊参与判断，先于回复格式与任务执行]'
             current_context=requests[-1]['contexts'][-1]
