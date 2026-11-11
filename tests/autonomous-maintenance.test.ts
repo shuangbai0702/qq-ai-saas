@@ -14,7 +14,8 @@ test('maintenance retains real child objects, PID and log pipes; reinstall is id
   const cachedPrototype=Object.create(Object.getPrototypeOf(agent));cachedPrototype.health=async()=>{throw Error('stale cached health')};Object.setPrototypeOf(agent,cachedPrototype);
   await agent.host.start('maintenance-fixture','protocol',process.execPath,[script],childRoot,process.env);
   const child=agent.host.children.get('maintenance-fixture:protocol')!;assert.ok(child.pid);const record=await agent.host.record('maintenance-fixture','protocol');assert.ok(record.created);
-  const result=await installAutonomousRuntime(agent,'a'.repeat(64));
+  const canonicalShutdown=agent.shutdown;const result=await installAutonomousRuntime(agent,'a'.repeat(64));
+  assert.equal(agent.shutdown,canonicalShutdown,'maintenance must retain canonical shutdown ownership');
   assert.equal(cachedPrototype.health,NodeAgent.prototype.health,'maintenance retained the old cached offline-policy closure');
   assert.equal(result.pid,process.pid);assert.equal(agent.host.children.get('maintenance-fixture:protocol'),child);assert.equal(child.exitCode,null);
   const coordinator=agent.autonomy;assert.equal((await installAutonomousRuntime(agent,'a'.repeat(64))).unchanged,true);assert.equal(agent.autonomy,coordinator);
@@ -42,7 +43,7 @@ test('Bilibili maintenance keeps current coordinator and child owners, and rolls
  try{
   await agent.host.start('media-fixture','protocol',process.execPath,[script],childRoot,process.env);
   const child=agent.host.children.get('media-fixture:protocol')!,coordinator=agent.autonomy,originalPid=child.pid;
-  const first=await installBilibiliRuntime(agent,'b'.repeat(64));assert.equal(first.pid,process.pid);assert.equal(agent.autonomy,coordinator);assert.equal(agent.host.children.get('media-fixture:protocol'),child);assert.equal(child.pid,originalPid);assert.equal(child.exitCode,null);
+  const canonicalShutdown=agent.shutdown;const first=await installBilibiliRuntime(agent,'b'.repeat(64));assert.equal(agent.shutdown,canonicalShutdown);assert.equal(first.pid,process.pid);assert.equal(agent.autonomy,coordinator);assert.equal(agent.host.children.get('media-fixture:protocol'),child);assert.equal(child.pid,originalPid);assert.equal(child.exitCode,null);
   const installed=agent.bilibili;assert.equal((await installBilibiliRuntime(agent,'b'.repeat(64))).unchanged,true);assert.equal(agent.bilibili,installed);
   const firstTick=agent.tick,firstShutdown=agent.shutdown;
   const query=db.query.bind(db);db.query=async(sql:any,args?:any)=>{if(String(sql).includes('tool_service_cooldowns'))throw Error('fixture database interruption');return query(sql,args)};

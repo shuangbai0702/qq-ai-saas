@@ -8,7 +8,7 @@ import {useLifetime} from './hooks';
 
 export function CapabilityManager({id,config,onChange,revision,appliedRevision,view='overview'}:{view?:'overview'|'data';id:string;config:BotConfig;onChange:(c:BotConfig)=>void;revision:number;appliedRevision:number}){
  if(view==='data')return <BehaviorData key={id} id={id}/>;
- const b:Partial<NonNullable<BotConfig['behavior']>>=config.behavior||{};const update=(key:string,value:boolean)=>onChange({...config,behavior:{...b,[key]:value} as NonNullable<BotConfig['behavior']>});
+ const b:Partial<NonNullable<BotConfig['behavior']>>=config.behavior||{};
  const capabilities=[
   {key:'groupParticipationEnabled',name:'群语义参与判断',value:b.groupParticipationEnabled??true,description:'仅白名单群有新消息且距上次判断或真实互动至少设定间隔（默认10分钟）时判断；正在跟聊不重复等待。',link:'chat'},
   {key:'ownerContactEnabled',name:'定时关心主人',value:b.ownerContactEnabled??true,description:'定时判断是否自然私聊主人；主人在群里与它交流也会推迟联系，未回应时不追问。',link:'proactive'},

@@ -17,7 +17,6 @@ test('one bounded inspection sweep validates PID ownership and invalidates befor
   await host.stop(id,'ai');await closed;await host.logWrites.get(id);assert.equal(await host.inspect(id,'ai'),null,'snapshot invalidated on stop');
   const stopped=await readFile(path.join(cwd,'runtime.log'),'utf8');assert.match(stopped,/stop requested .*intent=managed-stop/);assert.match(stopped,/process exited .* signal=.* intent=managed-stop/);
   await writeFile(host.file(id,'ai'),JSON.stringify({pid:process.pid,created:0}));await host.beginInspection();assert.equal(await host.inspect(id,'ai'),null,'wrong argv/creation never accepted');host.endInspection();
-  assert.equal(host.secrets.size,0,'rotated keys are not retained by host');
  }finally{host.endInspection();await import('node:fs/promises').then(fs=>fs.rm(host.file(id,'ai'),{force:true}))}
 });
 

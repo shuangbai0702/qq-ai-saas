@@ -17,7 +17,7 @@ async function availableHealthPort(db:Sql,preferred?:number,groupId=''){
  throw new Error('共享运行组没有可绑定的本机健康端口');
 }
 export class SharedAstrBotAdapter {
- constructor(private db:Sql,private host:ProcessHost,private dedicated:AstrBotAdapter,private source:string,private python:string,private context:(bot:any)=>Promise<RuntimeContext>,private canAttach?:(ctx:RuntimeContext)=>Promise<boolean>){}
+ constructor(private db:Sql,private host:ProcessHost,private dedicated:AstrBotAdapter,private source:string,private python:string,_context:(bot:any)=>Promise<RuntimeContext>,private canAttach?:(ctx:RuntimeContext)=>Promise<boolean>){}
  async assign(id:string){return this.db.transaction(async tx=>{await tx.query('SELECT id FROM bots WHERE id=$1 FOR UPDATE',[id]);const [bot]=await tx.query('SELECT group_id FROM bots WHERE id=$1',[id]);if(bot.group_id)return(await tx.query('SELECT * FROM runtime_groups WHERE id=$1',[bot.group_id]))[0];
   // Single-node Agent serializes assignment. Lock the chosen group for PG too.
   let [group]=await tx.query('SELECT g.* FROM runtime_groups g WHERE (SELECT count(*) FROM group_members m WHERE m.group_id=g.id)<g.capacity ORDER BY g.created_at LIMIT 1 FOR UPDATE');

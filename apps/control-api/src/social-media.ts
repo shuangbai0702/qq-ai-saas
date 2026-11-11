@@ -36,7 +36,7 @@ export function registerSocialMedia(app:FastifyInstance,root:string,owned:(req:a
   const id=prefix+createHash('sha256').update(bytes).digest('hex').slice(0,16),dir=directory(req.params.id);
   return locked(req.params.id,async()=>{const list=await files(req.params.id);if(!list.includes(id+'.json')&&list.length>=limit)throw invalid('本分类最多'+limit+'张图片，请先删除旧图');await mkdir(dir,{recursive:true});
    const temporary=path.join(dir,randomUUID()+'.tmp'),image=path.join(dir,id+'.png'),existing=list.includes(id+'.json');let installed=false;
-   try{if(!existing){await writeFile(image,bytes,{mode:0o600,flag:'wx'}).catch((e:any)=>{if(e.code!=='EEXIST')throw e});installed=true}await writeFile(temporary,JSON.stringify({id,meaning:data.meaning,avoid:data.avoid}),{mode:0o600,flag:'wx'});await rename(temporary,path.join(dir,id+'.json'));return{id};}
+   try{if(!existing){try{await writeFile(image,bytes,{mode:0o600,flag:'wx'});installed=true}catch(e:any){if(e.code!=='EEXIST')throw e}}await writeFile(temporary,JSON.stringify({id,meaning:data.meaning,avoid:data.avoid}),{mode:0o600,flag:'wx'});await rename(temporary,path.join(dir,id+'.json'));return{id};}
    catch(e){if(installed)await rm(image,{force:true});throw e}finally{await rm(temporary,{force:true})}});
  });
  app.get<{Params:{id:string;image:string}}>(`/v1/bots/:id/${kind}/:image`,async(req,reply)=>{await owned(req,req.params.id);if(!pattern.test(req.params.image))throw invalid('图片不存在',404);const dir=directory(req.params.id);try{await metadata(req.params.id,req.params.image);return reply.header('Cache-Control','private, no-store').type('image/png').send(await readFile(path.join(dir,req.params.image+'.png')))}catch(e:any){if(e.code==='ENOENT')throw invalid('图片不存在',404);throw e}});

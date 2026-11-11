@@ -1,4 +1,4 @@
-import React,{useState,useEffect,useId} from 'react';import {KeyRound,RefreshCw,Loader2} from 'lucide-react';import type {BotConfig} from '../../../packages/contracts/index';import {api} from './api';
+import {useState,useEffect,useId} from 'react';import {KeyRound,RefreshCw,Loader2} from 'lucide-react';import type {BotConfig} from '../../../packages/contracts/index';import {api} from './api';
 import {defaultReasoningEffort,reasoningEfforts} from '../../../packages/shared/model-catalog-options';
 export function ModelFields({cfg,setCfg,apiKey,setKey,hasKey=false,botId}:{cfg:BotConfig;setCfg:(c:BotConfig)=>void;apiKey:string;setKey:(s:string)=>void;hasKey?:boolean;botId?:string}){
  const [catalog,setCatalog]=useState<any>(),[loading,setLoading]=useState(false),[refresh,setRefresh]=useState(0);const listId=useId();

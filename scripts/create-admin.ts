@@ -1,4 +1,4 @@
-import 'dotenv/config';import path from'node:path';import{randomUUID}from'node:crypto';import{access}from'node:fs/promises';import{openDatabase}from'../packages/database/index.js';import{hashPassword}from'../packages/shared/security.js';
+import 'dotenv/config';import path from'node:path';import{randomUUID}from'node:crypto';import{openDatabase}from'../packages/database/index.js';import{hashPassword}from'../packages/shared/security.js';
 const email=process.argv[2]?.toLowerCase(),password=process.env.BOOTSTRAP_ADMIN_PASSWORD;
 if(!email?.includes('@')||!password||password.length<12)throw new Error('先设置BOOTSTRAP_ADMIN_PASSWORD（至少12字符），再运行 npm run admin:create -- 邮箱；不通过注册表单授予管理员');
 const root=path.resolve(process.env.DATA_ROOT||'.local');

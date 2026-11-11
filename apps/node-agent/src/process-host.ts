@@ -4,7 +4,7 @@ import {StringDecoder} from 'node:string_decoder';
 import {AsyncLocalStorage} from 'node:async_hooks';
 const stopIntents=new WeakMap<ChildProcess,string>();
 export class ProcessHost {
-  children=new Map<string,ChildProcess>(); secrets=new Map<string,string[]>(); logWrites=new Map<string,Promise<void>>();
+  children=new Map<string,ChildProcess>(); logWrites=new Map<string,Promise<void>>();
   constructor(public root:string,public python:string){}
   private inspectionContext=new AsyncLocalStorage<{snapshot?:Map<string,any>}>();
   private get inspection(){return this.inspectionContext.getStore()?.snapshot}

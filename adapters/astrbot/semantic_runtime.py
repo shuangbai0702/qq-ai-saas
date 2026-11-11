@@ -318,8 +318,12 @@ def install_native_retirement_guard(manager,stores,settings):
         original_get=db.get_platform_message_history
         async def get(*args,**kwargs):
             platform=kwargs.get('platform_id',args[0] if args else None)
+            st=owner(platform);lease=settings.get(platform)
             rows=await original_get(*args,**kwargs)
-            st=owner(platform)
+            # A late SDK read belongs to the store/configuration that began it.
+            # Never reinterpret its rows under a replacement tenant binding or
+            # return them unfiltered after the original owner has been released.
+            if owner(platform) is not st or settings.get(platform) is not lease:return []
             if st is None:return rows
             members=_retired_members(st.db)
             if not members:return rows

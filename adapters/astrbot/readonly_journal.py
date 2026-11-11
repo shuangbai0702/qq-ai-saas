@@ -4,7 +4,7 @@ SDK windows supply new events, never authority to replace a committed prefix.
 Source identity, permissions, protocol receipts and legal summary coverage keep
 their own business authority; this Journal owns the exact submitted sequence.
 """
-import copy,hashlib,json,os,time,uuid
+import copy,hashlib,json,os,time
 import journal_storage
 from dataclasses import dataclass,replace
 from context_protocol import READONLY_CURRENT,model_json,source
@@ -991,7 +991,7 @@ class ReadonlyJournal:
             wire=copy.deepcopy(old.wire)+suffix
             use_b=reading_b_enabled()
             if use_b:
-                from context_reading import PROTOCOL_MESSAGE,extract_pool,encode_readonly,decode_readonly
+                from context_reading import PROTOCOL_MESSAGE,encode_readonly,decode_readonly
                 pool=reading_pool(old.wire)
             def define_reading():
                 if use_b and PROTOCOL_MESSAGE not in wire:wire.append(copy.deepcopy(PROTOCOL_MESSAGE))
@@ -1033,7 +1033,7 @@ class ReadonlyJournal:
                     if packet!={'readonlyChanges':operations}:define_reading()
                 wire.append({'role':'user','content':READONLY_CURRENT+'\n'+memory_json(packet)})
         else:
-            from context_foundation import arrange,execution_view
+            from context_foundation import execution_view
             state=execution_view(state)
             wire=reading_baseline(messages,state)
         usage=history_usage(wire);base_chars=old.base_chars if reuse else usage['textChars']
@@ -1047,7 +1047,6 @@ class ReadonlyJournal:
                 reconstruction_permit=self._reservation(reconstruction_authority,reconstruction_scope,request_id,summary_ids)
             if reconstruction_permit is None and guarded:
                 raise ContextCapacityExceeded('The append-only request journal reached its configured capacity before an authorized 35-round reconstruction checkpoint. Existing history is unchanged; an authenticated administrator may request compression.',usage=usage)
-            from context_foundation import arrange
             if reconstruction_permit and reconstruction_permit.get('semanticBatch'):
                 base=semantic_retire_projection(base,reconstruction_permit)
                 messages=semantic_retire_projection(messages,reconstruction_permit)
@@ -1078,7 +1077,7 @@ class ReadonlyJournal:
         if self.last is None or self._staged is not None or self.recovery_error or self.retired_reason:return False
         if self.db is None or getattr(authority,'db',None) is not self.db:return False
         if permit.get('scope')!=json.loads(self.scope_key):raise ContextPrefixViolation('semantic_batch_scope_changed')
-        from context_foundation import arrange,execution_view
+        from context_foundation import execution_view
         base=semantic_retire_projection(self.last.base,permit)
         state=execution_view(copy.deepcopy(state))
         messages=base+([copy.deepcopy(event_authority)] if event_authority is not None else [])
