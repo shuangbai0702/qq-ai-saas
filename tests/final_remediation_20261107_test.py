@@ -2,9 +2,9 @@
 
 A: submitted-unknown candidates are retained; provably unsent ones leave no
    trace; a crash after staging resumes on the staged candidate.
-B: this system's own tool round-trips become complete bounded v2 material;
-   held rounds recover without new 35 rounds and never re-pay for unsupported
-   or protected evidence.
+B: this system's own tool round-trips become bounded v2 material;
+   incomplete originals remain explicit and permit legal 35-round checkpoints,
+   without inventing confirmed replies or purging the next owned input.
 All offline: real SQLite, fake provider, no network, no QQ.
 """
 import asyncio,contextvars,copy,json,sqlite3,sys,tempfile,time,unittest
