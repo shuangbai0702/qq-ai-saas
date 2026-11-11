@@ -227,11 +227,6 @@ def conversation_context(store,cfg,scope,subject,query,now,state=None):
             'ambient_group_messages':[item for item in ambient if (item['sender_id'],item['text']) not in observed]})
 
 
-def finish_memory_view(store,shared,cfg,scope,query):
-    """Compatibility assembly hook; the foundation is already fixed and unique."""
-    return shared
-
-
 def protocol_experience(store,scope,query='',limit=6):
     """Read existing QQ receipts, including passive tools; never assistant prose."""
     db=store.db;tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}

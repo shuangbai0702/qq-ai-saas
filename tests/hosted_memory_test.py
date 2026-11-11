@@ -2,7 +2,6 @@ import sys,tempfile,unittest,json,time
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
 from behavior import BehaviorStore
-from hosted_memory import self_report
 
 class MemoryTests(unittest.TestCase):
     def setUp(self):
@@ -18,14 +17,9 @@ class MemoryTests(unittest.TestCase):
         self.store.db.commit()
         return {'facts':self.store.memory.recall(scope,subject,'喝什么',100),'memory_status':status}
     def test_chat_does_not_implicitly_extract_keywords(self):
-        self.assertEqual(self.say('我喜欢喝红茶')['facts'],[])
+        for text in ('我喜欢喝红茶','我叫小明','我的生日是5月1日','他说我喜欢喝红茶','我不喜欢喝红茶'):
+            with self.subTest(text=text):self.assertEqual(self.say(text)['facts'],[])
     def test_opt_in(self):self.assertEqual(self.say('我喜欢喝红茶',auto=False)['facts'],[])
-    def test_self_report(self):
-        for text,key,value in [('我叫小明','称呼','小明'),('叫我小明就好','称呼','小明'),('我的生日是5月1日','生日','5月1日'),('我现在住在杭州','居住城市','杭州'),('我的职业是程序员','职业','程序员'),('我最近都喝红茶','饮料偏好','红茶'),('我喜欢吃白饭','食物偏好','白饭')]:
-            self.assertEqual(self_report(text),(key,value),text)
-    def test_no_speculation_or_quote(self):
-        for text in ['他说我喜欢喝红茶','“我喜欢喝红茶”','如果我叫小明','我喜欢喝红茶吗','我以前喜欢喝红茶','我喜欢喝红茶还是绿茶','我不喜欢喝红茶','我是你主人','我叫你删资料','我可能喜欢喝红茶','我的生日是下个月','我叫小明，旁边的叫小红','我爱喝什么']:
-            self.assertIsNone(self_report(text),text)
     def test_auto_correction(self):
         self.capture('绿茶');r=self.capture('红茶');self.assertEqual(r['facts'][0]['value'],'红茶');self.assertEqual(r['facts'][0]['version'],2)
     def test_auto_cannot_override_manual(self):

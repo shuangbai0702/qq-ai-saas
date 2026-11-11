@@ -14,8 +14,7 @@ import {FavoriteMaintenance} from './favorite-maintenance.js';
 
 // Shutdown stays with the canonical Agent, which dynamically owns all three
 // maintenance workers in the verified deployment baseline.
-// Old live Agents may predate the bounded operation lanes.
-const controlBusy=(agent:NodeAgent)=>agent.controlIdle?!agent.controlIdle():agent.busy;
+const controlBusy=(agent:NodeAgent)=>!agent.controlIdle();
 
 /** Refresh only trusted frontend configuration transport; retain all owners. */
 export async function installForegroundContextRuntime(agent:NodeAgent,release:string){
@@ -45,8 +44,7 @@ export async function installFavoriteRuntime(agent:NodeAgent,release:string){
  if(!/^[a-f0-9]{64}$/.test(release)||agent.closed)throw new Error('Invalid favorite maintenance release');
  const marker=Symbol.for('fishbot.favorite.maintenance'),live=agent as any;
  if(live[marker]?.release===release&&!live.favorites?.closed)return{unchanged:true,pid:process.pid,release};
- const timer=agent.timer,originalTick=agent.tick,previous=live.favorites;
- const existing=live[marker]?.hooks,hooks=existing??{current:previous};
+ const timer=agent.timer,previous=live.favorites;
  if(timer)clearInterval(timer);agent.timer=undefined;
  const children=[...agent.host.children].map(([id,child])=>({id,child,pid:child.pid}));
  let installed:FavoriteMaintenance|undefined;
@@ -55,13 +53,10 @@ export async function installFavoriteRuntime(agent:NodeAgent,release:string){
   if(controlBusy(agent)||agent.closed)throw new Error('Agent did not reach a favorite maintenance boundary');
   await previous?.stop();installed=new FavoriteMaintenance(agent.db,agent.root,agent.key);
   for(const owned of children)if(agent.host.children.get(owned.id)!==owned.child||owned.child.pid!==owned.pid||owned.child.exitCode!==null)throw new Error('Protocol owner changed during favorite maintenance');
-  live.favorites=installed;hooks.current=installed;
-  if(!existing){
-   agent.tick=async()=>{await originalTick.call(agent);if(!agent.closed)hooks.current.tick()};
-  }
-  live[marker]={release,at:Date.now(),hooks};
+  live.favorites=installed;
+  live[marker]={release,at:Date.now()};
   return{pid:process.pid,release,preservedChildren:children.map(({id,pid})=>({id,pid}))};
- }catch(error){await installed?.stop();live.favorites=previous;hooks.current=previous;agent.tick=originalTick;if(previous)previous.closed=false;throw error}
+ }catch(error){await installed?.stop();live.favorites=previous;if(previous)previous.closed=false;throw error}
  finally{if(timer&&!agent.closed){agent.timer=setInterval(()=>void agent.tick().catch(error=>console.error('agent tick:',redact(String(error)))),500);agent.timer.unref()}}
 }
 
@@ -112,11 +107,7 @@ export async function installBilibiliRuntime(agent:NodeAgent,release:string){
  const marker=Symbol.for('fishbot.bilibili.maintenance'),live=agent as any;
  if(live[marker]?.release===release&&!live.bilibili?.stopped)return{unchanged:true,pid:process.pid,release};
  const {BilibiliExecutor}=await import('./bilibili/executor.js');
- const timer=agent.timer,originalTick=agent.tick,previous=live.bilibili;
- // Reuse one mutable owner across releases. Repeated maintenance must not
- // retain every old executor through another tick wrapper each time.
- const existingHooks=live[marker]?.hooks;
- const hooks=existingHooks??{current:previous};
+ const timer=agent.timer,previous=live.bilibili;
  if(timer)clearInterval(timer);agent.timer=undefined;
  const children=[...agent.host.children].map(([id,child])=>({id,child,pid:child.pid}));
  let installed:InstanceType<typeof BilibiliExecutor>|undefined;
@@ -125,14 +116,8 @@ export async function installBilibiliRuntime(agent:NodeAgent,release:string){
   if(controlBusy(agent)||agent.closed)throw new Error('Agent did not reach a Bilibili maintenance boundary');
   await previous?.stop();installed=new BilibiliExecutor(agent.db,agent.root,agent.key);await installed.recover();
   await installed.publishBridges();live.bilibili=installed;
-  // Calling an existing native tick is harmless: executor mutex/nextRun prevent
-  // double admission. The original heartbeat closure and pipe drainers survive.
-  hooks.current=installed;
-  if(!existingHooks){
-   agent.tick=async()=>{await originalTick.call(agent);if(!agent.closed)hooks.current.tick()};
-  }
   for(const owned of children)if(agent.host.children.get(owned.id)!==owned.child||owned.child.pid!==owned.pid||owned.child.exitCode!==null)throw new Error('Runtime owner changed during Bilibili maintenance');
-  live[marker]={release,at:Date.now(),hooks};return{pid:process.pid,release,preservedChildren:children.map(({id,pid})=>({id,pid})),autonomousCoordinator:agent.autonomy.owner};
- }catch(error){await installed?.stop();hooks.current=previous;agent.tick=originalTick;live.bilibili=previous;if(previous)previous.stopped=false;throw error}
+  live[marker]={release,at:Date.now()};return{pid:process.pid,release,preservedChildren:children.map(({id,pid})=>({id,pid})),autonomousCoordinator:agent.autonomy.owner};
+ }catch(error){await installed?.stop();live.bilibili=previous;if(previous)previous.stopped=false;throw error}
  finally{if(timer&&!agent.closed){agent.timer=setInterval(()=>void agent.tick().catch(error=>console.error('agent tick:',redact(String(error)))),500);agent.timer.unref()}}
 }

@@ -167,7 +167,7 @@ class ReadingJournalTests(unittest.TestCase):
         crashed = ReadonlyJournal(self.db, 'private:12345')
         self.assertEqual(crashed.last.wire, candidate.wire)
         self.assertEqual(restored_state(crashed.last.wire), candidate.state)
-        self.assertTrue(self.journal.retain_submitted(candidate, 'unknown'))
+        self.assertTrue(self.journal.retain_submitted(candidate))
         recovered = ReadonlyJournal(self.db, 'private:12345')
         self.assertEqual(recovered.last.wire, candidate.wire)
         self.assertEqual(recovered.last.wire[:len(self.a_wire)], self.a_wire)

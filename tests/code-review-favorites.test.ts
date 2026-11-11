@@ -37,3 +37,15 @@ test('web sync cannot overwrite concurrent maintenance retry state or invent man
  try{await withFavoriteIndex(root,'a',async()=>{const index=await readFavoriteIndex(root,'a');Object.assign(index.items[0],{semantic:uncertain,semanticStatus:'uncertain',semanticAttempts:2});await writeFavoriteIndex(root,'a',index)})}finally{release()}
  await pending;const index=await readFavoriteIndex(root,'a');assert.equal(index.items[0].semanticAttempts,2);assert.equal(index.items[0].manual,undefined);assert.equal(index.items[0].meaning,'');
 });
+
+test('HTTP edits share the canonical index lock and preserve current persisted metadata',async t=>{
+ const {root,app,url}=await fixture(t,undefined,true);
+ const index=await readFavoriteIndex(root,'a');index.auditMarker='retained';index.items[0].semanticFailures=2;
+ await writeFile(path.join(root,'bots/a/qq-favorites/index.json'),JSON.stringify(index,null,2));
+ const before=(await app.inject({url})).json();
+ const edits=await Promise.all(Array.from({length:8},(_,n)=>app.inject({url:url+'/'+id,method:'PATCH',payload:{expectedVersion:before.version,meaning:'欢迎时使用'+n}})));
+ assert.equal(edits.filter(r=>r.statusCode===200).length,1);
+ assert.equal(edits.filter(r=>r.statusCode===409).length,7);
+ const saved=await readFavoriteIndex(root,'a');assert.equal(saved.auditMarker,'retained');assert.equal(saved.items[0].semanticFailures,2);
+ assert.equal(saved.items[0].manual,true);assert.match(saved.items[0].meaning,/^欢迎时使用[0-7]$/);
+});

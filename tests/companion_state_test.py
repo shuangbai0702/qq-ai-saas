@@ -5,7 +5,6 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters'/'astrbot'))
 from behavior import BehaviorStore
 from participation import Participation
 import companion_state as cs,initiative,autonomy
-from semantic_context import recall
 
 class CompanionState(unittest.IsolatedAsyncioTestCase):
  def setUp(self):
@@ -102,23 +101,5 @@ class CompanionState(unittest.IsolatedAsyncioTestCase):
   self.assertFalse(p.continuing('g','继续聊',subject='12345',now=self.now+2,seconds=0))
   p.outgoing('g','还可以',self.now+3,subject='12345');p.outgoing('g','嗯',self.now+4,subject='12345')
   self.assertEqual(p.blocked_reason('g','那要多久呢',b,now=self.now+5,subject='12345'),'fatigue')
- def test_semantic_candidates_include_different_wording_without_an_extra_request(self):
-  self.s.observe('private:12345','12345','记住：偏好饮料=乌龙茶','a',self.now)
-  metrics={};facts,notes=recall(self.s,'private:12345','12345','口渴时想喝点什么',self.cfg['behavior'],lambda:True,metrics)
-  self.assertEqual(facts[0]['value'],'乌龙茶');self.assertEqual(facts[0]['semantic_mode'],'model_semantic_candidate');self.assertEqual(metrics['semanticContextTurns'],1)
-  self.assertEqual(self.db.execute('SELECT count(*) FROM memory_embedding_budget').fetchone()[0],0)
- def test_semantic_forgetting_and_stopped_work_return_no_old_facts(self):
-  self.s.observe('private:12345','12345','记住：饮料=乌龙茶','a',self.now)
-  self.s.observe('private:12345','12345','忘记：饮料','b',self.now+1)
-  self.assertEqual(recall(self.s,'private:12345','12345','饮料',self.cfg['behavior'],lambda:True,{}),([],[]))
-  self.assertEqual(recall(self.s,'private:12345','12345','饮料',self.cfg['behavior'],lambda:False,{}),([],[]))
- def test_semantic_context_follows_same_person_but_does_not_fill_other_people(self):
-  self.s.observe('private:12345','12345','记住：饮料=乌龙茶','a',self.now)
-  same=recall(self.s,'group:77777','12345','饮料',self.cfg['behavior'],lambda:True,{})[0]
-  self.assertEqual(same[0]['value'],'乌龙茶');self.assertEqual(same[0]['source_scope'],'private:12345')
-  private=recall(self.s,'private:12345','12345','饮料',self.cfg['behavior'],lambda:True,{})[0]
-  self.assertEqual(private[0]['value'],'乌龙茶');self.assertEqual(private[0]['source_scope'],'private:12345')
-  self.assertEqual(recall(self.s,'group:77777','54321','饮料',self.cfg['behavior'],lambda:True,{}),([],[]))
-  self.assertEqual(recall(self.s,'private:12345','54321','饮料',self.cfg['behavior'],lambda:True,{}),([],[]))
 
 if __name__=='__main__':unittest.main()

@@ -24,17 +24,11 @@ export type ProtocolKind=z.infer<typeof ProtocolSchema>;
 export interface RuntimeContext {botId:string;tenantId:string;root:string;generation:number;revision:number;systemChangePermitId?:string;aiPort:number;protocolPort:number;token:string;config:BotConfig;apiKey:string;expectedUin:string;runtimeMode?:'dedicated'|'shared';groupId?:string;loginIntent?:'qr'|'resume'}
 export interface Health {alive:boolean;ready:boolean;online?:boolean;pid?:number;rssBytes?:number;metrics?:Record<string,unknown>;detail?:string;mode?:string;memoryPolicy?:unknown;loginState?:LoginState}
 export interface LoginSnapshot {state:LoginState;qr?:string;uin?:string;message?:string}
-export interface AiAdapter {
-  provision(ctx:RuntimeContext):Promise<void>;start(ctx:RuntimeContext):Promise<void>;stop(botId:string):Promise<void>;
-  restart(ctx:RuntimeContext):Promise<void>;validateConfig(config:unknown):Promise<void>;
-  applyConfig(ctx:RuntimeContext):Promise<{appliedRevision:number;restartRequired:boolean}>;
-  getHealth(botId:string):Promise<Health>;
-}
 export interface ProtocolAdapter {
   provision(ctx:RuntimeContext):Promise<void>;beginLogin(ctx:RuntimeContext):Promise<void>;
   getLoginState(ctx:RuntimeContext):Promise<LoginSnapshot>;cancelLogin(ctx:RuntimeContext):Promise<void>;
   queryIdentity(ctx:RuntimeContext):Promise<string|null>;getCapabilities():string[];
-  getHealth(ctx:RuntimeContext):Promise<Health>;stop(botId:string):Promise<void>;exportSessionRef(ctx:RuntimeContext):Promise<string>;
+  getHealth(ctx:RuntimeContext):Promise<Health>;stop(botId:string):Promise<void>;
 }
 export const personas=[{id:'dafeiyu',name:'大肥鱼',description:'嘴硬心软 · 简短自然 · 群聊伙伴',prompt:fishPrompt},{id:'helpful',name:'温和助手',description:'耐心清楚 · 准确回答',prompt:'你是一位温和、清楚、可靠的聊天伙伴。简短回答，依据真实上下文，不编造记忆。\n'+quoteReplyPolicy},{id:'custom',name:'自定义角色',description:'自由设定你的聊天伙伴',prompt:'请用自然、友好的中文交流，尊重真实信息与对话边界。\n'+quoteReplyPolicy}];
 export const defaultConfig:BotConfig=BotConfigSchema.parse({personaId:'dafeiyu',systemPrompt:fishPrompt,provider:'deepseek',baseUrl:'https://api.deepseek.com/v1',model:'deepseek-chat',trigger:'mention',groups:[],...fishSocialPreset});

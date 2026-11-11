@@ -1,11 +1,10 @@
 import path from 'node:path';import {mkdir,writeFile,rename} from 'node:fs/promises';
-import {BotConfigSchema,type AiAdapter,type RuntimeContext,type Health} from '../../packages/contracts/index.js';
+import {BotConfigSchema,type RuntimeContext,type Health} from '../../packages/contracts/index.js';
 import {ProcessHost} from '../../apps/node-agent/src/process-host.js';
-export class AstrBotAdapter implements AiAdapter {
+export class AstrBotAdapter {
   constructor(private host:ProcessHost,private source:string,private python:string){}
-  async validateConfig(config:unknown){BotConfigSchema.parse(config)}
   async provision(ctx:RuntimeContext){
-    await this.validateConfig(ctx.config);
+    BotConfigSchema.parse(ctx.config);
     for(const dir of ['data','tmp','data/plugins','data/plugin_data','data/temp','data/config'])await mkdir(path.join(ctx.root,'ai',dir),{recursive:true});
     await this.applyConfig(ctx);
   }
@@ -32,7 +31,5 @@ export class AstrBotAdapter implements AiAdapter {
     await this.host.start(ctx.botId,'ai',this.python,[path.resolve('adapters/astrbot/headless.py'),this.source,root],root,env,[ctx.apiKey,ctx.token]);
   }
   async stop(botId:string){await this.host.stop(botId,'ai')}
-  async restart(ctx:RuntimeContext){await this.stop(ctx.botId);await this.start(ctx)}
-  async getHealth(botId:string):Promise<Health>{const p=await this.host.inspect(botId,'ai');return {alive:!!p,ready:false,...(p?{pid:p.pid,rssBytes:p.rssBytes,memoryPolicy:p.memoryPolicy}:{})}}
-  async probe(ctx:RuntimeContext):Promise<Health>{const h=await this.getHealth(ctx.botId);if(!h.alive)return h;try{const r=await fetch(`http://127.0.0.1:${ctx.aiPort+1}/health`,{headers:{Authorization:`Bearer ${ctx.token}`},signal:AbortSignal.timeout(1500)});const data:any=await r.json();return {...h,ready:r.ok&&data.generation===ctx.generation&&data.revision===ctx.revision,metrics:data.metrics?.qq,detail:data.modelConfigured?'模型已配置，API可用性需实际对话验证':'尚未配置模型Key'}}catch{return h}}
+  async probe(ctx:RuntimeContext):Promise<Health>{const p=await this.host.inspect(ctx.botId,'ai');const h:Health={alive:!!p,ready:false,...(p?{pid:p.pid,rssBytes:p.rssBytes,memoryPolicy:p.memoryPolicy}:{})};if(!h.alive)return h;try{const r=await fetch(`http://127.0.0.1:${ctx.aiPort+1}/health`,{headers:{Authorization:`Bearer ${ctx.token}`},signal:AbortSignal.timeout(1500)});const data:any=await r.json();return {...h,ready:r.ok&&data.generation===ctx.generation&&data.revision===ctx.revision,metrics:data.metrics?.qq,detail:data.modelConfigured?'模型已配置，API可用性需实际对话验证':'尚未配置模型Key'}}catch{return h}}
 }

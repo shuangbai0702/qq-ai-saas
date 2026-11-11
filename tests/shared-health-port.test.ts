@@ -41,7 +41,7 @@ test('workerless shared restart repairs an occupied health port and preserves gr
  await mkdir(ctx.root,{recursive:true});const journal=path.join(ctx.root,'journal-preservation-fixture');await writeFile(journal,'durable journal fixture');
  let starts=0;const worker=http.createServer((req,res)=>{res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ready:true,generation:10}))});t.after(()=>close(worker));
  const host:any={root,endInspection:()=>{},inspect:async()=>null,start:async(id:string,kind:string,python:string,args:string[],cwd:string)=>{starts++;assert.equal(id,group.id);const manifest=JSON.parse(await readFile(path.join(cwd,'group.json'),'utf8'));assert.equal(manifest.token,group.token);assert.equal(manifest.generation,10);assert.notEqual(manifest.healthPort,port);await listen(worker,manifest.healthPort)}};
- const adapter=new SharedAstrBotAdapter(db,host,{} as any,'unused','unused',async()=>ctx);let attached=0;adapter.attach=async()=>{attached++};
+ const adapter=new SharedAstrBotAdapter(db,host,{} as any,'unused','unused');let attached=0;adapter.attach=async()=>{attached++};
  await adapter.start(ctx);const[current]=await db.query('SELECT * FROM runtime_groups WHERE id=$1',[group.id]);
  assert.equal(starts,1);assert.equal(attached,1);assert.equal(current.id,group.id);assert.equal(current.token,group.token);assert.equal(current.generation,10);assert.notEqual(current.health_port,port);assert.equal((worker.address() as net.AddressInfo).port,current.health_port);
  assert.equal((await db.query('SELECT group_id FROM bots WHERE id=$1',[bot.id]))[0].group_id,group.id);assert.equal(await readFile(journal,'utf8'),'durable journal fixture');
@@ -52,13 +52,13 @@ test('fresh owned worker truth preserves its occupied port and generation despit
  const worker=net.createServer(),port=await listen(worker);t.after(()=>close(worker));await db.query('UPDATE runtime_groups SET health_port=$2,generation=9 WHERE id=$1',[group.id,port]);
  const[bot]=await db.query('SELECT * FROM bots WHERE id=$1',[ids[0]]),ctx=await agent.context(bot);let cached=true,starts=0,attached=0;
  const host:any={root,endInspection:()=>{cached=false},inspect:async()=>cached?null:{pid:123,created:456},start:async()=>{starts++}};
- const adapter=new SharedAstrBotAdapter(db,host,{} as any,'unused','unused',async()=>ctx);adapter.attach=async()=>{attached++};await adapter.start(ctx);
+ const adapter=new SharedAstrBotAdapter(db,host,{} as any,'unused','unused');adapter.attach=async()=>{attached++};await adapter.start(ctx);
  const[current]=await db.query('SELECT * FROM runtime_groups WHERE id=$1',[group.id]);assert.equal(starts,0);assert.equal(attached,1);assert.equal(current.health_port,port);assert.equal(current.generation,9);assert.equal(current.token,group.token);assert.equal(worker.listening,true);
 });
 
 for(const arrival of [2,3])test(`owned worker appearing at inspection ${arrival} prevents port replacement and duplicate spawn`,async t=>{
  const{db,agent,ids,root}=await fixture(t),group=await agent.shared.assign(ids[0]);const[bot]=await db.query('SELECT * FROM bots WHERE id=$1',[ids[0]]),ctx=await agent.context(bot);let inspections=0,starts=0;
  const host:any={root,endInspection:()=>{},inspect:async()=>++inspections<arrival?null:{pid:123,created:456},start:async()=>{starts++}};
- const adapter=new SharedAstrBotAdapter(db,host,{} as any,'unused','unused',async()=>ctx);adapter.attach=async()=>{};await adapter.start(ctx);
+ const adapter=new SharedAstrBotAdapter(db,host,{} as any,'unused','unused');adapter.attach=async()=>{};await adapter.start(ctx);
  const[current]=await db.query('SELECT * FROM runtime_groups WHERE id=$1',[group.id]);assert.equal(inspections,arrival);assert.equal(starts,0);assert.equal(current.health_port,group.health_port);assert.equal(current.generation,group.generation);assert.equal(current.token,group.token);
 });

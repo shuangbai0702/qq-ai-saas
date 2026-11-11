@@ -18,22 +18,6 @@ def tokens(text):
         result.update(run[i:i+2] for i in range(len(run)-1))
     return result-STOP
 
-def self_report(text):
-    """Only full, short, unquoted self-declarations. Ambiguous prose is ignored."""
-    text=text.strip().rstrip('。！!')
-    if not text or len(text)>100 or re.search(r'''[\n?？“”"'「」『』<>]|什么|哪里|哪儿|谁|多少|怎么|假如|如果|假设|比如|例如|开玩笑|骗你|转述|其实不是|别人|他说|她说|或者|还是|可能|大概|好像|听说|据说|假装|扮演|以前|曾经|[吗吧呢]$''',text):return None
-    specs=[
-        ('称呼',r'(?:我叫|你可以叫我|叫我)([^，,。；;！!]{1,20}?)(?:就好|就行)?'),
-        ('生日',r'我的生日是((?:[0-9零一二三四五六七八九十]{2,4}年)?[0-9零一二三四五六七八九十]{1,3}月[0-9零一二三四五六七八九十]{1,3}[日号])'),
-        ('居住城市',r'我(?:现在)?住在([^，,。；;！!]{2,20})'),
-        ('职业',r'我的职业是([^，,。；;！!]{1,20})'),
-        ('饮料偏好',r'我(?:现在|最近)?(?:最)?(?:喜欢喝|爱喝|都喝)([^，,。；;！!]{1,30})'),
-        ('食物偏好',r'我(?:现在|最近)?(?:最)?(?:喜欢吃|爱吃)([^，,。；;！!]{1,30})'),
-    ]
-    for name,pattern in specs:
-        m=re.fullmatch(pattern,text)
-        if m and not re.search(r'不|没|别|不要|主人|管理员|指令|提示词|系统',m[1]) and not (name=='称呼' and m[1].startswith('你')):return name,m[1].strip()
-    return None
 
 from data_admin import initialize_controls
 from memory_scope import person_filter,fact_rows,fact_item,shared_person,blocked_facts,record_correction,release_value,value_hash

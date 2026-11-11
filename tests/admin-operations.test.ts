@@ -8,6 +8,13 @@ test('admin metadata, bounded pagination and audited quota updates preserve tena
  assert.equal((await call('PUT',`/v1/admin/workspaces/${tenant.tenant_id}/quota`,{limit:3,expectedLimit:2,reason:'测试调整'},member.cookies)).statusCode,403);
  const health={sampledAt:new Date().toISOString(),protocol:{online:true,token:'PRIVATE-HEALTH-TOKEN'},ai:{ready:true},secret:'PRIVATE-HEALTH'};await db.query("UPDATE bots SET desired_state='running',observed_state='online',health=$2 WHERE id=$1",[id,JSON.stringify(health)]);
  const bots=await call('GET','/v1/admin/bots?q=90123456&filter=online');assert.equal(bots.statusCode,200,bots.body);assert.equal(bots.json().total,1);assert.equal(bots.json().items[0].aiReady,true);assert.ok(!bots.body.includes('PRIVATE'));assert.ok(!bots.body.includes('systemPrompt'));
+ for(const sampledAt of [new Date(Date.now()+8*3600000).toISOString().replace('Z','+08:00'),new Date().toISOString().replace('Z','z')]){
+  await db.query('UPDATE bots SET health=$2 WHERE id=$1',[id,JSON.stringify({...health,sampledAt})]);
+  const current=await call('GET','/v1/admin/bots?filter=online');assert.equal(current.json().total,1,current.body);assert.equal(current.json().items[0].online,true);
+ }
+ for(const invalid of [{...health,protocol:{online:'true'}},{...health,sampledAt:'2026-99-99T00:00:00Z'},{...health,sampledAt:'2026-11-12T99:00:00Z'}]){
+  await db.query('UPDATE bots SET health=$2 WHERE id=$1',[id,JSON.stringify(invalid)]);const current=await call('GET','/v1/admin/bots?filter=online');assert.equal(current.statusCode,200,current.body);assert.equal(current.json().total,0);
+ }
  await db.query('UPDATE bots SET health=$2 WHERE id=$1',[id,JSON.stringify({...health,sampledAt:new Date(Date.now()-100000).toISOString()})]);assert.equal((await call('GET','/v1/admin/bots?filter=online')).json().total,0);assert.equal((await call('GET','/v1/admin/bots?filter=attention')).json().total,1);
  const list=(await call('GET','/v1/admin/workspaces?q=member@ops.test')).json();assert.equal(list.total,1);assert.equal(list.items[0].used,1);assert.equal(list.items[0].members[0].email,'member@ops.test');assert.ok(!JSON.stringify(list).includes('password'));
  const results=await Promise.all([3,4].map(limit=>call('PUT',`/v1/admin/workspaces/${tenant.tenant_id}/quota`,{limit,expectedLimit:2,reason:'支持追加名额'})));assert.deepEqual(results.map(r=>r.statusCode).sort(),[200,409]);const limit=results.find(r=>r.statusCode===200)!.json().limit;

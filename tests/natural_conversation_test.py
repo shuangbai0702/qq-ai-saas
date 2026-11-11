@@ -4,7 +4,6 @@ from types import SimpleNamespace as NS
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters'/'astrbot'))
 from behavior import BehaviorStore
 from companion_insights import apply,snapshot
-from semantic_context import recall
 from data_admin import run
 import companion_state,emotion_state,qq_actions
 
@@ -30,28 +29,27 @@ class NaturalConversation(unittest.IsolatedAsyncioTestCase):
         self.summary('11111上次去平江路拍夜景，雨天还想再去。')
         for i in range(80):self.summary('无关项目的进度记录'+str(i),at=10+i)
         self.summary('平江路秘密约定',scope='group:2',at=200)
-        facts,summaries=recall(self.store,'group:1','11111','还记得平江路的夜景吗',self.cfg,lambda:True,{})
+        summaries=self.store.reflection.foundation('group:1')
         self.assertIn('平江路',summaries[0]['summary']);self.assertNotIn('秘密',json.dumps(summaries,ensure_ascii=False))
         # Fixed checkpoint summaries remain complete and chronological even
         # when the question changes; legacy overflow never creates retrieval.
         self.assertEqual(summaries,self.store.reflection.foundation('group:1'))
         self.assertEqual(len(summaries),2)
         self.assertEqual({s['recall_reason'] for s in summaries},{'checkpoint_foundation'})
-        _,other=recall(self.store,'group:1','11111','另一个完全不同的问题',self.cfg,lambda:True,{})
+        other=self.store.reflection.foundation('group:1')
         self.assertEqual(other,summaries)
-    def test_fact_index_obeys_person_scope_correction_and_forget(self):
+    def test_fact_recall_obeys_person_scope_correction_and_forget(self):
         self.fact('职业','木雕师');self.fact('职业','不应出现的私密职业',subject='22222')
-        result=self.store.search.search('group:1','11111','木雕师');self.assertEqual(result[0]['value'],'木雕师')
+        result=self.store.memory.recall('group:1','11111','木雕师',self.now);self.assertEqual(result[0]['value'],'木雕师')
         row=self.db.execute("SELECT version FROM facts WHERE subject='11111' AND active=1").fetchone()
         self.assertTrue(run(self.path,{'action':'forget_fact','scope':'group:1','subject':'11111','name':'职业','expectedVersion':row[0]},connection=self.db)['ok'])
-        self.assertEqual(self.store.search.search('group:1','11111','木雕师'),[])
-        self.assertEqual(self.db.execute("SELECT count(*) FROM memory_search WHERE subject='11111'").fetchone()[0],0)
-    def test_index_survives_restart_and_can_be_rebuilt(self):
-        self.fact('爱好','昆曲');self.assertTrue(self.store.search.search('group:1','11111','昆曲'))
+        self.assertEqual(self.store.memory.recall('group:1','11111','木雕师',self.now),[])
+        self.assertFalse(self.db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_search'").fetchone())
+    def test_fact_recall_survives_restart_without_a_search_index(self):
+        self.fact('爱好','昆曲');self.assertTrue(self.store.memory.recall('group:1','11111','昆曲',self.now))
         self.store.close();self.store=BehaviorStore(self.path);self.db=self.store.db
-        self.assertEqual(self.store.search.search('group:1','11111','昆曲')[0]['value'],'昆曲')
-        self.db.execute('DELETE FROM memory_search');self.db.commit()
-        self.assertTrue(self.store.search.search('group:1','11111','昆曲'))
+        self.assertEqual(self.store.memory.recall('group:1','11111','昆曲',self.now)[0]['value'],'昆曲')
+        self.assertTrue(self.store.memory.recall('group:1','11111','昆曲',self.now))
     def test_semantic_extraction_requires_author_evidence(self):
         payload=self.payload()
         self.extract(payload,{'facts':[{'event':'one','name':'居住城市','value':'苏州','quote':'我搬到了苏州','kind':'stable'},

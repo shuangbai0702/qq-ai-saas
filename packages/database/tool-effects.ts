@@ -66,7 +66,7 @@ export class ToolEffects {
  }
  async validate(job:any,settings?:any,db=this.db){
   const [bot]=await db.query('SELECT * FROM bots WHERE id=$1 AND tenant_id=$2',[job.bot_id,job.tenant_id]),s=settings??await this.settings(job.tenant_id,job.bot_id,db);
-  if(!bot||bot.deleted_at||bot.desired_state!=='running'||!runtimeStatus(bot).online||bot.generation!==job.generation||bot.revision!==job.config_revision||s.revision!==job.settings_revision||job.cancel_requested||+new Date(job.deadline_at)<=Date.now())throw toolConflict('工作或配置已失效，QQ必须真实在线');
+  if(!runtimeStatus(bot).online||bot.generation!==job.generation||bot.revision!==job.config_revision||s.revision!==job.settings_revision||job.cancel_requested||+new Date(job.deadline_at)<=Date.now())throw toolConflict('工作或配置已失效，QQ必须真实在线');
   await this.validateContinuation(job,db);
   const op=biliOperations[job.operation as keyof typeof biliOperations];if(!op)throw toolConflict('工具未实现',400);
   if(!biliOperationAllowed(s.config,job.operation))throw toolConflict('未授权该B站能力',403);
@@ -143,7 +143,7 @@ export class ToolEffects {
  })}
  async completion(bot:any){return this.db.transaction(async tx=>{
   const [job]=await tx.query("SELECT * FROM tool_effects WHERE bot_id=$1 AND tenant_id=$2 AND generation=$3 AND config_revision=$4 AND authority='foreground' AND origin_scope<>'' AND state IN ('finished','unknown','canceled') AND (completion_state='pending' OR completion_state='claimed' AND completion_until<now()) ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED",[bot.id,bot.tenant_id,bot.generation,bot.revision]);
-  if(!job||bot.desired_state!=='running'||!runtimeStatus(bot).online)return null;
+  if(!job||!runtimeStatus(bot).online)return null;
   const settings=await this.settings(bot.tenant_id,bot.id,tx);if(!settings.config.enabled||settings.revision!==job.settings_revision){await tx.query("UPDATE tool_effects SET completion_state='stale' WHERE id=$1",[job.id]);return null}
   const owner=randomUUID();await tx.query("UPDATE tool_effects SET completion_state='claimed',completion_owner=$2,completion_until=now()+interval '120 seconds' WHERE id=$1",[job.id,owner]);
   return{id:job.id,owner,workId:job.work_id,scope:job.origin_scope,senderId:job.sender_id,eventId:job.origin_event,objective:job.continuation.objective,result:job.result,generation:job.generation,revision:job.config_revision};

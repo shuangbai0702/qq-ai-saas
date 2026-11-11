@@ -82,7 +82,7 @@ class SubmissionEvidenceTests(unittest.TestCase):
 
     def test_submitted_unknown_candidate_is_retained_as_baseline(self):
         p=self.staged()
-        self.assertTrue(self.j.retain_submitted(p,'provider_request_sent'))
+        self.assertTrue(self.j.retain_submitted(p))
         self.assertEqual(self.j.last.wire,p.wire,'a possibly-received request must not fall back to a prefix without its tail')
         self.assertIsNone(self.j._staged)
         state,payload,sha=self.row()
@@ -105,7 +105,7 @@ class SubmissionEvidenceTests(unittest.TestCase):
             p=j2.prepare(incoming,('t','b',1),now=2,strict=True,guarded=True,reconstruction_authority=authority,reconstruction_scope=SCOPE)
             self.assertIsNotNone(p.reconstruction_permit,'the licensed rebuild minted a reservation')
             self.assertTrue(j2.stage_candidate(p))
-            self.assertTrue(j2.retain_submitted(p,'provider_stream_started'))
+            self.assertTrue(j2.retain_submitted(p))
         self.assertEqual(authority.rows[0][1],'consumed','an unknown-submission rebuild never returns its permit to available')
         self.assertEqual(j2.last.wire,p.wire)
 
@@ -211,7 +211,7 @@ class ToolRoundMaterialTests(unittest.TestCase):
         finally:
             st.close();tmp.cleanup()
 
-class HoldRecoveryTests(unittest.IsolatedAsyncioTestCase):
+class SemanticBatchRecoveryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.store=BehaviorStore(Path(self.tmp.name)/'behavior.sqlite');self.db=self.store.db
         self.var=contextvars.ContextVar('hr',default=None);self.now=time.time()-100000;self.calls=[]
@@ -222,7 +222,7 @@ class HoldRecoveryTests(unittest.IsolatedAsyncioTestCase):
             msg={'role':'user','content':[{'type':'text','text':material.SOURCE+json.dumps({'scope':SCOPE,'sender_id':'12345678','event_id':str(i)})+'\n普通话题'+str(i)}]}
             if i==0:
                 # Round 0's stored material is incomplete (media dropped by the
-                # store budget): it can only earn coverage after a repair.
+                # store budget): the batch must expose that missing portion.
                 incomplete=material.snapshots([msg],SCOPE)[0];incomplete['images']=[];incomplete['complete']=False
                 self.store.reflection.record(SCOPE,'12345678',str(i),'普通话题0','普通回复0',self.now+i,materials=[incomplete])
             else:
@@ -241,67 +241,63 @@ class HoldRecoveryTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
             if self.store.reflection.task is task:break
 
-    async def test_hold_recovers_without_new_rounds_and_promotes_pending(self):
+    async def test_incomplete_original_is_marked_and_35_round_checkpoint_is_available(self):
         self.rounds()
         metrics={}
         self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=self.chat()),lambda:True,metrics,self.var))
         await self.drain()
         row=self.db.execute('SELECT state,pending_events,summary_id FROM memory_reconstruction_checkpoints WHERE scope=?',(SCOPE,)).fetchone()
-        self.assertIsNotNone(row);self.assertEqual(row[0],'pending_coverage')
-        self.assertIn('0',row[1])
-        hold=self.db.execute('SELECT reason FROM memory_hold_rounds WHERE scope=? AND event=?',(SCOPE,'0')).fetchone()
-        self.assertEqual(hold[0],'uncovered')
+        self.assertIsNotNone(row);self.assertEqual(row[0],'available');self.assertIsNone(row[1])
+        prompt=json.loads(self.calls[0]['prompt'])
+        missing=prompt['incomplete_material'][0]
+        self.assertEqual(missing['event'],'0');self.assertEqual(missing['missing'],'incomplete_original')
+        self.assertTrue(missing['available_text'])
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_hold_rounds WHERE scope=?',(SCOPE,)).fetchone()[0],0)
         self.assertEqual(len(self.calls),1)
         watermark=self.db.execute('SELECT summary_watermark FROM memory_reflection_progress WHERE scope=?',(SCOPE,)).fetchone()[0]
-        # Repair the material from the committed journal (digest-bound recapture).
-        msg={'role':'user','content':[{'type':'text','text':material.SOURCE+json.dumps({'scope':SCOPE,'sender_id':'12345678','event_id':'0'})+'\n普通话题0'}]}
-        def recapture(scope,events):
-            self.assertEqual(scope,SCOPE);self.assertEqual(list(events),['0'])
-            material.remember(self.db,SCOPE,material.snapshots([msg],SCOPE))
-        self.store.reflection.recapture=recapture
-        self.assertTrue(self.store.reflection.retry(),'held evidence recovers without waiting for 35 new rounds')
+        self.assertFalse(self.store.reflection.retry(),'completed batch does not need a second model-paid Coverage repair')
         await self.drain()
-        promoted=self.db.execute('SELECT state FROM memory_reconstruction_checkpoints WHERE scope=?',(SCOPE,)).fetchone()[0]
-        self.assertEqual(promoted,'available','complete coverage promotes the pending identity into the license')
-        self.assertIsNone(self.db.execute('SELECT 1 FROM memory_hold_rounds WHERE scope=? AND event=?',(SCOPE,'0')).fetchone())
-        self.assertEqual(self.db.execute('SELECT summary_watermark FROM memory_reflection_progress WHERE scope=?',(SCOPE,)).fetchone()[0],watermark,'recovery earns no watermark movement')
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints').fetchone()[0],1,'recovery never mints an extra checkpoint')
-        self.assertEqual(metrics.get('holdRecoverySummaries'),1)
-        self.assertEqual(len(self.calls),2,'exactly one bounded recovery model call')
-
-    async def test_unsupported_hold_never_reaches_the_model(self):
-        self.rounds()
-        metrics={}
-        self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=self.chat()),lambda:True,metrics,self.var))
-        await self.drain()
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints').fetchone()[0],1)
+        self.assertEqual(self.db.execute('SELECT summary_watermark FROM memory_reflection_progress WHERE scope=?',(SCOPE,)).fetchone()[0],watermark)
         self.assertEqual(len(self.calls),1)
-        # Native-only reply without a confirmed delivery can never cover.
+
+    async def test_unconfirmed_native_reply_does_not_become_confirmed_semantic_evidence(self):
+        self.rounds()
         msg={'role':'user','content':[{'type':'text','text':material.SOURCE+json.dumps({'scope':SCOPE,'sender_id':'12345678','event_id':'0'})+'\n普通话题0'}]}
         item=material.snapshots([msg,{'role':'assistant','content':'仅模型历史的回复'}],SCOPE)[0]
-        item['reply']='';item['complete']=True
-        item['native_reply']='仅模型历史的回复'
+        item['reply']='';item['complete']=True;item['native_reply']='仅模型历史的回复'
         self.db.execute('UPDATE memory_round_material SET material=? WHERE scope=? AND event=?',(json.dumps(item,ensure_ascii=False),SCOPE,'0'));self.db.commit()
-        self.store.reflection.recapture=lambda scope,events:(_ for _ in ()).throw(AssertionError('recapture must not run for an already-complete material'))
-        self.assertFalse(self.store.reflection.retry(),'an uncoverable hold stays blocked instead of re-paying')
-        await asyncio.sleep(0)
-        self.assertEqual(len(self.calls),1,'no model call for unsupported evidence')
-        self.assertGreaterEqual(metrics.get('summaryHoldUnsupported'),1)
+        self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=self.chat()),lambda:True,{},self.var))
+        await self.drain()
+        self.assertEqual(len(self.calls),1)
+        prompt=json.loads(self.calls[0]['prompt'])
+        turn=next(row for row in prompt['turns'] if row['event']=='0')
+        self.assertNotEqual(turn.get('bot'),'仅模型历史的回复','SDK text never manufactures a confirmed QQ reply')
+        self.assertEqual(self.db.execute('SELECT state FROM memory_reconstruction_checkpoints WHERE scope=?',(SCOPE,)).fetchone()[0],'available')
+        self.assertFalse(self.store.reflection.retry())
+        self.assertEqual(len(self.calls),1,'no additional model call for an obsolete Hold lifecycle')
 
-    async def test_protected_hold_is_left_to_the_batch_path(self):
+    async def test_legacy_claim_budget_cannot_hold_batch_or_purge_new_owned_input(self):
+        import semantic_batch
         self.rounds()
-        metrics={}
         async def protected(**kw):
             self.calls.append(kw)
             return NS(completion_text=json.dumps({'summary':'本批真实背景摘要','commitments':[{'event':'0','topic':'周末平江路','quote':'普通话题0','who':'user','stage':'accepted'}]},ensure_ascii=False))
         with patch.object(material,'MAX_CLAIMS_BYTES',2):
-            self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=protected),lambda:True,metrics,self.var))
+            self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=protected),lambda:True,{},self.var))
             await self.drain()
-        holds=self.db.execute("SELECT reason,count(*) FROM memory_hold_rounds WHERE scope=? GROUP BY reason",(SCOPE,)).fetchall()
-        self.assertTrue(any(r=='protected' for r,_ in holds),holds)
-        calls_before=len(self.calls)
-        self.assertFalse(self.store.reflection.retry(),'protected claim-budget conflicts are carried by ordinary batches, not re-paid recoveries')
-        await asyncio.sleep(0)
-        self.assertEqual(len(self.calls),calls_before)
+        checkpoint,state=self.db.execute('SELECT id,state FROM memory_reconstruction_checkpoints WHERE scope=?',(SCOPE,)).fetchone()
+        self.assertEqual(state,'available')
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_hold_rounds WHERE scope=?',(SCOPE,)).fetchone()[0],0)
+        self.store.reflection.record(SCOPE,'12345678','next','new batch original','new reply',self.now+40)
+        self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,subject,status,created) VALUES(?,?,?,'owned',?)",(SCOPE,'next','12345678',self.now+40));self.db.commit()
+        with self.db:
+            self.db.execute("UPDATE memory_semantic_batches SET state='retired' WHERE checkpoint_id=?",(checkpoint,))
+            semantic_batch.purge(self.db,checkpoint)
+        self.assertIsNotNone(self.db.execute("SELECT 1 FROM memory_rounds WHERE scope=? AND event='next'",(SCOPE,)).fetchone())
+        self.assertEqual(self.db.execute("SELECT status FROM pipeline_work_inputs WHERE scope=? AND event='next'",(SCOPE,)).fetchone()[0],'owned')
+        self.assertEqual(self.db.execute("SELECT count(*) FROM memory_rounds WHERE scope=? AND event<>'next'",(SCOPE,)).fetchone()[0],0)
+        self.assertEqual(len(self.calls),1)
 
 class UncommittedWindowHeadTests(unittest.TestCase):
     """A successful round aborted by a mid-request dependency change leaves an

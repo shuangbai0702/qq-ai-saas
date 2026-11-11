@@ -9,7 +9,6 @@ from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
 from behavior import BehaviorStore
 from memory_scope import memory_audience,summary_rows
-from semantic_context import recall as semantic_recall
 
 OWNER='768687099';STRANGER='2444309491'
 
@@ -78,19 +77,7 @@ class Audience(unittest.IsolatedAsyncioTestCase):
   self.assertNotIn(good,{item['id'] for item in result})
   self.assertEqual(self.store.reflection.recall('private:'+STRANGER,'完全无关查询',subject=STRANGER),result)
   self.assertNotIn(big,[r[0] for r in summary_rows(self.db,'private:'+STRANGER,STRANGER)])
-  hits=self.store.search.search('private:'+STRANGER,STRANGER,'平江路',summaries=True)
-  self.assertEqual(hits,[],'no parallel summary search lifecycle remains')
- def test_semantic_context_uses_fixed_scope_basis(self):
-  big=self.summary('合并背景','self','big',origins=['private:'+OWNER,'group:55555'])
-  good=self.summary('木雕展览未完话题','group:55555',people=[STRANGER])
-  own=self.summary('本会话固定资料','private:'+STRANGER)
-  facts,summaries=semantic_recall(self.store,'private:'+STRANGER,STRANGER,'木雕展览',{'memorySummary':True,'ownerUin':OWNER},lambda:True,{})
-  self.assertEqual({item['id'] for item in summaries},{big,own})
-  self.assertNotIn(good,{item['id'] for item in summaries})
-  owner_facts,owner_summaries=semantic_recall(self.store,'private:'+OWNER,OWNER,'木雕展览',{'memorySummary':True,'ownerUin':OWNER},lambda:True,{})
-  self.assertEqual({item['id'] for item in owner_summaries},{big},'the owner private chat reads the shared big basis, not another scope smalls')
-  stranger_facts,stranger_summaries=semantic_recall(self.store,'private:'+STRANGER,STRANGER,'木雕展览',{'memorySummary':True,'ownerUin':OWNER},lambda:True,{})
-  self.assertEqual({item['id'] for item in stranger_summaries},{big,own})
+  self.assertFalse(self.db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_search'").fetchone(),'no parallel summary search lifecycle remains')
  def test_core_note_single_scope_multi_scope_and_legacy(self):
   def note(text,scopes):
    self.db.execute('INSERT OR REPLACE INTO memory_core_notes(slot,text,scopes,people,sources,updated,schema_version,claims) VALUES(1,?,?,?,?,?,1,NULL)',(text,json.dumps(sorted(scopes)),'[]','[]',self.now));self.db.commit()

@@ -13,7 +13,7 @@ export async function lockExternalCycle(db:Sql,bot:any,workId:string,epoch:numbe
  FROM autonomy_actions a JOIN autonomy_cycles c ON c.id=a.cycle_id AND c.bot_id=a.bot_id AND c.tenant_id=a.tenant_id
  JOIN autonomy_settings s ON s.bot_id=a.bot_id AND s.tenant_id=a.tenant_id JOIN bots b ON b.id=a.bot_id AND b.tenant_id=a.tenant_id
  WHERE a.id=$1 AND a.bot_id=$2 AND a.tenant_id=$3 AND a.epoch=$4`,params);
- if(!row||active&&(row.finished_at||!['planned','executing'].includes(row.action_status)||+new Date(row.expires_at)<=Date.now()||row.current_epoch!==epoch||row.current_config.mode!=='active'||row.current_generation!==row.generation||row.current_revision!==row.config_revision||row.desired_state!=='running'||!runtimeStatus(row).online))throw conflict('自主外部动作工作已失效');
+ if(!row||active&&(row.finished_at||!['planned','executing'].includes(row.action_status)||+new Date(row.expires_at)<=Date.now()||row.current_epoch!==epoch||row.current_config.mode!=='active'||row.current_generation!==row.generation||row.current_revision!==row.config_revision||!runtimeStatus(row).online))throw conflict('自主外部动作工作已失效');
  return row;
 }
 export async function externalCount(db:Sql,cycleId:string){

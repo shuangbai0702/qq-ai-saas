@@ -10,5 +10,4 @@ export class MockProtocolAdapter implements ProtocolAdapter{
  getCapabilities(){return ['mock','qr','cancel','text','onebot-reverse-ws']}
  async getHealth(ctx:RuntimeContext){const p=await this.host.inspect(ctx.botId,'protocol');if(!p)return{alive:false,ready:false,online:false,mode:'mock'};let online=false,ready=false;let loginState:LoginSnapshot['state']|undefined;try{loginState=(await this.getLoginState(ctx)).state;online=loginState==='online';ready=true}catch{}return{alive:!!p,ready,online,loginState,pid:p?.pid,rssBytes:p?.rssBytes,mode:'mock'}}
  async stop(id:string){await this.host.stop(id,'protocol')}
- async exportSessionRef(ctx:RuntimeContext){return path.join(ctx.root,'mock-session.json')}
 }

@@ -5,7 +5,6 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
 from behavior import BehaviorStore
 from memory_reflection import Reflection
 from memory_scope import fact_rows,summary_rows
-from semantic_context import recall
 from data_admin import run
 
 
@@ -69,8 +68,8 @@ class SharedMemory(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.say('喝什么',self.private)['facts'][0]['value'],'手动红茶')
         self.assertEqual(self.db.execute('SELECT count(*) FROM facts WHERE active=1').fetchone()[0],2)
         self.say('更正记忆：饮料偏好=白水',self.private)
-        self.assertEqual(self.store.search.search(self.group,self.person,'白水')[0]['value'],'白水')
-        self.assertEqual(self.store.search.search(self.private,self.person,'白水')[0]['value'],'白水')
+        self.assertEqual(self.store.memory.recall(self.group,self.person,'白水',self.now)[0]['value'],'白水')
+        self.assertEqual(self.store.memory.recall(self.private,self.person,'白水',self.now)[0]['value'],'白水')
         self.assertEqual(self.db.execute('SELECT count(*) FROM facts WHERE active=1').fetchone()[0],1)
     def test_admin_edit_forget_and_stale_version_apply_to_shared_person(self):
         self.say('记住：饮料=红茶')
@@ -92,16 +91,17 @@ class SharedMemory(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(fake,{r[0] for r in summary_rows(self.db,self.private,self.person)})
         self.assertNotIn(other_private,{r[0] for r in summary_rows(self.db,self.private,self.person)})
         self.assertEqual({r['id'] for r in self.store.reflection.recall('private:87654321','平江路',subject='87654321')},{other_private})
-    def test_bm25_and_reply_model_candidates_share_authoritative_sources(self):
+    def test_fact_recall_and_checkpoint_foundation_share_authoritative_sources(self):
         self.say('记住：职业=木雕师',self.private)
         good=self.summary('木雕展览的未完话题',self.private,[self.person])
         bad=self.summary('木雕另一个人的秘密','private:87654321',['87654321'])
-        facts,summaries=recall(self.store,self.private,self.person,'木雕展览',{'memorySummary':True},lambda:True,{})
+        facts=self.store.memory.recall(self.private,self.person,'职业',self.now)
+        summaries=self.store.reflection.foundation(self.private)
         self.assertEqual(facts[0]['value'],'木雕师');self.assertEqual(facts[0]['source_scope'],self.private)
         self.assertIn(good,{x['id'] for x in summaries});self.assertNotIn(bad,{x['id'] for x in summaries})
         self.say('忘记：职业',self.group)
-        self.assertEqual(self.store.search.search(self.private,self.person,'木雕师'),[])
-        self.assertEqual(self.store.search.search(self.group,self.person,'木雕展览',summaries=True),[])
+        self.assertEqual(self.store.memory.recall(self.private,self.person,'木雕师',self.now),[])
+        self.assertFalse(self.db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_search'").fetchone())
     async def test_new_reflection_persists_real_participants_and_survives_restart(self):
         for i in range(35):self.store.reflection.record(self.group,self.person,'round'+str(i),'平江路夜景','夜景很好')
         async def text_chat(**kw):return NS(completion_text=json.dumps({'summary':'平江路夜景，提到87654321但此人未参与。'}))

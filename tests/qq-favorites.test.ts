@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';import Fastify from 'fastify';import {mkdtemp,readFile,writeFile,mkdir} from 'node:fs/promises';import path from 'node:path';import {execFileSync} from 'node:child_process';
-import {registerQQFavorites,downloadFavorite} from '../apps/control-api/src/qq-favorites.js';import {createApp} from '../apps/control-api/src/app.js';import {issueTestInvite} from './helpers/invitations.js';
+import {registerQQFavorites} from '../apps/control-api/src/qq-favorites.js';import {downloadFavorite} from '../packages/shared/qq-favorite-media.js';import {createApp} from '../apps/control-api/src/app.js';import {issueTestInvite} from './helpers/invitations.js';
 const python=path.resolve(`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`);
 async function until(check:()=>Promise<boolean>){for(let i=0;i<200;i++){if(await check())return;await new Promise(r=>setTimeout(r,25))}throw new Error('Favorite sync deadline')}
 test('QQ favorite sync preserves animation, settings, ownership and rejects stale account completion',async()=>{

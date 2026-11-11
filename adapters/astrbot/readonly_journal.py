@@ -1105,12 +1105,18 @@ class ReadonlyJournal:
         if history_boundary(usage['textChars'],prepared.base_chars,usage['wireChars'],growth_limit=False):
             self._settle(prepared,False)
             return False
+        return self._commit_candidate(prepared,submitted=False)
+
+    def _commit_candidate(self,prepared,*,submitted):
+        """One durable adoption path; unknown submission cannot refund a permit."""
         if self._accept_staged(prepared):return True
         atomic=bool(prepared.reconstruction_permit and not prepared.reconstruction_consumed and self.db is not None and getattr(prepared.reconstruction_authority,'db',None) is self.db)
         if prepared.reconstruction_permit and not prepared.reconstruction_consumed and not atomic and not self._settle(prepared,True):return False
         semantic=bool(atomic and prepared.reconstruction_permit.get('semanticBatch'))
         if not self._persist(prepared,'ready',settle_permit=atomic and not semantic,consume_permit=semantic):
-            if atomic:self._settle(prepared,False)
+            if atomic:self._settle(prepared,submitted)
+            # Even if persistence fails, retain the conservative in-memory
+            # prefix and fence further requests until recovery succeeds.
             self.last=prepared;self.retired_reason='persistence_unavailable';self._staged=None;return False
         self.last=prepared;self.retired_reason='';self.recovery_error=None;self._staged=None;return True
 
@@ -1136,7 +1142,7 @@ class ReadonlyJournal:
         self.last=candidate
         return True
 
-    def retain_submitted(self,prepared,stage):
+    def retain_submitted(self,prepared):
         """Keep the candidate whose submission reached (or may have reached)
         the provider as the new committed baseline.
 
@@ -1149,16 +1155,7 @@ class ReadonlyJournal:
         A permit already consumed by the stage transaction stays consumed.
         """
         if prepared.serial!=self.serial:return False
-        if self._accept_staged(prepared):return True
-        atomic=bool(prepared.reconstruction_permit and not prepared.reconstruction_consumed and self.db is not None and getattr(prepared.reconstruction_authority,'db',None) is self.db)
-        if prepared.reconstruction_permit and not prepared.reconstruction_consumed and not atomic and not self._settle(prepared,True):return False
-        semantic=bool(atomic and prepared.reconstruction_permit.get('semanticBatch'))
-        if not self._persist(prepared,'ready',settle_permit=atomic and not semantic,consume_permit=semantic):
-            if atomic:self._settle(prepared,True)
-            # Persistence failed: keep the candidate in memory so the next
-            # request still extends the possibly-received wire, and say so.
-            self.last=prepared;self.retired_reason='persistence_unavailable';self._staged=None;return False
-        self.last=prepared;self.retired_reason='';self.recovery_error=None;self._staged=None;return True
+        return self._commit_candidate(prepared,submitted=True)
 
     def _accept_staged(self,prepared):
         # The complete wire was committed BEFORE HTTP, together with its
@@ -1181,8 +1178,6 @@ class ReadonlyJournal:
         if authority is None:return False
         if in_transaction:return authority.settle_context_reconstruction(prepared.reconstruction_permit,success,in_transaction=True)
         return authority.settle_context_reconstruction(prepared.reconstruction_permit,success)
-
-    def discard(self,prepared):return self.abort_candidate(prepared)
 
     def abort_candidate(self,prepared):
         settled=self._settle(prepared,False)

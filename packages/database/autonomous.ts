@@ -294,15 +294,7 @@ export class AutonomyRepository {
   await tx.query("INSERT INTO autonomy_wakes(bot_id,tenant_id,dedupe_key,epoch,due_at,reason,scope) VALUES($1,$2,'budget-reset:',$3,(date_trunc('day',now() AT TIME ZONE 'Asia/Shanghai')+interval '1 day') AT TIME ZONE 'Asia/Shanghai','budget-reset','') ON CONFLICT(bot_id,dedupe_key) DO UPDATE SET epoch=excluded.epoch,due_at=excluded.due_at",[bot.bot_id,bot.tenant_id,bot.epoch]);
   await tx.query("UPDATE autonomy_settings SET state='budget_wait',last_error=$4,next_wake_at=(SELECT min(due_at) FROM autonomy_wakes WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3) WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3",[bot.bot_id,bot.tenant_id,bot.epoch,message]);
  }
- async consecutiveFaults(tenantId:string,botId:string,faultClass:string,limit=12){
-  // Ledger-only accounting for deterministic faults: how many most-recent
-  // finished cycles of this bot ended in the same fault class. A different
-  // class or a clean cycle proves recovery and resets the streak.
-  const rows=await this.db.query("SELECT decision->'fault'->>'class' AS class FROM autonomy_cycles WHERE bot_id=$1 AND tenant_id=$2 AND finished_at IS NOT NULL ORDER BY started_at DESC LIMIT $3",[botId,tenantId,limit]);
-  let count=0;for(const row of rows){if(row.class===faultClass)count++;else break}
-  return count;
- }
- async finish(claim:any,usage:{tokens:number;modelCalls:number;toolCalls:number;externalActions:number;charges?:unknown[]},reason:string,sleepSeconds:number,fault?:Record<string,unknown>){
+ async finish(claim:any,usage:{tokens:number;modelCalls:number;toolCalls:number;externalActions:number;charges?:unknown[]},reason:string,fault?:Record<string,unknown>){
   await this.db.transaction(async tx=>{
    // The usage JSON keeps its historical totals and now also carries the
    // charge ledger (actual/estimated/unknown per request); the fault context

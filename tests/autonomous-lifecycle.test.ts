@@ -82,7 +82,7 @@ test('one claim consumes due wakes only; future handoff deadlines and other owne
   assert.equal(wakes.some(w=>w.reason==='autonomous-time'),false);
   const view=await repo.view('ta','a');assert.ok(new Date(view.settings.next_wake_at).getTime()<=Date.now()+130000,'next_wake_at points at the nearest future deadline');
   const zero={tokens:0,modelCalls:0,toolCalls:0,externalActions:0};
-  await repo.finish(claim,zero,'no_due_work',0);
+  await repo.finish(claim,zero,'no_due_work');
   wakes=await db.query('SELECT reason,scope,due_at FROM autonomy_wakes WHERE bot_id=$1',['a']);
   assert.equal(wakes.length,3,'a terminal cycle arms no new wake');
  }finally{await db.close()}
@@ -96,7 +96,7 @@ test('remaining daily tokens form a bounded reservation without changing config 
   const claim=claims.find(Boolean)!;assert.equal(claim.tokenLimit,5000);assert.equal(claim.config.cycleTokenBudget,6000);
   let view=await repo.view('ta','a');assert.equal(view.settings.config.cycleTokenBudget,6000);assert.equal(view.usage.reserved_tokens,5000);
   const[cycle]=await db.query('SELECT budget FROM autonomy_cycles WHERE id=$1',[claim.cycleId]);assert.equal(cycle.budget.cycleTokenBudget,5000);assert.equal(cycle.budget.configuredCycleTokenBudget,6000);
-  await repo.finish(claim,{tokens:400,modelCalls:1,toolCalls:0,externalActions:0},'handoff_executed',900);
+  await repo.finish(claim,{tokens:400,modelCalls:1,toolCalls:0,externalActions:0},'handoff_executed');
   view=await repo.view('ta','a');assert.equal(view.usage.used_tokens,5400);assert.equal(view.usage.reserved_tokens,0);
   await repo.wake('ta','a',2,'next',0);const next=await repo.claim('three');assert.equal(next.tokenLimit,4600);
   await db.query("UPDATE autonomy_settings SET lease_until=now()-interval '1 second' WHERE bot_id='a'");
@@ -121,7 +121,7 @@ test('foreground handoff registers one persistent goal and due wake; forged iden
   assert.equal((await db.query("SELECT * FROM autonomy_wakes WHERE bot_id='a' AND reason='handoff-due'")).length,1);
   const claim=await repo.claim('handoff-worker');assert.ok(claim);
   await assert.rejects(repo.planHandoff(claim,view.goals[0],{}),/最早执行时间/,'a delay-registered handoff cannot dispatch early');
-  await repo.finish(claim,{tokens:0,modelCalls:0,toolCalls:0,externalActions:0},'no_due_work',0);
+  await repo.finish(claim,{tokens:0,modelCalls:0,toolCalls:0,externalActions:0},'no_due_work');
   view=await repo.view('ta','a');assert.ok(new Date(view.settings.next_wake_at).getTime()<Date.now()+301000,'the earlier handoff due wake keeps its own schedule');
   await repo.configure('ta','a',2,{mode:'passive'});assert.equal((await repo.acceptHandoff(bot,{...request,id:randomUUID()})).status,'rejected');
   assert.equal((await repo.view('tb','b')).goals.length,0);
@@ -213,11 +213,11 @@ test('a tenant backlog yields the next turn to another due tenant without delayi
   await db.query("UPDATE autonomy_wakes SET due_at=now()-CASE WHEN bot_id='a' THEN interval '3 hours' WHEN bot_id='a2' THEN interval '2 hours' ELSE interval '1 hour' END");
   await db.query('UPDATE autonomy_settings s SET next_wake_at=(SELECT min(due_at) FROM autonomy_wakes w WHERE w.bot_id=s.bot_id)');
   const first=await repo.claim('one-worker');assert.equal(first.bot_id,'a');
-  const zero={tokens:0,modelCalls:0,toolCalls:0,externalActions:0};await repo.finish(first,zero,'no_due_work',0);
+  const zero={tokens:0,modelCalls:0,toolCalls:0,externalActions:0};await repo.finish(first,zero,'no_due_work');
   await repo.wake('tb','b',2,'new-message',0); // Activity must not count as a scheduling turn.
   const second=await repo.claim('one-worker');assert.equal(second.bot_id,'b','one tenant backlog monopolized the global worker');
-  await repo.finish(second,zero,'no_due_work',0);
-  const third=await repo.claim('one-worker');assert.equal(third.bot_id,'a2');await repo.finish(third,zero,'no_due_work',0);
+  await repo.finish(second,zero,'no_due_work');
+  const third=await repo.claim('one-worker');assert.equal(third.bot_id,'a2');await repo.finish(third,zero,'no_due_work');
   assert.equal(await repo.claim('one-worker'),null);
  }finally{await db.close()}
 });
@@ -233,8 +233,8 @@ test('handoff dispatch CAS and immutable action ownership reject stale or foreig
   assert.equal(await repo.markExecuting(c,prepared.action.id),true);assert.equal(await repo.markExecuting(c,prepared.action.id),false);
   await repo.feedback(c,prepared.action.id,{status:'unknown',summary:'connection lost',effects:[{id:prepared.action.id,status:'unknown'}]});
   assert.equal(await repo.markExecuting(c,prepared.action.id),false,'unknown is never blindly resent');
-  await repo.finish(c,{tokens:200,modelCalls:2,toolCalls:1,externalActions:0},'waiting_receipt',300);
-  await repo.finish(c,{tokens:200,modelCalls:2,toolCalls:1,externalActions:0},'waiting_receipt',300);
+  await repo.finish(c,{tokens:200,modelCalls:2,toolCalls:1,externalActions:0},'waiting_receipt');
+  await repo.finish(c,{tokens:200,modelCalls:2,toolCalls:1,externalActions:0},'waiting_receipt');
   const v=await repo.view('ta','a');assert.equal(v.usage.reserved_tokens,0);assert.equal(v.usage.used_tokens,200);assert.equal(v.actions[0].status,'unknown');
  }finally{await db.close()}
 });
@@ -265,7 +265,7 @@ test('a known partial delivery does not permanently block a new handoff action; 
   const view=await repo.view('ta','a');
   const out=await repo.planHandoff(first,view.goals.find((g:any)=>g.id===goalOne),{});assert.equal(await repo.markExecuting(first,out.action.id),true);
   await repo.feedback(first,out.action.id,{status:'partial',summary:'one confirmed bubble; remaining output canceled before dispatch',effects:[{id:out.action.id+':0',status:'confirmed',receipt:'actual-first-receipt'}]});
-  await repo.finish(first,{tokens:100,modelCalls:1,toolCalls:0,externalActions:1},'handoff_executed',0);
+  await repo.finish(first,{tokens:100,modelCalls:1,toolCalls:0,externalActions:1},'handoff_executed');
   // A settled partial no longer blocks the target; a distinct uncertain one does.
   await db.query("UPDATE autonomy_goals SET source=jsonb_set(source,'{notBefore}',to_jsonb((extract(epoch from now())*1000)::bigint)) WHERE id=$1",[goalTwo]);
   await repo.wake('ta','a',2,'fixture',0);
@@ -274,7 +274,7 @@ test('a known partial delivery does not permanently block a new handoff action; 
   const next=await repo.planHandoff(second,view2.goals.find((g:any)=>g.id===goalTwo),{});
   assert.equal(await repo.markExecuting(second,next.action.id),true,'a settled partial was treated as a permanently unknown send');
   await repo.feedback(second,next.action.id,{status:'partial',summary:'one confirmed and one uncertain effect',effects:[{id:next.action.id+':0',status:'confirmed',receipt:'actual-next-receipt'},{id:next.action.id+':1',status:'unknown'}]});
-  await repo.finish(second,{tokens:100,modelCalls:1,toolCalls:0,externalActions:2},'waiting_receipt',300);
+  await repo.finish(second,{tokens:100,modelCalls:1,toolCalls:0,externalActions:2},'waiting_receipt');
   await db.query("UPDATE autonomy_goals SET source=jsonb_set(source,'{notBefore}',to_jsonb((extract(epoch from now())*1000)::bigint)) WHERE id=$1",[goalOne]);
   await repo.wake('ta','a',2,'fixture',0);
   const third=await repo.claim('delivery-owner-3');assert.ok(third);
@@ -303,7 +303,7 @@ test('login recovery atomically restores one wake after an offline cycle ends, w
  const{db,repo}=await fixture();try{
   await repo.configure('ta','a',1,{mode:'active'});await repo.applied('ta','a',2);const claim=await repo.claim('before-offline');assert.ok(claim);
   const goalId=randomUUID();await handoffGoal(db,'a','ta',goalId,3600000);
-  await db.query("UPDATE bots SET desired_state='offline' WHERE id='a'");await repo.suspendOffline();await repo.finish(claim,{tokens:200,modelCalls:1,toolCalls:0,externalActions:0},'ownership_changed',900);
+  await db.query("UPDATE bots SET desired_state='offline' WHERE id='a'");await repo.suspendOffline();await repo.finish(claim,{tokens:200,modelCalls:1,toolCalls:0,externalActions:0},'ownership_changed');
   assert.equal((await db.query("SELECT * FROM autonomy_wakes WHERE bot_id='a'")).length,0);
   await db.query("UPDATE bots SET desired_state='running',health=$1 WHERE id='a'",[JSON.stringify({protocol:{online:true},sampledAt:new Date().toISOString()})]);
   const wake=repo.wake.bind(repo);repo.wake=async()=>{throw new Error('controlled wake persistence failure')};
@@ -368,7 +368,7 @@ test('finalized-cycle executing orphan becomes receipt-only unknown, with tenant
   const action=(await repo.planHandoff(claim,(await repo.view('ta','a')).goals[0],{})).action;
   assert.equal(await repo.markExecuting(claim,action.id),true);
   assert.equal((await repo.unconfirmed('ta','a')).length,0,'a live execution is not an orphan');
-  await repo.finish(claim,{tokens:0,modelCalls:0,toolCalls:0,externalActions:0},'fixture_feedback_lost',0);
+  await repo.finish(claim,{tokens:0,modelCalls:0,toolCalls:0,externalActions:0},'fixture_feedback_lost');
   assert.equal((await repo.unconfirmed('tb','a')).length,0,'wrong tenant cannot recover another action');
   const pending=await repo.unconfirmed('ta','a');assert.deepEqual(pending.map((a:any)=>a.id),[action.id]);
   assert.equal((await db.query('SELECT status FROM autonomy_actions WHERE id=$1',[action.id]))[0].status,'unknown');
