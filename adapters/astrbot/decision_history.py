@@ -17,7 +17,7 @@ MAX_HISTORY_CHARS=160000
 # rather than giving a large baseline only a few remaining kilobytes.
 # Keep bounded append-only headroom while a legal checkpoint is pending.
 # This is a local transport limit, not a reconstruction permit or token limit.
-MAX_RETAINED_TEXT_CHARS=512000
+MAX_RETAINED_TEXT_CHARS=1024000
 MAX_RETAINED_WIRE_CHARS=4*1024*1024
 MAX_IDLE_SECONDS=1800
 # Autonomous sleep commonly lasts 30 minutes plus scheduling latency. This is

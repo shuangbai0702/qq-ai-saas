@@ -14,7 +14,7 @@ class PrivateCapacityEmergencyTests(unittest.TestCase):
         from readonly_journal import capacity_evidence
         journal=ReadonlyJournal();base=[{'role':'system','content':'stable identity'}]
         for round_number in range(34):
-            base.append({'role':'user','content':'round '+str(round_number)+'x'*12000})
+            base.append({'role':'user','content':'round '+str(round_number)+'x'*(MAX_RETAINED_TEXT_CHARS*82//100//34)})
             candidate=journal.prepare(base+[{'role':'user','content':READONLY_CURRENT+'\n'+model_json({'state':{'round':round_number}})}],1,now=round_number+1)
             if journal.last:self.assertEqual(candidate.wire[:len(journal.last.wire)],journal.last.wire)
             self.assertIsNone(candidate.reconstruction_permit)
@@ -25,7 +25,7 @@ class PrivateCapacityEmergencyTests(unittest.TestCase):
         self.assertEqual(warning['state'],'warning')
         self.assertFalse(warning['historyRewriteAllowed'])
         with self.assertRaises(ContextCapacityExceeded) as error:
-            journal.prepare(base+[{'role':'user','content':'y'*200000},
+            journal.prepare(base+[{'role':'user','content':'y'*(MAX_RETAINED_TEXT_CHARS//2)},
                 {'role':'user','content':READONLY_CURRENT+'\n'+model_json({'state':{}})}],1,now=35)
         self.assertEqual(error.exception.capacity['state'],'exhausted')
         self.assertEqual(model_json(journal.last.wire),before)
@@ -40,9 +40,9 @@ class PrivateCapacityEmergencyTests(unittest.TestCase):
             first=journal.prepare(base+[packet],1,now=1)
             self.assertTrue(journal.commit(first))
             incoming=base+[{'role':'assistant','content':'reply'},
-                           {'role':'user','content':'new user '+'y'*8000},packet]
+                           {'role':'user','content':'new user '+'y'*140000},packet]
             second=journal.prepare(incoming,1,now=2)
-            self.assertGreater(history_usage(second.wire)['textChars'],384000)
+            self.assertGreater(history_usage(second.wire)['textChars'],512000)
             self.assertLess(history_usage(second.wire)['textChars'],MAX_RETAINED_TEXT_CHARS)
             self.assertEqual(second.wire[:len(first.wire)],first.wire)
             self.assertIsNone(second.reconstruction_permit)
