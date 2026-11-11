@@ -42,6 +42,14 @@ class PermanentWork(unittest.TestCase):
   b=self.bind('2');self.p.activation_progress(b,1,'inputs_decided');self.done(b)
   rows=self.db.execute('SELECT event,work_id,passes,exit_reason FROM pipeline_events ORDER BY event').fetchall()
   self.assertEqual(rows,[('1',a.work_id,4,'activation_pass_limit'),('2',a.work_id,1,'inputs_decided')])
+ def test_legacy_empty_index_cannot_force_live_work_to_replan(self):
+  scope='private:12345678'
+  self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,subject,payload,status,created) VALUES(?,?,?,NULL,'pending',?)",(scope,'old','12345678',time.time()-86400))
+  self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,subject,payload,status,created) VALUES(?,?,?,?,'pending',?)",('group:55555','other','12345678','{}',time.time()))
+  w=self.bind('101')
+  self.assertEqual(self.p.unseen_inputs(w),0)
+  self.assertEqual(self.db.execute("SELECT status,owner,payload FROM pipeline_work_inputs WHERE event='old'").fetchone(),('blocked_recovery',None,None))
+  self.assertEqual(self.db.execute("SELECT status FROM pipeline_work_inputs WHERE event='other'").fetchone()[0],'pending')
  def test_seen_superseded_draft_leaves_question_pending(self):
   w=self.joined();self.p.seen_inputs(w,[message(w.scope,'2')]);self.done(w,'superseded','freshness_drop')
   seen,status,owner,payload=self.input()

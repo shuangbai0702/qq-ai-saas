@@ -41,7 +41,20 @@ async def main():
    assert '[管理员调试' in json.dumps(wire,ensure_ascii=False)
    assert any(m.get('role')=='system' and '[引用习惯]' in str(m.get('content')) for m in bodies[0]['messages'])
    assert not st.active
-   print('PASS real SDK admin probe: one HTTP, System quote rule, canonical Journal, no tools/QQ/business round')
+   # A completed draft with a silent settlement must be distinguished from
+   # delivered speech in the NEXT real SDK/HTTP request, without rewriting it.
+   import copy,time
+   from context_protocol import source
+   journal=st.model_journals[JOURNAL_SCOPE];prefix=copy.deepcopy(journal.last.wire)
+   origin=next(source(m) for m in journal.last.base if source(m))
+   st.db.execute("INSERT INTO pipeline_events(scope,subject,event,at,source,stage,status,reason,attempted,confirmed) VALUES(?,?,?,?,'admin_debug','output_plan','silent','model_no_reply_marker',0,0)",(origin['scope'],origin['sender_id'],origin['event_id'],time.time()))
+   st.db.commit()
+   await request(core._hosted_autonomous,'probe',st,lease,{'requestId':'22222222-2222-4222-8222-222222222222','scope':'private:12345678'})
+   assert len(bodies)==2
+   assert 'not_sent' in json.dumps(bodies[-1]['messages'],ensure_ascii=False)
+   assert journal.last.wire[:len(prefix)]==prefix
+   assert st.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0]==before
+   print('PASS real SDK admin probes: one HTTP each, silent not_sent in final HTTP, immutable prefix, no tools/QQ/business round')
   finally:
    runtime['close']();await provider.client.close()
 asyncio.run(main())

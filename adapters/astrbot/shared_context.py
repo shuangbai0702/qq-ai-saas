@@ -224,7 +224,7 @@ def delivery_view(db,journal=None,limit=8,budget=3000,exclude_scope=None,text_li
                       d.reply,d.at,s.data,d.state FROM pipeline_events p
                       LEFT JOIN dialogue_feedback d ON d.scope=p.scope AND d.event=p.event
                       LEFT JOIN memory_message_sources s ON s.scope=p.scope AND s.event=p.event AND s.direction='outgoing'
-                      WHERE p.status NOT IN ('received','sending','waiting','duplicate','silent')
+                      WHERE p.status NOT IN ('received','sending','waiting','duplicate')
                       ORDER BY p.at DESC LIMIT 64''').fetchall()
     result=[];used=0
     has_signals=bool(db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='companion_signals'").fetchone())
