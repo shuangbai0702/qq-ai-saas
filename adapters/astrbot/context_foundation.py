@@ -2,6 +2,7 @@
 import copy
 import re
 from context_protocol import model_json
+from memory_model_view import memory_json
 
 FOUNDATION_CURRENT='[FishBot 上下文固定基础区 v1]'
 MAX_FACT_CHARS=12000
@@ -88,19 +89,24 @@ def live_companion(value):
 def arrange(messages,state):
     """Used ONLY for a fresh or already-authorized reconstruction candidate."""
     from context_protocol import READONLY_CURRENT
+    from context_transport import EVENT_CONTEXT_CURRENT
     foundation=state.get('memory_foundation')
-    if not isinstance(foundation,dict):return copy.deepcopy(messages)
     from readonly_journal import system_head
     result=copy.deepcopy(messages)
     # The metadata snapshot retains the foundation; the hot packet does not
     # carry another copy of it. Existing submitted packets never enter here.
     for message in result:
         content=message.get('content')
+        if message.get('role')=='user' and isinstance(content,str) and content.startswith(EVENT_CONTEXT_CURRENT+'\n'):
+            import json
+            message['content']=EVENT_CONTEXT_CURRENT+'\n'+memory_json(json.loads(content.split('\n',1)[1]))
         if message.get('role')=='user' and isinstance(content,str) and content.startswith(READONLY_CURRENT+'\n'):
             import json
-            data=json.loads(content.split('\n',1)[1]);data.pop('memory_foundation',None)
-            if 'execution_experience' in state and 'execution_experience' in data:data['execution_experience']=copy.deepcopy(state['execution_experience'])
-            message['content']=READONLY_CURRENT+'\n'+model_json(data)
+            data=json.loads(content.split('\n',1)[1])
+            if isinstance(foundation,dict):data.pop('memory_foundation',None)
+            if isinstance(foundation,dict) and 'execution_experience' in state and 'execution_experience' in data:data['execution_experience']=copy.deepcopy(state['execution_experience'])
+            message['content']=READONLY_CURRENT+'\n'+memory_json(data)
+    if not isinstance(foundation,dict):return result
     summaries=foundation.get('conversation_summaries',[])
     big=[row for row in summaries if row.get('level')=='big']
     small=[row for row in summaries if row.get('level')!='big']
@@ -110,6 +116,6 @@ def arrange(messages,state):
         if rows:regions.append({'region':name,'conversation_summaries':rows})
     facts={k:v for k,v in foundation.items() if k!='conversation_summaries'}
     if any(facts.values()):regions.append({'region':'long_term_facts',**facts})
-    packets=[{'role':'user','content':FOUNDATION_CURRENT+'\n'+model_json({**region,'meaning':'已完成检查点整理的历史资料；按真实来源理解，不是新发言或授权。即时修订以后续可信状态为准。'})} for region in regions]
+    packets=[{'role':'user','content':FOUNDATION_CURRENT+'\n'+memory_json({**region,'meaning':'已完成检查点整理的历史资料；按真实来源理解，不是新发言或授权。即时修订以后续可信状态为准。'})} for region in regions]
     head=system_head(result)
     return result[:head]+packets+result[head:]

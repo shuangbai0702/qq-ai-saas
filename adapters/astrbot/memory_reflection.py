@@ -1106,7 +1106,8 @@ class Reflection:
                     from memory_operation_audit import Audit
                     operation_audit=Audit(merge_scope or scope,epoch,job,{},decode_status='not_received',through_round_id=rows[-1][0] if rows else None)
                     self._active_summary['operation_audit']=operation_audit
-                    response=await asyncio.wait_for(provider.text_chat(prompt=model_json(prompt),system_prompt=system,contexts=[],func_tool=None,request_max_retries=0,**({'image_urls':summary_images} if summary_images else {})),SUMMARY_REQUEST_TIMEOUT_SECONDS+5)
+                    from memory_model_view import memory_json
+                    response=await asyncio.wait_for(provider.text_chat(prompt=memory_json(prompt),system_prompt=system,contexts=[],func_tool=None,request_max_retries=0,**({'image_urls':summary_images} if summary_images else {})),SUMMARY_REQUEST_TIMEOUT_SECONDS+5)
                     from companion_insights import decode,apply
                     decode_diagnostics={}
                     data=decode(response.completion_text,decode_diagnostics)
