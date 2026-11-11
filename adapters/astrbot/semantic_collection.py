@@ -8,6 +8,13 @@ from context_protocol import model_json,source
 from semantic_batch import event_key,origin,discard_failed_service_inputs
 from summary_material import snapshots,valid_material,remember
 
+# Disposable observations can outlive their old pending row. They are still
+# real batch input, rather than a second memory authority or a new round.
+OBSERVATION_POOLS=(('social_samples','subject','text','created'),
+    ('relation_evidence','subject','quote','at'),('relation_events','subject',None,'at'),
+    ('dialogue_feedback','subject',None,'at'),('companion_seen',None,None,'at'),
+    ('companion_signals',None,'quote','at'))
+
 
 def _channel(value):
     return isinstance(value,str) and re.fullmatch(r'(?:private:\d{5,20}|group:\d{4,20})',value) is not None
@@ -119,7 +126,7 @@ def unavailable_stamp(db,discarded):
     for item in discarded:
         pair=origin('bot_shared',item['event'])
         for logical,event in (pair,('bot_shared',item['event'])):
-            for table in ('memory_pending','memory_rounds','memory_round_material','memory_hold_rounds','memory_message_sources'):
+            for table in ('memory_pending','memory_rounds','memory_round_material','memory_hold_rounds','memory_message_sources',*(p[0] for p in OBSERVATION_POOLS)):
                 if table in tables:values.append([table,logical,event,list(db.execute('SELECT * FROM '+table+' WHERE scope=? AND event=?',(logical,event)))])
     for table in ('memory_checkpoint_archives','fishbot_operator_session_archives'):
         if table in tables:values.append([table,list(db.execute('SELECT scope,sha FROM '+table+' ORDER BY rowid'))])
@@ -171,6 +178,7 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False):
     candidates={};materials={};anchors={};provided={};snippets={}
     def register(pair,person=None,at=None):
         if not pair or not eligible(pair):return
+        scopes.add(pair[0])
         item=candidates.setdefault(pair,{'people':set(),'times':set(),'bounds':set()})
         if person is not None:item['people'].add(str(person))
         if _time(at):item['times'].add(at)
@@ -186,6 +194,17 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False):
             if pair and answer:anchors.setdefault(pair,set()).add(answer)
     if 'memory_hold_rounds' in tables:
         for scope,event in db.execute('SELECT scope,event FROM memory_hold_rounds'):register(identity(scope,event))
+    for table,person_column,text_column,time_column in OBSERVATION_POOLS:
+        if table not in tables:continue
+        columns=[r[1] for r in db.execute('PRAGMA table_info('+table+')')]
+        for values in db.execute('SELECT * FROM '+table):
+            row=dict(zip(columns,values));pair=identity(row['scope'],row['event'])
+            register(pair,row.get(person_column),row.get(time_column))
+            if not pair or not eligible(pair):continue
+            if text_column and isinstance(row.get(text_column),str) and row[text_column]:
+                snippets.setdefault(pair,set()).add(row[text_column])
+            if table=='dialogue_feedback' and row.get('reply'):
+                anchors.setdefault(pair,set()).add(row['reply'])
     def capture(item,logical,upper_bound=None):
         if not valid_material(item,logical):raise ValueError('semantic_collection_material_invalid')
         pair=identity(logical,item['event'])

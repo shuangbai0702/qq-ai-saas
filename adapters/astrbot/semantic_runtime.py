@@ -179,6 +179,8 @@ def finish_semantic_batches(st,cfg,scope):
         if legacy:
             with st.db:st.reflection.checkpoint_issue('bot_shared',legacy[0],'native_legacy_cleanup',result['native'],resolved=result['native'].get('result')=='clean')
     st.semantic_retirement_status=result
+    if result['retired']:
+        print('FISHBOT_SEMANTIC_RETIREMENT '+model_json({'scope':scope,**result}),flush=True)
     return result
 
 

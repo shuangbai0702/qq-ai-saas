@@ -1286,6 +1286,11 @@ class Reflection:
                             self.db.execute('DELETE FROM memory_reflection_retry WHERE scope=?',(scope,))
                         operation_audit.persist(self.db,'committed','transaction_committed',checkpoint_id=checkpoint_id if job!='big' else None,summary_id=identifier)
                     audit_committed=True
+                    if discarded:
+                        print('FISHBOT_SEMANTIC_MATERIAL_RECOVERY '+model_json({
+                            'scope':scope,'checkpointId':checkpoint_id,
+                            'result':'memory_committed_pending_retirement',
+                            **metrics['semanticMaterialRecovery']}),flush=True)
                     new_checkpoints=self.db.execute("SELECT id,scope FROM memory_reconstruction_checkpoints WHERE state='available'").fetchall()
                     for checkpoint_id,checkpoint_scope in new_checkpoints:
                         if checkpoint_id in available_before or not callable(self.checkpoint_callback):continue
