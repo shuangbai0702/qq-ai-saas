@@ -50,11 +50,7 @@ async def main():
             from context_transport import EVENT_CONTEXT_CURRENT
             current_packet=next(json.loads(m['content'].split('\n',1)[1]) for m in requests[-1]['contexts'] if isinstance(m.get('content'),str) and m['content'].startswith(EVENT_CONTEXT_CURRENT+'\n'))
             policy=current_packet['policy']
-            guidance=current_packet['currentGuidance']
-            assert guidance.count('[引用习惯]')==1
-            assert '私聊非必要不引用，直接回复' in guidance
-            assert '群聊非必要不引用，需要明确对象时优先@' in guidance
-            assert '[引用习惯]' not in system,'new style guidance must not rewrite the stable System'
+            assert '[引用习惯]' not in current_packet['currentGuidance'],'role preferences belong in the configured System prompt'
             from bot_pipeline import EXECUTION_DISCLOSURE_POLICY
             assert (system+policy).count(EXECUTION_DISCLOSURE_POLICY)==1,'outward disclosure policy missing or duplicated'
             assert ('[后台任务登记]' in policy)==active,('handoff prompt missing',meme,active)
