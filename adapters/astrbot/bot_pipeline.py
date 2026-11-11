@@ -460,6 +460,26 @@ class BotPipeline:
         db.execute("UPDATE pipeline_actions SET state='interrupted' WHERE state='working'");db.commit()
         db.execute('CREATE TABLE IF NOT EXISTS pipeline_handoffs(id TEXT PRIMARY KEY,epoch INTEGER NOT NULL,data TEXT NOT NULL,state TEXT NOT NULL,receipt TEXT,at REAL NOT NULL)');db.commit()
         self.retire_transport_notifications()
+        self.resume_deferred_mentions()
+
+    def resume_deferred_mentions(self):
+        # A joined explicit @ has not received a main-model decision merely
+        # because its parent ambient Work chose to wait at admission.
+        rows=self.db.execute("""SELECT i.scope,i.event,i.payload FROM pipeline_work_inputs i
+          JOIN pipeline_events p ON p.scope=i.scope AND p.event=i.owner
+          WHERE i.status='deferred' AND i.seen=0 AND i.identity IS NOT NULL
+          AND p.stage='admission' AND p.attempted=0 AND p.confirmed=0
+          AND p.reason IN ('group_waiting','group_presence_busy_deferred','autonomous_owner_observing','group_model_silent_or_stale')
+          AND NOT EXISTS(SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope)
+          AND NOT EXISTS(SELECT 1 FROM pipeline_events own WHERE own.scope=i.scope AND own.event=i.event)""").fetchall()
+        with self.db:
+            for scope,event,payload in rows:
+                try:raw=json.loads(payload)
+                except (ValueError,TypeError):continue
+                parts=raw.get('message');self_id=str(raw.get('self_id') or '')
+                if raw.get('post_type')!='message' or protocol_input_scope(raw)!=scope or not self_id or not isinstance(parts,list):continue
+                if not any(isinstance(x,dict) and x.get('type')=='at' and str((x.get('data') or {}).get('qq'))==self_id for x in parts):continue
+                self.db.execute("UPDATE pipeline_work_inputs SET status='pending',owner=NULL,retry_at=0 WHERE scope=? AND event=? AND status='deferred'",(scope,event))
 
     def retire_transport_notifications(self):
         # Repair old queue bookkeeping only when no live scope owns it and
@@ -585,6 +605,7 @@ class BotPipeline:
                         value=json.loads(row[0]);value['settlement']={'status':'superseded','attempted':0,'confirmed':0,'planned':0,'confirmed_messages':0,'parent_work':model_json([work.scope,work.event_id]),'basis':'main_completed' if seen==1 else 'explicit_no_response' if seen==3 else 'confirmed_reply_coverage'}
                         self.db.execute("UPDATE memory_message_sources SET data=? WHERE scope='bot_shared' AND event=? AND direction='model'",(model_json(value),key))
             if release:self.db.execute('DELETE FROM pipeline_scope_work WHERE scope=? AND event=? AND runtime=?',(work.scope,work.event_id,self.runtime))
+        if release:self.resume_deferred_mentions()
 
     def close(self):
         with self.db:
