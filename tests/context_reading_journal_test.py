@@ -224,6 +224,26 @@ class ReadingJournalTests(unittest.TestCase):
         self.assertEqual(rejected.recovery_error,'journal_reading_definition_invalid')
         self.assertIsNone(rejected.last)
 
+    def test_legacy_hot_basis_repair_keeps_fixed_foundation_separate(self):
+        from context_foundation import FOUNDATION_CURRENT
+        foundation={'conversation_summaries':[],'core_note':{'text':'fixed exact material'}}
+        self.state['memory_foundation']=foundation
+        # Model-visible fixed foundation survived a historical retirement,
+        # whose durable full semantic state omitted the first hot packet.
+        self.journal.last.state=copy.deepcopy(self.state)
+        self.journal.last.wire=self.native+[{'role':'user','content':FOUNDATION_CURRENT+'\n'+model_json(foundation)}]
+        self.assertTrue(self.journal._persist(self.journal.last))
+        self.journal=ReadonlyJournal(self.db,'private:12345')
+        old=copy.deepcopy(self.journal.last.wire)
+        candidate=self.journal.prepare(self.native+[packet(self.state)],'same')
+        self.assertEqual(candidate.wire[:len(old)],old)
+        expected={k:v for k,v in self.state.items() if k!='memory_foundation'}
+        self.assertEqual(restored_state(candidate.wire),expected)
+        self.assertEqual(candidate.state,self.state)
+        self.assertEqual(candidate.wire.count(PROTOCOL_MESSAGE),1)
+        self.assertTrue(self.journal.commit(candidate))
+        self.assertIsNone(ReadonlyJournal(self.db,'private:12345').recovery_error)
+
 
 if __name__ == '__main__':
     unittest.main()
