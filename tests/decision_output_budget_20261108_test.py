@@ -40,6 +40,16 @@ class Budget(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(requests[-1]['max_completion_tokens'],autonomy.DECISION_OUTPUT_TOKENS)
             self.assertNotIn('max_tokens',requests[-1],'do not send conflicting provider limits')
             self.assertEqual(provider.provider_config['custom_extra_body'],{'max_completion_tokens':4096})
+            # The owner-only headroom must survive the real SDK's final merge,
+            # including providers using max_completion_tokens.
+            for key in ('max_tokens','max_completion_tokens'):
+                provider.provider_config['custom_extra_body']={key:4096}
+                token=autonomy.decision_token_limit.set(autonomy.OWNER_DECISION_OUTPUT_TOKENS)
+                try:await provider.text_chat(prompt='owner decision',contexts=[],func_tool=None)
+                finally:autonomy.decision_token_limit.reset(token)
+                self.assertEqual(requests[-1][key],8192)
+                self.assertNotIn('max_completion_tokens' if key=='max_tokens' else 'max_tokens',requests[-1])
+                self.assertEqual(provider.provider_config['custom_extra_body'],{key:4096})
         finally:
             await provider.client.close();runtime['close']();ProviderOpenAIOfficial._create_http_client=old
 

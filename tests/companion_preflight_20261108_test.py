@@ -59,6 +59,31 @@ class Preflight(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.calls,[])
         self.assertEqual(self.db.execute('SELECT count(*) FROM autonomy_owner_budget').fetchone()[0],0)
         self.assertEqual(self.db.execute('SELECT status FROM autonomy_owner_checks').fetchone()[0],'conversation_changed')
+    async def owner_result(self,finish):
+        self.cfg['behavior'].update(ownerUin='12345',ownerContactEnabled=True,ownerContactIntervalMinutes=15,ownerContactIdleMinutes=1,proactiveIntervalSeconds=0)
+        initiative.incoming(self.db,'private:12345','12345','99999','想聊茶',self.now-4000)
+        autonomy.owner_state(self.db,self.cfg,self.now-3600)
+        async def chat(**kwargs):
+            self.calls.append(kwargs)
+            self.assertEqual(autonomy.decision_token_limit.get(),8192)
+            return NS(completion_text='{"contact":true,"topic":"茶"}',raw_completion={'choices':[{'finish_reason':finish}]})
+        metrics={}
+        self.planner.maybe_start(self.cfg,NS(text_chat=chat),lambda:True,self.event,metrics,self.now)
+        with patch('companion_schedule.discarded',side_effect=self.reasons.append):await self.planner.task
+        self.assertEqual(len(self.calls),1,'no automatic repair request')
+        self.assertEqual(self.calls[0]['max_tokens'],8192)
+        self.assertEqual(autonomy.DECISION_OUTPUT_TOKENS,2048,'group budget stays unchanged')
+        self.assertIsNone(autonomy.decision_token_limit.get())
+        return metrics
+    async def test_owner_uses_separate_budget_and_adopts_complete_decision(self):
+        metrics=await self.owner_result('stop')
+        self.assertTrue(metrics['lastOwnerDecision']['contact'])
+        self.assertEqual(self.db.execute('SELECT allowed,topic FROM autonomy_owner').fetchone(),(1,'茶'))
+    async def test_truncated_owner_result_is_rejected_even_with_parseable_json(self):
+        metrics=await self.owner_result('length')
+        self.assertEqual(metrics['lastOwnerDecision']['reason'],'owner_output_truncated')
+        self.assertEqual(self.db.execute('SELECT allowed FROM autonomy_owner').fetchone()[0],0)
+        self.assertEqual(self.reasons,['ValueError'])
     def test_private_window_reads_shared_authority_without_drafts_or_group_displacement(self):
         from shared_context import recent,JOURNAL_SCOPE
         from context_protocol import SOURCE,model_json
