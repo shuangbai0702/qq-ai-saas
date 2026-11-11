@@ -1,4 +1,4 @@
-"""Scoped, bounded lexical recall and conservative first-person profile capture.
+"""Scoped, bounded recall of attributed facts.
 
 Mechanisms informed by dsh-fish-memory (stable facts vs decaying events),
 LivingMemory (CJK retrieval/scope separation), QQ-agent (per-member records).

@@ -1,7 +1,7 @@
 """Bounded, per-bot SQLite facts/relations and deterministic pre-model eligibility.
 No embedding daemon, no speculative LLM fact extraction, no hidden tool actions.
 """
-import sqlite3,time,json,re,random,asyncio,inspect,hashlib,copy,difflib,base64
+import sqlite3,time,json,re,asyncio,inspect,hashlib,copy,difflib,base64
 import initiative
 from context_protocol import model_json
 import autonomy
