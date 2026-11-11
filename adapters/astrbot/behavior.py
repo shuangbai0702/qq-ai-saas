@@ -618,9 +618,10 @@ def install_runtime(core,settings):
                 now=time.time()
                 event_id='tool:'+str(event.message_obj.message_id)
                 remember=(s['config'].get('behavior') or {}).get('memory',True) and st.reflection.epoch()==memory_epoch
-                receipt=next((r.get('receipt') for r in reversed(event.get_extra('_hosted_tool_results') or []) if r.get('tool')=='hosted_qq_group_send' and r.get('scope')==scope),None)
+                result=next((r for r in reversed(event.get_extra('_hosted_tool_results') or []) if r.get('tool')=='hosted_qq_group_send' and r.get('scope')==scope),{})
+                receipt=result.get('receipt')
                 if remember and receipt:
-                    st.participation.confirmed(scope,text,now,subject,event_id,{'sender_id':str(event.get_self_id()),'message_ids':[str(receipt)],'receipt':'confirmed','complete':True,'mentions':[subject] if subject else []})
+                    st.participation.confirmed(scope,text,now,subject,event_id,{'sender_id':str(event.get_self_id()),'message_ids':result.get('receipts') or [str(receipt)],'receipt':'confirmed','complete':result.get('complete',True),'mentions':[subject] if subject else []})
                 st.participation.outgoing(scope,text,subject=subject,event=event_id,persist=remember)
                 autonomy.note_interaction(st.db,s['config'],scope,'',now)
                 autonomy.note_reply(st.db,scope,subject,now)
@@ -634,7 +635,7 @@ def install_runtime(core,settings):
             if evidence is None:
                 evidence=[];event.set_extra('_hosted_research_evidence',evidence)
             if foreground:
-                extra_tools=inner_tools.features(s,event,st.db,memory_scope,lambda:delivery_current(event),evidence=evidence,memory_current=lambda:delivery_current(event) and st.reflection.epoch()==memory_epoch,on_sent=group_sent,social=st.social,review=lambda scope,text:review_group(event,scope,text))
+                extra_tools=inner_tools.features(s,event,st.db,memory_scope,lambda:delivery_current(event),evidence=evidence,memory_current=lambda:delivery_current(event) and st.reflection.epoch()==memory_epoch,on_sent=group_sent,social=st.social,review=lambda scope,text,confirmed='':review_group(event,scope,text,confirmed))
                 extra_tools+=brain.foreground_tools(event.get_platform_id(),event,lambda:delivery_current(event))
             else:
                 # Internal requests already received task_tools from this same
