@@ -3,8 +3,9 @@ import {Field} from './ui';
 type Props={config:BotConfig;onChange:(c:BotConfig)=>void};
 export function RhythmControls({config,onChange}:Props){
  const b=config.behavior||{} as NonNullable<BotConfig['behavior']>;const update=(change:Partial<NonNullable<BotConfig['behavior']>>)=>onChange({...config,behavior:{...b,...change} as NonNullable<BotConfig['behavior']>});
- return <section className="panel"><h2>聊天节奏</h2><p>按回复字数安排打字等待。首条只等打字模拟；后续每条的分条间隔与打字等待相加。</p>
+ return <section className="panel"><h2>聊天节奏</h2><p>打字停顿默认关闭；可在这里开启。分条间隔设为0时不等待，开启后与打字停顿相加。</p>
  <label className="toggle-row"><div><b>自然打字停顿</b><small>短句快速发送，长句稍等；停止或更新机器人会取消等待中的旧回复。</small></div><input type="checkbox" aria-label="自然打字停顿" checked={!!b.typingSimulation} onChange={e=>update({typingSimulation:e.target.checked})}/></label>
+ <label className="toggle-row"><div><b>气泡发送间隔</b><small>默认关闭；开启后后续气泡间隔800毫秒，可在高级设置调整。首条不增加间隔。</small></div><input type="checkbox" aria-label="气泡发送间隔" checked={(b.sendIntervalMs??0)>0} onChange={e=>update({sendIntervalMs:e.target.checked?800:0})}/></label>
  <div className="form-grid"><Field label="打字速度（字/秒）"><input type="number" min={5} max={60} disabled={!b.typingSimulation} value={b.typingSpeed??15} onChange={e=>update({typingSpeed:Number(e.target.value)})}/></Field><Field label="最长打字等待（秒）"><input type="number" min={0.25} max={5} step={0.25} disabled={!b.typingSimulation} value={b.typingMaxDelay??3} onChange={e=>update({typingMaxDelay:Number(e.target.value)})}/></Field></div>
  <label className="toggle-row"><div><b>轻微口语错字</b><small>只替换短中文闲聊中的少量语气词，不改数字、链接和代码；不需要可关闭。</small></div><input type="checkbox" aria-label="轻微口语错字" checked={!!b.typoEnabled} onChange={e=>update({typoEnabled:e.target.checked})}/></label>
  <Field label="错字触发概率" hint="参考0.02即2%，每条最多一个；不是完整拼音错字引擎。"><input type="number" min={0} max={0.05} step={0.01} disabled={!b.typoEnabled} value={b.typoProbability??0.02} onChange={e=>update({typoProbability:Number(e.target.value)})}/></Field>
