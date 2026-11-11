@@ -16,13 +16,17 @@ def decode(value):return Image.open(io.BytesIO(base64.b64decode(value.split(',',
 
 
 class Sizes(unittest.TestCase):
+    def test_explicit_source_tier_boundaries(self):
+        for original,expected in [(1,1),(127,127),(128,128),(129,128),(255,128),(256,128),(257,192),(511,192),(512,256),(513,256),(1024,256),(1025,512),(1920,512)]:
+            self.assertEqual(images.target_edge(original),expected)
+
     def test_landscape_portrait_panorama_and_exact_limit(self):
-        for size in [(1920,1080),(1080,1920),(3000,100),(1025,500),(1024,500),(513,250),(512,250),(511,250),(257,120),(256,120),(255,120),(32,20)]:
+        for size in [(1920,1080),(1080,1920),(3000,100),(1025,500),(1024,500),(513,250),(512,250),(511,250),(257,120),(256,120),(255,120),(129,60),(128,60),(127,60),(32,20)]:
             raw=encoded(size);limited=images.limit_data_url(raw)
             with decode(limited) as picture:
                 self.assertEqual(max(picture.size),images.target_edge(max(size)))
                 factor=min(1,images.target_edge(max(size))/max(size));self.assertLessEqual(abs(picture.width-size[0]*factor),1);self.assertLessEqual(abs(picture.height-size[1]*factor),1)
-                if max(size)<=256 or max(size)==512:self.assertEqual(picture.size,size);self.assertEqual(limited,raw)
+                if max(size)<=128:self.assertEqual(picture.size,size);self.assertEqual(limited,raw)
 
     def test_transparency_preserved(self):
         with decode(images.limit_data_url(encoded(mode='RGBA'))) as picture:self.assertIn('A',picture.getbands())
@@ -38,9 +42,9 @@ class Sizes(unittest.TestCase):
         original=out.getvalue()
         details={}
         with decode(images.limit_data_url(raw,details)) as picture:
-            self.assertEqual(picture.size,(328,164));self.assertEqual(getattr(picture,'n_frames',1),1)
+            self.assertEqual(picture.size,(256,128));self.assertEqual(getattr(picture,'n_frames',1),1)
             # All three chronological colors survive in the first montage row.
-            for x,color in [(54,'red'),(164,'green'),(273,'blue')]:
+            for x,color in [(42,'red'),(128,'green'),(213,'blue')]:
                 rgb=picture.getpixel((x,32));self.assertGreater(rgb[['red','green','blue'].index(color)],100)
         self.assertTrue(details['animated']);self.assertEqual(out.getvalue(),original)
         small=[Image.new('RGB',(60,30),c) for c in ['red','blue']];buf=io.BytesIO()
@@ -50,8 +54,9 @@ class Sizes(unittest.TestCase):
             self.assertEqual(picture.size,(60,30));self.assertEqual(picture.format,'JPEG')
 
     def test_real_gif_source_boundaries_cap_final_montage_not_each_cell(self):
-        for edge,expected in [(1025,512),(1024,328),(512,512),(511,256),(256,256)]:
-            frames=[Image.new('RGB',(edge,128),color) for color in ('red','green','blue')]
+        for edge,expected in [(1025,512),(1024,256),(513,256),(512,256),(511,192),(257,192),(256,128),(129,128),(128,128),(127,127)]:
+            height=min(128,edge)
+            frames=[Image.new('RGB',(edge,height),color) for color in ('red','green','blue')]
             output=io.BytesIO();frames[0].save(output,format='GIF',save_all=True,append_images=frames[1:],duration=100,loop=0)
             for frame in frames:frame.close()
             original=output.getvalue();details={}
@@ -61,7 +66,7 @@ class Sizes(unittest.TestCase):
                 else:self.assertLessEqual(max(montage.size),expected)
                 # A 3x3 sheet retains the input aspect ratio; one output pixel
                 # of rounding is allowed, rather than scaling each tile to cap.
-                self.assertLessEqual(abs(montage.height-montage.width*128/edge),1)
+                self.assertLessEqual(abs(montage.height-montage.width*height/edge),1)
             self.assertEqual(output.getvalue(),original)
 
     def test_invalid_and_over_budget_inputs_are_not_forwarded(self):
@@ -90,7 +95,7 @@ class Requests(unittest.IsolatedAsyncioTestCase):
             new=[message(encoded((edge,200))) for edge in (1025,1024,512,511,256)]
             result=await images.constrain_messages(history+new,{},retained)
             self.assertEqual(result[:len(retained)],before)
-            for item,edge in zip(result[len(retained):],(512,328,512,256,256)):
+            for item,edge in zip(result[len(retained):],(512,256,256,192,128)):
                 with decode(item['content'][-1]['image_url']['url']) as picture:self.assertEqual(max(picture.size),edge)
         self.assertEqual(retained,before)
 
@@ -108,7 +113,7 @@ class Requests(unittest.IsolatedAsyncioTestCase):
             prepared_view=await images.constrain_messages(request([old_input,current]),{},journal.last.base)
             result=journal.prepare(prepared_view,'fixed',strict=True)
             self.assertEqual(result.wire[:len(before)],before)
-            with decode(result.wire[-1]['content'][-1]['image_url']['url']) as picture:self.assertEqual(max(picture.size),328)
+            with decode(result.wire[-1]['content'][-1]['image_url']['url']) as picture:self.assertEqual(max(picture.size),256)
             self.assertEqual(journal.last.wire,before)
 
     async def test_submitted_legacy_media_stays_exact_before_checkpoint(self):
@@ -145,7 +150,7 @@ class Requests(unittest.IsolatedAsyncioTestCase):
         memo={};first=await images.constrain_messages(raw,memo)
         second=await images.constrain_messages(first,memo)
         self.assertEqual(first,second)
-        with decode(second[0]['content'][0]['image_url']['url']) as picture:self.assertEqual(max(picture.size),328)
+        with decode(second[0]['content'][0]['image_url']['url']) as picture:self.assertEqual(max(picture.size),256)
 
     async def test_sdk_current_image_uses_original_tiers_before_provider(self):
         from astrbot.core.platform.astr_message_event import current_message_event
@@ -156,7 +161,7 @@ class Requests(unittest.IsolatedAsyncioTestCase):
         images.install_sdk_preparation();token=current_message_event.set(event)
         try:
             with tempfile.TemporaryDirectory() as folder:
-                for size,target in [((1025,600),512),((1024,600),328),((512,300),512),((511,300),256),((256,100),256)]:
+                for size,target in [((1025,600),512),((1024,600),256),((512,300),256),((511,300),192),((256,100),128),((128,60),128),((127,60),127)]:
                     file=Path(folder)/'original.png';file.write_bytes(base64.b64decode(encoded(size).split(',',1)[1]))
                     result=await image_input.prepare_model_image(str(file),max_size=1280,output_dir=Path(folder))
                     with Image.open(result[0]) as picture:
