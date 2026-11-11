@@ -313,7 +313,7 @@ def current_view(messages,scope,event,service=False):
     return copy.deepcopy(head)+native_tail(messages,scope,event,service)
 
 
-def compose(journal,messages,scope,event,inputs=None,previous_tools=None,service=False,self_id='',input_digest=None):
+def compose(journal,messages,scope,event,inputs=None,previous_tools=None,service=False,self_id='',input_digest=None,system_transition_authorized=False):
     """Keep the exact canonical native prefix; append this event's new tail.
 
     Never overlap-match another SDK conversation or copy its old history.
@@ -348,6 +348,8 @@ def compose(journal,messages,scope,event,inputs=None,previous_tools=None,service
         service_input=[{'role':'user','content':content}]
     tail=copy.deepcopy(inputs or [])+service_input+tools[len(previous_tools):]
     old=journal.last.base if journal.last else messages[:system_head(messages)]
+    if system_transition_authorized and journal.checkpoint_system_boundary(JOURNAL_SCOPE):
+        old=messages[:system_head(messages)]+old[system_head(old):]
     identities={(o['scope'],str(o['event_id'])) for m in [*old,*tail] if (o:=source(m))}
     if not service and (scope,str(event)) not in identities:raise ValueError('shared_context_unobserved_event')
     return copy.deepcopy(old)+packets+tail,copy.deepcopy(tools)

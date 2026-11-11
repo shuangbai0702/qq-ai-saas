@@ -409,7 +409,14 @@ def observe_wire_request(request):
                 # Per-scope baseline: one conversation's licensed System
                 # transition must never block another scope still running the
                 # previously committed vector (R1 cross-scope fix).
-                reservation=contract.reserve(payload['messages'],value.get('systemPermitId'),value['attemptId'],time.time(),scope=value.get('scope') or '')
+                # An unchanged pinned System is not the newly saved config.
+                # Keep its audit permit available until the legal checkpoint
+                # actually adopts the new vector; direct reserve semantics stay strict.
+                from system_contract import system_vector_sha
+                scope=value.get('scope') or ''
+                baseline=contract.db.execute('SELECT system_sha FROM fishbot_system_scope_contract WHERE scope=?',(scope,)).fetchone()
+                permit=value.get('systemPermitId') if baseline and baseline[0]!=system_vector_sha(payload['messages']) else None
+                reservation=contract.reserve(payload['messages'],permit,value['attemptId'],time.time(),scope=scope)
                 value['systemReservation']=reservation
                 value['systemValidationStarted']=False
                 record_diagnostic(lease,{'kind':'wire_request','attemptId':value['attemptId'],'phase':value['phase'],

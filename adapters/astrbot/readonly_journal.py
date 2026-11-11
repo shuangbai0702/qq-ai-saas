@@ -628,6 +628,19 @@ class ReadonlyJournal:
                 'textHeadroom':max(0,MAX_RETAINED_TEXT_CHARS-usage['textChars']),
                 'wireHeadroom':max(0,MAX_RETAINED_WIRE_CHARS-usage['wireChars'])}
 
+    def checkpoint_system_boundary(self,scope):
+        """Only the unsubmitted replacement inside a committed retirement."""
+        old=self.last
+        if old is None or self.db is None or not scope:return False
+        head=system_head(old.base)
+        tables={r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        return bool(head and head==len(old.base) and
+            {'memory_semantic_batches','memory_reconstruction_checkpoints'}<=tables and
+            self.db.execute("""SELECT 1 FROM memory_semantic_batches b
+              JOIN memory_reconstruction_checkpoints c ON c.id=b.checkpoint_id
+              WHERE b.scope=? AND b.state='retired' AND c.state='consumed'
+                AND c.created<=? AND b.completed>=? LIMIT 1""",(scope,old.at,old.at)).fetchone())
+
     def prepare(self,messages,stamp,now=None,group_turn=None,reconstruction_authority=None,reconstruction_scope=None,
                 retirement=None,strict=False,compact_policy=False,guarded=True,retained_validator=None,
                 unprojected=None,coverage_view=None,system_transition_authorized=False):
@@ -695,19 +708,8 @@ class ReadonlyJournal:
             event_index=None;authority=None;excluded=set(() if index is None else (index,))
         base=copy.deepcopy([m for i,m in enumerate(messages) if i not in excluded]);old=self.last
         if old and system_transition_authorized and self.db is not None and reconstruction_scope:
-            head=system_head(old.base);new_head=system_head(base)
-            tables={r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            # The synchronous checkpoint replacement has not been submitted:
-            # its base has only System and its timestamp lies inside the exact
-            # committed retirement transaction. After any new model turn this
-            # window closes. A config-save System permit is still mandatory.
-            boundary=bool(head and head==len(old.base) and
-                {'memory_semantic_batches','memory_reconstruction_checkpoints'}<=tables and
-                self.db.execute('''SELECT 1 FROM memory_semantic_batches b
-                  JOIN memory_reconstruction_checkpoints c ON c.id=b.checkpoint_id
-                  WHERE b.scope=? AND b.state='retired' AND c.state='consumed'
-                    AND c.created<=? AND b.completed>=? LIMIT 1''',
-                  (reconstruction_scope,old.at,old.at)).fetchone())
+            new_head=system_head(base)
+            boundary=self.checkpoint_system_boundary(reconstruction_scope)
             if boundary and old.base!=base[:new_head]:
                 old=replace(old,base=copy.deepcopy(base[:new_head]),
                     wire=copy.deepcopy(base[:new_head])+copy.deepcopy(old.wire[system_head(old.wire):]))

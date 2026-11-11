@@ -44,7 +44,16 @@ class RuntimeTests(unittest.TestCase):
         held=j.prepare(candidate,('new-config',),reconstruction_authority=self.st.reflection,
             reconstruction_scope=SCOPE,retirement=j.last.retirement)
         self.assertEqual(held.wire[0],before[0])
-        updated=j.prepare(candidate,('new-config',),reconstruction_authority=self.st.reflection,
+        # Exercise the real shared composer before Journal admission: it used
+        # to discard the configured System before the permit check ran.
+        import shared_context
+        from unittest.mock import patch
+        with patch.object(shared_context,'JOURNAL_SCOPE',SCOPE):
+            held_composed,_=shared_context.compose(j,candidate,SCOPE,'next',inputs=[message('next')])
+            self.assertEqual(held_composed[0],before[0])
+            composed,_=shared_context.compose(j,candidate,SCOPE,'next',inputs=[message('next')],system_transition_authorized=True)
+        self.assertEqual(composed[0],new_system)
+        updated=j.prepare(composed,('new-config',),reconstruction_authority=self.st.reflection,
             reconstruction_scope=SCOPE,retirement=j.last.retirement,system_transition_authorized=True)
         self.assertEqual(updated.wire[0],new_system);self.assertEqual(j.last.wire,before)
         self.assertTrue(j.commit(updated))
