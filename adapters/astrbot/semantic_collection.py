@@ -119,17 +119,64 @@ class Collected(list):
         super().__init__(rows);self.discarded=list(discarded)
 
 
-def unavailable_stamp(db,discarded):
+def collect_local(db,scope,payload):
+    """Offer unrecoverable local originals honestly at a legal checkpoint.
+
+    The caller has already attempted Journal recapture. Keep complete captures
+    on the normal load/verify path; offer remaining fragments without inventing
+    a complete material row. No retirement occurs here.
+    """
+    if not _channel(scope):raise ValueError('semantic_collection_local_scope')
+    tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    output=Collected()
+    for row in payload:
+        event=str(row['event'])
+        if 'pipeline_scope_work' in tables and db.execute('SELECT 1 FROM pipeline_scope_work WHERE scope=? AND event=?',(scope,event)).fetchone():
+            raise ValueError('semantic_batch_work_still_active')
+        if 'pipeline_work_inputs' in tables and db.execute("SELECT 1 FROM pipeline_work_inputs WHERE scope=? AND event=? AND status='owned'",(scope,event)).fetchone():
+            raise ValueError('semantic_batch_input_still_owned')
+        saved=db.execute('SELECT material FROM memory_round_material WHERE scope=? AND event=?',(scope,event)).fetchone()
+        item=None
+        if saved:
+            try:item=json.loads(saved[0])
+            except (TypeError,ValueError):pass
+        # An unreadable format is a material gap; an explicit identity
+        # disagreement is not. Check identity before schema/version fallback.
+        if isinstance(item,dict):
+            for key,expected in (('scope',scope),('event',event),('subject',str(row['sender_id']))):
+                if key in item and (item[key] if key=='scope' else str(item[key]))!=expected:
+                    raise ValueError('semantic_collection_sender_conflict' if key=='subject' else 'semantic_collection_identity_conflict')
+            origin=source({'role':'user','content':item.get('text')})
+            if origin and (origin['scope'],str(origin['event_id']),str(origin['sender_id']))!=(scope,event,str(row['sender_id'])):
+                raise ValueError('semantic_collection_identity_conflict')
+        valid=valid_material(item,scope) and str(item['event'])==event if isinstance(item,dict) else False
+        if valid and item.get('complete'):
+            output.append(row);continue
+        images=item.get('images',[]) if valid else []
+        # Pending/round rows already carry the scope-bound source and reply.
+        # Invalid capture metadata must not assert another sender or media.
+        output.discarded.append({'event':event,'source_scope':scope,
+            'sender_ids':[str(row['sender_id'])],
+            'missing':'incomplete_original' if saved else 'full_original',
+            'available_text':[row['user']] if row.get('user') else [],
+            'available_reply':[row['bot']] if row.get('bot') else [],
+            'available_observations':[],'images':list(images)})
+    return output
+
+
+def unavailable_stamp(db,discarded,scope='bot_shared'):
     """CAS actual raw evidence; this hash is not model memory or coverage."""
     tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     values=[]
     for item in discarded:
-        pair=origin('bot_shared',item['event'])
-        for logical,event in (pair,('bot_shared',item['event'])):
-            for table in ('memory_pending','memory_rounds','memory_round_material','memory_hold_rounds','memory_message_sources',*(p[0] for p in OBSERVATION_POOLS)):
+        pair=origin(scope,item['event'])
+        for logical,event in sorted({pair,(scope,item['event'])}):
+            for table in ('memory_pending','memory_rounds','memory_round_material','memory_hold_rounds','memory_message_sources','pipeline_scope_work','pipeline_work_inputs',*(p[0] for p in OBSERVATION_POOLS)):
                 if table in tables:values.append([table,logical,event,list(db.execute('SELECT * FROM '+table+' WHERE scope=? AND event=?',(logical,event)))])
     for table in ('fishbot_readonly_journals','memory_checkpoint_archives','fishbot_operator_session_archives'):
-        if table in tables:values.append([table,list(db.execute('SELECT scope,sha FROM '+table+' ORDER BY rowid'))])
+        if table in tables:
+            rows=db.execute('SELECT scope,sha FROM '+table+' ORDER BY rowid') if scope=='bot_shared' else db.execute('SELECT scope,sha FROM '+table+' WHERE scope=? ORDER BY rowid',(model_json(scope),))
+            values.append([table,list(rows)])
     return hashlib.sha256(model_json(values).encode()).hexdigest()
 
 

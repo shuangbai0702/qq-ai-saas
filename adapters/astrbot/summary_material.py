@@ -702,7 +702,9 @@ def derive_claims(scope,payload,materials,corrections,data=None,*,strict=False):
         text=evidence_text(event,row,role)
         if quote not in text:continue
         quote=quote.strip()
-        if strict and len(quote)>CLAIM_TEXT:raise ValueError('semantic_claim_output_capacity_exceeded_material_retained')
+        if strict and len(quote)>CLAIM_TEXT:
+            # Preserve the invalid size for product validation, never silently clip.
+            claims.append({'invalid':'evidence_capacity'});continue
         material_row=stored.get(event) or {};signature=material_row.get('digest','')
         if role=='user':
             claims.append({'id':claim_identity(scope,event,'human_statement',quote),'text':quote[:CLAIM_TEXT],
@@ -830,17 +832,12 @@ def bound_claim_views(items,budget=1200,query=''):
     return used
 
 
-def semantic_claims_product(claims):
-    """Persist the model's valid selection whole, or retain the input batch.
-
-    Memory selection is lossy and belongs to the model. Storage capacity is
-    checked explicitly rather than silently making a second selection.
-    """
-    if any(not valid_claim(claim) for claim in claims):
-        raise ValueError('semantic_claim_output_invalid_material_retained')
-    if len(claims)>MAX_CLAIMS or len(model_json(claims).encode())>MAX_CLAIMS_BYTES:
-        raise ValueError('semantic_claim_output_capacity_exceeded_material_retained')
-    return claims
+def semantic_claims_product(claims,audit=None):
+    """Accept a valid optional product whole; rejection does not veto summary."""
+    reason='invalid_claim' if any(not valid_claim(claim) for claim in claims) else 'capacity' if len(claims)>MAX_CLAIMS or len(model_json(claims).encode())>MAX_CLAIMS_BYTES else None
+    if audit:
+        audit.product('claims','rejected' if reason else 'accepted',reason or 'applied',changed=bool(claims) and reason is None)
+    return [] if reason else claims
 
 
 def fit_claims(claims,budget=None,max_claims=None):

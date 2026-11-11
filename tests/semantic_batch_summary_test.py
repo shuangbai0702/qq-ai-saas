@@ -50,15 +50,22 @@ class SemanticSummary(unittest.IsolatedAsyncioTestCase):
   self.assertEqual(self.calls[0]['image_urls'],['data:image/png;base64,YQ=='])
   self.assertEqual(len(prompt['images'][0]['events']),36)
  async def test_failed_truncated_and_stale_do_not_commit_or_delete(self):
-  for mode in ('failed','truncated','stale','oversized','claims_overflow'):
+  for mode in ('failed','truncated','stale','oversized'):
    with self.subTest(mode=mode):
     self.r.binding=None
     if not self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0]:self.record(35,image=True)
     self.mode=mode;self.live=True;self.db.execute('DELETE FROM memory_reflection_retry');self.db.commit();await self.run_summary()
     self.assertIsNone(self.checkpoint());self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],35);self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
- async def test_missing_or_incomplete_material_reports_failure_before_model(self):
+ async def test_unrecoverable_material_is_declared_and_does_not_block_legal_summary(self):
   self.record();self.db.execute("DELETE FROM memory_round_material WHERE event='4'");self.db.commit();await self.run_summary()
-  self.assertIsNone(self.checkpoint());self.assertEqual(self.calls,[]);self.assertEqual(self.metrics['summaryFailures'],1)
+  self.assertEqual(self.checkpoint()[1:],(35,'available',None));self.assertEqual(len(self.calls),1)
+  prompt=json.loads(self.calls[0]['prompt'])
+  self.assertEqual(prompt['incomplete_material'][0]['event'],'4');self.assertEqual(prompt['incomplete_material'][0]['missing'],'full_original')
+  self.assertIn('missing部分未提供',self.calls[0]['system_prompt'])
+  self.assertEqual(self.metrics.get('summaryFailures',0),0)
+  # Commit is not Journal replacement: all remaining hot material is protected.
+  self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],34)
+  self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
  async def test_concurrent_material_change_rejects_commit(self):
   self.record();original=self.chat
   async def changed(**kw):

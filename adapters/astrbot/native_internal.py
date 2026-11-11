@@ -103,6 +103,8 @@ class BoundedProvider:
 
 async def run(provider,control,prompt,system,tools=(),handlers=None,context=None,contexts=None):
     """Return actual native feedback; cancellation settles the owned computation."""
+    from tool_outcome import RECEIPT_GUIDANCE
+    system+='\n'+RECEIPT_GUIDANCE
     handlers=handlers or {};allowed={tool.name:tool for tool in tools}
     tool_set=ToolSet(tools=list(tools)) if tools else None
     cooling={}

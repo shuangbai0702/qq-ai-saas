@@ -5,6 +5,40 @@ from media_egress import valid_url
 
 def remote_media_url(value):return valid_url(value)
 
+def hosted_send_definition(tool):
+    """Copy the SDK declaration at the hosted boundary; never mutate its cache."""
+    if tool.name!='send_message_to_user':return tool
+    import copy
+    # A changed SDK contract must stop before model submission, rather than
+    # leave its unsupported capabilities advertised or fail with a bare KeyError.
+    schema=tool.parameters
+    try:
+        properties=schema['properties'];messages=properties['messages'];item=messages['items'];fields=item['properties']
+        supported={'type','text','url','mention_user_id'}
+        compatible=(schema.get('type')=='object' and set(properties)=={'messages','session'}
+                    and messages.get('type')=='array' and item.get('type')=='object'
+                    and properties['session'].get('type')=='string'
+                    and supported<=set(fields)<=supported|{'path'}
+                    and all(isinstance(field,dict) and field.get('type')=='string' for field in fields.values()))
+    except (KeyError,TypeError,AttributeError):compatible=False
+    if not compatible:raise ValueError('hosted_native_send_schema_mismatch: unsupported SDK send declaration')
+    result=copy.copy(tool)
+    result.description=('向当前会话发送文本或媒体；普通文字回复可直接输出。媒体只接受HTTP(S) URL，'
+                        '不支持本地或沙箱路径。session省略、留空或使用当前会话；其他会话须用获授权的hosted目标工具。'
+                        '工具可见不等于获得新权限，实际发送仍按当前Work校验。')
+    result.parameters=copy.deepcopy(tool.parameters)
+    schema=result.parameters;schema['additionalProperties']=False
+    messages=schema['properties']['messages'];messages.update(minItems=1,maxItems=100)
+    item=messages['items'];item['additionalProperties']=False
+    fields=item['properties'];fields.pop('path',None)
+    fields['type']['enum']=['plain','image','record','video','file','mention_user']
+    for field in fields.values():field['maxLength']=20000
+    fields['url']['description']='image、record、video、file必填：可下载的HTTP(S)媒体URL。'
+    fields['text']['description']='plain必填：非空文本。'
+    fields['mention_user_id']['description']='mention_user必填：真实用户ID。'
+    schema['properties']['session'].update(maxLength=256,description='省略或留空表示当前会话；如填写只能是当前unified_msg_origin，不支持跨会话。')
+    return result
+
 def _install_tool_catalog(active):
     """Keep native tools stable before the runner builds its execution table."""
     import inspect
@@ -20,6 +54,8 @@ def _install_tool_catalog(active):
         agent_context=getattr(context,'context',None)
         event=getattr(agent_context,'event',None)
         request=bound.arguments.get('request')
+        if event is not None and request is not None and active(event) and request.func_tool:
+            request.func_tool=ToolSet(tools=[hosted_send_definition(tool) for tool in request.func_tool.tools])
         if event is not None and request is not None and active(event) and not event.get_extra('_hosted_internal_work'):
             plugin_context=agent_context.context
             settings=plugin_context.get_config(umo=event.unified_msg_origin).get('provider_ltm_settings',{})

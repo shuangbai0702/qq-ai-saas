@@ -7,6 +7,7 @@ from bilibili_tools import manifest
 GUIDANCE = ('execution_experience 是自己的真实工具经历，不是当前平台观看历史。回顾做过什么时先用这些回执，'
             '需要更多再调用 hosted_recall_experience；能力已关闭不代表过去没有做过。'
             '保留实际时间、覆盖范围和失败/未知，不把工具返回的候选材料说成亲历，不能用当前热门代替回顾。'
+            '按已确认成果、尝试及阻塞理解可续接的部分；经历是复盘依据，不是当前授权，也不要求重复原操作。'
             '跨会话 public_activity_only 仅允许说明已公开的动作/视频及覆盖范围，不能推测或披露原私聊请求。')
 
 

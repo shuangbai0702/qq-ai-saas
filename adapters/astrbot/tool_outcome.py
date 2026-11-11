@@ -3,6 +3,11 @@ import json
 STATES={'confirmed','rejected','partial','unknown','not_applicable'}
 EXECUTIONS={'completed','failed','canceled','pending'}
 REJECTED={'blocked','unavailable','invalid_favorite','disabled_favorite','not_sent','invalid_reference','invalid_source'}
+RECEIPT_GUIDANCE=('工具结果分开看execution（本次计算/排队状态）和receipt（对应外部操作回执）。'
+                  'pending是等待处理，prepared是素材准备，均不证明发送或履行；confirmed仅证明回执所指动作获确认，'
+                  '不自动证明整个目标完成。partial保留已确认部分；unknown表示结果不明，先核对原动作和账本，不盲目重试。'
+                  'rejected只说明该调用被拒；可按原因调整合法输入、选择其他可用能力或停止，不推断所有能力都不可用。'
+                  'not_applicable没有外部写入回执含义；读取完成不验证资料自身的主张。')
 
 def rejected(code,message):
     return json.dumps({'execution':'failed','receipt':{'status':'rejected'},'code':code,'message':message,'evidence':[]},ensure_ascii=False)
