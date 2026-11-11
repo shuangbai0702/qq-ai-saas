@@ -56,6 +56,16 @@ export function registerBehaviorData(app:FastifyInstance,root:string,owned:(req:
   if(bot.desired_state!=='running')throw Object.assign(new Error('请先启动机器人'),{statusCode:409});
   return bot;
  }
+ app.post<{Params:{id:string}}>('/v1/admin/bots/:id/model-probe',{config:{rateLimit:{max:2,timeWindow:'1 minute'}}},async req=>{
+  const bot=await adminBot(req);
+  const body=z.object({requestId:z.uuid(),scope}).strict().parse(req.body);
+  await db.query("INSERT INTO audit_events(tenant_id,event,bot_id,detail) VALUES($1,'admin.model.probe',$2,$3)",[bot.tenant_id,bot.id,JSON.stringify({...body,actorId:req.user!.id,qqSend:false,toolExecution:false})]);
+  return access(bot,{action:'admin_model_probe',...body,administrator:req.user!.id},true);
+ });
+ app.get<{Params:{id:string}}>('/v1/admin/bots/:id/model-probe',async req=>{
+  const bot=await adminBot(req),query=z.object({requestId:z.uuid()}).strict().parse(req.query);
+  return access(bot,{action:'admin_model_probe_status',...query},true);
+ });
  app.post<{Params:{id:string}}>('/v1/admin/bots/:id/force-compress',{config:{rateLimit:{max:6,timeWindow:'1 minute'}}},async req=>{
   const bot=await adminBot(req);
   const body=z.object({requestId:z.uuid(),allowPartial:z.boolean().default(false),discardUnavailable:z.boolean().default(false)}).strict().parse(req.body);

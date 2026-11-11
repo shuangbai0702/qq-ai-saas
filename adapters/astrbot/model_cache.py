@@ -245,6 +245,7 @@ def discarded(reason):
 def is_foreground_event(event):
     if not event or event.get_extra('_hosted_internal_work'):return False
     work=event.get_extra('_hosted_pipeline')
+    if getattr(work,'source',None)=='admin_debug':return event.get_extra('_hosted_admin_debug') is True
     # These all enter the same native conversation. Timer/owner/tool wakeups
     # must not bypass its durable wire/System contract just because no user
     # message triggered them. Effective business rounds are settled separately.

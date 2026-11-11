@@ -1,0 +1,25 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import Fastify from 'fastify';
+import {registerBehaviorData} from '../apps/control-api/src/behavior-data.js';
+test('model probe is admin-only, strict, audited and runtime-owner fenced',async t=>{
+ const app=Fastify();t.after(()=>app.close());app.setErrorHandler((e:any,_r,reply)=>reply.code(e.statusCode||400).send({error:e.message}));
+ app.addHook('onRequest',async req=>{req.user={id:'session-admin',email:'test',name:'test',tenant_id:'tenant',is_admin:req.headers['x-role']==='admin'}});
+ const id='11111111-1111-4111-8111-111111111111',requestId='22222222-2222-4222-8222-222222222222';
+ const calls:any[]=[],audits:any[]=[];let alive=true;const original=globalThis.fetch;t.after(()=>{globalThis.fetch=original});
+ globalThis.fetch=(async(url:any,init:any)=>{calls.push({url,headers:init.headers,body:JSON.parse(init.body)});return new Response(JSON.stringify({ok:true,state:'running'}))}) as typeof fetch;
+ const db={query:async(sql:string,args:any[])=>{if(sql.startsWith('SELECT'))return [{id,tenant_id:'tenant',desired_state:'running',runtime_mode:'shared',group_id:'group',generation:3,applied_revision:40}];audits.push(args);return[]}};
+ const agent={host:{inspect:async()=>alive},context:async()=>({aiPort:100,token:'member'}),shared:{group:async()=>({health_port:12345,token:'group',generation:5})}};
+ registerBehaviorData(app,'.',async()=>({id}),agent as any,db as any);
+ const url=`/v1/admin/bots/${id}/model-probe`,payload={requestId,scope:'private:12345678'};
+ assert.equal((await app.inject({method:'POST',url,payload})).statusCode,403);
+ assert.equal((await app.inject({method:'POST',url,headers:{'x-role':'admin'},payload:{...payload,administrator:'fake'}})).statusCode,400);
+ assert.equal((await app.inject({method:'POST',url:`/v1/bots/${id}/behavior-data`,payload:{action:'admin_model_probe',...payload}})).statusCode,400);
+ assert.equal(calls.length,0);
+ assert.equal((await app.inject({method:'POST',url,headers:{'x-role':'admin'},payload})).statusCode,200);
+ assert.equal(calls[0].body.administrator,'session-admin');assert.equal(calls[0].body.action,'admin_model_probe');
+ assert.equal(calls[0].headers['X-Member-Revision'],'40');assert.equal(calls[0].headers['X-Group-Generation'],'5');
+ assert.equal(JSON.parse(audits[0][2]).qqSend,false);
+ alive=false;assert.equal((await app.inject({method:'POST',url,headers:{'x-role':'admin'},payload})).statusCode,409);
+ assert.equal(calls.length,1);
+});
