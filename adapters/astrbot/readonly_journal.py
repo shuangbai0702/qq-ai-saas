@@ -8,6 +8,7 @@ import copy,hashlib,json,time,uuid
 import journal_storage
 from dataclasses import dataclass
 from context_protocol import READONLY_CURRENT,model_json,source
+from memory_model_view import memory_json
 from decision_history import changes,apply_changes,summaries,history_usage,history_boundary,MAX_RETAINED_WIRE_CHARS,MAX_RETAINED_TEXT_CHARS
 
 MAX_PERSISTED_JOURNAL_BYTES=16*1024*1024
@@ -918,8 +919,8 @@ class ReadonlyJournal:
                     if len(model_json(compact))<len(model_json(fallback)):
                         authority={'role':authority['role'],'content':EVENT_CONTEXT_CURRENT+'\n'+model_json(compact)}
                     else:authority={'role':authority['role'],'content':EVENT_CONTEXT_CURRENT+'\n'+model_json(fallback)}
-                wire.append(authority)
-            if operations:wire.append({'role':'user','content':READONLY_CURRENT+'\n'+model_json({'readonlyChanges':operations})})
+                wire.append({**authority,'content':EVENT_CONTEXT_CURRENT+'\n'+memory_json(json.loads(authority['content'].split('\n',1)[1]))})
+            if operations:wire.append({'role':'user','content':READONLY_CURRENT+'\n'+memory_json({'readonlyChanges':operations})})
         else:
             from context_foundation import arrange,execution_view
             state=execution_view(state)
