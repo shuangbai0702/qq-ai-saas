@@ -128,7 +128,7 @@ def unavailable_stamp(db,discarded):
         for logical,event in (pair,('bot_shared',item['event'])):
             for table in ('memory_pending','memory_rounds','memory_round_material','memory_hold_rounds','memory_message_sources',*(p[0] for p in OBSERVATION_POOLS)):
                 if table in tables:values.append([table,logical,event,list(db.execute('SELECT * FROM '+table+' WHERE scope=? AND event=?',(logical,event)))])
-    for table in ('memory_checkpoint_archives','fishbot_operator_session_archives'):
+    for table in ('fishbot_readonly_journals','memory_checkpoint_archives','fishbot_operator_session_archives'):
         if table in tables:values.append([table,list(db.execute('SELECT scope,sha FROM '+table+' ORDER BY rowid'))])
     return hashlib.sha256(model_json(values).encode()).hexdigest()
 
@@ -175,7 +175,7 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False):
     for table in ('memory_rounds','memory_pending','memory_hold_rounds','memory_round_material'):
         if table in tables:scopes.update(r[0] for r in db.execute('SELECT DISTINCT scope FROM '+table) if _channel(r[0]))
     for scope in sorted(scopes):discard_failed_service_inputs(db,scope)
-    candidates={};materials={};anchors={};provided={};snippets={}
+    candidates={};materials={};anchors={};provided={};snippets={};raw_observations={}
     def register(pair,person=None,at=None):
         if not pair or not eligible(pair):return
         scopes.add(pair[0])
@@ -260,7 +260,24 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False):
             if not o:continue
             if _time(o.get('at')):upper=o['at']
             if _time(upper):bounds[model_json([o['scope'],str(o['event_id'])])]=upper
-        for item in snapshots(messages,'bot_shared',db=db):capture(item,'bot_shared',bounds.get(item['event']))
+        for item in snapshots(messages,'bot_shared',db=db):
+            if valid_material(item,'bot_shared'):
+                capture(item,'bot_shared',bounds.get(item['event']));continue
+            if not discard_unavailable:raise ValueError('semantic_collection_material_invalid')
+            # The verified Journal is real original material even when its
+            # tool result exceeds the old bounded capture schema. Offer the
+            # exact physical blocks, never truncate them to pass validation.
+            pair=identity('bot_shared',item['event'])
+            if not pair or not eligible(pair):continue
+            register(pair,item['subject'])
+            if _time(bounds.get(item['event'])):candidates[pair]['bounds'].add(bounds[item['event']])
+            for index,message in enumerate(messages):
+                o=source(message)
+                if not o or (o['scope'],str(o['event_id']))!=pair:continue
+                register(pair,str(o['sender_id']),o.get('at'))
+                end=next((j for j in range(index+1,len(messages)) if messages[j].get('role')=='user'),len(messages))
+                block=copy.deepcopy(messages[index:end])
+                if block not in raw_observations.setdefault(pair,[]):raw_observations[pair].append(block)
     wanted=[]
     for pair,item in candidates.items():
         if not item['times'] and not item['bounds']:raise ValueError('semantic_collection_time_missing')
@@ -278,12 +295,22 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False):
     def offer_unavailable(pair,captures,reason):
         texts=set(snippets.get(pair,set()))
         texts.update(m['text'] for m in captures if m.get('text'))
+        raw=raw_observations.get(pair,[])
+        images={image for m in captures for image in m.get('images',[])}
+        for block in raw:
+            for message in block:
+                for part in message.get('content') if isinstance(message.get('content'),list) else []:
+                    if isinstance(part,dict) and part.get('type')=='image_url':
+                        url=(part.get('image_url') or {}).get('url')
+                        if isinstance(url,str) and url.startswith('data:image/'):images.add(url)
         output.discarded.append({'event':model_json(list(pair)),'source_scope':pair[0],
             'sender_ids':sorted(candidates[pair]['people']),'missing':reason,
             'available_text':sorted(texts),'available_reply':sorted(anchors.get(pair,set())),
-            'images':sorted({image for m in captures for image in m.get('images',[])})})
+            'available_observations':raw,'images':sorted(images)})
     for pair in sorted(wanted,key=lambda p:(min(candidates[p]['times'] or candidates[p]['bounds']),p)):
         captures=materials.get(pair,[])
+        if pair in raw_observations:
+            offer_unavailable(pair,captures,'incomplete_original');continue
         if not any(m.get('complete') is True for m in captures):
             # Explicitly incomplete evidence never acquires a forged complete
             # material/coverage row. It is offered as available fragments only.

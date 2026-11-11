@@ -46,6 +46,16 @@ class CollectionTests(unittest.TestCase):
         self.db.execute("UPDATE social_samples SET text='NEW_RECOVERED_TEXT' WHERE event='sample-only'")
         self.assertNotEqual(before,semantic_collection.unavailable_stamp(self.db,rows.discarded))
         self.assertIsNone(self.db.execute('SELECT 1 FROM memory_round_material').fetchone())
+    def test_oversized_real_tool_result_uses_full_trusted_journal_not_bounded_schema(self):
+        body='REAL_TOOL_RESULT_BEGIN_'+('x'*33930)+'_REAL_TOOL_RESULT_END'
+        self.archive([self.message(event='tool-size',at=50),
+            {'role':'assistant','content':None,'tool_calls':[{'id':'call','type':'function','function':{'name':'read','arguments':'{}'}}]},
+            {'role':'tool','tool_call_id':'call','content':body},
+            {'role':'assistant','content':'real final response'}])
+        rows=semantic_collection.collect(self.db,'bot_shared',100,[],discard_unavailable=True)
+        self.assertEqual(len(rows.discarded),1)
+        self.assertIn(body,model_json(rows.discarded))
+        self.assertIsNone(self.db.execute('SELECT 1 FROM memory_round_material').fetchone())
     def test_unknown_occurrence_time_uses_real_later_order_bound_only(self):
         first=event_message({'scope':self.channel,'sender_id':'12345678','event_id':'unknown-time'},'real old text')
         self.archive([first,self.message(event='next',at=90)])
