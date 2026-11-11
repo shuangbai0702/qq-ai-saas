@@ -30,6 +30,29 @@ class RuntimeTests(unittest.TestCase):
         p=Prepared(1,None,copy.deepcopy(self.base),copy.deepcopy(self.base),state,1,time.time(),'initial')
         self.assertTrue(journal.commit(p));self.st.model_journals[SCOPE]=journal
     def tearDown(self):self.st.close();self.temp.cleanup()
+    def test_checkpoint_system_adoption_requires_config_permit_and_no_new_submitted_turn(self):
+        from context_protocol import READONLY_CURRENT
+        j=self.st.model_journals[SCOPE]
+        j.last.base=j.last.base[:-1];j.last.wire=j.last.wire[:-1]
+        self.assertEqual(finish_semantic_batches(self.st,{},SCOPE)['retired'],1)
+        # Restore from real SQLite: the proof must survive Worker restart.
+        j=ReadonlyJournal(self.st.db,SCOPE);before=copy.deepcopy(j.last.wire)
+        new_system={'role':'system','content':'tenant System with new authorized quote rule'}
+        from context_transport import READONLY_FIELDS
+        readonly={k:v for k,v in j.last.state.items() if k in READONLY_FIELDS}
+        candidate=[new_system,message('next'),{'role':'user','content':READONLY_CURRENT+'\n'+model_json(readonly)}]
+        held=j.prepare(candidate,('new-config',),reconstruction_authority=self.st.reflection,
+            reconstruction_scope=SCOPE,retirement=j.last.retirement)
+        self.assertEqual(held.wire[0],before[0])
+        updated=j.prepare(candidate,('new-config',),reconstruction_authority=self.st.reflection,
+            reconstruction_scope=SCOPE,retirement=j.last.retirement,system_transition_authorized=True)
+        self.assertEqual(updated.wire[0],new_system);self.assertEqual(j.last.wire,before)
+        self.assertTrue(j.commit(updated))
+        # A later authorized save cannot rewrite this newly submitted prefix.
+        later=copy.deepcopy(candidate);later[0]['content']='another change'
+        frozen=j.prepare(later,('later',),reconstruction_authority=self.st.reflection,
+            reconstruction_scope=SCOPE,retirement=j.last.retirement,system_transition_authorized=True)
+        self.assertEqual(frozen.wire[0],new_system)
     def test_callback_retires_without_next_message_and_preserves_execution(self):
         result=finish_semantic_batches(self.st,{},SCOPE)
         self.assertEqual(result['retired'],1,result)

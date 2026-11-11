@@ -1658,9 +1658,11 @@ def install_runtime(core,settings):
             # boundary; it never retires committed model history.
             try:
                 from memory_scope import retained_context_visible
+                system_transition_authorized=False
                 if foreground and journal.last is not None:
                     from system_contract import request_identity
-                    if not owned.system_contract.transition_available(projected,lease.get('systemChangePermitId'),request_identity(),scope=key):
+                    system_transition_authorized=owned.system_contract.transition_available(projected,lease.get('systemChangePermitId'),request_identity(),scope=key)
+                    if not system_transition_authorized:
                         # A history checkpoint cannot authorize an independent
                         # System transition. Keep its committed vector before
                         # reserving/consuming any reconstruction checkpoint.
@@ -1674,7 +1676,8 @@ def install_runtime(core,settings):
                                          retirement=owned.reflection.reconstruction_stamp(key) if foreground else dependency,
                                          strict=foreground,compact_policy=foreground,guarded=foreground,
                                          retained_validator=(lambda wire:retained_context_visible(owned.db,wire,work.scope,str((lease['config'].get('behavior') or {}).get('ownerUin') or ''))) if foreground else None,
-                                         unprojected=unprojected_for_journal,coverage_view=native_view)
+                                         unprojected=unprojected_for_journal,coverage_view=native_view,
+                                         system_transition_authorized=system_transition_authorized)
                 if prepared:prepared.validation_dependency=dependency
             except BaseException as error:
                 if foreground and journal.last is None:owned.model_journals.pop(key,None)
