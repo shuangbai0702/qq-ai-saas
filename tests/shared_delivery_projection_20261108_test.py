@@ -125,16 +125,24 @@ class Delivery(unittest.IsolatedAsyncioTestCase):
             self.store.reflection.record(shared.JOURNAL_SCOPE,'12345678',identifier,m['content'],actual,materials=materials)
         class Summary:
             async def text_chat(self,**kwargs):return NS(completion_text=model_json({'summary':'35 completed real requests and confirmed answers.','evidence':[],'commitments':[]}))
+        committed_wire=copy.deepcopy(self.journal.last.wire)
         metrics={}
         self.assertTrue(self.store.reflection.maybe_start(shared.JOURNAL_SCOPE,{'memory':True,'memorySummary':True,'naturalConversation':False},Summary(),lambda:True,metrics,ContextVar('receipt-summary',default=None)))
         await self.store.reflection.task
         self.assertEqual(self.db.execute('SELECT round_count,state FROM memory_reconstruction_checkpoints').fetchall(),[(35,'available')],metrics)
+        self.assertEqual(self.journal.last.wire,committed_wire)
+        self.assertEqual(ReadonlyJournal(self.db,shared.JOURNAL_SCOPE).last.wire,committed_wire)
         m=inbound('private:87654321','36')
         composed,_=shared.compose(self.journal,packet(m,self.store,self.journal),'private:87654321','36',[m])
         projected=project_history(composed,coverage(self.db,shared.JOURNAL_SCOPE),shared.JOURNAL_SCOPE,shared.event_key({'scope':'private:87654321','event_id':'36'}))
-        self.assertFalse(any(x.get('role')=='assistant' and str(x.get('content','')).startswith('original draft') for x in projected))
+        # Whole-batch semantic checkpoints authorize retirement in Journal
+        # preparation; they no longer publish per-event legacy Coverage.
+        self.assertEqual(self.journal.last.wire,committed_wire)
         p=self.journal.prepare(projected,('bot',),strict=True,reconstruction_scope=shared.JOURNAL_SCOPE,
                                reconstruction_authority=self.store.reflection,retirement=self.store.reflection.reconstruction_stamp(shared.JOURNAL_SCOPE))
+        self.assertFalse(any(x.get('role')=='assistant' and str(x.get('content','')).startswith('original draft') for x in p.wire))
+        self.assertFalse(any(x.get('role')=='assistant' and str(x.get('content','')).startswith('original draft') for x in p.base))
+        self.assertEqual(self.journal.last.wire,committed_wire)
         self.assertIsNotNone(p.reconstruction_permit);self.assertTrue(self.journal.stage_candidate(p));self.assertTrue(self.journal.commit(p))
         self.assertEqual(self.db.execute('SELECT state FROM memory_reconstruction_checkpoints').fetchone()[0],'consumed')
         self.assertEqual(len([x for x in self.journal.last.base if x.get('role')=='user']),1)

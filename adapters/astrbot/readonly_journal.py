@@ -4,7 +4,7 @@ SDK windows supply new events, never authority to replace a committed prefix.
 Source identity, permissions, protocol receipts and legal summary coverage keep
 their own business authority; this Journal owns the exact submitted sequence.
 """
-import copy,hashlib,json,time,uuid
+import copy,hashlib,json,os,time,uuid
 import journal_storage
 from dataclasses import dataclass,replace
 from context_protocol import READONLY_CURRENT,model_json,source
@@ -92,6 +92,55 @@ def tail_extension(old_base,new_messages):
     return tail_new[len(tail_old):]
 
 GUIDANCE='只读资料包首次提供完整对象；后续标为readonlyChanges的资料包是该对象的增量，按顺序应用[set,path,value]或[remove,path]，新值覆盖旧值，remove后不能恢复旧值。只有最新合并资料是当前状态；旧资料包是当时记录，不是新的用户发言、当前身份或权限。每次仍回应最新真实消息，工具结果以真实回执为准。'
+
+def reading_b_enabled():
+    # Rollback affects only future packets. Committed B definitions and wire
+    # remain visible and decodable, including when this switch is disabled.
+    return os.environ.get('FISHBOT_CONTEXT_READING_B','1').lower() not in ('0','false','off')
+
+def reading_pool(wire):
+    """Require visible definitions/bases even after restart or write rollback."""
+    from context_reading import PROTOCOL_MESSAGE,extract_pool,has_b_payload
+    from context_transport import EVENT_CONTEXT_CURRENT
+    defined=readonly_basis=event_basis=False
+    for message in wire:
+        if message==PROTOCOL_MESSAGE:defined=True;continue
+        content=message.get('content')
+        if message.get('role')!='user' or not isinstance(content,str):continue
+        if content.startswith(READONLY_CURRENT+'\n'):
+            packet=json.loads(content.split('\n',1)[1])
+            root=('readonlyChanges' not in packet and not has_b_payload(packet)) or any(
+                op[0]=='set' and op[1]==[] for op in packet.get('readonlyChanges',[]))
+            if has_b_payload(packet) and (not defined or not (readonly_basis or root)):
+                raise ValueError('reading_definition_or_baseline_missing')
+            readonly_basis=readonly_basis or root
+        elif content.startswith(EVENT_CONTEXT_CURRENT+'\n'):
+            packet=json.loads(content.split('\n',1)[1])
+            if 'eventChanges' in packet:
+                if 'meaning' not in packet and (not defined or not event_basis):
+                    raise ValueError('event_definition_or_baseline_missing')
+            elif {'authority','currentGuidance','meaning'}<=set(packet):event_basis=True
+    return extract_pool(wire)
+
+def reading_baseline(messages,state):
+    """Only a fresh/licensed baseline reaches here; never pass old.wire."""
+    from context_foundation import arrange
+    wire=arrange(messages,state)
+    if not reading_b_enabled():return wire
+    from context_reading import PROTOCOL_MESSAGE,encode_readonly,decode_readonly
+    for i,message in enumerate(wire):
+        content=message.get('content')
+        if message.get('role')!='user' or not isinstance(content,str) or not content.startswith(READONLY_CURRENT+'\n'):continue
+        data=json.loads(content.split('\n',1)[1])
+        # The tested initial actions/time remain complete. Only candidate
+        # definitions need a self-contained version pool in a new baseline.
+        if not isinstance(data.get('social'),dict) or not isinstance(data['social'].get('meme_candidates'),list):continue
+        packet=encode_readonly({},data,[['set',[],data]],{})
+        if decode_readonly({},packet,{})!=data:raise ValueError('reading_baseline_mismatch')
+        wire[i]={**message,'content':READONLY_CURRENT+'\n'+memory_json(packet)}
+        wire.insert(i,copy.deepcopy(PROTOCOL_MESSAGE))
+        break
+    return wire
 
 def visible_summary_ids(value):
     result=set()
@@ -391,6 +440,9 @@ class ReadonlyJournal:
                     event=json.loads(authority['content'].split('\n',1)[1])
                     if not isinstance(event,dict) or set(event)!={'authority','policy','currentGuidance','meaning'}:raise ValueError()
                 except (TypeError,ValueError):self.recovery_error='journal_snapshot_invalid';return
+            try:reading_pool(value['wire'])
+            except (TypeError,ValueError,KeyError,IndexError):
+                self.recovery_error='journal_reading_definition_invalid';return
             self.last=Prepared(0,None,value['base'],value['wire'],value['state'],value['turns'],value['at'],'restored',group_turn,value['base_chars'],value['detail'],value['usage'],authority,value['retirement'])
             return
         overflow=self.db.execute('SELECT overflow FROM fishbot_readonly_journal_meta WHERE id=1').fetchone()[0]
@@ -921,29 +973,49 @@ class ReadonlyJournal:
                 # wire: deferred System/retirement changes are not adopted.
                 base=old.base+list(suffix)
             wire=copy.deepcopy(old.wire)+suffix
+            use_b=reading_b_enabled()
+            if use_b:
+                from context_reading import PROTOCOL_MESSAGE,extract_pool,encode_readonly,decode_readonly
+                pool=reading_pool(old.wire)
+            def define_reading():
+                if use_b and PROTOCOL_MESSAGE not in wire:wire.append(copy.deepcopy(PROTOCOL_MESSAGE))
             # Event facts are append-only too, but an identical packet adds no
             # information. Repeating it on every ToolLoop request needlessly
             # grows history and can manufacture the next size boundary.
             if authority is not None and authority!=old.authority:
                 current_data=json.loads(authority['content'].split('\n',1)[1])
                 previous_data=json.loads(old.authority['content'].split('\n',1)[1]) if old.authority else {}
-                if compact_policy and old.authority:
+                # A checkpoint may leave only a contract-presence placeholder
+                # in metadata. It is not a model-visible event baseline.
+                event_basis=any(isinstance(m.get('content'),str) and m.get('role')=='user'
+                    and m['content'].startswith(EVENT_CONTEXT_CURRENT+'\n')
+                    and 'eventChanges' not in json.loads(m['content'].split('\n',1)[1])
+                    for m in old.wire)
+                if compact_policy and old.authority and (not use_b or event_basis):
                     delta=changes(previous_data,current_data)
                     if apply_changes(previous_data,delta)!=current_data:raise ValueError('event_projection_mismatch')
-                    compact={'eventChanges':delta,'meaning':'仅按set/remove路径更新上一份平台事件资料；未变字段沿用，不改历史、不授予权限。'}
+                    compact={'eventChanges':delta}
+                    if not use_b:compact['meaning']='仅按set/remove路径更新上一份平台事件资料；未变字段沿用，不改历史、不授予权限。'
                     # Keep the full latest snapshot in durable metadata. Only
                     # the NEW wire packet may use a smaller lossless delta.
                     fallback=copy.deepcopy(current_data)
                     if fallback.get('policy')==previous_data.get('policy'):fallback.pop('policy',None)
                     if len(model_json(compact))<len(model_json(fallback)):
+                        define_reading()
                         authority={'role':authority['role'],'content':EVENT_CONTEXT_CURRENT+'\n'+model_json(compact)}
                     else:authority={'role':authority['role'],'content':EVENT_CONTEXT_CURRENT+'\n'+model_json(fallback)}
                 wire.append({**authority,'content':EVENT_CONTEXT_CURRENT+'\n'+memory_json(json.loads(authority['content'].split('\n',1)[1]))})
-            if operations:wire.append({'role':'user','content':READONLY_CURRENT+'\n'+memory_json({'readonlyChanges':operations})})
+            if operations:
+                packet={'readonlyChanges':operations}
+                if use_b:
+                    packet=encode_readonly(old.state,state,operations,pool)
+                    if decode_readonly(old.state,packet,copy.deepcopy(pool))!=state:raise ValueError('reading_increment_mismatch')
+                    if packet!={'readonlyChanges':operations}:define_reading()
+                wire.append({'role':'user','content':READONLY_CURRENT+'\n'+memory_json(packet)})
         else:
             from context_foundation import arrange,execution_view
             state=execution_view(state)
-            wire=arrange(messages,state)
+            wire=reading_baseline(messages,state)
         usage=history_usage(wire);base_chars=old.base_chars if reuse else usage['textChars']
         # A foreground journal cannot rebuild at a cache-growth threshold.
         # Existing absolute text/wire limits still require a real permit.
@@ -959,7 +1031,7 @@ class ReadonlyJournal:
             if reconstruction_permit and reconstruction_permit.get('semanticBatch'):
                 base=semantic_retire_projection(base,reconstruction_permit)
                 messages=semantic_retire_projection(messages,reconstruction_permit)
-            wire=arrange(messages,state);reason='history_size_boundary';reuse=False
+            wire=reading_baseline(messages,state);reason='history_size_boundary';reuse=False
             usage=history_usage(wire);base_chars=usage['textChars'];detail=history_boundary(usage['textChars'],base_chars,usage['wireChars'],growth_limit=False)
             if detail:
                 if reconstruction_permit:reconstruction_authority.settle_context_reconstruction(reconstruction_permit,False)
@@ -991,7 +1063,7 @@ class ReadonlyJournal:
         state=execution_view(copy.deepcopy(state))
         messages=base+([copy.deepcopy(event_authority)] if event_authority is not None else [])
         messages.append({'role':'user','content':READONLY_CURRENT+'\n'+model_json(state)})
-        wire=arrange(messages,state);usage=history_usage(wire)
+        wire=reading_baseline(messages,state);usage=history_usage(wire)
         if history_boundary(usage['textChars'],usage['textChars'],usage['wireChars'],growth_limit=False):return False
         self.serial+=1
         stored_authority=copy.deepcopy(event_authority)
