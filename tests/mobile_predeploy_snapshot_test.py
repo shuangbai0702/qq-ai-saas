@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 import sqlite3
+import json
 import tempfile
 import unittest
 
@@ -10,6 +11,22 @@ spec.loader.exec_module(snapshot)
 
 
 class ProjectionTest(unittest.TestCase):
+    def test_assets_only_follow_bound_account_and_exact_index_files(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); source = root/'source'; target = root/'target'
+            images = source/'qq-favorites/images'; images.mkdir(parents=True)
+            name = 'qqf_'+'a'*16
+            index = source/'qq-favorites/index.json'
+            index.write_text(json.dumps({'account':'12345678','items':[
+                {'id':name,'file':name+'.png'}, {'id':'../../private','file':'../secret.png'}]}))
+            (images/(name+'.png')).write_bytes(b'synthetic approved image')
+            (images/'unreferenced.png').write_bytes(b'not referenced')
+            self.assertEqual(snapshot.project_assets(source,target,'other account'), [])
+            copied = snapshot.project_assets(source,target,'12345678')
+            self.assertEqual(len(copied),2)
+            self.assertTrue((target/'qq-favorites/images'/(name+'.png')).exists())
+            self.assertFalse((target/'qq-favorites/images/unreferenced.png').exists())
+
     def test_products_keep_identity_raw_empty_source_unchanged(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder); source = root / 'source.sqlite'; target = root / 'target.sqlite'
@@ -22,6 +39,12 @@ class ProjectionTest(unittest.TestCase):
               CREATE TABLE memory_reconstruction_checkpoints(id INTEGER PRIMARY KEY,summary_id,state);
               CREATE TABLE memory_semantic_batches(checkpoint_id INTEGER PRIMARY KEY,state);
               CREATE TABLE memory_checkpoint_admin_overrides(checkpoint_id INTEGER PRIMARY KEY,administrator);
+              CREATE TABLE sticker_inbox(id PRIMARY KEY,status,png);
+              CREATE TABLE sticker_originals(id PRIMARY KEY,bytes);
+              INSERT INTO sticker_inbox VALUES('ok','approved',x'01');
+              INSERT INTO sticker_inbox VALUES('pending','pending',x'02');
+              INSERT INTO sticker_originals VALUES('ok',x'03');
+              INSERT INTO sticker_originals VALUES('pending',x'04');
               INSERT INTO facts VALUES(40,'durable synthetic cognition');
               INSERT INTO memory_pending VALUES(99,'private raw input must not migrate');
               INSERT INTO memory_summaries VALUES(7,'accepted summary');
@@ -42,6 +65,8 @@ class ProjectionTest(unittest.TestCase):
             self.assertEqual(result.execute('SELECT * FROM facts').fetchall(), [(40, 'durable synthetic cognition')])
             self.assertEqual(result.execute('SELECT * FROM memory_pending').fetchall(), [])
             self.assertEqual(result.execute('SELECT * FROM contacts').fetchall(), [])
+            self.assertEqual(result.execute('SELECT * FROM sticker_inbox').fetchall(), [('ok','approved',b'\x01')])
+            self.assertEqual(result.execute('SELECT * FROM sticker_originals').fetchall(), [('ok',b'\x03')])
             self.assertEqual(result.execute('SELECT * FROM memory_search').fetchall(), [])
             self.assertEqual(result.execute('SELECT * FROM memory_reconstruction_checkpoints').fetchall(), [(3, 7, 'consumed')])
             self.assertEqual(result.execute('SELECT * FROM memory_semantic_batches').fetchall(), [(3, 'retired')])

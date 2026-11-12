@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import sqlite3
 import subprocess
@@ -25,6 +26,7 @@ COGNITIVE_TABLES = {
     'memory_semantic_batches', 'memory_semantic_discard_audit',
     'memory_hold_rounds', 'memory_summary_unresolved',
     'memory_media_retirement_choices', 'memory_retirement_exceptions',
+    'sticker_inbox', 'sticker_originals',
 }
 RAW_TABLES = {
     'fishbot_readonly_journals', 'fishbot_readonly_journal_blobs',
@@ -71,6 +73,10 @@ def project_sqlite(source, destination):
                 where = " WHERE state IN ('committed','retired') AND checkpoint_id IN (" + committed_checkpoints + ')'
             if name == 'memory_checkpoint_admin_overrides':
                 where = ' WHERE checkpoint_id IN (' + committed_checkpoints + ')'
+            if name == 'sticker_inbox':
+                where = " WHERE status='approved'"
+            if name == 'sticker_originals':
+                where = " WHERE id IN (SELECT id FROM sticker_inbox WHERE status='approved')"
             rows = src.execute('SELECT * FROM "' + name + '"' + where).fetchall()
             if rows:
                 dst.executemany('INSERT INTO "' + name + '" VALUES(' + ','.join('?' for _ in rows[0]) + ')', rows)
@@ -91,6 +97,58 @@ def project_sqlite(source, destination):
     finally:
         dst.close()
         src.close()
+
+
+def project_assets(source, destination, account):
+    """Only typed, referenced Social assets; never scan a QQ profile/cache."""
+    source, destination = Path(source), Path(destination)
+    copied = []
+    def copy(relative, captured=None):
+        p = source / relative
+        if p.is_symlink() or not p.resolve().is_relative_to(source.resolve()):
+            raise ValueError('asset_path_outside_bot')
+        data = p.read_bytes() if captured is None else captured
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        copied.append(str(relative))
+    settings = source / 'meme-pack-settings.json'
+    if settings.is_file():
+        copy(Path('meme-pack-settings.json'))
+    index = source / 'qq-favorites/index.json'
+    if index.is_file():
+        if index.is_symlink() or not index.resolve().is_relative_to(source.resolve()):
+            raise ValueError('asset_path_outside_bot')
+        captured = index.read_bytes()
+        data = json.loads(captured)
+        if str(data.get('account', '')) == str(account) and account:
+            # Keep the account's management metadata; files must be exact index
+            # references, not arbitrary paths supplied by item text/URLs.
+            copy(Path('qq-favorites/index.json'), captured)
+            for item in data.get('items', [])[:200]:
+                identifier, filename = item.get('id', ''), item.get('file', '')
+                if not re.fullmatch(r'qqf_[a-f0-9]{16}', identifier) or filename not in (identifier + '.gif', identifier + '.png'):
+                    continue
+                relative = Path('qq-favorites/images') / filename
+                if (source / relative).is_file() and (source / relative).stat().st_size <= 1048576:
+                    copy(relative)
+    for category in ('reactions', 'gallery'):
+        folder = source / category
+        if not folder.is_dir():
+            continue
+        for metadata in sorted(folder.glob('*.json'))[:64]:
+            if metadata.is_symlink() or not metadata.resolve().is_relative_to(source.resolve()):
+                raise ValueError('asset_path_outside_bot')
+            captured = metadata.read_bytes()
+            data = json.loads(captured)
+            identifier = data.get('id', '')
+            if not isinstance(identifier, str) or not re.fullmatch(r'[a-z0-9_-]{1,32}', identifier):
+                continue
+            image = folder / (identifier + '.png')
+            if image.is_file() and image.stat().st_size <= 262144:
+                copy(metadata.relative_to(source), captured)
+                copy(image.relative_to(source))
+    return copied
 
 
 def capture(output, runtime, api_container, pg_container):
@@ -140,6 +198,10 @@ def capture(output, runtime, api_container, pg_container):
         else:
             result['missingBotStores'].append({'botHash': hashlib.sha256(bot['id'].encode()).hexdigest()[:16],
                                                'desiredState': bot['desired_state']})
+        binding = next((row['qq_uin'] for row in data['qq_bindings'] if row['bot_id'] == bot['id']), bot['expected_uin'])
+        assets = project_assets(root / 'bots' / bot['id'], output / 'bots' / bot['id'], binding)
+        if assets:
+            result.setdefault('assets', []).append({'botHash': hashlib.sha256(bot['id'].encode()).hexdigest()[:16], 'files': len(assets)})
     result['files'] = {str(p.relative_to(output)): {'bytes': p.stat().st_size, 'sha256': sha(p)} for p in output.rglob('*') if p.is_file()}
     (output / 'manifest-private.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
     print(json.dumps({'phase': result['phase'], 'pgCounts': result['pgCounts'], 'bots': len(result['bots']), 'bytes': sum(x['bytes'] for x in result['files'].values()), 'executionAuthorized': False}))
