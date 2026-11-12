@@ -34,6 +34,46 @@ class CollectionTests(unittest.TestCase):
         self.db.execute('INSERT INTO memory_checkpoint_archives VALUES(?,?,?,?)',(key,2,payload,hashlib.sha256(payload.encode()).hexdigest()))
         return payload
     def collect(self,payload=None):return semantic_collection.collect(self.db,'bot_shared',100,payload or [])
+    def test_service_feedback_without_subject_does_not_invent_a_second_sender(self):
+        message=event_message({'scope':self.channel,'sender_id':'87654321','event_id':'service','at':50,
+                               'kind':'platform_service_not_user'},'trusted service input')
+        items=summary_material.snapshots([message,{'role':'assistant','content':'actual draft'}],'bot_shared')
+        # This fixture has a confirmed reply; a bare shared native draft is
+        # intentionally not sufficient evidence of a completed material.
+        items[0]['reply']='actual draft'
+        key=model_json([self.channel,'service'])
+        self.db.execute('INSERT INTO memory_pending VALUES(?,?,?,?,?,?)',('bot_shared','87654321',key,'trusted service input','',50))
+        summary_material.remember(self.db,'bot_shared',items)
+        self.db.execute('INSERT INTO dialogue_feedback(scope,event,subject,reply,at,state) VALUES(?,?,?,?,?,?)',(self.channel,'service','','actual draft',50,'observing'))
+        result=self.collect()
+        self.assertEqual(len(result),1);self.assertEqual(result[0]['sender_id'],'87654321')
+        self.assertEqual(result[0]['source']['kind'],'platform_service_not_user')
+        self.assertEqual(self.db.execute('SELECT subject FROM dialogue_feedback').fetchone(),('',))
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone(),(0,))
+
+    def test_nonempty_conflicting_feedback_subject_still_refuses_sender_rewrite(self):
+        self.old()
+        for person in ('87654321',0,' 12345678 '):
+            with self.subTest(person=person):
+                self.db.execute('INSERT OR REPLACE INTO dialogue_feedback(scope,event,subject,reply,at,state) VALUES(?,?,?,?,?,?)',(self.channel,'old',person,'真实已发回复',50,'observing'))
+                with self.assertRaisesRegex(ValueError,'semantic_collection_sender_conflict'):self.collect()
+                self.assertEqual(self.db.execute('SELECT subject FROM dialogue_feedback').fetchone(),(str(person),))
+
+    def test_missing_observation_authors_preserve_material_and_observation_rows(self):
+        self.old()
+        for pool in ('social_samples','dialogue_feedback'):
+            for person in (None,'',' \t '):
+                with self.subTest(pool=pool,person=person):
+                    self.db.execute('SAVEPOINT missing_author_test')
+                    try:
+                        if pool=='social_samples':
+                            self.db.execute('INSERT INTO social_samples(scope,event,subject,text,created) VALUES(?,?,?,?,?)',(self.channel,'old',person,'actual observed quote',50))
+                        else:
+                            self.db.execute('INSERT INTO dialogue_feedback(scope,event,subject,reply,at,state) VALUES(?,?,?,?,?,?)',(self.channel,'old',person,'真实已发回复',50,'observing'))
+                        result=self.collect()
+                        self.assertEqual(len(result),1);self.assertEqual(result[0]['sender_id'],'12345678')
+                        self.assertEqual(self.db.execute('SELECT subject FROM '+pool).fetchone(),(person,))
+                    finally:self.db.execute('ROLLBACK TO missing_author_test');self.db.execute('RELEASE missing_author_test')
     def test_orphan_observation_pools_join_existing_batch_without_forged_original(self):
         self.db.execute("INSERT INTO social_samples(scope,event,subject,text,created) VALUES('group:55555','sample-only','87654321','ACTUAL_ORPHAN_TEXT',50)")
         self.db.execute("INSERT INTO companion_seen VALUES('private:12345678','seen-only',60)")
