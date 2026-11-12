@@ -25,7 +25,7 @@ class SendAdmission(unittest.TestCase):
     def test_23_old_messages_and_3_reactions_do_not_cause_repeated_model_calls(self):
         for i in range(23):self.queued('old'+str(i))
         for i in range(3):self.queued('reaction'+str(i),{'post_type':'notice','notice_type':'group_msg_emoji_like'})
-        self.assertEqual(self.p.unseen_inputs(self.work),23)
+        self.assertEqual(self.p.unseen_inputs(self.work),26,'reactions remain observable inputs, not filtered notices')
         self.p.request_inputs(self.work,[self.message('root')])
         self.assertEqual(self.p.input_continuation(self.work),'inputs_not_adopted')
         self.assertEqual(self.db.execute("SELECT count(*) FROM pipeline_work_inputs WHERE event LIKE 'old%' AND seen=0 AND status='owned'").fetchone()[0],23)
@@ -46,12 +46,14 @@ class SendAdmission(unittest.TestCase):
         self.p.request_inputs(self.work,[self.message('root')])
         self.assertEqual(self.p.input_continuation(self.work),'inputs_decided')
         self.assertEqual(self.db.execute("SELECT status FROM pipeline_work_inputs WHERE event='unknown'").fetchone()[0],'blocked_unknown')
-    def test_old_reaction_can_retire_only_without_execution_or_live_owner(self):
+    def test_reaction_is_retained_and_not_treated_as_transport_noise(self):
+        from bot_pipeline import is_transport_notification
+        self.assertFalse(is_transport_notification({'post_type':'notice','notice_type':'group_msg_emoji_like'}))
         self.queued('reaction',{'post_type':'notice','notice_type':'group_msg_emoji_like'},status='blocked_recovery')
         self.queued('unknown',{'post_type':'notice','notice_type':'group_msg_emoji_like'},status='blocked_unknown')
         self.p.retire_transport_notifications()
         self.assertEqual(dict(self.db.execute('SELECT event,status FROM pipeline_work_inputs')),
-                         {'reaction':'settled_notification','unknown':'blocked_unknown'})
+                         {'reaction':'blocked_recovery','unknown':'blocked_unknown'})
 
 
 if __name__=='__main__':unittest.main()
