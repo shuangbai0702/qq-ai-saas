@@ -114,6 +114,41 @@ class ContinuityWire(unittest.TestCase):
         finally:fixture.tearDown()
 
 class ContinuityBigMerge(unittest.IsolatedAsyncioTestCase):
+    async def test_summary_input_and_foundation_preserve_both_speakers_and_address_target(self):
+        from types import SimpleNamespace as NS
+        from summary_checkpoint_foundation_test import CheckpointFoundation
+        from semantic_runtime import finish_semantic_batches
+        fixture=CheckpointFoundation();fixture.setUp();captured=[]
+        user='导航先关掉，我叫你长椅同学，陪我坐一会儿。'
+        bot='好，我这张长椅陪你歇着，不催你出发。'
+        product='用户称机器人“长椅同学”，要求陪坐；机器人自称“这张长椅”，回应陪用户歇着、不催出发。'
+        async def chat(**kw):
+            captured.append(kw)
+            turns=json.loads(kw['prompt'])['turns']
+            self.assertEqual(turns[31]['user'],user)
+            self.assertEqual(turns[31]['bot'],bot)
+            return NS(completion_text=json.dumps({'summary':'独立长期资料',
+                'conversation_continuity':[{'source_scope':SCOPE,'text':product}]}))
+        try:
+            fixture.chat=chat
+            journal=ReadonlyJournal(fixture.db,SCOPE)
+            initial=journal.prepare(messages([{'role':'system','content':'fixed'},source_message('0')],
+                {'memory_foundation':{'conversation_summaries':[]}}),fixture.r.reconstruction_stamp(SCOPE))
+            self.assertTrue(journal.commit(initial));fixture.store.model_journals[SCOPE]=journal
+            for i in range(35):
+                question,answer=(user,bot) if i==31 else ('普通交流'+str(i),'收到')
+                msg=source_message(str(i));msg['content']=msg['content'].split('\n',1)[0]+'\n'+question
+                fixture.r.record(SCOPE,'12345678',str(i),question,answer,
+                    materials=snapshots([msg,{'role':'assistant','content':answer}],SCOPE))
+            fixture.r.maybe_start(SCOPE,{'memory':True,'memorySummary':True},NS(text_chat=chat),lambda:True,{},fixture.var)
+            await fixture.r.task
+            self.assertEqual(len(captured),1,'both products use the same production summary call')
+            self.assertEqual(finish_semantic_batches(fixture.store,{},SCOPE)['retired'],1)
+            wire=fixture.store.model_journals[SCOPE].last.wire
+            self.assertEqual(model_json(wire).count(product),1)
+            self.assertNotIn(product,model_json(snapshots(wire,SCOPE)))
+        finally:fixture.tearDown()
+
     async def test_third_small_waits_for_merge_then_adopts_its_own_continuity(self):
         from types import SimpleNamespace as NS
         from summary_checkpoint_foundation_test import CheckpointFoundation

@@ -1137,6 +1137,10 @@ class Reflection:
                     prompt['core_note']=core_before
                     from memory_products import SYSTEM as PRODUCT_MEMORY_SYSTEM
                     system+=' '+CORE_NOTE_UPDATE
+                    if job=='big':
+                        system+=' 本次是历史摘要合并，没有可供core_note引用的新聊天event；core_note.events须省略或为空，只能在core_note.summaries引用本次summaries实际展示的整数id，不引用摘要正文或其来源里的旧事件。'
+                    else:
+                        system+=' core_note.events只可逐字复制本次turns中event字段的完整字符串；若它是编码的会话与事件组合，仍须完整复制，不能改用source.event_id、来源包里的原生ID、序号或数字。没有可引用材料或不需要更新时省略core_note，不猜ID。'
                     if job!='big':system+=' '+PRODUCT_MEMORY_SYSTEM
                     if job!='big':
                         from conversation_continuity import SYSTEM as CONTINUITY_SYSTEM,source_scopes
