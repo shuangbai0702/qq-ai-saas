@@ -30,11 +30,11 @@ def delivery_scope(event):
 def is_transport_notification(raw):
     """These protocol notices never count as pending conversational input.
 
-    Pokes retain their existing dedicated handler; neither they, recalls nor
-    message reactions should replan a Work as an unanswered chat message.
+    Pokes retain their existing dedicated handler; neither they nor recalls
+    should make a chat Work replan or be replayed as an unanswered message.
     """
     return isinstance(raw,dict) and raw.get('post_type')=='notice' and (
-        raw.get('notice_type') in ('group_recall','friend_recall','group_msg_emoji_like') or
+        raw.get('notice_type') in ('group_recall','friend_recall') or
         raw.get('notice_type')=='notify' and raw.get('sub_type') in ('input_status','poke'))
 
 
@@ -513,7 +513,7 @@ class BotPipeline:
         # no execution was ever registered. Never reclassify unknown effects,
         # actual chat, or already-committed model/Journal representations.
         rows=self.db.execute("""SELECT scope,event,payload FROM pipeline_work_inputs i
-          WHERE status IN ('pending','queued','owned','deferred','blocked_recovery') AND payload IS NOT NULL
+          WHERE status IN ('pending','queued','owned','blocked_recovery') AND payload IS NOT NULL
           AND NOT EXISTS(SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope)
           AND NOT EXISTS(SELECT 1 FROM pipeline_events e WHERE e.scope=i.scope AND e.event=i.event)""").fetchall()
         has_issues=self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_checkpoint_issues'").fetchone()
@@ -921,7 +921,6 @@ class BotPipeline:
     def claim_scope(self,work):
         from shared_context import active
         if not active(self.db):return True  # Legacy sessions keep their existing scheduler until lawful migration.
-        self.retire_transport_notifications()
         with self.db:
             owned=self.db.execute('INSERT OR IGNORE INTO pipeline_scope_work VALUES(?,?,?,?,?)',(work.scope,work.event_id,work.subject,self.runtime,os.getpid())).rowcount
             work.scope_owner=bool(owned)
