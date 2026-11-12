@@ -10,7 +10,7 @@ export const behaviorDefaults={
  groupParticipationIntervalMinutes:10,
  groupParticipationStyle:'active' as const,
  groupParticipationOtherConversations:false,
- groupDecisionContextMessages:12,
+ groupDecisionContextMessages:6,
  groupDecisionTimeoutSeconds:10,
  ownerContactEnabled:runtimeDefaults.ownerContactEnabled,
  ownerContactIntervalMinutes:30,

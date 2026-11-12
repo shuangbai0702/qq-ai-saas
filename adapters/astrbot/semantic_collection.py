@@ -227,7 +227,9 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False):
         if not pair or not eligible(pair):return
         scopes.add(pair[0])
         item=candidates.setdefault(pair,{'people':set(),'times':set(),'bounds':set()})
-        if person is not None:item['people'].add(str(person))
+        # Legacy/service feedback may have no author (subject=''). That is
+        # missing metadata, not a second sender contradicting the actual input.
+        if person is not None and (not isinstance(person,str) or person.strip()):item['people'].add(str(person))
         if _time(at):item['times'].add(at)
     for row in payload:
         pair=identity('bot_shared',row['event'])

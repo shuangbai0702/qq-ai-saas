@@ -62,6 +62,14 @@ class AutonomyTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(decision);self.assertFalse(decision[0].reply)
         self.assertEqual(set(disposed),{str(i) for i in range(88,100)})
         self.assertEqual(len(self.provider.calls),1)
+    async def test_group_decision_defaults_to_latest_six_messages(self):
+        messages=[{'sender_id':'22222222','text':'topic '+str(i),'source_event':str(i),'source_scope':'group:12345'} for i in range(12)]
+        await self.store.presence.evaluate('group:12345',self.cfg,'11',self.provider,messages,{}, {},lambda:True,self.metrics,self.event,self.now)
+        payload=self.provider.calls[0]
+        rendered=json.dumps(payload,ensure_ascii=False)
+        self.assertIn('topic 6',rendered)
+        self.assertIn('topic 11',rendered)
+        self.assertNotIn('topic 5',rendered)
     async def test_silence_does_not_dispose_of_partial_text_or_missing_media(self):
         self.provider.answer={'reply':False,'target':'open','participation':'open','information':'substantive','interest':'weak','reason_code':'not_needed','confidence':'high'}
         originals={'long':'x'*300+' 请帮我解决尾部问题','ambient':'x'*180+' 尾部问题', 'media':'图片说明', 'complete':'完整短文本'}

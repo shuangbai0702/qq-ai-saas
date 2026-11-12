@@ -326,7 +326,7 @@ class GroupPresence:
         self.db.execute('DELETE FROM autonomy_group_inbox WHERE scope=? AND event=?',(scope,str(event_id)))
         self.db.commit()
         metrics['groupDecisionRequests'] = metrics.get('groupDecisionRequests', 0)+1
-        limit = max(3, min(30, b.get('groupDecisionContextMessages', 12)))
+        limit = max(3, min(30, b.get('groupDecisionContextMessages', 6)))
         recent = []; remaining = 3000
         for message in reversed(messages[-limit:]):
             text = str(message.get('text', ''))[:min(300, remaining)]
