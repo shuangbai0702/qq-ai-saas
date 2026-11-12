@@ -153,7 +153,7 @@ class Coordination(unittest.IsolatedAsyncioTestCase):
         a=j.prepare([system,user('human'),packet({})],1,group_turn=(scope,'human',who));self.assertTrue(j.commit(a))
         state={'group_round_history':[{'source_scope':scope,'round_event':'human','messages':[{'source_scope':scope,'source_event':'human','sender_id':who}],'reply':{'role':'self','recipient_id':who,'text':'实际回复'}}]}
         internal={'role':'user','content':'[平台内部主动时刻]'}
-        db.execute("INSERT INTO pipeline_events VALUES(?,?,?,?,'scheduled_contact','context','received','',0,0)",(scope,who,'timer',time.time()));db.commit()
+        db.execute("INSERT INTO pipeline_events(scope,subject,event,at,source,stage,status,reason,attempted,confirmed) VALUES(?,?,?,?,'scheduled_contact','context','received','',0,0)",(scope,who,'timer',time.time()));db.commit()
         b=j.prepare([system,internal,packet(state)],2,group_turn=(scope,'timer',who))
         self.assertEqual(b.wire[:len(a.wire)],a.wire);self.assertTrue(j.commit(b))
         j=ReadonlyJournal(db,scope);self.assertFalse(j.recovery_error);self.assertEqual(j.last.group_turn,(scope,'timer',who))

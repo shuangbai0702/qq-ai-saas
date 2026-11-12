@@ -35,7 +35,7 @@ test('real SDK keeps one active Work per Scope, absorbs bursts and hands off onl
    req.setEncoding('utf8'); // Preserve multibyte Schema text across TCP chunks.
    let raw='';for await(const chunk of req)raw+=chunk;const body=JSON.parse(raw);
    let answer:string;
-   if(body.messages.some((m:any)=>m.role==='system'&&/你是(?:群聊|私聊)发送前复核器/.test(textOf(m)))){
+   if(body.messages.some((m:any)=>m.role==='system'&&textOf(m).includes('你是回复适宜性复核器'))){
     const payload=JSON.parse(textOf(nativeMessages(body).at(-1)));reviews.push({body,payload});
     // Dropping an obsolete draft must preserve each independent new question:
     // these deliberately have no semantic coverage claim and need a main pass.
@@ -109,7 +109,7 @@ test('real SDK keeps one active Work per Scope, absorbs bursts and hands off onl
    const labels=Array.from({length:count},(_,i)=>`SCOPE_CASE_P${count}_${i}`);
    await send(scope,base,labels[0]);await held(scope,1);
    for(let i=1;i<count;i++)await send(scope,base+i,labels[i]);
-   await until(async()=>(await state(`SELECT count(*) FROM pipeline_work_inputs WHERE scope='${scope}' AND owner='${base}' AND status='owned'`))[0][0]===count-1,'all burst events durably joined');
+   await until(async()=>(await state(`SELECT count(*) FROM pipeline_work_inputs WHERE scope='${scope}' AND owner='${base}' AND event<>'${base}' AND status='owned'`))[0][0]===count-1,'all burst events durably joined');
    assert.equal(mainFor(scope).length,1,'no competing same-Scope model task');
    assert.deepEqual(await state(`SELECT event FROM pipeline_events WHERE scope='${scope}'`),[[String(base)]],'joined inputs have no second Work');
    release(scope,1);await held(scope,2);
@@ -119,10 +119,11 @@ test('real SDK keeps one active Work per Scope, absorbs bursts and hands off onl
    release(scope,2);await finished(scope,base);
    assert.equal(mainFor(scope).length,2,'one continuation absorbs the whole burst');
    assert.equal(reviewFor(scope).length,1,'events already in main #2 do not invoke Freshness again');
-   assert.deepEqual(await state(`SELECT status,seen,count(*) FROM pipeline_work_inputs WHERE scope='${scope}' GROUP BY status,seen`),[['settled',1,count-1]],'all joined events settle after actual main inclusion');
+   assert.deepEqual(await state(`SELECT status,seen,count(*) FROM pipeline_work_inputs WHERE scope='${scope}' AND event<>'${base}' GROUP BY status,seen`),[['settled',1,count-1]],'all joined events settle after actual main inclusion');
    const sent=(await messages()).filter(x=>String(x.params.user_id)===scope.slice(8));
-   assert.equal(sent.length,1,'replace/drop defer to the original Work main continuation; one final reply is delivered');
-   if(count===10)assert.ok(!sentText(sent[0]).includes('已收到补充，接下来一起回答。'),'auxiliary replacement prose is not sent as a main answer');
+   assert.equal(sent.length,count===100?1:2,'keep/replace sends its suitable draft, while drop emits nothing; independent questions still reach main');
+   if(count===2)assert.equal(sentText(sent[0]),'完整回答：0','keep preserves the original suitable reply');
+   if(count===10)assert.equal(sentText(sent[0]),'已收到补充，接下来一起回答。','replace sends the reviewed draft without another rewrite request');
    assert.equal(sentText(sent.at(-1)),'完整回答：'+Array.from({length:count},(_,i)=>String(i)).join('，'),'final response retains every independent question index');
   }
 
@@ -133,10 +134,10 @@ test('real SDK keeps one active Work per Scope, absorbs bursts and hands off onl
   await send(group,base+1,'SCOPE_CASE_GROUP_B','87654321');
   await send(group,base+2,'SCOPE_CASE_GROUP_C','22345678');
   await send(privateScope,base+1,'SCOPE_CASE_OTHER_PRIVATE'); // QQ event IDs are only unique within their Scope.
-  await until(async()=>(await state(`SELECT count(*) FROM pipeline_work_inputs WHERE scope='${group}'`))[0][0]===2&&
+  await until(async()=>(await state(`SELECT count(*) FROM pipeline_work_inputs WHERE scope='${group}' AND event<>'${base}'`))[0][0]===2&&
     (await state(`SELECT count(*) FROM pipeline_events WHERE scope='${privateScope}'`))[0][0]===1,'separate scope admitted');
-  assert.deepEqual(await state(`SELECT subject,owner FROM pipeline_work_inputs WHERE scope='${group}' ORDER BY event`),[['87654321',String(base)],['22345678',String(base)]]);
-  assert.deepEqual(await state(`SELECT count(*) FROM pipeline_work_inputs WHERE scope='${privateScope}'`),[[0]],'private input cannot join group Work');
+  assert.deepEqual(await state(`SELECT subject,owner FROM pipeline_work_inputs WHERE scope='${group}' AND event<>'${base}' ORDER BY event`),[['87654321',String(base)],['22345678',String(base)]]);
+  assert.deepEqual(await state(`SELECT count(*) FROM pipeline_work_inputs WHERE scope='${privateScope}' AND event<>'${base+1}'`),[[0]],'private input cannot join group Work');
   release(group,1);
   await until(async()=>gates.has(privateScope+':1')||gates.has(group+':2'),'shared writer schedules next Scope');
   // The common writer may fairly choose either waiter first; release them
@@ -145,7 +146,18 @@ test('real SDK keeps one active Work per Scope, absorbs bursts and hands off onl
    await until(async()=>gates.has(privateScope+':1')||gates.has(group+':2'),'next independent main');
    if(gates.has(privateScope+':1'))release(privateScope,1);else release(group,2);
   }
-  await finished(group,base);await finished(privateScope,base+1);
+  // drop ends this draft. Group admission may hand the remaining real inputs
+  // to the next activation of the same logical Work; it must not call the
+  // dropped draft "sent" or discard those independently unanswered inputs.
+  await until(async()=>
+   (await state(`SELECT count(*) FROM pipeline_events WHERE scope='${group}' AND status='sent' AND attempted=confirmed`))[0][0]===1&&
+   (await state(`SELECT count(*) FROM pipeline_scope_work WHERE scope='${group}'`))[0][0]===0,'group reply settled with no active competing owner');
+  await finished(privateScope,base+1);
+  const groupActivations=await state(`SELECT event,status,attempted,confirmed FROM pipeline_events WHERE scope='${group}' ORDER BY event`);
+  if(groupActivations.length===1)assert.deepEqual(groupActivations,[[String(base),'sent',1,1]],'same activation continues and sends once');
+  else assert.deepEqual(groupActivations,[[String(base),'superseded',0,0],[String(base+1),'sent',1,1]],'dropped draft never counts as sent; the earliest unanswered input resumes');
+  assert.deepEqual(await state(`SELECT status,seen,count(*) FROM pipeline_work_inputs WHERE scope='${group}' GROUP BY status,seen`),[['settled',1,3]],'every group input is accounted for after the real response');
+  assert.equal((await state(`SELECT DISTINCT work_id FROM pipeline_events WHERE scope='${group}'`)).length,1,'group recovery retains the permanent logical Work');
   assert.equal(mainFor(group).length,2);assert.equal(mainFor(privateScope).length,1);
   assert.equal(reviewFor(group).length,1);assert.equal(reviewFor(privateScope).length,0,'other Scope arrivals cannot trigger private review');
   assert.ok(mainFor(group)[1].inputs.some((x:any)=>x.sender_id==='87654321'&&x.event_id===String(base+1)));
@@ -178,7 +190,7 @@ test('real SDK keeps one active Work per Scope, absorbs bursts and hands off onl
   assert.equal(mainFor(handoffScope)[4].inputs.find((x:any)=>x.event_id===String(handoff+4)).at,originalHandoffOrigin.at,'handoff preserves the first observed protocol time instead of conversion time');
   release(handoffScope,5);await finished(handoffScope,handoff+1);
   assert.equal(mainFor(handoffScope).length,5);assert.equal(reviewFor(handoffScope).length,4);
-  assert.deepEqual(await state(`SELECT status,seen,count(*) FROM pipeline_work_inputs WHERE scope='${handoffScope}' GROUP BY status,seen`),[['settled',1,4]]);
+  assert.deepEqual(await state(`SELECT status,seen,count(*) FROM pipeline_work_inputs WHERE scope='${handoffScope}' AND event<>'${handoff}' GROUP BY status,seen`),[['settled',1,4]]);
 
 
   // Compare the full serialized old message objects. Facts, metadata,
