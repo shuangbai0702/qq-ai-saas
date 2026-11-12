@@ -1,70 +1,109 @@
-"""Offline task-start and post-response ownership checks for expression learning."""
-import asyncio,contextvars,json,sqlite3,sys,tempfile,unittest
+"""Style learning shares the summary task, transaction and lifecycle owner."""
+import asyncio,json,sqlite3,sys,unittest
 from pathlib import Path
-from types import SimpleNamespace as NS
 from unittest.mock import patch
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
-from social import SocialStore,maybe_learn
+ROOT=Path(__file__).resolve().parents[1]
+sys.path[:0]=[str(ROOT/'references/astrbot'),str(ROOT/'adapters/astrbot'),str(ROOT/'tests')]
+from style_learning_summary_fixture import SummaryLearningFixture
 
 
-class LearningLifecycleTests(unittest.IsolatedAsyncioTestCase):
+class LearningLifecycleTests(SummaryLearningFixture,unittest.IsolatedAsyncioTestCase):
+    def fresh(self,name):
+        self.store.close()
+        from behavior import BehaviorStore
+        self.path=Path(self.temporary.name)/(name+'.sqlite')
+        self.store=BehaviorStore(self.path);self.db=self.store.db;self.ref=self.store.reflection
+        self.state['current']=True;self.cfg['styleLearning']=True;self.calls.clear()
+
     async def test_stale_queued_jobs_make_no_request_and_reserve_no_cooldown(self):
-        for change,expected in [('close','learning_store_closed'),('lease','learning_lease_replaced'),('disable','learning_disabled'),('epoch','learning_epoch_changed'),('auth','learning_auth_paused')]:
-            with self.subTest(change=change),tempfile.TemporaryDirectory() as root:
-                db=sqlite3.connect(':memory:');store=SocialStore(db,root)
-                for i in range(12):store.observe('group:1',str(i%2),'这波有节目效果',str(i))
-                state={'current':True,'auth':False};cfg={'styleLearning':True};calls=[];reasons=[];metrics={}
-                async def model(**_):calls.append(True);return NS(completion_text='{"patterns":[]}')
-                with patch('autonomy.auth_paused',side_effect=lambda *_:state['auth']),patch('social.discarded',side_effect=reasons.append):
-                    maybe_learn(store,'group:1',cfg,NS(text_chat=model),lambda:state['current'],metrics,contextvars.ContextVar('style-event',default=None))
-                    if change=='close':store.closed=True
-                    elif change=='lease':state['current']=False
-                    elif change=='disable':cfg['styleLearning']=False
-                    elif change=='epoch':db.execute('UPDATE social_control SET epoch=epoch+1');db.commit()
-                    elif change=='auth':state['auth']=True
-                    await store.task
-                self.assertEqual(calls,[]);self.assertEqual(reasons,[expected]);self.assertNotIn('learningRequests',metrics)
-                self.assertEqual(db.execute('SELECT count(*) FROM social_learning').fetchone()[0],0)
-                self.assertEqual(db.execute('SELECT count(*) FROM social_samples').fetchone()[0],12)
-                store.close();db.close()
+        # Disabling style alone leaves the authorized summary request intact.
+        for change in ('close','lease','epoch'):
+            with self.subTest(change=change):
+                self.fresh('queued-'+change);self.record();self.start()
+                if change=='close':self.ref.closed=True
+                elif change=='lease':self.state['current']=False
+                else:self.db.execute('UPDATE memory_reflection_control SET epoch=epoch+1');self.db.commit()
+                await self.finish()
+                self.assertEqual(self.calls,[]);self.assertEqual(self.social_attempts(),0)
+                self.assertEqual(self.sample_count(),35);self.assertEqual(self.patterns(),[])
 
     async def test_late_results_are_explicitly_discarded_without_consuming_samples(self):
-        for change,expected in [('close','learning_store_closed'),('lease','learning_lease_replaced'),('disable','learning_disabled'),('epoch','learning_epoch_changed')]:
-            with self.subTest(change=change),tempfile.TemporaryDirectory() as root:
-                db=sqlite3.connect(':memory:');store=SocialStore(db,root)
-                for i in range(12):store.observe('group:1',str(i%2),'这波有节目效果',str(i))
-                entered=asyncio.Event();release=asyncio.Event();state={'current':True};cfg={'styleLearning':True};reasons=[];metrics={}
-                async def model(**_):entered.set();await release.wait();return NS(completion_text='{"patterns":[]}')
-                with patch('social.discarded',side_effect=reasons.append),patch.object(store,'accept_learning',wraps=store.accept_learning) as accept:
-                    maybe_learn(store,'group:1',cfg,NS(text_chat=model),lambda:state['current'],metrics,contextvars.ContextVar('style-event',default=None))
-                    await entered.wait()
-                    if change=='close':store.closed=True
-                    elif change=='lease':state['current']=False
-                    elif change=='disable':cfg['styleLearning']=False
-                    else:db.execute('UPDATE social_control SET epoch=epoch+1');db.commit()
-                    release.set();await store.task;accept.assert_not_called()
-                self.assertEqual(reasons,[expected]);self.assertEqual(metrics['learningRequests'],1)
-                self.assertEqual(db.execute('SELECT watermark FROM social_learning').fetchone()[0],0)
-                self.assertEqual(db.execute('SELECT count(*) FROM social_samples').fetchone()[0],12)
-                store.close();db.close()
+        for change,expected in [('close',None),('lease',None),('disable','learning_disabled'),('epoch','learning_epoch_changed')]:
+            with self.subTest(change=change):
+                self.fresh('late-'+change);self.record();entered=asyncio.Event();release=asyncio.Event()
+                async def model(**kw):entered.set();await release.wait();return self.result(kw)
+                with patch('social.accept_summary_learning',wraps=__import__('social').accept_summary_learning) as accept:
+                    self.start(model);await entered.wait()
+                    if change=='close':self.ref.closed=True
+                    elif change=='lease':self.state['current']=False
+                    elif change=='disable':self.cfg['styleLearning']=False
+                    else:self.db.execute('UPDATE social_control SET epoch=epoch+1');self.db.commit()
+                    release.set();await self.finish();accept.assert_not_called()
+                self.assertEqual(self.patterns(),[]);self.assertEqual(self.social_attempts(),0)
+                if expected:
+                    self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1)
+                    receipt=self.db.execute("SELECT decision,reason FROM memory_operation_audit_details WHERE category='learning' ORDER BY rowid DESC LIMIT 1").fetchone()
+                    self.assertEqual(receipt,('rejected',expected))
+                else:self.assertEqual(self.sample_count(),35)
 
-    async def test_task_slot_still_serializes_and_valid_empty_learning_consumes_batch(self):
-        with tempfile.TemporaryDirectory() as root:
-            db=sqlite3.connect(':memory:');store=SocialStore(db,root)
-            for i in range(12):store.observe('group:1',str(i%2),'有节目效果',str(i))
-            entered=asyncio.Event();release=asyncio.Event();calls=[];adoptions=[];cfg={'styleLearning':True};metrics={}
-            async def model(**_):calls.append(True);entered.set();await release.wait();return NS(completion_text='{"patterns":[]}')
-            provider=NS(text_chat=model);event=contextvars.ContextVar('style-event',default='original')
-            with patch('social.adopted',side_effect=adoptions.append):
-                maybe_learn(store,'group:1',cfg,provider,lambda:True,metrics,event)
-                first=store.task
-                maybe_learn(store,'group:1',cfg,provider,lambda:True,metrics,event)
-                self.assertIs(store.task,first);self.assertEqual(db.execute('SELECT count(*) FROM social_learning').fetchone()[0],0)
-                await entered.wait();self.assertEqual(db.execute('SELECT count(*) FROM social_learning').fetchone()[0],1)
-                release.set();await first
-            self.assertEqual(calls,[True]);self.assertEqual(adoptions,['learning_applied']);self.assertEqual(event.get(),'original')
-            self.assertGreater(db.execute('SELECT watermark FROM social_learning').fetchone()[0],0)
-            self.assertEqual(store.learning_batch('group:1'),[]);store.close();db.close()
+    async def test_task_slot_serializes_and_empty_result_consumes_only_with_summary(self):
+        self.record();entered=asyncio.Event();release=asyncio.Event();calls=[]
+        async def model(**kw):
+            calls.append(kw);entered.set();await release.wait()
+            from types import SimpleNamespace
+            return SimpleNamespace(completion_text=json.dumps({'summary':'真实交流','learning':[]}))
+        self.assertTrue(self.start(model));first=self.ref.task
+        self.assertFalse(self.start(model));self.assertIs(self.ref.task,first)
+        self.assertEqual(self.social_attempts(),0)
+        await entered.wait();release.set();await first
+        self.assertEqual(len(calls),1);self.assertEqual(self.event.get(),'original')
+        self.assertEqual(self.social_attempts(),0);self.assertEqual(self.patterns(),[])
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1)
+        self.assertEqual(self.db.execute('SELECT round_count FROM memory_reconstruction_checkpoints').fetchone()[0],35)
+        # The durable checkpoint consumes the batch; original rows remain until
+        # the Journal adopts it, so learning cannot delete those rows itself.
+        self.assertFalse(self.start(model));self.assertEqual(len(calls),1)
+
+    async def test_before_35_no_request_then_one_summary_learns_two_real_senders(self):
+        self.record(count=34)
+        self.assertFalse(self.start());await self.finish()
+        self.assertEqual(self.calls,[]);self.assertIsNone(self.store.social.task)
+        self.record(start=34,count=1);self.assertTrue(self.start());await self.finish()
+        self.assertEqual(len(self.calls),1);self.assertNotIn('learningRequests',self.metrics)
+        batch=json.loads(self.calls[0]['prompt'])['style_learning']
+        self.assertEqual(len(batch),1);self.assertEqual(len(batch[0]['samples']),35)
+        self.assertEqual({row['sender'] for row in batch[0]['samples']},{'12345678','23456789'})
+        self.assertEqual(self.patterns(),[(self.scope,'有节目效果')])
+
+    async def test_shared_batch_uses_original_group_and_excludes_private_and_unoffered(self):
+        self.scope='bot_shared'
+        self.record(origins=['group:12345','group:12345','private:12345678'])
+        self.store.social.observe('group:67890','34567890','有节目效果','not-in-batch')
+        self.start();await self.finish()
+        batches=json.loads(self.calls[0]['prompt'])['style_learning']
+        self.assertEqual([row['scope'] for row in batches],['group:12345'])
+        self.assertEqual(len(batches[0]['samples']),24)
+        self.assertEqual(self.patterns(),[('group:12345','有节目效果')])
+
+    async def test_disabled_before_request_keeps_summary_and_omits_style_data(self):
+        self.record();self.start();self.cfg['styleLearning']=False;await self.finish()
+        self.assertEqual(len(self.calls),1)
+        self.assertNotIn('style_learning',json.loads(self.calls[0]['prompt']))
+        self.assertEqual(self.patterns(),[]);self.assertEqual(self.social_attempts(),0)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1)
+
+    async def test_database_failure_at_style_fence_rolls_back_summary_and_learning(self):
+        self.record();entered=asyncio.Event();release=asyncio.Event()
+        async def model(**kw):entered.set();await release.wait();return self.result(kw)
+        self.start(model);await entered.wait()
+        def authorize(action,table,*_):
+            return sqlite3.SQLITE_DENY if action==sqlite3.SQLITE_READ and table=='social_control' else sqlite3.SQLITE_OK
+        self.db.set_authorizer(authorize)
+        try:release.set();await self.finish()
+        finally:self.db.set_authorizer(None)
+        self.assertEqual(self.metrics['summaryFailures'],1)
+        self.assertEqual(self.patterns(),[]);self.assertEqual(self.sample_count(),35)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],0)
 
 
 if __name__=='__main__':unittest.main()

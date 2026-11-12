@@ -8,7 +8,7 @@ import autonomy
 import companion_state
 from hosted_memory import ScopedMemory
 import context_foundation
-from social import SocialStore,maybe_learn,requests_meme
+from social import SocialStore,requests_meme
 from pathlib import Path
 from datetime import datetime,timezone,timedelta
 from output_clean import clean as clean_internal,prepare_history,normalize_image_markers,without_image_markers
@@ -468,13 +468,6 @@ def install_runtime(core,settings):
                 from semantic_runtime import finish_semantic_batches
                 st.semantic_native=(getattr(core,'conversation_manager',None),id)
                 metrics.setdefault(id,{})['semanticRetirement']=finish_semantic_batches(st,cfg,scope)
-            if not cfg.get('styleLearning') or not settings.get(id) is s:return
-            scopes=[scope] if scope!='bot_shared' else [r[0] for r in st.db.execute('SELECT scope FROM social_samples GROUP BY scope ORDER BY max(id) DESC')]
-            for candidate in scopes:
-                if not st.social.learning_batch(candidate):continue
-                maybe_learn(st.social,candidate,cfg,provider,lambda:settings.get(id) is s,metrics.setdefault(id,{}),current_message_event,lease=s)
-                care.track(st,st.social.task)
-                break
         stores[id].reflection.checkpoint_callback=learned_checkpoint
         if provider is not None:
             from model_cache import bind_system_contract

@@ -72,7 +72,7 @@ class SemanticSummary(unittest.IsolatedAsyncioTestCase):
    reply=await original(**kw);row=self.db.execute("SELECT material FROM memory_round_material WHERE event='0'").fetchone();m=json.loads(row[0]);m['reply']='迟到的新回复';self.db.execute("UPDATE memory_round_material SET material=? WHERE event='0'",(json.dumps(m),));self.db.commit();return reply
   self.chat=changed;await self.run_summary();self.assertIsNone(self.checkpoint());self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
  async def test_core_note_exposes_no_sources_and_update_does_not_accumulate(self):
-  self.db.execute("INSERT INTO memory_core_notes VALUES(1,'提炼事实','[\"private:12345678\"]','[\"12345678\"]','[\"old-original-id\"]',1,1,NULL)");self.db.commit()
+  self.db.execute("INSERT INTO memory_core_notes(slot,text,scopes,people,sources,updated,schema_version,claims) VALUES(1,'提炼事实','[\"private:12345678\"]','[\"12345678\"]','[\"old-original-id\"]',1,1,NULL)");self.db.commit()
   prior=self.r.core_note();self.assertNotIn('sources',prior)
   changed=self.r.update_core_note({'core_note':{'text':'新的提炼事实','events':['new'],'summaries':[]}},prior,[{'event':'new','sender_id':'12345678'}],[],SCOPE)
   self.assertEqual(changed,1);self.assertEqual(self.db.execute('SELECT sources FROM memory_core_notes').fetchone()[0],'[]')

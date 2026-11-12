@@ -33,11 +33,13 @@ class CoreNoteTests(unittest.IsolatedAsyncioTestCase):
    if task:await task
    await asyncio.sleep(0)
    if self.ref.task is task:break
- def test_single_region_length_and_no_unknown_evidence(self):
+ def test_single_region_length_and_unknown_evidence_is_unverified(self):
   self.assertEqual(self.patch('甲'*300),1);self.assertEqual(self.patch('乙'*301),0)
   self.assertEqual(self.ref.core_note()['text'],'甲'*300)
-  self.assertEqual(self.patch('不应保存',events=['invented']),0)
-  self.assertEqual(self.patch('不应保存',events=[]),0)
+  self.assertEqual(self.patch('未知引用仍保存认知',events=['invented']),1)
+  self.assertEqual(self.ref.core_note()['source_verification'],'unverified')
+  self.assertEqual(self.patch('缺失引用仍保存认知',events=[]),1)
+  self.assertEqual(self.ref.core_note()['source_verification'],'unverified')
   self.assertEqual(self.patch('sk-'+'a'*16),0)
   self.assertEqual(self.db.execute('SELECT count(*) FROM memory_core_notes').fetchone()[0],1)
   with self.assertRaises(sqlite3.IntegrityError):self.db.execute("INSERT INTO memory_core_notes(slot,text,scopes,people,sources,updated,schema_version,claims) VALUES(2,'bad','[]','[]','[]',0,1,NULL)")

@@ -1,5 +1,5 @@
-"""Core-note evidence has one offered namespace; never normalize an ID to accept it."""
-import json,sys,unittest
+"""Reference failures are observable without vetoing valid cognition updates."""
+import json,sqlite3,sys,unittest
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/'references/astrbot'),str(ROOT/'adapters/astrbot'),str(ROOT/'tests')]
@@ -19,17 +19,102 @@ class CoreNoteEvidence(unittest.TestCase):
             try:
                 reflection=store.reflection
                 event=json.dumps(['private:12345678','420'],ensure_ascii=False,separators=(',',':'))
-                payload=[{'event':event,'sender_id':'12345678'}]
-                prior=reflection.core_note()
-                for evidence in ('420',420):
-                    data={'core_note':{'op':'create','text':'合成交流中更愿意先听完再提建议。','events':[evidence]}}
+                payload=[{'event':event,'sender_id':'12345678','source':{'source_scope':'private:12345678'}}]
+                for index,evidence in enumerate(('420',420)):
+                    prior=reflection.core_note()
+                    data={'core_note':{'text':f'交流中更愿意先听完再提建议。{index}','events':[evidence]}}
                     audit=Audit('bot_shared',1,'summary',data)
-                    self.assertEqual(reflection.update_core_note(data,prior,payload,[],'bot_shared',audit),0)
-                    self.assertEqual(audit.details[('core_note',0)]['reason'],'unknown_event')
-                    self.assertEqual(reflection.core_note(),prior)
-                data={'core_note':{'op':'create','text':'合成交流中更愿意先听完再提建议。','events':[event]}}
-                self.assertEqual(reflection.update_core_note(data,prior,payload,[],'bot_shared'),1)
+                    self.assertEqual(reflection.update_core_note(data,prior,payload,[],'bot_shared',audit),1)
+                    self.assertEqual(audit.details[('core_note',0)]['reason'],'applied_source_unverified:unknown_event')
+                    self.assertEqual(audit.counts['core_note']['accepted'],1)
+                    self.assertEqual(reflection.core_note()['source_verification'],'unverified')
+                    self.assertEqual(reflection.core_note()['source_scopes'],['private:12345678'])
+                    self.assertEqual(reflection.core_note()['subjects'],['12345678'])
+                data={'core_note':{'text':'交流中更愿意先听完再提建议。','events':[event]}}
+                self.assertEqual(reflection.update_core_note(data,reflection.core_note(),payload,[],'bot_shared'),1)
                 self.assertEqual(reflection.core_note()['text'],data['core_note']['text'])
+                self.assertEqual(reflection.core_note()['source_verification'],'references_matched')
+            finally:store.close()
+
+    def test_missing_malformed_unknown_and_excessive_references_only_audit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store=BehaviorStore(Path(temporary)/'behavior.sqlite')
+            try:
+                ref=store.reflection;payload=[{'event':'offered','sender_id':'12345678','source':{'source_scope':'private:12345678'}}]
+                variants=[{}, {'events':'offered'}, {'summaries':[999999]}, {'summaries':[10**30]}, {'summaries':['1']}, {'events':['offered']*13}, {'events':[{'id':'offered'}]}]
+                for index,refs in enumerate(variants):
+                    data={'core_note':{'text':f'先听完再建议{index}',**refs}};audit=Audit('bot_shared',1,'summary',data)
+                    with store.db:
+                        self.assertEqual(ref.update_core_note(data,ref.core_note(),payload,[],'bot_shared',audit),1)
+                        audit.persist(store.db,'applied','applied')
+                    note=ref.core_note('group:55555','23456789')
+                    self.assertEqual(note['source_verification'],'unverified')
+                    self.assertEqual(note['source_scopes'],['private:12345678'])
+                    self.assertEqual(note['subjects'],['12345678'])
+                    self.assertEqual(store.db.execute('SELECT sources FROM memory_core_notes').fetchone()[0],'[]')
+                    self.assertEqual(store.db.execute('SELECT decision FROM memory_operation_audit_details WHERE audit_id=?',(audit.id,)).fetchone()[0],'accepted')
+                # Retiring source indexes cannot erase the durable uncertainty.
+                store.db.execute("UPDATE memory_core_notes SET sources='[]'");store.db.commit()
+                self.assertEqual(ref.core_note()['source_verification'],'unverified')
+                self.assertEqual(ref.core_note('invalid','23456789')['text'],'')
+                with tempfile.TemporaryDirectory() as other:
+                    isolated=BehaviorStore(Path(other)/'behavior.sqlite')
+                    try:self.assertEqual(isolated.reflection.core_note()['text'],'')
+                    finally:isolated.close()
+            finally:store.close()
+
+    def test_explicit_foreign_scope_and_snapshot_fences_remain_hard_failures(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store=BehaviorStore(Path(temporary)/'behavior.sqlite')
+            try:
+                ref=store.reflection;payload=[{'event':'offered','sender_id':'12345678','source':{'source_scope':'private:12345678'}}]
+                foreign=store.db.execute("INSERT INTO memory_summaries(scope,text,sources,updated) VALUES('private:23456789','foreign','[]',1)").lastrowid
+                store.db.commit()
+                for refs in ({'events':[json.dumps(['private:23456789','offered'])]}, {'summaries':[foreign]}):
+                    data={'core_note':{'text':'不可转移归属',**refs}};audit=Audit('bot_shared',1,'summary',data)
+                    self.assertEqual(ref.update_core_note(data,ref.core_note(),payload,[],'bot_shared',audit),0)
+                    self.assertEqual(audit.details[('core_note',0)]['reason'],'cross_scope_evidence')
+                prior=ref.core_note()
+                with store.db:self.assertEqual(ref.update_core_note({'core_note':{'text':'新认知'}},prior,payload,[],'bot_shared'),1)
+                self.assertEqual(ref.update_core_note({'core_note':{'text':'迟到认知'}},prior,payload,[],'bot_shared'),0)
+                before=ref.core_note()
+                with self.assertRaisesRegex(RuntimeError,'transaction failure'):
+                    with store.db:
+                        self.assertEqual(ref.update_core_note({'core_note':{'text':'必须回滚'}},before,payload,[],'bot_shared'),1)
+                        raise RuntimeError('transaction failure')
+                self.assertEqual(ref.core_note(),before)
+            finally:store.close()
+
+    def test_bot_shared_offered_multiple_scopes_and_summary_fallback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store=BehaviorStore(Path(temporary)/'behavior.sqlite')
+            try:
+                ref=store.reflection;rows=[]
+                for origin,person in [('private:12345678','12345678'),('group:55555','23456789')]:
+                    ident=store.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated) VALUES(?,?,?,1)',(origin,'提炼经历','[]')).lastrowid
+                    store.db.execute('INSERT INTO memory_summary_people VALUES(?,?)',(ident,person))
+                    rows.append((ident,'提炼经历','[]',1,origin))
+                store.db.commit()
+                with store.db:self.assertEqual(ref.update_core_note({'core_note':{'text':'综合本批经历'}},ref.core_note(),[],rows,'bot_shared'),1)
+                self.assertEqual(ref.core_note()['source_scopes'],['group:55555','private:12345678'])
+                self.assertEqual(ref.core_note()['subjects'],['12345678','23456789'])
+                self.assertEqual(ref.core_note()['source_verification'],'unverified')
+                with store.db:self.assertEqual(ref.update_core_note({'core_note':{'text':'完整引用本批经历','summaries':[r[0] for r in rows]}},ref.core_note(),[],rows,'bot_shared'),1)
+                self.assertEqual(ref.core_note()['source_verification'],'references_matched')
+            finally:store.close()
+
+    def test_existing_note_migrates_as_unknown_without_rewriting_content(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path=Path(temporary)/'behavior.sqlite'
+            db=sqlite3.connect(path)
+            db.execute('CREATE TABLE memory_core_notes(slot INTEGER PRIMARY KEY CHECK(slot=1),text TEXT NOT NULL,scopes TEXT NOT NULL,people TEXT NOT NULL,sources TEXT NOT NULL,updated REAL NOT NULL)')
+            db.execute("INSERT INTO memory_core_notes VALUES(1,'旧认知','[\"private:12345678\"]','[\"12345678\"]','[]',1)")
+            db.commit();db.close()
+            store=BehaviorStore(path)
+            try:
+                self.assertEqual(store.reflection.core_note()['text'],'旧认知')
+                self.assertEqual(store.reflection.core_note()['source_verification'],'unknown')
+                self.assertEqual(store.reflection.core_note()['updated'],1)
             finally:store.close()
 
 
