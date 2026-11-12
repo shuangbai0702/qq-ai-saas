@@ -1,8 +1,8 @@
-import asyncio,contextvars,json,sqlite3,sys,tempfile,unittest,time
+import asyncio,json,sqlite3,sys,tempfile,unittest,time
 from pathlib import Path
-from types import SimpleNamespace
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
-from social import SocialStore,maybe_learn
+from social import SocialStore
+from style_learning_summary_fixture import SummaryLearningFixture
 FISH_ID=json.loads(Path('templates/meme-packs/blue-fat-fish/index.json').read_text(encoding='utf8'))['items'][0]['id']
 
 class SocialTests(unittest.TestCase):
@@ -153,35 +153,28 @@ class SocialTests(unittest.TestCase):
   cfg={'memeEnabled':True,'memePacks':[]};context=self.s.context('group:1','自定义场景',cfg)
   self.assertEqual([x['id'] for x in context['meme_candidates']],[identifier]);self.assertIsNotNone(self.s.select_image('[MEME:'+identifier+']','group:1',cfg,1000,candidates=context['meme_candidates'])[1])
 
-class LifecycleTests(unittest.IsolatedAsyncioTestCase):
+class LifecycleTests(SummaryLearningFixture,unittest.IsolatedAsyncioTestCase):
  async def test_failed_model_preserves_learning_batch_across_reopen(self):
-  from unittest.mock import patch
-  with tempfile.TemporaryDirectory() as folder:
-   db=sqlite3.connect(Path(folder)/'data.db');store=SocialStore(db,folder)
-   for i in range(12):store.observe('group:1',str(i%2),'有节目效果',str(i),now=1000)
-   async def fail(**kwargs):raise ConnectionError('isolated model unavailable')
-   metrics={}
-   with patch('social.time.time',return_value=1100):
-    maybe_learn(store,'group:1',{'styleLearning':True},SimpleNamespace(text_chat=fail),lambda:True,metrics,contextvars.ContextVar('test',default=None));await store.task
-   self.assertEqual(metrics['learningFailures'],1);self.assertEqual(db.execute('SELECT max(watermark) FROM social_learning').fetchone()[0],0)
-   store.close();db.close();db=sqlite3.connect(Path(folder)/'data.db');store=SocialStore(db,folder)
-   self.assertEqual(len(store.learning_batch('group:1',now=3000)),12);store.close();db.close()
+  from behavior import BehaviorStore
+  self.record()
+  async def fail(**kwargs):raise ConnectionError('summary model unavailable')
+  self.start(fail);await self.finish()
+  self.assertEqual(self.metrics['summaryFailures'],1);self.assertEqual(self.social_attempts(),0)
+  self.assertEqual(self.sample_count(),35);self.assertEqual(self.patterns(),[])
+  self.store.close();self.store=BehaviorStore(self.path);self.db=self.store.db;self.ref=self.store.reflection
+  self.assertEqual(self.sample_count(),35)
+  self.db.execute('UPDATE memory_reflection_retry SET next_at=0');self.db.commit()
+  self.start();await self.finish()
+  self.assertEqual(self.patterns(),[(self.scope,'有节目效果')])
  async def test_late_learner_cannot_write_after_replacement(self):
-  with tempfile.TemporaryDirectory() as folder:
-   db=sqlite3.connect(Path(folder)/'data.db');s=SocialStore(db,folder)
-   for i in range(12):s.observe('group:1',str(i%2),'这波有节目效果',str(i))
-   entered,release=asyncio.Event(),asyncio.Event();current=True
-   async def text_chat(**kwargs):entered.set();await release.wait();return SimpleNamespace(completion_text=json.dumps({'patterns':[{'expression':'有节目效果','situation':'开玩笑','source_ids':[1,2]}]}))
-   maybe_learn(s,'group:1',{'styleLearning':True},SimpleNamespace(text_chat=text_chat),lambda:current,{},contextvars.ContextVar('test',default=None))
-   await entered.wait();current=False;release.set();await s.task
-   self.assertEqual(s.expressions('group:1','开玩笑'),[]);s.close();db.close()
+  self.record();entered,release=asyncio.Event(),asyncio.Event()
+  async def model(**kw):entered.set();await release.wait();return self.result(kw)
+  self.start(model);await entered.wait();self.state['current']=False;release.set();await self.finish()
+  self.assertEqual(self.patterns(),[]);self.assertEqual(self.sample_count(),35)
  async def test_close_cancels_pending_learning(self):
-  with tempfile.TemporaryDirectory() as folder:
-   db=sqlite3.connect(Path(folder)/'data.db');s=SocialStore(db,folder)
-   for i in range(12):s.observe('group:1',str(i%2),'有节目效果',str(i))
-   entered=asyncio.Event()
-   async def text_chat(**kwargs):entered.set();await asyncio.Event().wait()
-   maybe_learn(s,'group:1',{'styleLearning':True},SimpleNamespace(text_chat=text_chat),lambda:True,{},contextvars.ContextVar('test',default=None));await entered.wait();s.close()
-   with self.assertRaises(asyncio.CancelledError):await s.task
-   db.close()
+  self.record();entered=asyncio.Event()
+  async def model(**kw):entered.set();await asyncio.Event().wait()
+  self.start(model);await entered.wait();task=self.ref.task;self.ref.close()
+  with self.assertRaises(asyncio.CancelledError):await task
+  self.assertEqual(self.patterns(),[]);self.assertEqual(self.sample_count(),35)
 if __name__=='__main__':unittest.main(verbosity=2)
