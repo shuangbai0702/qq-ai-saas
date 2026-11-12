@@ -10,6 +10,14 @@ from runtime_memory import owned
 from memory_snapshot import metrics, lifetime
 
 
+def reason(error):
+    if isinstance(error, ValueError) and str(error) in ('lifetime-mismatch', 'owner-mismatch'):
+        return str(error)
+    if isinstance(error, psutil.AccessDenied):
+        return 'access-denied'
+    return type(error).__name__
+
+
 def record(path):
     with Path(path).open(encoding='utf-8-sig') as stream:
         value = json.loads(stream.read(16385))
@@ -26,8 +34,8 @@ def collect(config):
         supervisor = record(state/'supervisor.json')
         supervisor_owner = {**supervisor, 'root': str(Path(config['sourceRoot']))}
         owned(supervisor_owner)
-    except (OSError, ValueError, KeyError, TypeError, psutil.Error):
-        result['errors'].append(dict(reason='supervisor-owner-unavailable'))
+    except (OSError, ValueError, KeyError, TypeError, psutil.Error) as exc:
+        result['errors'].append(dict(reason='supervisor-owner-unavailable', detail=reason(exc)))
         return result
     seen = set()
     for service, container, owner in (
