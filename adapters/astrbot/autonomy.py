@@ -338,9 +338,8 @@ class GroupPresence:
             remaining -= len(text)
             if remaining <= 0:
                 break
-        from bot_pipeline import decision_memory,decision_version
+        from bot_pipeline import decision_memory
         from context_transport import decision_request
-        memory_version=decision_version(self.db,scope)
         # Keep both observations until the common projector establishes exact
         # attributed body/media equivalence; windows may truncate differently.
         dialogue=dict(dialogue or {})
@@ -364,7 +363,7 @@ class GroupPresence:
                 decision = normalize_decision_payload(data)
                 if decision.target == 'other' and not b.get('groupParticipationOtherConversations', False):
                     decision = ParticipationDecision.silent(source='policy', target='other')
-                current=self.current(scope, cfg, now, row[2], live) and decision_version(self.db,scope)==memory_version
+                current=self.current(scope, cfg, now, row[2], live)
                 if not current:
                     decision = ParticipationDecision.silent(source='stale')
                 cooldown={}
