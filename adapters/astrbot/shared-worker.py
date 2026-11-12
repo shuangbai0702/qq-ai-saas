@@ -143,11 +143,12 @@ async def main():
             m=members.get(id)
             if m is not member or id in core.event_bus.stopped_platforms:return
             if m.get('uin') and str(message.self_id)!=str(m['uin']):return
-            allowed=set(m.get('groups',[]))
-            if allowed and message.group_id and str(message.group_id) not in allowed:return
+            from native_ingress import admitted
+            raw=getattr(message,'raw_message',{}) or {}
+            if not admitted(raw,behavior_settings[id]['config']):return
             if m['modelConfigured'] and 'provider-'+id not in core.provider_manager.inst_map:return
             try:
-                retained=getattr(message,'_hosted_ingress_retained',False) or behavior['retain_ingress'](id,platform.create_event(message))
+                retained=raw.get('post_type','message')!='message' or getattr(message,'_hosted_ingress_retained',False) or behavior['retain_ingress'](id,platform.create_event(message))
             except Exception as error:
                 errors[id]='Ingress retention failed'
                 worker_lifecycle.record('ingress_retention_failed',member=id,reason=type(error).__name__)
@@ -159,9 +160,10 @@ async def main():
         platform.handle_msg=gated
         from native_ingress import bind as bind_ingress
         def raw_allowed(raw):
+            from native_ingress import admitted
             return (members.get(id) is member and id not in core.event_bus.stopped_platforms
                 and (not member.get('uin') or str(raw.get('self_id'))==str(member['uin']))
-                and (not member.get('groups') or not raw.get('group_id') or str(raw['group_id']) in set(member['groups']))
+                and admitted(raw,behavior_settings[id]['config'])
                 and (not member['modelConfigured'] or 'provider-'+id in core.provider_manager.inst_map))
         bind_ingress(platform,lambda raw:behavior['acquire_raw_ingress'](id,raw),raw_allowed,lambda:stop_fence.quiescing)
         core.event_bus.stopped_platforms.discard(id)

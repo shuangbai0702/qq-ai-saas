@@ -1111,15 +1111,8 @@ class Reflection:
                             for person,event,question,answer,at in pending:
                                 merged.setdefault(event,{'sender_id':person,'event':event,'user':question,'bot':answer,'at':at,'source':message_provenance.get(self.db,scope,event)})
                             payload=sorted(merged.values(),key=lambda r:r['at'])
-                        if job=='summary':
-                            from summary_material import legacy_materials
-                            if callable(self.recapture):self.recapture(scope,[r[0] for r in self.db.execute('SELECT event FROM memory_hold_rounds WHERE scope=?',(scope,))])
-                            old=legacy_materials(self.db,scope);present={r['event'] for r in payload}
-                            for event,m in old.items():
-                                if event not in present:
-                                    origin=__import__('context_protocol').source({'role':'user','content':m['text']})
-                                    payload.append({'sender_id':m['subject'],'event':event,'user':m['text'],'bot':m.get('reply',''),'at':origin['at'],'source':origin})
-                            payload.sort(key=lambda r:r['at'])
+                        if job=='summary' and callable(self.recapture):
+                            self.recapture(scope,[r[0] for r in self.db.execute('SELECT event FROM memory_hold_rounds WHERE scope=?',(scope,))])
                         # Keep trusted author identity when incomplete material leaves turns.
                         # These text-free witnesses never enter quote/evidence consumers.
                         input_authors=summary_author_witnesses(scope,payload)
@@ -1130,6 +1123,11 @@ class Reflection:
                             if discarded:discard_stamp=unavailable_stamp(self.db,discarded,scope=scope)
                         if scope=='bot_shared':
                             from semantic_collection import collect,previous_summaries
+                            # Shared collection already includes old Holds and
+                            # recaptures them with every other source pool. Do
+                            # not first require each legacy Hold to have a full
+                            # capture: genuinely unavailable originals belong in
+                            # its explicit incomplete_material model input.
                             # Normal and administrator-triggered checkpoints use
                             # the same recovery: offer every real fragment and
                             # explicitly label originals that cannot be restored.

@@ -30,13 +30,13 @@ async def main():
     await core.persona_mgr.initialize()
     # Upstream allowlist gates private sessions too. Restrict only group input at
     # the OneBot adapter boundary so private chat remains independently usable.
-    allowed=set(manifest.get('groups',[]))
+    from native_ingress import admitted
     for platform in core.platform_manager.get_insts():
         if hasattr(platform,'handle_msg'):
             original=platform.handle_msg
             async def gated(message, original=original):
                 if manifest.get('expectedUin') and str(message.self_id)!=str(manifest['expectedUin']):return
-                if allowed and message.group_id and str(message.group_id) not in allowed:return
+                if not admitted(getattr(message,'raw_message',{}) or {},manifest.get('config',{})):return
                 await original(message)
             platform.handle_msg=gated
     from behavior import install_runtime
@@ -46,7 +46,7 @@ async def main():
         if hasattr(platform,'convert_message'):
             bind_ingress(platform,lambda raw:behavior['acquire_raw_ingress']('qq',raw),
                 lambda raw:(not manifest.get('expectedUin') or str(raw.get('self_id'))==str(manifest['expectedUin']))
-                and (not allowed or not raw.get('group_id') or str(raw['group_id']) in allowed))
+                and admitted(raw,manifest.get('config',{})))
     stop=asyncio.Event()
     async def health(request):
         if request.headers.get('Authorization')!='Bearer '+manifest['token']:raise web.HTTPUnauthorized()

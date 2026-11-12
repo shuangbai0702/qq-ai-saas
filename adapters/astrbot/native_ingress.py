@@ -7,6 +7,25 @@ from types import SimpleNamespace
 import time
 
 
+def admitted(raw, config):
+    """One trusted QQ boundary for messages and notices, before conversion."""
+    if not isinstance(raw, dict): return False
+    if raw.get('post_type') == 'notice' and raw.get('notice_type') == 'group_msg_emoji_like': return False
+    group = str(raw.get('group_id') or '')
+    if not group: return True
+    whitelist = (config.get('behavior') or {}).get('groupParticipationGroups', [])
+    configured = config.get('groups', [])
+    return group in whitelist and (not configured or group in configured)
+
+
+def directed_poke(raw):
+    return (isinstance(raw, dict) and raw.get('post_type') == 'notice'
+        and raw.get('notice_type') == 'notify' and raw.get('sub_type') == 'poke'
+        and bool(raw.get('user_id')) and bool(raw.get('self_id'))
+        and str(raw.get('target_id')) == str(raw['self_id'])
+        and str(raw['user_id']) != str(raw['self_id']))
+
+
 class RawInput:
     def __init__(self, member, raw):
         self.member = member
@@ -26,11 +45,11 @@ def bind(platform, acquire, allowed=lambda raw: True, quiescing=lambda: False):
     platform.convert_retained_message = original
 
     async def convert(raw):
+        if not allowed(raw): return None
         # Notice/request conversion has no stable message id. Preserve its
         # existing adapter path instead of inventing a recovery identity.
         if raw.get('post_type', 'message') != 'message':
             return await original(raw)
-        if not allowed(raw): return None
         release = acquire(raw)  # synchronous persistence before any await
         if release is None: return None
         try:

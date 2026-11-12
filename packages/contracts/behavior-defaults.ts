@@ -37,6 +37,7 @@ export const behaviorDefaults={
  typoEnabled:true,
  typoProbability:0.02,
  pokeReply:true,
+ pokeIntoAiContext:false,
  pokeProbability:0.25,
  memorySummary:true,
  memorySemantic:true,

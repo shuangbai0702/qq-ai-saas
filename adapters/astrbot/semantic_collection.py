@@ -129,6 +129,41 @@ def collect_local(db,scope,payload):
     if not _channel(scope):raise ValueError('semantic_collection_local_scope')
     tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     output=Collected()
+    payload=list(payload);present={str(row['event']) for row in payload}
+    # A legacy Hold has a trusted scope/event even when its original and
+    # author are gone. Offer that gap explicitly in this same legal batch;
+    # never manufacture a sender, complete capture or independent recovery.
+    if 'memory_hold_rounds' in tables:
+        for event,raw in db.execute('''SELECT h.event,m.material FROM memory_hold_rounds h
+          LEFT JOIN memory_round_material m ON m.scope=h.scope AND m.event=h.event
+          WHERE h.scope=? ORDER BY h.created,h.event''',(scope,)):
+            event=str(event)
+            if event in present:continue
+            if 'pipeline_scope_work' in tables and db.execute('SELECT 1 FROM pipeline_scope_work WHERE scope=? AND event=?',(scope,event)).fetchone():
+                raise ValueError('semantic_batch_work_still_active')
+            if 'pipeline_work_inputs' in tables and db.execute("SELECT 1 FROM pipeline_work_inputs WHERE scope=? AND event=? AND status='owned'",(scope,event)).fetchone():
+                raise ValueError('semantic_batch_input_still_owned')
+            item=None
+            if raw:
+                try:item=json.loads(raw)
+                except (TypeError,ValueError):pass
+            if isinstance(item,dict):
+                for key,expected in (('scope',scope),('event',event)):
+                    if key in item and str(item[key])!=expected:raise ValueError('semantic_collection_identity_conflict')
+                origin=source({'role':'user','content':item.get('text')})
+                if origin and ((origin['scope'],str(origin['event_id']))!=(scope,event)
+                    or 'subject' in item and str(origin['sender_id'])!=str(item['subject'])):
+                    raise ValueError('semantic_collection_identity_conflict')
+            valid=valid_material(item,scope) if isinstance(item,dict) else False
+            if valid:
+                payload.append({'sender_id':item['subject'],'event':event,'user':item['text'],
+                    'bot':item.get('reply',''),'at':origin.get('at'),'source':origin})
+                present.add(event);continue
+            output.discarded.append({'event':event,'source_scope':scope,'sender_ids':[],
+                'missing':'incomplete_original' if raw else 'full_original',
+                'available_text':[item['text']] if isinstance(item,dict) and isinstance(item.get('text'),str) and item['text'] else [],
+                'available_reply':[item['reply']] if isinstance(item,dict) and isinstance(item.get('reply'),str) and item['reply'] else [],
+                'available_observations':[],'images':[]})
     for row in payload:
         event=str(row['event'])
         if 'pipeline_scope_work' in tables and db.execute('SELECT 1 FROM pipeline_scope_work WHERE scope=? AND event=?',(scope,event)).fetchone():

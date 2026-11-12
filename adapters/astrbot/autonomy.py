@@ -247,13 +247,14 @@ class GroupPresence:
         if len(payload)>16384:return False
         with self.db:
             self.db.execute('INSERT INTO autonomy_group_inbox VALUES(?,?,?,?,0) ON CONFLICT(scope) DO UPDATE SET event=excluded.event,payload=excluded.payload,at=excluded.at,queued=0 WHERE excluded.at>=at AND excluded.event!=event',(scope,str(event_id),payload,now))
-            self.db.execute('DELETE FROM autonomy_group_inbox WHERE at<?',(now-86400,))
-            self.db.execute('DELETE FROM autonomy_group_inbox WHERE rowid NOT IN (SELECT rowid FROM autonomy_group_inbox ORDER BY at DESC LIMIT 100)')
         return True
 
     def pending(self,cfg,provider,live,now):
-        with self.db:self.db.execute('DELETE FROM autonomy_group_inbox WHERE at<=?',(now-86400,))
-        for scope,event,payload,at,queued in self.db.execute('SELECT scope,event,payload,at,queued FROM autonomy_group_inbox WHERE at>? AND (queued=0 OR queued<=?) ORDER BY at DESC LIMIT 100',(now-86400,now-30)).fetchall():
+        for scope,event,payload,at,queued in self.db.execute('SELECT scope,event,payload,at,queued FROM autonomy_group_inbox WHERE queued=0 OR queued<=? ORDER BY at DESC',(now-30,)).fetchall():
+            # Permission removal ends scheduling, not a claimed answer. Valid
+            # input responsibility is never deleted merely for being old.
+            if not group_allowed(cfg,scope):
+                self.discard({'scope':scope,'event':event,'at':at});continue
             clock=self.snapshot(scope)
             if event==clock[3] or at<=clock[1]:
                 self.discard({'scope':scope,'event':event,'at':at});continue

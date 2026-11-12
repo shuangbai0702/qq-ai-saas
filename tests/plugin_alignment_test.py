@@ -86,7 +86,7 @@ class Plugins(unittest.IsolatedAsyncioTestCase):
   result=await qq_actions.execute(ev,cfg,self.s.db,'signature','test',lambda:True);self.assertNotIn('private credential',result)
   await qq_actions.execute(ev,cfg,self.s.db,'signature','test',lambda:True);self.assertEqual(len(calls),1)
  async def test_poke_probability_cooldown_and_target(self):
-  calls=[];ev=self.event();ev.message_obj.raw_message={'post_type':'notice','sub_type':'poke','target_id':'90000','user_id':'11111'}
+  calls=[];ev=self.event();ev.message_obj.raw_message={'post_type':'notice','notice_type':'notify','self_id':'90000','sub_type':'poke','target_id':'90000','user_id':'11111'}
   async def send(**kw):calls.append(kw)
   ev.bot=NS(send_poke=send);cfg={'behavior':{'pokeReply':True,'pokeProbability':.25}}
   self.assertTrue(await poke(ev,cfg,self.s.db,lambda:True,rng=lambda:0,now=100));await poke(ev,cfg,self.s.db,lambda:True,rng=lambda:0,now=101);self.assertEqual(calls,[{'user_id':'11111'}])

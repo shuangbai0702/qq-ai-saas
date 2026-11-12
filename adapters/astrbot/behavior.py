@@ -341,14 +341,22 @@ def install_runtime(core,settings):
         owned=stores.get(event.get_platform_id()) if event else None
         receipts_before=event.get_extra('_hosted_protocol_receipt_count',0) if event else 0
         if work and owned:owned.pipeline.sending(work)
-        if event and event.get_extra('_hosted_internal_work'):
-            # The author remains the service principal (sender=0). Resolve the
-            # authenticated Work's destination here, never by posing as owner.
-            call=inspect.signature(dispatch_original).bind(cls,*args,**kwargs)
-            call.arguments['session_id']=work.scope.split(':',1)[1]
-            call.arguments['is_group']=work.scope.startswith('group:')
-            result=await dispatch_original(*call.args,**call.kwargs)
-        else:result=await dispatch_original(cls,*args,**kwargs)
+        attempt=work.attempted if work and owned else None
+        try:
+            if event and event.get_extra('_hosted_internal_work'):
+                # The author remains the service principal (sender=0). Resolve the
+                # authenticated Work's destination here, never by posing as owner.
+                call=inspect.signature(dispatch_original).bind(cls,*args,**kwargs)
+                call.arguments['session_id']=work.scope.split(':',1)[1]
+                call.arguments['is_group']=work.scope.startswith('group:')
+                result=await dispatch_original(*call.args,**call.kwargs)
+            else:result=await dispatch_original(cls,*args,**kwargs)
+        except group_freshness.PreDispatchRejected:
+            # Only the boundary that counted this attempt may retract it.
+            # Outer send wrappers can see the same exception without owning
+            # an attempt; neither a confirmed prefix nor a later send is theirs.
+            if attempt is not None:bot_pipeline.BotPipeline.retract_pre_dispatch(owned.db,work,attempt)
+            raise
         if work and owned:
             if event.get_extra('_hosted_protocol_receipt_count',0)<=receipts_before:raise RuntimeError('missing_protocol_receipt')
             owned.pipeline.confirmed(work)
@@ -395,6 +403,9 @@ def install_runtime(core,settings):
                 autonomy.decision_token_limit.reset(limit);current_message_event.reset(token)
         # One retry handles a burst arriving during review. Continuous chatter
         # cannot create an unbounded model loop or bless an unseen revision.
+        # Only this destination's observed conversation invalidates the draft.
+        # Shared memory stays live for new requests; its global epoch and row
+        # revisions do not attribute a change to the current conversation.
         # The whole check shares one auxiliary disposition record: keep,
         # replace and drop are applied decisions (adoption of the judgment,
         # not proof of a send); an exhausted retry is honestly not adopted.
@@ -402,20 +413,16 @@ def install_runtime(core,settings):
         with auxiliary_scope(provider,phase,work.event_id,scope):
             for _ in range(2):
                 began=time.monotonic()
-                version=bot_pipeline.decision_version(st.db,scope)
-                state_changed=event.get_extra('_hosted_decision_version',version)!=version
                 fallback=work.scope==scope and work.source in ('message','deferred_group') and bool(re.fullmatch(r'-?\d+',work.event_id)) and int(work.event_id)!=0
                 timeout=float(getattr(provider,'provider_config',{}).get('timeout',60) or 60)
                 decision=await st.freshness.check(scope,cursor,work.started,work.event_id,draft,confirmed,call,lambda:delivery_current(event) and stores.get(event.get_platform_id()) is st,timeout=max(0,timeout-event.get_extra('_hosted_freshness_elapsed',0)),fallback=fallback,
-                    seen_events=(event.get_extra('_hosted_model_seen_events') or {}).get(scope),state_changed=state_changed)
-                if version!=bot_pipeline.decision_version(st.db,scope):decision={**decision,'action':'retry','reason':'state_changed_during_review'}
+                    seen_events=(event.get_extra('_hosted_model_seen_events') or {}).get(scope))
                 if decision.get('checked'):event.set_extra('_hosted_freshness_elapsed',event.get_extra('_hosted_freshness_elapsed',0)+time.monotonic()-began)
                 if decision['action']!='retry':break
             if decision['action']=='retry':decision={**decision,'action':'drop','reason':'group_changed_during_review'}
             if decision.get('checked') and decision['action'] in ('keep','replace','drop'):adopted('freshness_'+decision['action'])
             else:discarded('freshness_'+str(decision.get('action','unknown')))
         if decision['action']!='drop':
-            event.set_extra('_hosted_decision_version',version)
             cursors[scope]=decision['cursor'];event.set_extra('_hosted_freshness_cursors',cursors)
             if scope==work.scope and not confirmed:
                 from group_freshness import response_coverage
@@ -746,6 +753,9 @@ def install_runtime(core,settings):
         if event.get_extra('_hosted_received_at') is None:event.set_extra('_hosted_received_at',time.monotonic())
         cfg=s['config']
         if (cfg.get('behavior') or {}).get('enabled',True) is False:return
+        from native_ingress import admitted
+        raw=getattr(event.message_obj,'raw_message',{}) or {}
+        if not event.get_extra('_hosted_initiative',False) and not event.get_extra('_hosted_scope_continuation') and not admitted(raw,cfg):return
         id=event.get_platform_id();st=store(id,s);group=str(event.get_group_id() or '');subject=str(event.get_sender_id());scope='group:'+group if group else 'private:'+subject
         if group and cfg.get('groups') and group not in cfg['groups']:
             # The retained ingress row can never bind in this scope; settle it
@@ -756,10 +766,24 @@ def install_runtime(core,settings):
             # poke() consumes every notice event (non-poke notices always stop
             # here). A retained notice row can therefore never bind; settle it
             # instead of leaving it to five futile recovery passes.
-            if str(getattr(getattr(event.message_obj,'raw_message',None),'post_type',''))=='notice':
+            if raw.get('post_type')=='notice':
                 st.pipeline.settle_refused_input(scope,str(getattr(event.message_obj,'message_id','') or ''),'settled_notice')
             return
-        if bot_pipeline.is_transport_notification(getattr(event.message_obj,'raw_message',None)):return
+        poke_context=bool(event.get_extra('_hosted_poke_context',False))
+        if poke_context:
+            # SDK event identity and actual sender stay intact. This is a
+            # protocol interaction, never a fabricated user quotation.
+            text='[QQ互动事件] 用户戳了机器人一下（协议通知，不是文字发言）。'
+            event.message_obj.message=[Plain(text)];event.message_obj.message_str=text
+            event.message_str=text
+            # Serialize on the existing scope lock before bind, so a notice
+            # arriving during another Work cannot be lost at claim_scope.
+            try:acquired=bool(source_event.get_extra('_hosted_scope_owner')) or await st.acquire_scope(scope,lambda:delivery_current(event))
+            except asyncio.TimeoutError:return
+            if not acquired:return
+            source_event.set_extra('_hosted_scope_owner',(st,scope))
+            if not current(event):return
+        elif bot_pipeline.is_transport_notification(raw):return
         internal=event.get_extra('_hosted_initiative',False);deferred=event.get_extra('_hosted_deferred_group');now=time.time()
         if deferred and (event.get_extra('_hosted_scheduled_generation')!=s.get('generation') or not st.presence.pending_current(deferred,cfg,lambda:current(event))):return
         continuation=bool(event.get_extra('_hosted_scope_continuation'))
@@ -792,7 +816,7 @@ def install_runtime(core,settings):
         if not internal and not deferred and not continuation:
             import quote_reply
             quote_reply.observe(st.db,event,s,scope)
-        mentioned=bot_pipeline.addressed_to_self(event) or bool(event.get_extra('_hosted_recovered_addressed_self',False))
+        mentioned=poke_context or bot_pipeline.addressed_to_self(event) or bool(event.get_extra('_hosted_recovered_addressed_self',False))
         other_target=any(isinstance(c,At) and str(c.qq)!=str(event.get_self_id()) for c in event.get_messages()) and not mentioned
         incoming=''.join(c.text for c in event.get_messages() if isinstance(c,Plain))
         if not internal and not deferred and not continuation and (group or subject!=str(event.get_self_id())):
@@ -963,6 +987,7 @@ def install_runtime(core,settings):
             proactive=bool(event.get_extra('_hosted_initiative',False))
             identity={'bot_id':s['botId'],'scope':scope,'group_id':group or None,'sender_id':None if proactive else subject,'nickname':None if proactive else event.get_sender_name(),'directed_to_bot':not group or mentioned,'owner':bool(owner and subject==owner and not proactive),'owner_id':owner or None}
             if proactive:identity.update(message_source='platform_initiative',recipient_id=subject,recipient_is_owner=bool(owner and subject==owner),is_user_statement=False)
+            elif poke_context:identity.update(message_source='platform_poke',is_user_statement=False)
             social_cfg=dict(cfg.get('behavior') or {});social_cfg['_qqAccount']=str(event.get_self_id())
             gate=st.social.image_status(scope,social_cfg,request=event.get_message_str())
             social_cfg['memeEnabled']=gate['reason']=='available'
@@ -981,8 +1006,7 @@ def install_runtime(core,settings):
             # Snapshot before the first context read/embedding await, so an
             # arrival during assembly cannot be silently blessed as old input.
             event.set_extra('_hosted_freshness_cursors',{scope:st.freshness.cursor(scope)})
-            event.set_extra('_hosted_decision_version',bot_pipeline.decision_version(st.db,scope))
-            assembly=bot_pipeline.ContextBuilder(identity,'tool_result' if event.get_extra('_hosted_tool_completion') else 'internal_timer' if internal else 'deferred_real_QQ' if deferred else 'real_QQ')
+            assembly=bot_pipeline.ContextBuilder(identity,'tool_result' if event.get_extra('_hosted_tool_completion') else 'internal_timer' if internal else 'protocol_poke' if poke_context else 'deferred_real_QQ' if deferred else 'real_QQ')
             # Ingress time is provenance, not the read cutoff. A queued Work
             # must see replies confirmed while it waited (including across a
             # debounce boundary); old wire itself remains immutable.
@@ -2118,12 +2142,8 @@ def install_runtime(core,settings):
         try:return await send(event,message)
         except asyncio.CancelledError:raise
         except group_freshness.PreDispatchRejected as error:
-            # Proven pre-dispatch rejection at the protocol boundary: remove
-            # the exactly-one recorded attempt like the controlled tool send
-            # path, so a never-sent bubble cannot settle as unknown.
-            owned=stores.get(event.get_platform_id());work=event.get_extra('_hosted_pipeline')
-            if owned is not None and isinstance(work,bot_pipeline.Work):
-                bot_pipeline.retract_pre_dispatch(owned.db,work,work.attempted)
+            # The dispatch boundary already retracts its exact counted attempt.
+            # This outer wrapper must never refund a newer or nested send.
             from model_cache import record_execution_error
             record_execution_error(setting(event),error,work_id=getattr(event.get_extra('_hosted_pipeline'),'event_id',None))
             bot_pipeline.stop(event,type(error).__name__,'error')
@@ -2174,6 +2194,9 @@ def install_runtime(core,settings):
         """Durably retain protocol input before any SDK preparation await."""
         lease=settings.get(id)
         if lease is None or event.get_platform_id()!=id:raise ValueError('ingress_member_unavailable')
+        from native_ingress import admitted
+        raw=getattr(event.message_obj,'raw_message',{}) or {}
+        if not admitted(raw,lease.get('config',{})) or raw.get('post_type','message')!='message':return False
         if str(event.get_sender_id())==str(event.get_self_id()):return False
         if bot_pipeline.is_transport_notification(getattr(event.message_obj,'raw_message',None)):return False
         st=store(id,lease);pipeline=st.pipeline

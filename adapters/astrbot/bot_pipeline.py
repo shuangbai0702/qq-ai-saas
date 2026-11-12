@@ -4,7 +4,7 @@ Capabilities add context/tools/output inside this work. They do not create a
 second ingress, invent a sender, or own the QQ transport or a bot's database.
 """
 from dataclasses import dataclass,field
-import hashlib,json,math,time,uuid,os
+import hashlib,json,math,time,uuid,os,sqlite3
 import psutil
 
 
@@ -427,6 +427,49 @@ class Work:
         self.reason=reason;self.status=status
 
 
+def waiting_reconciliation_plan(db,only_scope=None):
+    """Read-only metadata repair plan, never permission to replay an input.
+
+    A waiting activation is distinct from its durable input responsibility.
+    Keep current inbox/Scope owners, undecided inputs and uncertain outputs.
+    Do not infer a response from age, missing rows or a newer group message.
+    """
+    tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if 'pipeline_events' not in tables:return {'actions':[],'protected':{}}
+    rows=db.execute("SELECT scope,subject,event,reason,stage,attempted,confirmed,updated_at FROM pipeline_events WHERE status='waiting' AND (? IS NULL OR scope=?)",(only_scope,only_scope)).fetchall()
+    if not rows:return {'actions':[],'protected':{}}
+    referenced=set();journal_readable=True
+    if 'fishbot_readonly_journals' in tables:
+        try:
+            import journal_storage
+            from context_protocol import source
+            for scope,version,payload in db.execute("SELECT scope,version,payload FROM fishbot_readonly_journals WHERE payload IS NOT NULL AND state='ready'"):
+                def blob(channel,digest):
+                    row=db.execute('SELECT data FROM fishbot_readonly_journal_blobs WHERE scope=? AND sha=?',(channel,digest)).fetchone()
+                    return row[0] if row else None
+                value=json.loads(payload) if version==1 else journal_storage.decode(payload,scope,blob)
+                for message in value.get('base',[])+value.get('wire',[]):
+                    origin=source(message)
+                    if origin:referenced.add((origin['scope'],str(origin['event_id'])))
+        except (ValueError,TypeError,KeyError,sqlite3.Error):journal_readable=False
+    actions=[];protected={}
+    def keep(reason):protected[reason]=protected.get(reason,0)+1
+    for scope,subject,event,reason,stage,attempted,confirmed,updated in rows:
+        if stage!='admission' or reason not in RECOVERABLE_ADMISSION_REASONS or attempted or confirmed:
+            keep('execution_or_unknown');continue
+        if db.execute('SELECT 1 FROM pipeline_scope_work WHERE scope=?',(scope,)).fetchone():keep('live_scope_owner');continue
+        if 'autonomy_group_inbox' in tables and db.execute('SELECT 1 FROM autonomy_group_inbox WHERE scope=? AND event=?',(scope,event)).fetchone():keep('current_inbox');continue
+        if 'memory_message_sources' in tables and db.execute("SELECT 1 FROM memory_message_sources WHERE direction='model' AND CASE WHEN json_valid(data) THEN json_extract(data,'$.source_scope')=? AND json_extract(data,'$.event_id')=? AND json_extract(data,'$.settlement') IS NULL ELSE 1 END",(scope,event)).fetchone():keep('unsettled_model_output');continue
+        inputs=db.execute('SELECT status FROM pipeline_work_inputs WHERE scope=? AND (event=? OR owner=?)',(scope,event,event)).fetchall()
+        blocked=inputs and any(r[0] in ('blocked_recovery','blocked_unknown') for r in inputs)
+        if inputs and any(not str(r[0]).startswith('settled') and r[0] not in ('blocked_recovery','blocked_unknown') for r in inputs):keep('unfinished_input');continue
+        if not inputs and (not journal_readable or (scope,event) in referenced):keep('journal_or_unreadable');continue
+        actions.append({'scope':scope,'subject':subject,'event':event,'expectedReason':reason,'expectedUpdated':updated,
+                        'status':'blocked' if blocked or not inputs else 'superseded',
+                        'reason':'waiting_input_blocked' if blocked else 'waiting_inputs_settled' if inputs else 'waiting_responsibility_missing'})
+    return {'actions':actions,'protected':protected}
+
+
 class BotPipeline:
     def __init__(self,db):
         self.db=db
@@ -483,6 +526,7 @@ class BotPipeline:
         db.execute('CREATE TABLE IF NOT EXISTS pipeline_handoffs(id TEXT PRIMARY KEY,epoch INTEGER NOT NULL,data TEXT NOT NULL,state TEXT NOT NULL,receipt TEXT,at REAL NOT NULL)');db.commit()
         self.retire_transport_notifications()
         self.resume_deferred_mentions()
+        self.reconcile_waiting()
 
     def resume_deferred_mentions(self):
         # A joined trusted @/reply has not received a main-model decision merely
@@ -507,6 +551,22 @@ class BotPipeline:
                     self.db.execute('UPDATE pipeline_work_inputs SET addressed_self=? WHERE scope=? AND event=? AND addressed_self IS NULL',(addressed,scope,event))
                 if not addressed:continue
                 self.db.execute("UPDATE pipeline_work_inputs SET status='pending',owner=NULL,retry_at=0 WHERE scope=? AND event=? AND status='deferred' AND seen=0 AND addressed_self=1",(scope,event))
+
+    def reconcile_waiting(self,scope=None):
+        """Close only proven ownerless activations; no inputs/history change."""
+        changed=0
+        with self.db:
+            # Plan and apply under one writer reservation; another process
+            # cannot install a fresh inbox/input between proof and metadata CAS.
+            if not self.db.in_transaction:self.db.execute('BEGIN IMMEDIATE')
+            plan=waiting_reconciliation_plan(self.db,scope)
+            for item in plan['actions']:
+                changed+=self.db.execute("""UPDATE pipeline_events SET status=?,reason=?,updated_at=?
+                  WHERE scope=? AND subject=? AND event=? AND status='waiting' AND stage='admission'
+                  AND attempted=0 AND confirmed=0 AND reason=? AND updated_at IS ?
+                  AND NOT EXISTS(SELECT 1 FROM pipeline_scope_work w WHERE w.scope=pipeline_events.scope)""",
+                  (item['status'],item['reason'],time.time(),item['scope'],item['subject'],item['event'],item['expectedReason'],item['expectedUpdated'])).rowcount
+        return changed
 
     def retire_transport_notifications(self):
         # Repair old queue bookkeeping only when no live scope owns it and
@@ -680,7 +740,9 @@ class BotPipeline:
                         value=json.loads(row[0]);value['settlement']={'status':'superseded','attempted':0,'confirmed':0,'planned':0,'confirmed_messages':0,'parent_work':model_json([work.scope,work.event_id]),'basis':'main_completed' if seen==1 else 'explicit_no_response' if seen==3 else 'confirmed_reply_coverage'}
                         self.db.execute("UPDATE memory_message_sources SET data=? WHERE scope='bot_shared' AND event=? AND direction='model'",(model_json(value),key))
             if release:self.db.execute('DELETE FROM pipeline_scope_work WHERE scope=? AND event=? AND runtime=?',(work.scope,work.event_id,self.runtime))
-        if release:self.resume_deferred_mentions()
+        if release:
+            self.resume_deferred_mentions()
+            self.reconcile_waiting(work.scope)
 
     def close(self):
         with self.db:
@@ -918,7 +980,10 @@ class BotPipeline:
             # Retain exact recovery evidence while its model input lacks final
             # provenance; a blanket 24h/2048 prune caused irreparable Holds.
             protected="NOT EXISTS (SELECT 1 FROM memory_message_sources m WHERE m.direction='model' AND json_extract(m.data,'$.source_scope')=pipeline_events.scope AND json_extract(m.data,'$.event_id')=pipeline_events.event AND json_extract(m.data,'$.settlement') IS NULL)" if self.db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_message_sources'").fetchone() else '1'
-            terminal="status IN ('sent','silent','superseded','blocked','error','interrupted','combined') AND attempted=confirmed"
+            # Blocked inputs retain their own duplicate guard. Missing-input
+            # activations have only this content-free key: pruning it would
+            # silently turn an unresolved old delivery into a new execution.
+            terminal="status IN ('sent','silent','superseded','blocked','error','interrupted','combined') AND attempted=confirmed AND coalesce(reason,'')<>'waiting_responsibility_missing'"
             self.db.execute('DELETE FROM pipeline_events WHERE at<? AND '+terminal+' AND '+protected,(now-86400,))
             self.db.execute('DELETE FROM pipeline_events WHERE rowid NOT IN (SELECT rowid FROM pipeline_events ORDER BY at DESC LIMIT 2048) AND '+terminal+' AND '+protected)
         if not work.ledger_owner:
@@ -961,10 +1026,10 @@ class BotPipeline:
     @staticmethod
     def retract_pre_dispatch(db,work,attempt):
         """Remove exactly one latest attempt only after a proven pre-dispatch rejection."""
-        if not isinstance(work,Work) or work.attempted!=attempt or work.confirmed!=attempt-1:return False
+        if not isinstance(work,Work) or type(attempt) is not int or attempt<=0 or work.attempted!=attempt or work.confirmed!=attempt-1:return False
         previous=attempt;current=attempt-1
         with db:
-            changed=db.execute('UPDATE pipeline_events SET attempted=?,updated_at=? WHERE scope=? AND subject=? AND event=? AND attempted=?',(current,time.time(),work.scope,work.subject,work.event_id,previous)).rowcount
+            changed=db.execute('UPDATE pipeline_events SET attempted=?,updated_at=? WHERE scope=? AND subject=? AND event=? AND attempted=? AND confirmed<=?',(current,time.time(),work.scope,work.subject,work.event_id,previous,current)).rowcount
         if changed:work.attempted=current
         return bool(changed)
 

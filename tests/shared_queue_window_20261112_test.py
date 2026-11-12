@@ -20,6 +20,18 @@ class GroupQueueWindow(unittest.TestCase):
         self.db.commit();self.messages[(scope,str(event))]=message;return message
     def keys(self,messages):return [(source(m)['scope'],source(m)['event_id']) for m in messages]
     def count(self):return self.db.execute('SELECT count(*) FROM fishbot_shared_inputs').fetchone()[0]
+    def test_outstanding_directed_input_survives_background_window_and_restart(self):
+        from bot_pipeline import BotPipeline
+        pipeline=BotPipeline(self.db)
+        for n in range(20):self.add('group:12345',n)
+        self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,status,addressed_self,seen) VALUES('group:12345','1','owned',1,0)")
+        first=shared.queued(self.db,self.cfg,self.j)
+        self.assertIn(('group:12345','1'),self.keys(first))
+        self.assertEqual(len(first),13,'12 background + required directed input')
+        # Even an adopted later window cannot make a missing directed input
+        # silently disappear during recovery before the next request.
+        self.j.last=NS(base=[self.messages[('group:12345','19')]])
+        self.assertIn(('group:12345','1'),self.keys(shared.queued(self.db,self.cfg,self.j)))
     def test_each_group_has_twelve_private_unbounded_and_late_current_inside_quota(self):
         for scope in ('group:12345','group:23456','private:12345678'):
             for n in range(20):self.add(scope,n)
