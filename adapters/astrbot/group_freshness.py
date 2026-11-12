@@ -33,6 +33,7 @@ keep：原回复仍然适合发送。replace：确实需要把最新消息和原
 原草稿中的合法媒体和分条标记可保留，不发明新的媒体标记。若已有部分投递，只能keep保留剩余部分或drop放弃剩余部分，不能replace重发整段。'''
 
 INPUT_DISPOSITION='\nresponded_events只列当前草稿确实完整回应的latest_messages事件ID；ignored_events只列你明确判断无需本Work另行回应的事件ID（例如无关插话、纯反馈），不是只看见。独立问题、尚需工具或继续思考的要求两者都不列。keep仅判断草稿可用，不表示所有新消息已处理；允许两表为空。'
+INPUT_DISPOSITION+='\n判断重点是此刻发送是否合适，而不是队列是否为空。有尚未回答的独立问题，不自动使当前回复失效；原回复仍适合就keep，该问题可在后续处理。只有新信息确实改变当前回复的适宜性时才replace或drop。'
 
 
 class PreDispatchRejected(RuntimeError):
