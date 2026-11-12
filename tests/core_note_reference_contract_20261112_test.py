@@ -119,6 +119,40 @@ class CoreNoteEvidence(unittest.TestCase):
 
 
 class CoreNotePrompt(unittest.IsolatedAsyncioTestCase):
+    async def test_unavailable_whole_batch_keeps_identity_for_visibility_and_forgetting(self):
+        from memory_reflection import forget_core_notes
+        from types import SimpleNamespace
+        for forget_by in ('scope','subject'):
+            with self.subTest(forget_by=forget_by):
+                fixture=fixture_module.CheckpointFoundation();fixture.setUp()
+                try:
+                    fixture.r.shared_context=True
+                    origin=fixture_module.SCOPE
+                    events=[json.dumps([origin,str(index)],separators=(',',':')) for index in range(35)]
+                    for event in events:
+                        fixture.r.record('bot_shared','12345678',event,'仅存可信碎片','已确认回复')
+                    calls=[]
+                    async def model(**kw):
+                        calls.append(kw)
+                        return SimpleNamespace(completion_text=json.dumps({'summary':'只能基于剩余片段理解，完整原文不可得。',
+                            'core_note':{'text':'面对不完整经历保留谨慎理解。','events':[events[0]]}}))
+                    fixture.r.maybe_start('bot_shared',{'memory':True,'memorySummary':True},SimpleNamespace(text_chat=model),lambda:True,{},fixture.var)
+                    await fixture.r.task
+                    self.assertEqual(len(calls),1)
+                    self.assertEqual(json.loads(calls[0]['prompt'])['turns'],[])
+                    self.assertEqual(len(json.loads(calls[0]['prompt'])['incomplete_material']),35)
+                    note=fixture.r.core_note('group:55555','23456789')
+                    self.assertEqual(note['text'],'面对不完整经历保留谨慎理解。')
+                    self.assertEqual(note['source_scopes'],[origin]);self.assertEqual(note['subjects'],['12345678'])
+                    self.assertEqual(note['source_verification'],'unverified')
+                    reason=fixture.db.execute("SELECT reason FROM memory_operation_audit_details WHERE category='core_note'").fetchone()[0]
+                    self.assertEqual(reason,'applied_source_unverified:unknown_event')
+                    self.assertEqual(fixture.db.execute('SELECT sources FROM memory_core_notes').fetchone()[0],'[]')
+                    with fixture.db:
+                        forget_core_notes(fixture.db,scope=origin if forget_by=='scope' else '',subject='12345678' if forget_by=='subject' else '')
+                    self.assertEqual(fixture.r.core_note()['text'],'')
+                finally:fixture.tearDown()
+
     async def test_real_small_and_big_requests_explain_distinct_evidence_contracts(self):
         fixture=fixture_module.CheckpointFoundation();fixture.setUp()
         try:

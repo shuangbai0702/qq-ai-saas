@@ -594,7 +594,7 @@ class Reflection:
         except (ValueError,TypeError):return []
         return [claim for claim in claims if valid_claim(claim) and protected_claim(claim)] if isinstance(claims,list) else []
 
-    def update_core_note(self,data,prior,payload,big_rows,scope,audit=None):
+    def update_core_note(self,data,prior,payload,big_rows,scope,audit=None,author_witnesses=()):
         def reject(reason):
             if audit:audit.mark('core_note',0,'rejected',reason)
             return 0
@@ -625,6 +625,7 @@ class Reflection:
         def summary_scopes(key):
             return [x[0] for x in self.db.execute('SELECT scope FROM memory_summary_origins WHERE summary_id=?',(key,))] or [summaries[key][4]]
         offered_scopes={event_scope(row) for row in payload}
+        offered_scopes.update(event_scope(row) for row in author_witnesses)
         for key in summaries:offered_scopes.update(summary_scopes(key))
         if not offered_scopes and valid_scope(scope):offered_scopes.add(scope)
         for value in selected_events:
@@ -647,6 +648,11 @@ class Reflection:
         if issues:
             selected_events=list(events);selected_summaries=list(summaries)
         scopes=set(prior['source_scopes']);people=set(prior['subjects'])
+        if issues:
+            # Identity-only witnesses survive unavailable originals. They attach
+            # ownership for visibility/forgetting, never validate a model ID.
+            for row in author_witnesses:
+                scopes.add(event_scope(row));people.add(str(row['sender_id']))
         for key in selected_events:
             row=events[key];scopes.add(event_scope(row));people.add(str(row['sender_id']))
         for key in selected_summaries:
@@ -1233,7 +1239,7 @@ class Reflection:
                             merge_claims,merge_hold=self.merge_sources(ids)
                             # Old protected claims cannot veto semantic replacement.
                         core_products=big_rows if job=='big' else [(p['id'],p['text'],'[]',0,p['scope'],p['level']) for p in previous_products]
-                        metrics['coreNoteUpdates']=metrics.get('coreNoteUpdates',0)+self.update_core_note(data,core_before,payload,core_products,merge_scope or scope,audit=operation_audit)
+                        metrics['coreNoteUpdates']=metrics.get('coreNoteUpdates',0)+self.update_core_note(data,core_before,payload,core_products,merge_scope or scope,audit=operation_audit,author_witnesses=author_payload)
                         if job=='big':
                             people=self.db.execute('SELECT DISTINCT subject FROM memory_summary_people WHERE summary_id IN ('+marks+')',ids).fetchall()
                             origins={x[0] for x in self.db.execute('SELECT scope FROM memory_summary_origins WHERE summary_id IN ('+marks+')',ids)}
