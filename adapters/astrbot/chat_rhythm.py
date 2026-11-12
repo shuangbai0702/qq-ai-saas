@@ -2,6 +2,7 @@
 No input-trigger changes and no model calls. Only ordinary Chinese chat gets typos.
 """
 import random,re,asyncio,time
+from native_ingress import admitted,directed_poke
 
 
 def typing_delay(text,cfg,rng=random.random):
@@ -26,9 +27,13 @@ def conversational_typo(text,cfg,rng=random.random):
 async def poke(event,cfg,db,current,rng=random.random,now=None):
     raw=getattr(event.message_obj,'raw_message',{}) or {}
     if raw.get('post_type')!='notice':return False
-    # Notices must never fall through into a paid model turn.
     b=cfg.get('behavior') or {};now=time.time() if now is None else now
-    if not b.get('pokeReply') or raw.get('sub_type')!='poke' or str(raw.get('target_id'))!=str(event.get_self_id()) or str(raw.get('user_id'))!=str(event.get_sender_id()) or str(event.get_sender_id())==str(event.get_self_id()):return True
+    if not admitted(raw,cfg) or not directed_poke(raw) or str(raw.get('self_id'))!=str(event.get_self_id()) or str(raw.get('user_id'))!=str(event.get_sender_id()):return True
+    if b.get('pokeIntoAiContext'):
+        # The server validates this protocol event; raw text cannot opt in.
+        event.set_extra('_hosted_poke_context',True)
+        return False
+    if not b.get('pokeReply'):return True
     group=str(event.get_group_id() or '')
     if group and cfg.get('groups') and group not in cfg['groups']:return True
     db.execute('CREATE TABLE IF NOT EXISTS poke_cooldown(scope TEXT PRIMARY KEY,at REAL)')

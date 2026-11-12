@@ -44,3 +44,15 @@ test('owner contact UI remains enabled independently of proactive and explains d
  assert.match(taskUi,/不会周期性调用模型规划/);assert.match(taskUi,/用户已经授权的提醒仍按原任务执行/);
  assert.doesNotMatch(taskUi,/自主层接管主人联系|主动层可根据真实兴趣形成目标/);
 });
+
+
+test('poke AI context defaults off, survives API parse and is exposed separately in UI',()=>{
+ const config=BotConfigSchema.parse({...defaultConfig,behavior:{}});
+ assert.equal(config.behavior!.pokeIntoAiContext,false);
+ const enabled=BotConfigSchema.parse({...config,behavior:{...config.behavior,pokeIntoAiContext:true}});
+ assert.equal(enabled.behavior!.pokeIntoAiContext,true);
+ assert.equal(BotConfigSchema.parse(JSON.parse(JSON.stringify(enabled))).behavior!.pokeIntoAiContext,true);
+ const html=renderToStaticMarkup(createElement(RhythmControls,{config,onChange:()=>{}}));
+ const input=html.match(/<input[^>]*aria-label="允许戳一戳进入AI上下文"[^>]*>/)?.[0];
+ assert.ok(input);assert.doesNotMatch(input,/checked=/);
+});

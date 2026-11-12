@@ -153,6 +153,10 @@ def observe(db,event,cfg,group_limit=2):
 def queued(db,cfg,journal,group_limit=2,current=None):
     known={(o['scope'],str(o['event_id'])) for m in (journal.last.base if journal.last else []) if (o:=source(m))}
     pending=list(db.execute('SELECT id,scope,event,message FROM fishbot_shared_inputs ORDER BY id'))
+    # A group background window is not permission to omit an outstanding
+    # directed input. Reuse its trusted admission identity; no second queue.
+    has_inputs=db.execute("SELECT 1 FROM sqlite_master WHERE name='pipeline_work_inputs'").fetchone()
+    required=set(db.execute("SELECT scope,event FROM pipeline_work_inputs WHERE addressed_self=1 AND seen=0 AND status IN ('pending','queued','owned','deferred')")) if has_inputs else set()
     # A crash can occur after Journal adoption but before queue settlement.
     # Still-queued committed rows witness the accepted group window; older
     # background must not become "new" again on the next writer/restart.
@@ -163,7 +167,7 @@ def queued(db,cfg,journal,group_limit=2,current=None):
     for row in pending:
         identifier,scope,event,_=row
         if not included(scope,cfg,group_limit) or (scope,event) in known:continue
-        if scope.startswith('group:') and identifier<=adopted.get(scope,0) and not (current and (scope,event)==current[:2]):
+        if scope.startswith('group:') and identifier<=adopted.get(scope,0) and (scope,event) not in required and not (current and (scope,event)==current[:2]):
             discarded.append(identifier);continue
         rows.append(row)
     groups={}
@@ -175,6 +179,7 @@ def queued(db,cfg,journal,group_limit=2,current=None):
         active=next((row for row in items if current and (scope,row[2])==current[:2]),None)
         if active is not None and active not in window:window=[active,*window[-11:]]
         selected.update(row[0] for row in window)
+        selected.update(row[0] for row in items if (row[1],row[2]) in required)
         discarded.extend(row[0] for row in items if row[0] not in selected)
     rows=[row for row in rows if not row[1].startswith('group:') or row[0] in selected]
     result=[]

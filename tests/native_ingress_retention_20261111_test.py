@@ -23,7 +23,7 @@ def extract(path,name,namespace):
 class Ingress(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.db=sqlite3.connect(':memory:');self.pipeline=bot_pipeline.BotPipeline(self.db)
-        self.lease={'tenantId':'tenant','botId':'bot','generation':1,'revision':1}
+        self.lease={'tenantId':'tenant','botId':'bot','generation':1,'revision':1,'config':{'groups':[],'behavior':{'groupParticipationGroups':[]}}}
         self.member={'uin':'99999','groups':[],'modelConfigured':True,'events':0}
         self.errors={};self.executed=[];self.raw={'message_id':'101','user_id':'12345','message_type':'private','message':'hello'}
         self.message=NS(self_id='99999',group_id='',message_id='101',timestamp=time.time(),raw_message=self.raw)
@@ -41,7 +41,7 @@ class Ingress(unittest.IsolatedAsyncioTestCase):
             self.executed.append(self.db.execute('SELECT status,payload FROM pipeline_work_inputs').fetchone())
         self.namespace={'id':'qq','member':self.member,'members':{'qq':self.member},
             'core':NS(event_bus=NS(stopped_platforms=set()),provider_manager=NS(inst_map={'provider-qq':object()})),
-            'platform':NS(create_event=create),'behavior':{'retain_ingress':self.retain},'errors':self.errors,
+            'platform':NS(create_event=create),'behavior':{'retain_ingress':self.retain},'behavior_settings':{'qq':{'config':self.lease['config']}},'errors':self.errors,
             'worker_lifecycle':worker_lifecycle,'stop_fence':self.fence,'original':original}
         self.gate=extract(Path('adapters/astrbot/shared-worker.py'),'gated',self.namespace)
     def tearDown(self):self.db.close()
@@ -52,14 +52,14 @@ class Ingress(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(row[0],time.time()+25);self.assertEqual(row[1],self.message.timestamp)
         await self.gate(self.message)
         self.assertEqual(len(self.executed),1)
-    async def test_sdk_notice_and_request_without_protocol_message_id_are_retained(self):
+    async def test_sdk_notice_and_request_without_protocol_message_id_enter_program_path_without_retention(self):
         for kind in ('notice','request'):
             with self.subTest(kind=kind):
                 self.raw={'post_type':kind,'user_id':'12345','self_id':'99999','sub_type':'poke','target_id':'99999'}
                 self.message.raw_message=self.raw;self.message.message_id='sdk-'+kind
                 await self.gate(self.message)
                 row=self.db.execute('SELECT event,payload FROM pipeline_work_inputs WHERE event=?',('sdk-'+kind,)).fetchone()
-                self.assertIsNotNone(row);self.assertNotIn('message_id',__import__('json').loads(row[1]))
+                self.assertIsNone(row)
         self.assertEqual(len(self.executed),2)
 
     async def test_typing_status_never_joins_work_or_enters_recovery_queue(self):
@@ -69,7 +69,7 @@ class Ingress(unittest.IsolatedAsyncioTestCase):
             await self.gate(self.message)
             self.assertFalse(self.pipeline.join_active(self.create(self.message)))
             self.assertFalse(self.pipeline.persist_input(self.create(self.message),self.lease))
-        self.assertFalse(self.executed);self.assertFalse(self.errors)
+        self.assertEqual(self.executed,[None,None]);self.assertFalse(self.errors)
         self.assertEqual(self.db.execute('SELECT count(*) FROM pipeline_work_inputs').fetchone()[0],0)
 
     async def test_restart_reconciles_only_unexecuted_typing_notifications(self):
@@ -109,11 +109,11 @@ class Ingress(unittest.IsolatedAsyncioTestCase):
     async def test_original_identity_group_and_provider_gates_still_precede_retention(self):
         for case in ('self','group','provider','stopped'):
             with self.subTest(case=case):
-                self.message.self_id='99999';self.message.group_id='';self.member['groups']=[]
+                self.message.self_id='99999';self.message.group_id='';self.member['groups']=[];self.raw.pop('group_id',None)
                 self.namespace['core'].provider_manager.inst_map={'provider-qq':object()}
                 self.namespace['core'].event_bus.stopped_platforms=set()
                 if case=='self':self.message.self_id='88888'
-                if case=='group':self.message.group_id='55555';self.member['groups']=['77777']
+                if case=='group':self.message.group_id='55555';self.raw['group_id']='55555';self.member['groups']=['77777']
                 if case=='provider':self.namespace['core'].provider_manager.inst_map={}
                 if case=='stopped':self.namespace['core'].event_bus.stopped_platforms.add('qq')
                 await self.gate(self.message)

@@ -149,7 +149,7 @@ test('real SDK keeps one active Work per Scope, absorbs bursts and hands off onl
   assert.deepEqual(await state(`SELECT event,status,attempted,confirmed FROM pipeline_events WHERE scope='${group}' ORDER BY event`),[[String(base),'sent',1,1]],'group continuation keeps its original owner and sends once');
   assert.deepEqual(await state(`SELECT status,seen,count(*) FROM pipeline_work_inputs WHERE scope='${group}' GROUP BY status,seen`),[['settled',1,3]],'all group inputs settle after the actual answer');
   assert.equal(mainFor(group).length,2);assert.equal(mainFor(privateScope).length,1);
-  assert.equal(reviewFor(group).length,2,'one new private-state revision requires one additional suitability check');assert.equal(reviewFor(privateScope).length,0,'other Scope arrivals cannot trigger private review');
+  assert.equal(reviewFor(group).length,1,'only the joined group inputs require review; another private Scope must not trigger an additional check');assert.equal(reviewFor(privateScope).length,0,'other Scope arrivals cannot trigger private review');
   assert.ok(mainFor(group)[1].inputs.some((x:any)=>x.sender_id==='87654321'&&x.event_id===String(base+1)));
   assert.ok(mainFor(group)[1].inputs.some((x:any)=>x.sender_id==='22345678'&&x.event_id===String(base+2)));
   const groupSent=(await messages()).filter(x=>String(x.params.group_id)===group.slice(6));
@@ -192,7 +192,7 @@ test('real SDK keeps one active Work per Scope, absorbs bursts and hands off onl
    if(priorInScope)assert.deepEqual(main[index].body.tools,priorInScope.body.tools,'same-Scope continuation tool catalog stable');
   }
   assert.equal(main.length,14,'main requests are bounded independently of burst size');
-  assert.equal(reviews.length,9,'only genuinely unseen revisions reach the auxiliary model');
+  assert.equal(reviews.length,8,'only unseen same-Scope revisions reach the auxiliary model; unrelated private memory does not interrupt a draft');
   assert.deepEqual(errors,[],'HTTP fixtures completed without hidden failures');
  }finally{
   for(const release of gates.values())release();

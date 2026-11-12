@@ -10,6 +10,8 @@ from readonly_journal import ReadonlyJournal
 from context_foundation_20261109_test import messages
 from summary_material import snapshots,model_view
 
+from summary_stream_fixture import summary_provider
+
 SCOPE='private:12345678'
 def continuity(checkpoint=1):
     return {'checkpoint_id':checkpoint,'items':[{'source_scope':SCOPE,'text':'连续性版本'+str(checkpoint)}],
@@ -140,7 +142,7 @@ class ContinuityBigMerge(unittest.IsolatedAsyncioTestCase):
                 msg=source_message(str(i));msg['content']=msg['content'].split('\n',1)[0]+'\n'+question
                 fixture.r.record(SCOPE,'12345678',str(i),question,answer,
                     materials=snapshots([msg,{'role':'assistant','content':answer}],SCOPE))
-            fixture.r.maybe_start(SCOPE,{'memory':True,'memorySummary':True},NS(text_chat=chat),lambda:True,{},fixture.var)
+            fixture.r.maybe_start(SCOPE,{'memory':True,'memorySummary':True},summary_provider(chat),lambda:True,{},fixture.var)
             await fixture.r.task
             self.assertEqual(len(captured),1,'both products use the same production summary call')
             self.assertEqual(finish_semantic_batches(fixture.store,{},SCOPE)['retired'],1)
