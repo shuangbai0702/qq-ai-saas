@@ -136,6 +136,32 @@ class SnapshotTest(unittest.TestCase):
         self.assertIsNone(row['swapBytes'])
         self.assertEqual(row['ussBytes'], 12)
 
+    def test_windows_private_commit_keeps_distinct_memory_meaning(self):
+        with patch.object(snapshot.sys, 'platform', 'win32'):
+            self.api.memory_info = lambda: NS(rss=4096, vms=8192, private=12288)
+            self.assertEqual(snapshot.metrics(self.api,100,None,'api')['privateCommitBytes'],12288)
+            self.api.memory_info = lambda: NS(rss=4096, vms=8192)
+            self.assertEqual(snapshot.metrics(self.api,100,None,'api')['privateCommitBytes'],8192)
+        with patch.object(snapshot.sys, 'platform', 'linux'):
+            self.assertIsNone(snapshot.metrics(self.api,100,None,'api')['privateCommitBytes'])
+
+    def test_windows_compression_requires_system_parent_and_valid_lifetime(self):
+        fake=FakeProcess(8);fake.info={'name':'Memory Compression'};self.processes[8]=fake
+        with patch.object(snapshot.sys,'platform','win32'),patch.object(snapshot.psutil,'process_iter',return_value=[fake]):
+            self.assertIsNone(snapshot.windows_compression()['residentBytes'])
+            fake.ppid=lambda:4
+            self.assertEqual(snapshot.windows_compression()['residentBytes'],4096)
+            fake.reuse_on_read=True
+            self.assertIsNone(snapshot.windows_compression()['residentBytes'])
+
+    def test_missing_or_denied_compression_is_unknown_not_zero(self):
+        with patch.object(snapshot.sys,'platform','win32'),patch.object(snapshot.psutil,'process_iter',return_value=[]):
+            self.assertEqual(snapshot.windows_compression()['status'],'not-observed')
+            self.assertIsNone(snapshot.windows_compression()['residentBytes'])
+        with patch.object(snapshot.sys,'platform','win32'),patch.object(snapshot.psutil,'process_iter',side_effect=snapshot.psutil.AccessDenied(1)):
+            self.assertEqual(snapshot.windows_compression()['status'],'access-denied')
+            self.assertIsNone(snapshot.windows_compression()['residentBytes'])
+
     def test_pid_reuse_during_metrics_is_not_published(self):
         self.api.reuse_on_read = True
         result = self.collect()

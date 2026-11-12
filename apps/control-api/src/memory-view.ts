@@ -5,7 +5,7 @@ const numeric=(v:any)=>typeof v==='number'&&Number.isFinite(v)&&v>=0;
 export function aggregate(rows:any[],complete=true){
  const unique=[...new Map(rows.map(p=>[`${p.container||'local'}:${p.pid}:${p.created}`,p])).values()];
  const sum=(key:string)=>complete&&unique.every(p=>numeric(p[key]))?unique.reduce((v,p)=>v+p[key],0):null;
- return{processCount:complete?unique.length:null,pssBytes:sum('pssBytes'),ussBytes:sum('ussBytes'),swapBytes:sum('swapBytes'),rssBytes:sum('rssBytes'),cpuSeconds:sum('cpuSeconds'),identity:unique.map(p=>`${p.container}:${p.pid}:${p.created}`).sort().join(',')};
+ return{processCount:complete?unique.length:null,pssBytes:sum('pssBytes'),ussBytes:sum('ussBytes'),swapBytes:sum('swapBytes'),privateCommitBytes:sum('privateCommitBytes'),rssBytes:sum('rssBytes'),cpuSeconds:sum('cpuSeconds'),identity:unique.map(p=>`${p.container}:${p.pid}:${p.created}`).sort().join(',')};
 }
 export function buildMemoryView(sample:any,local:any,bots:any[],host:any,now=Date.now()){
  const hostFresh=host&&numeric(host.sampledAt)&&now-host.sampledAt*1000>=-5000&&now-host.sampledAt*1000<=90000;
@@ -47,9 +47,10 @@ export function buildMemoryView(sample:any,local:any,bots:any[],host:any,now=Dat
  const mem=sample.details.host.meminfoBytes||{};
  const platform=sample.details.host.platform||local.platform||host?.platform||'unknown';
  const portable=local.host||{};
+ const compression=hostFresh&&platform==='win32'?host.host?.memoryCompression:null;
  const sub=(a:any,b:any)=>numeric(a)&&numeric(b)?Math.max(0,a-b):null;
  const psi=(text:any,kind:string)=>{const m=typeof text==='string'&&text.match(new RegExp(`^${kind} avg10=([\\d.]+)`, 'm'));return m?Number(m[1]):null};
  const statusComplete=discoveryComplete&&accounts.every(b=>ownerComplete(b.id,'protocol')&&!['stale','unknown'].includes(b.status));
  const overview={platform,totalBytes:sample.details.host.totalBytes,usedBytes:sub(sample.details.host.totalBytes,sample.hostAvailableBytes),availableBytes:sample.hostAvailableBytes,swapUsedBytes:sub(mem.SwapTotal,mem.SwapFree)??(numeric(portable.swapUsedBytes)?portable.swapUsedBytes:null),swapTotalBytes:numeric(mem.SwapTotal)?mem.SwapTotal:numeric(portable.swapTotalBytes)?portable.swapTotalBytes:null,zswapPhysicalBytes:mem.Zswap??null,zswappedLogicalBytes:mem.Zswapped??null,onlineQQ:statusComplete?accounts.filter(b=>b.realOnline).length:null,onlineMock:statusComplete?accounts.filter(b=>b.online&&b.protocol==='mock').length:null,runtimeProcesses:localComplete?processes.filter(p=>['protocol','shared','dedicated'].includes(p.category)).length:null,memoryPressureSome:psi(sample.details.host.memoryPressure,'some'),memoryPressureFull:psi(sample.details.host.memoryPressure,'full'),cpuPressureSome:psi(sample.details.host.cpuPressure,'some'),cpuPercent:null as number|null};
- return{overview,categories,accounts,groups,processes,coverage:{hostFresh:!!hostFresh,hostSampledAt:host?.sampledAt?new Date(host.sampledAt*1000).toISOString():null,hostComplete,localComplete,complete:hostComplete&&localComplete,errors:[...(local.errors||[]),...(hostFresh?host.errors||[]:[{reason:'host-sample-missing-or-stale'}])],truncated:!!local.truncated||!!host?.truncated},unassignedRuntime:processes.filter(p=>p.ownerId&&!botIds.has(p.ownerId)&&!groupIds.has(p.ownerId)&&p.kind!=='api').map(p=>p.pid)};
+ return{overview:{...overview,memoryCompressionBytes:compression?.status==='ok'&&numeric(compression.residentBytes)?compression.residentBytes:null,memoryCompressionStatus:compression?.status??'unavailable'},categories,accounts,groups,processes,coverage:{hostFresh:!!hostFresh,hostSampledAt:host?.sampledAt?new Date(host.sampledAt*1000).toISOString():null,hostComplete,localComplete,complete:hostComplete&&localComplete,errors:[...(local.errors||[]),...(hostFresh?host.errors||[]:[{reason:'host-sample-missing-or-stale'}])],truncated:!!local.truncated||!!host?.truncated},unassignedRuntime:processes.filter(p=>p.ownerId&&!botIds.has(p.ownerId)&&!groupIds.has(p.ownerId)&&p.kind!=='api').map(p=>p.pid)};
 }
