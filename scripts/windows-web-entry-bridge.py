@@ -74,7 +74,10 @@ def origin_healthy(config):
     req = urllib.request.Request('http://127.0.0.1:'+str(config['localPort'])+'/v1/health',
                                  headers={'Host': config['httpHost']})
     try:
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
         with opener.open(req, timeout=3) as response:
             value = json.loads(response.read(8193))
             return response.status == 200 and value.get('ok') is True and value.get('publicOrigin') == 'https://'+config['httpHost']
