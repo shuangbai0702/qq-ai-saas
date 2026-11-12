@@ -7,7 +7,7 @@ import time
 
 import psutil
 from runtime_memory import owned
-from memory_snapshot import metrics, lifetime
+from memory_snapshot import metrics, lifetime, windows_compression
 
 
 def reason(error):
@@ -30,6 +30,7 @@ def collect(config):
     state = Path(config['stateRoot'])
     result = dict(sampledAt=time.time(), platform='win32', processes=[],
                   errors=[], truncated=False, expectedAbsent=[])
+    result['host'] = dict(memoryCompression=windows_compression())
     try:
         supervisor = record(state/'supervisor.json')
         supervisor_owner = {**supervisor, 'root': str(Path(config['sourceRoot']))}

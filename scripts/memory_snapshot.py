@@ -37,7 +37,7 @@ def metrics(process, created, owner, kind):
     row = dict(pid=process.pid, parentPid=None, name=None, ownerId=owner,
                kind=kind, created=created, rssBytes=None, pssBytes=None,
                ussBytes=None, swapBytes=None, vmsBytes=None, cpuSeconds=None,
-               threads=None, readBytes=None, writeBytes=None)
+               threads=None, readBytes=None, writeBytes=None, privateCommitBytes=None)
     # Independent reads retain RSS when full-info or another metric is denied.
     def read(method):
         try:
@@ -51,6 +51,10 @@ def metrics(process, created, owner, kind):
     basic = read(process.memory_info)
     for key, attr in [('rssBytes', 'rss'), ('vmsBytes', 'vms')]:
         row[key] = number(getattr(basic, attr, None))
+    if sys.platform == 'win32':
+        # PrivateUsage is commit backed by RAM or pagefile, not disk residency.
+        # New psutil versions expose the same Windows metric as vms only.
+        row['privateCommitBytes'] = number(getattr(basic, 'private', getattr(basic, 'vms', None)))
     full = read(lambda: process.memory_full_info())
     for key, attr in [('pssBytes', 'pss'), ('ussBytes', 'uss'), ('swapBytes', 'swap')]:
         row[key] = number(getattr(full, attr, None))
@@ -63,6 +67,34 @@ def metrics(process, created, owner, kind):
     row['writeBytes'] = number(getattr(io, 'write_bytes', None))
     lifetime(process, created)
     return row
+
+
+def windows_compression():
+    """Physical working set of the kernel compression process; never infer zero."""
+    result = dict(residentBytes=None, status='not-observed', source='compression-process-working-set')
+    if sys.platform != 'win32':
+        result['status'] = 'not-applicable'
+        return result
+    started = time.monotonic()
+    try:
+        for count, process in enumerate(psutil.process_iter(['name'])):
+            if count >= 2048 or time.monotonic() - started > 2:
+                result['status'] = 'scan-incomplete'
+                break
+            if str(process.info.get('name') or '').casefold() not in ('memory compression', 'memcompression'):
+                continue
+            created = process.create_time()
+            lifetime(process, created)
+            # The native compression process belongs to System, not an app.
+            if process.ppid() != 4:
+                continue
+            value = number(process.memory_info().rss)
+            lifetime(process, created)
+            result.update(residentBytes=value, status='ok' if value is not None else 'metric-unavailable')
+            break
+    except (psutil.Error, OSError, ValueError, NotImplementedError) as exc:
+        result['status'] = 'lifetime-mismatch' if isinstance(exc, ValueError) else 'access-denied' if isinstance(exc, psutil.AccessDenied) else 'metric-unavailable'
+    return result
 
 
 def collect(request):

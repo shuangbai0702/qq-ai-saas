@@ -34,6 +34,7 @@ class HostMonitorTest(unittest.TestCase):
 
     def run_collect(self, owner=None):
         with patch.object(monitor, 'owned', side_effect=owner or self.owned), \
+             patch.object(monitor, 'windows_compression', return_value={'residentBytes':12,'status':'ok'}), \
              patch.object(monitor, 'lifetime'), \
              patch.object(monitor, 'metrics', side_effect=lambda p,c,o,k: dict(pid=p.pid, created=c, pssBytes=None)):
             return monitor.publish(self.config)
@@ -48,6 +49,7 @@ class HostMonitorTest(unittest.TestCase):
         self.assertNotIn('root', text)
         self.assertIsNone(result['processes'][0]['pssBytes'])
         self.assertEqual(json.loads(text), result)
+        self.assertEqual(result['host']['memoryCompression']['residentBytes'],12)
 
     def test_missing_agent_not_expected_in_live_mode(self):
         self.write('supervisor.json', dict(pid=1, created=1, preflight=False))
