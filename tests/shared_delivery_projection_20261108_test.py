@@ -43,7 +43,7 @@ class Delivery(unittest.IsolatedAsyncioTestCase):
         p=self.journal.prepare(assembled,('bot',),strict=True,reconstruction_scope=shared.JOURNAL_SCOPE,
                                retirement=self.store.reflection.reconstruction_stamp(shared.JOURNAL_SCOPE))
         self.assertTrue(self.journal.stage_candidate(p));self.assertTrue(self.journal.commit(p))
-        self.journal.append_completion({'role':'assistant','content':draft})
+        self.journal.append_completion({'role':'assistant','content':draft},model_origin=(scope,str(event),'12345678'))
         return m
     def settle(self,scope,event,status='sent',text='actual replacement',proof=True,complete=True,attempted=1):
         self.db.execute('''INSERT INTO pipeline_events(scope,subject,event,at,source,stage,status,reason,attempted,confirmed)
@@ -55,6 +55,9 @@ class Delivery(unittest.IsolatedAsyncioTestCase):
                             (scope,str(event),'12345678',time.time(),text[:2000]))
         if proof:
             message_provenance.put(self.db,scope,event,'outgoing',{'receipt':'confirmed','message_ids':['qq-'+str(event)],'complete':complete})
+        message_provenance.settle_model_output(self.db,NS(scope=scope,event_id=str(event),subject='12345678',
+            status=status,attempted=attempted,confirmed=1 if proof else 0,
+            planned_messages=1 if text else 0,confirmed_messages=1 if proof else 0))
         self.db.commit()
     async def test_replaced_draft_stays_exact_and_next_other_scope_sees_real_delivery(self):
         self.append('group:55555','one','obsolete model draft')
@@ -88,6 +91,40 @@ class Delivery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data['dialogue']['deliveries'][0]['delivery'],'confirmed')
         self.assertEqual(data['dialogue']['deliveries'][0]['confirmed_text'],'late confirmed real send')
         self.assertEqual(refreshed[-1],next_input)
+
+    async def test_unsent_draft_has_one_compact_flag_without_repeating_text_after_restart(self):
+        draft='未发出的私人草稿。'*80
+        self.append('group:55555','draft',draft)
+        prefix=copy.deepcopy(self.journal.last.wire)
+        self.settle('group:55555','draft','silent',text='',proof=False,attempted=0)
+        view=shared.delivery_view(self.db,self.journal)
+        self.assertEqual(view,[{'source_scope':'group:55555','source_event':'draft','recipient_id':'12345678','delivery':'not_sent','draft_only':True}])
+        self.assertNotIn(draft,model_json(view));self.assertLess(len(model_json(view)),160)
+        restored=ReadonlyJournal(self.db,shared.JOURNAL_SCOPE)
+        self.assertEqual(shared.delivery_view(self.db,restored),view)
+        self.assertEqual(restored.last.wire,prefix)
+        self.assertEqual(shared.delivery_view(self.db,restored,exclude_scope='group:55555'),[])
+
+    async def test_pure_silence_has_no_per_message_context_receipt(self):
+        for i in range(4):
+            self.append('group:55555',str(i),'[NO_REPLY]')
+            self.settle('group:55555',str(i),'silent',text='',proof=False,attempted=0)
+        self.assertEqual(shared.delivery_view(self.db,self.journal),[])
+
+        self.assertFalse(any(row.get('text')=='[NO_REPLY]' for row in shared.recent(self.db)))
+
+    async def test_unknown_draft_never_claims_definite_non_delivery(self):
+        self.append('group:55555','uncertain','draft')
+        self.settle('group:55555','uncertain','unknown',text='',proof=False,attempted=1)
+        view=shared.delivery_view(self.db,self.journal)
+        self.assertEqual(view[0]['delivery'],'unknown');self.assertNotIn('draft_only',view[0])
+
+    async def test_legacy_missing_output_owner_retains_non_delivery_without_guessing(self):
+        self.append('group:55555','legacy','old unowned draft')
+        self.settle('group:55555','legacy','silent',text='',proof=False,attempted=0)
+        self.db.execute("DELETE FROM memory_message_sources WHERE direction='model'");self.db.commit()
+        view=shared.delivery_view(self.db,self.journal)
+        self.assertEqual(view[0]['delivery'],'not_sent');self.assertNotIn('draft_only',view[0])
     async def test_unshared_scope_and_event_collisions_do_not_enter_delivery_view(self):
         self.append('private:12345678','same')
         self.settle('group:99999','same',text='not in this Journal')
@@ -125,7 +162,9 @@ class Delivery(unittest.IsolatedAsyncioTestCase):
             identifier=shared.event_key({'scope':scope,'event_id':str(n)})
             self.store.reflection.record(shared.JOURNAL_SCOPE,'12345678',identifier,m['content'],actual,materials=materials)
         class Summary:
-            async def text_chat(self,**kwargs):return NS(completion_text=model_json({'summary':'35 completed real requests and confirmed answers.','evidence':[],'commitments':[]}))
+            async def text_chat_stream(self,**kwargs):
+                yield NS(completion_text=model_json({'summary':'35 completed real requests and confirmed answers.','evidence':[],'commitments':[]}),
+                         raw_completion={'choices':[{'finish_reason':'stop'}]})
         committed_wire=copy.deepcopy(self.journal.last.wire)
         metrics={}
         self.assertTrue(self.store.reflection.maybe_start(shared.JOURNAL_SCOPE,{'memory':True,'memorySummary':True,'naturalConversation':False},Summary(),lambda:True,metrics,ContextVar('receipt-summary',default=None)))

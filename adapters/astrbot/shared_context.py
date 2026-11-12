@@ -192,7 +192,7 @@ def recent(db,limit=12,budget=3000,scope=None):
             result.append({'source_scope':origin['scope'],'sender_id':origin['sender_id'],'at':origin.get('at'),
                            'source_event':origin['event_id'],'text':text.split('\n',1)[-1][:600],
                            **({'attention':'[important]'} if origin.get('attention')=='[important]' else {})})
-        elif scope is None and message.get('role')=='assistant' and isinstance(message.get('content'),str) and message['content']:
+        elif scope is None and message.get('role')=='assistant' and isinstance(message.get('content'),str) and message['content'].strip() not in ('','[NO_REPLY]'):
             result.append({'role':'self','text':message['content'][:600],'delivery':'model_output_not_send_receipt'})
     result=result[-limit:]
     while result and len(model_json(result))>budget:result.pop(0)
@@ -220,6 +220,22 @@ def delivery_view(db,journal=None,limit=8,budget=3000,exclude_scope=None,text_li
         if journal.last is None:return []
         messages=journal.last.base
     known={(o['scope'],str(o['event_id'])) for m in messages if (o:=source(m)) and o['scope']!=exclude_scope}
+    # Attribute drafts through exact existing provenance, never nearest-user
+    # guesses. Send only an outcome flag, not another copy of assistant text.
+    from message_provenance import model_output_owners
+    owners=model_output_owners(db,JOURNAL_SCOPE,messages)
+    drafts=set();silences=set();anchor=None;anchor_index=0
+    for index,message in enumerate(messages):
+        origin=source(message)
+        if origin:
+            anchor=event_key(origin);anchor_index=index
+        elif message.get('role')=='assistant' and not message.get('tool_calls'):
+            content=message.get('content')
+            owner=owners.get((anchor,index-anchor_index))
+            if owner and isinstance(content,str) and content.strip() not in ('','[NO_REPLY]'):
+                drafts.add((owner['source_scope'],str(owner['event_id'])))
+            elif owner and isinstance(content,str) and content.strip()=='[NO_REPLY]':
+                silences.add((owner['source_scope'],str(owner['event_id'])))
     rows=db.execute('''SELECT p.scope,p.subject,p.event,p.status,p.attempted,p.confirmed,
                       d.reply,d.at,s.data,d.state FROM pipeline_events p
                       LEFT JOIN dialogue_feedback d ON d.scope=p.scope AND d.event=p.event
@@ -243,6 +259,9 @@ def delivery_view(db,journal=None,limit=8,budget=3000,exclude_scope=None,text_li
             # A completed model response or an attempted protocol write does
             # not establish delivery. Never infer success from Work status.
             item['delivery']='unknown' if attempted or confirmed or status in ('sent','partial','unknown') else 'not_sent'
+            if item['delivery']=='not_sent':
+                if (scope,str(event)) in drafts:item['draft_only']=True
+                elif (scope,str(event)) in silences and feedback_state not in ('engaged','confused','corrected','rejected'):continue
         # Human feedback changes interpretation, never protocol confirmation.
         # Older records have only state; do not invent a reaction or quote.
         if feedback_state in ('engaged','confused','corrected','rejected'):
@@ -260,7 +279,7 @@ def delivery_view(db,journal=None,limit=8,budget=3000,exclude_scope=None,text_li
 
 def delivery_context(db,journal):
     return {'deliveries':delivery_view(db,journal),
-            'meaning':'历史assistant内容是模型原稿，不等于已发送；deliveries记录原会话最终聊天回复的投递结算，不替代独立工具回执。confirmed_text为协议确认文本，text_complete=false时只是有界摘录；unknown不代表失败或允许重发。feedback是对方后续反应，corrected/rejected不撤销协议投递确认，也不授予重发权限。'}
+            'meaning':'历史assistant是生成原稿，不是已说出口的话。draft_only=true且not_sent：只生成过、未发送，不得说“我回了”，也不能解释成网络发送失败；纯静默无须逐条列出。只有confirmed_text能证明协议确认的发言，text_complete=false是摘录；unknown不代表失败或允许重发。deliveries不替代工具回执；feedback只说明对方反应，不撤销投递确认或授予重发权限。'}
 
 
 def refresh_deliveries(messages,db,journal):

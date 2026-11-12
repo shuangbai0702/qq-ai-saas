@@ -1212,21 +1212,17 @@ def install_runtime(core,settings):
                     record_diagnostic(s,{'kind':'media_selection','phase':'foreground','workId':getattr(work,'event_id',None),
                         'mediaStatus':'superseded_before_send','reason':'freshness_'+decision['action'],'imageId':image.get('id') if image else None})
                 fence='group_freshness:' if scope.startswith('group:') else 'private_freshness:'
-                if decision['action']=='keep' and work and work.source=='message' and not confirmed_text and st.pipeline.unseen_inputs(work):
-                    # An applicable draft is not completion of newly joined
-                    # questions. Let this same Work reason over ALL inputs
-                    # before emitting its first bubble, unless explicitly
-                    # covered or classified as requiring no response.
-                    work.planned_messages-=len(plan.messages)-index
-                    bot_pipeline.stop(self,fence+'unhandled_inputs','superseded')
-                    return result
+                # keep is the model's judgment that this draft is suitable.
+                # Pending inputs retain their own processing obligation; their
+                # mere existence cannot veto a suitable, independently useful
+                # reply. The destination cursor still fences actual dispatch.
                 if decision['action']=='drop':
                     if work and work.source=='message':work.planned_messages-=len(plan.messages)-index
                     self.set_extra('_hosted_freshness_history','\n'.join(confirmed_text))
                     bot_pipeline.stop(self,fence+decision['reason'],'superseded')
                     return result
                 if decision['action']=='replace':
-                    if work and work.source=='message' and not confirmed_text:
+                    if work and work.source=='message' and st.shared_context and not confirmed_text:
                         # Freshness advises; the current main Work performs the
                         # renewed reasoning with the real appended events.
                         work.planned_messages-=len(plan.messages)-index
@@ -1749,6 +1745,8 @@ def install_runtime(core,settings):
                         except Exception:pass
                     from readonly_journal import ContextRecoveryUnavailable
                     raise ContextRecoveryUnavailable('The exact request journal could not be persisted; no model request was submitted.')
+                if foreground and shared_mode:
+                    owned.pipeline.request_inputs(work,prepared.base)
                 from model_cache import record_diagnostic
                 record_diagnostic(image_event.get_extra('_hosted_lease'),{'kind':'context','phase':'inner_execution' if internal else 'foreground',
                     'workId':work.event_id,'resetReason':prepared.reason or None,'resetDetail':prepared.detail or None,
@@ -2022,7 +2020,7 @@ def install_runtime(core,settings):
                 if owner is None or settings.get(event.get_platform_id()) is not lease or not owner.shared_context or work is None or not work.observes_input:reason='not_foreground_owner'
                 elif active_event.get_extra('_hosted_model_error',False):reason='model_error'
                 elif work.attempted!=work.confirmed:reason='unconfirmed_effect'
-                elif not owner.pipeline.unseen_inputs(work):reason='inputs_decided'
+                elif (continuation:=owner.pipeline.input_continuation(work))!='continue_inputs':reason=continuation
                 elif passes>=4:reason='activation_pass_limit'
                 elif work.status in ('blocked','error','duplicate') or work.reason in ('group_waiting','group_presence_busy_deferred','group_model_silent_or_stale'):reason='admission_blocked'
                 else:reason='continue_inputs'

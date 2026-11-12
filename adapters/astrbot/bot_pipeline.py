@@ -30,11 +30,11 @@ def delivery_scope(event):
 def is_transport_notification(raw):
     """These protocol notices never count as pending conversational input.
 
-    Pokes retain their existing dedicated handler; neither they nor recalls
-    should make a chat Work replan or be replayed as an unanswered message.
+    Pokes retain their existing dedicated handler; neither they, recalls nor
+    message reactions should replan a Work as an unanswered chat message.
     """
     return isinstance(raw,dict) and raw.get('post_type')=='notice' and (
-        raw.get('notice_type') in ('group_recall','friend_recall') or
+        raw.get('notice_type') in ('group_recall','friend_recall','group_msg_emoji_like') or
         raw.get('notice_type')=='notify' and raw.get('sub_type') in ('input_status','poke'))
 
 
@@ -404,6 +404,7 @@ class Work:
     confirmed_media_kinds:list=field(default_factory=list)
     summary_materials:list=field(default_factory=list)
     on_stage:object=field(default=None,repr=False)
+    unadopted_at_request:object=field(default=None,repr=False)
 
     @property
     def work_id(self):
@@ -512,7 +513,7 @@ class BotPipeline:
         # no execution was ever registered. Never reclassify unknown effects,
         # actual chat, or already-committed model/Journal representations.
         rows=self.db.execute("""SELECT scope,event,payload FROM pipeline_work_inputs i
-          WHERE status IN ('pending','queued','owned','blocked_recovery') AND payload IS NOT NULL
+          WHERE status IN ('pending','queued','owned','deferred','blocked_recovery') AND payload IS NOT NULL
           AND NOT EXISTS(SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope)
           AND NOT EXISTS(SELECT 1 FROM pipeline_events e WHERE e.scope=i.scope AND e.event=i.event)""").fetchall()
         has_issues=self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_checkpoint_issues'").fetchone()
@@ -590,7 +591,33 @@ class BotPipeline:
             self.db.executemany("UPDATE pipeline_work_inputs SET seen=1 WHERE scope=? AND event=? AND owner=? AND status='owned'",[(work.scope,e,work.event_id) for e in seen])
 
     def unseen_inputs(self,work):
-        return self.db.execute("SELECT count(*) FROM pipeline_work_inputs WHERE scope=? AND owner=? AND event<>? AND status='owned' AND seen=0",(work.scope,work.event_id,work.event_id)).fetchone()[0]
+        return len(self.unseen_input_events(work))
+
+    def unseen_input_events(self,work):
+        rows=self.db.execute("SELECT event,payload FROM pipeline_work_inputs WHERE scope=? AND owner=? AND event<>? AND status='owned' AND seen=0",(work.scope,work.event_id,work.event_id)).fetchall()
+        result=set()
+        for identifier,payload in rows:
+            try:raw=json.loads(payload) if payload else None
+            except (ValueError,TypeError):raw=None
+            if not is_transport_notification(raw):result.add(identifier)
+        return result
+
+    def request_inputs(self,work,messages):
+        """Snapshot the submitted view, without claiming model completion.
+
+        An old queue row absent from this candidate cannot be repaired by
+        repeatedly invoking the model with exactly the same input. Keep its
+        recovery ledger intact; only later ingress warrants another pass.
+        """
+        from context_protocol import source
+        adopted={str(o['event_id']) for m in messages if (o:=source(m)) and o['scope']==work.scope}
+        work.unadopted_at_request=self.unseen_input_events(work)-adopted
+
+    def input_continuation(self,work):
+        unseen=self.unseen_input_events(work)
+        if not unseen:return 'inputs_decided'
+        if work.unadopted_at_request is not None and unseen<=work.unadopted_at_request:return 'inputs_not_adopted'
+        return 'continue_inputs'
 
     def covered_inputs(self,work,events):
         # A review's explicit semantic coverage is provisional until the whole
@@ -894,6 +921,7 @@ class BotPipeline:
     def claim_scope(self,work):
         from shared_context import active
         if not active(self.db):return True  # Legacy sessions keep their existing scheduler until lawful migration.
+        self.retire_transport_notifications()
         with self.db:
             owned=self.db.execute('INSERT OR IGNORE INTO pipeline_scope_work VALUES(?,?,?,?,?)',(work.scope,work.event_id,work.subject,self.runtime,os.getpid())).rowcount
             work.scope_owner=bool(owned)

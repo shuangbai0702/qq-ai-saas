@@ -86,7 +86,7 @@ class Recovery(unittest.IsolatedAsyncioTestCase):
 
     def test_pokes_recalls_and_typing_never_enter_or_join_chat_work(self):
         from bot_pipeline import is_transport_notification
-        for kind,sub in [('notify','poke'),('notify','input_status'),('group_recall',None),('friend_recall',None)]:
+        for kind,sub in [('notify','poke'),('notify','input_status'),('group_recall',None),('friend_recall',None),('group_msg_emoji_like',None)]:
             with self.subTest(kind=kind,sub=sub):
                 e=event();e.message_obj.raw_message.update(post_type='notice',notice_type=kind,sub_type=sub)
                 self.assertTrue(is_transport_notification(e.message_obj.raw_message))
