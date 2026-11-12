@@ -43,7 +43,9 @@ class Authority(unittest.TestCase):
             plan=json.loads(result.stdout)
             self.assertEqual((plan['sid'],plan['runLevel']),('S-1-5-20','Limited'))
             self.assertEqual(len(plan['modifyDirectories']),3)
-            self.assertIn(str(python_base),plan['readDirectories'])
+            # NetworkService TEMP may use an 8.3 alias. The installer grants
+            # the resolved real directory, not that alias or the junction.
+            self.assertIn(str(python_base.resolve()),plan['readDirectories'])
             self.assertNotIn(str(junction),plan['readDirectories'])
             result=subprocess.run([*args,'-ServiceAccount','LocalService'],capture_output=True,text=True,encoding='utf-8',timeout=15)
             self.assertEqual(result.returncode,0,result.stderr)
