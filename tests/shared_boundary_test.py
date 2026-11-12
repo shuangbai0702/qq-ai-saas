@@ -31,6 +31,7 @@ class Request:
 async def run():
     calls=[]
     async def changed(*args):calls.append(args)
+    namespace['stop_fence']=SimpleNamespace(quiescing=False)
     namespace.update(web=SimpleNamespace(HTTPBadRequest=BadRequest),lock=asyncio.Lock(),members={'bot-A':body},unload=changed,install=changed)
     exec(compile(ast.Module(body=[put],type_ignores=[]),'<worker-put>','exec'),namespace)
     for value in invalid:
