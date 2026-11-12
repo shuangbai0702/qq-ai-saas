@@ -7,16 +7,17 @@ trusted events, materials and recorded corrections; v1 rows are read as-is.
 """
 import asyncio,hashlib,json,re
 from context_protocol import SOURCE,source,digest,reply_digest,image_notice,model_json,supported_block,tool_round_block,tools_digest,TOOL_ARGUMENT_CHARS,TOOL_RESULT_CHARS
+from memory_policy import DEFAULT_SUMMARY_ROUNDS
 MAX_TEXT=64000
 MAX_IMAGES_BYTES=4*1024*1024
 MAX_STORE_BYTES=24*1024*1024
 
 
 def checkpoint_round_gate(db,alias='c'):
-    """Only an exact checkpoint-bound administrator grant may waive 35 rounds."""
-    ordinary=f'{alias}.round_count=35'
+    """Only an exact checkpoint-bound administrator grant may waive the default rounds."""
+    ordinary=f'{alias}.round_count={DEFAULT_SUMMARY_ROUNDS}'
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_checkpoint_admin_overrides'").fetchone():return ordinary
-    return f"({ordinary} OR ({alias}.round_count BETWEEN 1 AND 34 AND EXISTS (SELECT 1 FROM memory_checkpoint_admin_overrides a WHERE a.checkpoint_id={alias}.id AND length(trim(a.administrator))>0 AND length(trim(a.request_id))>0)))"
+    return f"({ordinary} OR ({alias}.round_count BETWEEN 1 AND {DEFAULT_SUMMARY_ROUNDS-1} AND EXISTS (SELECT 1 FROM memory_checkpoint_admin_overrides a WHERE a.checkpoint_id={alias}.id AND length(trim(a.administrator))>0 AND length(trim(a.request_id))>0)))"
 
 
 def project_history(messages,covered,scope,current_event,protect_latest=True):

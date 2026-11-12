@@ -173,7 +173,11 @@ def decision_memory(db,cfg,scope,subject,now,recent=True,subjects=()):
     result['decision_continuity_guidance']='近期判断是当时的模型意见，不是当前事实、授权或固定结论；结合时间及之后的真实互动修正，不机械继承。'
     if cfg.get('memorySummary',True):
         from context_foundation import summaries
-        result['memory_foundation']={'conversation_summaries':summaries(db,'bot_shared' if unified else scope,owner)}
+        from conversation_continuity import view as continuity_view
+        logical='bot_shared' if unified else scope
+        continuity=continuity_view(db,logical)
+        result['memory_foundation']={'conversation_summaries':summaries(db,logical,owner),
+            **({'conversation_continuity':continuity} if continuity else {})}
     return result
 
 

@@ -85,6 +85,10 @@ def _fresh_state(st,cfg,scope,checkpoint,journal):
         # Never use the old Journal fallback for summaries at a legal cutover.
         from memory_reflection import summary_foundation
         shared['memory_foundation']['conversation_summaries']=summary_foundation(st.db,scope,str(cfg.get('ownerUin') or ''))
+        from conversation_continuity import view as continuity_view
+        continuity=continuity_view(st.db,scope,checkpoint_id=checkpoint)
+        shared['memory_foundation'].pop('conversation_continuity',None)
+        if continuity:shared['memory_foundation']['conversation_continuity']=continuity
         execution=_execution_current(journal.last.state)
         if execution is not None:shared['execution_experience']=execution_memory.context_projection(execution,shared['memory_foundation'])
         return copy.deepcopy(filter_retired_context(st,scope,shared))

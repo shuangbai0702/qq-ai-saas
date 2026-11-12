@@ -599,6 +599,11 @@ class ReadonlyJournal:
                         changed=self.db.execute("UPDATE memory_semantic_batches SET state='retired',completed=? WHERE checkpoint_id=? AND scope=? AND digest=? AND state IN ('committed','retired')",
                             (time.time(),prepared.reconstruction_permit['id'],json.loads(self.scope_key),prepared.reconstruction_permit['batchDigest'])).rowcount
                         if changed!=1:raise ContextPrefixViolation('semantic_batch_commit_changed')
+                        from conversation_continuity import view as continuity_view,retire_previous
+                        expected=continuity_view(self.db,json.loads(self.scope_key),checkpoint_id=prepared.reconstruction_permit['id'])
+                        if prepared.state.get('memory_foundation',{}).get('conversation_continuity')!=expected:
+                            raise ContextPrefixViolation('semantic_continuity_checkpoint_mismatch')
+                        retire_previous(self.db,json.loads(self.scope_key),prepared.reconstruction_permit['id'])
                     journal_storage.prune_unreferenced_blobs(self.db,self.scope_key)
             if model_origin is not None:
                 from message_provenance import bind_model_output

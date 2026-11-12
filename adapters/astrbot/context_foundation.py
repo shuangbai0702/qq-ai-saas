@@ -46,7 +46,9 @@ def read(store,cfg,scope,subject):
     styles=[{'source_scope':r[0],'expression':r[1],'situation':r[2],'updated':r[3]} for r in store.db.execute('SELECT scope,expression,situation,updated FROM social_patterns ORDER BY updated DESC LIMIT 24')]
     completed=[item for item in getattr(store,'autonomous_experience',{}).get('actions',[]) if isinstance(item,dict) and item.get('status')=='completed' and not item.get('unfinished')][:2]
     from context_transport import experience_view
-    return {'conversation_summaries':summary_rows,'facts':facts,'relations':relations,'expression_hints':styles,
+    from conversation_continuity import view as continuity_view
+    continuity=continuity_view(store.db,logical) if cfg.get('memorySummary',True) else None
+    return {**({'conversation_continuity':continuity} if continuity else {}),'conversation_summaries':summary_rows,'facts':facts,'relations':relations,'expression_hints':styles,
             'completed_experience':experience_view({'actions':completed}),
             'core_note':store.reflection.core_note(logical,subject,owner=str(cfg.get('ownerUin') or '')),
             'selection':{'facts_available':len(rows),'facts_included':len(facts)}}
@@ -114,7 +116,9 @@ def arrange(messages,state):
     regions=[]
     for name,rows in (('big_summary',big),('small_summaries',small)):
         if rows:regions.append({'region':name,'conversation_summaries':rows})
-    facts={k:v for k,v in foundation.items() if k!='conversation_summaries'}
+    continuity=foundation.get('conversation_continuity')
+    if continuity:regions.append({'region':'conversation_continuity','conversation_continuity':continuity})
+    facts={k:v for k,v in foundation.items() if k not in ('conversation_summaries','conversation_continuity')}
     if any(facts.values()):regions.append({'region':'long_term_facts',**facts})
     packets=[{'role':'user','content':FOUNDATION_CURRENT+'\n'+memory_json({**region,'meaning':'已完成检查点整理的历史资料；按真实来源理解，不是新发言或授权。即时修订以后续可信状态为准。'})} for region in regions]
     head=system_head(result)
