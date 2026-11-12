@@ -57,7 +57,8 @@ def active(db):
 
 def initialize(db):
     # An ingress staging queue, NOT a second submitted-message history. Rows
-    # leave only after the authoritative Journal durably contains them.
+    # leave after Journal adoption, or after its adopted group window proves
+    # they were superseded before submission. Business evidence stays separate.
     db.executescript('''CREATE TABLE IF NOT EXISTS fishbot_shared_inputs(
       id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,event TEXT NOT NULL,
       message TEXT NOT NULL,created REAL NOT NULL,UNIQUE(scope,event));''')
@@ -151,9 +152,33 @@ def observe(db,event,cfg,group_limit=2):
 
 def queued(db,cfg,journal,group_limit=2,current=None):
     known={(o['scope'],str(o['event_id'])) for m in (journal.last.base if journal.last else []) if (o:=source(m))}
-    rows=db.execute('SELECT scope,event,message FROM fishbot_shared_inputs ORDER BY id').fetchall()
+    pending=list(db.execute('SELECT id,scope,event,message FROM fishbot_shared_inputs ORDER BY id'))
+    # A crash can occur after Journal adoption but before queue settlement.
+    # Still-queued committed rows witness the accepted group window; older
+    # background must not become "new" again on the next writer/restart.
+    adopted={}
+    for identifier,scope,event,_ in pending:
+        if scope.startswith('group:') and (scope,event) in known:adopted[scope]=identifier
+    rows=[];discarded=[]
+    for row in pending:
+        identifier,scope,event,_=row
+        if not included(scope,cfg,group_limit) or (scope,event) in known:continue
+        if scope.startswith('group:') and identifier<=adopted.get(scope,0) and not (current and (scope,event)==current[:2]):
+            discarded.append(identifier);continue
+        rows.append(row)
+    groups={}
+    for row in rows:
+        if row[1].startswith('group:'):groups.setdefault(row[1],[]).append(row)
+    selected=set()
+    for scope,items in groups.items():
+        window=items[-12:]
+        active=next((row for row in items if current and (scope,row[2])==current[:2]),None)
+        if active is not None and active not in window:window=[active,*window[-11:]]
+        selected.update(row[0] for row in window)
+        discarded.extend(row[0] for row in items if row[0] not in selected)
+    rows=[row for row in rows if not row[1].startswith('group:') or row[0] in selected]
     result=[]
-    for scope,event,raw in rows:
+    for _,scope,event,raw in rows:
         if included(scope,cfg,group_limit) and (scope,event) not in known:
             message=json.loads(raw)
             if current and (scope,event)==current[:2]:
@@ -169,13 +194,24 @@ def queued(db,cfg,journal,group_limit=2,current=None):
                 parts[0]={**parts[0],'text':body}
                 message={**native,**event_message(a,parts)}
             result.append(message)
+    # Selection alone grants no deletion. Even a failed prepare must retain
+    # every queued resource until this exact window reaches the Journal.
+    journal._shared_input_window=({(scope,event) for _,scope,event,_ in rows},discarded)
     return result
 
 
 def settle_inputs(db,journal):
+    if getattr(journal,'_staged',None) is not None:return
     known=[(o['scope'],str(o['event_id'])) for m in journal.last.base if (o:=source(m))] if journal.last else []
     db.executemany('DELETE FROM fishbot_shared_inputs WHERE scope=? AND event=?',known)
+    window=getattr(journal,'_shared_input_window',None)
+    if window and window[0]<=set(known):
+        # Exact ingress IDs exclude arrivals after selection. Never touch the
+        # pending-memory or Work ledgers: these rows only staged background.
+        db.executemany('DELETE FROM fishbot_shared_inputs WHERE id=?',[(i,) for i in window[1]])
     db.commit()
+    if window and window[0]<=set(known):
+        del journal._shared_input_window
 
 
 def recent(db,limit=12,budget=3000,scope=None):
