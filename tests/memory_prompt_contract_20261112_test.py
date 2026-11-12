@@ -10,6 +10,8 @@ from companion_insights import SEMANTIC_MEMORY_SYSTEM,SYSTEM as INSIGHT_SYSTEM
 from memory_operation_audit import Audit
 from unittest.mock import patch
 
+from summary_stream_fixture import summary_provider
+
 class MemoryPromptContract(unittest.IsolatedAsyncioTestCase):
  setUp=fixture.SemanticSummary.setUp
  tearDown=fixture.SemanticSummary.tearDown
@@ -40,7 +42,7 @@ class MemoryPromptContract(unittest.IsolatedAsyncioTestCase):
   self.db.commit()
   original=self.run_summary
   async def chat(**kw):self.calls.append(copy.deepcopy(kw));return NS(completion_text=json.dumps({'summary':'保留当前条件'}))
-  self.r.binding=({'memory':True,'memorySummary':True,'naturalConversation':True,'_persona':'角色'*3000},NS(text_chat=chat),lambda:True,self.metrics,contextvars.ContextVar('prompt',default=None))
+  self.r.binding=({'memory':True,'memorySummary':True,'naturalConversation':True,'_persona':'角色'*3000},summary_provider(chat),lambda:True,self.metrics,contextvars.ContextVar('prompt',default=None))
   self.assertTrue(self.r.retry());await self.r.task
   data=json.loads(self.calls[0]['prompt']);view=data['previous_commitments_visibility']
   self.assertEqual(view['total'],18);self.assertGreater(view['omitted'],0);self.assertEqual(view['shown'],len(data['previous_commitments']['rows']) if isinstance(data['previous_commitments'],dict) else len(data['previous_commitments']))
@@ -58,7 +60,7 @@ class MemoryPromptContract(unittest.IsolatedAsyncioTestCase):
   self.record()
   async def chat(**kw):
    self.calls.append(copy.deepcopy(kw));return NS(completion_text=json.dumps({'summary':'保存合法摘要','learning':'格式错误'}))
-  self.r.binding=({'memory':True,'memorySummary':True,'styleLearning':True,'naturalConversation':False},NS(text_chat=chat),lambda:True,self.metrics,contextvars.ContextVar('learning',default=None))
+  self.r.binding=({'memory':True,'memorySummary':True,'styleLearning':True,'naturalConversation':False},summary_provider(chat),lambda:True,self.metrics,contextvars.ContextVar('learning',default=None))
   with patch('social.summary_learning_batches',return_value=[{'scope':'group:12345','samples':[]}]):
    self.assertTrue(self.r.retry());await self.r.task
   self.assertIsNotNone(self.checkpoint())

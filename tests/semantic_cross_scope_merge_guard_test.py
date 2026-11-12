@@ -10,6 +10,8 @@ from summary_material_test import message,SCOPE
 import summary_material,semantic_batch
 
 
+from summary_stream_fixture import summary_provider
+
 class CrossScopeMergeGuard(unittest.IsolatedAsyncioTestCase):
     async def test_original_scope_merge_preserves_shared_batch_member_and_deletes_only_unowned_legacy(self):
         await self.merge_case(SCOPE,'bot_shared')
@@ -40,8 +42,8 @@ class CrossScopeMergeGuard(unittest.IsolatedAsyncioTestCase):
                 db.commit()
                 originals={table:db.execute('SELECT * FROM '+table+' WHERE scope=? AND event=?',(merge_scope,event_key('shared-owned'))).fetchall() for table in ('memory_rounds','memory_round_material','memory_pending')}
                 calls=[]
-                async def chat(**kw):calls.append(kw);return NS(completion_text='合并后的持续记忆')
-                metrics={};r.binding=({'memory':True,'memorySummary':True},NS(text_chat=chat),lambda:True,metrics,contextvars.ContextVar('cross_merge',default=None))
+                async def chat(**kw):calls.append(kw);return NS(completion_text=json.dumps({'summary':'合并后的持续记忆'}))
+                metrics={};r.binding=({'memory':True,'memorySummary':True},summary_provider(chat),lambda:True,metrics,contextvars.ContextVar('cross_merge',default=None))
                 self.assertTrue(r.retry());await r.task;r.binding=None
                 self.assertEqual(len(calls),1);self.assertEqual(metrics.get('bigSummariesSaved'),1)
                 self.assertEqual(db.execute('SELECT state FROM memory_semantic_batches').fetchone(),('committed',))

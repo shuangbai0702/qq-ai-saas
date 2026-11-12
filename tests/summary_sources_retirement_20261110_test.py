@@ -8,6 +8,8 @@ from behavior import BehaviorStore
 from summary_material_test import message,SCOPE
 import summary_material as material
 
+from summary_stream_fixture import summary_provider
+
 class SummarySources(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.path=Path(self.tmp.name)/'behavior.sqlite'
@@ -16,11 +18,11 @@ class SummarySources(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):self.store.close();self.tmp.cleanup()
     async def chat(self,**kw):
         self.calls.append(json.loads(kw['prompt']))
-        return NS(completion_text='持续记忆' if '最多1500' in kw['system_prompt'] else json.dumps({'summary':'真实经历'}))
+        return NS(completion_text=json.dumps({'summary':'持续记忆'}) if '最多1500' in kw['system_prompt'] else json.dumps({'summary':'真实经历'}))
     async def batch(self,start):
         for i in range(start,start+35):
             self.r.record(SCOPE,'12345678',str(i),'看这个','已回复',materials=material.snapshots([message(str(i))],SCOPE))
-        self.assertTrue(self.r.maybe_start(SCOPE,{'memory':True,'memorySummary':True},NS(text_chat=self.chat),lambda:True,{},self.var))
+        self.assertTrue(self.r.maybe_start(SCOPE,{'memory':True,'memorySummary':True},summary_provider(self.chat),lambda:True,{},self.var))
         await self.r.task;await asyncio.sleep(0)
     async def test_rollups_keep_coverage_without_accumulating_sources(self):
         for start in (0,35,70,105,140,175):await self.batch(start)
@@ -84,7 +86,7 @@ class SummarySources(unittest.IsolatedAsyncioTestCase):
         async def capacity(**kw):
             seen.extend(json.loads(kw['prompt'])['turns'])
             raise ValueError('provider_context_capacity')
-        self.assertTrue(self.r.maybe_start(SCOPE,{'memorySummary':True},NS(text_chat=capacity),lambda:True,{},self.var))
+        self.assertTrue(self.r.maybe_start(SCOPE,{'memorySummary':True},summary_provider(capacity),lambda:True,{},self.var))
         await self.r.task
         self.assertEqual(len(seen),660)
         self.assertEqual(next(x['user'] for x in seen if x['event']=='pending-624'),'完整待整理正文624')

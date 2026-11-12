@@ -7,6 +7,8 @@ from memory_reflection import Reflection,invalidate
 from hosted_memory import ScopedMemory
 from data_admin import run
 
+from summary_stream_fixture import summary_provider
+
 class LongMemory(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.db=sqlite3.connect(':memory:');self.r=Reflection(self.db);self.calls=[]
@@ -80,9 +82,9 @@ class LongMemory(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.calls)
     async def test_late_reflection_cannot_restore_deleted_sources(self):
         entered=asyncio.Event();release=asyncio.Event()
-        async def text_chat(**kw):entered.set();await release.wait();return NS(completion_text='真实话题摘要')
+        async def text_chat(**kw):entered.set();await release.wait();return NS(completion_text=json.dumps({'summary':'真实话题摘要'}))
         for i in range(35):self.r.record('group:1','123',str(i),'question','answer')
-        self.r.maybe_start('group:1',{'memorySummary':True,'summaryRounds':35},NS(text_chat=text_chat),lambda:True,{},contextvars.ContextVar('event',default=None))
+        self.r.maybe_start('group:1',{'memorySummary':True,'summaryRounds':35},summary_provider(text_chat),lambda:True,{},contextvars.ContextVar('event',default=None))
         await entered.wait();self.facts.observe('group:1','123','更正记忆：称呼=新名字','correct',2);self.db.commit()
         release.set();await self.r.task
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],0)
@@ -197,8 +199,8 @@ class ReflectionDebt(unittest.IsolatedAsyncioTestCase):
                 self.assertGreaterEqual(db.execute('SELECT count(*) FROM '+table).fetchone()[0],1000)
                 self.assertEqual(db.execute('SELECT count(*) FROM '+table+' WHERE scope=?',(quiet,)).fetchone()[0],35)
             calls=[]
-            async def chat(**kw):calls.append(kw);return NS(completion_text='安静会话的真实摘要')
-            r.maybe_start(busy,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=chat),lambda:True,{},contextvars.ContextVar('fair_debt',default=None));await r.task
+            async def chat(**kw):calls.append(kw);return NS(completion_text=json.dumps({'summary':'安静会话的真实摘要'}))
+            r.maybe_start(busy,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},summary_provider(chat),lambda:True,{},contextvars.ContextVar('fair_debt',default=None));await r.task
             self.assertEqual(db.execute('SELECT scope FROM memory_summaries').fetchone()[0],quiet)
             self.assertEqual(db.execute('SELECT count(*) FROM memory_pending WHERE scope=?',(quiet,)).fetchone()[0],0)
             self.assertEqual(len(calls),1)
@@ -206,12 +208,12 @@ class ReflectionDebt(unittest.IsolatedAsyncioTestCase):
     async def test_no_daily_summary_gate_and_busy_scopes_retry(self):
         db=sqlite3.connect(':memory:');r=Reflection(db);calls=[];gate=asyncio.Event()
         async def chat(**kw):
-            calls.append(kw);await gate.wait();return NS(completion_text='真实对话摘要')
+            calls.append(kw);await gate.wait();return NS(completion_text=json.dumps({'summary':'真实对话摘要'}))
         cfg={'memory':True,'memorySummary':True,'summaryRounds':35,'dailySummaryLimit':0,'naturalConversation':False}
         try:
             for scope in ('private:12345678','private:87654321'):
                 for n in range(35):r.record(scope,scope[8:],str(n),'真实问题','真实回答')
-            self.assertTrue(r.maybe_start('private:12345678',cfg,NS(text_chat=chat),lambda:True,{},contextvars.ContextVar('debt_event',default=None)))
+            self.assertTrue(r.maybe_start('private:12345678',cfg,summary_provider(chat),lambda:True,{},contextvars.ContextVar('debt_event',default=None)))
             self.assertFalse(r.retry());gate.set();await r.task
             await asyncio.sleep(0)
             if not r.task or r.task.done():r.retry()
@@ -225,15 +227,15 @@ class ReflectionDebt(unittest.IsolatedAsyncioTestCase):
         async def fail(**kw):raise RuntimeError('provider unavailable')
         cfg={'memorySummary':True,'summaryRounds':35};var=contextvars.ContextVar('debt_event',default=None)
         try:
-            r.maybe_start(scope,cfg,NS(text_chat=fail),lambda:True,{},var);await r.task
+            r.maybe_start(scope,cfg,summary_provider(fail),lambda:True,{},var);await r.task
             self.assertFalse(r.retry());r.close();r=Reflection(db)
             self.assertEqual(db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
             r.incoming(scope,'12345678','partial','原问题');r.confirmed_prefix(scope,'12345678','partial','首条已发送',r.epoch())
             self.assertEqual(db.execute("SELECT answer FROM memory_pending WHERE event='partial'").fetchone()[0],'首条已发送')
             self.assertEqual(db.execute("SELECT count(*) FROM memory_rounds WHERE event='partial'").fetchone()[0],0)
-            async def success(**kw):return NS(completion_text='实际整理完成')
+            async def success(**kw):return NS(completion_text=json.dumps({'summary':'实际整理完成'}))
             db.execute('UPDATE memory_reflection_retry SET next_at=0');db.commit()
-            r.maybe_start(scope,cfg,NS(text_chat=success),lambda:True,{},var);await r.task
+            r.maybe_start(scope,cfg,summary_provider(success),lambda:True,{},var);await r.task
             self.assertEqual(db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1)
         finally:r.close();db.close()
 

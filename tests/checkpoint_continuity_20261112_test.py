@@ -15,6 +15,8 @@ from readonly_journal import ReadonlyJournal
 import conversation_continuity as continuity
 
 
+from summary_stream_fixture import summary_provider
+
 class CheckpointContinuity(unittest.IsolatedAsyncioTestCase):
     setUp = fixture.ReflectionTests.setUp
     tearDown = fixture.ReflectionTests.tearDown
@@ -35,7 +37,7 @@ class CheckpointContinuity(unittest.IsolatedAsyncioTestCase):
             return NS(completion_text=json.dumps(data, ensure_ascii=False))
         self.assertTrue(self.store.reflection.maybe_start(
             fixture.SCOPE, {'memory': True, 'memorySummary': True, 'summaryRounds': 35, 'naturalConversation': False},
-            NS(text_chat=response), current, {}, self.var))
+            summary_provider(response), current, {}, self.var))
         await self.drain()
         return calls
 
@@ -141,7 +143,7 @@ class CheckpointContinuity(unittest.IsolatedAsyncioTestCase):
         async def failed(**kw):
             raise TimeoutError('offline fixture')
         calls = await self.summarize(None, start=35, chat=failed)
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), 2)
         self.assertEqual(continuity.view(self.db, fixture.SCOPE), before)
         self.db.execute('DELETE FROM memory_reflection_retry'); self.db.commit()
         import semantic_batch

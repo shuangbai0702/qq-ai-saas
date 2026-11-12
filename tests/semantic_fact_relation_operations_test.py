@@ -21,6 +21,8 @@ PERSON='12345678'
 CFG={'memory':True,'memoryAutoCapture':True,'selfDevelopment':True}
 
 
+from summary_stream_fixture import summary_provider
+
 class SemanticFactRelationOperations(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory()
@@ -313,13 +315,13 @@ class SemanticReflectionOperations(unittest.IsolatedAsyncioTestCase):
                                                 'affinity':36,'trust':.8,'impression':'交流认真可靠，逐渐亲近。'}],
                         **({'core_note':{'text':'喜欢直率交流，表达简短；愿意坦诚提出分歧。','events':[prompt['turns'][0]['event']]}} if core else {})},ensure_ascii=False))
                 metrics={};reflection=store.reflection
-                reflection.binding=(cfg,NS(text_chat=chat),lambda:True,metrics,contextvars.ContextVar('semantic_reflection',default=None))
+                reflection.binding=(cfg,summary_provider(chat),lambda:True,metrics,contextvars.ContextVar('semantic_reflection',default=None))
                 with patch('semantic_batch.commit',side_effect=RuntimeError('forced_test_rollback')) if fail else patch('semantic_batch.commit',wraps=__import__('semantic_batch').commit):
                     self.assertTrue(reflection.retry())
                     if close:
                         with self.assertRaises(asyncio.CancelledError):await reflection.task
                     else:await reflection.task
-                self.assertEqual(len(calls),1)
+                self.assertEqual(len(calls),2 if malformed or provider_failure else 1)
                 audit_row=db.execute('SELECT checkpoint_id,summary_id,state,counts FROM memory_operation_audits').fetchone()
                 if fail or forget or malformed or provider_failure or close:
                     self.assertIsNone(audit_row[0]);self.assertIsNone(audit_row[1])

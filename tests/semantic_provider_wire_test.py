@@ -81,12 +81,18 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
                                              'affinity': 41, 'trust': .85,
                                              'impression': '共同绘画让交流更亲近可靠'}],
                 })
+            if self.mode=='network_error':
+                return httpx.Response(503,json={'error':{'message':'fixture unavailable'}})
+            if self.requests[-1].get('stream'):
+                chunk={'id':'semantic-wire-fixture','object':'chat.completion.chunk','created':1,'model':'fixture',
+                       'choices':[{'index':0,'delta':{'role':'assistant','content':json.dumps(output,ensure_ascii=False)},'finish_reason':None}]}
+                terminal={'id':'semantic-wire-fixture','object':'chat.completion.chunk','created':1,'model':'fixture',
+                          'choices':[{'index':0,'delta':{},'finish_reason':self.mode}]}
+                return httpx.Response(200,headers={'content-type':'text/event-stream'},content='data: '+json.dumps(chunk)+'\n\ndata: '+json.dumps(terminal)+'\n\ndata: [DONE]\n\n')
             return httpx.Response(200, json={
-                'id': 'semantic-wire-fixture', 'model': 'fixture',
-                'choices': [{'index': 0, 'message': {
-                    'role': 'assistant', 'content': json.dumps(output, ensure_ascii=False)},
-                    'finish_reason': self.mode}],
-            })
+                'id':'semantic-wire-fixture','model':'fixture',
+                'choices':[{'index':0,'message':{'role':'assistant','content':json.dumps(output,ensure_ascii=False)},'finish_reason':self.mode}]})
+
 
         self.http_patch = patch.object(
             ProviderOpenAIOfficial, '_create_http_client',
@@ -105,6 +111,26 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
             result = finish_semantic_batches(self.store, self.cfg, scope)
             self.callbacks.append((scope, result))
         self.store.reflection.checkpoint_callback = checkpoint
+
+    async def test_network_failure_is_exactly_two_real_stream_requests(self):
+        from memory_reflection import summary_model_output
+        async def no_retry(provider,error,*args,**kwargs):raise error
+        self.mode='network_error'
+        with patch.object(type(self.provider),'_handle_api_error',no_retry):
+            with self.assertRaises(Exception):
+                await summary_model_output(self.provider,dict(prompt='fixture',contexts=[],func_tool=None,request_max_retries=0),lambda:True,{},800)
+        self.assertEqual(len(self.requests),2)
+        self.assertTrue(all(r['stream'] is True for r in self.requests))
+
+    async def test_complete_json_without_terminal_reason_never_commits(self):
+        self.populate()
+        before=self.store.db.execute('SELECT * FROM memory_rounds ORDER BY id').fetchall()
+        self.mode=None
+        await self.summarize()
+        self.assertEqual(len(self.requests),2)
+        self.assertEqual(self.store.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],0)
+        self.assertEqual(self.store.db.execute('SELECT * FROM memory_rounds ORDER BY id').fetchall(),before)
+        self.assertEqual(self.callbacks,[])
 
     async def asyncTearDown(self):
         await self.provider.client.close()
@@ -199,8 +225,8 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(reflection.retry())
         await reflection.task
 
-    def assert_complete_summary_http(self):
-        self.assertEqual(len(self.requests), 1)
+    def assert_complete_summary_http(self,attempts=1):
+        self.assertEqual(len(self.requests), attempts)
         messages = self.requests[0]['messages']
         text = '\n'.join(
             m['content'] if isinstance(m.get('content'), str) else
@@ -306,7 +332,7 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
         pending_before = db.execute("SELECT * FROM memory_pending WHERE answer<>'' ORDER BY event").fetchall()
         self.mode = 'length'
         await self.summarize()
-        self.assert_complete_summary_http()
+        self.assert_complete_summary_http(attempts=2)
         # The error checkpoint may commit cleanup of proven internal residue;
         # genuine conversation material must remain byte-for-byte retryable.
         self.assert_failed_controls_discarded()

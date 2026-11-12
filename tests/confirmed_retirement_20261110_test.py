@@ -12,6 +12,8 @@ import summary_material as sm
 import message_provenance as mp
 import journal_storage
 
+from summary_stream_fixture import summary_provider
+
 class Materials(unittest.TestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.store=BehaviorStore(Path(self.tmp.name)/'b.sqlite');self.db=self.store.db;self.r=self.store.reflection
@@ -35,7 +37,7 @@ class Materials(unittest.TestCase):
   actual=self.db.execute('SELECT id FROM memory_rounds').fetchone()[0]
   self.db.execute("INSERT INTO memory_hold_rounds VALUES('bot_shared','existing',NULL,'uncovered',1000)")
   self.db.execute("INSERT INTO memory_hold_rounds VALUES('bot_shared','missing',NULL,'uncovered',1000)");self.db.commit()
-  self.r.binding=({'memorySummary':True},NS(text_chat=lambda **kw:None),lambda:True,{},contextvars.ContextVar('event',default=None))
+  self.r.binding=({'memorySummary':True},summary_provider(lambda **kw:None),lambda:True,{},contextvars.ContextVar('event',default=None))
   self.r.retry()
   self.assertEqual(self.db.execute("SELECT round_id FROM memory_hold_rounds WHERE event='existing'").fetchone()[0],actual)
   self.assertIsNone(self.db.execute("SELECT round_id FROM memory_hold_rounds WHERE event='missing'").fetchone()[0])
@@ -124,7 +126,7 @@ class Cancellation(unittest.IsolatedAsyncioTestCase):
    async def chat(**kwargs):
     entered.set();await asyncio.Event().wait()
    for i in range(35):r.record('bot_shared','12345678',str(i),'真实输入','已确认回复')
-   r.maybe_start('bot_shared',{'memory':True,'memorySummary':True},NS(text_chat=chat),lambda:True,{},contextvars.ContextVar('close_test',default=None))
+   r.maybe_start('bot_shared',{'memory':True,'memorySummary':True},summary_provider(chat),lambda:True,{},contextvars.ContextVar('close_test',default=None))
    task=r.task
    try:
     await asyncio.wait_for(entered.wait(),2)

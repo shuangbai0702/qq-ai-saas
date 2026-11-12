@@ -15,6 +15,8 @@ from summary_material_test import message,SCOPE
 import summary_material as material
 import message_provenance
 
+from summary_stream_fixture import summary_provider
+
 class SemanticObservedRecovery(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.path=Path(self.tmp.name)/'behavior.sqlite'
@@ -31,7 +33,7 @@ class SemanticObservedRecovery(unittest.IsolatedAsyncioTestCase):
         if self.fail_model:raise RuntimeError('offline failure')
         return NS(completion_text=json.dumps({'summary':'本批可见原信息及补全材料，未知发送仍未知'}))
     def bind(self):
-        self.r.binding=({'memorySummary':True,'naturalConversation':False},NS(text_chat=self.chat),lambda:self.live,self.metrics,self.var)
+        self.r.binding=({'memorySummary':True,'naturalConversation':False},summary_provider(self.chat),lambda:self.live,self.metrics,self.var)
     async def start(self):
         self.bind();result=self.r.retry()
         if result:await self.r.task

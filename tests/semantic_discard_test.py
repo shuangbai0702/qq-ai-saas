@@ -8,6 +8,8 @@ from context_protocol import event_message,model_json
 import summary_material,semantic_batch,semantic_collection
 
 
+from summary_stream_fixture import summary_provider
+
 class DiscardTests(unittest.IsolatedAsyncioTestCase):
     from semantic_provider_wire_test import SemanticProviderWire as Fixture
     asyncSetUp=Fixture.asyncSetUp
@@ -78,7 +80,7 @@ class DiscardTests(unittest.IsolatedAsyncioTestCase):
         r,db=self.prepare()
         with self.assertRaises(PermissionError):r.force_compress_once(discard_unavailable=True)
         async def fail(**kwargs):raise RuntimeError('upstream unavailable')
-        r.binding=(self.cfg,NS(text_chat=fail),lambda:True,self.metrics,contextvars.ContextVar('discard_fail',default=None))
+        r.binding=(self.cfg,summary_provider(fail),lambda:True,self.metrics,contextvars.ContextVar('discard_fail',default=None))
         r.force_compress_once(allow_partial=True,administrator='admin',request_id='fail',discard_unavailable=True)
         self.assertFalse((await r.task)['ok'])
         self.assertIsNotNone(db.execute("SELECT 1 FROM memory_pending WHERE scope='group:55555'").fetchone())
@@ -89,7 +91,7 @@ class DiscardTests(unittest.IsolatedAsyncioTestCase):
         async def changed(**kwargs):
             db.execute("UPDATE memory_pending SET question='newly recovered actual content' WHERE scope='group:55555'");db.commit()
             return NS(completion_text='{"summary":"actual summary"}')
-        r.binding=(self.cfg,NS(text_chat=changed),lambda:True,self.metrics,contextvars.ContextVar('discard_cas',default=None))
+        r.binding=(self.cfg,summary_provider(changed),lambda:True,self.metrics,contextvars.ContextVar('discard_cas',default=None))
         r.force_compress_once(allow_partial=True,administrator='admin',request_id='changed',discard_unavailable=True)
         result=await r.task;self.assertFalse(result['ok']);self.assertEqual(result['reason'],'semantic_discard_material_changed')
         self.assertIsNone(db.execute('SELECT 1 FROM memory_semantic_batches').fetchone())

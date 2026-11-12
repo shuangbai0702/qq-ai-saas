@@ -9,6 +9,8 @@ from summary_material_test import message,SCOPE
 import summary_material
 import semantic_batch
 
+from summary_stream_fixture import summary_provider
+
 class SemanticSummary(unittest.IsolatedAsyncioTestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.store=BehaviorStore(Path(self.tmp.name)/'behavior.sqlite');self.r=self.store.reflection;self.db=self.store.db;self.calls=[];self.mode='ok';self.live=True;self.metrics={}
@@ -26,7 +28,7 @@ class SemanticSummary(unittest.IsolatedAsyncioTestCase):
   if self.mode=='claims_overflow':return NS(completion_text=json.dumps({'summary':'选择的事实','evidence':[{'event':str(i%35),'who':'user','quote':'看这个'} for i in range(97)]}))
   return NS(completion_text=json.dumps({'summary':'记住人物关系和重要经历，普通寒暄自主遗忘。'}))
  async def run_summary(self):
-  self.r.binding=({'memory':True,'memorySummary':True,'naturalConversation':False},NS(text_chat=self.chat),lambda:self.live,self.metrics,contextvars.ContextVar('semantic_test',default=None))
+  self.r.binding=({'memory':True,'memorySummary':True,'naturalConversation':False},summary_provider(self.chat),lambda:self.live,self.metrics,contextvars.ContextVar('semantic_test',default=None))
   if not self.r.retry():return False
   await self.r.task;return True
  def checkpoint(self):return self.db.execute('SELECT id,round_count,state,pending_events FROM memory_reconstruction_checkpoints ORDER BY id DESC LIMIT 1').fetchone()

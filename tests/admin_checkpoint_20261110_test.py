@@ -9,18 +9,20 @@ from behavior import BehaviorStore
 from summary_material_test import message
 import summary_material as material
 
+from summary_stream_fixture import summary_provider
+
 class AdminCheckpoint(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.store=BehaviorStore(Path(self.tmp.name)/'behavior.sqlite')
         self.r=self.store.reflection;self.db=self.store.db;self.calls=[];self.current=True;self.mode='ok'
-        self.r.binding=({'memory':True,'memorySummary':True,'naturalConversation':False},NS(text_chat=self.chat),lambda:self.current,{},contextvars.ContextVar('admin_checkpoint',default=None))
+        self.r.binding=({'memory':True,'memorySummary':True,'naturalConversation':False},summary_provider(self.chat),lambda:self.current,{},contextvars.ContextVar('admin_checkpoint',default=None))
     def tearDown(self):self.store.close();self.tmp.cleanup()
     async def chat(self,**kw):
         self.calls.append(json.loads(kw['prompt']))
         if self.mode=='fail':raise RuntimeError('provider unavailable')
         if self.mode=='stale':self.current=False
         if self.mode=='truncated':return NS(completion_text='{"summary":"看似完整但上游标明被截断"}',raw_completion=NS(choices=[NS(message=NS(content=''),finish_reason='length')]))
-        return NS(completion_text='持续记忆' if '最多1500' in kw['system_prompt'] else json.dumps({'summary':'真实经历'}))
+        return NS(completion_text=json.dumps({'summary':'持续记忆'}) if '最多1500' in kw['system_prompt'] else json.dumps({'summary':'真实经历'}))
     def record(self,start,count):
         for i in range(start,start+count):
             event=str(i);m=material.snapshots([message(event),{'role':'assistant','content':'已回复'}],'bot_shared')

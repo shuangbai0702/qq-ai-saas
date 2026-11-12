@@ -8,6 +8,8 @@ from behavior import BehaviorStore
 from summary_material_test import message,SCOPE
 import summary_material as material
 
+from summary_stream_fixture import summary_provider
+
 class CheckpointFoundation(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.path=Path(self.tmp.name)/'behavior.sqlite'
@@ -22,12 +24,12 @@ class CheckpointFoundation(unittest.IsolatedAsyncioTestCase):
             self.merge_entered.set()
             if self.mode=='blocked':await self.merge_release.wait()
             if self.mode=='fail':raise RuntimeError('merge unavailable')
-            return NS(completion_text='持续记忆')
+            return NS(completion_text=json.dumps({'summary':'持续记忆'}))
         return NS(completion_text=json.dumps({'summary':'本批真实经历'}))
     async def batch(self,start):
         for i in range(start,start+35):
             self.r.record(SCOPE,'12345678',str(i),'看这个','已回复',materials=material.snapshots([message(str(i))],SCOPE))
-        self.r.maybe_start(SCOPE,{'memory':True,'memorySummary':True},NS(text_chat=self.chat),lambda:True,{},self.var)
+        self.r.maybe_start(SCOPE,{'memory':True,'memorySummary':True},summary_provider(self.chat),lambda:True,{},self.var)
         await self.r.task
         await asyncio.sleep(0)
     async def first_two(self):
@@ -68,7 +70,7 @@ class CheckpointFoundation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.r.foundation(SCOPE),before)
         self.r.checkpoint_callback=self.callbacks.append;self.mode='ok'
         self.db.execute('UPDATE memory_reflection_retry SET next_at=0');self.db.commit()
-        self.assertTrue(self.r.maybe_start(SCOPE,{'memory':True,'memorySummary':True},NS(text_chat=self.chat),lambda:True,{},self.var))
+        self.assertTrue(self.r.maybe_start(SCOPE,{'memory':True,'memorySummary':True},summary_provider(self.chat),lambda:True,{},self.var))
         await self.r.task;await asyncio.sleep(0)
         self.assertEqual([r['level'] for r in self.r.foundation(SCOPE)],['big'])
         self.assertEqual(self.callbacks,[SCOPE]*3)
@@ -106,7 +108,7 @@ class CheckpointFoundation(unittest.IsolatedAsyncioTestCase):
         for i in range(35):
             self.r.record('bot_shared','12345678',json.dumps([SCOPE,str(i)],separators=(',',':')),'看这个','已回复',materials=material.snapshots([message(str(i))],'bot_shared'))
         metrics={}
-        self.r.maybe_start('bot_shared',{'memory':True,'memorySummary':True},NS(text_chat=self.chat),lambda:True,metrics,self.var)
+        self.r.maybe_start('bot_shared',{'memory':True,'memorySummary':True},summary_provider(self.chat),lambda:True,metrics,self.var)
         await self.r.task
         self.assertTrue(self.merge_entered.is_set(),(metrics,self.db.execute('SELECT scope,text FROM memory_summaries').fetchall(),self.db.execute('SELECT * FROM memory_reconstruction_checkpoints').fetchall()))
         self.assertEqual([r['level'] for r in self.r.foundation('bot_shared')],['big'])
