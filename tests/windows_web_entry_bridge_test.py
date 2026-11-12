@@ -57,5 +57,17 @@ class BridgeContract(unittest.TestCase):
         with patch.object(mod.urllib.request,'build_opener',side_effect=OSError('down')):
             self.assertFalse(mod.origin_healthy(self.config()))
 
+    def test_health_rejects_redirects(self):
+        import urllib.error
+        captured=[]
+        class Opener:
+            def open(self,request,timeout):
+                raise urllib.error.HTTPError(request.full_url,302,'redirect',{},None)
+        def build(*handlers):captured.extend(handlers);return Opener()
+        with patch.object(mod.urllib.request,'build_opener',side_effect=build):
+            self.assertFalse(mod.origin_healthy(self.config()))
+        redirect=next(x for x in captured if isinstance(x,mod.urllib.request.HTTPRedirectHandler))
+        self.assertIsNone(redirect.redirect_request(None,None,302,'redirect',{},'http://127.0.0.1:8787/v1/health'))
+
 
 if __name__=='__main__':unittest.main()
