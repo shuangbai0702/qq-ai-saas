@@ -747,8 +747,18 @@ def install_runtime(core,settings):
         cfg=s['config']
         if (cfg.get('behavior') or {}).get('enabled',True) is False:return
         id=event.get_platform_id();st=store(id,s);group=str(event.get_group_id() or '');subject=str(event.get_sender_id());scope='group:'+group if group else 'private:'+subject
-        if group and cfg.get('groups') and group not in cfg['groups']:return
-        if await poke(event,cfg,st.db,lambda:current(event)):return
+        if group and cfg.get('groups') and group not in cfg['groups']:
+            # The retained ingress row can never bind in this scope; settle it
+            # instead of leaving it to five futile recovery passes.
+            st.pipeline.settle_refused_input(scope,str(getattr(event.message_obj,'message_id','') or ''))
+            return
+        if await poke(event,cfg,st.db,lambda:current(event)):
+            # poke() consumes every notice event (non-poke notices always stop
+            # here). A retained notice row can therefore never bind; settle it
+            # instead of leaving it to five futile recovery passes.
+            if str(getattr(getattr(event.message_obj,'raw_message',None),'post_type',''))=='notice':
+                st.pipeline.settle_refused_input(scope,str(getattr(event.message_obj,'message_id','') or ''),'settled_notice')
+            return
         if bot_pipeline.is_transport_notification(getattr(event.message_obj,'raw_message',None)):return
         internal=event.get_extra('_hosted_initiative',False);deferred=event.get_extra('_hosted_deferred_group');now=time.time()
         if deferred and (event.get_extra('_hosted_scheduled_generation')!=s.get('generation') or not st.presence.pending_current(deferred,cfg,lambda:current(event))):return
@@ -759,6 +769,10 @@ def install_runtime(core,settings):
             if st.shared_context:
                 import shared_context
                 if not shared_context.included(scope,cfg,st.shared_group_limit):
+                    # The retained ingress row can never bind outside the
+                    # shared whitelist; settle it instead of letting the
+                    # recovery sweep retry it five times into blocked_recovery.
+                    st.pipeline.settle_refused_input(scope,str(getattr(event.message_obj,'message_id','') or ''))
                     bot_pipeline.stop(event,'outside_shared_group_whitelist','silent');return
             import forwarded_messages
             await forwarded_messages.apply(event,live=lambda:current(event))
@@ -2103,6 +2117,17 @@ def install_runtime(core,settings):
     async def observed_send(event,message):
         try:return await send(event,message)
         except asyncio.CancelledError:raise
+        except group_freshness.PreDispatchRejected as error:
+            # Proven pre-dispatch rejection at the protocol boundary: remove
+            # the exactly-one recorded attempt like the controlled tool send
+            # path, so a never-sent bubble cannot settle as unknown.
+            owned=stores.get(event.get_platform_id());work=event.get_extra('_hosted_pipeline')
+            if owned is not None and isinstance(work,bot_pipeline.Work):
+                bot_pipeline.retract_pre_dispatch(owned.db,work,work.attempted)
+            from model_cache import record_execution_error
+            record_execution_error(setting(event),error,work_id=getattr(event.get_extra('_hosted_pipeline'),'event_id',None))
+            bot_pipeline.stop(event,type(error).__name__,'error')
+            raise
         except Exception as error:
             # The SDK can catch adapter failures before the outer scheduler;
             # retain typed, content-free evidence at the real failure boundary.

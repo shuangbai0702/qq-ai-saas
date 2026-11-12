@@ -556,6 +556,24 @@ class BotPipeline:
             self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,subject,owner,payload,status,created,observed_at,payload_sha,identity,addressed_self) VALUES(?,?,?,NULL,?,'pending',?,?,?,?,?)",(scope,identifier,str(event.get_sender_id()),payload,time.time(),observed,digest,binding,addressed))
         return True
 
+    def settle_refused_input(self,scope,identifier,reason='settled_refused'):
+        """Terminal settlement for an input refused before bind.
+
+        persist_input already retained this authenticated event, but a
+        refusal that happens before bind can never create a pipeline_events
+        row, so the row would otherwise burn five futile recovery passes and
+        park as blocked_recovery forever. Only unowned pending/queued rows
+        settle: an active scope Work keeps its own inputs.
+        """
+        if not scope or not identifier:return False
+        with self.db:
+            changed=self.db.execute("""UPDATE pipeline_work_inputs SET status=?,owner=NULL
+              WHERE scope=? AND event=? AND status IN ('pending','queued')
+              AND NOT EXISTS(SELECT 1 FROM pipeline_scope_work w WHERE w.scope=?)""",(reason,scope,identifier,scope)).rowcount
+            if changed and self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_checkpoint_issues'").fetchone():
+                self.db.execute("UPDATE memory_checkpoint_issues SET status='resolved',updated=? WHERE kind=? AND status='open'",(time.time(),'input_recovery:'+scope+':'+identifier))
+        return bool(changed)
+
     def execution_boundary(self,work,name):
         # observe starts background learning/tool preparation before the main
         # model_tools stage. Conservatively revoke recovery before any of it.
