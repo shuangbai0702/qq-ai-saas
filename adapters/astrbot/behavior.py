@@ -366,7 +366,7 @@ def install_runtime(core,settings):
         cursor=cursors.get(scope,0)
         provider=provider_for(event.get_platform_id())
         is_group=scope.startswith('group:')
-        phase='group_freshness' if is_group else 'private_freshness'
+        phase='group_freshness' # One request/cache identity; scene stays in dynamic data.
         metric_key='groupFreshnessModelCalls' if is_group else 'privateFreshnessModelCalls'
         async def call(payload):
             if provider is None:raise RuntimeError('model_unavailable')
@@ -1222,12 +1222,6 @@ def install_runtime(core,settings):
                     bot_pipeline.stop(self,fence+decision['reason'],'superseded')
                     return result
                 if decision['action']=='replace':
-                    if work and work.source=='message' and st.shared_context and not confirmed_text:
-                        # Freshness advises; the current main Work performs the
-                        # renewed reasoning with the real appended events.
-                        work.planned_messages-=len(plan.messages)-index
-                        bot_pipeline.stop(self,fence+'main_continuation','superseded')
-                        return result
                     # Re-render through the same OutputPlan, never a second
                     # sender. No protocol attempt has happened at index zero.
                     count=self.get_extra('_hosted_freshness_replans',0)
