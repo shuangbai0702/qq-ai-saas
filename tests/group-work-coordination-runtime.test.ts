@@ -15,7 +15,7 @@ test('real SDK queues adjacent Work through confirmed settlement and skips only 
    await new Promise<void>(r=>{releaseEmbedding=r});res.setHeader('Content-Type','application/json');
    res.end(JSON.stringify({data:body.input.map((_:any,index:number)=>({index,embedding:[1,0]})),usage:{prompt_tokens:1,total_tokens:1}}));return;
   }
-  if(body.messages.some((m:any)=>m.role==='system'&&m.content.includes('你是群聊发送前复核器'))){
+  if(body.messages.some((m:any)=>m.role==='system'&&m.content.includes('你是回复适宜性复核器'))){
    const data=JSON.parse(nativeMessages(body).at(-1).content);reviews.push(data);
    answer=JSON.stringify({action:'keep',responded_events:data.review.latest_messages.filter((m:any)=>m.text.includes('EXTRA_A')).map((m:any)=>m.event)});
   }else{

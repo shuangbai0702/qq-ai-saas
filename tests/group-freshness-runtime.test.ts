@@ -20,7 +20,7 @@ test('native group preflight keeps, replaces and drops delayed drafts with true 
   let raw='';for await(const chunk of req)raw+=chunk;const body=JSON.parse(raw);
   const system=body.messages.filter((m:any)=>m.role==='system').map((m:any)=>m.content).join('\n');
   let answer:string;
-  if(system.includes('你是群聊发送前复核器')){
+  if(system.includes('你是回复适宜性复核器')){
    const payload=JSON.parse(nativeMessages(body).at(-1).content);reviews.push({body,payload});
    const latest=JSON.stringify(payload.review.latest_messages);
    answer=latest.includes('LATEST_FALLBACK')?'invalid JSON':JSON.stringify(latest.includes('LATEST_REPLACE')?{action:'replace',text:'结合刚才的补充回答。',reason:'updated'}:latest.includes('LATEST_DROP')?{action:'drop',reason:'already_resolved'}:{action:'keep',reason:'unrelated'});
