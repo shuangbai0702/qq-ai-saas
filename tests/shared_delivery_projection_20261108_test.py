@@ -162,9 +162,11 @@ class Delivery(unittest.IsolatedAsyncioTestCase):
             identifier=shared.event_key({'scope':scope,'event_id':str(n)})
             self.store.reflection.record(shared.JOURNAL_SCOPE,'12345678',identifier,m['content'],actual,materials=materials)
         class Summary:
+            async def text_chat(self,**kwargs):
+                return NS(completion_text=model_json({'summary':'35 completed real requests and confirmed answers.','evidence':[],'commitments':[]}),
+                          raw_completion={'choices':[{'finish_reason':'stop'}]})
             async def text_chat_stream(self,**kwargs):
-                yield NS(completion_text=model_json({'summary':'35 completed real requests and confirmed answers.','evidence':[],'commitments':[]}),
-                         raw_completion={'choices':[{'finish_reason':'stop'}]})
+                yield await self.text_chat(**kwargs)
         committed_wire=copy.deepcopy(self.journal.last.wire)
         metrics={}
         self.assertTrue(self.store.reflection.maybe_start(shared.JOURNAL_SCOPE,{'memory':True,'memorySummary':True,'naturalConversation':False},Summary(),lambda:True,metrics,ContextVar('receipt-summary',default=None)))
