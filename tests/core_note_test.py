@@ -19,7 +19,14 @@ class CoreNoteTests(unittest.IsolatedAsyncioTestCase):
   with self.db:return self.ref.update_core_note(data,self.ref.core_note() if prior is None else prior,payload,[],self.scope)
  def rounds(self):
   from memory_reflection import DEFAULT_SUMMARY_ROUNDS
-  for i in range(DEFAULT_SUMMARY_ROUNDS):self.ref.record(self.scope,'12345678',str(i),'请叫我小林','好的',time.time())
+  from context_protocol import event_message
+  from summary_material import snapshots
+  for i in range(DEFAULT_SUMMARY_ROUNDS):
+   # A source-bound optional note requires the actual offered material;
+   # metadata-only rows now intentionally use the missing-original path.
+   message=event_message({'scope':self.scope,'sender_id':'12345678','event_id':str(i)},'请叫我小林')
+   self.ref.record(self.scope,'12345678',str(i),'请叫我小林','好的',time.time(),
+       materials=snapshots([message,{'role':'assistant','content':'好的'}],self.scope))
  async def drain(self):
   for _ in range(12):
    task=self.ref.task
