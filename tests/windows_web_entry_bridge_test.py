@@ -1,4 +1,5 @@
 import importlib.util
+import http.client
 import pathlib
 import unittest
 from unittest.mock import patch
@@ -24,6 +25,22 @@ class BridgeContract(unittest.TestCase):
         for field,value in [('httpHost','shuangbai.online\r\nX: x'),('localPort',8787),('sshUser','root -o StrictHostKeyChecking=no')]:
             config=self.config();config[field]=value
             with self.assertRaises(ValueError):mod.validate(config)
+
+    def test_optional_dns_bridge_is_fixed_tls_destination(self):
+        config=self.config();config['dnsTlsBridgePort']=48881
+        command=mod.ssh_command(config)
+        self.assertIn('127.0.0.1:48881:www.duckdns.org:443',command)
+        config['dnsTlsBridgePort']=config['localPort']
+        with self.assertRaises(ValueError):mod.validate(config)
+
+    def test_dns_bridge_keeps_certificate_and_hostname_verification(self):
+        from unittest.mock import MagicMock
+        sock=MagicMock();context=MagicMock()
+        tls=MagicMock();tls.makefile.return_value.readline.return_value=b''
+        context.wrap_socket.return_value=tls
+        with patch.object(mod.socket,'create_connection',return_value=sock),patch.object(mod.ssl,'create_default_context',return_value=context):
+            with self.assertRaises(http.client.BadStatusLine):mod.publish_via_tls_bridge(48881,'example','synthetic','https://example.trycloudflare.com')
+        context.wrap_socket.assert_called_with(sock,server_hostname='www.duckdns.org')
 
     def test_health_cannot_fall_back_to_predeployment_api(self):
         seen=[]

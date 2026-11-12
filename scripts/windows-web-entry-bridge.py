@@ -1,13 +1,17 @@
 """Supervise a website-only encrypted origin bridge; never start a FishBot Agent."""
 import argparse
+import http.client
 import importlib.util
 import ipaddress
 import json
 import os
 from pathlib import Path
 import re
+import socket
+import ssl
 import time
 import urllib.request
+import urllib.parse
 
 
 def load(name, path):
@@ -24,6 +28,9 @@ def validate(config):
     port = config['localPort']
     if type(port) is not int or not 1024 <= port <= 65535 or port in (5432, 8787):
         raise ValueError('invalid bridge port')
+    dns_port = config.get('dnsTlsBridgePort')
+    if dns_port is not None and (type(dns_port) is not int or not 1024 <= dns_port <= 65535 or dns_port in (5432, 8787, port)):
+        raise ValueError('invalid DNS TLS bridge port')
     if not re.fullmatch('[a-z0-9.-]+', config['httpHost']):
         raise ValueError('invalid HTTP host')
     for key in ('sourceRoot', 'stateRoot', 'ssh', 'privateKey', 'knownHosts', 'cloudflared', 'dnsConfig'):
@@ -33,12 +40,33 @@ def validate(config):
 
 def ssh_command(config):
     validate(config)
-    return [config['ssh'], '-N', '-T', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes',
+    command = [config['ssh'], '-N', '-T', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes',
             '-o', 'StrictHostKeyChecking=yes', '-o', 'UserKnownHostsFile='+config['knownHosts'],
             '-o', 'ExitOnForwardFailure=yes', '-o', 'ServerAliveInterval=15',
             '-o', 'ServerAliveCountMax=3', '-o', 'ConnectTimeout=10',
-            '-i', config['privateKey'], '-L', '127.0.0.1:'+str(config['localPort'])+':127.0.0.1:80',
-            config['sshUser']+'@'+config['sshHost']]
+            '-i', config['privateKey'], '-L', '127.0.0.1:'+str(config['localPort'])+':127.0.0.1:80']
+    if config.get('dnsTlsBridgePort'):
+        command += ['-L', '127.0.0.1:'+str(config['dnsTlsBridgePort'])+':www.duckdns.org:443']
+    return command + [config['sshUser']+'@'+config['sshHost']]
+
+
+def publish_via_tls_bridge(port, domain, token, url):
+    """Keep DuckDNS TLS/SNI verification across a pinned SSH transport."""
+    class Connection(http.client.HTTPSConnection):
+        def connect(self):
+            sock = socket.create_connection(('127.0.0.1', port), timeout=self.timeout)
+            try:
+                self.sock = ssl.create_default_context().wrap_socket(sock, server_hostname='www.duckdns.org')
+            except BaseException:
+                sock.close()
+                raise
+    connection = Connection('www.duckdns.org', timeout=10)
+    try:
+        connection.request('GET', '/update?'+urllib.parse.urlencode(dict(domains=domain, token=token, txt=url)))
+        response = connection.getresponse()
+        return response.status == 200 and response.read(64).decode('ascii', errors='replace').strip() == 'OK'
+    finally:
+        connection.close()
 
 
 def origin_healthy(config):
@@ -94,7 +122,8 @@ def run(config):
                     if now-last_sync >= 15:
                         last_sync = now
                         try:
-                            status = dns.sync_once(dns_config, health=lambda: origin_healthy(config))
+                            update = dns.publish if not config.get('dnsTlsBridgePort') else lambda domain, token, url: publish_via_tls_bridge(config['dnsTlsBridgePort'], domain, token, url)
+                            status = dns.sync_once(dns_config, health=lambda: origin_healthy(config), update=update)
                         except Exception:
                             status = 'dns-check-or-update-failed'
                         supervisor.atomic(state/'dns-status.json', {'status': status, 'checkedAt': time.time()})
