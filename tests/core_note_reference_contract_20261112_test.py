@@ -12,6 +12,8 @@ from semantic_runtime import finish_semantic_batches
 import tempfile
 
 
+from summary_stream_fixture import summary_provider
+
 class CoreNoteEvidence(unittest.TestCase):
     def test_shared_encoded_event_is_exact_and_does_not_grant_native_id_alias(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -136,7 +138,7 @@ class CoreNotePrompt(unittest.IsolatedAsyncioTestCase):
                         calls.append(kw)
                         return SimpleNamespace(completion_text=json.dumps({'summary':'只能基于剩余片段理解，完整原文不可得。',
                             'core_note':{'text':'面对不完整经历保留谨慎理解。','events':[events[0]]}}))
-                    fixture.r.maybe_start('bot_shared',{'memory':True,'memorySummary':True},SimpleNamespace(text_chat=model),lambda:True,{},fixture.var)
+                    fixture.r.maybe_start('bot_shared',{'memory':True,'memorySummary':True},summary_provider(model),lambda:True,{},fixture.var)
                     await fixture.r.task
                     self.assertEqual(len(calls),1)
                     self.assertEqual(json.loads(calls[0]['prompt'])['turns'],[])

@@ -32,6 +32,8 @@ def correction_claim(scope,event,text='我不叫江哥',subject='123'):
             'status':'applied','visibility':scope,'protected':True,'value':value_hash('江哥')}
 
 
+from summary_stream_fixture import summary_provider
+
 class P0HoldMergeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.store=BehaviorStore(Path(self.tmp.name)/'behavior.sqlite');self.db=self.store.db
@@ -74,7 +76,7 @@ class P0HoldMergeTests(unittest.IsolatedAsyncioTestCase):
         self.rounds(special={0:('我们约定周末一起去平江路','好的')})
         metrics={}
         with patch.object(material,'MAX_CLAIMS_BYTES',2):
-            self.assertTrue(self.store.reflection.maybe_start(SCOPE,CLEAN_CFG,NS(text_chat=self.chat()),lambda:True,metrics,self.var));await self.drain()
+            self.assertTrue(self.store.reflection.maybe_start(SCOPE,CLEAN_CFG,summary_provider(self.chat()),lambda:True,metrics,self.var));await self.drain()
         hold=self.db.execute('SELECT round_id,reason FROM memory_hold_rounds WHERE scope=? AND event=?',(SCOPE,'0')).fetchone()
         self.assertIsNotNone(hold,'an unresolved hold is registered')
         self.assertEqual(hold[1],'protected')
@@ -108,7 +110,7 @@ class P0HoldMergeTests(unittest.IsolatedAsyncioTestCase):
         self.rounds()
         self.db.execute('INSERT INTO memory_hold_rounds VALUES(?,?,?,?,?)',(SCOPE,'ghost',1,'protected',time.time()));self.db.commit()
         metrics={}
-        self.assertTrue(self.store.reflection.maybe_start(SCOPE,CLEAN_CFG,NS(text_chat=self.chat()),lambda:True,metrics,self.var));await self.drain()
+        self.assertTrue(self.store.reflection.maybe_start(SCOPE,CLEAN_CFG,summary_provider(self.chat()),lambda:True,metrics,self.var));await self.drain()
         self.assertEqual(len(self.calls),1,'the batch itself still completes')
         self.assertEqual(self.db.execute('SELECT reason FROM memory_hold_rounds WHERE scope=? AND event=?',(SCOPE,'ghost')).fetchone()[0],'lost')
         self.assertEqual(metrics.get('summaryHoldUnrecoverable'),1)
@@ -126,7 +128,7 @@ class P0HoldMergeTests(unittest.IsolatedAsyncioTestCase):
         with state preserved, none dangles, and a migrated permit is usable."""
         for batch in range(2):
             self.rounds(start=batch*35)
-            if batch==0:self.assertTrue(self.store.reflection.maybe_start(SCOPE,CLEAN_CFG,NS(text_chat=self.chat()),lambda:True,{},self.var))
+            if batch==0:self.assertTrue(self.store.reflection.maybe_start(SCOPE,CLEAN_CFG,summary_provider(self.chat()),lambda:True,{},self.var))
             else:self.store.reflection.retry()
             await self.drain()
         checkpoints=self.db.execute('SELECT id,state,summary_id FROM memory_reconstruction_checkpoints WHERE scope=? ORDER BY id',(SCOPE,)).fetchall()
@@ -156,7 +158,7 @@ class P0HoldMergeTests(unittest.IsolatedAsyncioTestCase):
         group_a='group:111';group_b='group:222'
         a1=self.small(group_a,'群A约定周末爬山');a2=self.small(group_a,'群A的未解决话题');b1=self.small(group_b,'群B的背景')
         self.db.commit()
-        self.store.reflection.maybe_start(SCOPE,{'memorySummary':True},NS(text_chat=self.chat()),lambda:True,{},self.var);await self.drain()
+        self.store.reflection.maybe_start(SCOPE,{'memorySummary':True},summary_provider(self.chat()),lambda:True,{},self.var);await self.drain()
         self.assertEqual(self.calls,[],'two-scopes-of-smalls never merge across audiences')
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],3)
         self.assertEqual({r['id'] for r in self.store.reflection.rolling(group_a)},{a1,a2},'group A keeps its own summaries in rolling')
@@ -183,7 +185,7 @@ class P0HoldMergeTests(unittest.IsolatedAsyncioTestCase):
         self.db.commit();metrics={}
         budget=2+len(json.dumps(claims[0],ensure_ascii=False,separators=(',',':')).encode())+1
         with patch.object(material,'MAX_CLAIMS_BYTES',budget):
-            self.assertFalse(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True},NS(text_chat=self.chat()),lambda:True,metrics,self.var),'a refused conflict starts no task')
+            self.assertFalse(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True},summary_provider(self.chat()),lambda:True,metrics,self.var),'a refused conflict starts no task')
         await self.drain()
         self.assertEqual(self.calls,[],'a group whose protected claims cannot all be carried never runs')
         self.assertEqual(metrics.get('summaryProtectedConflicts'),1)
@@ -203,7 +205,7 @@ class P0HoldMergeTests(unittest.IsolatedAsyncioTestCase):
             late=[correction_claim(SCOPE,'late-%d'%i,'纠正证据%d，我们约定了后续安排'%i) for i in range(120)]
             self.db.execute('UPDATE memory_summaries SET claims=? WHERE id=?',(json.dumps(late),ids[-1]));self.db.commit()
             self.calls.append(kw);return NS(completion_text=json.dumps({'summary':'合并后的大摘要','core_note':{'text':'迟到的核心背景','summaries':ids}}))
-        self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True},NS(text_chat=chat),lambda:True,metrics,self.var));await self.drain()
+        self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True},summary_provider(chat),lambda:True,metrics,self.var));await self.drain()
         after=self.db.execute('SELECT slot,text,scopes,people,sources,updated,schema_version,claims FROM memory_core_notes WHERE slot=1').fetchone()
         self.assertEqual(before,after,'an abandoned merge commits nothing, not even the core note')
         self.assertEqual(metrics.get('summaryFailures'),1)
@@ -213,7 +215,7 @@ class P0HoldMergeTests(unittest.IsolatedAsyncioTestCase):
     async def test_cleanup_quotas_never_drop_held_evidence(self):
         self.rounds(special={0:('我们约定周末一起去平江路','好的')})
         with patch.object(material,'MAX_CLAIMS_BYTES',2):
-            self.assertTrue(self.store.reflection.maybe_start(SCOPE,CLEAN_CFG,NS(text_chat=self.chat()),lambda:True,{},self.var));await self.drain()
+            self.assertTrue(self.store.reflection.maybe_start(SCOPE,CLEAN_CFG,summary_provider(self.chat()),lambda:True,{},self.var));await self.drain()
         self.assertIsNotNone(self.db.execute('SELECT 1 FROM memory_hold_rounds WHERE scope=? AND event=?',(SCOPE,'0')).fetchone())
         for i in range(1001):self.store.reflection.record(SCOPE,PERSON,'bulk-%d'%i,'问题%d'%i,'回复%d'%i,self.now+300+i)
         self.assertIsNotNone(self.db.execute('SELECT 1 FROM memory_rounds WHERE event=?',('0',)).fetchone(),'the held round survives the 1000-row quota')

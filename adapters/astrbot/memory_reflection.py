@@ -54,6 +54,49 @@ def validate_summary_output(response):
         raise SummaryOutputTruncated('summary_output_truncated_material_retained')
 
 
+async def summary_model_output(provider,request,live,metrics,limit,on_decode=None,on_attempt=None):
+    """Retry only a complete model read and its mandatory output validation.
+
+    No product writes or transaction callbacks belong inside this boundary.
+    The hosted provider disables upstream retries; each iteration is one request.
+    """
+    from contextlib import aclosing
+    from companion_insights import decode
+    from output_clean import clean
+    async def read():
+        final=None
+        async with aclosing(provider.text_chat_stream(**request)) as responses:
+            async for response in responses:
+                if not live():return None
+                if not getattr(response,'is_chunk',False):final=response
+        if final is None:raise ValueError('incomplete_summary_stream')
+        return final
+    for attempt in range(2):
+        if not live():return None
+        metrics['summaryRequests']=metrics.get('summaryRequests',0)+1
+        if on_attempt:on_attempt()
+        try:
+            response=await asyncio.wait_for(read(),SUMMARY_REQUEST_TIMEOUT_SECONDS+5)
+            if not live():return None
+            diagnostics={}
+            data=decode(response.completion_text,diagnostics)
+            if on_decode:on_decode(data,diagnostics)
+            validate_summary_output(response)
+            from model_cache import response_shape
+            reason=response_shape(getattr(response,'raw_completion',None)).get('finishReason')
+            if reason!='stop':raise ValueError('invalid_summary_finish_reason')
+            if diagnostics.get('decode_status')!='json_object':raise ValueError('invalid_summary_json')
+            text=clean(data['summary']).strip()
+            if not text:raise ValueError('empty_summary')
+            if len(text)>limit:raise ValueError('summary_output_capacity_exceeded_material_retained')
+            return response,data,text
+        except asyncio.CancelledError:raise
+        except Exception:
+            if not live():return None
+            if attempt:raise
+            metrics['summaryImmediateRetries']=metrics.get('summaryImmediateRetries',0)+1
+
+
 def scrub(value):
     import re
     return re.sub(r'(?i)\bsk-[A-Za-z0-9_-]{12,}|Bearer\s+\S+','[凭据已移除]',value)[:800]
@@ -870,14 +913,9 @@ class Reflection:
         prompt=memory_projection(prompt)
         system=SYSTEM+' 本次补全同一原批次的摘要，完整保留original_summary中的已有信息与protected_evidence，加入缺失的真实材料。observed_requests未重复展示的text/confirmed_reply与turns内同event、sender_id的user/bot完全相同。native_reply仅为模型原稿，不代表投递。输出JSON对象：{"summary":"补全后的完整原摘要"}。'
         if not live():return False
-        metrics['summaryRequests']=metrics.get('summaryRequests',0)+1
-        response=await asyncio.wait_for(provider.text_chat(prompt=model_json(prompt),system_prompt=system,contexts=[],func_tool=None,request_max_retries=0,**({'image_urls':summary_images} if summary_images else {})),SUMMARY_REQUEST_TIMEOUT_SECONDS+5)
-        if not live():return False
-        validate_summary_output(response)
-        from companion_insights import decode
-        from output_clean import clean
-        data=decode(response.completion_text);text=clean(data['summary']).strip()
-        if not text or len(text)>(1500 if summary[4]=='big' else 800):raise ValueError('invalid_recovered_summary')
+        result=await summary_model_output(provider,dict(prompt=model_json(prompt),system_prompt=system,contexts=[],func_tool=None,request_max_retries=0,**({'image_urls':summary_images} if summary_images else {})),live,metrics,1500 if summary[4]=='big' else 800)
+        if result is None:return False
+        response,data,text=result
         new_claims=derive_claims(scope,payload,materials,batch_corrections(self.db,scope,[r[2] for r in rows]),data)
         claims,dropped=fit_claims(prior+new_claims)
         if dropped or any(c['id'] not in {x['id'] for x in claims} for c in prior) or uncarried_events(new_claims,{c['id'] for c in claims}):raise ValueError('recovery_claims_uncovered')
@@ -974,7 +1012,7 @@ class Reflection:
     def retry(self,_inline=False,_manual=None):
         if not self.binding:return False
         cfg,provider,is_current,metrics,event_var=self.binding
-        if self.closed or cfg.get('memory') is False or not cfg.get('memorySummary') or not callable(getattr(provider,'text_chat',None)) or not is_current() or not _inline and self.task and not self.task.done():return False
+        if self.closed or cfg.get('memory') is False or not cfg.get('memorySummary') or not callable(getattr(provider,'text_chat_stream',None)) or not is_current() or not _inline and self.task and not self.task.done():return False
         # Resume already committed replacements without another model call,
         # a new round or a separate compression cycle.
         now=time.time()
@@ -1196,23 +1234,21 @@ class Reflection:
                         from semantic_collection import unavailable_stamp
                         discard_stamp=unavailable_stamp(self.db,discarded,scope=scope)
                     self.db.commit()
-                    metrics['summaryRequests']=metrics.get('summaryRequests',0)+1
                     from memory_operation_audit import Audit
-                    operation_audit=Audit(merge_scope or scope,epoch,job,{},decode_status='not_received',through_round_id=rows[-1][0] if rows else None)
-                    self._active_summary['operation_audit']=operation_audit
+                    def starting():
+                        nonlocal operation_audit
+                        operation_audit=Audit(merge_scope or scope,epoch,job,{},decode_status='not_received',through_round_id=rows[-1][0] if rows else None)
+                        if self._active_summary:self._active_summary['operation_audit']=operation_audit
                     from memory_model_view import memory_json
-                    response=await asyncio.wait_for(provider.text_chat(prompt=memory_json(prompt),system_prompt=system,contexts=[],func_tool=None,request_max_retries=0,**({'image_urls':summary_images} if summary_images else {})),SUMMARY_REQUEST_TIMEOUT_SECONDS+5)
-                    from companion_insights import decode,apply
-                    decode_diagnostics={}
-                    data=decode(response.completion_text,decode_diagnostics)
-                    operation_audit=Audit(merge_scope or scope,epoch,job,data,{str(r['sender_id']) for r in author_payload},through_round_id=rows[-1][0] if rows else None,**decode_diagnostics)
-                    if self._active_summary:self._active_summary['operation_audit']=operation_audit
-                    if self.closed or not is_current() or self.epoch()!=epoch:return {'ok':False,'reason':'stale_configuration'}
-                    validate_summary_output(response)
-                    from output_clean import clean
-                    text=clean(data['summary']).strip()
-                    if not text:raise ValueError('empty_summary')
-                    if len(text)>(1500 if job=='big' else 800):raise ValueError('summary_output_capacity_exceeded_material_retained')
+                    def decoded(data,diagnostics):
+                        nonlocal operation_audit
+                        operation_audit=Audit(merge_scope or scope,epoch,job,data,{str(r['sender_id']) for r in author_payload},through_round_id=rows[-1][0] if rows else None,**diagnostics)
+                        if self._active_summary:self._active_summary['operation_audit']=operation_audit
+                    live=lambda:not self.closed and is_current() and self.epoch()==epoch
+                    result=await summary_model_output(provider,dict(prompt=memory_json(prompt),system_prompt=system,contexts=[],func_tool=None,request_max_retries=0,**({'image_urls':summary_images} if summary_images else {})),live,metrics,1500 if job=='big' else 800,decoded,starting)
+                    if result is None:return {'ok':False,'reason':'stale_configuration'}
+                    response,data,text=result
+                    from companion_insights import apply
                     available_before={r[0] for r in self.db.execute("SELECT id FROM memory_reconstruction_checkpoints WHERE state='available'")}
                     with self.db:
                         self.db.execute('BEGIN IMMEDIATE')

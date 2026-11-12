@@ -7,6 +7,7 @@ from behavior import BehaviorStore
 from context_protocol import event_message,model_json
 import journal_storage,semantic_collection,summary_material
 from semantic_batch import event_key
+from summary_stream_fixture import summary_provider
 
 
 class CollectionTests(unittest.TestCase):
@@ -34,6 +35,42 @@ class CollectionTests(unittest.TestCase):
         self.db.execute('INSERT INTO memory_checkpoint_archives VALUES(?,?,?,?)',(key,2,payload,hashlib.sha256(payload.encode()).hexdigest()))
         return payload
     def collect(self,payload=None):return semantic_collection.collect(self.db,'bot_shared',100,payload or [])
+    def test_credential_redacted_store_and_original_journal_collect_same_material(self):
+        secret='sk-abcdefghijklmnop'
+        reply='reply Bearer fixture_token'
+        messages=[self.message(body='input '+secret),
+            {'role':'assistant','content':None,'tool_calls':[{'id':'c','type':'function','function':{'name':'read','arguments':json.dumps({'key':secret})}}]},
+            {'role':'tool','tool_call_id':'c','content':'result '+secret},
+            {'role':'assistant','content':reply}]
+        item=summary_material.snapshots(messages,'bot_shared',db=self.db)[0]
+        item['reply']=reply;before=copy.deepcopy(item)
+        self.db.execute('INSERT INTO memory_pending VALUES(?,?,?,?,?,?)',('bot_shared',item['subject'],item['event'],'display',reply,50))
+        self.archive(messages,'bot_shared')
+        # The first collection must survive remember's sanitizing insert;
+        # repeating it then joins the saved sanitized capture with raw wire.
+        rows=self.collect();self.assertEqual(len(rows),1)
+        self.assertEqual(self.collect(),rows)
+        saved=json.loads(self.db.execute('SELECT material FROM memory_round_material').fetchone()[0])
+        self.assertEqual(saved,summary_material.material_storage_view(item))
+        self.assertNotIn(secret,model_json(saved));self.assertNotIn('fixture_token',model_json(saved))
+        self.assertEqual(rows[0]['user'],saved['text']);self.assertEqual(rows[0]['bot'],saved['reply'])
+        self.assertEqual(item,before);self.assertEqual(saved['digest'],before['digest'])
+        # The collector itself never retires evidence or mints rounds.
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone(),(0,))
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_checkpoint_archives').fetchone(),(1,))
+
+    def test_storage_normalization_does_not_hide_real_capture_conflicts(self):
+        item=summary_material.snapshots([self.message(),{'role':'assistant','content':'original reply'}],'bot_shared',db=self.db)[0]
+        item['reply']='confirmed reply'
+        item['tools']=[{'id':'c','name':'read','arguments':'{}','result':'original result'}]
+        for field in ('text','reply','tools'):
+            with self.subTest(field=field):
+                changed=copy.deepcopy(item)
+                if field=='tools':changed[field][0]['result']='different result'
+                else:changed[field]+=' different'
+                captures=[summary_material.material_storage_view(m) for m in (item,changed)]
+                with self.assertRaisesRegex(ValueError,'semantic_collection_.*conflict'):semantic_collection._select(captures)
+
     def test_service_feedback_without_subject_does_not_invent_a_second_sender(self):
         message=event_message({'scope':self.channel,'sender_id':'87654321','event_id':'service','at':50,
                                'kind':'platform_service_not_user'},'trusted service input')
@@ -208,7 +245,7 @@ class SharedSummaryIntegration(unittest.IsolatedAsyncioTestCase):
             if mutate:
                 self.db.execute("UPDATE memory_summaries SET text=text||'并发修订' WHERE scope='group:55555'");self.db.commit()
             return NS(completion_text=model_json({'summary':'新的有损共享摘要'}))
-        self.reflection.binding=({'memory':True,'memorySummary':True,'naturalConversation':False},NS(text_chat=chat),lambda:True,self.metrics,contextvars.ContextVar('shared_collection',default=None))
+        self.reflection.binding=({'memory':True,'memorySummary':True,'naturalConversation':False},summary_provider(chat),lambda:True,self.metrics,contextvars.ContextVar('shared_collection',default=None))
         self.assertTrue(self.reflection.retry());await self.reflection.task
     async def test_same_call_consumes_legacy_product_relinks_checkpoint_and_keeps_35_rounds(self):
         old=self.populate();await self.run_summary();self.assertEqual(len(self.calls),1)

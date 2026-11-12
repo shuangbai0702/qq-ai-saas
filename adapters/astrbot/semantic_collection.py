@@ -6,7 +6,7 @@ pending/material rows are inputs, never new rounds or permission assertions.
 import copy,hashlib,json,math,re
 from context_protocol import model_json,source
 from semantic_batch import event_key,origin,discard_failed_service_inputs
-from summary_material import snapshots,valid_material,remember
+from summary_material import snapshots,valid_material,remember,material_storage_view
 
 # Disposable observations can outlive their old pending row. They are still
 # real batch input, rather than a second memory authority or a new round.
@@ -261,7 +261,10 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False):
         o=source({'role':'user','content':item['text']})
         register(pair,item['subject'],o.get('at'))
         if _time(upper_bound):candidates[pair]['bounds'].add(upper_bound)
-        mapped=copy.deepcopy(item);mapped.update(scope='bot_shared',event=model_json(list(pair)))
+        # Journals retain the original wire while saved captures have already
+        # crossed the credential-removal boundary. Compare and offer the same
+        # representation that remember persists, keeping immutable digests.
+        mapped=material_storage_view(item);mapped.update(scope='bot_shared',event=model_json(list(pair)))
         materials.setdefault(pair,[]).append(mapped)
     def saved_materials():
         for logical,event,raw in db.execute('SELECT scope,event,material FROM memory_round_material'):
@@ -371,7 +374,7 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False):
             if not discard_unavailable:raise
             offer_unavailable(pair,captures,'conflicting_originals');continue
         if meta['people']!={item['subject']}:raise ValueError('semantic_collection_sender_conflict')
-        replies=anchors.get(pair,set())
+        replies={material_storage_view({'reply':reply})['reply'] for reply in anchors.get(pair,set())}
         if len(replies)>1:
             if not discard_unavailable:raise ValueError('semantic_collection_reply_conflict')
             offer_unavailable(pair,captures,'conflicting_originals');continue

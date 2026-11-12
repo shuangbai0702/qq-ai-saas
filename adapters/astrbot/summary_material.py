@@ -234,20 +234,30 @@ def coverage_eligible(item,scope):
     return True
 
 
+def material_storage_view(material):
+    """Detached, idempotent credential-safe representation of material fields.
+
+    Original input digests and media/provenance stay unchanged: this is the
+    existing storage boundary, not a new identity or coverage assertion.
+    """
+    item=json.loads(json.dumps(material,ensure_ascii=False))
+    redact=lambda value:re.sub(r'(?i)\bsk-[A-Za-z0-9_-]{12,}|Bearer\s+\S+','[凭据已移除]',value)
+    for field in ('text','reply','native_reply'):
+        if isinstance(item.get(field),str):item[field]=redact(item[field])
+    if isinstance(item.get('tools'),list):
+        item['tools']=[{**tool,'arguments':redact(tool['arguments']),'result':redact(tool['result'])} for tool in item['tools']]
+    for output in item.get('native_outputs',[]):
+        output['text']=redact(output['text'])
+    return item
+
+
 def remember(db,scope,materials):
     used=db.execute('SELECT COALESCE(sum(length(CAST(material AS BLOB))),0) FROM memory_round_material').fetchone()[0]
     for item in materials or []:
         if not valid_material(item,scope):continue
-        item=json.loads(json.dumps(item,ensure_ascii=False))
         # Apply the same storage boundary before both insert and v3 refresh.
         # Refresh returns early below; it must not bypass credential removal.
-        redact=lambda value:re.sub(r'(?i)\bsk-[A-Za-z0-9_-]{12,}|Bearer\s+\S+','[凭据已移除]',value)
-        for field in ('text','reply','native_reply'):
-            if isinstance(item.get(field),str):item[field]=redact(item[field])
-        if isinstance(item.get('tools'),list):
-            item['tools']=[{**tool,'arguments':redact(tool['arguments']),'result':redact(tool['result'])} for tool in item['tools']]
-        for output in item.get('native_outputs',[]):
-            output['text']=redact(output['text'])
+        item=material_storage_view(item)
         row=db.execute('SELECT subject FROM memory_rounds WHERE scope=? AND event=?',(scope,item.get('event'))).fetchone()
         if not row and scope=='bot_shared':
             # An observed silent/background message needs retirement evidence
