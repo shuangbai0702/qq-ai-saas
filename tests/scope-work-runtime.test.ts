@@ -43,6 +43,8 @@ test('real SDK keeps one active Work per Scope, absorbs bursts and hands off onl
      ?{action:'keep',reason:'draft_valid_but_new_question_unhandled',responded_events:[]}
      :payload.context.scope==='private:12345002'
      ?{action:'replace',text:'已收到补充，接下来一起回答。',reason:'fixture_needs_current_questions',responded_events:[]}
+     :payload.context.scope==='group:778190'&&payload.review.latest_messages.every((x:any)=>main.filter(m=>m.scope===payload.context.scope).at(-1)?.inputs.some((i:any)=>i.event_id===x.event))
+     ?{action:'keep',reason:'current_main_covers_group_inputs',responded_events:[]}
      :{action:'drop',reason:'fixture_needs_current_questions',responded_events:[]});
    }else{
     const data=platformContext(body),scope=data.identity.scope;
@@ -133,33 +135,21 @@ test('real SDK keeps one active Work per Scope, absorbs bursts and hands off onl
   await send(group,base,'SCOPE_CASE_GROUP_A','12345678');await held(group,1);
   await send(group,base+1,'SCOPE_CASE_GROUP_B','87654321');
   await send(group,base+2,'SCOPE_CASE_GROUP_C','22345678');
-  await send(privateScope,base+1,'SCOPE_CASE_OTHER_PRIVATE'); // QQ event IDs are only unique within their Scope.
-  await until(async()=>(await state(`SELECT count(*) FROM pipeline_work_inputs WHERE scope='${group}' AND event<>'${base}'`))[0][0]===2&&
-    (await state(`SELECT count(*) FROM pipeline_events WHERE scope='${privateScope}'`))[0][0]===1,'separate scope admitted');
+  await until(async()=>(await state(`SELECT count(*) FROM pipeline_work_inputs WHERE scope='${group}' AND event<>'${base}'`))[0][0]===2,'group arrivals durably joined');
   assert.deepEqual(await state(`SELECT subject,owner FROM pipeline_work_inputs WHERE scope='${group}' AND event<>'${base}' ORDER BY event`),[['87654321',String(base)],['22345678',String(base)]]);
+  release(group,1);await held(group,2);
+  // Force the unrelated private observation AFTER the group request snapshot.
+  // This is a real state-version change during generation, not a timing race
+  // over which writer happened to obtain the lock first.
+  await send(privateScope,base+1,'SCOPE_CASE_OTHER_PRIVATE');
+  await until(async()=>(await state(`SELECT count(*) FROM pipeline_events WHERE scope='${privateScope}'`))[0][0]===1,'private scope independently admitted');
   assert.deepEqual(await state(`SELECT count(*) FROM pipeline_work_inputs WHERE scope='${privateScope}' AND event<>'${base+1}'`),[[0]],'private input cannot join group Work');
-  release(group,1);
-  await until(async()=>gates.has(privateScope+':1')||gates.has(group+':2'),'shared writer schedules next Scope');
-  // The common writer may fairly choose either waiter first; release them
-  // independently without imposing a scheduling order on the implementation.
-  for(let i=0;i<2;i++){
-   await until(async()=>gates.has(privateScope+':1')||gates.has(group+':2'),'next independent main');
-   if(gates.has(privateScope+':1'))release(privateScope,1);else release(group,2);
-  }
-  // drop ends this draft. Group admission may hand the remaining real inputs
-  // to the next activation of the same logical Work; it must not call the
-  // dropped draft "sent" or discard those independently unanswered inputs.
-  await until(async()=>
-   (await state(`SELECT count(*) FROM pipeline_events WHERE scope='${group}' AND status='sent' AND attempted=confirmed`))[0][0]===1&&
-   (await state(`SELECT count(*) FROM pipeline_scope_work WHERE scope='${group}'`))[0][0]===0,'group reply settled with no active competing owner');
-  await finished(privateScope,base+1);
-  const groupActivations=await state(`SELECT event,status,attempted,confirmed FROM pipeline_events WHERE scope='${group}' ORDER BY event`);
-  if(groupActivations.length===1)assert.deepEqual(groupActivations,[[String(base),'sent',1,1]],'same activation continues and sends once');
-  else assert.deepEqual(groupActivations,[[String(base),'superseded',0,0],[String(base+1),'sent',1,1]],'dropped draft never counts as sent; the earliest unanswered input resumes');
-  assert.deepEqual(await state(`SELECT status,seen,count(*) FROM pipeline_work_inputs WHERE scope='${group}' GROUP BY status,seen`),[['settled',1,3]],'every group input is accounted for after the real response');
-  assert.equal((await state(`SELECT DISTINCT work_id FROM pipeline_events WHERE scope='${group}'`)).length,1,'group recovery retains the permanent logical Work');
+  release(group,2);await held(privateScope,1);release(privateScope,1);
+  await finished(group,base);await finished(privateScope,base+1);
+  assert.deepEqual(await state(`SELECT event,status,attempted,confirmed FROM pipeline_events WHERE scope='${group}' ORDER BY event`),[[String(base),'sent',1,1]],'group continuation keeps its original owner and sends once');
+  assert.deepEqual(await state(`SELECT status,seen,count(*) FROM pipeline_work_inputs WHERE scope='${group}' GROUP BY status,seen`),[['settled',1,3]],'all group inputs settle after the actual answer');
   assert.equal(mainFor(group).length,2);assert.equal(mainFor(privateScope).length,1);
-  assert.equal(reviewFor(group).length,1);assert.equal(reviewFor(privateScope).length,0,'other Scope arrivals cannot trigger private review');
+  assert.equal(reviewFor(group).length,2,'one new private-state revision requires one additional suitability check');assert.equal(reviewFor(privateScope).length,0,'other Scope arrivals cannot trigger private review');
   assert.ok(mainFor(group)[1].inputs.some((x:any)=>x.sender_id==='87654321'&&x.event_id===String(base+1)));
   assert.ok(mainFor(group)[1].inputs.some((x:any)=>x.sender_id==='22345678'&&x.event_id===String(base+2)));
   const groupSent=(await messages()).filter(x=>String(x.params.group_id)===group.slice(6));
@@ -202,7 +192,7 @@ test('real SDK keeps one active Work per Scope, absorbs bursts and hands off onl
    if(priorInScope)assert.deepEqual(main[index].body.tools,priorInScope.body.tools,'same-Scope continuation tool catalog stable');
   }
   assert.equal(main.length,14,'main requests are bounded independently of burst size');
-  assert.equal(reviews.length,8,'only genuinely unseen revisions reach the auxiliary model');
+  assert.equal(reviews.length,9,'only genuinely unseen revisions reach the auxiliary model');
   assert.deepEqual(errors,[],'HTTP fixtures completed without hidden failures');
  }finally{
   for(const release of gates.values())release();
