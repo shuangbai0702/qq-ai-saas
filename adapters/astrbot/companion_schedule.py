@@ -6,7 +6,7 @@ import companion_state
 import autonomy
 from context_protocol import model_json
 from context_transport import decision_request
-from bot_pipeline import decision_memory,decision_version
+from bot_pipeline import decision_memory
 from model_cache import usage_evidence
 from datetime import datetime,timezone,timedelta
 
@@ -85,14 +85,12 @@ class Planner:
                         self.db.execute('INSERT INTO companion_plan_budget VALUES(?,1) ON CONFLICT(day) DO UPDATE SET count=count+1',(day,));self.db.execute('DELETE FROM companion_plan_budget WHERE day<?',(day-7,))
                         if group_version is not None:self.db.execute('INSERT INTO autonomy_groups(scope,checked) VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET checked=excluded.checked',(scope,now))
                     metrics['planRequests']=metrics.get('planRequests',0)+1
-                    memory_version=decision_version(self.db,scope)
                     recent=[{'sender_id':r[0],'text':r[1][:180],'at':r[2],'source_event':r[3],'source_scope':scope} for r in self.db.execute('SELECT subject,question,at,event FROM memory_pending WHERE scope=? ORDER BY at DESC LIMIT 8',(scope,))] if b.get('memory',True) else []
                     result=await asyncio.wait_for(provider.text_chat(**decision_request({'persona':str(cfg.get('systemPrompt') or ''),'owner_id':str(b.get('ownerUin') or ''),'scope':scope,'memory':decision_memory(self.db,cfg,scope,subject,now,subjects=[m['subject'] for m in members]),'companion':companion_state.context(self.db,cfg,scope,now),'current_time':datetime.fromtimestamp(now,timezone(timedelta(hours=8))).isoformat(),'last_user_text':candidate[4],'last_bot_text':candidate[5],'last_user_at':candidate[1],'last_bot_at':candidate[2] or None,'idle_seconds':max(0,int(now-anchor)),'recent_received':recent,'cooldown_base_seconds':autonomy.cooldown_base(cfg,scope,'plan'),'unanswered':candidate[6],'contact_subject':subject,'eligible_members':members},SYSTEM+autonomy.COOLDOWN_SYSTEM+' 群聊可额外输出contact_subject，从eligible_members的真实subject中选择最适合延续兴趣或未完话题的人；不能选择列表外的人。无需为了联系而强造话题，联系理由不成立就contact=false。',reference_first=True),func_tool=None),15)
                     if self.closed or not current():discarded('runtime_replaced');return
                     metrics['lastPlanUsage']={'at':time.time(),**usage_evidence(result)}
                     reason=stale_reason(time.time(),started=True)
                     if reason:discarded(reason);return
-                    if decision_version(self.db,scope)!=memory_version:discarded('decision_state_changed');return
                     raw=result.completion_text.strip()
                     if raw.startswith('```'):raw=raw.split('\n',1)[1].rsplit('```',1)[0]
                     data=json.loads(raw)
@@ -157,7 +155,6 @@ class Planner:
                     metrics['ownerDecisionRequests']=metrics.get('ownerDecisionRequests',0)+1
                     from memory_scope import pending_messages
                     memory=decision_memory(self.db,cfg,scope,owner,now,recent=False)
-                    memory_version=decision_version(self.db,scope)
                     if b.get('memory',True):
                         # This judgment has no native chat contexts. Keep a separate
                         # bounded private window so a busy group cannot displace it.
@@ -170,8 +167,6 @@ class Planner:
                     result=await asyncio.wait_for(provider.text_chat(**decision_request({'owner_id':owner,'persona':str(cfg.get('systemPrompt') or ''),'scope':scope,'companion':companion_state.context(self.db,cfg,scope,now),'owner_memory':memory,'conversation_timing':timing,'cooldown_base_seconds':autonomy.cooldown_base(cfg,scope,'owner'),'last_user_text':contact[7][:500],'last_bot_text':contact[8][:500],'current_time':datetime.fromtimestamp(now,timezone(timedelta(hours=8))).isoformat()},autonomy.OWNER_SYSTEM+autonomy.COOLDOWN_SYSTEM,reference_first=True),func_tool=None,max_tokens=autonomy.OWNER_DECISION_OUTPUT_TOKENS,request_max_retries=1),60)
                     if self.closed or not current():discarded('runtime_replaced');return
                     metrics['lastOwnerUsage']={'at':time.time(),**usage_evidence(result)}
-                    if decision_version(self.db,scope)!=memory_version:
-                        discarded('decision_state_changed');result_record('decision_state_changed');return
                     latest=autonomy.owner_state(self.db,cfg,time.time())
                     if not latest or latest[0]!=owner or latest[2][2:5]!=contact[2:5] or paused(self.db,scope,time.time()) or quiet(cfg,time.time()):
                         metrics['lastOwnerDecision']={'at':now,'contact':False,'reason':'conversation_changed'}

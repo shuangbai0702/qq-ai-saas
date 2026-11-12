@@ -102,6 +102,24 @@ class AutonomyTest(unittest.IsolatedAsyncioTestCase):
     async def test_groups_have_separate_windows(self):
         await self.judge();autonomy.note_interaction(self.db,self.cfg,'group:12345','22222222',self.now+10)
         self.assertTrue((await self.judge(scope='group:67890',event='two',now=self.now+11))[0].reply)
+    async def test_foreign_memory_change_does_not_veto_group_decision(self):
+        self.provider.entered=asyncio.Event();self.provider.release=asyncio.Event()
+        task=asyncio.create_task(self.judge());await asyncio.wait_for(self.provider.entered.wait(),2)
+        self.store.memory.remember('private:33333333','33333333','地点','广州','foreign',self.now+1)
+        self.store.memory.correct('private:33333333','33333333','地点','广州','深圳','foreign-correction','本人明确纠正',self.now+2)
+        self.provider.release.set();decision=(await task)[0]
+        self.assertTrue(decision.reply);self.assertEqual(decision.source,'ai')
+        self.assertEqual(len(self.provider.calls),1)
+    async def test_foreign_memory_change_does_not_veto_owner_decision(self):
+        self.contact();self.provider.answer={'contact':True,'topic':'接着聊共同兴趣'}
+        self.provider.entered=asyncio.Event();self.provider.release=asyncio.Event();at=self.now+3600
+        self.store.planner.maybe_start(self.cfg,self.provider,lambda:True,self.event,self.metrics,now=at)
+        await asyncio.wait_for(self.provider.entered.wait(),2)
+        self.store.memory.remember('group:67890','33333333','地点','广州','foreign',at+1)
+        self.store.memory.correct('group:67890','33333333','地点','广州','深圳','foreign-correction','本人明确纠正',at+2)
+        self.provider.release.set();await self.store.planner.task
+        self.assertTrue(autonomy.owner_delivery_candidate(self.db,self.cfg,at))
+        self.assertEqual(len(self.provider.calls),1)
     async def test_empty_and_outside_whitelist_never_call_model(self):
         self.assertIsNone(await self.judge(scope='group:99999'))
         self.cfg['behavior']['groupParticipationGroups']=[];self.assertIsNone(await self.judge());self.assertEqual(self.provider.calls,[])
