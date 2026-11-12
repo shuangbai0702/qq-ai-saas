@@ -69,5 +69,28 @@ class BridgeContract(unittest.TestCase):
         redirect=next(x for x in captured if isinstance(x,mod.urllib.request.HTTPRedirectHandler))
         self.assertIsNone(redirect.redirect_request(None,None,302,'redirect',{},'http://127.0.0.1:8787/v1/health'))
 
+    def test_trial_requires_explicit_mode_and_configuration(self):
+        config=self.config()
+        self.assertEqual(mod.upstream_port(config),48880)
+        config['mode']='local-api-trial'
+        with self.assertRaises(ValueError):mod.validate(config)
+        config['preflightConfig']=str(pathlib.Path.cwd()/'private-config.json')
+        mod.validate(config);self.assertEqual(mod.upstream_port(config),8787)
+        config['mode']='fallback-to-anything'
+        with self.assertRaises(ValueError):mod.validate(config)
+
+    def test_trial_refuses_business_authority(self):
+        import tempfile,json
+        with tempfile.TemporaryDirectory() as tmp:
+            root=pathlib.Path(tmp);(root/'supervisor.json').write_text(json.dumps({'preflight':True}))
+            authority=root/'owner';authority.write_text('enabled')
+            conf=root/'config.json';conf.write_text(json.dumps({'stateRoot':str(root),'executionAuthority':str(authority)}))
+            config=self.config();config.update(mode='local-api-trial',preflightConfig=str(conf))
+            with patch.object(mod.urllib.request,'build_opener') as build:
+                self.assertFalse(mod.origin_healthy(config));build.assert_not_called()
+            authority.unlink();(root/'supervisor.json').write_text(json.dumps({'preflight':False}))
+            with patch.object(mod.urllib.request,'build_opener') as build:
+                self.assertFalse(mod.origin_healthy(config));build.assert_not_called()
+
 
 if __name__=='__main__':unittest.main()

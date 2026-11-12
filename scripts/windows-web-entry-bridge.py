@@ -33,6 +33,10 @@ def validate(config):
         raise ValueError('invalid DNS TLS bridge port')
     if not re.fullmatch('[a-z0-9.-]+', config['httpHost']):
         raise ValueError('invalid HTTP host')
+    if config.get('mode', 'encrypted-origin') not in ('encrypted-origin', 'local-api-trial'):
+        raise ValueError('invalid website mode')
+    if config.get('mode') == 'local-api-trial' and not Path(config.get('preflightConfig', '')).is_absolute():
+        raise ValueError('explicit preflight configuration required')
     for key in ('sourceRoot', 'stateRoot', 'ssh', 'privateKey', 'knownHosts', 'cloudflared', 'dnsConfig'):
         if not Path(config[key]).is_absolute():
             raise ValueError('absolute paths required')
@@ -69,19 +73,28 @@ def publish_via_tls_bridge(port, domain, token, url):
         connection.close()
 
 
+def upstream_port(config):
+    # Trial mode is explicit: it must never be an implicit failure fallback.
+    return 8787 if config.get('mode') == 'local-api-trial' else config['localPort']
+
+
 def origin_healthy(config):
-    # Never use the separate predeployment API's /v1/health as evidence.
-    req = urllib.request.Request('http://127.0.0.1:'+str(config['localPort'])+'/v1/health',
+    req = urllib.request.Request('http://127.0.0.1:'+str(upstream_port(config))+'/v1/health',
                                  headers={'Host': config['httpHost']})
     try:
+        if config.get('mode') == 'local-api-trial':
+            preflight = json.loads(Path(config['preflightConfig']).read_text(encoding='utf-8-sig'))
+            state = json.loads((Path(preflight['stateRoot'])/'supervisor.json').read_text())
+            if Path(preflight['executionAuthority']).exists() or state.get('preflight') is not True:
+                return False
         class NoRedirect(urllib.request.HTTPRedirectHandler):
             def redirect_request(self, req, fp, code, msg, headers, newurl):
                 return None
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
         with opener.open(req, timeout=3) as response:
             value = json.loads(response.read(8193))
-            return response.status == 200 and value.get('ok') is True and value.get('publicOrigin') == 'https://'+config['httpHost']
-    except (OSError, ValueError, AttributeError):
+            return response.status == 200 and value.get('ok') is True and value.get('publicOrigin') == 'https://'+config['httpHost'] and (config.get('mode') != 'local-api-trial' or value.get('agent') is False)
+    except (OSError, ValueError, AttributeError, KeyError):
         return False
 
 
@@ -100,7 +113,7 @@ def run(config):
         job = supervisor.WindowsJob(); job.assign()
         ssh = supervisor.Service('web-ssh', ssh_command(config), source, dict(os.environ), state, state, 2)
         tunnel = supervisor.Service('web-tunnel', [config['cloudflared'], 'tunnel', '--url',
-            'http://127.0.0.1:'+str(config['localPort']), '--http-host-header', config['httpHost'], '--no-autoupdate'],
+            'http://127.0.0.1:'+str(upstream_port(config)), '--http-host-header', config['httpHost'], '--no-autoupdate'],
             source, dict(os.environ), state, state, 3)
         last_sync = 0
         supervisor.atomic(state/'bridge.json', {'pid': os.getpid(), 'created': supervisor.psutil.Process().create_time(), 'websiteOnly': True})
