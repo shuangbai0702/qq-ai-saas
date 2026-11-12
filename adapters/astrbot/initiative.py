@@ -273,11 +273,21 @@ async def resume_scope_input(core,id,lease,store,settings):
         if message is None or settings.get(id) is not lease:raise RuntimeError('scope_resume_stale')
         # The SDK conversion stamps replay time. Reuse the first trusted
         # observation instead; redelivery must not change protocol identity.
-        if observed_at is None:
-            from context_protocol import source
-            previous=store.db.execute('SELECT message FROM fishbot_shared_inputs WHERE scope=? AND event=?',(scope,event_id)).fetchone()
-            origin=source(json.loads(previous[0])) if previous else None
-            observed_at=origin.get('at') if origin else None
+        from context_protocol import source
+        shared_queue=store.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fishbot_shared_inputs'").fetchone()
+        previous=store.db.execute('SELECT message FROM fishbot_shared_inputs WHERE scope=? AND event=?',(scope,event_id)).fetchone() if shared_queue else None
+        origin=source(json.loads(previous[0])) if previous else None
+        if origin is None:
+            journal=getattr(store,'model_journals',{}).get('bot_shared')
+            origin=next((o for m in (journal.last.base if journal and journal.last else [])
+                         if (o:=source(m)) and o['scope']==scope and str(o['event_id'])==event_id),None)
+        # Raw retention precedes SDK conversion. Its fractional observation
+        # clock is not necessarily the SDK timestamp already bound into the
+        # canonical input. Replay that existing timestamp, never rewrite it.
+        if origin is not None:
+            if origin['scope']!=scope or str(origin['event_id'])!=event_id or str(origin['sender_id'])!=str(raw.get('user_id')):
+                raise ValueError('scope_resume_original_author_changed')
+            observed_at=origin.get('at')
         if not isinstance(observed_at,(int,float)) or observed_at<=0:
             with store.db:store.db.execute("UPDATE pipeline_work_inputs SET status='blocked_evidence' WHERE scope=? AND event=?",(scope,event_id))
             raise ValueError('scope_resume_original_time_missing')

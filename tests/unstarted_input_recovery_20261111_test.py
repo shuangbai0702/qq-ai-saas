@@ -32,6 +32,44 @@ class Recovery(unittest.IsolatedAsyncioTestCase):
     async def resume(self,lease=None):
         value=lease or self.lease
         return await initiative.resume_scope_input(self.core,'qq',value,self.store,{'qq':value})
+    async def test_raw_retention_clock_does_not_replace_bound_sdk_time_on_recovery(self):
+        from context_protocol import event_message,model_json
+        import shared_context
+        shared_context.initialize(self.db)
+        for location in ('queue','journal'):
+            with self.subTest(location=location):
+                self.db.execute('DELETE FROM pipeline_work_inputs')
+                self.db.execute('DELETE FROM fishbot_shared_inputs')
+                e=event(at=time.time());self.assertTrue(self.p.persist_input(e,self.lease))
+                canonical_time=int(e.message_obj.timestamp)
+                canonical=event_message({'scope':'private:12345','event_id':'101','sender_id':'12345','at':canonical_time},'hello')
+                self.store.model_journals={}
+                if location=='queue':
+                    self.db.execute('INSERT INTO fishbot_shared_inputs(scope,event,message,created) VALUES(?,?,?,?)',('private:12345','101',model_json(canonical),time.time()))
+                else:self.store.model_journals={'bot_shared':NS(last=NS(base=[canonical]))}
+                self.db.commit();before=model_json(canonical);delivered=[]
+                async def convert(raw):return NS(message_id='101',timestamp=time.time()+20,raw_message=raw)
+                platform=NS(meta=lambda:NS(id='qq'),convert_message=convert,create_event=lambda m:m,commit_event=delivered.append)
+                self.core.platform_manager.get_insts=lambda:[platform]
+                with patch.dict(sys.modules,{'aiocqhttp':NS(Event=NS(from_payload=lambda raw:raw))}):
+                    self.assertTrue(await self.resume())
+                self.assertEqual(delivered[0].timestamp,canonical_time)
+                self.assertEqual(self.db.execute('SELECT observed_at FROM pipeline_work_inputs').fetchone()[0],e.message_obj.timestamp)
+                self.assertEqual(model_json(canonical),before,'recovery never rewrites committed source')
+                self.assertEqual(delivered[0].raw_message,e.message_obj.raw_message)
+
+    async def test_recovery_canonical_time_cannot_override_conflicting_author(self):
+        from context_protocol import event_message,model_json
+        import shared_context
+        shared_context.initialize(self.db);e=event();self.assertTrue(self.p.persist_input(e,self.lease))
+        wrong=event_message({'scope':'private:12345','event_id':'101','sender_id':'54321','at':int(time.time())},'hello')
+        self.db.execute('INSERT INTO fishbot_shared_inputs(scope,event,message,created) VALUES(?,?,?,?)',('private:12345','101',model_json(wrong),time.time()));self.db.commit()
+        delivered=[]
+        async def convert(raw):return NS(message_id='101',timestamp=time.time(),raw_message=raw)
+        self.core.platform_manager.get_insts=lambda:[NS(meta=lambda:NS(id='qq'),convert_message=convert,create_event=lambda m:m,commit_event=delivered.append)]
+        with patch.dict(sys.modules,{'aiocqhttp':NS(Event=NS(from_payload=lambda raw:raw))}):
+            with self.assertRaisesRegex(ValueError,'original_author_changed'):await self.resume()
+        self.assertEqual(delivered,[])
     def test_cancelled_root_is_durable_and_only_unstarted_queued_root_can_reenter(self):
         e=event();work=self.p.bind(e,self.lease);work.stop('cancelled');self.p.finish(work,{})
         self.assertEqual(self.input(),'pending')
