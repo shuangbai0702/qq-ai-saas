@@ -1,3 +1,4 @@
+import {SharedAstrBotAdapter} from '../adapters/astrbot/shared.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -14,7 +15,9 @@ test('maintenance retains real child objects, PID and log pipes; reinstall is id
   const cachedPrototype=Object.create(Object.getPrototypeOf(agent));cachedPrototype.health=async()=>{throw Error('stale cached health')};Object.setPrototypeOf(agent,cachedPrototype);
   await agent.host.start('maintenance-fixture','protocol',process.execPath,[script],childRoot,process.env);
   const child=agent.host.children.get('maintenance-fixture:protocol')!;assert.ok(child.pid);const record=await agent.host.record('maintenance-fixture','protocol');assert.ok(record.created);
+  agent.shared.request=async()=>{throw Error('stale cached IPC')};
   const canonicalShutdown=agent.shutdown;const result=await installAutonomousRuntime(agent,'a'.repeat(64));
+  assert.equal(agent.shared.request,SharedAstrBotAdapter.prototype.request,'maintenance retained stale IPC');
   assert.equal(agent.shutdown,canonicalShutdown,'maintenance must retain canonical shutdown ownership');
   assert.equal(cachedPrototype.health,NodeAgent.prototype.health,'maintenance retained the old cached offline-policy closure');
   assert.equal(result.pid,process.pid);assert.equal(agent.host.children.get('maintenance-fixture:protocol'),child);assert.equal(child.exitCode,null);
