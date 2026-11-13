@@ -3,7 +3,7 @@ Inspired by LivingMemory's ten-round reflection and source/revision fencing.
 Summaries are conversation evidence, never verified profile facts or instructions.
 """
 from model_cache import auxiliary_scope,adopted,discarded as record_discarded,SUMMARY_REQUEST_TIMEOUT_SECONDS
-import asyncio,json,time,hashlib
+import asyncio,json,time,hashlib,re
 from pathlib import Path
 import message_provenance
 from context_protocol import model_json
@@ -948,13 +948,28 @@ class Reflection:
         The API authenticates the administrator. A partial checkpoint records
         that authorization separately; Coverage and audience fences still apply.
         """
-        if scope!='bot_shared':return {'started':False,'reason':'unsupported_scope'}
+        if scope!='bot_shared' and not re.fullmatch(r'(?:private:\d{5,20}|group:\d{4,20})',scope):return {'started':False,'reason':'unsupported_scope'}
         if (allow_partial or discard_unavailable) and (not isinstance(administrator,str) or not administrator.strip() or not isinstance(request_id,str) or not request_id.strip()):
             raise PermissionError('administrator_authorization_required')
         if request_id and self.db.execute('SELECT checkpoint_id FROM memory_checkpoint_admin_overrides WHERE request_id=?',(request_id,)).fetchone():
             return {'started':False,'reason':'request_already_committed'}
-        if self.task and not self.task.done():return {'started':False,'reason':'busy'}
         manual={'scope':scope,'allow_partial':allow_partial,'administrator':administrator,'request_id':request_id,'summary_done':False,'discard_unavailable':bool(discard_unavailable)}
+        if self.task and not self.task.done():
+            previous=self.task
+            async def queued():
+                try:await asyncio.shield(previous)
+                except asyncio.CancelledError:
+                    if not previous.cancelled():raise
+                except Exception:pass # The preceding native task records its own failure.
+                admission=getattr(self,'admission',None)
+                async def execute():
+                    continuation=self.retry(_inline=True,_manual=manual)
+                    return await continuation if continuation else {'ok':False,'reason':'no_eligible_material'}
+                if callable(admission):
+                    async with admission():return await execute()
+                return await execute()
+            self.task=asyncio.create_task(queued())
+            return {'started':True,'reason':'queued'}
         started=self.retry(_manual=manual)
         return {'started':bool(started),'reason':'started' if started else 'no_eligible_material'}
 
@@ -962,18 +977,17 @@ class Reflection:
         if not self.binding:return False
         cfg,provider,is_current,metrics,event_var=self.binding
         if self.closed or cfg.get('memory') is False or not cfg.get('memorySummary') or not callable(getattr(provider,'text_chat_stream',None)) or not is_current() or not _inline and self.task and not self.task.done():return False
+        admission=getattr(self,'admission',None)
         # Resume already committed replacements without another model call,
         # a new round or a separate compression cycle.
         now=time.time()
-        if callable(self.checkpoint_callback):
+        if callable(self.checkpoint_callback) and (_inline or not callable(admission)):
             for (pending_scope,) in self.db.execute("SELECT DISTINCT scope FROM memory_semantic_batches WHERE state IN ('committed','retired')").fetchall():
                 try:self.checkpoint_callback(pending_scope)
                 except Exception:metrics['checkpointCallbackFailures']=metrics.get('checkpointCallbackFailures',0)+1
         self.db.commit()
-        # The summary contract is converged to exactly 35 completed business
-        # rounds (B package): the batch window and the mint gate are one
-        # contract. A stored non-35 configuration is normalized here and
-        # counted instead of silently producing batches that can never mint.
+        # 35 is the due threshold. After accepted dialogue drains, include all
+        # completed rounds through that idle boundary (possibly 36, 37, ...).
         configured=cfg.get('summaryRounds',DEFAULT_SUMMARY_ROUNDS)
         summary_rounds=DEFAULT_SUMMARY_ROUNDS
         if configured!=DEFAULT_SUMMARY_ROUNDS:
@@ -993,11 +1007,22 @@ class Reflection:
                 if _manual is not None and (candidate!=_manual['scope'] or _manual['summary_done']):continue
                 progress=self.db.execute('SELECT summary_watermark,insight_watermark FROM memory_reflection_progress WHERE scope=?',(candidate,)).fetchone() or (0,0)
                 # Only new completed rounds earn the next checkpoint.
-                batch=self.db.execute('SELECT id,subject,event,question,answer,at FROM memory_rounds WHERE scope=? AND id>? ORDER BY id LIMIT ?',(candidate,progress[0],summary_rounds)).fetchall()
-                from activation_rounds import settled
-                if not settled(self.db,candidate,batch):continue
+                batch=self.db.execute('SELECT id,subject,event,question,answer,at FROM memory_rounds WHERE scope=? AND id>? ORDER BY id',(candidate,progress[0])).fetchall()
                 if len(batch)>=summary_rounds or (batch and _manual is not None and _manual['allow_partial']):
                     scope=candidate;job='summary';rows=batch;summary_from=progress[0];break
+        recovery=self.db.execute("""SELECT 1 FROM memory_semantic_batches b WHERE state='committed'
+          OR (state='retired' AND EXISTS (SELECT 1 FROM memory_checkpoint_issues i
+            WHERE i.checkpoint_id=b.checkpoint_id AND i.scope=b.scope AND i.status='open'
+            AND i.kind IN ('semantic_retirement','native_legacy_cleanup','native_history_cleanup'))) LIMIT 1""").fetchone()
+        if not _inline and callable(admission) and (scope or recovery):
+            async def admitted():
+                async with admission():
+                    # Re-read authority AFTER draining, not the candidate that
+                    # existed when the 35th round first made compression due.
+                    continuation=self.retry(_inline=True,_manual=_manual)
+                    return await continuation if continuation else {'ok':False,'reason':'no_eligible_material'}
+            self.task=asyncio.create_task(admitted())
+            return True
         if not scope:
             # Persist lost-state discovery even when no new batch is due;
             # leave no open write transaction for the next foreground request.
@@ -1222,7 +1247,7 @@ class Reflection:
                                 # New completed dialogue may append while the
                                 # model summarizes an authorized partial batch.
                                 # Fence the selected prefix, not the later tail.
-                                live_rows=held_now+self.db.execute('SELECT id,subject,event,question,answer,at FROM memory_rounds WHERE scope=? AND id>? AND id<=? ORDER BY id LIMIT ?',(scope,summary_from,rows[-1][0],summary_rounds)).fetchall()
+                                live_rows=held_now+self.db.execute('SELECT id,subject,event,question,answer,at FROM memory_rounds WHERE scope=? AND id>? AND id<=? ORDER BY id',(scope,summary_from,rows[-1][0])).fetchall()
                                 if progress_now[0]!=summary_from or live_rows!=rows:raise RuntimeError('summary_checkpoint_stale')
                         if job=='big':
                             ids=[r[0] for r in big_rows];marks=','.join('?' for _ in ids)
@@ -1355,7 +1380,7 @@ class Reflection:
                                 self.db.execute('DELETE FROM memory_summaries WHERE id IN ('+legacy_marks+')',legacy_product_ids)
                             new_rows=[r for r in rows if r[0]>summary_from]
                             admin_partial=bool(_manual is not None and _manual['allow_partial'] and 0<len(new_rows)<DEFAULT_SUMMARY_ROUNDS)
-                            if not (summary_rounds==DEFAULT_SUMMARY_ROUNDS and (len(new_rows)==DEFAULT_SUMMARY_ROUNDS or admin_partial)):
+                            if not (summary_rounds==DEFAULT_SUMMARY_ROUNDS and (len(new_rows)>=DEFAULT_SUMMARY_ROUNDS or admin_partial)):
                                 raise RuntimeError('semantic_batch_requires_legal_rounds')
                             from activation_rounds import valid as valid_round
                             if not all(valid_round(self.db,scope,r) for r in new_rows):

@@ -15,7 +15,7 @@ MAX_STORE_BYTES=24*1024*1024
 
 def checkpoint_round_gate(db,alias='c'):
     """Only an exact checkpoint-bound administrator grant may waive the default rounds."""
-    ordinary=f'{alias}.round_count={DEFAULT_SUMMARY_ROUNDS}'
+    ordinary=f'{alias}.round_count>={DEFAULT_SUMMARY_ROUNDS}'
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_checkpoint_admin_overrides'").fetchone():return ordinary
     return f"({ordinary} OR ({alias}.round_count BETWEEN 1 AND {DEFAULT_SUMMARY_ROUNDS-1} AND EXISTS (SELECT 1 FROM memory_checkpoint_admin_overrides a WHERE a.checkpoint_id={alias}.id AND length(trim(a.administrator))>0 AND length(trim(a.request_id))>0)))"
 

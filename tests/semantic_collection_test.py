@@ -243,8 +243,8 @@ class SharedSummaryIntegration(unittest.IsolatedAsyncioTestCase):
         self.tmp=tempfile.TemporaryDirectory();self.store=BehaviorStore(Path(self.tmp.name)/'shared.sqlite');self.db=self.store.db
         self.reflection=self.store.reflection;self.reflection.shared_context=True;self.metrics={};self.calls=[]
     def tearDown(self):self.store.close();self.tmp.cleanup()
-    def populate(self):
-        for i in range(35):
+    def populate(self,count=35):
+        for i in range(count):
             message=event_message({'scope':'private:12345678','sender_id':'12345678','event_id':str(i),'at':100+i},'本批真实正文'+str(i))
             event=model_json(['private:12345678',str(i)])
             materials=summary_material.snapshots([message,{'role':'assistant','content':'已发回复'}],'bot_shared',db=self.db)
@@ -287,6 +287,61 @@ class SharedSummaryIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(self.db.execute('SELECT 1 FROM memory_summaries WHERE id=?',(old,)).fetchone())
         self.assertIsNone(self.db.execute("SELECT 1 FROM memory_summaries WHERE scope='bot_shared'").fetchone())
         self.assertIsNone(self.db.execute('SELECT 1 FROM memory_semantic_batches').fetchone())
+
+    async def test_idle_boundary_includes_37_completed_rounds(self):
+        self.populate(37);await self.run_summary()
+        self.assertEqual(len(self.calls[0]['turns']),37)
+        self.assertEqual(self.db.execute("SELECT round_count FROM memory_reconstruction_checkpoints WHERE scope='bot_shared'").fetchone(),(37,),str(self.db.execute('SELECT kind,detail FROM memory_checkpoint_issues').fetchall()))
+
+    async def test_compression_waits_for_accepted_dialogue_then_blocks_new_execution(self):
+        import asyncio
+        st=self.store;self.populate();st.active=1
+        entered=asyncio.Event();finish=asyncio.Event();order=[]
+        async def compress():
+            async with st.compression_admission():
+                order.append('compress');entered.set();await finish.wait()
+        task=asyncio.create_task(compress());await asyncio.sleep(0)
+        self.assertFalse(entered.is_set());self.assertFalse(st.compression_active)
+        st.active=0;st.slot_changed.set();await entered.wait()
+        async def later():await st.wait_compression();order.append('later')
+        late=asyncio.create_task(later());await asyncio.sleep(0)
+        self.assertEqual(order,['compress']);finish.set();await task;await late
+        self.assertEqual(order,['compress','later']);self.assertIsNone(st.model_writer.owner)
+
+    async def test_cancelled_compression_releases_existing_writer_and_wakes_ingress(self):
+        import asyncio
+        st=self.store;entered=asyncio.Event()
+        async def compress():
+            async with st.compression_admission():entered.set();await asyncio.Event().wait()
+        task=asyncio.create_task(compress());await entered.wait();task.cancel()
+        with self.assertRaises(asyncio.CancelledError):await task
+        self.assertFalse(st.compression_active);self.assertIsNone(st.model_writer.owner)
+
+    async def test_existing_native_queue_drains_before_compression(self):
+        import asyncio
+        st=self.store;entered=asyncio.Event()
+        self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,status) VALUES('private:12345678','queued','queued')");self.db.commit()
+        async def compress():
+            async with st.compression_admission():entered.set()
+        task=asyncio.create_task(compress());await asyncio.sleep(0)
+        self.assertFalse(entered.is_set())
+        self.db.execute("UPDATE pipeline_work_inputs SET status='settled' WHERE event='queued'");self.db.commit();st.slot_changed.set()
+        await task;self.assertTrue(entered.is_set())
+
+    async def test_manual_request_queues_after_existing_native_reflection(self):
+        import asyncio
+        self.populate();gate=asyncio.Event()
+        async def preceding():await gate.wait();raise RuntimeError('preceding recorded failure')
+        self.reflection.task=asyncio.create_task(preceding())
+        self.reflection.binding=({'memory':True,'memorySummary':True,'naturalConversation':False},summary_provider(lambda **kw: None),lambda:True,self.metrics,contextvars.ContextVar('queued',default=None))
+        async def chat(**kwargs):
+            from types import SimpleNamespace as NS
+            return NS(completion_text=model_json({'summary':'正常完成'}))
+        self.reflection.binding=(self.reflection.binding[0],summary_provider(chat),*self.reflection.binding[2:])
+        result=self.reflection.force_compress_once(request_id='queued-after-native',administrator='operator',allow_partial=True)
+        self.assertEqual(result,{'started':True,'reason':'queued'})
+        queued=self.reflection.task;await asyncio.sleep(0);self.assertFalse(queued.done());gate.set()
+        self.assertTrue((await queued)['ok'])
     def test_dependency_ignores_indexes_but_fences_semantic_people(self):
         old=self.populate();before=self.reflection.context_dependency([old],'bot_shared')
         self.db.execute("UPDATE memory_summaries SET sources='[]' WHERE id=?",(old,))
