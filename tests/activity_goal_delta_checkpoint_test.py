@@ -1,4 +1,4 @@
-"""B inheritance retires through the real 35-round semantic transaction."""
+"""Current goal-only input survives the real 35-round semantic transaction."""
 import copy,contextvars,sys,time,unittest
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parent))
@@ -11,11 +11,11 @@ class GoalCheckpoint(unittest.IsolatedAsyncioTestCase):
     asyncTearDown=fixture.ActivationCheckpoint.asyncTearDown
     summarize=fixture.ActivationCheckpoint.summarize
 
-    async def test_35_retirement_restart_rebuilds_full_goal_action_effect_baseline(self):
+    async def test_35_retirement_restart_supplies_only_current_goals(self):
         from activation_rounds import record
         from readonly_journal import ReadonlyJournal,Prepared
         from summary_material import snapshots,remember
-        from activity_context import tail_service,committed_goals,_goal_service
+        from activity_context import tail_service,committed_goals,_goal_service,necessary_goals
         from types import SimpleNamespace as NS
         scope=fixture.fixture.SCOPE;db=self.store.db;value=snapshot()
         journal=ReadonlyJournal(db,scope)
@@ -30,7 +30,7 @@ class GoalCheckpoint(unittest.IsolatedAsyncioTestCase):
             base.append(user);journal.serial+=1
             prepared=Prepared(journal.serial,None,copy.deepcopy(base),copy.deepcopy(base),{},1,time.time(),'fixture')
             tail_service(prepared,journal,NS(scope=scope,event_id=event))
-            self.assertEqual(committed_goals(prepared.wire,scope)[0],value)
+            self.assertEqual(committed_goals(prepared.wire,scope)[0],necessary_goals(value))
             prepared.base.append(assistant);prepared.wire.append(copy.deepcopy(assistant))
             prepared.main_conversation=True;self.assertTrue(journal.commit(prepared))
         self.store.model_journals[scope]=journal
@@ -45,8 +45,8 @@ class GoalCheckpoint(unittest.IsolatedAsyncioTestCase):
         tail_service(prepared,restored,NS(scope=scope,event_id=event))
         self.assertEqual(prepared.wire[:len(before)],before)
         current=_goal_service(prepared.wire[-1],scope)['currentGoals']
-        self.assertEqual(current['mode'],'baseline');self.assertEqual(current['snapshot'],value)
-        self.assertEqual(committed_goals(prepared.wire,scope)[0],value)
+        self.assertEqual(current,necessary_goals(value));self.assertEqual(set(current),{'goals'})
+        self.assertEqual(committed_goals(prepared.wire,scope)[0],necessary_goals(value))
 
 
 if __name__=='__main__':unittest.main()
