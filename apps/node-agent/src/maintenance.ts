@@ -80,7 +80,7 @@ export async function installAutonomousRuntime(agent:NodeAgent,release:string,op
  const timer=agent.timer;if(timer)clearInterval(timer);agent.timer=undefined;
  let installed:AutonomyCoordinator|undefined;
  const prototype=Object.getPrototypeOf(agent);
- const old={start:agent.host.start,apply:agent.ai.applyConfig,attach:agent.shared.attach,health:prototype.health,context:prototype.context,autonomy:agent.autonomy};
+ const old={start:agent.host.start,apply:agent.ai.applyConfig,attach:agent.shared.attach,request:agent.shared.request,health:prototype.health,context:prototype.context,autonomy:agent.autonomy};
  const wasAutonomyRunning=!old.autonomy.closed&&Boolean(old.autonomy.timer);
  const children=[...agent.host.children].map(([id,child])=>({id,child,pid:child.pid}));
  try{
@@ -93,6 +93,7 @@ export async function installAutonomousRuntime(agent:NodeAgent,release:string,op
   agent.host.start=ProcessHost.prototype.start;
   agent.ai.applyConfig=AstrBotAdapter.prototype.applyConfig;
   agent.shared.attach=SharedAstrBotAdapter.prototype.attach;
+  agent.shared.request=SharedAstrBotAdapter.prototype.request;
   prototype.health=NodeAgent.prototype.health;
   prototype.context=NodeAgent.prototype.context;
   installed=new AutonomyCoordinator(agent.db,runtimeClient(agent.db));agent.autonomy=installed;
@@ -103,7 +104,7 @@ export async function installAutonomousRuntime(agent:NodeAgent,release:string,op
   if(options.start!==false)installed.start();else installed.closed=true;
   return{pid:process.pid,release,preservedChildren:children.map(({id,pid})=>({id,pid})),coordinator:installed.owner};
  }catch(error){
-  await installed?.stop();agent.host.start=old.start;agent.ai.applyConfig=old.apply;agent.shared.attach=old.attach;prototype.health=old.health;prototype.context=old.context;
+  await installed?.stop();agent.host.start=old.start;agent.ai.applyConfig=old.apply;agent.shared.attach=old.attach;agent.shared.request=old.request;prototype.health=old.health;prototype.context=old.context;
   // stop() has settled the old active Work before replacement. On failure,
   // restore the previous scheduler only if it was running; never replay a Work.
   if(old.autonomy){agent.autonomy=old.autonomy;if(wasAutonomyRunning&&!agent.closed){old.autonomy.closed=false;old.autonomy.start()}}
