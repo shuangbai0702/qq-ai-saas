@@ -224,7 +224,9 @@ async def main():
         if stop_fence.quiescing:raise web.HTTPConflict(reason='Worker preparing to stop')
         id=request.match_info['id'];m=members.get(id)
         if not m or request.headers.get('X-Member-Generation')!=str(m['generation']) or request.headers.get('X-Member-Revision')!=str(m['revision']):raise web.HTTPConflict()
-        data=await request.json()
+        # Full authoritative Goal/Action/ToolEffects baselines may exceed 128 KiB.
+        # Only authenticated, identity-checked execute accepts this larger body.
+        data=await request.clone(client_max_size=4*1024*1024 if request.match_info['operation']=='execute' else 131072).json()
         if stop_fence.quiescing:raise web.HTTPConflict(reason='Worker preparing to stop')
         try:return web.json_response(await behavior['autonomous'](id,request.match_info['operation'],data))
         except (ValueError,KeyError,TypeError):raise web.HTTPConflict(reason='Autonomous work invalid or stale') from None

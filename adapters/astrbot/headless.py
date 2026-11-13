@@ -58,7 +58,9 @@ async def main():
     async def autonomous_work(request):
         if request.headers.get('Authorization')!='Bearer '+manifest['token']:raise web.HTTPUnauthorized()
         if request.headers.get('X-Member-Generation')!=str(manifest['generation']) or request.headers.get('X-Member-Revision')!=str(manifest['revision']):raise web.HTTPConflict()
-        try:return web.json_response(await behavior['autonomous']('qq',request.match_info['operation'],await request.json()))
+        # Keep ordinary control requests bounded; full execute baselines need more room.
+        data=await request.clone(client_max_size=4*1024*1024 if request.match_info['operation']=='execute' else 131072).json()
+        try:return web.json_response(await behavior['autonomous']('qq',request.match_info['operation'],data))
         except (ValueError,KeyError,TypeError):raise web.HTTPConflict(reason='Autonomous work invalid or stale') from None
     app=web.Application(client_max_size=131072);app.router.add_get('/health',health);app.router.add_post('/behavior-data',manage_data);app.router.add_post('/autonomous/{operation}',autonomous_work)
     runner=web.AppRunner(app);await runner.setup();await web.TCPSite(runner,'127.0.0.1',manifest['aiPort']+1).start()
