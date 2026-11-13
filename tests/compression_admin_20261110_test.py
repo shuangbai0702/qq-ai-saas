@@ -47,17 +47,6 @@ class CompressionAdmin(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manage(self.store,self.data,self.care)['status'],409)
         self.assertEqual(self.calls,[])
 
-    async def test_nonshared_uses_only_an_existing_real_journal_scope(self):
-        import sqlite3,json
-        self.store.shared_context=False;self.store.db=sqlite3.connect(':memory:')
-        self.store.db.execute('CREATE TABLE fishbot_readonly_journals(scope,state)')
-        self.store.db.execute('INSERT INTO fishbot_readonly_journals VALUES(?,?)',(json.dumps('private:12345678'),'ready'))
-        try:
-            self.assertEqual(manage(self.store,{**self.data,'scope':'private:87654321'},self.care)['status'],409)
-            self.assertEqual(manage(self.store,{**self.data,'scope':'private:12345678'},self.care)['state'],'running')
-            self.assertEqual(self.calls[0][0],'private:12345678')
-        finally:self.store.db.close()
-
     async def test_discard_unavailable_is_explicit_boolean_and_forwarded(self):
         self.assertEqual(manage(self.store,{**self.data,'discardUnavailable':'true'},self.care)['status'],400)
         manage(self.store,{**self.data,'discardUnavailable':True},self.care)

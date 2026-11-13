@@ -70,17 +70,15 @@ def _execution_current(previous):
     return copy.deepcopy(value)
 
 
-def _fresh_state(st,cfg,scope,checkpoint,journal,cohort=()):
+def _fresh_state(st,cfg,scope,checkpoint,journal):
     """Read a post-retirement view, rolling back the temporary SQL preview."""
     import bot_pipeline,execution_memory
     subject=scope[8:] if scope.startswith('private:') else str(cfg.get('ownerUin') or '0')
     st.db.execute('SAVEPOINT semantic_state_preview')
     previous=st.model_journals.get(scope)
     try:
-        checkpoints=tuple(cohort) or (checkpoint,)
-        for identifier in checkpoints:
-            st.db.execute("UPDATE memory_semantic_batches SET state='retired' WHERE checkpoint_id=?",(identifier,))
-        for identifier in checkpoints:semantic_batch.purge(st.db,identifier,preview=True)
+        st.db.execute("UPDATE memory_semantic_batches SET state='retired' WHERE checkpoint_id=?",(checkpoint,))
+        semantic_batch.purge(st.db,checkpoint,preview=True)
         permit={**semantic_batch.permit(st.db,checkpoint),'scope':scope}
         st.model_journals[scope]=SimpleNamespace(last=replace(journal.last,base=semantic_retire_projection(journal.last.base,permit)))
         shared=bot_pipeline.conversation_context(st,cfg,scope,subject,'',time.time())
@@ -115,45 +113,6 @@ def _journals_busy(st):
                for journal in st.model_journals.values())
 
 
-def _finish_cohort(st,cfg,rows):
-    """Rebuild independently licensed scopes in one existing SQLite transaction.
-
-    Cross-session raw windows can reference another scope's retired batch.
-    Neither scope may be edited without its own checkpoint; all replacements
-    and the existing global cleanup check therefore commit together.
-    """
-    entries=[];permits=[];saved=[]
-    try:
-        checkpoints=tuple(row[0] for row in rows)
-        for checkpoint,scope,summary_id in rows:
-            journal=st.model_journals.get(scope)
-            if journal is None:
-                journal=ReadonlyJournal(st.db,scope)
-                if journal.last is not None:st.model_journals[scope]=journal
-            if journal.last is None or journal._staged is not None or journal.recovery_error or journal.retired_reason:
-                raise ValueError('semantic_cohort_journal_unavailable')
-            state=_fresh_state(st,cfg,scope,checkpoint,journal,checkpoints)
-            permit=st.reflection.reserve_context_reconstruction(scope,'semantic-retire:'+uuid.uuid4().hex,summary_ids=[summary_id],checkpoint_id=checkpoint)
-            if not permit or permit.get('id')!=checkpoint or not permit.get('semanticBatch'):
-                if permit:st.reflection.settle_context_reconstruction(permit,False)
-                raise ValueError('semantic_cohort_checkpoint_not_reservable')
-            permits.append(permit);entries.append((journal,permit,state,st.reflection.reconstruction_stamp(scope)))
-        saved=[(journal,dict(journal.__dict__)) for journal,_,_,_ in entries]
-        st.db.execute('BEGIN IMMEDIATE')
-        for journal,permit,state,stamp in entries:
-            if not journal.retire_semantic_batch(permit,st.reflection,state,retirement=stamp,retirement_transaction=True):
-                raise ValueError('semantic_cohort_journal_replace_refused')
-        for checkpoint in checkpoints:semantic_batch.purge(st.db,checkpoint)
-        st.db.commit()
-    except BaseException:
-        if st.db.in_transaction:st.db.rollback()
-        for journal,previous in saved:journal.__dict__.clear();journal.__dict__.update(previous)
-        for permit in permits:st.reflection.settle_context_reconstruction(permit,False)
-        raise
-    for checkpoint,scope,_ in rows:_issue(st,scope,checkpoint,'retired',resolved=True)
-    return len(entries)
-
-
 def finish_semantic_batches(st,cfg,scope):
     """Synchronous owner callback: reserve, replace, purge, retry safely."""
     if st.db.in_transaction:return {'result':'transaction_busy'}
@@ -161,18 +120,6 @@ def finish_semantic_batches(st,cfg,scope):
     rows=st.db.execute('''SELECT b.checkpoint_id,b.state,c.state,c.summary_id FROM memory_semantic_batches b
       JOIN memory_reconstruction_checkpoints c ON c.id=b.checkpoint_id WHERE b.scope=? ORDER BY b.checkpoint_id''',(scope,)).fetchall()
     result={'retired':0,'pending':0}
-    cohort=st.db.execute('''SELECT b.checkpoint_id,b.scope,c.summary_id FROM memory_semantic_batches b
-      JOIN memory_reconstruction_checkpoints c ON c.id=b.checkpoint_id
-      WHERE b.state='committed' AND c.state='available' ORDER BY b.checkpoint_id''').fetchall()
-    # Never borrow a peer's license or rewrite a scope without its checkpoint.
-    if len(cohort)>1 and len({row[1] for row in cohort})==len(cohort) and any(row[1]==scope for row in cohort) and not _journals_busy(st):
-        try:result['retired']+=_finish_cohort(st,cfg,cohort)
-        except Exception as error:
-            reason=str(error) if str(error)=='semantic_active_journal_reconstruction_required' else 'error:'+type(error).__name__
-            for identifier,owner,_ in cohort:_issue(st,owner,identifier,reason)
-        else:
-            rows=st.db.execute('''SELECT b.checkpoint_id,b.state,c.state,c.summary_id FROM memory_semantic_batches b
-              JOIN memory_reconstruction_checkpoints c ON c.id=b.checkpoint_id WHERE b.scope=? ORDER BY b.checkpoint_id''',(scope,)).fetchall()
     for checkpoint,batch_state,checkpoint_state,summary_id in rows:
         if _journals_busy(st):
             _issue(st,scope,checkpoint,'journal_busy_or_unavailable');result['pending']+=1;continue

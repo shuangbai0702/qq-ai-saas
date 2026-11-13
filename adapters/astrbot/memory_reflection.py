@@ -3,7 +3,7 @@ Inspired by LivingMemory's ten-round reflection and source/revision fencing.
 Summaries are conversation evidence, never verified profile facts or instructions.
 """
 from model_cache import auxiliary_scope,adopted,discarded as record_discarded,SUMMARY_REQUEST_TIMEOUT_SECONDS
-import asyncio,json,time,hashlib,re
+import asyncio,json,time,hashlib
 from pathlib import Path
 import message_provenance
 from context_protocol import model_json
@@ -948,7 +948,7 @@ class Reflection:
         The API authenticates the administrator. A partial checkpoint records
         that authorization separately; Coverage and audience fences still apply.
         """
-        if scope!='bot_shared' and not re.fullmatch(r'(?:private:\d{5,20}|group:\d{4,20})',scope):return {'started':False,'reason':'unsupported_scope'}
+        if scope!='bot_shared':return {'started':False,'reason':'unsupported_scope'}
         if (allow_partial or discard_unavailable) and (not isinstance(administrator,str) or not administrator.strip() or not isinstance(request_id,str) or not request_id.strip()):
             raise PermissionError('administrator_authorization_required')
         if request_id and self.db.execute('SELECT checkpoint_id FROM memory_checkpoint_admin_overrides WHERE request_id=?',(request_id,)).fetchone():
