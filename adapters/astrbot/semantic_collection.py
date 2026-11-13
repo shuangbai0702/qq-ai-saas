@@ -250,7 +250,7 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False):
     for table in ('memory_rounds','memory_pending','memory_hold_rounds','memory_round_material'):
         if table in tables:scopes.update(r[0] for r in db.execute('SELECT DISTINCT scope FROM '+table) if _channel(r[0]))
     for scope in sorted(scopes):discard_failed_service_inputs(db,scope)
-    candidates={};materials={};anchors={};provided={};snippets={};raw_observations={}
+    candidates={};materials={};anchors={};provided={};snippets={};raw_observations={};completed_anchors=set()
     def register(pair,person=None,at=None):
         if not pair or not eligible(pair):return
         scopes.add(pair[0])
@@ -267,6 +267,15 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False):
         if table not in tables:continue
         for scope,person,event,question,answer,at in db.execute('SELECT scope,subject,event,question,answer,at FROM '+table):
             pair=identity(scope,event);register(pair,person,at)
+            # Shared completed-round identities selected by the caller are the
+            # authoritative batch anchors. Service activation is counted before
+            # its SDK input is built; SOURCE/capture timestamps may legitimately
+            # fall just after the final round's timestamp. Do not reinterpret
+            # that latency as a different event or widen the batch cutoff.
+            supplied=provided.get(pair)
+            if (table=='memory_rounds' and scope=='bot_shared' and supplied
+                and supplied['sender_id']==person and supplied['at']==at and _time(at) and at<=cutoff):
+                completed_anchors.add(pair)
             if pair and eligible(pair):snippets.setdefault(pair,set()).add(question)
             if pair and answer:anchors.setdefault(pair,set()).add(answer)
     if 'memory_hold_rounds' in tables:
@@ -362,7 +371,7 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False):
     wanted=[]
     for pair,item in candidates.items():
         if not item['times'] and not item['bounds']:raise ValueError('semantic_collection_time_missing')
-        if item['times'] and min(item['times'])<=cutoff<max(item['times']):raise ValueError('semantic_collection_time_conflict')
+        if pair not in completed_anchors and item['times'] and min(item['times'])<=cutoff<max(item['times']):raise ValueError('semantic_collection_time_conflict')
         if min(item['times'] or item['bounds'])<=cutoff:wanted.append(pair)
     if callable(recapture):
         for logical in sorted(scopes):

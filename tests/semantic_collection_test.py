@@ -186,6 +186,27 @@ class CollectionTests(unittest.TestCase):
         self.db.execute('INSERT INTO memory_semantic_batches VALUES(?,?,?,?,?,?,?,?)',(999,self.channel,'digest',model_json([event_key(self.channel,'retired')]),20,'retired',20,20))
         rows=self.collect();self.assertEqual([json.loads(r['event'])[1] for r in rows],['eligible'])
         self.assertIsNone(self.db.execute("SELECT 1 FROM memory_pending WHERE scope='bot_shared' AND event=?",(model_json([self.channel,'later']),)).fetchone())
+
+    def test_pending_capture_after_completed_anchor_is_not_an_event_time_conflict(self):
+        self.old('anchor',101)
+        key=model_json([self.channel,'anchor'])
+        self.db.execute('INSERT INTO memory_rounds(scope,subject,event,question,answer,at) VALUES(?,?,?,?,?,?)',
+            ('bot_shared','12345678',key,'display','真实已发回复',100))
+        self.db.execute('INSERT INTO memory_pending VALUES(?,?,?,?,?,?)',
+            (self.channel,'12345678','anchor','display','真实已发回复',102))
+        result=self.collect([{'sender_id':'12345678','event':key,'user':'display','bot':'真实已发回复','at':100}])
+        self.assertEqual([json.loads(r['event'])[1] for r in result],['anchor'])
+        self.assertEqual(self.db.execute('SELECT at FROM memory_pending WHERE scope=? AND event=?',
+            (self.channel,'anchor')).fetchone(),(102,))
+        self.assertEqual(self.db.execute("SELECT at FROM memory_rounds WHERE scope='bot_shared'").fetchone(),(100,))
+
+    def test_pending_bound_does_not_retire_a_later_original_or_hide_source_conflict(self):
+        self.old('later',101)
+        self.assertEqual(self.collect(),[])
+        # A real source timestamp and completed round across the cutoff remain
+        # an explicit conflict; this fix only distinguishes collection time.
+        self.db.execute('UPDATE memory_rounds SET at=99')
+        with self.assertRaisesRegex(ValueError,'semantic_collection_time_conflict'):self.collect()
     def test_missing_material_is_explicit_and_atomic(self):
         self.old('good');self.old('missing',material=False)
         with self.assertRaisesRegex(ValueError,'material_missing'):self.collect()
