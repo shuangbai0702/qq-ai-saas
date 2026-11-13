@@ -4,7 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace as NS
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
 from context_transport import experience_view
-from bot_pipeline import experience_context,ContextBuilder
+from bot_pipeline import experience_context,ContextBuilder,conversation_context
+from unittest.mock import patch
 
 
 def fixture():
@@ -20,6 +21,19 @@ def fixture():
 
 
 class BriefExperience(unittest.TestCase):
+    def test_shared_journal_channel_switch_does_not_replay_execution_view(self):
+        db=sqlite3.connect(':memory:');self.addCleanup(db.close)
+        db.execute('CREATE TABLE pipeline_actions(id TEXT,at REAL,state TEXT,result TEXT)')
+        raw=fixture();store=NS(db=db,shared_context=True,model_journals={},autonomous_experience=raw,reflection=NS(core_note=lambda *a,**k:{}))
+        with patch('context_foundation.read',return_value={}),patch('semantic_runtime.filter_retired_context',side_effect=lambda s,c,v:v),patch('shared_context.delivery_context',return_value={}),patch('agreement_state.context_view',return_value=[]):
+            private=conversation_context(store,{'memory':True,'ownerUin':'12345678'},'private:12345678','12345678','real input',200)
+            group=conversation_context(store,{'memory':True,'ownerUin':'12345678'},'group:55555','55555555','different input',201)
+            self.assertEqual(private['autonomous_experience'],group['autonomous_experience'])
+            self.assertEqual(group['autonomous_experience']['actions'][0]['sourceScope'],'private:12345678')
+            from decision_history import changes
+            self.assertEqual(changes(private['autonomous_experience'],group['autonomous_experience']),[])
+        self.assertEqual(store.autonomous_experience,raw)
+
     def test_terminal_unfinished_does_not_revive_history_but_unknown_receipt_survives(self):
         db=sqlite3.connect(':memory:');self.addCleanup(db.close)
         db.execute('CREATE TABLE pipeline_actions(id TEXT,at REAL,state TEXT,result TEXT)')

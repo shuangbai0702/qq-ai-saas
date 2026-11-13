@@ -200,7 +200,11 @@ def conversation_context(store,cfg,scope,subject,query,now,state=None):
         # The canonical shared Journal already contains the real channel
         # messages. Do not reinject person-selected copies or SDK round views.
         return filter_retired_context(store,scope,{'persona_core_note':{'guidance':CORE_NOTE_POLICY,**store.reflection.core_note('bot_shared',subject,owner=str(cfg.get('ownerUin') or ''))},
-                'memory_foundation':foundation,'state':state,'dialogue':delivery_context(store.db,store.model_journals.get(JOURNAL_SCOPE)),'autonomous_experience':experience_context(store,scope,cfg),
+                # The shared Journal is one continuous bot conversation. A
+                # channel change must not clear then restore the same in-flight
+                # records. Each record retains sourceScope; Work.scope and all
+                # execution authorization remain bound to the current event.
+                'memory_foundation':foundation,'state':state,'dialogue':delivery_context(store.db,store.model_journals.get(JOURNAL_SCOPE)),'autonomous_experience':experience_context(store,'self',cfg),
                 'group_round_history':[],'conversation_timeline':[],'recent_messages':[],
                 'recent_cross_session_messages':[],'ambient_group_messages':[],
                 'active_agreements':agreement_state.context_view(store.db,scope,owner=str(cfg.get('ownerUin') or '')) if enabled else [],
