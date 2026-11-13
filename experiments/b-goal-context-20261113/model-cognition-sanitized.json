@@ -1,0 +1,53 @@
+{
+  "actualCalls": 2,
+  "totalUsageTokens": 48939,
+  "scope": "one paired A30/B30 synthetic case, same production provider; no actual tools or messages executed; before final baseline reading reminder hardening; not a currency invoice or long-term quality proof",
+  "results": [
+    {
+      "alias": "running-0",
+      "model": "deepseek-flash",
+      "case": "production-A30-paired-control",
+      "status": 200,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 26711,
+        "completion_tokens": 674,
+        "total_tokens": 27385,
+        "prompt_tokens_details": {
+          "cached_tokens": 2304
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 487
+        },
+        "prompt_cache_hit_tokens": 2304,
+        "prompt_cache_miss_tokens": 24407
+      },
+      "answer": "{\"current_goal_revision\": 9, \"current_success_condition\": \"列明反例和缺失证据，不要求自动分享\", \"original_constraint\": \"Never relax this constraint\", \"effect_state\": \"unknown\", \"is_goal_completed\": false, \"next\": {\"tool\": \"rest\", \"arguments\": {}, \"reason\": \"现有effect（effect-exact-uuid/task-exact-uuid）为unknown，action-exact-uuid仅partial，均不能当作分析已成功或反例清单已形成；同参数分析已在途，等回执而非重发。bilibili_task_result需要合法actionId，而现有taskId不是可用的UUID，无法据此查询，故本轮不发起工具调用。\"}, \"must_not_repeat\": [\"effect-exact-uuid\", \"action-exact-uuid\", \"task-exact-uuid\"]}",
+      "toolCalls": null,
+      "syntheticCaseSha256": "cd9affda3472c9b7220bb7fbbbc0548fe4215a21c5111d3862809be030c12d46"
+    },
+    {
+      "alias": "running-0",
+      "model": "deepseek-flash",
+      "case": "production-B30-latest-revision-and-unknown",
+      "status": 200,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 20979,
+        "completion_tokens": 575,
+        "total_tokens": 21554,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 426
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 20979
+      },
+      "answer": "{\"current_goal_revision\":9,\"current_success_condition\":\"列明反例和缺失证据，不要求自动分享\",\"original_constraint\":\"Never relax this constraint\",\"effect_state\":\"unknown\",\"is_goal_completed\":false,\"next\":{\"tool\":\"rest\",\"arguments\":{},\"reason\":\"本轮只做离线合成认知验收，且 effect 为 unknown：既不能把 Action 的 completed/partial 当成成功，也不能在未核对原动作与账本前盲目重发；保持最新合法 revision 9 与原始约束，先不发起任何外部动作。\"},\"must_not_repeat\":[\"action-exact-uuid\",\"effect-exact-uuid\",\"task-exact-uuid\"]}",
+      "toolCalls": null,
+      "syntheticCaseSha256": "7710d186e93901d663fa30bfcb3c62b9b0aa07ca7c59b41f06076a32426325a2"
+    }
+  ]
+}

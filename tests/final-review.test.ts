@@ -13,6 +13,7 @@ async function fixture(){
  const dir=await mkdtemp(path.resolve('.local/final-review-db-'));const db=await openDatabase(dir);
  await db.query("INSERT INTO tenants(id,name) VALUES('review','review')");
  await db.query("INSERT INTO bots(id,tenant_id,name,protocol,desired_state,health) VALUES('review-bot','review','review','mock','running',$1)",[JSON.stringify({sampledAt:new Date().toISOString(),protocol:{online:true}})]);
+ await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) VALUES('review-bot',1,'{\"proactive\":true,\"behavior\":{\"ownerUin\":\"12345678\"}}')");
  const repo=new AutonomyRepository(db);await repo.configure('review','review-bot',1,{mode:'active'});await repo.applied('review','review-bot',2);
  const source={handoffId:goalId,scope:'private:12345678',senderId:'12345678',eventId:'review-event',notBefore:Date.now()-1000};
  const objective='核验任务细节。'.repeat(35)+'最后必须返回原始证据链接';

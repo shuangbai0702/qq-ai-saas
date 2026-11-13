@@ -1,0 +1,289 @@
+{
+  "mode": "B",
+  "unit": "unicode serialized characters; not token billing",
+  "rows": [
+    {
+      "activation": 1,
+      "journal_added_chars": 8790,
+      "journal_total_chars": 8792,
+      "goal_body_chars": 926,
+      "request_messages_chars": 8748,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 2,
+      "journal_added_chars": 2077,
+      "journal_total_chars": 10869,
+      "goal_body_chars": 78,
+      "request_messages_chars": 10825,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 3,
+      "journal_added_chars": 1115,
+      "journal_total_chars": 11984,
+      "goal_body_chars": 78,
+      "request_messages_chars": 11940,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 4,
+      "journal_added_chars": 1156,
+      "journal_total_chars": 13140,
+      "goal_body_chars": 78,
+      "request_messages_chars": 13096,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 5,
+      "journal_added_chars": 1313,
+      "journal_total_chars": 14453,
+      "goal_body_chars": 178,
+      "request_messages_chars": 14409,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 6,
+      "journal_added_chars": 1238,
+      "journal_total_chars": 15691,
+      "goal_body_chars": 78,
+      "request_messages_chars": 15647,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 7,
+      "journal_added_chars": 1278,
+      "journal_total_chars": 16969,
+      "goal_body_chars": 78,
+      "request_messages_chars": 16925,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 8,
+      "journal_added_chars": 1480,
+      "journal_total_chars": 18449,
+      "goal_body_chars": 78,
+      "request_messages_chars": 18405,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 9,
+      "journal_added_chars": 1335,
+      "journal_total_chars": 19784,
+      "goal_body_chars": 78,
+      "request_messages_chars": 19740,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 10,
+      "journal_added_chars": 1579,
+      "journal_total_chars": 21363,
+      "goal_body_chars": 286,
+      "request_messages_chars": 21319,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 11,
+      "journal_added_chars": 1335,
+      "journal_total_chars": 22698,
+      "goal_body_chars": 78,
+      "request_messages_chars": 22654,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 12,
+      "journal_added_chars": 1335,
+      "journal_total_chars": 24033,
+      "goal_body_chars": 78,
+      "request_messages_chars": 23989,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 13,
+      "journal_added_chars": 1335,
+      "journal_total_chars": 25368,
+      "goal_body_chars": 78,
+      "request_messages_chars": 25324,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 14,
+      "journal_added_chars": 2395,
+      "journal_total_chars": 27763,
+      "goal_body_chars": 78,
+      "request_messages_chars": 54523,
+      "sdk_requests": 2
+    },
+    {
+      "activation": 15,
+      "journal_added_chars": 1502,
+      "journal_total_chars": 29265,
+      "goal_body_chars": 78,
+      "request_messages_chars": 29221,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 16,
+      "journal_added_chars": 1335,
+      "journal_total_chars": 30600,
+      "goal_body_chars": 78,
+      "request_messages_chars": 30556,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 17,
+      "journal_added_chars": 1335,
+      "journal_total_chars": 31935,
+      "goal_body_chars": 78,
+      "request_messages_chars": 31891,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 18,
+      "journal_added_chars": 1335,
+      "journal_total_chars": 33270,
+      "goal_body_chars": 78,
+      "request_messages_chars": 33226,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 19,
+      "journal_added_chars": 1335,
+      "journal_total_chars": 34605,
+      "goal_body_chars": 78,
+      "request_messages_chars": 34561,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 20,
+      "journal_added_chars": 1630,
+      "journal_total_chars": 36235,
+      "goal_body_chars": 208,
+      "request_messages_chars": 36191,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 21,
+      "journal_added_chars": 1334,
+      "journal_total_chars": 37569,
+      "goal_body_chars": 78,
+      "request_messages_chars": 37525,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 22,
+      "journal_added_chars": 1335,
+      "journal_total_chars": 38904,
+      "goal_body_chars": 78,
+      "request_messages_chars": 38860,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 23,
+      "journal_added_chars": 1335,
+      "journal_total_chars": 40239,
+      "goal_body_chars": 78,
+      "request_messages_chars": 40195,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 24,
+      "journal_added_chars": 1334,
+      "journal_total_chars": 41573,
+      "goal_body_chars": 78,
+      "request_messages_chars": 41529,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 25,
+      "journal_added_chars": 1479,
+      "journal_total_chars": 43052,
+      "goal_body_chars": 78,
+      "request_messages_chars": 43008,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 26,
+      "journal_added_chars": 1335,
+      "journal_total_chars": 44387,
+      "goal_body_chars": 78,
+      "request_messages_chars": 44343,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 27,
+      "journal_added_chars": 1335,
+      "journal_total_chars": 45722,
+      "goal_body_chars": 78,
+      "request_messages_chars": 45678,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 28,
+      "journal_added_chars": 1334,
+      "journal_total_chars": 47056,
+      "goal_body_chars": 78,
+      "request_messages_chars": 47012,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 29,
+      "journal_added_chars": 1335,
+      "journal_total_chars": 48391,
+      "goal_body_chars": 78,
+      "request_messages_chars": 48347,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 30,
+      "journal_added_chars": 1589,
+      "journal_total_chars": 49980,
+      "goal_body_chars": 173,
+      "request_messages_chars": 49936,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 31,
+      "journal_added_chars": 1334,
+      "journal_total_chars": 51314,
+      "goal_body_chars": 78,
+      "request_messages_chars": 51270,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 32,
+      "journal_added_chars": 1335,
+      "journal_total_chars": 52649,
+      "goal_body_chars": 78,
+      "request_messages_chars": 52605,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 33,
+      "journal_added_chars": 1335,
+      "journal_total_chars": 53984,
+      "goal_body_chars": 78,
+      "request_messages_chars": 53940,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 34,
+      "journal_added_chars": 1480,
+      "journal_total_chars": 55464,
+      "goal_body_chars": 78,
+      "request_messages_chars": 55420,
+      "sdk_requests": 1
+    },
+    {
+      "activation": 35,
+      "journal_added_chars": 1335,
+      "journal_total_chars": 56799,
+      "goal_body_chars": 78,
+      "request_messages_chars": 56755,
+      "sdk_requests": 1
+    }
+  ],
+  "journal_growth35": 56797,
+  "goal_body35": 4111,
+  "all_request_messages35": 1179613
+}

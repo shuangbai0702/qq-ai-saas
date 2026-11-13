@@ -43,6 +43,7 @@ for(const privateChat of [false,true])test((privateChat?'private replace':'group
   const ctx=await current.agent.context((await current.db.query('SELECT * FROM bots WHERE id=$1',[id]))[0]),mock=current.agent.protocols.mock as MockProtocolAdapter;
   await mock.call(ctx,'/transition',{state:'online',uin:'90008773'});
   await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.ai?.ready,'AI ready');
+  await until(async()=>!!(await mock.call(ctx,'/state')).connected,'protocol WebSocket connected');
   const python=path.resolve(`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`);
   const state=async(sql:string)=>JSON.parse((await promisify(execFile)(python,['-B','-c','import sqlite3,sys,json;d=sqlite3.connect(sys.argv[1]);r=d.execute(sys.argv[2]).fetchall();d.commit();print(json.dumps(r))',path.join(root,'bots',id,'behavior.sqlite'),sql],{windowsHide:true})).stdout);
   const group=privateChat?undefined:'778101',scope=privateChat?'private:12345678':'group:778101';

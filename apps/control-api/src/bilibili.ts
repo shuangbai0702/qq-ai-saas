@@ -1,4 +1,5 @@
 import {qqExternalBudget,biliWorkEffects} from '../../../packages/database/external-action-budget.js';
+import {cycleModelBudget} from '../../../packages/database/model-request-budget.js';
 import type {FastifyInstance} from 'fastify';
 import {z} from 'zod';
 import {randomUUID} from 'node:crypto';
@@ -12,6 +13,7 @@ import {BiliAccounts} from '../../node-agent/src/bilibili/account-broker.js';
 import {BiliWeb} from '../../node-agent/src/bilibili/web-adapter.js';
 import {verifyBridge} from '../../../packages/shared/tool-bridge.js';
 import {encrypt} from '../../../packages/shared/security.js';
+import {registerAutonomousGoals} from './autonomous-goals.js';
 import {registerExecutionMemory} from './execution-memory.js';
 
 export function registerBilibili(app:FastifyInstance,db:Sql,key:Buffer,owned:(req:any,id:string)=>Promise<any>,root:string){
@@ -21,10 +23,13 @@ export function registerBilibili(app:FastifyInstance,db:Sql,key:Buffer,owned:(re
   const b=await owned(req,req.params.id),s=await repo.settings(b.tenant_id,b.id);
   const [login]=await db.query('SELECT id,state,expires_at,updated_at FROM bilibili_logins WHERE bot_id=$1 AND tenant_id=$2',[b.id,b.tenant_id]);
   const [cooldown]=await db.query("SELECT until_at,reason FROM tool_service_cooldowns WHERE service='bilibili' AND until_at>now()");
-  let mediaReady=false;try{const raw=await readFile(path.join(root,'media-status.json'),'utf8');if(raw.length<4096){const m=JSON.parse(raw);mediaReady=m.ready===true&&Date.now()-m.at<15000}}catch{}
+  let mediaReady=false,mediaReason='媒体状态尚未核实',mediaDependencies:any=null;try{const raw=await readFile(path.join(root,'media-status.json'),'utf8');if(raw.length<4096){const m=JSON.parse(raw);mediaReady=m.ready===true&&Date.now()-m.at<15000;mediaDependencies=m;mediaReason=String(m.reason||mediaReason)}}catch{}
+  const [botModel]=await db.query('SELECT r.config,(s.ciphertext IS NOT NULL) AS has_key FROM bot_config_revisions r LEFT JOIN secrets s ON s.bot_id=r.bot_id AND s.tenant_id=$3 WHERE r.bot_id=$1 AND r.revision=$2',[b.id,b.revision,b.tenant_id]);
+  const modelConfigured=s.config.model.provider==='openai'?!!(s.model_secret&&s.config.model.baseUrl&&s.config.model.model):s.config.model.provider==='bot'&&!!(botModel?.has_key&&botModel.config?.baseUrl&&botModel.config?.model);
+  const mediaExecutable=mediaReady&&modelConfigured;
   const jobs=await db.query('SELECT id,operation,state,result,cancel_requested,created_at,updated_at FROM tool_effects WHERE bot_id=$1 AND tenant_id=$2 ORDER BY created_at DESC LIMIT 20',[b.id,b.tenant_id]);
   return{config:s.config,revision:s.revision,hasModelKey:!!s.model_secret,account:await publicAccount(b.tenant_id,b.id),login:login?{...login,state:+new Date(login.expires_at)<Date.now()&&['created','waiting_scan','waiting_confirm'].includes(login.state)?'expired':login.state}:null,cooldown:cooldown??null,jobs,
-   operations:Object.entries(biliOperations).map(([name,op])=>({name,scope:op.scope,write:op.write,implemented:name!=='analyze'||mediaReady,accountVerified:false})),mediaReady,mediaReason:mediaReady?'采样帧工具可用；使用当前机器人图片模型，仅理解指定区间的稀疏画面，不理解声音':'媒体资源委派或Guard未就绪，采样帧执行暂不开放'};
+   operations:Object.entries(biliOperations).map(([name,op])=>({name,scope:op.scope,write:op.write,implemented:name!=='analyze'||mediaExecutable,accountVerified:false})),mediaReady:mediaExecutable,mediaDependencies,modelConfigured,modelVerification:'configured_only_actual_vision_support_requires_provider_receipt',mediaReason:!mediaReady?mediaReason:!modelConfigured?'媒体依赖已就绪，图片模型或Key未配置':mediaReason};
  });
  app.put<{Params:{id:string}}>('/v1/bots/:id/bilibili',async req=>{
   const b=await owned(req,req.params.id),v=z.object({expectedRevision:z.number().int().positive(),config:BilibiliConfigSchema,modelKey:z.string().min(1).max(2000).regex(/^[^\r\n]+$/).optional(),clearModelKey:z.boolean().optional()}).strict().parse(req.body);
@@ -59,6 +64,8 @@ export function registerBilibili(app:FastifyInstance,db:Sql,key:Buffer,owned:(re
  // Separate audience from user sessions and Agent->worker group credentials.
  const runtime=async(req:any)=>{const [b]=await db.query('SELECT * FROM bots WHERE id=$1 AND deleted_at IS NULL',[req.params.id]);const token=String(req.headers.authorization||'').replace(/^Bearer /,'');if(!b||!verifyBridge(key,b,token))throw toolConflict('工具运行身份无效',401);return b};
  registerExecutionMemory(app,db,runtime);
+ registerAutonomousGoals(app,db,runtime);
+ app.post<{Params:{id:string}}>('/internal/v1/bots/:id/model-request-budget',async req=>{const b=await runtime(req),v=z.object({workId:z.string().min(1).max(200),epoch:z.number().int().positive(),requestId:z.string().min(1).max(300),phase:z.enum(['reserve','settled','released','unknown']),source:z.literal('main'),tokens:z.number().int().nonnegative().optional()}).strict().parse(req.body);return cycleModelBudget(db,b,v)});
  app.post<{Params:{id:string}}>('/internal/v1/bots/:id/external-action-budget',async req=>{const b=await runtime(req),v=z.object({workId:z.string().min(1).max(200),epoch:z.number().int().positive(),logicalActionId:z.string().min(1).max(300),phase:z.enum(['reserve','confirmed','unknown','released'])}).strict().parse(req.body);return qqExternalBudget(db,b,v)});
  app.post<{Params:{id:string}}>('/internal/v1/bots/:id/external-effects',async req=>{const b=await runtime(req),v=z.object({workId:z.string().min(1).max(200)}).strict().parse(req.body);return{effects:await biliWorkEffects(db,b.id,b.tenant_id,v.workId)}});
  app.post<{Params:{id:string}}>('/internal/v1/bots/:id/tools/completion',async req=>{const b=await runtime(req);return{completion:await repo.completion(b)}});

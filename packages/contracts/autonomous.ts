@@ -3,11 +3,12 @@ import {z} from 'zod';
 export const AutonomyConfigSchema=z.object({
   mode:z.enum(['passive','active']).default('passive'),
   rollout:z.enum(['shadow','live']).default('live'),
+  activityScope:z.string().regex(/^(private|group):[0-9]{1,20}$/).optional(),
   activityEnabled:z.boolean().default(true),
   activityIntervalMinutes:z.number().int().min(5).max(1440).default(30),
-  activityModelCalls:z.number().int().min(1).max(16).default(4),
-  activityToolCalls:z.number().int().min(0).max(64).default(8),
-  activityTokenBudget:z.number().int().min(4000).max(2000000).default(128000),
+  activityModelCalls:z.number().int().min(1).max(16).default(8),
+  activityToolCalls:z.number().int().min(0).max(64).default(16),
+  activityTokenBudget:z.number().int().min(4000).max(2000000).default(500000),
   activityExternalActions:z.number().int().min(0).max(4).default(1),
   fatigueEnabled:z.boolean().default(true),
   fatigueWindowMinutes:z.number().int().min(10).max(1440).default(60),
@@ -68,3 +69,13 @@ export interface TaskFeedback {
  effects:Array<{id:string;logicalActionId?:string;status:string;receipt?:string}>;
  unfinished:string[];
 }
+
+// Identity is built by the authenticated runtime, never exposed as model args.
+export const AutonomousGoalAudienceSchema=z.object({
+ scope:z.string().regex(/^(self|(?:private|group):[0-9]{1,20})$/),senderId:z.string().regex(/^[0-9]{1,20}$/),
+ work:z.object({id:z.string().uuid(),epoch:z.number().int().positive()}).strict().optional(),
+}).strict();
+export type AutonomousGoalAudience=z.infer<typeof AutonomousGoalAudienceSchema>;
+export const AutonomousGoalUpdateSchema=z.object({goalId:z.string().uuid(),expectedRevision:z.number().int().positive(),
+ changes:z.object({title:z.string().min(1).max(1000).optional(),reason:z.string().min(1).max(12000).optional(),successCondition:z.string().min(1).max(12000).optional(),nextIntention:z.string().max(12000).optional(),status:z.enum(['active','paused','completed','abandoned']).optional(),progress:z.string().max(12000).optional()}).strict().refine(v=>Object.keys(v).length>0,'需要实际修改字段'),
+}).strict();

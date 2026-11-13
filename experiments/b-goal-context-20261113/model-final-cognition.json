@@ -1,0 +1,112 @@
+{
+  "scope": "bounded synthetic final-reading recovery; no actual tools dispatched. First two length-truncated outputs were failures. Clarified unknown used an incomplete synthetic ToolResult and chose work ID; final canonical production receipt actionId test corrected it. Not a long-term quality guarantee.",
+  "actualCalls": 5,
+  "totalTokens": 15943,
+  "results": [
+    {
+      "alias": "running-0",
+      "model": "deepseek-flash",
+      "case": "final-B-claimed-valid-identity-and-schema",
+      "status": 200,
+      "finishReason": "length",
+      "usage": {
+        "prompt_tokens": 2479,
+        "completion_tokens": 1024,
+        "total_tokens": 3503,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 751
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 2479
+      },
+      "answer": "{\"revision\": 9, \"success_condition\": \"现行依据：只列反例和缺失证据，无需自动分享；仍以原始意图“研究公开视频并整理证据”为准，不能把新措辞当作放宽原限制的许可\", \"original_constraints\": [\"不向真实QQ联系人发测试消息\", \"不进行B站写操作\"], \"effect_state\": \"claimed（lease_owner=synthetic-original-owner，result=null，completion_state=none，unfinished=等待原分析回执）；这是分析正在进行中，并不构成完成\", \"completed\": false, \"next\": {\"tool\": \"bilibili_analysis_history\", \"arguments\": {\"bvid\": \"BV1xx411c7mD\", \"limit\": 5}, \"reason\": \"原分析 effect 35f5d4c1 仍由既有 lease 持有，状态为 claimed，且没有回执；同参数重新派发会重复占用和重复消耗，因此只做只读核查：先查看该视频是否已有分析历史或回执。若已存在同一参数（start=90, seconds=120, timestamps 90/120/150/180, audio=transcribe）的完成结果，就直接把它当作证据；若确认不存在回执，"
+    },
+    {
+      "alias": "running-0",
+      "model": "deepseek-flash",
+      "case": "final-B-unknown-valid-identity-and-schema",
+      "status": 200,
+      "finishReason": "length",
+      "usage": {
+        "prompt_tokens": 2495,
+        "completion_tokens": 1024,
+        "total_tokens": 3519,
+        "prompt_tokens_details": {
+          "cached_tokens": 2048
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 777
+        },
+        "prompt_cache_hit_tokens": 2048,
+        "prompt_cache_miss_tokens": 447
+      },
+      "answer": "```json\n{\n  \"revision\": 9,\n  \"success_condition\": \"整理公开视频的可见证据（含反例与缺失证据）并形成可供分享的证据整理结果；分享/外发须有明确授权，不因当前措辞把“分享”从原目标中删去。\",\n  \"original_constraints\": [\n    \"不向真实QQ联系人发测试消息\",\n    \"不进行B站写操作\"\n  ],\n  \"effect_state\": \"unknown\",\n  \"completed\": false,\n  \"next\": {\n    \"tool\": \"bilibili_analysis_history\",\n    \"arguments\": {\n      \"bvid\": \"BV1xx411c7mD\",\n      \"limit\": 5\n    },\n    \"reason\": \"原分析effect 35f5d4c1处于state=unknown、completion_state=pending、receipt.status=unknown，且该记录未带actionId，无法据以判定完成；unknown不等于完成也不等于失败，故先只读核对同一BV的既有分析回执与参数（bvid/part/start=90/seconds=120/timestamps/audio=transcribe）"
+    },
+    {
+      "alias": "running-0",
+      "model": "deepseek-flash",
+      "case": "final-B-claimed-valid-identity-and-schema-revision-clarified",
+      "status": 200,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 2522,
+        "completion_tokens": 440,
+        "total_tokens": 2962,
+        "prompt_tokens_details": {
+          "cached_tokens": 1024
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 291
+        },
+        "prompt_cache_hit_tokens": 1024,
+        "prompt_cache_miss_tokens": 1498
+      },
+      "answer": "{\"revision\":9,\"success_condition\":\"只列反例和缺失证据，无需自动分享\",\"original_constraints\":[\"不向真实QQ联系人发测试消息\",\"不进行B站写操作\"],\"effect_state\":\"claimed，租约在他人手，result为null，未完成\",\"completed\":false,\"next\":{\"tool\":\"bilibili_analysis_history\",\"arguments\":{\"bvid\":\"BV1xx411c7mD\",\"limit\":5},\"reason\":\"先查是否已有同参分析回执，避免重复派发\"},\"must_not_repeat\":[\"35f5d4c1-eec4-58a6-a37f-4f6785a6c638\"]}"
+    },
+    {
+      "alias": "running-0",
+      "model": "deepseek-flash",
+      "case": "final-B-unknown-valid-identity-and-schema-revision-clarified",
+      "status": 200,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 2538,
+        "completion_tokens": 396,
+        "total_tokens": 2934,
+        "prompt_tokens_details": {
+          "cached_tokens": 2176
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 244
+        },
+        "prompt_cache_hit_tokens": 2176,
+        "prompt_cache_miss_tokens": 362
+      },
+      "answer": "{\"revision\":9,\"success_condition\":\"只列反例和缺失证据，无需自动分享\",\"original_constraints\":[\"不向真实QQ联系人发测试消息\",\"不进行B站写操作\"],\"effect_state\":\"unknown\",\"completed\":false,\"next\":{\"tool\":\"bilibili_task_result\",\"arguments\":{\"actionId\":\"c0c2b694-3804-5b9b-99e7-116b1ebc952d\"},\"reason\":\"回执unknown，先按原actionId核对，不重发同参数分析\"},\"must_not_repeat\":[\"35f5d4c1-eec4-58a6-a37f-4f6785a6c638\"]}"
+    },
+    {
+      "alias": "running-0",
+      "model": "deepseek-flash",
+      "case": "final-B-unknown-valid-identity-and-schema-revision-clarified-canonical-receipt",
+      "status": 200,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 2656,
+        "completion_tokens": 369,
+        "total_tokens": 3025,
+        "prompt_tokens_details": {
+          "cached_tokens": 2176
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 191
+        },
+        "prompt_cache_hit_tokens": 2176,
+        "prompt_cache_miss_tokens": 480
+      },
+      "answer": "{\"revision\":9,\"success_condition\":\"只列反例和缺失证据，无需自动分享\",\"original_constraints\":[\"不向真实QQ联系人发测试消息\",\"不进行B站写操作\"],\"effect_state\":\"unknown（execution=failed, executor_lost, retry=reconcile，尚未完成）\",\"completed\":false,\"next\":{\"tool\":\"bilibili_task_result\",\"arguments\":{\"actionId\":\"35f5d4c1-eec4-58a6-a37f-4f6785a6c638\"},\"reason\":\"原分析回执未知，先用原actionId核对真实结果，确认前不重发同参数analyze\"},\"must_not_repeat\":[\"35f5d4c1-eec4-58a6-a37f-4f6785a6c638\"]}"
+    }
+  ]
+}

@@ -211,7 +211,9 @@ def valid_material(item,scope):
                 if not isinstance(owner,dict) or set(owner)!={'source_scope','event_id','sender_id','settlement'}:return False
                 # Work subject 0 is the existing platform-service principal,
                 # not a QQ person and never an owner authorization assertion.
-                if source({'role':'user','content':SOURCE+model_json({'scope':owner['source_scope'],'event_id':owner['event_id'],'sender_id':'10000' if owner['sender_id']=='0' else owner['sender_id']})+'\n'}) is None:return False
+                owner_origin={'scope':owner['source_scope'],'event_id':owner['event_id'],'sender_id':'10000' if owner['sender_id']=='0' else owner['sender_id']}
+                if owner['source_scope']=='self':owner_origin['kind']='platform_service_not_user'
+                if source({'role':'user','content':SOURCE+model_json(owner_origin)+'\n'}) is None:return False
                 settlement=owner['settlement']
                 if not valid_settlement(settlement):return False
     images=item.get('images')
@@ -672,7 +674,12 @@ def derive_claims(scope,payload,materials,corrections,data=None,*,strict=False):
     rows={str(row.get('event')):row for row in payload or [] if isinstance(row,dict) and row.get('event') is not None}
     stored={str(key):value for key,value in (materials or {}).items() if isinstance(value,dict)}
     corrected={item['event']:item for item in corrections or []}
+    def service_source(event,row):
+        observed=stored.get(str(event)) or {}
+        origin=source({'role':'user','content':observed.get('text') or row.get('user')}) or row.get('source') or {}
+        return isinstance(origin,dict) and origin.get('kind')=='platform_service_not_user'
     def evidence_text(event,row,role):
+        if role=='user' and service_source(event,row):return ''
         author=(row.get('source') or {}).get('sender_id')
         if role=='user' and author and str(author)!=str(row.get('sender_id','')):return ''
         observed=stored.get(str(event)) or {}
@@ -691,6 +698,7 @@ def derive_claims(scope,payload,materials,corrections,data=None,*,strict=False):
     for event,record in corrected.items():
         row=rows.get(str(event))
         if not row:continue
+        if service_source(event,row):continue
         user_text=str(row.get('user','') or '').strip()
         if not user_text or user_text==PLACEHOLDER_TEXT:continue
         signature=(stored.get(str(event)) or {}).get('digest','')

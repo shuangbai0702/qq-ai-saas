@@ -54,7 +54,9 @@ def source(message):
     if not isinstance(text,str) or not text.startswith(SOURCE):return None
     try:value=json.loads(text.split('\n',1)[0][len(SOURCE):])
     except (ValueError,TypeError):return None
-    if not isinstance(value,dict) or not re.fullmatch(r'(group|private):\d{4,20}',str(value.get('scope',''))) or not re.fullmatch(r'\d{5,20}',str(value.get('sender_id',''))):return None
+    if not isinstance(value,dict):return None
+    service=value.get('scope')=='self' and value.get('kind')=='platform_service_not_user'
+    if not (service or re.fullmatch(r'(group|private):\d{4,20}',str(value.get('scope','')))) or not re.fullmatch(r'\d{5,20}',str(value.get('sender_id',''))):return None
     event=value.get('event_id')
     if type(event) not in (str,int) or type(event) is int and event<=0 or not str(event) or len(str(event))>512 or any(c in str(event) for c in '\r\n'):return None
     return value

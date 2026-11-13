@@ -3,8 +3,12 @@ from pathlib import Path
 from types import SimpleNamespace as NS
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters'/'astrbot'))
 from behavior import BehaviorStore
-from companion_insights import apply,snapshot
+from companion_insights import apply,apply_semantic_memory,snapshot
 from data_admin import run
+from context_protocol import SOURCE,model_json
+from summary_material import snapshots
+from readonly_journal import Prepared,ReadonlyJournal
+from summary_stream_fixture import summary_provider
 import companion_state,emotion_state,qq_actions
 
 
@@ -87,12 +91,20 @@ class NaturalConversation(unittest.IsolatedAsyncioTestCase):
         emotion_state.observe(self.db,'group:1','你真蠢',self.now+1,True)
         self.extract(payload,{'emotion':{'event':'one','kind':'happy','intensity':2,'quote':'我搬到了苏州'}},before)
         self.assertEqual(emotion_state.context(self.db,'group:1',self.now+2)['kind'],'angry')
-    def test_relation_interpretation_corrects_existing_event_once(self):
-        payload=self.payload(text='你这话让我很不舒服。');self.assertEqual(self.db.execute('SELECT affinity FROM relations').fetchone()[0],1)
-        data={'relations':[{'event':'one','sentiment':-1,'quote':'你这话让我很不舒服'}]}
-        self.extract(payload,data);self.assertEqual(self.db.execute('SELECT affinity FROM relations').fetchone()[0],-1)
-        self.extract(payload,data);self.assertEqual(self.db.execute('SELECT affinity FROM relations').fetchone()[0],-1)
-        self.assertEqual(self.db.execute('SELECT gains FROM relation_progress').fetchone()[0],1)
+    def test_model_relation_operation_sets_overall_state_once(self):
+        payload=self.payload(text='你这话让我很不舒服。');before=snapshot(self.db,'group:1',{'11111'})
+        self.assertEqual(self.db.execute('SELECT affinity FROM relations').fetchone()[0],0,'ordinary text observation does not infer a relationship score')
+        prior=next((row for row in before['memory_state']['relations'] if row['subject']=='11111'),None)
+        relation_version=next((row['version'] for row in before['memory_state']['relation_versions'] if row['subject']=='11111'),None)
+        operation={'op':'replace' if prior else 'create','scope':'group:1','subject':'11111','expected_version':relation_version,
+                   'affinity':-12,'trust':-.6,'impression':'这次交流让我不舒服，之后需要看是否能修复。'}
+        data={'relation_operations':[operation]}
+        with self.db:apply_semantic_memory(self.db,self.store.memory,'group:1',self.cfg,payload,data,before,self.now+1)
+        expected=(-12,-.6,'这次交流让我不舒服，之后需要看是否能修复。')
+        self.assertEqual(self.db.execute('SELECT affinity,trust,impression FROM relations WHERE scope=? AND subject=?',('group:1','11111')).fetchone(),expected)
+        with self.assertRaisesRegex(ValueError,'semantic_relation_snapshot_changed'):
+            with self.db:apply_semantic_memory(self.db,self.store.memory,'group:1',self.cfg,payload,data,before,self.now+1)
+        self.assertEqual(self.db.execute('SELECT affinity,trust,impression FROM relations WHERE scope=? AND subject=?',('group:1','11111')).fetchone(),expected)
     def test_feedback_is_evidenced_quiet_is_not_rejection(self):
         p=self.store.participation
         p.outgoing('group:1','雨下得真大',self.now-200,subject='11111',event='one')
@@ -112,15 +124,27 @@ class NaturalConversation(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(p.in_conversation('group:2','我也想听',cfg,1001))
         self.assertFalse(p.in_conversation('group:1','我也想听',{**cfg,'followupSeconds':0},1001))
     async def test_delayed_combined_reflection_cannot_undo_forget(self):
-        self.fact('居住城市','杭州')
-        for i in range(35):self.store.reflection.record('group:1','11111',str(i),'我搬到了苏州','我喜欢昆曲')
+        scope='group:12345';self.fact('居住城市','杭州',scope=scope)
+        history=[{'role':'system','content':'fixture policy'}]
+        for i in range(35):
+            event=str(i)
+            user={'role':'user','content':SOURCE+model_json({'scope':scope,'sender_id':'11111','event_id':event})+'\n我搬到了苏州'}
+            reply={'role':'assistant','content':'我喜欢昆曲的水磨腔。'}
+            history.extend([user,reply])
+            self.store.reflection.record(scope,'11111',event,'我搬到了苏州','我喜欢昆曲的水磨腔。',materials=snapshots([user,reply],scope))
+        journal=ReadonlyJournal(self.db,scope);journal.serial=1
+        self.assertTrue(journal.commit(Prepared(1,None,history,history,{},1,self.now,'initial')))
+        self.store.model_journals[scope]=journal
+        before=snapshot(self.db,scope,{'11111'})
+        fact_version=next(item['version'] for item in before['memory_state']['fact_versions'] if item['subject']=='11111' and item['name']=='居住城市')
         entered=asyncio.Event();release=asyncio.Event()
         async def chat(**kw):
             entered.set();await release.wait()
-            return NS(completion_text=json.dumps({'summary':'此人说搬去了苏州','facts':[{'event':'0','name':'住所','value':'苏州','quote':'我搬到了苏州'}]}))
-        self.store.reflection.maybe_start('group:1',self.cfg,NS(text_chat=chat),lambda:True,{},contextvars.ContextVar('event',default=None))
+            data={'summary':'此人说搬去了苏州','fact_operations':[{'op':'replace','scope':scope,'subject':'11111','name':'居住城市','expected_version':fact_version,'value':'苏州','kind':'stable','importance':.8}]}
+            return NS(completion_text=json.dumps(data,ensure_ascii=False))
+        self.assertTrue(self.store.reflection.maybe_start(scope,self.cfg,summary_provider(chat),lambda:True,{},contextvars.ContextVar('event',default=None)))
         await asyncio.wait_for(entered.wait(),3)
-        run(self.path,{'action':'forget_fact','scope':'group:1','subject':'11111','name':'居住城市','expectedVersion':1},connection=self.db)
+        run(self.path,{'action':'forget_fact','scope':scope,'subject':'11111','name':'居住城市','expectedVersion':1},connection=self.db)
         release.set();await self.store.reflection.task
         self.assertEqual(self.db.execute('SELECT count(*) FROM facts WHERE active=1').fetchone()[0],0)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],0)

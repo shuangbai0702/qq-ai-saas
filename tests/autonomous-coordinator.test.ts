@@ -18,6 +18,9 @@ const usage={modelCalls:1,toolCalls:0,tokens:400};
 /** One accepted handoff goal: the only durable work item the coordinator
  * dispatches. goalId doubles as the handoff id, exactly as acceptHandoff writes. */
 async function handoffGoal(db:any,goalId:string,bot='bot-0',opts:{scope?:string;owner?:boolean;notBeforeOffsetMs?:number;objective?:string}={}){
+ // Real accepted work always has its Bot's current configuration revision.
+ // Goal reads now verify that authoritative identity before execute IPC.
+ await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) SELECT id,revision,'{}' FROM bots WHERE id=$1 ON CONFLICT(bot_id,revision) DO NOTHING",[bot]);
  const notBefore=Date.now()+(opts.notBeforeOffsetMs??-1000);
  await db.query("INSERT INTO autonomy_goals(id,bot_id,tenant_id,origin,status,title,reason,progress,success_condition,source) VALUES($1,$2,'tenant',$3,'active',$4,'real chat submitted through the authorized foreground tool','',$5,$6)",
   [goalId,bot,opts.owner?'owner_request':'contact_request',opts.objective||'deliver the accepted task result',opts.objective||'deliver the accepted task result',
@@ -97,7 +100,9 @@ test('config re-enable restores dormant model work without replaying an unknown 
   await coordinator.tick();await coordinator.active?.task;
   assert.deepEqual(executed,[pendingId],'a config revision bypasses sampling delay and restores only unstarted work');
   view=await coordinator.repo.view('tenant','bot-0');
-  assert.equal(view.goals.find((g:any)=>g.id===pendingId).status,'completed');
+  assert.equal(view.goals.find((g:any)=>g.id===pendingId).status,'active','completed research step leaves cognitive completion to the goal tool');
+  const finished=view.actions.find((a:any)=>a.goal_id===pendingId);
+  assert.equal(finished.status,'completed');assert.equal(finished.result.reviewGoalRevision,view.goals.find((g:any)=>g.id===pendingId).revision);
   assert.equal(view.actions.find((a:any)=>a.id===actionId).status,'unknown');
   assert.equal((await db.query('SELECT count(*)::int AS n FROM autonomy_actions WHERE goal_id=$1',[unknownId]))[0].n,1);
  }finally{await coordinator.stop();await db.close()}
@@ -293,7 +298,7 @@ test('accepted task result flows back, completes the goal and leaves no polling 
  }finally{await coordinator.stop();await db.close()}
 });
 
-test('a blocked refusal abandons the accepted handoff; receipts still settle through the tick loop',async()=>{
+test('a blocked handoff preserves the goal for model review; receipts still settle through the tick loop',async()=>{
  const db=await fixture();const goalId='7c9a1bd2-2a4b-4a35-9f7b-1c2d3e4f5a6c';let actionId='';
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
@@ -306,7 +311,9 @@ test('a blocked refusal abandons the accepted handoff; receipts still settle thr
   await handoffGoal(db,goalId);await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
   await coordinator.tick();await coordinator.active?.task;
   let view=await coordinator.repo.view('tenant','bot-0');
-  assert.equal(view.goals[0].status,'abandoned','a final refusal frees the accepted-goal slot');assert.equal(view.cycles[0].reason,'handoff_blocked');
+  assert.equal(view.goals[0].status,'active','execution refusal cannot decide to abandon the cognitive goal');
+  assert.equal(view.actions[0].result.reviewGoalRevision,view.goals[0].revision);
+  assert.equal(view.cycles[0].reason,'handoff_needs_review');
   // The receipt-settlement path remains for any action left uncertain.
   await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget,started_at,finished_at) VALUES('closed-cycle','bot-0','tenant',2,0,0,'old','ended','{}',now(),now())");
   await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at,result,created_at,finished_at) VALUES('later-unknown','closed-cycle','bot-0','tenant',2,'message','private:12345678','contact','unknown',now()+interval '1 hour',$1,now(),now())",[JSON.stringify({status:'unknown',summary:'protocol response lost',effects:[{id:'later-unknown:0',status:'unknown'}],usage})]);

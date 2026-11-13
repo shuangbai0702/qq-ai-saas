@@ -1,0 +1,32 @@
+{
+  "providerCalls": 0,
+  "rows": [
+    {
+      "bvid": "BV1WigzztEyx",
+      "first": {
+        "segments": []
+      },
+      "limitations": [
+        "平台未提供可用字幕；未分析音频或画面"
+      ]
+    },
+    {
+      "bvid": "BV19CoBYjEFg",
+      "first": {
+        "segments": []
+      },
+      "limitations": [
+        "平台未提供可用字幕；未分析音频或画面"
+      ]
+    },
+    {
+      "bvid": "BV1FY411z7yE",
+      "first": {
+        "segments": []
+      },
+      "limitations": [
+        "平台未提供可用字幕；未分析音频或画面"
+      ]
+    }
+  ]
+}

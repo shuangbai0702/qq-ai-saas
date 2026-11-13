@@ -114,7 +114,7 @@ def origin(scope,event):
     if scope=='bot_shared':
         try:
             channel,identifier=json.loads(event)
-            if isinstance(channel,str) and channel.startswith(('private:','group:')):return channel,str(identifier)
+            if isinstance(channel,str) and (channel=='self' or channel.startswith(('private:','group:'))):return channel,str(identifier)
         except (ValueError,TypeError):pass
     return scope,str(event)
 

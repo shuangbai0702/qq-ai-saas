@@ -3,7 +3,8 @@
 No chat sender, database connection, timer or per-bot resident Agent lives here.
 The caller supplies a current service identity, existing tools and effect fences.
 """
-import asyncio,json,time,hashlib
+import asyncio,json,time,hashlib,uuid
+import jsonschema
 from dataclasses import dataclass,field
 from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
 from astrbot.core.agent.run_context import ContextWrapper
@@ -39,6 +40,7 @@ class RunControl:
     last_progress:float=field(default_factory=time.monotonic)
     trace:dict=field(default_factory=dict)
     diagnostic_lease:dict=field(default_factory=dict,repr=False)
+    model_budget:object=field(default=None,repr=False)
 
     def progress(self):self.last_progress=time.monotonic()
 
@@ -62,6 +64,13 @@ class BoundedProvider:
         output_cap=min(c.output_tokens,c.tokens-c.used_tokens-input_estimate)
         if output_cap<min(512,c.output_tokens):c.failure='request_token_budget';raise WorkBudgetExceeded(c.failure)
         estimated=input_estimate+output_cap
+        request_id='main:'+str(uuid.uuid4())
+        if c.model_budget:
+            await c.model_budget(request_id,'reserve',estimated)
+            try:c.check()
+            except BaseException:
+                await c.model_budget(request_id,'released',0)
+                raise
         c.used_models+=1
         c.output_caps.append(output_cap)
         # The hosted pinned provider reads this context-local limit when it
@@ -79,6 +88,9 @@ class BoundedProvider:
             else:
                 c.used_tokens+=estimated;c.estimated_usage=True
                 c.failure=('model_request_failed:'+type(error).__name__ if stage in ('provider_response_received','provider_stream_started') else 'model_request_unconfirmed')
+            if c.model_budget:
+                try:await asyncio.shield(c.model_budget(request_id,'released' if stage=='request_not_sent' else 'unknown',0 if stage=='request_not_sent' else estimated))
+                except Exception:c.failure='model_budget_settlement_unknown'
             if c.trace:
                 from model_cache import record_diagnostic
                 record_diagnostic(c.diagnostic_lease,{'kind':'request_disposition',**c.trace,'status':'failed',
@@ -98,6 +110,8 @@ class BoundedProvider:
         else:
             # Missing billing data cannot refund an unobserved model request.
             c.used_tokens+=estimated;c.estimated_usage=True
+        if c.model_budget:
+            await c.model_budget(request_id,'settled',total if type(total) is int and total>0 else estimated)
         c.progress();c.check();return response
 
 
@@ -115,6 +129,11 @@ async def run(provider,control,prompt,system,tools=(),handlers=None,context=None
             if tool.name not in allowed:raise WorkStopped('unavailable_tool')
             if control.used_tools>=control.tool_calls:control.failure='tool_call_budget';raise WorkBudgetExceeded(control.failure)
             control.used_tools+=1
+            try:jsonschema.validate(arguments,tool.parameters)
+            except jsonschema.ValidationError as error:
+                yield CallToolResult(isError=True,content=[TextContent(type='text',text=json.dumps({'status':'rejected','reason':'invalid_tool_arguments','tool':tool.name,'path':list(error.absolute_path),'detail':error.message,'parameters':tool.parameters},ensure_ascii=False))])
+                control.progress()
+                return
             handler=handlers.get(tool.name)
             try:
                 if tool.name in cooling:value=cooling[tool.name]
@@ -161,14 +180,19 @@ async def run(provider,control,prompt,system,tools=(),handlers=None,context=None
     async def drive():
         # step_until_done() adds an extra forced-final request. Count our own
         # steps so its courtesy final response cannot exceed the caller budget.
-        while not runner.done():
-            control.check()
-            if control.used_models>=control.model_calls:raise WorkBudgetExceeded('model_call_budget')
-            async for _ in runner.step():pass
-            # Native runners turn provider exceptions into an error response.
-            # Recheck the authoritative control after even a terminal step.
-            control.check()
-        return runner.get_final_llm_resp()
+        try:
+            while not runner.done():
+                control.check()
+                if control.used_models>=control.model_calls:raise WorkBudgetExceeded('model_call_budget')
+                async for _ in runner.step():pass
+                # Provider failures may be converted into a native response.
+                control.check()
+            return runner.get_final_llm_resp()
+        finally:
+            event=getattr(context,'event',None)
+            if event and event.get_extra('_hosted_main_activation'):
+                owner=event.get_extra('_hosted_model_writer')
+                if owner:owner.model_writer.release()
     task=asyncio.create_task(drive());canceled=asyncio.create_task(control.cancel.wait())
     result=None;status='completed';reason=''
     try:

@@ -74,3 +74,22 @@ test('failed autonomous maintenance restores the running coordinator without rep
   agent.host.children.get=get;assert.equal(agent.host.children.get('owner:protocol'),child);
  }finally{agent.host.children.get=get;prior.stop=stop;await prior.stop();agent.host.children.clear();await db.close()}
 });
+
+
+test('held autonomous installation preserves real child ownership and never starts a coordinator request before resume',async()=>{
+ const root=await mkdtemp(path.resolve('.local/autonomous-held-')),db=await openDatabase(root),agent=new NodeAgent(db,root,Buffer.alloc(32));
+ const childRoot=path.join(root,'bots','held-fixture');await mkdir(childRoot,{recursive:true});const script=path.join(childRoot,'fixture.cjs');await writeFile(script,"setInterval(()=>console.log('held-owner-alive'),30)");
+ try{
+  await agent.host.start('held-fixture','protocol',process.execPath,[script],childRoot,process.env);
+  const child=agent.host.children.get('held-fixture:protocol')!,previous=agent.autonomy,query=db.query.bind(db);let autonomyQueries=0;
+  db.query=async(sql:any,args?:any)=>{if(String(sql).includes('autonomy_settings'))autonomyQueries++;return query(sql,args)};
+  const oldTick=agent.tick,oldShutdown=agent.shutdown;
+  await installAutonomousRuntime(agent,'f'.repeat(64),{start:false});
+  assert.notEqual(agent.autonomy,previous);assert.equal(previous.closed,true);assert.equal(agent.autonomy.closed,true);assert.equal(agent.autonomy.timer,undefined);assert.equal(agent.autonomy.heartbeatTimer,undefined);
+  assert.equal(autonomyQueries,0,'held installation must not run the immediate autonomous planning tick');
+  assert.equal(agent.tick,oldTick);assert.equal(agent.shutdown,oldShutdown);assert.equal(agent.host.children.get('held-fixture:protocol'),child);assert.equal(child.exitCode,null);
+  agent.autonomy.closed=false;agent.autonomy.start();
+  const until=Date.now()+3000;while(!autonomyQueries&&Date.now()<until)await new Promise(r=>setTimeout(r,10));assert.ok(autonomyQueries>0,'explicit resume starts the current coordinator');
+  assert.equal(agent.host.children.get('held-fixture:protocol'),child);assert.equal((await agent.host.inspect('held-fixture','protocol')).pid,child.pid);
+ }finally{await agent.autonomy.stop();await agent.host.stop('held-fixture','protocol');await db.close()}
+});

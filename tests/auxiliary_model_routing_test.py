@@ -10,7 +10,7 @@ PHASES=('private_freshness','group_freshness','group_presence','owner_contact','
 def lease(bot='one',model='aux-model'):
     return {'tenantId':'tenant-'+bot,'botId':bot,'config':{'model':'main-model','auxiliaryModel':model}}
 def event(owner):
-    return NS(get_extra=lambda key,default=None:owner if key=='_hosted_lease' else default)
+    return NS(get_extra=lambda key,default=None:owner if key=='_hosted_lease' else default,get_platform_id=lambda:'fixture')
 
 class RoutingTests(unittest.IsolatedAsyncioTestCase):
     def test_exact_five_phases_config_and_provider_binding(self):
@@ -92,6 +92,7 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
         async def prepare(self,prompt,model=None):received.append((prompt,model));raise Prepared()
         def overrides(self,payload,extra):extra.update(self.provider_config['custom_extra_body'])
         namespace={'inspect':inspect,'prepare':prepare,'current_message_event':cv,'provider_overrides':overrides,
+                   'delivery_current':lambda event:True,'stores':{},
                    'autonomy':NS(decision_token_limit=contextvars.ContextVar('route-limit',default=None))}
         module=ast.Module(body=[functions['prepare_chat_payload'],functions['decision_output_override']],type_ignores=[])
         exec(compile(module,str(source),'exec'),namespace)

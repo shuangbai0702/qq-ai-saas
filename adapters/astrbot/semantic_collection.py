@@ -17,7 +17,7 @@ OBSERVATION_POOLS=(('social_samples','subject','text','created'),
 
 
 def _channel(value):
-    return isinstance(value,str) and re.fullmatch(r'(?:private:\d{5,20}|group:\d{4,20})',value) is not None
+    return value=='self' or isinstance(value,str) and re.fullmatch(r'(?:private:\d{5,20}|group:\d{4,20})',value) is not None
 
 
 def _time(value):

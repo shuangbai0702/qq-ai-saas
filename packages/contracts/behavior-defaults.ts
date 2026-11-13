@@ -76,7 +76,6 @@ export const behaviorDefaults={
  stickerCollect:true,
  stickerGroups:[],
  dailyStickerCollectLimit:10,
- memeCooldownSeconds:20,
  cooldownSeconds:0,
  randomReplyProbability:0.03,
  quietStart:runtimeDefaults.quietStart,

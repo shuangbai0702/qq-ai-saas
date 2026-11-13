@@ -346,12 +346,8 @@ class SocialStore:
                 return {} if self.closed or not is_current() else self.context(scope,text,cfg)
 
     def image_status(self, scope, cfg, now=None, request=''):
-        now=time.time() if now is None else now
         if not cfg.get('memeEnabled'):return {'reason':'disabled'}
         if SERIOUS.search(request):return {'reason':'sensitive'}
-        row = self.db.execute('SELECT max(last_sent) FROM social_images WHERE scope=?', (scope,)).fetchone()
-        remaining=cfg.get('memeCooldownSeconds',20)-(now-row[0]) if row[0] is not None else 0
-        if remaining>0:return {'reason':'cooldown','retryAfterSeconds':math.ceil(remaining)}
         return {'reason':'available'}
 
     def image_available(self, scope, cfg, now=None, request=''):
@@ -379,8 +375,8 @@ class SocialStore:
         return next((x for x in self.catalog(gallery=True) if ids and x['id']==ids[0]),None)
 
     def reserve_image(self, scope, now=None):
-        # Reserve the conversation cooldown before awaiting transport. Daily
-        # counts are usage statistics only; a failed attempt is never imagesSent.
+        # Record attempts before awaiting transport; these statistics do not
+        # impose a daily quota or cooldown. A failed attempt is not imagesSent.
         now = time.time() if now is None else now
         day=time.strftime('%Y-%m-%d',time.gmtime(now))
         self.db.execute('INSERT INTO social_images VALUES(?,?,1,?) ON CONFLICT(scope,day) DO UPDATE SET count=count+1,last_sent=excluded.last_sent', (scope,day,now))

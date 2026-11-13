@@ -1,0 +1,170 @@
+{
+  "at": "2026-11-13T11:05:16.887Z",
+  "boundedProviderCalls": 1,
+  "providerCalls": 1,
+  "wrapperPythonConfigured": true,
+  "tests": [
+    {
+      "name": "media-readiness",
+      "ok": true,
+      "result": {
+        "ready": true,
+        "code": "ready",
+        "reason": "FFmpeg/ffprobe与受监督进程树已通过本机准入；模型接口支持仍以真实执行为准",
+        "asrConfigured": true
+      }
+    },
+    {
+      "name": "real-twelve-frame-provider",
+      "ok": true,
+      "result": {
+        "modality": "frames",
+        "bvid": "BV1WigzztEyx",
+        "cid": 25827875444,
+        "part": 1,
+        "requestedClip": [
+          40,
+          52
+        ],
+        "clip": [
+          40,
+          52
+        ],
+        "frameTimes": [
+          40.046,
+          41.046,
+          42.046,
+          43.046,
+          44.046,
+          45.046,
+          46.046,
+          47.046,
+          48.046,
+          49.046,
+          50.046,
+          51.046
+        ],
+        "requestedFrameCount": 12,
+        "requestedTimes": [
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51
+        ],
+        "missingFrames": [],
+        "timestampBasis": "decoded source PTS",
+        "frameOffsets": [
+          0.045999999999999375,
+          0.045999999999999375,
+          0.045999999999999375,
+          0.045999999999999375,
+          0.045999999999999375,
+          0.045999999999999375,
+          0.045999999999999375,
+          0.045999999999999375,
+          0.045999999999999375,
+          0.045999999999999375,
+          0.045999999999999375,
+          0.045999999999999375
+        ],
+        "frameImageMaxEdge": 256,
+        "crop": null,
+        "sourceSize": {
+          "width": 640,
+          "height": 360
+        },
+        "analysisComplete": true,
+        "finishReason": "stop",
+        "frameCount": 12,
+        "coveredRanges": [
+          [
+            40.046,
+            40.046
+          ],
+          [
+            41.046,
+            41.046
+          ],
+          [
+            42.046,
+            42.046
+          ],
+          [
+            43.046,
+            43.046
+          ],
+          [
+            44.046,
+            44.046
+          ],
+          [
+            45.046,
+            45.046
+          ],
+          [
+            46.046,
+            46.046
+          ],
+          [
+            47.046,
+            47.046
+          ],
+          [
+            48.046,
+            48.046
+          ],
+          [
+            49.046,
+            49.046
+          ],
+          [
+            50.046,
+            50.046
+          ],
+          [
+            51.046,
+            51.046
+          ]
+        ],
+        "audio": {
+          "trackDownloaded": false,
+          "analyzed": false,
+          "source": {
+            "bvid": "BV1WigzztEyx",
+            "cid": 25827875444,
+            "part": 1
+          },
+          "segments": []
+        },
+        "limitations": [
+          "只分析指定片段的离散采样帧",
+          "帧间动作、完整时间段未获验证",
+          "音频未分析",
+          "未观看完整视频"
+        ],
+        "usage": {
+          "modelRequests": 1,
+          "downloadBytes": 20450060,
+          "imageBytes": 48954,
+          "providerUsage": {
+            "prompt_tokens": 13935,
+            "completion_tokens": 1114,
+            "total_tokens": 15049
+          },
+          "costStatus": "unknown"
+        }
+      }
+    }
+  ],
+  "sentFrameCount": 12,
+  "model": "gemini-3.8-flash",
+  "providerOrigin": "https://api.llmgo.net"
+}

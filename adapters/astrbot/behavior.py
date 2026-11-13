@@ -486,14 +486,16 @@ def install_runtime(core,settings):
         subject=scope[8:] if scope.startswith('private:') else '0' if scope=='self' else ''
         identity={'bot_id':s['botId'],'scope':scope,'sender_id':'0','owner':False,'owner_id':str(b.get('ownerUin') or '') or None,'principal':'autonomous-service','group_id':scope[6:] if scope.startswith('group:') else None}
         assembly=bot_pipeline.ContextBuilder(identity,'autonomous_work')
-        assembly.contribute('delivery',{'recipient':{'scope':scope,'owner':bool(subject and subject==str(b.get('ownerUin') or ''))},'task':event.get_extra('_hosted_autonomous_action')})
+        task=event.get_extra('_hosted_autonomous_action')
+        if event.get_extra('_hosted_main_activation') and isinstance(task,dict):task={k:v for k,v in task.items() if k not in ('goalSnapshot','continuation')}
+        assembly.contribute('delivery',{'recipient':{'scope':scope,'owner':bool(subject and subject==str(b.get('ownerUin') or ''))},'task':task})
         assembly.contribute('companion',{'companion':context_foundation.live_companion(companion_state.context(st.db,s['config'],scope,now,objective))})
         shared=bot_pipeline.conversation_context(st,b,scope,subject,objective,now)
         shared['execution_experience']=execution_memory.context_projection(event.get_extra('_hosted_execution_memory',{'status':'not_loaded'}),shared['memory_foundation'])
         assembly.contribute('memory',{'execution_memory_guidance':execution_memory.GUIDANCE})
         assembly.contribute('memory',{key:shared[key] for key in ('memory_foundation','state','recent_messages','recent_cross_session_messages','conversation_timeline','autonomous_experience','execution_experience','group_round_history','active_agreements')})
         assembly.contribute('conversation',{key:shared[key] for key in ('dialogue','ambient_group_messages')})
-        if (event.get_extra('_hosted_autonomous_action') or {}).get('kind')=='message':
+        if (event.get_extra('_hosted_autonomous_action') or {}).get('kind')=='message' or event.get_extra('_hosted_main_activation'):
             social_cfg={**b,'_qqAccount':str(event.get_self_id())}
             gate=st.social.image_status(scope,social_cfg,request=objective)
             social_cfg['memeEnabled']=gate['reason']=='available'
@@ -1400,12 +1402,12 @@ def install_runtime(core,settings):
             # Keep the same base system bytes for every event. Whether a visual
             # capability is configured is supplied in the current platform
             # event data and the actual tool list, both rechecked by the backend.
-            bound.arguments['system_prompt']=persona_prompt(bound.arguments.get('system_prompt'),images=True,chat=not event.get_extra('_hosted_internal_work'))
+            bound.arguments['system_prompt']=persona_prompt(bound.arguments.get('system_prompt'),images=True,chat=not event.get_extra('_hosted_internal_work') or event.get_extra('_hosted_main_activation'))
             # Never clean or reinterpret an already submitted assistant prefix.
             # New provider responses are sanitized before SDK admission.
             if isinstance(bound.arguments.get('contexts'),list):
                 bound.arguments['contexts']=prepare_history(bound.arguments['contexts'])
-            if event.get_extra('_hosted_internal_work') and (event.get_extra('_hosted_autonomous_action') or {}).get('kind')=='research':
+            if event.get_extra('_hosted_internal_work') and not event.get_extra('_hosted_main_activation') and (event.get_extra('_hosted_autonomous_action') or {}).get('kind')=='research':
                 # Shared identity/memory still come from ContextBuilder. A
                 # internal task does not receive conflicting QQ bubble, meme
                 # and conversational-final-answer rules on every tool step.
@@ -1501,7 +1503,7 @@ def install_runtime(core,settings):
         stage=None if success else submission_stage()
         submitted_unknown=bool(stage and stage!='request_not_sent')
         retained=False;settled_state='abort'
-        if event.get_extra('_hosted_internal_work'):
+        if event.get_extra('_hosted_internal_work') and not event.get_extra('_hosted_main_activation'):
             # Existing inner-Work lifecycle remains outside the foreground R4
             # scope; keep its prior settlement behavior unchanged.
             valid=(current(event) and delivery_current(event) and stores.get(event.get_platform_id()) is owned
@@ -1642,14 +1644,16 @@ def install_runtime(core,settings):
                 # the single finalization-time record merges them by digest.
                 materials_acc.extend(captured)
         internal_identity=image_event.get_extra('_hosted_internal_work') if image_event else None
-        internal=bool(owned and work and work.source=='autonomous' and isinstance(internal_identity,dict) and internal_identity.get('id')==work.event_id)
-        shared_mode=bool(foreground and owned and owned.shared_context)
+        main_activation=bool(image_event and image_event.get_extra('_hosted_main_activation'))
+        internal=bool(not main_activation and owned and work and work.source=='autonomous' and isinstance(internal_identity,dict) and internal_identity.get('id')==work.event_id)
+        canonical_main=bool(image_event and image_event.get_extra('_hosted_canonical_main'))
+        shared_mode=bool(foreground and owned and (owned.shared_context or main_activation or canonical_main))
         if shared_mode:
             import shared_context
-            image_event.set_extra('_hosted_journal_scope',shared_context.JOURNAL_SCOPE)
+            image_event.set_extra('_hosted_journal_scope',image_event.get_extra('_hosted_main_journal_scope') or (shared_context.JOURNAL_SCOPE if owned.shared_context else work.scope))
         if (foreground or internal) and isinstance(projected,list):
             from readonly_journal import ReadonlyJournal,visible_summary_ids
-            key=('autonomous',work.event_id) if internal else shared_context.JOURNAL_SCOPE if shared_mode else work.scope
+            key=image_event.get_extra('_hosted_main_journal_scope') if main_activation else ('autonomous',work.event_id) if internal else shared_context.JOURNAL_SCOPE if owned.shared_context and shared_mode else work.scope
             journal=owned.model_journals.pop(key,None)
             if journal is None:journal=ReadonlyJournal(owned.db,key if isinstance(key,str) else None)
             owned.model_journals[key]=journal
@@ -1661,7 +1665,8 @@ def install_runtime(core,settings):
                 self._sanitize_assistant_messages(normalized)
                 projected=normalized['messages']
                 current_native=shared_context.native_tail(projected,work.scope,work.event_id)[0] if work.source in ('message','deferred_group') else None
-                additions=shared_context.queued(owned.db,setting(image_event)['config'],journal,owned.shared_group_limit,current=(work.scope,str(work.event_id),current_native) if current_native else None)
+                already_current=bool(journal.last and any((o:=source(m)) and o['scope']==work.scope and str(o['event_id'])==str(work.event_id) for m in journal.last.base))
+                additions=shared_context.queued(owned.db,setting(image_event)['config'],journal,owned.shared_group_limit,current=(work.scope,str(work.event_id),current_native) if current_native else None) if owned.shared_context else ([current_native] if current_native and not already_current else [])
                 additions=await constrain_messages(additions,image_memo)
                 projected=shared_context.refresh_deliveries(projected,owned.db,journal)
                 from system_contract import request_identity
@@ -1734,6 +1739,9 @@ def install_runtime(core,settings):
                                          unprojected=unprojected_for_journal,coverage_view=native_view,
                                          system_transition_authorized=system_transition_authorized)
                 if prepared:prepared.validation_dependency=dependency
+                if prepared and main_activation:
+                    from activity_context import tail_service
+                    tail_service(prepared,journal,work)
                 if prepared:
                     from readonly_journal import capacity_evidence
                     metrics.setdefault(image_event.get_platform_id(),{})['contextCapacity']={**capacity_evidence(prepared.usage),'candidate':True}
@@ -1765,7 +1773,14 @@ def install_runtime(core,settings):
                 # back to a prefix without this tail. Refuse before HTTP if
                 # durable staging fails; settle-time retention cannot protect
                 # against a process crash between submission and settlement.
-                if not journal.stage_candidate(prepared):
+                def stage_activation():
+                    action=image_event.get_extra('_hosted_autonomous_action') or {}
+                    if main_activation and action.get('autonomousMoment') is True and not action.get('continuation'):
+                        from activation_rounds import record as record_activation
+                        from activity_context import event_key as activation_event
+                        record_activation(owned.db,key,activation_event(work,key),work.event_id,source_scope=work.scope,subject=str(image_event.get_self_id()),at=work.source_at)
+                if main_activation or canonical_main:prepared.main_conversation=True
+                if not journal.stage_candidate(prepared,on_stage=stage_activation):
                     from model_cache import record_diagnostic
                     record_diagnostic(image_event.get_extra('_hosted_lease'),{'kind':'context','phase':'inner_execution' if internal else 'foreground',
                         'workId':work.event_id,'resetReason':'candidate_stage_failed','resetDetail':journal.recovery_error or 'stage_refused'})
@@ -1777,6 +1792,10 @@ def install_runtime(core,settings):
                         except Exception:pass
                     from readonly_journal import ContextRecoveryUnavailable
                     raise ContextRecoveryUnavailable('The exact request journal could not be persisted; no model request was submitted.')
+                if main_activation:
+                    image_event.set_extra('_hosted_main_request_staged',True)
+                    if (image_event.get_extra('_hosted_autonomous_action') or {}).get('autonomousMoment'):
+                        image_event.set_extra('_hosted_activation_admitted',True)
                 if foreground and shared_mode:
                     owned.pipeline.request_inputs(work,prepared.base)
                 from model_cache import record_diagnostic
@@ -1822,7 +1841,10 @@ def install_runtime(core,settings):
     ProviderOpenAIOfficial._apply_provider_specific_request_overrides=decision_output_override
     chat=ProviderOpenAIOfficial.text_chat;stream=ProviderOpenAIOfficial.text_chat_stream
     async def writer_enter(st,event,foreground):
-        if st is None or not st.shared_context or not event or not (foreground or event.get_extra('_hosted_internal_work')):return None
+        if st is None or not event:return None
+        from activity_context import canonical_main
+        if not st.shared_context and canonical_main(st,event):event.set_extra('_hosted_canonical_main',True)
+        if not (st.shared_context or event.get_extra('_hosted_main_activation') or event.get_extra('_hosted_canonical_main')) or not (foreground or event.get_extra('_hosted_internal_work')):return None
         await st.model_writer.acquire()
         event.set_extra('_hosted_model_writer',st)
         if not current(event) or not delivery_current(event):
@@ -1832,27 +1854,31 @@ def install_runtime(core,settings):
             event.set_extra('_hosted_journal_scope',JOURNAL_SCOPE)
         return st.model_writer
     def record_shared_completion(st,event,response):
-        if not st or not st.shared_context or not event or event.get_extra('_hosted_internal_work'):return
+        if not st or not event:return
+        main_activation=event.get_extra('_hosted_main_activation')
+        if not st.shared_context and not main_activation and not event.get_extra('_hosted_canonical_main'):return
+        if event.get_extra('_hosted_internal_work') and not main_activation:return
         from shared_context import JOURNAL_SCOPE,settle_inputs
-        journal=st.model_journals.get(JOURNAL_SCOPE)
+        logical=event.get_extra('_hosted_main_journal_scope') if main_activation else JOURNAL_SCOPE if st.shared_context else event.get_extra('_hosted_pipeline').scope
+        journal=st.model_journals.get(logical)
         if journal and journal.last:
             work=event.get_extra('_hosted_pipeline')
             # Only a terminal answer goes here. Tool call/result adjacency is
             # captured together by the next request while this writer is held.
             if not getattr(response,'tools_call_names',None) and response.completion_text:
                 journal.append_completion({'role':'assistant','content':response.completion_text or ''},model_origin=(work.scope,work.event_id,work.subject))
-            st.pipeline.seen_inputs(work,journal.last.base)
+            if not main_activation:st.pipeline.seen_inputs(work,journal.last.base)
             from summary_material import snapshots,remember
             from shared_context import event_key
-            current_id=event_key({'scope':work.scope,'event_id':work.event_id})
-            materials=snapshots(journal.last.base,JOURNAL_SCOPE,db=st.db)
+            current_id=event_key({'scope':work.scope,'event_id':work.event_id}) if logical==JOURNAL_SCOPE else str(work.event_id)
+            materials=snapshots(journal.last.base,logical,db=st.db)
             for item in materials:
-                actual=st.db.execute('SELECT answer FROM memory_rounds WHERE scope=? AND event=?',(JOURNAL_SCOPE,item['event'])).fetchone()
+                actual=st.db.execute('SELECT answer FROM memory_rounds WHERE scope=? AND event=?',(logical,item['event'])).fetchone()
                 item['reply']=actual[0] if actual else ''
                 if item['event']==current_id and getattr(response,'tools_call_names',None):item['complete']=False
-            remember(st.db,JOURNAL_SCOPE,materials)
+            remember(st.db,logical,materials)
             work.summary_materials.extend(materials)
-            settle_inputs(st.db,journal)
+            if st.shared_context:settle_inputs(st.db,journal)
     async def text_chat(self,*args,**kwargs):
         started=time.time()
         journal_token=model_journal_pending.set(None)
@@ -1993,12 +2019,13 @@ def install_runtime(core,settings):
         """R2 effective-round settlement: one Work earns at most one memory
         round, recorded exactly once at Work finalization, adjacent to
         pipeline.finish. Individual sends only accumulated their confirmed
-        output on the Work. A round that did not fully complete with real
-        receipts is never minted here; its evidence stays in the pipeline
-        ledger, the pending question row and the retained wire."""
+        output on the Work. At least one confirmed conversational output earns
+        one round; partial/unknown remaining effects retain their own ledger
+        status and are never promoted to successful delivery by this counter."""
         id=event.get_platform_id();s=lease;cfg=s['config'];rhythm=cfg.get('behavior') or {}
-        if work.status!='sent' or work.planned_messages<=0 or work.confirmed_messages!=work.planned_messages:return
-        if event.get_extra('_hosted_model_error',False) or event.get_extra('_hosted_platform_notice',False):return
+        if event.get_extra('_hosted_main_activation'):return
+        if work.confirmed_messages<=0:return
+        if event.get_extra('_hosted_platform_notice',False):return
         if event.get_extra('_hosted_memory_epoch',st.reflection.epoch())!=st.reflection.epoch():return
         if not event.get_extra('_hosted_initiative',False):
             import periodic_guidance,shared_context
@@ -2008,7 +2035,8 @@ def install_runtime(core,settings):
         if not answer.strip():
             kinds=list(dict.fromkeys(work.confirmed_media_kinds))
             if kinds:answer='[平台已确认发送非文本消息：'+','.join(kinds)+']'
-        if st.shared_context and work.source not in ('message','deferred_group'):
+        service_dialogue=work.source=='autonomous' and (event.get_extra('_hosted_autonomous_action') or {}).get('kind')=='message'
+        if st.shared_context and work.source not in ('message','deferred_group','owner_contact','scheduled_contact') and not service_dialogue:
             from shared_context import JOURNAL_SCOPE,event_key
             from summary_material import confirmed_reply,remember
             identifier=event_key({'scope':work.scope,'event_id':work.event_id})
@@ -2017,7 +2045,6 @@ def install_runtime(core,settings):
             st.db.execute('UPDATE memory_pending SET answer=? WHERE scope=? AND event=?',(answer,JOURNAL_SCOPE,identifier))
             st.db.commit()
             return # A service send is evidence, never a fabricated user round.
-        if event.get_extra('_hosted_initiative',False):return
         question=event.get_message_str()
         if not question.strip() and not any(isinstance(m,dict) and m.get('event')==str(work.event_id) for m in work.summary_materials or []):
             components=list(event.get_messages())
@@ -2029,6 +2056,9 @@ def install_runtime(core,settings):
             from shared_context import JOURNAL_SCOPE,event_key
             reflection_scope=JOURNAL_SCOPE;reflection_event=event_key({'scope':work.scope,'event_id':work.event_id});round_messages=None
             question=next((m['text'] for m in work.summary_materials if m.get('scope')==reflection_scope and m.get('event')==reflection_event),question)
+        if service_dialogue or work.source in ('owner_contact','scheduled_contact'):
+            from activation_rounds import annotate_service
+            annotate_service(st.db,reflection_scope,reflection_event,work.event_id,source_scope=work.scope)
         st.reflection.record(reflection_scope,work.subject,reflection_event,question,answer,context_through=event.get_extra('_hosted_context_at'),context_messages=round_messages,materials=work.summary_materials)
         provider=provider_for(id)
         st.reflection.maybe_start(reflection_scope,{**rhythm,'_persona':cfg.get('systemPrompt','')},provider,lambda:settings.get(id) is s and id not in core.event_bus.stopped_platforms,metrics.setdefault(id,{}),current_message_event)

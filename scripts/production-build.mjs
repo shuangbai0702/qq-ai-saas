@@ -24,6 +24,8 @@ const sourceHashes={};for(const file of entries)sourceHashes[path.relative(root,
 // The behavior layer runs as Python source next to the compiled ESM. A
 // release manifest that omits it cannot detect old source with new bundles.
 const pythonSources={};const contracts={};const migrations={};
+const runtimeScripts={};
+for(const file of await readdir('scripts'))if(file.endsWith('.py')||file.startsWith('media-')||file==='media-asr-requirements.txt')runtimeScripts['scripts/'+file]=sha(await readFile('scripts/'+file));
 for(const file of await readdir('adapters/astrbot'))if(file.endsWith('.py'))pythonSources['adapters/astrbot/'+file]=sha(await readFile('adapters/astrbot/'+file));
 for(const file of await readdir('packages/contracts'))if(file.endsWith('.json'))contracts['packages/contracts/'+file]=sha(await readFile('packages/contracts/'+file));
 await mkdir('dist-server/packages/contracts',{recursive:true});
@@ -33,4 +35,4 @@ const revision=spawnSync('git',['rev-parse','HEAD'],{encoding:'utf8',windowsHide
 if(revision.status!==0)throw new Error('Production build requires a traceable Git revision');
 const tree=spawnSync('git',['status','--porcelain','--untracked-files=normal'],{encoding:'utf8',windowsHide:true});
 if(tree.status!==0)throw new Error('Cannot verify production source state');
-await writeFile('dist-server/build.json',JSON.stringify({builtAt:new Date().toISOString(),gitCommit:revision.stdout.trim(),gitDirty:!!tree.stdout.trim(),node:process.version,version:pkg.version,entry:'apps/control-api/src/main.js',sourceHashes,pythonSources,contracts,migrations,note:'Compiled ESM: no tsx or resident Vite. Keep source Python launchers and references alongside this output.'},null,2));
+await writeFile('dist-server/build.json',JSON.stringify({builtAt:new Date().toISOString(),gitCommit:revision.stdout.trim(),gitDirty:!!tree.stdout.trim(),node:process.version,version:pkg.version,entry:'apps/control-api/src/main.js',sourceHashes,pythonSources,runtimeScripts,contracts,migrations,note:'Compiled ESM: no tsx or resident Vite. Keep source Python launchers and references alongside this output.'},null,2));

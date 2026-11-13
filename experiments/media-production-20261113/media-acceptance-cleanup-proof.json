@@ -1,0 +1,60 @@
+{
+  "liveProcesses": [
+    {
+      "creationDate": "2026-11-12T19:46:54.7112930+08:00",
+      "pid": 6672
+    },
+    {
+      "creationDate": "2026-11-12T19:46:52.2932630+08:00",
+      "pid": 13844
+    }
+  ],
+  "workspaces": [
+    {
+      "entries": 0,
+      "name": "scratch"
+    },
+    {
+      "entries": 0,
+      "name": "long-scratch"
+    },
+    {
+      "entries": 0,
+      "name": "continuation-scratch"
+    }
+  ],
+  "tasks": [
+    {
+      "lastTaskResult": 0,
+      "name": "FishBot Media Acceptance 20261113",
+      "state": "Ready"
+    },
+    {
+      "lastTaskResult": 0,
+      "name": "FishBot Public Media Acceptance 20261113",
+      "state": "Ready"
+    },
+    {
+      "lastTaskResult": 0,
+      "name": "FishBot ASR Negative Acceptance 20261113",
+      "state": "Ready"
+    },
+    {
+      "lastTaskResult": 0,
+      "name": "FishBot Long Media Acceptance 20261113",
+      "state": "Ready"
+    },
+    {
+      "lastTaskResult": 0,
+      "name": "FishBot Continuation Media Acceptance 20261113",
+      "state": "Ready"
+    },
+    {
+      "lastTaskResult": 0,
+      "name": "FishBot Twelve Media Acceptance 20261113",
+      "state": "Ready"
+    }
+  ],
+  "runtimeConfigStillAbsent": true,
+  "ownedAcceptanceTasksRemoved": true
+}

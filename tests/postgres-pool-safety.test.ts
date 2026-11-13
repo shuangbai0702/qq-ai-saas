@@ -16,7 +16,7 @@ test('statement failure rolls back; broken rollback discards connection and pres
  class FixturePool extends EventEmitter{
   operations:string[]=[];released:boolean[]=[];rollbackFailure=false;ended=false;
   constructor(public options:any){super();pool=this}
-  async query(){return{rows:Array.from({length:11},(_,i)=>({version:String(i+1).padStart(3,'0')}))}}
+  async query(){return{rows:Array.from({length:12},(_,i)=>({version:String(i+1).padStart(3,'0')}))}}
   async connect(){return{query:async(sql:string)=>{this.operations.push(sql);if(sql==='ROLLBACK'&&this.rollbackFailure)throw new Error('broken socket');return{rows:[]}},release:(discard:boolean)=>this.released.push(discard)}}
   async end(){this.ended=true}
  }

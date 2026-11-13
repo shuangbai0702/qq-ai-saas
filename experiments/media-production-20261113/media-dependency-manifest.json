@@ -1,0 +1,42 @@
+{
+  "configuredCandidateSha256": "75bc295c63101164dbd7b85c1161de5aa3d5507d4b8c7fe282c218cc9e6017c2",
+  "asrExecutable": "C:/FishBotPredeploy20261112/media-asr-20261113/venv/Scripts/python.exe",
+  "files": {
+    "C:/FishBotPredeploy20261112/media-asr-20261113/media-asr.py": {
+      "bytes": 3841,
+      "sha256": "2d201dbf66319d2dfb80eea96a98ff930555b859e0542b6bbac04861d4ffbb50"
+    },
+    "C:/FishBotPredeploy20261112/media-asr-20261113/model-small/vocabulary.txt": {
+      "bytes": 459861,
+      "sha256": "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913"
+    },
+    "C:/FishBotPredeploy20261112/media-asr-20261113/model-small/config.json": {
+      "bytes": 2370,
+      "sha256": "b55496ac7940a7ae47d2c01eab40edfd8701feec1229d9cce3b40014383fb828"
+    },
+    "C:/FishBotPredeploy20261112/media-asr-20261113/ffmpeg-runtime/ffmpeg-9.0.2-essentials_build/bin/ffmpeg.exe": {
+      "bytes": 105423872,
+      "sha256": "3256173f3f8bffd7df12227c68adf68025edb1832273a9530688a7bb1ed8edec"
+    },
+    "C:/FishBotPredeploy20261112/media-asr-20261113/model-small/tokenizer.json": {
+      "bytes": 2203239,
+      "sha256": "fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab"
+    },
+    "C:/FishBotPredeploy20261112/media-asr-20261113/model-small/model.bin": {
+      "bytes": 483546902,
+      "sha256": "3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671"
+    },
+    "C:/FishBotPredeploy20261112/media-asr-20261113/ffmpeg-runtime/ffmpeg-9.0.2-essentials_build/bin/ffprobe.exe": {
+      "bytes": 105221120,
+      "sha256": "f0d36ecbbdd3bcfac3efa078c96c7271c2e68b3810595552ac3b7f17e9a65c52"
+    }
+  },
+  "versions": {
+    "python": "3.11.9",
+    "faster-whisper": "1.2.1",
+    "ctranslate2": "4.9.0",
+    "psutil": "7.2.2"
+  },
+  "sourceScriptSha256": "2d201dbf66319d2dfb80eea96a98ff930555b859e0542b6bbac04861d4ffbb50",
+  "scriptMatchesSource": true
+}

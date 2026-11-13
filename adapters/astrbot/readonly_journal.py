@@ -203,6 +203,9 @@ class Prepared:
     # again, refunded or re-issued, whatever happens to the candidate after
     # the durable stage.
     reconstruction_consumed:bool=False
+    # Local routing provenance, never a Provider field or another transcript.
+    # Survives legal retirement of the service block that established it.
+    main_conversation:bool=False
 
 def confirmed_group_extension(old,base,state,turn,db=None):
     """Bridge only the SDK's explicit per-round group history replacement.
@@ -439,7 +442,7 @@ class ReadonlyJournal:
                 value=json.loads(payload) if version==1 else journal_storage.decode(payload,self.scope_key,read_blob)
             except (TypeError,ValueError,KeyError,IndexError):self.recovery_error='journal_snapshot_invalid';return
             required={'scope','base','wire','state','turns','at','group_turn','base_chars','detail','usage','authority','retirement'}
-            if not isinstance(value,dict) or set(value)!=required or value['scope']!=self.scope_key or not isinstance(value['base'],list) or not isinstance(value['wire'],list) or not isinstance(value['state'],dict) or type(value['turns']) is not int or not isinstance(value['at'],(int,float)):
+            if not isinstance(value,dict) or set(value)-{'main_conversation'}!=required or type(value.get('main_conversation',False)) is not bool or value['scope']!=self.scope_key or not isinstance(value['base'],list) or not isinstance(value['wire'],list) or not isinstance(value['state'],dict) or type(value['turns']) is not int or not isinstance(value['at'],(int,float)):
                 self.recovery_error='journal_snapshot_invalid';return
             group_turn=value['group_turn']
             if group_turn is not None:
@@ -460,6 +463,7 @@ class ReadonlyJournal:
             except (TypeError,ValueError,KeyError,IndexError):
                 self.recovery_error='journal_reading_definition_invalid';return
             self.last=Prepared(0,None,value['base'],value['wire'],value['state'],value['turns'],value['at'],'restored',group_turn,value['base_chars'],value['detail'],value['usage'],authority,value['retirement'])
+            self.last.main_conversation=value.get('main_conversation',False)
             return
         overflow=self.db.execute('SELECT overflow FROM fishbot_readonly_journal_meta WHERE id=1').fetchone()[0]
         # An operator-enrolled legacy scope can establish exactly one new
@@ -490,11 +494,12 @@ class ReadonlyJournal:
         value={'scope':self.scope_key,'base':prepared.base,'wire':prepared.wire,'state':prepared.state,'turns':prepared.turns,'at':prepared.at,
                'group_turn':prepared.group_turn,'base_chars':prepared.base_chars,'detail':prepared.detail,'usage':prepared.usage,
                'authority':prepared.authority,'retirement':prepared.retirement}
+        if prepared.main_conversation:value['main_conversation']=True
         return journal_storage.encode(value)
 
     def _snapshot(self,prepared):return self._snapshot_parts(prepared)[0]
 
-    def _persist(self,prepared,state='ready',settle_permit=False,consume_permit=False,tombstone=True,settle_cutover=True,model_origin=None):
+    def _persist(self,prepared,state='ready',settle_permit=False,consume_permit=False,tombstone=True,settle_cutover=True,model_origin=None,on_stage=None):
         if self.db is None or self.scope_key is None:return True
         try:payload,blobs=self._snapshot_parts(prepared)
         except (TypeError,ValueError):self.recovery_error='journal_snapshot_serialize';return False
@@ -611,10 +616,11 @@ class ReadonlyJournal:
             if consume_permit and json.loads(self.scope_key)=='bot_shared' and 'memory_message_sources' in tables:
                 from message_provenance import prune_retired_model_owners
                 prune_retired_model_owners(self.db,'bot_shared',prepared.base)
+            if on_stage is not None:on_stage()
             self.db.commit();return True
         except BaseException:self.db.rollback();raise
 
-    def stage_candidate(self,prepared):
+    def stage_candidate(self,prepared,on_stage=None):
         """Persist the exact outgoing candidate before any HTTP submission.
 
         Once a request may leave the process, the next request must never fall
@@ -639,7 +645,7 @@ class ReadonlyJournal:
                      and prepared.reconstruction_authority is not None
                      and getattr(prepared.reconstruction_authority,'db',None) is self.db)
         saved=(self.recovery_error,self.retired_reason)
-        ok=self._persist(prepared,'ready',consume_permit=consume,tombstone=False,settle_cutover=False)
+        ok=self._persist(prepared,'ready',consume_permit=consume,tombstone=False,settle_cutover=False,on_stage=on_stage)
         self.recovery_error,self.retired_reason=saved
         if not ok:return False
         self._staged=prepared.serial
@@ -1069,7 +1075,9 @@ class ReadonlyJournal:
         # wire may contain a shorter authority-only delta when its policy is
         # byte-identical to the latest committed policy.
         stored_authority=copy.deepcopy(event_packet) if event_packets else authority
-        return Prepared(self.serial,stamp,base,wire,copy.deepcopy(state),turns,now,reason,group_turn,base_chars,detail,usage,stored_authority,retirement,reconstruction_permit,reconstruction_authority,None,retirement_deferred,False)
+        candidate=Prepared(self.serial,stamp,base,wire,copy.deepcopy(state),turns,now,reason,group_turn,base_chars,detail,usage,stored_authority,retirement,reconstruction_permit,reconstruction_authority,None,retirement_deferred,False)
+        candidate.main_conversation=bool(old and old.main_conversation)
+        return candidate
 
     def retire_semantic_batch(self,permit,authority,state,retirement=None,event_authority=None):
         """Immediately rebuild a settled Journal from a committed summary.
@@ -1100,6 +1108,7 @@ class ReadonlyJournal:
                 'authority':{},'policy':{},'currentGuidance':'','meaning':'已完成语义检查点；下一真实平台事件提供当前身份与现场。'})}
         candidate=Prepared(self.serial,self.last.stamp,base,wire,state,1,time.time(),'semantic_batch_retirement',
             None,usage['textChars'],'',usage,stored_authority,retirement,permit,authority)
+        candidate.main_conversation=self.last.main_conversation
         if not self.stage_candidate(candidate):return False
         return self._accept_staged(candidate)
 

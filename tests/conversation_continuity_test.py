@@ -4,6 +4,7 @@ from types import SimpleNamespace as NS
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
 from behavior import BehaviorStore
 from memory_reflection import invalidate
+from summary_stream_fixture import summary_provider
 import group_actions
 
 
@@ -16,10 +17,24 @@ class Continuity(unittest.IsolatedAsyncioTestCase):
     def pending(self,event='unanswered',person=None,scope=None):
         self.store.reflection.incoming(scope or self.scope,person or self.person,event,'刚在群里开头了',self.now)
     def seed(self):
-        for i in range(35):self.store.reflection.record(self.scope,self.person,'answered'+str(i),'真实问题'+str(i),'真实回复'+str(i),self.now+i+1)
+        from context_protocol import SOURCE,model_json
+        from summary_material import snapshots
+        from readonly_journal import ReadonlyJournal,Prepared
+        from semantic_runtime import finish_semantic_batches
+        native=[{'role':'system','content':'Synthetic continuity fixture'}]
+        for event,question in self.db.execute('SELECT event,question FROM memory_pending WHERE scope=?',(self.scope,)):
+            native.append({'role':'user','content':SOURCE+model_json({'scope':self.scope,'sender_id':self.person,'event_id':event})+'\n'+question})
+        for i in range(35):
+            event='answered'+str(i);question='真实问题'+str(i);answer='真实回复'+str(i)
+            pair=[{'role':'user','content':SOURCE+model_json({'scope':self.scope,'sender_id':self.person,'event_id':event})+'\n'+question},{'role':'assistant','content':answer}]
+            self.store.reflection.record(self.scope,self.person,event,question,answer,self.now+i+1,materials=snapshots(pair,self.scope));native.extend(pair)
+        journal=ReadonlyJournal(self.db,self.scope);journal.serial=1
+        self.assertTrue(journal.commit(Prepared(1,None,native,native,{},35,self.now+36,'initial')))
+        self.store.model_journals[self.scope]=journal
+        self.store.reflection.checkpoint_callback=lambda scope:finish_semantic_batches(self.store,{'memorySummary':True},scope)
     async def summarize(self,chat,current=lambda:True):
-        self.store.reflection.maybe_start(self.scope,{'memorySummary':True,'summaryRounds':35},NS(text_chat=chat),current,{},self.event_var)
-        await self.store.reflection.task
+        started=self.store.reflection.maybe_start(self.scope,{'memorySummary':True,'summaryRounds':35},summary_provider(chat),current,{},self.event_var)
+        if started:await self.store.reflection.task
     def test_unanswered_group_visible_in_private_with_real_source_and_time(self):
         self.pending()
         recent=self.store.reflection.recent(self.private,self.person,now=self.now+1)
@@ -43,10 +58,10 @@ class Continuity(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(sum(len(json.dumps(r,ensure_ascii=False,separators=(',',':'))) for r in recent),3000)
     async def test_successful_summary_atomically_replaces_only_covered_pending(self):
         self.pending();self.seed();calls=[]
-        async def chat(**kw):calls.append(kw);return NS(completion_text='真实群聊摘要')
+        async def chat(**kw):calls.append(kw);return NS(completion_text=json.dumps({'summary':'真实群聊摘要'}))
         await self.summarize(chat)
         payload=json.loads(calls[0]['prompt']);turns=payload['turns'] if isinstance(payload,dict) else payload
-        self.assertIn('unanswered',{r['event'] for r in turns})
+        self.assertIn('unanswered',{r['event'] for r in turns+payload.get('incomplete_material',[])},'legacy missing captures must still be offered as honest available fragments')
         self.assertEqual(self.store.reflection.recent(self.private,self.person),[])
         self.assertEqual(self.store.reflection.recall(self.private,'真实群聊',subject=self.person),[],'a query cannot pull another scope summary into this foundation')
         foundation=self.store.reflection.foundation(self.scope)
@@ -57,19 +72,23 @@ class Continuity(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls),1)
     async def test_new_messages_and_updated_answer_while_compressing_are_retained(self):
         self.pending();self.seed();entered=asyncio.Event();release=asyncio.Event()
-        async def chat(**kw):entered.set();await release.wait();return NS(completion_text='摘要只覆盖旧版本')
+        async def chat(**kw):entered.set();await release.wait();return NS(completion_text=json.dumps({'summary':'摘要只覆盖旧版本'}))
         task=asyncio.create_task(self.summarize(chat));await asyncio.wait_for(entered.wait(),3)
         self.store.reflection.record(self.scope,self.person,'unanswered','刚在群里开头了','后来真实回复',self.now+6)
         self.pending('newer');release.set();await task
         records=self.store.reflection.recent(self.private,self.person,now=self.now+7)
-        self.assertEqual({r['source_event'] for r in records},{'unanswered','newer'})
+        # A concurrent change invalidates the summary CAS; earlier originals
+        # also remain until a new valid summary and Journal handoff succeed.
+        self.assertTrue({'unanswered','newer'}<={r['source_event'] for r in records})
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],0)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM memory_pending WHERE event LIKE 'answered%' ").fetchone()[0],35)
         self.assertEqual(next(r for r in records if r['source_event']=='unanswered')['text'],'刚在群里开头了')
         self.assertEqual(self.db.execute('SELECT answer FROM memory_pending WHERE event=?',('unanswered',)).fetchone()[0],'后来真实回复')
     async def test_failure_and_stale_summary_do_not_erase_pending(self):
         self.pending();self.seed()
         async def failed(**kw):raise TimeoutError()
         await self.summarize(failed);self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],36)
-        async def chat(**kw):return NS(completion_text='迟到摘要')
+        async def chat(**kw):return NS(completion_text=json.dumps({'summary':'迟到摘要'}))
         await self.summarize(chat,lambda:False)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],36)
     def test_ambient_messages_do_not_create_more_summary_calls_and_forget_clears(self):

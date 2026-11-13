@@ -12,6 +12,7 @@ async function fixture(){
  const close=db.close.bind(db);db.close=async()=>{try{await close()}finally{await rm(root,{recursive:true,force:true})}};
  await db.query("INSERT INTO tenants(id,name) VALUES('tenant','tenant')");
  await db.query("INSERT INTO bots(id,tenant_id,name,protocol,desired_state,health) VALUES('bot','tenant','bot','mock','running',$1)",[JSON.stringify({sampledAt:new Date().toISOString(),protocol:{online:true}})]);
+ await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) VALUES('bot',1,'{\"proactive\":true,\"behavior\":{\"ownerUin\":\"12345678\"}}')");
  return db;
 }
 const usage={modelCalls:1,toolCalls:0,tokens:400};
@@ -95,7 +96,7 @@ test('an accepted handoff past its seven-day reply window is refused and frees t
   await coordinator.tick();await coordinator.active?.task;
   assert.equal(executions,1,'the inner runtime is the authority that refuses the expired window');
   const view=await coordinator.repo.view('tenant','bot');
-  assert.equal(view.goals[0].status,'abandoned','the refused handoff frees its slot without a fake success');
-  assert.equal(view.actions[0].status,'blocked');assert.equal(view.cycles[0].reason,'handoff_blocked');
+  assert.equal(view.goals[0].status,'active','an execution refusal cannot decide the semantic goal status');
+  assert.equal(view.actions[0].status,'blocked');assert.equal(view.cycles[0].reason,'handoff_needs_review');
  }finally{await coordinator.stop();await db.close()}
 });

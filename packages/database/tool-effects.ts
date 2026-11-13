@@ -55,6 +55,26 @@ export class ToolEffects {
    if(operation.write){const [unknown]=await tx.query("SELECT id FROM tool_effects WHERE bot_id=$1 AND tenant_id=$2 AND args_digest=$3 AND state IN ('dispatching','unknown') LIMIT 1",[bot.id,bot.tenant_id,hash]);if(unknown)throw toolConflict('相同操作结果尚未确认，禁止再次提交')}
    const record={...fresh,operation:call.operation,args,bot_id:bot.id,settings_revision:s.revision,account_revision:account?.revision,account_uid:account?.uid,authority:call.authority,sender_id:call.senderId,mode_epoch:call.epoch,work_id:call.workId,config_revision:bot.revision,cancel_requested:false,deadline_at:new Date(call.deadlineAt),origin_scope:call.origin?.scope??'',origin_event:call.origin?.eventId??'',continuation:{objective:call.origin?.objective??'',...(call.continuation?{sourceActionId:call.continuation.actionId,sourceOwner:call.continuation.owner}:{})}};
    await this.validate(record,s,tx);
+   // A different model step is not a new execution responsibility. Reuse only
+   // unresolved analysis with exact arguments and the same work/goal owner.
+   // Changed questions/ranges remain independent observations.
+   if(call.operation==='analyze'){
+    const [pending]=await tx.query(`SELECT e.* FROM tool_effects e
+     WHERE e.bot_id=$1 AND e.tenant_id=$2 AND e.operation='analyze' AND e.args_digest=$3
+      AND e.authority=$4 AND e.sender_id IS NOT DISTINCT FROM $5
+      AND e.mode_epoch IS NOT DISTINCT FROM $6 AND e.origin_scope=$7
+      AND e.generation=$8 AND e.config_revision=$9 AND e.settings_revision=$10
+      AND e.account_revision IS NOT DISTINCT FROM $12
+      AND e.account_uid IS NOT DISTINCT FROM $13
+      AND NOT e.cancel_requested AND e.state IN ('queued','claimed','dispatching','unknown')
+      AND (e.work_id=$11 OR EXISTS(SELECT 1 FROM autonomy_actions original
+       JOIN autonomy_actions candidate ON candidate.goal_id=original.goal_id
+        AND candidate.bot_id=original.bot_id AND candidate.tenant_id=original.tenant_id
+       WHERE original.id=e.work_id AND candidate.id=$11 AND original.bot_id=e.bot_id
+        AND original.tenant_id=e.tenant_id AND original.goal_id IS NOT NULL))
+     ORDER BY e.created_at,e.id LIMIT 1`,[bot.id,bot.tenant_id,hash,call.authority,call.senderId??null,call.epoch??null,call.origin?.scope??'',bot.generation,bot.revision,s.revision,call.workId,account?.revision??null,account?.uid??null]);
+    if(pending)return pending;
+   }
    const [row]=await tx.query('INSERT INTO tool_effects(id,tenant_id,bot_id,work_id,step_id,operation,args,args_digest,authority,sender_id,mode_epoch,generation,config_revision,settings_revision,account_revision,deadline_at,account_uid,origin_scope,origin_event,continuation) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *',[randomUUID(),bot.tenant_id,bot.id,call.workId,call.stepId,call.operation,JSON.stringify(args),hash,call.authority,call.senderId??null,call.epoch??null,bot.generation,bot.revision,s.revision,account?.revision??null,new Date(call.deadlineAt),account?.uid??null,call.origin?.scope??'',call.origin?.eventId??'',JSON.stringify(record.continuation)]);
    return row;
   });
@@ -74,7 +94,8 @@ export class ToolEffects {
    // Only an already-admitted asynchronous read may outlive its parent task.
    // Admission records contain the bot's `id`; truthiness is not evidence that
    // a tool effect exists, and must never revive completed work for new writes.
-   const [a]=await db.query("SELECT a.id FROM autonomy_actions a JOIN autonomy_settings s ON s.bot_id=a.bot_id AND s.tenant_id=a.tenant_id WHERE a.id=$1 AND a.bot_id=$2 AND a.tenant_id=$3 AND a.epoch=$4 AND s.epoch=a.epoch AND s.config->>'mode'='active' AND ((a.status IN ('planned','executing') AND a.expires_at>now()) OR a.status IN ('completed','partial') AND EXISTS(SELECT 1 FROM tool_effects e WHERE e.id=$5 AND e.bot_id=a.bot_id AND e.tenant_id=a.tenant_id AND e.work_id=a.id AND e.mode_epoch=a.epoch AND e.operation='analyze' AND e.authority='autonomous' AND NOT e.cancel_requested AND e.deadline_at>now() AND e.state IN ('queued','claimed')))",[job.work_id,bot.id,bot.tenant_id,job.mode_epoch,job.id??null]);
+   const [a]=await db.query("SELECT a.id,s.config AS autonomy_config FROM autonomy_actions a JOIN autonomy_settings s ON s.bot_id=a.bot_id AND s.tenant_id=a.tenant_id WHERE a.id=$1 AND a.bot_id=$2 AND a.tenant_id=$3 AND a.epoch=$4 AND s.epoch=a.epoch AND s.config->>'mode'='active' AND ((a.status IN ('planned','executing') AND a.expires_at>now()) OR a.status IN ('completed','partial') AND EXISTS(SELECT 1 FROM tool_effects e WHERE e.id=$5 AND e.bot_id=a.bot_id AND e.tenant_id=a.tenant_id AND e.work_id=a.id AND e.mode_epoch=a.epoch AND e.operation='analyze' AND e.authority='autonomous' AND NOT e.cancel_requested AND e.deadline_at>now() AND e.state IN ('queued','claimed')))",[job.work_id,bot.id,bot.tenant_id,job.mode_epoch,job.id??null]);
+   if(op.write&&(a?.autonomy_config?.rollout??'live')!=='live')throw toolConflict('shadow禁止真实外部写入',403);
    if(!s.config.allowAutonomous||!a)throw toolConflict('自主工作授权已失效',403);
   }else if(op.write||op.scope!=='public.read'){
    const [cfg]=await db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[bot.id,bot.revision]);
@@ -98,22 +119,27 @@ export class ToolEffects {
   await tx.query('DELETE FROM tool_cancellations WHERE expires_at<now()');
   // A crash while dispatching is ambiguous, never replay a POST. Reads can be
   // retried by a new Work; no unbounded automatic retries or model polling.
-  await tx.query("UPDATE tool_effects SET state='unknown',result=jsonb_build_object('schemaVersion','fishbot.tool-result.v1','actionId',id,'execution','failed','error',jsonb_build_object('code','executor_lost','retry','reconcile','userMessage','执行器丢失回执，只能核对原动作，不得重复发送'),'receipt',jsonb_build_object('status','unknown'),'usage',jsonb_build_object('modelRequests',coalesce((usage_checkpoint->>'modelRequests')::integer,0),'costStatus','unknown'),'versions',jsonb_build_object('adapter','bilibili-web-v1')),updated_at=now() WHERE state='dispatching' AND lease_until<now()");
-  await tx.query("UPDATE tool_effects SET state='canceled',completion_state=CASE WHEN operation='analyze' AND origin_scope<>'' THEN 'pending' ELSE completion_state END,result=jsonb_build_object('schemaVersion','fishbot.tool-result.v1','actionId',id,'execution','canceled','receipt',jsonb_build_object('status','rejected'),'error',jsonb_build_object('code','canceled_before_completion','retry','never','userMessage','后台任务已取消或超过期限，未获得分析结果'),'usage',jsonb_build_object('modelRequests',coalesce((usage_checkpoint->>'modelRequests')::integer,0),'costStatus','unknown'),'versions',jsonb_build_object('adapter','bilibili-web-v1')),updated_at=now() WHERE (state='queued' OR state='claimed' AND lease_until<now()) AND (deadline_at<now() OR cancel_requested)");
+  await tx.query("UPDATE tool_effects SET state='unknown',completion_state=CASE WHEN operation='analyze' AND (origin_scope<>'' OR authority='autonomous') THEN 'pending' ELSE completion_state END,result=jsonb_build_object('schemaVersion','fishbot.tool-result.v1','actionId',id,'execution','failed','error',jsonb_build_object('code','executor_lost','retry','reconcile','userMessage','执行器丢失回执，只能核对原动作，不得重复发送'),'receipt',jsonb_build_object('status','unknown'),'usage',jsonb_build_object('modelRequests',coalesce((usage_checkpoint->>'modelRequests')::integer,0),'costStatus','unknown'),'versions',jsonb_build_object('adapter','bilibili-web-v1')),updated_at=now() WHERE (state='dispatching' OR state='claimed' AND operation='analyze' AND COALESCE((usage_checkpoint->>'modelRequests')::int,0)>0) AND lease_until<now()");
+  await tx.query("UPDATE tool_effects SET state='canceled',completion_state=CASE WHEN operation='analyze' AND (origin_scope<>'' OR authority='autonomous') THEN 'pending' ELSE completion_state END,result=jsonb_build_object('schemaVersion','fishbot.tool-result.v1','actionId',id,'execution','canceled','receipt',jsonb_build_object('status','rejected'),'error',jsonb_build_object('code','canceled_before_completion','retry','never','userMessage','后台任务已取消或超过期限，未获得分析结果'),'usage',jsonb_build_object('modelRequests',coalesce((usage_checkpoint->>'modelRequests')::integer,0),'costStatus','unknown'),'versions',jsonb_build_object('adapter','bilibili-web-v1')),updated_at=now() WHERE (state='queued' OR state='claimed' AND lease_until<now()) AND (deadline_at<now() OR cancel_requested)");
   await tx.query("UPDATE tool_effects SET state='queued',lease_owner=NULL WHERE state='claimed' AND lease_until<now() AND NOT cancel_requested AND deadline_at>now()");
+  // Recovery/cancellation also publishes a durable terminal fact, without a new scheduler.
+  await tx.query("INSERT INTO autonomy_wakes(bot_id,tenant_id,dedupe_key,epoch,due_at,reason) SELECT e.bot_id,e.tenant_id,'bilibili:'||e.id,s.epoch,now(),'tool-completed' FROM tool_effects e JOIN autonomy_settings s ON s.bot_id=e.bot_id AND s.tenant_id=e.tenant_id AND s.epoch=e.mode_epoch JOIN bots b ON b.id=e.bot_id AND b.tenant_id=e.tenant_id AND b.generation=e.generation AND b.revision=e.config_revision WHERE e.authority='autonomous' AND e.operation='analyze' AND e.completion_state='pending' AND e.state IN ('finished','unknown','canceled') AND s.config->>'mode'='active' ON CONFLICT(bot_id,dedupe_key) DO NOTHING");
   const [job]=await tx.query("SELECT e.* FROM tool_effects e JOIN bots b ON b.id=e.bot_id AND b.tenant_id=e.tenant_id WHERE e.state='queued' AND ($1=false OR e.operation<>'analyze') AND NOT e.cancel_requested AND e.deadline_at>now() AND NOT EXISTS(SELECT 1 FROM tool_effects active WHERE active.bot_id=e.bot_id AND active.state IN ('claimed','dispatching')) ORDER BY CASE WHEN e.authority='foreground' THEN 0 ELSE 1 END,e.created_at LIMIT 1 FOR UPDATE OF e,b SKIP LOCKED",[excludeMedia]);
   if(!job)return null;await tx.query("UPDATE tool_effects SET state='claimed',lease_owner=$2,lease_until=now()+interval '210 seconds',updated_at=now() WHERE id=$1",[job.id,owner]);return{...job,state:'claimed',lease_owner:owner};
  })}
  async beginDispatch(job:any,signal:AbortSignal){return this.db.transaction(async tx=>{
   // State transitions belong to the ledger. An expired owner cannot dispatch
   // merely because recovery has not reclaimed its row yet.
+  const [candidate]=await tx.query('SELECT * FROM tool_effects WHERE id=$1 AND lease_owner=$2',[job.id,job.lease_owner]);
+  if(!candidate||candidate.state!=='claimed'||+new Date(candidate.lease_until)<=Date.now())return false;
+  const reserveCycle=candidate.authority==='autonomous'&&biliOperations[candidate.operation as keyof typeof biliOperations].write?await lockExternalCycle(tx,{id:candidate.bot_id,tenant_id:candidate.tenant_id},candidate.work_id,candidate.mode_epoch):null;
   const [fresh]=await tx.query('SELECT * FROM tool_effects WHERE id=$1 AND lease_owner=$2 FOR UPDATE',[job.id,job.lease_owner]);
   if(!fresh||fresh.state!=='claimed'||+new Date(fresh.lease_until)<=Date.now())return false;
   await this.validate(fresh,undefined,tx);
   if(signal.aborted)return false;
   const reserve=fresh.authority==='autonomous'&&biliOperations[fresh.operation as keyof typeof biliOperations].write;
   if(reserve){
-   const cycle=await lockExternalCycle(tx,{id:fresh.bot_id,tenant_id:fresh.tenant_id},fresh.work_id,fresh.mode_epoch);
+   const cycle=reserveCycle??await lockExternalCycle(tx,{id:fresh.bot_id,tenant_id:fresh.tenant_id},fresh.work_id,fresh.mode_epoch);
    if(!fresh.budget_reserved)await checkExternalCapacity(tx,cycle);
   }
   if(signal.aborted)return false;
@@ -131,10 +157,28 @@ export class ToolEffects {
   if(!rows.length)throw toolConflict('工具租约已失效');
  }
  async finish(job:any,result:ToolResult){return this.db.transaction(async tx=>{
+  // Consistent cycle -> effect lock order with model budget reservation.
+  const cycle=job.authority==='autonomous'?await lockExternalCycle(tx,{id:job.bot_id,tenant_id:job.tenant_id},job.work_id,job.mode_epoch,false):null;
   const [original]=await tx.query('SELECT * FROM tool_effects WHERE id=$1 FOR UPDATE',[job.id]);
-  const cycle=original?.budget_reserved?await lockExternalCycle(tx,{id:job.bot_id,tenant_id:job.tenant_id},job.work_id,job.mode_epoch,false):null;
-  const rows=await tx.query("UPDATE tool_effects SET state=$3,result=$4,completion_state=CASE WHEN operation='analyze' AND origin_scope<>'' THEN 'pending' ELSE completion_state END,lease_until=NULL,updated_at=now() WHERE id=$1 AND lease_owner=$2 AND state IN ('claimed','dispatching','unknown') RETURNING id",[job.id,job.lease_owner,result.receipt.status==='unknown'?'unknown':result.execution==='canceled'?'canceled':'finished',JSON.stringify(result)]);
-  if(cycle)await settleCycleExternal(tx,cycle);
+  const rows=await tx.query("UPDATE tool_effects SET state=$3,result=$4,completion_state=CASE WHEN operation='analyze' AND (origin_scope<>'' OR authority='autonomous') THEN 'pending' ELSE completion_state END,lease_until=NULL,updated_at=now() WHERE id=$1 AND lease_owner=$2 AND (state IN ('claimed','dispatching') OR state='unknown' AND result->'receipt'->>'status'='unknown' AND $5<>'unknown') RETURNING id",[job.id,job.lease_owner,result.receipt.status==='unknown'?'unknown':result.execution==='canceled'?'canceled':'finished',JSON.stringify(result),result.receipt.status]);
+  if(cycle){
+   await settleCycleExternal(tx,cycle);
+   if(rows.length){
+    const checkpoint=original?.usage_checkpoint||{},calls=Math.max(Number(checkpoint.modelRequests||0),Number(result.usage?.modelRequests||0));
+    const raw=(result.usage as any)?.providerUsage,actualTokens=Number.isSafeInteger(raw?.total_tokens)&&raw.total_tokens>=0;
+    const tokens=Math.max(Number(checkpoint.settledTokens||0),actualTokens?raw.total_tokens:0);
+    const modelDelta=Math.max(0,calls-Number(checkpoint.settledModelRequests||0)),tokenDelta=Math.max(0,tokens-Number(checkpoint.settledTokens||0));
+    // Journaled model requests settle through their request identity. Keep the
+    // existing checkpoint as the fallback for effects without that journal;
+    await tx.query("UPDATE tool_effects SET usage_checkpoint=usage_checkpoint||$2::jsonb WHERE id=$1",[job.id,JSON.stringify({modelRequests:calls,settledModelRequests:calls,settledTokens:tokens,tokenStatus:actualTokens||checkpoint.tokenStatus==='actual'?'actual':'unknown'})]);
+    const journaled=Object.values(cycle.budget.modelRequests||{}).some((r:any)=>r.source==='media'&&r.effectId===job.id);
+    if(cycle.finished_at&&!journaled){
+     await tx.query("UPDATE autonomy_cycles SET usage=jsonb_set(jsonb_set(jsonb_set(jsonb_set(usage,'{modelCalls}',to_jsonb(COALESCE((usage->>'modelCalls')::int,0)+$2::int)),'{tokens}',to_jsonb(COALESCE((usage->>'tokens')::bigint,0)+$3::bigint)),'{mediaModelCalls}',to_jsonb(COALESCE((usage->>'mediaModelCalls')::int,0)+$2::int)),'{mediaTokens}',to_jsonb(COALESCE((usage->>'mediaTokens')::bigint,0)+$3::bigint)) WHERE id=$1",[cycle.id,modelDelta,tokenDelta]);
+     await tx.query("UPDATE autonomy_cycles SET usage=usage||jsonb_build_object('mediaTokenStatus',$2::text) WHERE id=$1",[cycle.id,!actualTokens&&checkpoint.tokenStatus!=='actual'||cycle.usage?.mediaTokenStatus==='unknown'?'unknown':'actual']);
+     await tx.query('UPDATE autonomy_daily_usage SET model_calls=model_calls+$3,used_tokens=used_tokens+$4 WHERE bot_id=$1 AND tenant_id=$2 AND day=$5',[job.bot_id,job.tenant_id,modelDelta,tokenDelta,cycle.budget.day]);
+    }
+   }
+  }
   if(rows.length&&job.authority==='autonomous'&&job.operation==='analyze'){
    // Wake the existing outer owner, never introduce a Bilibili scheduler.
    await tx.query("INSERT INTO autonomy_wakes(bot_id,tenant_id,dedupe_key,epoch,due_at,reason) SELECT bot_id,tenant_id,$3,epoch,now(),'tool-completed' FROM autonomy_settings WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$4 AND config->>'mode'='active' ON CONFLICT(bot_id,dedupe_key) DO NOTHING",[job.bot_id,job.tenant_id,'bilibili:'+job.id,job.mode_epoch]);

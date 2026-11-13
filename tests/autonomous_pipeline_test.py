@@ -28,6 +28,22 @@ async def main():
         budget_calls.append((identity['id'],logical,phase))
         return {'reserved':phase!='released','status':phase}
     external_action_budget.update=budget_boundary
+    # This protocol fixture cannot reach the control API. Exercise the new
+    # per-request boundary here without bypassing its ordering or receipts;
+    # actual cycle/tenant/CAS accounting is tested against the real database.
+    import model_request_budget
+    model_budget_calls={}
+    def bind_model_budget(settings,identity,current):
+        async def transition(request_id,phase,tokens):
+            key=(identity['id'],request_id)
+            if phase=='reserve':
+                assert current() and key not in model_budget_calls
+                model_budget_calls[key]='reserved'
+            else:
+                assert model_budget_calls[key]=='reserved'
+                model_budget_calls[key]=phase
+        return transition if identity.get('cycleId') else None
+    model_request_budget.bind=bind_model_budget
     # The fixture constructs Core directly. Production initializes this shared
     # SDK database before platform startup; do the same before concurrent sends.
     from astrbot.core import db_helper
@@ -111,17 +127,22 @@ async def main():
     try:
         mode='activity';p,w,st=setup('activity');calls.clear();message_requests.clear()
         p['config'].update(activityEnabled=True,maxSleepSeconds=86400)
-        result=await brain.execute('qq',{'work':w,'action':{'kind':'research','target':'','objective':'自主活动','autonomousMoment':True}})
+        import shared_context
+        shared_context.initialize(st.db);st.shared_context=True;st.reflection.shared_context=True
+        result=await brain.execute('qq',{'work':w,'action':{'kind':'research','target':'','objective':'自主活动','autonomousMoment':True,'goalSnapshot':{'goals':[],'actions':[],'effects':[]}}})
         assert result['status']=='completed' and result['restSeconds']==600,result
         assert len(message_requests)==2 and not calls,result
-        assert not st.model_journals and st.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0]==0,'service work polluted QQ 35-round history'
+        assert ('autonomous',w['id']) not in st.model_journals,'activity created a separate thinking Journal'
+        # This fixture provider bypasses the hosted HTTP preparation/staging.
+        # Durable activation counting is exercised by activity_main_journal_test.
+        assert st.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0]==0,'unsubmitted fixture request minted a round'
         handoff=st.pipeline.pending_handoffs(1)[0]
         assert handoff['parentActionId']==w['id'] and handoff['eventId']==w['id'] and handoff['senderId']=='0' and handoff['scope']=='self',handoff
         assert handoff['kind']=='research' and handoff['origin']=='model',handoff
-        assert any('自主活动时刻' in str(r) for r in message_requests),'activity tail absent in actual SDK request'
+        assert any('autonomous_activation' in str(r) for r in message_requests),'activity tail absent in actual SDK request'
         assert all('本次最终结果严格遵循任务的JSON合同' not in str(r) for r in message_requests)
         assert st.pipeline.internal_result(w['id'])['result']['autonomousMoment'] is True
-        try:await brain.execute('qq',{'work':w,'action':{'kind':'research','target':'','objective':'自主活动','autonomousMoment':True}})
+        try:await brain.execute('qq',{'work':w,'action':{'kind':'research','target':'','objective':'自主活动','autonomousMoment':True,'goalSnapshot':{'goals':[],'actions':[],'effects':[]}}})
         except ValueError:pass
         assert len(message_requests)==2,'duplicate activation called provider again'
         print('PIPELINE activity actual native SDK tool loop, rest, durable service handoff, duplicate fence and QQ counter isolation passed')
@@ -676,10 +697,12 @@ async def main():
             assert result['status']=='completed',result
             sent=[params['message'] for method,params in calls if method=='send_private_msg']
             images=[c for chain in sent for c in chain if c['type']=='image']
-            assert len(images)==(1 if mode=='favorite' else 0),(mode,images,result)
+            # Favorite semantic readiness remains required; the removed meme
+            # cooldown must not suppress an otherwise sendable favorite.
+            assert len(images)==1,(mode,images,result)
             if images:assert images[0]['data'].get('sub_type')==1,images
             assert len(sent)==2,sent
-        print('PIPELINE real QQ favorites do not depend on platform candidates and final cooldown still fences concurrent output passed')
+        print('PIPELINE real QQ favorites do not depend on platform candidates or removed cooldown passed')
 
         for bubbles in (1,2,3,4):
             mode='normal';p,w,st=setup('logical-budget-'+str(bubbles));w['budget']['externalActions']=1;calls.clear()

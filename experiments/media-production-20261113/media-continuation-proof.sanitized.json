@@ -1,0 +1,117 @@
+{
+  "identity": "NETWORK SERVICE",
+  "providerCalls": 0,
+  "tests": [
+    {
+      "name": "real-20s-continuation-range-audio-asr",
+      "ok": true,
+      "bvid": "BV1WigzztEyx",
+      "cid": 25827875444,
+      "sourceDuration": 583,
+      "clip": [
+        90,
+        110
+      ],
+      "decodedDuration": 19.999438,
+      "downloadBytes": 1260967,
+      "segments": [
+        {
+          "from": 90,
+          "to": 92.56,
+          "textLength": 13
+        },
+        {
+          "from": 92.56,
+          "to": 94.4,
+          "textLength": 11
+        },
+        {
+          "from": 94.4,
+          "to": 98,
+          "textLength": 19
+        },
+        {
+          "from": 98,
+          "to": 100,
+          "textLength": 7
+        },
+        {
+          "from": 100,
+          "to": 102,
+          "textLength": 9
+        },
+        {
+          "from": 102,
+          "to": 103.76,
+          "textLength": 10
+        },
+        {
+          "from": 103.76,
+          "to": 105.28,
+          "textLength": 10
+        },
+        {
+          "from": 105.28,
+          "to": 107.6,
+          "textLength": 9
+        },
+        {
+          "from": 107.6,
+          "to": 109.9994375,
+          "textLength": 12
+        }
+      ]
+    },
+    {
+      "name": "real-20s-continuation-range-audio-asr",
+      "ok": true,
+      "bvid": "BV1WigzztEyx",
+      "cid": 25827875444,
+      "sourceDuration": 583,
+      "clip": [
+        110,
+        130
+      ],
+      "decodedDuration": 20.000313,
+      "downloadBytes": 2193458,
+      "segments": [
+        {
+          "from": 110,
+          "to": 114.64,
+          "textLength": 23
+        },
+        {
+          "from": 114.64,
+          "to": 118.56,
+          "textLength": 16
+        },
+        {
+          "from": 118.56,
+          "to": 120.08,
+          "textLength": 7
+        },
+        {
+          "from": 120.08,
+          "to": 122.4,
+          "textLength": 10
+        },
+        {
+          "from": 122.4,
+          "to": 124.64,
+          "textLength": 12
+        },
+        {
+          "from": 124.64,
+          "to": 127.12,
+          "textLength": 12
+        },
+        {
+          "from": 127.12,
+          "to": 129.52,
+          "textLength": 12
+        }
+      ]
+    }
+  ],
+  "cleaned": true
+}
