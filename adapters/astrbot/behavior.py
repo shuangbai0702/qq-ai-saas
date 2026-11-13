@@ -220,6 +220,9 @@ def sanitize_new_response(response,event=None):
         cleaned=''
         if hasattr(response,'result_chain'):response.result_chain=None
     response.completion_text=cleaned
+    if cleaned!=value and getattr(response,'result_chain',None) is not None:
+        response.result_chain=copy.copy(response.result_chain)
+        response.result_chain.chain=[Plain(cleaned)] if cleaned else []
     # Typed reasoning/signatures remain private protocol fields where providers
     # require them for tool continuation. The runner's public channel excludes
     # reasoning chains; never relabel private fields as ordinary answer text.
@@ -367,6 +370,44 @@ def install_runtime(core,settings):
     def provider_for(id):
         instances=getattr(getattr(core,'provider_manager',None),'inst_map',{})
         return instances.get('provider-'+id) or (instances.get('platform-model') if len(settings)==1 else None)
+    async def admit_public(event,message):
+        from public_output import inspect as inspect_public,REGENERATE,pending_tools,Rejected
+        st=stores.get(event.get_platform_id());s=setting(event);work=event.get_extra('_hosted_pipeline')
+        provider=provider_for(event.get_platform_id())
+        secrets=getattr(provider,'api_keys',[]) or []
+        if not inspect_public(message,secrets):return message
+        from model_cache import record_diagnostic
+        # Reuse the original Work, Journal, provider, lease and request budget.
+        # Only text generation is permitted; no Agent/tool loop is replayed.
+        while event.get_extra('_hosted_output_retries',0)<2:
+            count=event.get_extra('_hosted_output_retries',0)+1
+            event.set_extra('_hosted_output_retries',count)
+            record_diagnostic(s,{'kind':'output_guard','workId':getattr(work,'event_id',None),'status':'blocked','reason':'internal_protocol','retry':count})
+            if st is None or work is None or provider is None or not delivery_current(event):break
+            journal=st.model_journals.get(event.get_extra('_hosted_main_journal_scope') or ('bot_shared' if st.shared_context else work.scope))
+            if journal is None or journal.last is None:break
+            if event.get_extra('_hosted_model_tools_pending',False) or pending_tools(journal.last.base):
+                # The native tool loop returns this rejection to its original
+                # model. Starting another request here would break call/result
+                # adjacency (and can deadlock the Journal writer).
+                if count>=2:bot_pipeline.stop(event,'public_output_rejected','silent')
+                raise Rejected(REGENERATE)
+            event.set_extra('_hosted_output_regeneration',True)
+            try:
+                response=await provider.text_chat(prompt=None,contexts=copy.deepcopy(journal.last.base),
+                    system_prompt=s['config'].get('systemPrompt',''),func_tool=None,request_max_retries=0)
+                if not delivery_current(event):return None
+                if getattr(response,'role',None)=='err' or getattr(response,'tools_call_name',None):break
+                text=response.completion_text or ''
+                if not text.strip():break
+                if not inspect_public(text,secrets):
+                    replacement=copy.copy(message);replacement.chain=[Plain(text)]
+                    return replacement
+            except asyncio.CancelledError:raise
+            except Exception:break
+            finally:event.set_extra('_hosted_output_regeneration',False)
+        bot_pipeline.stop(event,'public_output_rejected','silent')
+        return None
     async def review_group(event,scope,draft,confirmed=''):
         s=setting(event);st=stores.get(event.get_platform_id());work=event.get_extra('_hosted_pipeline')
         if not s or st is None or work is None:return {'action':'drop','reason':'missing_work'}
@@ -539,8 +580,8 @@ def install_runtime(core,settings):
         st=stores.get(event.get_platform_id())
         if st is not None and setting(event) is event.get_extra('_hosted_lease'):
             before=st.freshness.cursor(destination)
-            wire=params.get('message',[])
-            text=''.join(str(p.get('data',{}).get('text','')) for p in wire if isinstance(p,dict) and p.get('type')=='text') if isinstance(wire,list) else str(wire)[:600]
+            from public_output import texts
+            text=''.join(texts(params.get('messages',params.get('message',[]))))
             st.freshness.observe(destination,'receipt:'+receipt,str(event.get_self_id()),text,role='self')
             cursors=dict(event.get_extra('_hosted_freshness_cursors') or {})
             # A receipt accounts for our own bubble, not unseen arrivals during
@@ -548,19 +589,37 @@ def install_runtime(core,settings):
             if cursors.get(destination,before)==before:cursors[destination]=st.freshness.cursor(destination)
             event.set_extra('_hosted_freshness_cursors',cursors)
         return receipt
+    def forward_dispatch(event,st,work):
+        reservation=event.get_extra('_hosted_autonomy_reservation')
+        if reservation:
+            autonomy.settle_send(st.db,reservation,'unknown')
+            event.set_extra('_hosted_protocol_dispatched',True)
+        st.pipeline.sending(work)
     async def call_action(self,action,**params):
         event=current_message_event.get()
-        if event and getattr(event,'bot',None) is self and action in ('send_private_msg','send_group_msg'):
+        forward=action in ('send_private_forward_msg','send_group_forward_msg')
+        send_kind=action.replace('_forward_msg','_msg') if forward else action
+        from public_output import inspect as inspect_public
+        if event and getattr(event,'bot',None) is self and send_kind in ('send_private_msg','send_group_msg'):
+            if inspect_public(params):raise group_freshness.PreDispatchRejected('public_output_rejected')
+        forward_store=stores.get(event.get_platform_id()) if event and forward else None
+        forward_work=event.get_extra('_hosted_pipeline') if forward_store else None
+        if forward_work:
+            group_freshness.guard_dispatch(event,forward_store,lambda:delivery_current(event),send_kind,params)
+        if event and getattr(event,'bot',None) is self and send_kind in ('send_private_msg','send_group_msg'):
             if event.get_extra('_hosted_lease') is not None:
-                group_freshness.guard_dispatch(event,stores.get(event.get_platform_id()),lambda:delivery_current(event),action,params)
+                group_freshness.guard_dispatch(event,stores.get(event.get_platform_id()),lambda:delivery_current(event),send_kind,params)
             favorite_file=event.get_extra('_hosted_favorite_wire')
             # Only a renderer-bound QQ favorite gets the custom-sticker flag;
             # ordinary model images and user-provided wire data stay unchanged.
             if favorite_file and isinstance(params.get('message'),list):
                 params['message']=[{**part,'data':{**part['data'],'sub_type':1}} if part.get('type')=='image' and part.get('data',{}).get('file')==favorite_file else part for part in params['message']]
         if not event or not event.get_extra('_hosted_internal_work'):
+            if forward_work:
+                forward_dispatch(event,forward_store,forward_work)
             result=await action_original(self,action,**params)
-            if event and getattr(event,'bot',None) is self and action in ('send_private_msg','send_group_msg'):note_message_receipt(event,result,action,params)
+            if event and getattr(event,'bot',None) is self and send_kind in ('send_private_msg','send_group_msg'):note_message_receipt(event,result,send_kind,params)
+            if forward_work:forward_store.pipeline.confirmed(forward_work)
             return result
         identity=event.get_extra('_hosted_internal_work');id=event.get_platform_id();s=setting(event)
         if event.bot is not self or not brain.valid(id,identity):raise asyncio.CancelledError('stale internal tool')
@@ -585,17 +644,17 @@ def install_runtime(core,settings):
         if work and work.scope.startswith('private:'):permitted.add('send_private_msg')
         if (s['config'].get('behavior') or {}).get('groupParticipationEnabled',True):permitted.add('send_group_msg')
         if (s['config'].get('behavior') or {}).get('qqFavoriteSaveEnabled',True):permitted.add('add_custom_face')
-        if action not in permitted or not brain.effect_current(event) or not work:raise asyncio.CancelledError('internal effect denied')
+        if send_kind not in permitted or not brain.effect_current(event) or not work:raise asyncio.CancelledError('internal effect denied')
         st=stores.get(id)
         if st is None:raise asyncio.CancelledError('member unloaded')
         target=work.scope
-        if action in ('send_private_msg','send_group_msg'):
-            actual=('group:'+str(params.get('group_id'))) if action=='send_group_msg' else ('private:'+str(params.get('user_id')))
+        if send_kind in ('send_private_msg','send_group_msg'):
+            actual=('group:'+str(params.get('group_id'))) if send_kind=='send_group_msg' else ('private:'+str(params.get('user_id')))
             if actual!=target:
-                if action!='send_group_msg' or str(params.get('group_id')) not in group_actions.read_groups(event,s['config']):raise asyncio.CancelledError('internal destination mismatch')
+                if send_kind!='send_group_msg' or str(params.get('group_id')) not in group_actions.read_groups(event,s['config']):raise asyncio.CancelledError('internal destination mismatch')
                 target=actual
         effects=st.pipeline.internal_result(work.event_id)['effects']
-        logical=work.event_id+':message:'+target if action in ('send_private_msg','send_group_msg') else work.event_id+':'+str(len(effects))
+        logical=work.event_id+':message:'+target if send_kind in ('send_private_msg','send_group_msg') else work.event_id+':'+str(len(effects))
         proposed=effects+[{'id':logical,'logicalActionId':logical,'status':'dispatching'}]
         if bot_pipeline.effect_units(proposed)>identity['budget'].get('externalActions',0):raise WorkBudgetExceeded('external_action_budget')
         import external_action_budget
@@ -605,8 +664,8 @@ def install_runtime(core,settings):
         try:
             if not brain.effect_current(event) or stores.get(id) is not st:
                 raise asyncio.CancelledError('internal effect revoked after reservation')
-            if action in ('send_private_msg','send_group_msg'):
-                group_freshness.guard_dispatch(event,st,lambda:delivery_current(event),action,params)
+            if send_kind in ('send_private_msg','send_group_msg'):
+                group_freshness.guard_dispatch(event,st,lambda:delivery_current(event),send_kind,params)
             sequence=st.pipeline.internal_effect(work,action,target)
         except BaseException:
             await external_action_budget.settle(s,identity,logical,'released')
@@ -614,6 +673,7 @@ def install_runtime(core,settings):
         if action=='add_custom_face':
             event.set_extra('_hosted_favorite_verifier',lambda proof:st.pipeline.internal_receipt(work,sequence,proof) if stores.get(id) is st else None)
             st.db.execute('UPDATE qq_favorite_writes SET action=?,sequence=? WHERE account=? AND md5=?',(work.event_id,sequence,str(event.get_self_id()),event.get_extra('_hosted_favorite_md5')));st.db.commit()
+        if forward_work:forward_dispatch(event,forward_store,forward_work)
         try:result=await action_original(self,action,**params)
         except BaseException:
             await external_action_budget.settle(s,identity,logical,'unknown')
@@ -621,10 +681,11 @@ def install_runtime(core,settings):
         if action=='add_custom_face':
             await external_action_budget.settle(s,identity,logical,'unknown')
             return result # confirmed only by QQ favorite detail readback
-        try:receipt=note_message_receipt(event,result,action,params) if action in ('send_private_msg','send_group_msg') else 'onebot_ack'
+        try:receipt=note_message_receipt(event,result,send_kind,params) if send_kind in ('send_private_msg','send_group_msg') else 'onebot_ack'
         except BaseException:
             await external_action_budget.settle(s,identity,logical,'unknown')
             raise
+        if forward_work:forward_store.pipeline.confirmed(forward_work)
         await external_action_budget.settle(s,identity,logical,'confirmed')
         # Settle the already-dispatched effect in its original store while
         # unload drains it. A new settings lease revokes future sends, not an
@@ -1063,6 +1124,8 @@ def install_runtime(core,settings):
             if self.get_extra('_hosted_generation') is not None or self.get_extra('_hosted_lease') is not None:return
             return await original_send(self,message)
         if message is None:return
+        message=await admit_public(self,message)
+        if message is None:return
         if not self.get_extra('_hosted_freshness_rendering',False):
             # The final draft is not evidence of speech. This prefix starts
             # empty and advances only with actual receipts, for every abort
@@ -1283,7 +1346,7 @@ def install_runtime(core,settings):
             self.set_extra('_hosted_protocol_blocked',False)
             before_confirmed=work.confirmed if work else 0
             if any(isinstance(c,Image) for c in outgoing.chain):
-                if image:social.reserve_image(scope)
+                if image or gallery:social.reserve_image(scope)
                 self.set_extra('_hosted_meme_sent',True)
                 # Consume the prepared bytes before I/O; the sent/unknown
                 # fence stays set even when the attachment is released.
@@ -1315,7 +1378,8 @@ def install_runtime(core,settings):
                     # Only carry this work's own confirmed receipt forward.
                     # New interaction/pause during protocol I/O stays stale.
                     admitted=delivery_current(self);decision=self.get_extra('_hosted_group_decision')
-                    bubble_text=''.join(x.text for x in outgoing.chain if isinstance(x,Plain))
+                    from public_output import texts
+                    bubble_text=''.join(texts(outgoing))
                     confirmed_text.append(bubble_text)
                     if work is not None:
                         # Each send only accumulates its own confirmed output;
@@ -1349,10 +1413,11 @@ def install_runtime(core,settings):
                     if entry:entry.update(completeMs=elapsed,at=time.time())
                     else:samples.append({'event':key,'firstMs':elapsed,'completeMs':elapsed,'at':time.time()})
                     samples[:]=samples[-16:]
-        if image and self.get_extra('_hosted_meme_confirmed',False):
-            social.image_sent(scope,image['id'])
+        if (image or gallery) and self.get_extra('_hosted_meme_confirmed',False):
+            delivered=image or gallery
+            social.image_sent(scope,delivered['id'])
             m=metrics.setdefault(id,{});m['imagesSent']=m.get('imagesSent',0)+1
-            m['lastMemeDecision']={'reason':'sent','imageId':image['id'],'at':time.time()}
+            m['lastMemeDecision']={'reason':'sent','imageId':delivered['id'],'at':time.time()}
             if automatic_image_selected:m['imagesAutoSent']=m.get('imagesAutoSent',0)+1
         active_store=store(id,s)
         bot_pipeline.stage(self,'commit')
@@ -1692,7 +1757,11 @@ def install_runtime(core,settings):
                 for item in captured:
                     original=source({'role':'user','content':item['text']})
                     if original:
-                        owned.db.execute('INSERT OR IGNORE INTO memory_pending VALUES(?,?,?,?,?,?)',(key,item['subject'],item['event'],item['text'],'',float(original.get('at') or time.time())))
+                        at=original.get('at')
+                        if type(at) not in (int,float) or not 0<at<float('inf'):
+                            owned.reflection.checkpoint_issue(key,0,'input_timestamp_missing',{'event':item['event'],'source_scope':original['scope']})
+                            continue
+                        owned.db.execute('INSERT OR IGNORE INTO memory_pending VALUES(?,?,?,?,?,?)',(key,item['subject'],item['event'],item['text'],'',float(at)))
                         message_provenance.put(owned.db,key,item['event'],'incoming',{'sender_id':item['subject'],'source_scope':original['scope']})
                 owned.db.commit()
                 # Coverage is only a candidate retirement view, not permission
@@ -1732,6 +1801,10 @@ def install_runtime(core,settings):
                         projected=fixed_system+projected[system_head(projected):]
                         if isinstance(unprojected_for_journal,list):
                             unprojected_for_journal=fixed_system+unprojected_for_journal[system_head(unprojected_for_journal):]
+                if image_event.get_extra('_hosted_output_regeneration',False):
+                    from public_output import REGENERATE
+                    projected=[*projected,{'role':'user','content':REGENERATE}]
+                    if isinstance(unprojected_for_journal,list):unprojected_for_journal=[*unprojected_for_journal,{'role':'user','content':REGENERATE}]
                 prepared=journal.prepare(projected,stamp,group_turn=group_turn,
                                          reconstruction_authority=owned.reflection,reconstruction_scope=key,
                                          retirement=owned.reflection.reconstruction_stamp(key) if foreground else dependency,
@@ -1858,7 +1931,11 @@ def install_runtime(core,settings):
             event.set_extra('_hosted_journal_scope',JOURNAL_SCOPE)
         return st.model_writer
     def record_shared_completion(st,event,response):
-        if not st or not event:return
+        if not event:return
+        # The SDK has not submitted tool calls back to the Journal yet while
+        # their bodies run. Track this real provider handoff on the same event.
+        event.set_extra('_hosted_model_tools_pending',bool(getattr(response,'tools_call_name',None)))
+        if not st:return
         main_activation=event.get_extra('_hosted_main_activation')
         if not st.shared_context and not main_activation and not event.get_extra('_hosted_canonical_main'):return
         if event.get_extra('_hosted_internal_work') and not main_activation:return
@@ -1869,7 +1946,7 @@ def install_runtime(core,settings):
             work=event.get_extra('_hosted_pipeline')
             # Only a terminal answer goes here. Tool call/result adjacency is
             # captured together by the next request while this writer is held.
-            if not getattr(response,'tools_call_names',None) and response.completion_text:
+            if not getattr(response,'tools_call_name',None) and response.completion_text:
                 journal.append_completion({'role':'assistant','content':response.completion_text or ''},model_origin=(work.scope,work.event_id,work.subject))
             if not main_activation:st.pipeline.seen_inputs(work,journal.last.base)
             from summary_material import snapshots,remember
@@ -1879,7 +1956,7 @@ def install_runtime(core,settings):
             for item in materials:
                 actual=st.db.execute('SELECT answer FROM memory_rounds WHERE scope=? AND event=?',(logical,item['event'])).fetchone()
                 item['reply']=actual[0] if actual else ''
-                if item['event']==current_id and getattr(response,'tools_call_names',None):item['complete']=False
+                if item['event']==current_id and getattr(response,'tools_call_name',None):item['complete']=False
             remember(st.db,logical,materials)
             work.summary_materials.extend(materials)
             if st.shared_context:settle_inputs(st.db,journal)
@@ -1896,7 +1973,7 @@ def install_runtime(core,settings):
         foreground=is_foreground_event(event)
         attempt_token=begin_attempt(event,self,system_contract=getattr(system_store,'system_contract',None) if foreground else None,
                                     system_permit_id=lease.get('systemChangePermitId') if foreground and isinstance(lease,dict) else None)
-        writer=None;keep_writer=False
+        writer=None
         try:
             writer=await writer_enter(system_store,event,foreground)
             b=inject(chat,self,args,kwargs)
@@ -1908,7 +1985,6 @@ def install_runtime(core,settings):
             response_finished=time.monotonic()
             settle_journal(e,True)
             record_shared_completion(system_store,e,response)
-            keep_writer=bool(getattr(response,'tools_call_names',None))
             if e and current(e) and e.get_platform_id() in metrics:
                 m=metrics[e.get_platform_id()];m['successes']=m.get('successes',0)+1
                 raw=response.raw_completion
@@ -1949,7 +2025,10 @@ def install_runtime(core,settings):
             settle_journal(current_message_event.get(),False)
             raise
         finally:
-            if writer and not keep_writer:writer.release()
+            # SDK ToolLoop requests run in different awaitable Tasks. This
+            # task-owned writer serializes each durable provider transaction;
+            # retaining it between calls would deadlock the next tool result.
+            if writer:writer.release()
             model_journal_pending.reset(journal_token)
             reset_attempt(attempt_token)
     async def text_stream(self,*args,**kwargs):
@@ -1964,7 +2043,7 @@ def install_runtime(core,settings):
         foreground=is_foreground_event(event)
         attempt_token=begin_attempt(event,self,system_contract=getattr(system_store,'system_contract',None) if foreground else None,
                                     system_permit_id=lease.get('systemChangePermitId') if foreground and isinstance(lease,dict) else None)
-        last_response=None;writer=None;keep_writer=False;completion_done=False
+        last_response=None;writer=None;completion_done=False
         try:
             writer=await writer_enter(system_store,event,foreground)
             b=inject(stream,self,args,kwargs)
@@ -1985,16 +2064,14 @@ def install_runtime(core,settings):
                         finish_attempt('completed',response)
                         settle_journal(event,True)
                         record_shared_completion(system_store,event,response)
-                        keep_writer=bool(getattr(response,'tools_call_names',None))
                         completion_done=True
-                        if writer and not keep_writer:writer.release()
+                        if writer:writer.release()
                     yield response
             if last_response is None:raise RuntimeError('incomplete_model_stream')
             if not completion_done:
                 finish_attempt('completed',last_response)
                 settle_journal(current_message_event.get(),True)
                 record_shared_completion(system_store,current_message_event.get(),last_response)
-                keep_writer=bool(getattr(last_response,'tools_call_names',None))
         except Exception as error:
             finish_attempt('failed',reason=type(error).__name__)
             from model_cache import record_error_site
@@ -2009,7 +2086,7 @@ def install_runtime(core,settings):
             finish_attempt('canceled',reason='stream_not_exhausted')
             # A consumer can close the generator without exhausting it.
             settle_journal(current_message_event.get(),False)
-            if writer and not keep_writer:writer.release()
+            if writer:writer.release()
             model_journal_pending.reset(journal_token)
             reset_attempt(attempt_token)
     # Pinned upstream otherwise retries some failures up to ten times. Hosted

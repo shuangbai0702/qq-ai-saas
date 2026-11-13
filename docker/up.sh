@@ -16,5 +16,8 @@ if [ ! -f .env.docker ]; then
   fi
 fi
 docker run --rm --user "$(id -u):$(id -g)" --entrypoint node -v "$PWD:/export" "$image" scripts/docker-init.mjs /export "${1:-admin@example.com}" "${2:-http://127.0.0.1:8787}"
+# Explicit migration job, before either long-lived service opens the schema.
+docker compose --env-file .env.docker up -d --wait db
+docker compose --env-file .env.docker run --rm --no-deps --entrypoint node -e DB_AUTO_MIGRATE=true agent scripts/docker-migrate.mjs
 docker compose --env-file .env.docker up -d
 printf '%s\n' 'Started. View status: docker compose --env-file .env.docker ps' 'Initial password: .local/docker-secrets/admin-password'

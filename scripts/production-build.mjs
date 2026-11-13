@@ -25,14 +25,22 @@ const sourceHashes={};for(const file of entries)sourceHashes[path.relative(root,
 // release manifest that omits it cannot detect old source with new bundles.
 const pythonSources={};const contracts={};const migrations={};
 const runtimeScripts={};
-for(const file of await readdir('scripts'))if(file.endsWith('.py')||file.startsWith('media-')||file==='media-asr-requirements.txt')runtimeScripts['scripts/'+file]=sha(await readFile('scripts/'+file));
+for(const file of await readdir('scripts'))if(file.endsWith('.py')||file.endsWith('.mjs')||file.startsWith('media-')||file==='media-asr-requirements.txt')runtimeScripts['scripts/'+file]=sha(await readFile('scripts/'+file));
 for(const file of await readdir('adapters/astrbot'))if(file.endsWith('.py'))pythonSources['adapters/astrbot/'+file]=sha(await readFile('adapters/astrbot/'+file));
 for(const file of await readdir('packages/contracts'))if(file.endsWith('.json'))contracts['packages/contracts/'+file]=sha(await readFile('packages/contracts/'+file));
 await mkdir('dist-server/packages/contracts',{recursive:true});
 for(const name of Object.keys(contracts))await copyFile(name,path.join('dist-server',name));
 for(const file of await readdir('packages/database/migrations'))if(file.endsWith('.sql'))migrations['packages/database/migrations/'+file]=sha(await readFile('packages/database/migrations/'+file));
+const artifactHashes={};
+async function artifacts(dir){for(const item of await readdir(dir,{withFileTypes:true})){const name=path.join(dir,item.name);if(item.isDirectory())await artifacts(name);else if(name!=='dist-server/build.json')artifactHashes[name.split(path.sep).join('/')]=sha(await readFile(name))}}
+await artifacts('dist-server');await artifacts('apps/web/dist');
 const revision=spawnSync('git',['rev-parse','HEAD'],{encoding:'utf8',windowsHide:true});
-if(revision.status!==0)throw new Error('Production build requires a traceable Git revision');
+let exported;
+if(revision.status!==0){
+ exported=JSON.parse(await readFile('release-source.json','utf8'));
+ if(exported.version!==1||!(/^[a-f0-9]{40}$/).test(exported.gitCommit)||exported.gitDirty)throw new Error('Production export must be clean and traceable');
+ for(const [file,digest] of Object.entries({...sourceHashes,...pythonSources,...runtimeScripts,...contracts,...migrations}))if(exported.files[file]!==digest)throw new Error('Release export input drift: '+file);
+}
 const tree=spawnSync('git',['status','--porcelain','--untracked-files=normal'],{encoding:'utf8',windowsHide:true});
-if(tree.status!==0)throw new Error('Cannot verify production source state');
-await writeFile('dist-server/build.json',JSON.stringify({builtAt:new Date().toISOString(),gitCommit:revision.stdout.trim(),gitDirty:!!tree.stdout.trim(),node:process.version,version:pkg.version,entry:'apps/control-api/src/main.js',sourceHashes,pythonSources,runtimeScripts,contracts,migrations,note:'Compiled ESM: no tsx or resident Vite. Keep source Python launchers and references alongside this output.'},null,2));
+if(tree.status!==0&&!exported)throw new Error('Cannot verify production source state');
+await writeFile('dist-server/build.json',JSON.stringify({builtAt:new Date().toISOString(),gitCommit:exported?.gitCommit||revision.stdout.trim(),gitDirty:exported?exported.gitDirty:!!tree.stdout.trim(),node:process.version,version:pkg.version,entry:'apps/control-api/src/main.js',sourceHashes,pythonSources,runtimeScripts,contracts,migrations,artifactHashes,note:'Compiled ESM: no tsx or resident Vite. Keep source Python launchers and references alongside this output.'},null,2));

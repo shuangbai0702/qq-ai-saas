@@ -4,7 +4,7 @@ The existing Journal owns wire history; this module only selects its logical
 key, serializes writers, and prepares new, never-submitted inputs.
 """
 import asyncio,copy,json,re,time,hashlib
-from context_protocol import SOURCE,source,model_json,event_message
+from context_protocol import SOURCE,source,model_json,event_message,scoped_event
 
 JOURNAL_SCOPE='bot_shared'
 
@@ -27,7 +27,7 @@ def included(scope,cfg,group_limit=2):
 
 def event_key(origin):
     """Message IDs are only unique in their protocol source, never bot-wide."""
-    return model_json([origin['scope'],str(origin['event_id'])])
+    return scoped_event(origin['scope'],origin['event_id'])
 
 
 class Writer:

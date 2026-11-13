@@ -10,8 +10,24 @@ from pathlib import Path
 import httpx
 
 LOG=logging.getLogger(__name__)
-SECRET=re.compile(r'\bsk-[A-Za-z0-9_-]{12,}\b')
+from credential_redaction import pattern
+SECRET=pattern(12,bearer=False)
 _provider_owner=contextvars.ContextVar('fishbot_capture_provider_owner',default=None)
+_cleaned={}
+
+def prune_captures(root,now=None):
+    """Expire only this module's recognized diagnostic files, never bot data."""
+    now=time.time() if now is None else now
+    folder=root/'model-request-captures'
+    if not folder.is_dir() or folder.is_symlink():return
+    for session in folder.iterdir():
+        if not re.fullmatch(r'[a-f0-9]{24}',session.name) or session.is_symlink() or not session.is_dir():continue
+        entries=list(session.iterdir())
+        if not entries or any(p.is_symlink() or not p.is_file() or not re.fullmatch(r'[0-7]\.(request|response)\.json',p.name) for p in entries):continue
+        if max(p.stat().st_mtime for p in entries)>=now-86400:continue
+        for item in entries:item.unlink()
+        try:session.rmdir()
+        except OSError:pass # An active capture can have created a fresh file.
 
 @contextmanager
 def provider_scope(provider,settings,resolve):
@@ -71,6 +87,10 @@ def begin(request):
             bot_id,lease,_=owner;kind='background'
         if not lease or not lease.get('root'):return None
         root=Path(lease['root']);arm=root/'model-request-capture.json'
+        if time.time()-_cleaned.get(str(root),0)>300:
+            _cleaned[str(root)]=time.time()
+            while len(_cleaned)>128:_cleaned.pop(next(iter(_cleaned)))
+            prune_captures(root)
         if not arm.is_file():return None
         cfg=json.loads(arm.read_text())
         if cfg.get('botId')!=bot_id or not time.time()<cfg.get('expiresAt',0)<=time.time()+1800:return None

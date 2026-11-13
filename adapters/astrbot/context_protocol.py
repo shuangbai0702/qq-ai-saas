@@ -31,6 +31,13 @@ def model_json(value):
     return json.dumps(value,ensure_ascii=False,separators=(',',':'))
 
 
+def scoped_event(scope,event):
+    return model_json([scope,str(event)])
+
+def scoped_event_hash(scope,event):
+    return hashlib.sha256(scoped_event(scope,event).encode()).hexdigest()
+
+
 def event_message(origin,parts):
     """Render NEW trusted input once; never apply to a committed Journal.
 

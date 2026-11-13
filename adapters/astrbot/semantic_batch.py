@@ -8,7 +8,7 @@ from context_protocol import model_json
 from memory_policy import DEFAULT_SUMMARY_ROUNDS
 
 
-def event_key(scope,event):return hashlib.sha256(model_json([scope,str(event)]).encode()).hexdigest()
+from context_protocol import scoped_event_hash as event_key
 
 
 def initialize(db):

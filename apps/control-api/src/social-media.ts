@@ -1,3 +1,4 @@
+import {atomicJson} from '../../../packages/shared/fs-atomic.js';
 import type {FastifyInstance} from 'fastify';
 import {z} from 'zod';
 import path from 'node:path';
@@ -26,8 +27,8 @@ export function registerSocialMedia(app:FastifyInstance,root:string,owned:(req:a
   const value=z.object({expectedVersion:z.string().length(64),meaning:z.string().trim().min(2).max(100),avoid:z.string().max(100),enabled:z.boolean()}).parse(req.body);
   return locked(req.params.id,async()=>{const file=path.join(directory(req.params.id),req.params.image+'.json');let raw:string;try{raw=await metadata(req.params.id,req.params.image)}catch(e:any){if(e.code==='ENOENT')throw invalid('图片不存在',404);throw e}
    if(version(raw)!==value.expectedVersion)throw invalid('图片说明已更新，请刷新后重试',409);
-   const old=JSON.parse(raw),temporary=path.join(directory(req.params.id),randomUUID()+'.tmp');
-   await mkdir(directory(req.params.id),{recursive:true});try{await writeFile(temporary,JSON.stringify({...old,meaning:value.meaning,avoid:value.avoid,enabled:value.enabled}),{flag:'wx',mode:0o600});await rename(temporary,file)}finally{await rm(temporary,{force:true})}return{ok:true};
+   const old=JSON.parse(raw);
+   await atomicJson(file,{...old,meaning:value.meaning,avoid:value.avoid,enabled:value.enabled});return{ok:true};
   });
  });
  app.post<{Params:{id:string}}>(`/v1/bots/:id/${kind}`,{bodyLimit:360000,config:{rateLimit:{max:10,timeWindow:'1 minute'}}},async req=>{

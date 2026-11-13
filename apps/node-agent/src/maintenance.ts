@@ -4,7 +4,7 @@
  * Only the autonomous coordinator and the affected canonical methods are
  * replaced. No process, database connection or account is recreated here.
  */
-import {NodeAgent} from './agent.js';
+import {NodeAgent,HeartbeatWriter} from './agent.js';
 import {AutonomyCoordinator,runtimeClient} from './autonomous.js';
 import {ProcessHost} from './process-host.js';
 import {AstrBotAdapter} from '../../../adapters/astrbot/index.js';
@@ -15,6 +15,18 @@ import {FavoriteMaintenance} from './favorite-maintenance.js';
 // Shutdown stays with the canonical Agent, which dynamically owns all three
 // maintenance workers in the verified deployment baseline.
 const controlBusy=(agent:NodeAgent)=>!agent.controlIdle();
+
+/** Refresh these two stateless methods while the existing owners are held.
+ * No constructor, timer, database, ChildProcess or heartbeat queue is replaced.
+ */
+export function installResilienceRuntime(agent:NodeAgent,release:string,heartbeatPrototype:object){
+ if(!/^[a-f0-9]{64}$/.test(release)||agent.closed||controlBusy(agent))throw new Error('Invalid resilience maintenance boundary');
+ const descriptor=Object.getOwnPropertyDescriptor(HeartbeatWriter.prototype,'writeOnce');
+ if(!descriptor||!Object.getOwnPropertyDescriptor(heartbeatPrototype,'writeOnce'))throw new Error('Heartbeat owner contract changed');
+ Object.getPrototypeOf(agent).execute=NodeAgent.prototype.execute;
+ Object.defineProperty(heartbeatPrototype,'writeOnce',descriptor);
+ return{pid:process.pid,release,agentOwnerPreserved:true,heartbeatQueuePreserved:true};
+}
 
 /** Refresh only trusted frontend configuration transport; retain all owners. */
 export async function installForegroundContextRuntime(agent:NodeAgent,release:string){

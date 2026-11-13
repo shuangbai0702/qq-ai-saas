@@ -1,3 +1,4 @@
+import {atomicJson} from '../../../packages/shared/fs-atomic.js';
 import type {FastifyInstance} from 'fastify';import {readFile,mkdir,writeFile,rename,rm} from 'node:fs/promises';import path from 'node:path';import {createHash,randomUUID} from 'node:crypto';import {z} from 'zod';
 const packRoot=path.resolve('templates/meme-packs/blue-fat-fish');
 export async function installedFishPack(){
@@ -15,7 +16,7 @@ export function registerMemePacks(app:FastifyInstance,root:string,owned:(req:any
    const pack=await installedFishPack();if(!pack.items.some((i:any)=>i.id===req.params.image))throw Object.assign(new Error('表情不存在'),{statusCode:404});
    const raw=await settings(id);if(hash(raw)!==value.expectedVersion)throw Object.assign(new Error('图包状态已更新，请刷新后重试'),{statusCode:409});
    const disabled=new Set<string>(JSON.parse(raw).disabled);if(value.enabled)disabled.delete(req.params.image);else disabled.add(req.params.image);
-   const dest=file(id),temp=dest+'.'+randomUUID()+'.tmp';await mkdir(path.dirname(dest),{recursive:true});try{await writeFile(temp,JSON.stringify({disabled:[...disabled]}),{mode:0o600,flag:'wx'});await rename(temp,dest)}finally{await rm(temp,{force:true})}return {ok:true};
+   await atomicJson(file(id),{disabled:[...disabled]});return {ok:true};
   });locks.set(id,task);try{return await task}finally{if(locks.get(id)===task)locks.delete(id)}
  });
 }

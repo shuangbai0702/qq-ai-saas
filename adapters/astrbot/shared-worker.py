@@ -92,24 +92,33 @@ async def main():
             if isinstance(v,dict) and isinstance(dst.get(k),dict):merge(dst[k],v)
             else:dst[k]=copy.deepcopy(v)
     async def unload(id,permanent=False):
-        # Invalidate learning callbacks before draining provider/platform awaits.
+        # Revoke first; cleanup failures must not leave a routable member.
         behavior_settings.pop(id,None)
-        await behavior['drain'](id)
+        failures=[]
+        async def cleanup(name,operation):
+            try:await operation()
+            except BaseException as error:
+                failures.append(error)
+                worker_lifecycle.record('member_cleanup_failed',member=id,step=name,reason=type(error).__name__)
+        await cleanup('drain',lambda:behavior['drain'](id))
         active_store=behavior['stores'].get(id)
-        if active_store:active_store.reflection.close();active_store.social.close()
-        await core.event_bus.stop_platform(id)
-        await core.platform_manager.terminate_platform(id)
-        await core.provider_manager.terminate_provider('provider-'+id)
-        behavior_settings.pop(id,None)
-        behavior['release'](id)
-        if id in members:
-            m=members.pop(id);tombstones[id]=(m['generation'],m['revision'])
-            await core.umop_config_router.delete_route(id+'::')
-            await core.astrbot_config_mgr.delete_conf(m['confId'])
+        if active_store and not failures:
+            for resource in (active_store.reflection,active_store.social):
+                try:resource.close()
+                except Exception as error:failures.append(error)
+        await cleanup('events',lambda:core.event_bus.stop_platform(id))
+        await cleanup('platform',lambda:core.platform_manager.terminate_platform(id))
+        await cleanup('provider',lambda:core.provider_manager.terminate_provider('provider-'+id))
+        if not failures:behavior['release'](id)
+        m=members.pop(id,None)
+        if m:
+            tombstones[id]=(m['generation'],m['revision'])
+            await cleanup('route',lambda:core.umop_config_router.delete_route(id+'::'))
+            await cleanup('config',lambda:core.astrbot_config_mgr.delete_conf(m['confId']))
         core.astrbot_config['platform']=[p for p in core.astrbot_config['platform'] if p.get('id')!=id]
         core.provider_manager.providers_config[:]=[p for p in core.provider_manager.providers_config if p.get('id')!='provider-'+id]
-        if permanent:
-            await db_helper.delete_persona('persona-'+id)
+        if permanent:await cleanup('persona',lambda:db_helper.delete_persona('persona-'+id))
+        if failures:raise next((e for e in failures if isinstance(e,asyncio.CancelledError)),failures[0])
     async def install(id,body):
         cfg=copy.deepcopy(dict(core.astrbot_config));merge(cfg,body['config'])
         cfg['platform']=[];cfg['provider']=[];cfg['disable_builtin_commands']=True;cfg['plugin_set']=[]
@@ -176,6 +185,8 @@ async def main():
     async def health(request):
         activity=behavior['activity']()
         if lock.locked():activity={**activity,'idle':False}
+        for member,store in list(behavior['stores'].items()):
+            behavior['metrics'].setdefault(member,{})['operationalHealth']=store.reflection.operational_health()
         return web.json_response({'ready':True,'pid':os.getpid(),'generation':manifest['generation'],'capacity':manifest['capacity'],'members':{id:{'generation':m['generation'],'revision':m['revision'],'events':m['events'],'modelConfigured':m['modelConfigured']} for id,m in members.items()},'metrics':behavior['metrics'],'memberErrors':errors,'startedAt':started,'activity':activity,'stopFence':True,'quiescing':stop_fence.quiescing})
     async def put(request):
         if stop_fence.quiescing:raise web.HTTPConflict(reason='Worker preparing to stop')
@@ -196,13 +207,14 @@ async def main():
             elif id in tombstones and stamp<tombstones[id]:raise web.HTTPConflict()
             if not current and len(members)>=manifest['capacity']:raise web.HTTPConflict(reason='Group capacity reached')
             try:
-                if current:await unload(id)
+                if current or id in behavior['stores']:await unload(id)
                 await install(id,body)
                 return web.json_response({'generation':stamp[0],'revision':stamp[1]})
             except Exception:
                 errors[id]='Member apply failed; member paused'
-                await unload(id)
-                raise web.HTTPBadRequest(reason='Member apply failed; check provider configuration')
+                try:await unload(id)
+                except Exception:pass # The cleanup records each failed resource; keep the original apply error.
+                raise web.HTTPBadRequest(reason='Member apply failed; check provider configuration') from None
     async def remove(request):
         id=request.match_info['id'];generation=int(request.headers.get('X-Member-Generation','-1'))
         async with lock:

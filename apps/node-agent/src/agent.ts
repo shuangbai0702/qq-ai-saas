@@ -1,3 +1,4 @@
+import {renameAtomic} from '../../../packages/shared/fs-atomic.js';
 import {FavoriteMaintenance} from './favorite-maintenance.js';
 import {BotConfigSchema} from '../../../packages/contracts/index.js';
 import {acquireLease} from '../../../packages/database/lease.js';
@@ -27,7 +28,7 @@ export class HeartbeatWriter{
   const snapshot={...this.identity,...payload,sequence:this.sequence,at:Date.now()};
   const temp=`${this.file}.${this.identity.pid}.${randomUUID()}.tmp`;
   let renamed=false;
-  try{await writeFile(temp,JSON.stringify(snapshot),{flag:'wx',mode:0o600});await this.deps.rename(temp,this.file);renamed=true}
+  try{await writeFile(temp,JSON.stringify(snapshot),{flag:'wx',mode:0o600});await renameAtomic(temp,this.file,this.deps.rename);renamed=true}
   finally{if(!renamed)await rm(temp,{force:true})}
  }
  async stop(){this.stopped=true;await this.chain.catch(()=>{})}
@@ -142,7 +143,7 @@ export class NodeAgent {
      });this.recovery.delete(bot.id);
      if(reconnected)return;
    }
-   else if(command.kind==='stop'||command.kind==='delete'){await (bot.runtime_mode==='shared'?this.shared.stop(bot.id,command.kind==='delete'):ai.stop(bot.id));await protocol.stop(bot.id);await this.db.query("UPDATE bots SET observed_state='stopped',health='{}' WHERE id=$1 AND generation=$2",[bot.id,command.generation]);if(command.kind==='delete')await this.db.transaction(async tx=>{await tx.query('DELETE FROM secrets WHERE bot_id=$1',[bot.id]);await tx.query('DELETE FROM qq_bindings WHERE bot_id=$1',[bot.id]);await tx.query('UPDATE bots SET deleted_at=now() WHERE id=$1',[bot.id])});}
+   else if(command.kind==='stop'||command.kind==='delete'){await (bot.runtime_mode==='shared'?this.shared.stop(bot.id,command.kind==='delete'):ai.stop(bot.id));await protocol.stop(bot.id);await this.db.query("UPDATE bots SET observed_state='stopped',health='{}' WHERE id=$1 AND generation=$2",[bot.id,command.generation]);if(command.kind==='delete')await this.db.transaction(async tx=>{const [owner]=await tx.query('SELECT generation,deleted_at FROM bots WHERE id=$1 FOR UPDATE',[bot.id]);if(!owner||owner.deleted_at||owner.generation!==command.generation)throw Object.assign(new Error('删除已被新操作替代'),{superseded:true});await tx.query('DELETE FROM instances WHERE bot_id=$1',[bot.id]);for(const table of ['bilibili_logins','bilibili_accounts','bilibili_settings'])await tx.query('DELETE FROM '+table+' WHERE bot_id=$1',[bot.id]);await tx.query("UPDATE login_sessions SET state=CASE WHEN state IN ('online','expired','canceled','failed') THEN state ELSE 'canceled' END,qr=NULL,sequence=sequence+1 WHERE bot_id=$1",[bot.id]);await tx.query('DELETE FROM secrets WHERE bot_id=$1',[bot.id]);await tx.query('DELETE FROM qq_bindings WHERE bot_id=$1',[bot.id]);await tx.query('UPDATE bots SET deleted_at=now() WHERE id=$1',[bot.id])});}
    else if(command.kind==='login'){const sessionId=command.idempotency_key.replace(/^login-/, '');const [s]=await this.db.query("UPDATE login_sessions SET state='starting',sequence=sequence+1 WHERE bot_id=$1 AND id=$2 AND generation=$3 AND state='created' RETURNING id",[bot.id,sessionId,command.generation]);if(s){if(bot.runtime_mode==='shared')await this.shared.stop(bot.id);await protocol.stop(bot.id);
      if(bot.runtime_mode!=='shared'&&bot.desired_state==='running'&&!(await ai.probe(ctx!)).ready){
        await ai.stop(bot.id);

@@ -29,7 +29,8 @@ SYSTEM=(
 )
 
 MEANING='合法检查点提炼的近期交流线索，不是真实新发言、长期事实或执行凭据；按来源理解，新真实交流优先，不强迫续聊旧话题。只在下一合法检查点替换，不按时间或轮数过期。'
-_SECRET=re.compile(r'(?i)\bsk-[A-Za-z0-9_-]{8,}|Bearer\s+\S+')
+from credential_redaction import pattern
+_SECRET=pattern(8)
 
 
 def source_scopes(scope,authors):

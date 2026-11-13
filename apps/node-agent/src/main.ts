@@ -7,6 +7,14 @@ import {readFile,rm} from 'node:fs/promises';
 import {openDatabase, configuredDatabaseUrl} from '../../../packages/database/index.js';
 import {loadKey} from '../../../packages/shared/security.js';
 import {NodeAgent,HeartbeatWriter} from './agent.js';
+import {fileURLToPath,pathToFileURL} from 'node:url';
+
+// Source-mode development has no release manifest. Compiled production does.
+if(import.meta.url.endsWith('.js')){
+  const releaseRoot=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../../../..');
+  const verifier=await import(pathToFileURL(path.join(releaseRoot,'scripts/verify-production.mjs')).href);
+  await verifier.verifyProduction(releaseRoot);
+}
 
 const databaseUrl = await configuredDatabaseUrl();
 if (!databaseUrl) throw new Error('独立Agent需要PostgreSQL；PGlite仅支持嵌入式单进程模式');
