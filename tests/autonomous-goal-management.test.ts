@@ -49,16 +49,21 @@ test('goal exact-ID permissions, original intent preservation and stale revision
  const snapshot=await repo.readGoals(bot,audience);assert.equal(snapshot.complete,true);assert.ok(snapshot.goals[0].progress.length>12000,'read never silently clips existing content');
  await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget) VALUES($1,'bot','tenant',2,$2,$3,'test','ended','{}')",[cycleId,bot.generation,bot.revision]);
  await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at,goal_id,result) VALUES($1,$2,'bot','tenant',2,'research','','original responsibility','unknown',now(),$3,'{\"effects\":[{\"status\":\"unknown\"}],\"unfinished\":[\"receipt reconciliation\"]}')",[actionId,cycleId,goalId]);
+ const beforeEnd=await repo.readGoals(bot,audience);assert.deepEqual(Object.keys(beforeEnd).sort(),['complete','goals']);
+ assert.equal(beforeEnd.goals[0].id,goalId);assert.equal(beforeEnd.goals[0].revision,2);assert.equal(beforeEnd.goals[0].success_condition,'current milestone');assert.equal(beforeEnd.goals[0].source.originalGoal.successCondition,'original constraints');
  const ended=await repo.updateGoal(bot,audience,{goalId,expectedRevision:2,changes:{status:'completed'}});assert.equal(ended.status,'updated');assert.equal(ended.retainedExecutionResponsibility,true);
- const retained=await repo.readGoals(bot,audience);assert.equal(retained.goals[0].status,'completed');assert.equal(retained.actions[0].status,'unknown');assert.deepEqual(retained.actions[0].result.unfinished,['receipt reconciliation']);
+ const retained=await repo.readGoals(bot,audience);assert.deepEqual(retained,{goals:[],complete:true});
+ const [unresolved]=await db.query('SELECT * FROM autonomy_actions WHERE id=$1',[actionId]);assert.equal(unresolved.status,'unknown');assert.deepEqual(unresolved.result.unfinished,['receipt reconciliation']);
  await db.query("INSERT INTO tool_effects(id,tenant_id,bot_id,work_id,step_id,operation,args,args_digest,authority,mode_epoch,generation,config_revision,settings_revision,deadline_at,state,lease_owner) VALUES($1,'tenant','bot',$2,'exact-step','analyze',$3,'exact-digest','autonomous',2,$4,$5,1,now()+interval '5 minutes','claimed','exact-worker')",[effectId,actionId,JSON.stringify({bvid:'BV1xx411c7mD',question:'specific observation',start:0,seconds:30,frameCount:4}),bot.generation,bot.revision]);
- const pending=(await repo.readGoals(bot,audience)).effects[0];
+ assert.deepEqual(await repo.readGoals(bot,audience),{goals:[],complete:true});
+ const [pending]=await db.query('SELECT * FROM tool_effects WHERE id=$1',[effectId]);
  assert.equal(pending.id,effectId);assert.equal(pending.work_id,actionId);assert.equal(pending.step_id,'exact-step');assert.equal(pending.args.frameCount,4);assert.equal(pending.args.question,'specific observation');assert.equal(pending.args_digest,'exact-digest');assert.equal(pending.lease_owner,'exact-worker');assert.equal(pending.mode_epoch,2);assert.equal(pending.state,'claimed');assert.equal(pending.cancel_requested,false);assert.ok(pending.deadline_at);
  await db.query("UPDATE tool_effects SET state='finished',completion_state='done' WHERE id=$1",[effectId]);
  await db.query("UPDATE autonomy_actions SET status='completed',result='{}' WHERE id=$1",[actionId]);
  const closed=await repo.readGoals(bot,audience);
- assert.equal(closed.goals[0].id,goalId);assert.equal(closed.goals[0].status,'completed');assert.equal(closed.goals[0].revision,3);assert.equal(closed.goals[0].terminalRecord,true);assert.equal(closed.goals[0].progress,undefined);assert.equal(closed.actions.length,0);assert.equal(closed.effects.length,0);
- assert.equal((await repo.readGoals(bot,{scope:'private:88888888',senderId:'88888888'})).goals.length,0,'terminal identities obey the original scope authority');
+ assert.deepEqual(closed,{goals:[],complete:true});
+ const [closedGoal]=await db.query('SELECT * FROM autonomy_goals WHERE id=$1',[goalId]);assert.equal(closedGoal.status,'completed');assert.equal(closedGoal.revision,3);assert.ok(closedGoal.progress.length>12000,'reading goals never deletes authoritative history');
+ assert.equal((await repo.readGoals(bot,{scope:'private:88888888',senderId:'88888888'})).goals.length,0,'current goals obey the original scope authority');
 
 });
 for(const terminal of ['finished','unknown','canceled'])test('tool-completed '+terminal+' alone resumes original action cognition once without replaying effects',async t=>{
