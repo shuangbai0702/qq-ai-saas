@@ -996,7 +996,6 @@ class Reflection:
         if not self.binding:return False
         cfg,provider,is_current,metrics,event_var=self.binding
         if self.closed or not is_current() or not _inline and self.task and not self.task.done():return False
-        model_ready=cfg.get('memory') is not False and cfg.get('memorySummary') and callable(getattr(provider,'text_chat_stream',None))
         admission=getattr(self,'admission',None)
         # Resume already committed replacements without another model call,
         # a new round or a separate compression cycle.
@@ -1028,7 +1027,6 @@ class Reflection:
             if _inline:return recover_pending()
             self.task=asyncio.create_task(recover_pending());return True
         self.db.commit()
-        if not model_ready:return False
         # 35 is the due threshold. After accepted dialogue drains, include all
         # completed rounds through that idle boundary (possibly 36, 37, ...).
         configured=cfg.get('summaryRounds',DEFAULT_SUMMARY_ROUNDS)
@@ -1078,8 +1076,13 @@ class Reflection:
                 token=event_var.set(None)
                 operation_audit=None;audit_committed=False
                 try:
-                    previous_products=[];previous_dependency=None;legacy_product_ids=[];discarded=[];discard_stamp=None;author_payload=[]
                     if self.closed or not is_current() or self.epoch()!=epoch:return {'ok':False,'reason':'stale_configuration'}
+                    # Checkpoint maintenance is mandatory, independent of the
+                    # optional memory controls. Missing transport is a recorded
+                    # retryable failure, never a silent cancellation of due work.
+                    if not callable(getattr(provider,'text_chat_stream',None)):
+                        raise RuntimeError('semantic_summary_provider_unavailable')
+                    previous_products=[];previous_dependency=None;legacy_product_ids=[];discarded=[];discard_stamp=None;author_payload=[]
                     if job=='big':
                         prompt={'source_scope':'bot_shared_background','summaries':[{'id':r[0],'text':r[1],'source_scopes':[x[0] for x in self.db.execute('SELECT scope FROM memory_summary_origins WHERE summary_id=?',(r[0],))] or [r[4]],'level':r[5]} for r in big_rows]}
                         # The merge model must see the structured protected evidence,
