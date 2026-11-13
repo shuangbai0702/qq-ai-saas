@@ -1,0 +1,48 @@
+{
+  "id": "c79c6d26-50bd-4a9c-a0b5-ff82d19f7c9e",
+  "state": "finished",
+  "completion_state": "none",
+  "origin_scope": "",
+  "created_at": "2026-11-13T12:37:29.497Z",
+  "updated_at": "2026-11-13T12:37:54.319Z",
+  "execution": "completed",
+  "bvid": "BV1eFs96uE3K",
+  "frameCount": 4,
+  "frameTimes": [
+    0,
+    2,
+    4,
+    6
+  ],
+  "requestedClip": [
+    0,
+    8
+  ],
+  "finishReason": "stop",
+  "analysisComplete": true,
+  "usage": {
+    "costStatus": "unknown",
+    "imageBytes": 16648,
+    "downloadBytes": 5453919,
+    "modelRequests": 1,
+    "providerUsage": {
+      "total_tokens": 2214,
+      "prompt_tokens": 1104,
+      "completion_tokens": 1110,
+      "prompt_tokens_details": {
+        "cached_tokens": 892
+      }
+    }
+  },
+  "audio": {
+    "source": {
+      "cid": 43130096919,
+      "bvid": "BV1eFs96uE3K",
+      "part": 1
+    },
+    "analyzed": false,
+    "segments": [],
+    "trackDownloaded": false
+  },
+  "analysisExcerpt": "仅依据提供的 4 个离散采样帧描述；未提供/未分析音频，不能据此判断原声或完整视频内容。\n\n- **PTS 0 秒**：蓝色放射状/网格背景。画面中央白字为“**梗指南**”，下方黄字为“**蓝色大肥鱼**”。右上角可见哔哩哔哩相关水印标识。\n- **PTS 2 秒**：画面与 "
+}

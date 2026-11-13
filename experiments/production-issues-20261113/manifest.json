@@ -1,0 +1,63 @@
+{
+  "commit": "3c1c2b97a1f05b20b0814c5ee90f40a1c4e8b250",
+  "targets": {
+    "adapters/astrbot/bilibili_tools.py": {
+      "sha256": "50d532727145e04c0d7be7d6cf5a8cc30f2338d28062d0ed7d1df64302803f1e"
+    },
+    "apps/control-api/src/bilibili.ts": {
+      "sha256": "77bad86f2a91635976674bb3f195ebaebc1db38dd1773949f179034e972674c4"
+    },
+    "apps/node-agent/src/autonomous.ts": {
+      "sha256": "265ade9aaaf8b3ef4a147b36564ca30304f3ac8159731e5ba5f4cdf65930cea1"
+    },
+    "apps/node-agent/src/bilibili/video-evidence.ts": {
+      "sha256": "fc09dc14b321852776f4e1b339d2916c8e1a7a9673a2ee12bb44105523fb48b4"
+    },
+    "packages/database/tool-effects.ts": {
+      "sha256": "2330e8e37924e7494c3a15e23c096a2c722599f09cf9ee143a1decc2cb69bad8"
+    },
+    "packages/shared/bilibili-model.ts": {
+      "sha256": "a5bd5583423ce6d85fcb6d32275152438ce41a1f2f65e1a90ed8e6d43e6c9356"
+    },
+    "dist-server/apps/control-api/src/bilibili.js": {
+      "sha256": "44aaf14b98cd60b13cc361043c9d946a5e8945b1cd232a9803b262a4d0039715"
+    },
+    "dist-server/apps/node-agent/src/autonomous.js": {
+      "sha256": "becbc504b4d828dacf4b08d341444bfa65002ec66584790934ddf78d028fb9bf"
+    },
+    "dist-server/apps/node-agent/src/bilibili/video-evidence.js": {
+      "sha256": "5a8f2e907b1f822d91bf35f3f3abced041550fdb4b49c5257ee98a9c2ba4e1fd"
+    },
+    "dist-server/packages/database/tool-effects.js": {
+      "sha256": "0637fad97dd25d40a3708aa9b93a527fd9e8469a006a7f3975713e064b03b8de"
+    },
+    "dist-server/packages/shared/bilibili-model.js": {
+      "sha256": "49005e776e755330bb615f31a0eb0d837393e5d8a6418039c2c668e0ffa9c7d0"
+    },
+    "dist-server/apps/node-agent/src/maintenance.js": {
+      "sha256": "1543d1226ad6b8d66c8ab7fb92a857c29fd505f27d148f1ee70d49128cdca7b6"
+    },
+    "dist-server/apps/node-agent/src/maintenance.js.map": {
+      "sha256": "77792afe34edc6d8740fad30ceb746e7657142e798c122b6f9b93fa9c81771e5"
+    },
+    "dist-server/build.json": {
+      "sha256": "7c6b16ed56bc7023b93ab860990727a6baf65495bf68c6ca7b85519314f76f7f"
+    },
+    "dist-server/apps/control-api/src/bilibili.js.map": {
+      "sha256": "766c409f21ac0aa4cbfdef4470bd93448fb4fac8f80578c63d646e58766f48a8"
+    },
+    "dist-server/apps/node-agent/src/autonomous.js.map": {
+      "sha256": "0e96cfbd475f35027f4ad3f207261a266995a380919ee08b1291074247ca3d4d"
+    },
+    "dist-server/apps/node-agent/src/bilibili/video-evidence.js.map": {
+      "sha256": "4b6d02b8a64d1286599e4e1e5da5c15076dcda8fdef2d18a461a21c95ae7e3e2"
+    },
+    "dist-server/packages/database/tool-effects.js.map": {
+      "sha256": "d9a458cd14daa2902bb50fb7337d3bae561c4fb119be38b4b2c8613848d5710b"
+    },
+    "dist-server/packages/shared/bilibili-model.js.map": {
+      "sha256": "1883e2add3aaaea1d5ccb9f411f23293b4db747147a706226f572b326de0a163"
+    }
+  },
+  "capturedAt": "2026-11-13T12:22:55.403Z"
+}

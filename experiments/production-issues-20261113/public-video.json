@@ -1,0 +1,44 @@
+{
+  "id": "a1c0845f-3128-4d36-b6d4-40dc4fac8659",
+  "state": "finished",
+  "completion_state": "none",
+  "origin_scope": "",
+  "created_at": "2026-11-13T12:28:33.051Z",
+  "updated_at": "2026-11-13T12:29:00.088Z",
+  "execution": "completed",
+  "bvid": "BV1eFs96uE3K",
+  "frameCount": 4,
+  "frameTimes": [
+    0,
+    2,
+    4,
+    6
+  ],
+  "requestedClip": [
+    0,
+    8
+  ],
+  "finishReason": "length",
+  "analysisComplete": false,
+  "usage": {
+    "costStatus": "unknown",
+    "imageBytes": 16648,
+    "downloadBytes": 5613148,
+    "modelRequests": 1,
+    "providerUsage": {
+      "total_tokens": 2304,
+      "prompt_tokens": 1104,
+      "completion_tokens": 1200
+    }
+  },
+  "audio": {
+    "source": {
+      "cid": 43130096919,
+      "bvid": "BV1eFs96uE3K",
+      "part": 1
+    },
+    "analyzed": false,
+    "segments": [],
+    "trackDownloaded": false
+  }
+}

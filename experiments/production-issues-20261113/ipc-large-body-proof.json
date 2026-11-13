@@ -1,0 +1,1 @@
+{"at":"2026-11-13T12:37:58.061Z","bodyBytes":905058,"http":200,"status":"canceled","preflightReason":"identity_cycleId","reason":"stale_internal_work","usage":{"tokens":0,"modelCalls":0,"toolCalls":0},"effects":[]}
