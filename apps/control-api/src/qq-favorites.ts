@@ -1,3 +1,4 @@
+import {atomicJson as atomic} from '../../../packages/shared/fs-atomic.js';
 import {favoriteDirectory,withFavoriteIndex,readFavoriteIndex,writeFavoriteIndex} from '../../../packages/shared/qq-favorite-index.js';
 import type {FastifyInstance} from 'fastify';import {readFile,writeFile,mkdir,rename,rm,readdir,lstat} from 'node:fs/promises';import path from 'node:path';import {createHash,randomUUID} from 'node:crypto';import {z} from 'zod';
 import type {FavoriteAnnotation} from '../../../packages/shared/qq-favorite-semantics.js';
@@ -11,7 +12,6 @@ import {downloadFavorite,nativeCall,normalize} from '../../../packages/shared/qq
 type Dependencies={call?:typeof nativeCall;download?:typeof downloadFavorite;normalize?:typeof normalize;caption?:(bot:Bot,file:string,signal:AbortSignal)=>Promise<FavoriteAnnotation>};
 export function registerQQFavorites(app:FastifyInstance,root:string,owned:(req:any,id:string)=>Promise<Bot>,deps:Dependencies={}){
  const tasks=new Map<string,{controller:AbortController;promise:Promise<void>}>();let closing=false;
- async function atomic(file:string,data:unknown){await mkdir(path.dirname(file),{recursive:true});const temp=file+'.'+randomUUID()+'.tmp';try{await writeFile(temp,JSON.stringify(data),{flag:'wx',mode:0o600});for(let attempt=0;;attempt++){try{await rename(temp,file);break}catch(e:any){if(process.platform!=='win32'||!['EPERM','EACCES','EBUSY'].includes(e.code)||attempt>=4)throw e;await new Promise(r=>setTimeout(r,25*(attempt+1)))}}}finally{await rm(temp,{force:true})}}
  function account(bot:Bot){return String(bot.qq_uin||'')}
  async function active(req:any,initial:Bot,signal:AbortSignal){signal.throwIfAborted();const b=await owned(req,initial.id);if(b.generation!==initial.generation||account(b)!==account(initial)||b.desired_state==='deleting')throw invalid('QQ账号或实例已切换，请重新同步',409);return b}
  async function state(id:string){try{const s=JSON.parse(await readFile(path.join(favoriteDirectory(root,id),'sync.json'),'utf8'));return s.syncing&&!tasks.has(id)?{...s,syncing:false,error:'上次同步已中断，请重新同步'}:s}catch(e:any){if(e.code==='ENOENT')return{syncing:false};throw e}}

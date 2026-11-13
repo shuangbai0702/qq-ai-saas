@@ -212,6 +212,8 @@ async def resume_scope_input(core,id,lease,store,settings):
     if queue is not None and queue.qsize()>0:return False
     for task,event in getattr(getattr(core,'event_bus',None),'_pending_tasks',{}).items():
         if not task.done() and event.get_platform_id()==id:return False
+    from input_reconciliation import reconcile
+    reconcile(store.db,store.reflection)
     # Protocol redelivery may already have a terminal original Work. Reconcile
     # only queue bookkeeping; never manufacture a response or replay effects.
     with store.db:
@@ -235,7 +237,7 @@ async def resume_scope_input(core,id,lease,store,settings):
           WHERE i.status='queued' AND coalesce(i.retry_at,0)<?
           AND NOT EXISTS (SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope)
           AND NOT EXISTS (SELECT 1 FROM pipeline_events e WHERE e.scope=i.scope AND e.subject=i.subject AND e.event=i.event)""",(time.time(),))
-        for failed_scope,failed_event,count in store.db.execute("SELECT scope,event,retry_count FROM pipeline_work_inputs WHERE status='blocked_recovery'").fetchall():
+        for failed_scope,failed_event,count in store.db.execute("SELECT scope,min(event),max(retry_count) FROM pipeline_work_inputs WHERE status='blocked_recovery' GROUP BY scope").fetchall():
             store.reflection.checkpoint_issue('bot_shared',0,'input_recovery:'+failed_scope+':'+failed_event,{'scope':failed_scope,'event':failed_event,'reason':'ingress_not_accepted','state':'blocked_recovery','retry_count':count,'external_replay':False})
     row=store.db.execute("SELECT scope,event,payload,observed_at,retry_count FROM pipeline_work_inputs i WHERE status='pending' AND coalesce(retry_at,0)<=? AND NOT EXISTS (SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope) ORDER BY created LIMIT 1",(time.time(),)).fetchone()
     if not row:return False

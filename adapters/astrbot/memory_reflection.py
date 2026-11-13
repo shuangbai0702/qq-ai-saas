@@ -115,8 +115,8 @@ async def summary_model_output(provider,request,live,metrics,limit,on_decode=Non
 
 
 def scrub(value):
-    import re
-    return re.sub(r'(?i)\bsk-[A-Za-z0-9_-]{12,}|Bearer\s+\S+','[凭据已移除]',value)[:800]
+    from credential_redaction import redact
+    return redact(value)[:800]
 
 async def _embedding_request(provider,base_url,model,texts):
     if not base_url:
@@ -859,6 +859,13 @@ class Reflection:
 
     def checkpoint_issue(self,scope,identifier,kind,detail,resolved=False):
         """Durable, deduplicated operational exception; never a QQ message."""
+        if kind.startswith('input_recovery:') and isinstance(detail,dict) and detail.get('scope'):
+            # Input rows remain the exact evidence. Issues summarize one scope,
+            # rather than creating another unbounded per-event identity ledger.
+            input_scope=detail['scope'];kind='input_recovery:'+input_scope
+            counts=dict(self.db.execute("SELECT status,count(*) FROM pipeline_work_inputs WHERE scope=? AND status LIKE 'blocked_%' GROUP BY status",(input_scope,)))
+            detail={'scope':input_scope,'blocked':counts,'external_replay':False}
+            resolved=not counts
         raw=json.dumps(detail,ensure_ascii=False,sort_keys=True,separators=(',',':'))
         status='resolved' if resolved else 'open';now=time.time()
         self.db.execute('''INSERT INTO memory_checkpoint_issues VALUES(?,?,?,?,?,?,?)
@@ -867,93 +874,18 @@ class Reflection:
           WHERE status<>excluded.status OR detail<>excluded.detail''',
           (scope,identifier,kind,status,raw,now,now))
 
-    def null_hold_batch(self,scope,now,metrics):
-        """Locate the original pending product, without inventing a round.
-
-        NULL holds cannot join the ordinary small-summary stream. A bounded
-        repair rewrites only the existing product which explicitly waited for
-        these events. Missing batch identity or unsupported evidence stays held.
-        """
-        held=self.db.execute("SELECT h.event,m.subject,p.question,p.answer,p.at FROM memory_hold_rounds h LEFT JOIN memory_round_material m ON m.scope=h.scope AND m.event=h.event LEFT JOIN memory_pending p ON p.scope=h.scope AND p.event=h.event WHERE h.scope=? AND h.round_id IS NULL AND h.reason NOT IN ('lost','media_retained') ORDER BY h.created,h.event LIMIT 8",(scope,)).fetchall()
-        if not held:return None
-        legacy=[]
-        for event,*_ in held:
-            raw=self.db.execute('SELECT material FROM memory_round_material WHERE scope=? AND event=?',(scope,event)).fetchone()
-            try:version=json.loads(raw[0]).get('version',0) if raw else 0
-            except (ValueError,TypeError):version=0
-            if version<3:legacy.append(event)
-        if legacy and self.recapture is not None and now-self._recapture_at.get(scope,0)>=600:
-            self._recapture_at[scope]=now
-            try:self.recapture(scope,legacy)
-            except Exception:metrics['summaryHoldRecaptureFailures']=metrics.get('summaryHoldRecaptureFailures',0)+1
-        ready=[(None,person,event,question,answer,at) for event,person,question,answer,at in held]
-        if not self.hold_recovery_ready(scope,ready,now,metrics):return None
-        from summary_material import checkpoint_round_gate
-        for checkpoint in self.db.execute(f"SELECT id,summary_id,pending_events,through_round_id,round_count,epoch FROM memory_reconstruction_checkpoints c WHERE scope=? AND state IN ('pending_coverage','available') AND pending_events IS NOT NULL AND epoch=? AND {checkpoint_round_gate(self.db)} ORDER BY id",(scope,self.epoch())):
-            try:pending=json.loads(checkpoint[2])
-            except (ValueError,TypeError):continue
-            if not isinstance(pending,list):continue
-            summary=self.db.execute("SELECT s.id,s.text,s.sources,s.claims,coalesce(l.kind,'small') FROM memory_summaries s LEFT JOIN memory_summary_levels l ON l.id=s.id WHERE s.id=? AND s.scope=?",(checkpoint[1],scope)).fetchone()
-            if not summary or summary[4] not in ('small','big'):continue
-            selected=[r for r in ready if r[2] in pending and self.db.execute('''SELECT 1 FROM memory_summary_unresolved u
-                JOIN memory_round_material m ON m.scope=u.scope AND m.event=u.event
-                WHERE u.scope=? AND u.event=? AND u.summary_id=? AND u.digest=json_extract(m.material,'$.digest')''',
-                (scope,r[2],summary[0])).fetchone()]
-            if not selected:continue
-            # A producer must prove final Work ownership/settlement. Legacy
-            # native-only captures cannot be repaired by physical adjacency.
-            from summary_material import coverage_eligible
-            materials=[]
-            for row in selected:
-                raw=self.db.execute('SELECT material FROM memory_round_material WHERE scope=? AND event=?',(scope,row[2])).fetchone()
-                if not raw:return None
-                item=json.loads(raw[0])
-                if item.get('version',0)<3 or not coverage_eligible(item,scope) or not __import__('summary_material').media_retirement_allowed(self.db,scope,row[2],item):
-                    metrics['summaryHoldBindingMissing']=metrics.get('summaryHoldBindingMissing',0)+1
-                    return None
-                materials.append((row[2],raw[0]))
-            return checkpoint,summary,selected,materials
-        metrics['summaryHoldBatchMissing']=metrics.get('summaryHoldBatchMissing',0)+1
-        return None
-
-    async def recover_null_hold_batch(self,scope,batch,provider,is_current,metrics,epoch):
-        """Amend the original batch atomically; no new summary or permit."""
-        from summary_material import enrich,derive_claims,batch_corrections,fit_claims,uncarried_events,coverage_digest,claim_view,model_view
-        checkpoint,summary,rows,raw_materials=batch
-        live=lambda:not self.closed and is_current() and self.epoch()==epoch
-        materials,observations=await enrich(self.db,scope,[r[2] for r in rows],provider,live,metrics)
-        payload=[{'sender_id':r[1],'event':r[2],'user':r[3] or materials[r[2]]['text'],'bot':r[4] or '', 'at':r[5] or 0,'source':message_provenance.get(self.db,scope,r[2])} for r in rows]
-        prior=json.loads(summary[3]) if summary[3] else []
-        prompt={'source_scope':scope,'original_summary':summary[1],'protected_evidence':[claim_view(c) for c in prior], 'turns':payload,
-                'observed_requests':model_view(materials,payload),'image_observations':observations}
-        from output_clean import memory_projection
-        prompt=memory_projection(prompt)
-        system=SYSTEM+' 本次补全同一原批次的摘要，完整保留original_summary中的已有信息与protected_evidence，加入缺失的真实材料。observed_requests未重复展示的text/confirmed_reply与turns内同event、sender_id的user/bot完全相同。native_reply仅为模型原稿，不代表投递。输出JSON对象：{"summary":"补全后的完整原摘要"}。'
-        if not live():return False
-        result=await summary_model_output(provider,dict(prompt=model_json(prompt),system_prompt=system,contexts=[],func_tool=None,request_max_retries=0,**({'image_urls':summary_images} if summary_images else {})),live,metrics,1500 if summary[4]=='big' else 800)
-        if result is None:return False
-        response,data,text=result
-        new_claims=derive_claims(scope,payload,materials,batch_corrections(self.db,scope,[r[2] for r in rows]),data)
-        claims,dropped=fit_claims(prior+new_claims)
-        if dropped or any(c['id'] not in {x['id'] for x in claims} for c in prior) or uncarried_events(new_claims,{c['id'] for c in claims}):raise ValueError('recovery_claims_uncovered')
-        with self.db:
-            self.db.execute('BEGIN IMMEDIATE')
-            if not live() or self.null_hold_batch(scope,time.time(),{})!=batch:raise RuntimeError('summary_checkpoint_stale')
-            self.db.execute('UPDATE memory_summaries SET text=?,claims=?,schema_version=2,updated=? WHERE id=?',(text,json.dumps(claims,ensure_ascii=False,separators=(',',':')),time.time(),summary[0]))
-            for event,material in materials.items():
-                self.db.execute('INSERT INTO memory_summary_coverage VALUES(?,?,?,?,?) ON CONFLICT(scope,event) DO UPDATE SET subject=excluded.subject,digest=excluded.digest,summary_id=excluded.summary_id',(scope,event,material['subject'],coverage_digest(material),summary[0]))
-                self.db.execute('INSERT OR IGNORE INTO memory_summary_people VALUES(?,?)',(summary[0],material['subject']))
-                self.db.execute('DELETE FROM memory_hold_rounds WHERE scope=? AND event=? AND round_id IS NULL',(scope,event))
-                self.db.execute('DELETE FROM memory_round_material WHERE scope=? AND event=?',(scope,event))
-                self.db.execute('DELETE FROM memory_pending WHERE scope=? AND event=?',(scope,event))
-            self._promote_pending_checkpoints(scope)
-            self.db.execute('DELETE FROM memory_reflection_retry WHERE scope=?',(scope,))
-        metrics['nullHoldBatchRepairs']=metrics.get('nullHoldBatchRepairs',0)+1
-        promoted=self.db.execute("SELECT 1 FROM memory_reconstruction_checkpoints WHERE id=? AND state='available'",(checkpoint[0],)).fetchone()
-        if promoted and callable(self.checkpoint_callback):
-            try:self.checkpoint_callback(scope)
-            except Exception:metrics['checkpointCallbackFailures']=metrics.get('checkpointCallbackFailures',0)+1
-        return True
+    def operational_health(self):
+        now=time.time()
+        cached=getattr(self,'_operational_health',None)
+        if cached and now-cached['at']<60:return cached
+        issues=self.db.execute("SELECT count(*),min(first_seen) FROM memory_checkpoint_issues WHERE status='open'").fetchone()
+        inputs=dict(self.db.execute("SELECT status,count(*) FROM pipeline_work_inputs WHERE status LIKE 'blocked_%' GROUP BY status"))
+        value={'at':now,'openIssues':issues[0],'oldestIssueSeconds':round(now-issues[1]) if issues[1] else 0,'blockedInputs':inputs,
+               'degraded':bool(issues[0] or inputs)}
+        if value['degraded'] and (cached is None or (value['openIssues'],inputs)!=(cached['openIssues'],cached['blockedInputs'])):
+            print('FISHBOT_OPERATIONAL_HEALTH '+model_json(value),flush=True)
+        self._operational_health=value
+        return value
 
     def health_snapshot(self,scope,summary_rounds=DEFAULT_SUMMARY_ROUNDS):
         """Bounded, content-free per-scope reflection health (B package).
@@ -1446,11 +1378,7 @@ class Reflection:
                                 if _manual is not None:_manual['discarded']=recovery_counts
                             metrics['semanticMediaUntracked']=media_release.get('untracked',0)
                             metrics['summariesSaved']=metrics.get('summariesSaved',0)+1
-                            holds=set()
-                        if job=='hold_recovery' and holds:
-                            self.db.execute('UPDATE memory_reflection_retry SET next_at=? WHERE scope=?',(time.time()+600,scope))
-                        else:
-                            self.db.execute('DELETE FROM memory_reflection_retry WHERE scope=?',(scope,))
+                        self.db.execute('DELETE FROM memory_reflection_retry WHERE scope=?',(scope,))
                         operation_audit.persist(self.db,'committed','transaction_committed',checkpoint_id=checkpoint_id if job!='big' else None,summary_id=identifier)
                     audit_committed=True
                     if discarded:

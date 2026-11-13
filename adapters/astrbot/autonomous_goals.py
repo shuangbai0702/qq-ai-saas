@@ -21,15 +21,12 @@ def tools(settings,event,db,current):
             payload={'trusted':trusted}
             operation='read'
             if self.name=='update_autonomous_goal':operation='update';payload['update']=args
-            url=bridge['url'].rstrip('/')+'/internal/v1/bots/'+bridge['botId']+'/autonomous-goals/'+operation
             try:
-                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8),trust_env=False,headers={'Authorization':'Bearer '+bridge['token']}) as client:
-                    async with client.post(url,json=payload,allow_redirects=False) as response:
-                        # Goals are returned whole: response size is never silently clipped.
-                        value=await response.json()
-                        if not current():raise asyncio.CancelledError('stale goal result')
-                        if response.status>=400:return json.dumps({'status':'rejected','reason':'goal_bridge_rejected','detail':value},ensure_ascii=False)
-                        return json.dumps(value,ensure_ascii=False)
+                from bridge_http import post
+                status,value=await post(bridge,'autonomous-goals/'+operation,payload)
+                if not current():raise asyncio.CancelledError('stale goal result')
+                if status>=400:return json.dumps({'status':'rejected','reason':'goal_bridge_rejected','detail':value},ensure_ascii=False)
+                return json.dumps(value,ensure_ascii=False)
             except (aiohttp.ClientError,asyncio.TimeoutError,ValueError):
                 return json.dumps({'status':'unknown','reason':'goal_bridge_unavailable','instruction':'先按原goalId读取权威revision，不得假报修改成功或盲目重复修改'})
     changes={'type':'object','properties':{'title':{'type':'string','minLength':1,'maxLength':1000},'reason':{'type':'string','minLength':1,'maxLength':12000},'successCondition':{'type':'string','minLength':1,'maxLength':12000},'nextIntention':{'type':'string','maxLength':12000},'progress':{'type':'string','maxLength':12000},'status':{'type':'string','enum':['active','paused','completed','abandoned']}},'additionalProperties':False,'minProperties':1}

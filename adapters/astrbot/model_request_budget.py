@@ -12,10 +12,8 @@ def bind(settings,identity,current):
         if phase=='reserve' and not current():raise asyncio.CancelledError('stale model budget owner')
         bridge=manifest(settings)
         if not bridge:raise RuntimeError('model_budget_bridge_unavailable')
-        url=bridge['url'].rstrip('/')+'/internal/v1/bots/'+bridge['botId']+'/model-request-budget'
+        from bridge_http import post
         body={'workId':identity['id'],'epoch':identity['epoch'],'requestId':request_id,'phase':phase,'source':'main','tokens':tokens}
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8),trust_env=False,headers={'Authorization':'Bearer '+bridge['token']}) as client:
-            async with client.post(url,json=body,allow_redirects=False) as response:
-                if response.status>=400:raise RuntimeError('model_budget_'+phase+'_rejected:'+str(response.status))
-                await response.json()
+        status,_=await post(bridge,'model-request-budget',body)
+        if status>=400:raise RuntimeError('model_budget_'+phase+'_rejected:'+str(status))
     return transition

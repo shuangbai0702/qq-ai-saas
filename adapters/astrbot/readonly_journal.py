@@ -536,11 +536,14 @@ class ReadonlyJournal:
                 archive_bytes=self.db.execute('SELECT coalesce(sum(length(cast(payload AS BLOB))),0) FROM memory_checkpoint_archives').fetchone()[0] if has_archives else 0
                 archive_overflow=archive_required and archive_bytes+((existing[0] or 0) if existing else 0)>MAX_CHECKPOINT_ARCHIVE_BYTES
             count=self.db.execute('SELECT count(*) FROM fishbot_readonly_journals').fetchone()[0]
+            # Existing snapshots may progress under their actual row/byte
+            # limits. Preserve overflow as missing-scope recovery evidence;
+            # clearing it could mistake lost history for a new conversation.
             # Account for UTF-8 snapshot bytes and all retained scoped blobs.
             # A wire-character limit is not its storage-byte limit.
             # The existing per-bot total still bounds every row and all scopes.
             allowed=(next_total<=MAX_PERSISTED_JOURNAL_BYTES and
-                     (existing is not None or (used[1] or 0)<MAX_PERSISTED_JOURNALS) and (existing is not None or count<MAX_JOURNAL_TOMBSTONES) and not overflow and not archive_overflow)
+                     (existing is not None or (used[1] or 0)<MAX_PERSISTED_JOURNALS) and (existing is not None or count<MAX_JOURNAL_TOMBSTONES) and not archive_overflow)
             if not allowed:
                 if not tombstone:self.db.rollback()
                 else:

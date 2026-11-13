@@ -1,3 +1,6 @@
+import {fileURLToPath} from 'node:url';
+import {verifyProduction} from './verify-production.mjs';
+await verifyProduction(fileURLToPath(new URL('..',import.meta.url)));
 import {bootstrapAdmin} from './bootstrap-admin.mjs';
 const role=process.env.SERVICE_ROLE;
 if(!['api','agent'].includes(role))throw new Error('SERVICE_ROLE must be explicitly set to api or agent');

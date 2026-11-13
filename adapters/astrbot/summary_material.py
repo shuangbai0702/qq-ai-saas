@@ -243,7 +243,7 @@ def material_storage_view(material):
     existing storage boundary, not a new identity or coverage assertion.
     """
     item=json.loads(json.dumps(material,ensure_ascii=False))
-    redact=lambda value:re.sub(r'(?i)\bsk-[A-Za-z0-9_-]{12,}|Bearer\s+\S+','[凭据已移除]',value)
+    from credential_redaction import redact
     for field in ('text','reply','native_reply'):
         if isinstance(item.get(field),str):item[field]=redact(item[field])
     if isinstance(item.get('tools'),list):

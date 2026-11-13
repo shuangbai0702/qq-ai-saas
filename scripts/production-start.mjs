@@ -3,6 +3,8 @@ import {pathToFileURL} from 'node:url';
 import {access,mkdir,writeFile,readFile,rm} from 'node:fs/promises';
 const root=path.resolve(import.meta.dirname,'..');process.chdir(root);
 process.env.NODE_ENV='production';
+const {verifyProduction}=await import('./verify-production.mjs');
+await verifyProduction(root);
 await import('dotenv/config');
 const entry=path.join(root,'dist-server/apps/control-api/src/main.js');
 try{await access(entry);await access(path.join(root,'apps/web/dist/index.html'))}catch{throw new Error('Production assets missing. First run node scripts/production-build.mjs')}

@@ -13,8 +13,7 @@ from pathlib import Path
 def image_key(value):return hashlib.sha256(value.encode('utf-8')).hexdigest()
 
 
-def event_key(scope,event):
-    return image_key(json.dumps([scope,str(event)],ensure_ascii=False,separators=(',',':')))
+from context_protocol import scoped_event_hash as event_key
 
 
 def initialize(db):
