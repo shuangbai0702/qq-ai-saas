@@ -140,6 +140,7 @@ class Activity(unittest.IsolatedAsyncioTestCase):
         # The SDK's private window never received the internal activation.
         # A real following input must still append to that exact main Journal.
         saved=copy.deepcopy(self.st.model_journals[scope].last.wire)
+        service_policy=json.loads(self.st.model_journals[scope].last.authority['content'].split('\n',1)[1])['policy']
         self.st.model_journals.clear()
         from astrbot.core.platform.astrbot_message import MessageMember
         from astrbot.core.platform.astr_message_event import current_message_event
@@ -148,7 +149,7 @@ class Activity(unittest.IsolatedAsyncioTestCase):
         event.message_obj.raw_message={'post_type':'message','message_type':'private','message_id':'human-after-activation','user_id':12345678,'self_id':90000000,'message':[{'type':'text','data':{'text':'Continue our conversation'}}]}
         event.set_extra('_hosted_internal_work',None);event.set_extra('_hosted_initiative',False)
         from context_foundation import read
-        event.set_extra('_hosted_context',model_json({'memory_foundation':read(self.st,self.settings['qq']['config']['behavior'],scope,'12345678'),'state':{}}))
+        event.set_extra('_hosted_context',model_json({'identity':{'scope':scope,'sender_id':'12345678','self_id':'90000000','owner':False},'memory_foundation':read(self.st,self.settings['qq']['config']['behavior'],scope,'12345678'),'state':{}}))
         work=self.st.pipeline.bind(event,self.settings['qq'])
         token=current_message_event.set(event)
         try:
@@ -156,6 +157,19 @@ class Activity(unittest.IsolatedAsyncioTestCase):
                 prompt=SOURCE+model_json({'scope':scope,'sender_id':'12345678','event_id':work.event_id})+'\nContinue our conversation')
         finally:current_message_event.reset(token)
         self.assertEqual(self.requests[-1]['messages'][:len(saved)],saved)
+        human_policy=json.loads(self.st.model_journals[scope].last.authority['content'].split('\n',1)[1])['policy']
+        self.assertEqual(human_policy,service_policy)
+        self.assertIn('仅当本轮身份为自主服务任务时',human_policy)
+        from decision_history import apply_changes
+        latest={}
+        for message in self.requests[-1]['messages']:
+            content=message.get('content')
+            if isinstance(content,str) and content.startswith(EVENT_CONTEXT_CURRENT+'\n'):
+                packet=json.loads(content.split('\n',1)[1])
+                latest=apply_changes(latest,packet['eventChanges']) if 'eventChanges' in packet else packet
+        self.assertEqual(latest['authority']['identity']['sender_id'],'12345678')
+        suffix=model_json(self.requests[-1]['messages'][len(saved):])
+        self.assertNotIn(human_policy,suffix)
         self.assertEqual(self.st.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],1)
 
     async def test_other_modes_count_only_real_dialogue(self):
