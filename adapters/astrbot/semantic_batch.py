@@ -17,6 +17,8 @@ def initialize(db):
       checkpoint_id INTEGER PRIMARY KEY,scope TEXT NOT NULL,digest TEXT NOT NULL,
       members TEXT NOT NULL,cutoff REAL NOT NULL,state TEXT NOT NULL,
       created REAL NOT NULL,completed REAL)''')
+    db.execute('''CREATE TABLE IF NOT EXISTS memory_semantic_purges(
+      checkpoint_id INTEGER PRIMARY KEY,completed REAL NOT NULL)''')
 
 
 def permit(db,checkpoint_id):
@@ -165,10 +167,17 @@ def purge(db,checkpoint_id,*,preview=False):
     # Keep transaction ownership with the caller even when this is its first
     # mutation: releasing an outermost SQLite savepoint would otherwise commit.
     if preview and not db.in_transaction:raise ValueError('semantic_preview_transaction_required')
+    initialize(db)
     if not db.in_transaction:db.execute('BEGIN')
     db.execute('SAVEPOINT semantic_batch_purge')
     try:
+        if not preview and db.execute('SELECT 1 FROM memory_semantic_purges WHERE checkpoint_id=?',(checkpoint_id,)).fetchone():
+            db.execute('RELEASE semantic_batch_purge');return True
         result=_purge(db,checkpoint_id,preview=preview)
+        if result and not preview:
+            # The receipt and every cleanup (including archive verification)
+            # commit or roll back together under the caller's transaction.
+            db.execute('INSERT INTO memory_semantic_purges VALUES(?,?)',(checkpoint_id,time.time()))
         db.execute('RELEASE semantic_batch_purge')
         return result
     except BaseException:
@@ -227,6 +236,14 @@ def _purge(db,checkpoint_id,*,preview=False):
           ON p.scope=c.scope AND p.subject=c.subject AND p.at=c.last_user
           WHERE c.last_user_event IS NULL AND
           (SELECT count(*) FROM memory_pending m WHERE m.scope=c.scope AND m.subject=c.subject AND m.at=c.last_user)=1'''))
+    feedback_by_channel={}
+    semantic_sources={}
+    for table,channel_column,event_column in (('facts','scope','event'),('memory_agreements','source_scope','source_event')):
+        if table in tables and events:
+            indexed={}
+            for rowid,channel,identifier in db.execute('SELECT rowid,'+channel_column+','+event_column+' FROM '+table):
+                indexed.setdefault((channel,identifier),[]).append(rowid)
+            semantic_sources[table]=(event_column,indexed)
     for event in events:
         channel,identifier=origin(scope,event)
         if {'last_user_event','last_bot_event'}<=contact_columns:
@@ -255,22 +272,30 @@ def _purge(db,checkpoint_id,*,preview=False):
             # Signals are quote evidence, not the derived companion state.
             db.execute('DELETE FROM companion_signals WHERE scope=? AND event=?',(channel,identifier))
             semantic='semantic:'+event_key(channel,identifier)
-            for signal_event,quote in db.execute("SELECT event,quote FROM companion_signals WHERE scope=? AND kind='dialogue_feedback'",(channel,)).fetchall():
-                try:feedback=json.loads(quote)
-                except (ValueError,TypeError):continue
-                if isinstance(feedback,dict) and str(feedback.get('reaction_event',''))==identifier:
-                    feedback['reaction_event']=semantic
-                    feedback.pop('quote',None)
-                    db.execute("UPDATE companion_signals SET quote=? WHERE scope=? AND event=? AND kind='dialogue_feedback'",(model_json(feedback),channel,signal_event))
+            if channel not in feedback_by_channel:
+                indexed={}
+                for signal_event,quote in db.execute("SELECT event,quote FROM companion_signals WHERE scope=? AND kind='dialogue_feedback'",(channel,)):
+                    try:feedback=json.loads(quote)
+                    except (ValueError,TypeError):continue
+                    if isinstance(feedback,dict):indexed.setdefault(str(feedback.get('reaction_event','')),[]).append((signal_event,feedback))
+                feedback_by_channel[channel]=indexed
+            indexed=feedback_by_channel[channel]
+            for signal_event,feedback in indexed.pop(identifier,[]):
+                feedback['reaction_event']=semantic
+                feedback.pop('quote',None)
+                db.execute("UPDATE companion_signals SET quote=? WHERE scope=? AND event=? AND kind='dialogue_feedback'",(model_json(feedback),channel,signal_event))
+                indexed.setdefault(semantic,[]).append((signal_event,feedback))
         if 'memory_message_sources' in tables:db.execute('DELETE FROM memory_message_sources WHERE scope=? AND event=?',(channel,identifier))
         if 'pipeline_work_inputs' in tables:
             # Minimal identity/status/receipt fencing remains a system ledger;
             # it is not model memory and no longer contains the raw request.
             db.execute("UPDATE pipeline_work_inputs SET payload=NULL WHERE scope=? AND event=? AND status<>'owned'",(channel,identifier))
-        if 'facts' in tables:
-            db.execute('UPDATE facts SET event=? WHERE scope=? AND event=?',('semantic:'+event_key(channel,identifier),channel,identifier))
-        if 'memory_agreements' in tables:
-            db.execute('UPDATE memory_agreements SET source_event=? WHERE source_scope=? AND source_event=?',('semantic:'+event_key(channel,identifier),channel,identifier))
+        for table,(column,indexed) in semantic_sources.items():
+            matching=indexed.pop((channel,identifier),[])
+            if matching:
+                semantic='semantic:'+event_key(channel,identifier)
+                db.executemany('UPDATE '+table+' SET '+column+'=? WHERE rowid=?',((semantic,rowid) for rowid in matching))
+                indexed.setdefault((channel,semantic),[]).extend(matching)
     # Original ID lists are no longer model memory or checkpoint dependencies.
     if 'memory_summaries' in tables:
         if scope=='bot_shared':db.execute("UPDATE memory_summaries SET sources='[]'")
@@ -279,13 +304,15 @@ def _purge(db,checkpoint_id,*,preview=False):
     if scope=='bot_shared' and 'memory_summary_coverage' in tables:
         # Old Coverage rows without any remaining hot input are obsolete source
         # indexes, not semantic memory or a proof needed by whole-batch retirement.
+        hot=set()
+        for table in ('memory_rounds','memory_pending','memory_round_material','memory_hold_rounds','pipeline_scope_work'):
+            if table in tables:hot.update(db.execute('SELECT scope,event FROM '+table))
+        owned=set(db.execute("SELECT scope,event FROM pipeline_work_inputs WHERE status='owned'")) if 'pipeline_work_inputs' in tables else set()
         for logical,identifier in db.execute('SELECT scope,event FROM memory_summary_coverage').fetchall():
             channel,event=origin(logical,identifier)
             identities={(logical,identifier),(channel,event),('bot_shared',model_json([channel,event]))}
-            hot=any(table in tables and any(db.execute('SELECT 1 FROM '+table+' WHERE scope=? AND event=?',pair).fetchone() for pair in identities)
-                    for table in ('memory_rounds','memory_pending','memory_round_material','memory_hold_rounds','pipeline_scope_work'))
-            owned='pipeline_work_inputs' in tables and any(db.execute("SELECT 1 FROM pipeline_work_inputs WHERE scope=? AND event=? AND status='owned'",pair).fetchone() for pair in identities)
-            if not hot and not owned:db.execute('DELETE FROM memory_summary_coverage WHERE scope=? AND event=?',(logical,identifier))
+            if not identities.intersection(hot) and not identities.intersection(owned):
+                db.execute('DELETE FROM memory_summary_coverage WHERE scope=? AND event=?',(logical,identifier))
     # Recovery archives obey the same successful exact-batch retirement.
     # They may keep uncompressed evidence and System, never a retired copy.
     import journal_storage

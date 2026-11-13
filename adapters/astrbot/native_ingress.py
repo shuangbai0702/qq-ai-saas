@@ -4,6 +4,7 @@ The original lives only in pipeline_work_inputs. Recovery uses the original
 converter directly; it already owns that same durable input.
 """
 from types import SimpleNamespace
+import inspect
 import time
 
 
@@ -50,7 +51,10 @@ def bind(platform, acquire, allowed=lambda raw: True, quiescing=lambda: False):
         # existing adapter path instead of inventing a recovery identity.
         if raw.get('post_type', 'message') != 'message':
             return await original(raw)
-        release = acquire(raw)  # synchronous persistence before any await
+        release = acquire(raw)
+        # During local retirement a dedicated SQLite connection persists this
+        # same input off-loop. SDK conversion still starts only after commit.
+        if inspect.isawaitable(release):release=await release
         if release is None: return None
         try:
             if quiescing(): return None

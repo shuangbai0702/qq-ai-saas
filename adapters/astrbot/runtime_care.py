@@ -41,7 +41,7 @@ class RuntimeCare:
     def busy(store):
         # Admission/debounce and capacity waits own inbound work too. Counting
         # model calls alone can declare a five-second burst window idle.
-        return bool(store.active or getattr(store,'ingress',0) or store.batches or getattr(store,'waiting',0) or any(task and not task.done() for task in (store.social.task, store.social.stickers.task, store.reflection.task, getattr(getattr(store,'planner',None),'task',None))))
+        return bool(store.active or getattr(store,'ingress',0) or store.batches or getattr(store,'waiting',0) or getattr(store,'compression_active',False) or any(not task.done() for task in getattr(store,'_local_db_workers',())) or any(task and not task.done() for task in (store.social.task, store.social.stickers.task, store.reflection.task, getattr(getattr(store,'planner',None),'task',None))))
 
     def status(self,core):
         """Inspect native queue/task ownership; expose no message content."""

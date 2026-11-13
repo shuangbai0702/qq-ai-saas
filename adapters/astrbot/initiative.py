@@ -331,6 +331,7 @@ def start(core,settings,store,metrics):
                     brain=getattr(core,'_hosted_autonomous',None)
                     from bilibili_tools import resume_completion
                     st=store(id,s)
+                    if getattr(st,'compression_active',False):continue
                     if await resume_scope_input(core,id,s,st,settings):continue
                     if getattr(st,'compression_boundary',None) is not None:continue
                     if getattr(getattr(core,'_hosted_stop_fence',None),'quiescing',False):break

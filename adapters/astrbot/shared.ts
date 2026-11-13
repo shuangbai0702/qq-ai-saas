@@ -18,6 +18,16 @@ async function availableHealthPort(db:Sql,preferred?:number,groupId=''){
  throw new Error('共享运行组没有可绑定的本机健康端口');
 }
 export class SharedAstrBotAdapter {
+ private ipcStalls=new Map<string,{pid:number;created:number;since:number}>();
+ private recentBusyLoop(group:any,owner:any){
+  this.ipcStalls??=new Map(); // Existing live adapters may receive this prototype without reconstruction.
+  const now=Date.now();let episode=this.ipcStalls.get(group.id);
+  if(!episode||episode.pid!==owner.pid||episode.created!==owner.created){episode={pid:owner.pid,created:owner.created,since:now};this.ipcStalls.set(group.id,episode)}
+  const activity=owner.loopActivity;
+  // RuntimeCare's existing stamp proves loop activity, never business progress.
+  // Even continuously refreshed busy telemetry cannot defer a stuck IPC forever.
+  return now-episode.since<300000&&activity?.active===true&&Number.isFinite(activity.at)&&activity.at*1000<=now+5000&&now-activity.at*1000<=120000;
+ }
  constructor(private db:Sql,private host:ProcessHost,private dedicated:AstrBotAdapter,private source:string,private python:string,private canAttach?:(ctx:RuntimeContext)=>Promise<boolean>){}
  async assign(id:string){return this.db.transaction(async tx=>{await tx.query('SELECT id FROM bots WHERE id=$1 FOR UPDATE',[id]);const [bot]=await tx.query('SELECT group_id FROM bots WHERE id=$1',[id]);if(bot.group_id)return(await tx.query('SELECT * FROM runtime_groups WHERE id=$1',[bot.group_id]))[0];
   // Single-node Agent serializes assignment. Lock the chosen group for PG too.
@@ -54,8 +64,9 @@ export class SharedAstrBotAdapter {
  async recoverReadiness(ctx:RuntimeContext){
   const group=await this.group(ctx.botId);if(!group)return this.start(ctx);
   this.host.endInspection();const owner=await this.host.inspect(group.id,'ai');if(!owner)return this.start(ctx);
-  let health:any;try{health=await this.request(group,'/health','GET',undefined,undefined,1500)}catch{/* A timed-out control plane is rechecked against current PID ownership below. */}
+  let health:any;try{health=await this.request(group,'/health','GET',undefined,undefined,1500);this.ipcStalls?.delete(group.id)}catch{/* A timed-out control plane is rechecked against current PID ownership below. */}
   if(health?.ready){
+   this.ipcStalls?.delete(group.id);
    if(health.generation!==group.generation)throw Object.assign(new Error('共享组代次已变化，拒绝替换健康进程'),{superseded:true});
    const member=health.members?.[ctx.botId];if(member?.generation===ctx.generation&&member?.revision===ctx.revision)return;
    // Healthy group: only repair this member; peers keep their live work.
@@ -65,6 +76,7 @@ export class SharedAstrBotAdapter {
   if(!currentGroup||currentGroup.id!==group.id||currentGroup.generation!==group.generation||!bot||bot.deleted_at||bot.desired_state!=='running'||bot.generation!==ctx.generation||bot.revision!==ctx.revision)throw Object.assign(new Error('共享组恢复已被新生命周期替代'),{superseded:true});
   this.host.endInspection();const current=await this.host.inspect(group.id,'ai');
   if(!current||current.pid!==owner.pid||current.created!==owner.created)throw Object.assign(new Error('共享组进程所有权已变化'),{superseded:true});
+  if(!health&&this.recentBusyLoop(group,current))return;
   await this.host.stop(group.id,'ai','shared-readiness-timeout',{pid:owner.pid,created:owner.created});
   // Existing start owns generation advancement and reattaches this member.
   // Peers recover independently after their own live protocol/identity check.
@@ -75,5 +87,5 @@ export class SharedAstrBotAdapter {
   // Per-bot root/Work/Journal survive ordinary offline unload and group moves.
   await db.query('DELETE FROM group_members WHERE bot_id=$1',[id]);await db.query('UPDATE bots SET group_id=NULL WHERE id=$1',[id]);
   const [active]=await db.query("SELECT count(*)::int AS count FROM group_members WHERE group_id=$1 AND desired_state='running'",[group.id]);if(!active.count){await this.host.stop(group.id,'ai');await db.query("UPDATE runtime_groups SET desired_state='stopped',observed_state='stopped' WHERE id=$1",[group.id]);}}
- async probe(ctx:RuntimeContext):Promise<Health>{const group=await this.group(ctx.botId);if(!group)return{alive:false,ready:false};const p=await this.host.inspect(group.id,'ai');if(!p){await this.db.query("UPDATE runtime_groups SET observed_state='failed',health=$2 WHERE id=$1",[group.id,JSON.stringify({alive:false})]);await this.db.query("UPDATE group_members SET observed_state='failed' WHERE group_id=$1 AND desired_state='running'",[group.id]);return{alive:false,ready:false,detail:'共享组进程退出'}}try{const h=await this.request(group,'/health','GET',undefined,undefined,1500);const m=h.members[ctx.botId];const ready=h.ready&&h.generation===group.generation&&m?.generation===ctx.generation&&m?.revision===ctx.revision;await this.db.query('UPDATE runtime_groups SET health=$2 WHERE id=$1',[group.id,JSON.stringify({pid:p.pid,rssBytes:p.rssBytes,members:Object.keys(h.members).length,generation:h.generation})]);return{alive:true,ready:!!ready,pid:p.pid,memoryPolicy:p.memoryPolicy,metrics:h.metrics?.[ctx.botId],detail:`共享组 ${group.id}；${m?.modelConfigured?'模型已配置，需对话验收':'尚未配置模型Key'}；组RSS ${Math.round(p.rssBytes/1048576)} MiB（不按成员重复计费）`};}catch{return{alive:true,ready:false,pid:p.pid,memoryPolicy:p.memoryPolicy,detail:'共享组IPC未就绪'}}}
+ async probe(ctx:RuntimeContext):Promise<Health>{const group=await this.group(ctx.botId);if(!group)return{alive:false,ready:false};const p=await this.host.inspect(group.id,'ai');if(!p){this.ipcStalls?.delete(group.id);await this.db.query("UPDATE runtime_groups SET observed_state='failed',health=$2 WHERE id=$1",[group.id,JSON.stringify({alive:false})]);await this.db.query("UPDATE group_members SET observed_state='failed' WHERE group_id=$1 AND desired_state='running'",[group.id]);return{alive:false,ready:false,detail:'共享组进程退出'}}try{const h=await this.request(group,'/health','GET',undefined,undefined,1500);this.ipcStalls?.delete(group.id);const m=h.members[ctx.botId];const ready=h.ready&&h.generation===group.generation&&m?.generation===ctx.generation&&m?.revision===ctx.revision;await this.db.query('UPDATE runtime_groups SET health=$2 WHERE id=$1',[group.id,JSON.stringify({pid:p.pid,rssBytes:p.rssBytes,members:Object.keys(h.members).length,generation:h.generation})]);return{alive:true,ready:!!ready,pid:p.pid,memoryPolicy:p.memoryPolicy,metrics:h.metrics?.[ctx.botId],detail:`共享组 ${group.id}；${m?.modelConfigured?'模型已配置，需对话验收':'尚未配置模型Key'}；组RSS ${Math.round(p.rssBytes/1048576)} MiB（不按成员重复计费）`};}catch{const busy=this.recentBusyLoop(group,p);return{alive:true,ready:false,pid:p.pid,memoryPolicy:p.memoryPolicy,detail:busy?'共享组IPC卡顿；已核验近期忙循环活动，有限观察中（不代表任务推进）':'共享组IPC未就绪'}}}
 }

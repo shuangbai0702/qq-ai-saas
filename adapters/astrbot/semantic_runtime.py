@@ -118,7 +118,9 @@ def finish_semantic_batches(st,cfg,scope):
     if st.db.in_transaction:return {'result':'transaction_busy'}
     semantic_batch.initialize(st.db)
     rows=st.db.execute('''SELECT b.checkpoint_id,b.state,c.state,c.summary_id FROM memory_semantic_batches b
-      JOIN memory_reconstruction_checkpoints c ON c.id=b.checkpoint_id WHERE b.scope=? ORDER BY b.checkpoint_id''',(scope,)).fetchall()
+      JOIN memory_reconstruction_checkpoints c ON c.id=b.checkpoint_id WHERE b.scope=?
+      AND NOT EXISTS (SELECT 1 FROM memory_semantic_purges p WHERE p.checkpoint_id=b.checkpoint_id)
+      ORDER BY b.checkpoint_id''',(scope,)).fetchall()
     result={'retired':0,'pending':0}
     for checkpoint,batch_state,checkpoint_state,summary_id in rows:
         if _journals_busy(st):
@@ -126,6 +128,7 @@ def finish_semantic_batches(st,cfg,scope):
         if batch_state=='retired':
             try:
                 with st.db:semantic_batch.purge(st.db,checkpoint)
+                _issue(st,scope,checkpoint,'retired',resolved=True)
             except ValueError as error:
                 _issue(st,scope,checkpoint,str(error));result['pending']+=1
             continue
@@ -267,9 +270,16 @@ def install_native_retirement_guard(manager,stores,settings):
     def owner(platform):
         st=stores.get(platform)
         return st if manager.db is db and st is not None and platform in settings and not getattr(st.reflection,'closed',False) else None
-    def cleanup(platform,st,cid=None):
-        try:status=clean_native_history(manager,platform,st,cid)
+    async def cleanup(platform,st,cid=None):
+        from semantic_async import clean_native
+        lease=settings.get(platform)
+        # This may be the accepted conversation's final SDK save while a
+        # compression boundary waits for it to drain. Native cleanup has its
+        # own thread/connection; waiting for admission here would deadlock.
+        if owner(platform) is not st or settings.get(platform) is not lease:return {'result':'pending','reason':'stale_native_owner'}
+        try:status=await clean_native(st,manager,platform,cid)
         except (OSError,sqlite3.Error,ValueError,TypeError) as error:status={'result':'pending','reason':type(error).__name__}
+        if owner(platform) is not st or settings.get(platform) is not lease:return {'result':'pending','reason':'stale_native_owner'}
         st.semantic_native_status=status
         return status
     if hasattr(db,'update_conversation'):
@@ -277,7 +287,7 @@ def install_native_retirement_guard(manager,stores,settings):
         async def update(*args,**kwargs):
             value=await original(*args,**kwargs)
             platform=getattr(value,'platform_id',None);st=owner(platform)
-            if st is not None:cleanup(platform,st,getattr(value,'conversation_id',None))
+            if st is not None:await cleanup(platform,st,getattr(value,'conversation_id',None))
             return value
         db.update_conversation=update
     if hasattr(db,'insert_platform_message_history'):
@@ -309,7 +319,8 @@ def install_native_retirement_guard(manager,stores,settings):
             # Retirement can commit while the asynchronous insert is in flight.
             st=owner(platform)
             if st is not None:
-                status=cleanup(platform,st)
+                status=await cleanup(platform,st)
+                if owner(platform) is not st:return None
                 if source and _retired_row(source,source['scope'],_retired_members(st.db)):
                     if status.get('result')!='clean':raise ValueError('native_history_cleanup_pending')
                     return None
