@@ -20,6 +20,18 @@ async function fixture(t:any){
  await db.query("INSERT INTO autonomy_goals(id,bot_id,tenant_id,origin,status,title,reason,success_condition,source) VALUES($1,'bot','tenant','owner_request','active','original intent','original motive','original constraints',$2)",[goalId,JSON.stringify({scope:'private:12345678',senderId:'12345678',owner:true,handoffId:goalId,notBefore:Date.now()+600000})]);
  return{db,repo,bot};
 }
+test('current Goal limit includes paused goals and preserves accepted replay',async t=>{
+ const {db,repo,bot}=await fixture(t);
+ for(let i=0;i<8;i++)await db.query("INSERT INTO autonomy_goals(id,bot_id,tenant_id,origin,status,title,reason,success_condition,source) VALUES($1,'bot','tenant','model',$2,'retained','why','done','{}')",[`10000000-0000-4000-8000-${String(i).padStart(12,'0')}`,i%2?'paused':'paused_user']);
+ const request={id:'20000000-0000-4000-8000-000000000001',tenantId:'tenant',botId:'bot',generation:bot.generation,revision:bot.revision,epoch:2,eventId:'real-input',scope:'private:12345678',senderId:'12345678',at:Date.now(),objective:'tenth goal',delaySeconds:600};
+ const trusted={...bot,bot_id:bot.id,epoch:2};
+ const tenth=await repo.acceptHandoff(trusted,request);assert.equal(tenth.status,'accepted');
+ const replay=await repo.acceptHandoff(trusted,request);assert.equal(replay.status,'accepted');
+ const eleventh=await repo.acceptHandoff(trusted,{...request,id:'20000000-0000-4000-8000-000000000002',objective:'eleventh goal'});
+ assert.equal(eleventh.status,'rejected');assert.equal(eleventh.reason,'active_goal_limit');
+ const [{count}]=await db.query("SELECT count(*)::int AS count FROM autonomy_goals WHERE bot_id='bot' AND status NOT IN ('completed','abandoned','canceled')");assert.equal(count,10);
+});
+
 test('goal exact-ID permissions, original intent preservation and stale revision CAS',async t=>{
  const {db,repo,bot}=await fixture(t),audience={scope:'private:12345678',senderId:'12345678'};
  assert.equal((await repo.readGoals(bot,{scope:'private:88888888',senderId:'88888888'})).goals.length,0);

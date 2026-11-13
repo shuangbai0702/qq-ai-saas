@@ -68,47 +68,20 @@ GOAL_READING='baseline.snapshot是完整当前目标；delta.changes按集合中
 
 
 def necessary_goals(snapshot):
-    """Current goal progress and unresolved responsibility, never execution history."""
+    """Current Goal definitions only; execution receipts retain their own owners."""
     import copy
     if not isinstance(snapshot,dict):raise ValueError('goal_snapshot_not_object')
-    pending=('queued','claimed','dispatching','unknown','pending')
-    responsibilities=[]
-    # A second projection occurs at the Provider boundary. Preserve the same
-    # minimal current responsibility there, without needing historical rows.
-    for row in snapshot.get('currentResponsibilities',[]):
-        responsibilities.append(copy.deepcopy(row))
-    effects={}
-    for effect in _goal_rows(snapshot.get('effects',[])).values():
-        if effect.get('state',effect.get('status')) not in pending and effect.get('completion_state') not in ('pending','claimed'):continue
-        work=effect.get('work_id',effect.get('action_id',effect.get('actionId')))
-        effects.setdefault(work,[]).append({k:copy.deepcopy(effect[k]) for k in ('id','operation','state','status','completion_state') if k in effect})
-    for action in _goal_rows(snapshot.get('actions',[])).values():
-        result=action.get('result') or {}
-        unfinished=result.get('unfinished',[])
-        unresolved=effects.get(action['id'],[])
-        # Canonical tool_effects are primary; local feedback may lead them.
-        for effect in result.get('effects',[]):
-            if effect.get('status') in pending and not any(e.get('id')==effect.get('id') for e in unresolved):
-                unresolved.append({k:copy.deepcopy(effect[k]) for k in ('id','status') if k in effect})
-        if action.get('status') not in ('planned','executing','partial','unknown') and not unfinished and not unresolved:continue
-        item={k:copy.deepcopy(action[k]) for k in ('id','status') if k in action}
-        goal=action.get('goal_id',action.get('goalId'))
-        if goal:item['goalId']=goal
-        if unfinished:item['unfinished']=copy.deepcopy(unfinished)
-        if unresolved:item['effects']=unresolved
-        responsibilities.append(item)
-    responsible_goals={r.get('goalId') for r in responsibilities}
     current=[]
     for goal in _goal_rows(snapshot.get('goals',[])).values():
         terminal=goal.get('status') in ('completed','abandoned','canceled')
-        if goal.get('terminalRecord') or terminal and goal['id'] not in responsible_goals:continue
+        if goal.get('terminalRecord') or terminal:continue
         fields=('id','revision','status','progress','updated_at') if terminal else ('id','revision','title','reason','success_condition','successCondition','status','progress','updated_at')
         item={k:copy.deepcopy(goal[k]) for k in fields if k in goal}
         source=goal.get('source') or {}
         constraints={k:copy.deepcopy(source[k]) for k in ('originalGoal','constraints','restrictions','nextIntention') if k in source} if not terminal else {}
         if constraints:item['source']=constraints
         current.append(item)
-    return {'goals':current,**({'currentResponsibilities':responsibilities} if responsibilities else {})}
+    return {'goals':current}
 
 
 def _goal_rows(rows):
@@ -189,19 +162,26 @@ def apply_goal_delta(previous,value,scope):
     return result
 
 
-def _goal_service(message,scope):
+def _goal_service(message,scope,location=False):
     from context_protocol import source
     origin=source(message)
     if not origin or origin.get('kind')!='platform_service_not_user' or scope!='bot_shared' and origin['scope']!=scope:return None
     content=message.get('content')
-    text=content if isinstance(content,str) else content[0]['text']
+    parts=[{'type':'text','text':content}] if isinstance(content,str) else content
     try:
-        body=text.split('\n',1)[1]
-        if body.startswith(_SERVICE_NOTICE):body=body[len(_SERVICE_NOTICE):]
+        header,body=parts[0]['text'].split('\n',1)
+        prefix=header+'\n';index=0
+        if body.startswith(_SERVICE_NOTICE):
+            body=body[len(_SERVICE_NOTICE):];prefix+=_SERVICE_NOTICE
+        # The SDK preserves the source/notice and payload as separate physical
+        # text parts. Only the immediately following part may be the payload;
+        # never scan quotes, attachments or arbitrary later JSON for a match.
+        if not body.strip() and len(parts)>1 and parts[1].get('type')=='text':
+            index=1;body=parts[1]['text'];prefix=''
         value=json.loads(body)
-    except (ValueError,IndexError):return None
+    except (ValueError,IndexError,KeyError,TypeError,AttributeError):return None
     if isinstance(value,dict) and value.get('kind') in ('autonomous_activation','autonomous_tool_continuation') and 'currentGoals' in value:
-        return value
+        return (value,index,prefix) if location else value
     return None
 
 
@@ -234,16 +214,15 @@ def encode_goal_candidate(prepared,journal,work):
         if index<prefix or message in old:continue
         origin=source(message)
         if not origin or origin['scope']!=work.scope or str(origin['event_id'])!=str(work.event_id):continue
-        payload=_goal_service(message,scope)
-        if payload is None:continue
+        located=_goal_service(message,scope,location=True)
+        if located is None:continue
+        payload,part_index,part_prefix=located
         replacement=copy.deepcopy(message)
         payload['currentGoals']=necessary_goals(payload['currentGoals'])
         content=replacement['content']
-        text=content if isinstance(content,str) else content[0]['text']
-        header,body=text.split('\n',1)
-        rendered=header+'\n'+(_SERVICE_NOTICE if body.startswith(_SERVICE_NOTICE) else '')+model_json(payload)
+        rendered=part_prefix+model_json(payload)
         if isinstance(content,str):replacement['content']=rendered
-        else:content[0]['text']=rendered
+        else:content[part_index]['text']=rendered
         prepared.wire[index]=replacement
         for base_index,base_message in enumerate(prepared.base):
             if base_message==message:prepared.base[base_index]=copy.deepcopy(replacement)

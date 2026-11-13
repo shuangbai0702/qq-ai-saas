@@ -474,6 +474,20 @@ class Wiring(unittest.IsolatedAsyncioTestCase):
 if __name__=='__main__':unittest.main()
 
 class ViewAnchors(unittest.TestCase):
+ def test_foreground_clock_replaces_sampling_without_changing_real_event_times(self):
+  from context_transport import request_context_view,EVENT_CONTEXT_CURRENT
+  from context_protocol import READONLY_CURRENT
+  value={'observedAt':100,'identity':{'scope':'private:12345678','sender_id':'12345678','owner':True},'autonomous_experience':{'sampledAt':99,'actions':[{'id':'a','assignedAt':71,'finishedAt':81,'status':'unknown'}]}}
+  original=copy.deepcopy(value)
+  _,messages=request_context_view('fixed',[],None,'rules','',json.dumps(value))
+  event=next(json.loads(m['content'].split('\n',1)[1]) for m in messages if m['content'].startswith(EVENT_CONTEXT_CURRENT))
+  readonly=next(json.loads(m['content'].split('\n',1)[1]) for m in messages if m['content'].startswith(READONLY_CURRENT))
+  self.assertIn('current_time',event['authority'])
+  self.assertNotIn('observedAt',event['authority'])
+  self.assertNotIn('sampledAt',readonly['autonomous_experience'])
+  self.assertEqual(readonly['autonomous_experience']['actions'],value['autonomous_experience']['actions'])
+  self.assertEqual(value,original)
+
  def test_observed_anchor_added_once_per_snapshot(self):
   import time as _t
   from context_transport import social_context_view

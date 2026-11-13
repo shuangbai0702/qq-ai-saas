@@ -20,6 +20,20 @@ def fixture():
 
 
 class BriefExperience(unittest.TestCase):
+    def test_terminal_unfinished_does_not_revive_history_but_unknown_receipt_survives(self):
+        db=sqlite3.connect(':memory:');self.addCleanup(db.close)
+        db.execute('CREATE TABLE pipeline_actions(id TEXT,at REAL,state TEXT,result TEXT)')
+        raw=fixture();row=raw['actions'][0]
+        row.update(status='blocked',effects=[])
+        store=NS(db=db,autonomous_experience=raw)
+        view=experience_context(store,'self',{'memory':True})
+        self.assertEqual(view['actions'],[]);self.assertNotIn('sampledAt',view)
+        row['effects']=[{'status':'unknown','receipt':{'status':'unknown'}}]
+        view=experience_context(store,'self',{'memory':True})
+        self.assertEqual([a['id'] for a in view['actions']],['action'])
+        self.assertEqual(view['actions'][0]['effects'],row['effects'])
+        self.assertEqual(raw['sampledAt'],123456)
+
     def test_prose_is_bounded_and_explicitly_marked_as_abridged(self):
         raw=fixture();raw_action=raw['actions'][0];view=experience_view(raw);action=view['actions'][0]
         self.assertEqual(view['view'],'brief_v1');self.assertIn('截断',view['meaning'])

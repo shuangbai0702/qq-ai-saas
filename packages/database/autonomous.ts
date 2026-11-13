@@ -147,8 +147,8 @@ export class AutonomyRepository {
     if(depth>8)return{status:'rejected',reason:'continuation_depth_limit'};
     if(r.delaySeconds<300)return{status:'rejected',reason:'continuation_interval_minimum'};
    }else if(r.origin==='model'&&s.bot_config.proactive!==true)return{status:'rejected',reason:'proactive_disabled'};
-   const [{count}]=await tx.query("SELECT count(*)::int AS count FROM autonomy_goals WHERE bot_id=$1 AND tenant_id=$2 AND status IN ('active','paused_mode')",[r.botId,r.tenantId]);
-   if(count>=12)return{status:'rejected',reason:'active_goal_limit'};
+   const [{count}]=await tx.query("SELECT count(*)::int AS count FROM autonomy_goals WHERE bot_id=$1 AND tenant_id=$2 AND status NOT IN ('completed','abandoned','canceled')",[r.botId,r.tenantId]);
+   if(count>=10)return{status:'rejected',reason:'active_goal_limit'};
    const owner=Boolean(s.bot_config.behavior?.ownerUin&&String(s.bot_config.behavior.ownerUin)===r.senderId);
    const notBefore=r.at+r.delaySeconds*1000;
    const source={eventId:r.eventId,scope:r.scope,senderId:r.senderId,owner:r.origin==='model'?false:owner,handoffId:r.id,handoffFingerprint:fingerprint,notBefore,kind:r.kind||'message',...(r.origin?{origin:r.origin}:{}),...(r.parentActionId?{parentActionId:r.parentActionId,continuationDepth:depth}:{}),...(r.agreement?{agreement:r.agreement}:{})};

@@ -526,6 +526,7 @@ def install_runtime(core,settings):
         event.set_extra('_hosted_memory_epoch',st.reflection.epoch())
         subject=scope[8:] if scope.startswith('private:') else '0' if scope=='self' else ''
         identity={'bot_id':s['botId'],'scope':scope,'sender_id':'0','owner':False,'owner_id':str(b.get('ownerUin') or '') or None,'principal':'autonomous-service','group_id':scope[6:] if scope.startswith('group:') else None}
+        identity['self_id']=str(event.get_self_id())
         assembly=bot_pipeline.ContextBuilder(identity,'autonomous_work')
         task=event.get_extra('_hosted_autonomous_action')
         if event.get_extra('_hosted_main_activation') and isinstance(task,dict):task={k:v for k,v in task.items() if k not in ('goalSnapshot','continuation')}
@@ -1049,6 +1050,7 @@ def install_runtime(core,settings):
             owner=str((cfg.get('behavior') or {}).get('ownerUin') or '')
             proactive=bool(event.get_extra('_hosted_initiative',False))
             identity={'bot_id':s['botId'],'scope':scope,'group_id':group or None,'sender_id':None if proactive else subject,'nickname':None if proactive else event.get_sender_name(),'directed_to_bot':not group or mentioned,'owner':bool(owner and subject==owner and not proactive),'owner_id':owner or None}
+            identity['self_id']=str(event.get_self_id())
             if proactive:identity.update(message_source='platform_initiative',recipient_id=subject,recipient_is_owner=bool(owner and subject==owner),is_user_statement=False)
             elif poke_context:identity.update(message_source='platform_poke',is_user_statement=False)
             social_cfg=dict(cfg.get('behavior') or {});social_cfg['_qqAccount']=str(event.get_self_id())
@@ -1523,17 +1525,9 @@ def install_runtime(core,settings):
             if (setting(event)['config'].get('behavior') or {}).get('naturalConversation',True):
                 protocol+='\n[自然群友交流]结合真实QQ身份、引用对象、recent_burst和群内上下文理解谁在接谁的话。dialogue记录自己真实说过的话，避免重复同一个观点、相同开场和结尾；同一人聊了多轮时表达可以更简短、自然转向相关兴趣，不机械告别或反复追问。先回应眼前具体内容，按既定人格保持自己的立场与喜好；遇到事实纠正可以承认，角色玩笑不当事实认账。日常交流不必变成建议、步骤、总结和服务承诺，表情或一句看法也可以。严肃问题按实际需要讲清楚，不强行搞笑、造错字或编造离线经历。\n'
             current_rules+='\n'+event.get_extra('_hosted_participation_hint','')
-            current_rules+='\n'+bot_pipeline.CROSS_SCOPE_GUIDANCE
             current_rules+='\n'+qq_actions.signature_hint(event,setting(event)['config'])
-            try:
-                speaker=json.loads(event.get_extra('_hosted_context','{}')).get('identity',{})
-                if event.get_extra('_hosted_initiative',False):
-                    current_rules+='\n[本轮来源]这是机器人自己的主动表达机会，没有新的用户发言；话题建议不是对方的原话。自己的研究以第一人称自然分享，归于对方的说法须有真实对方事件支持。\n'
-                elif event.get_extra('_hosted_admin_debug'):
-                    current_rules+='\n[管理员调试]这是平台调试事件，不是当前QQ联系人的发言；sender=0无主人权限，最终文字只返回管理员，不发送QQ，不登记业务轮。\n'
-                elif not event.get_extra('_hosted_internal_work'):
-                    current_rules+='\n[本轮真实发言者]'+json.dumps({'sender_id':speaker.get('sender_id'),'owner_id':speaker.get('owner_id'),'relationship':'已绑定主人' if speaker.get('owner') else '普通聊天对象；不是主人'},ensure_ascii=False)+'。这标识作者，不表示必须回复；群聊是否需要接话仍结合participation_entry与实际对象判断。不要把其他人的话或旧回复的称呼移到当前对象身上。\n'
-            except (TypeError,ValueError):pass
+            if event.get_extra('_hosted_admin_debug'):
+                current_rules+='\n[管理员调试]这是平台调试事件，不是当前QQ联系人的发言；sender=0无主人权限，最终文字只返回管理员，不发送QQ，不登记业务轮。\n'
             from context_transport import request_context_view
             context=request_context(event)
             from model_cache import is_foreground_event

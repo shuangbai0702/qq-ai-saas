@@ -226,7 +226,13 @@ def request_context_view(system,contexts,prompt,policy,current_rules,context,too
     except (ValueError,TypeError):data=None
     authority={};readonly={}
     if isinstance(data,dict):
+        data.pop('observedAt',None)
         readonly={k:v for k,v in data.items() if k in READONLY_FIELDS}
+        # This request supplies authority.current_time below. Presentation
+        # sampling clocks are not new events; auxiliary readers retain their
+        # own anchors because they may not use this foreground envelope.
+        if isinstance(readonly.get('autonomous_experience'),dict):
+            readonly['autonomous_experience']={k:v for k,v in readonly['autonomous_experience'].items() if k!='sampledAt'}
         authority=authority_context_view({k:v for k,v in data.items() if k not in READONLY_FIELDS},prompt)
     task_index=None
     if prompt is None and isinstance(contexts,list):
