@@ -1,0 +1,14 @@
+{
+  "ok": true,
+  "pid": 6672,
+  "held": false,
+  "stage": "resumed",
+  "database": {
+    "ok": 1
+  },
+  "protocolOwnersPreserved": true,
+  "controlIdle": true,
+  "autonomyClosed": false,
+  "bilibiliStopped": false,
+  "favoritesClosed": false
+}

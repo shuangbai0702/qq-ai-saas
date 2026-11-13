@@ -1,0 +1,30 @@
+{
+  "commit": "ffefd83004028629ff59043371506bf407687ff5",
+  "targets": {
+    "adapters/astrbot/shared-worker.py": {
+      "sha256": "1db26e316b2a5241708a3fde1bd3314c3b2fa870ade0cb45feed083ab11cda23"
+    },
+    "adapters/astrbot/headless.py": {
+      "sha256": "3913715a5a581c9a761c6aa177e1e56176153195c23612238ebddd6ee088da2e"
+    },
+    "apps/node-agent/src/bilibili/video-evidence.ts": {
+      "sha256": "d433579eaabf8fc62fc3a72e80b1b7f5e740774b8c83e1dd6128c0350850234f"
+    },
+    "dist-server/apps/node-agent/src/bilibili/video-evidence.js": {
+      "sha256": "33f2b328ca364fb3d7b6d208bbd4dc7ac5ad4edb606ffa858738fc9d781c4fd9"
+    },
+    "dist-server/apps/node-agent/src/bilibili/video-evidence.js.map": {
+      "sha256": "48429701928c197085058fc3dbf488e26aa961632d1304fa5499f68dfad18125"
+    },
+    "dist-server/apps/node-agent/src/maintenance.js": {
+      "sha256": "ea06bd4a6b4bf4211418df431a4cfe8bdb5db38164ccb5c6d831e57e5eefad3b"
+    },
+    "dist-server/apps/node-agent/src/maintenance.js.map": {
+      "sha256": "8dbed39d3476529c71661d415b09ecb231a1607dbf1b9ac0e254e85780b4c569"
+    },
+    "dist-server/build.json": {
+      "sha256": "afd22f7990d842d77f5aa3336ecea6e08435635ccd8a1eb034d8efaa5c8d3fe7"
+    }
+  },
+  "capturedAt": "2026-11-13T12:33:53.108Z"
+}

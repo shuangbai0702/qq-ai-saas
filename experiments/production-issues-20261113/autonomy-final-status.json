@@ -1,0 +1,9 @@
+{
+  "epoch": 28,
+  "runtime_epoch": 28,
+  "state": "sleeping",
+  "last_error": null,
+  "next_wake_at": "2026-11-13T12:57:33.634Z",
+  "at": "2026-11-13T12:44:33.143Z",
+  "activationObserved": false
+}
