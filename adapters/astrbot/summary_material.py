@@ -342,9 +342,6 @@ def recover_archived_materials(db,scope,events):
     initial=set(wanted)
     if not wanted:return {'recovered':0,'missing':[],'invalid_archives':0}
 
-    def read_blob(channel,digest):
-        row=db.execute('SELECT data FROM fishbot_readonly_journal_blobs WHERE scope=? AND sha=?',(channel,digest)).fetchone()
-        return row[0] if row else None
     observed={}
     def recover(key,version,payload,sha):
         if not isinstance(payload,str) or not isinstance(sha,str) or hashlib.sha256(payload.encode()).hexdigest()!=sha:raise ValueError('recovery_archive_sha')
@@ -352,10 +349,7 @@ def recover_archived_materials(db,scope,events):
         if channel!='bot_shared' and not re.fullmatch(r'(?:private|group):\d{4,20}',str(channel)):raise ValueError('recovery_archive_scope')
         if scope!='bot_shared' and channel not in (scope,'bot_shared'):return
         if type(version) is not int:raise ValueError('recovery_archive_version')
-        if version==1:value=json.loads(payload)
-        elif version==journal_storage.VERSION:value=journal_storage.decode(payload,key,read_blob)
-        else:raise ValueError('recovery_archive_version')
-        if not isinstance(value,dict) or value.get('scope')!=key:raise ValueError('recovery_archive_scope')
+        value=journal_storage.read_snapshot_payload(db,key,version,payload,sha,integrity='recovery_archive_sha',version_error='recovery_archive_version',scope_error='recovery_archive_scope')
         for field in ('base','wire'):
             messages=value.get(field)
             if not isinstance(messages,list) or any(not isinstance(message,dict) or not isinstance(message.get('role'),str) for message in messages):raise ValueError('recovery_archive_messages')

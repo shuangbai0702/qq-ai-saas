@@ -66,14 +66,7 @@ def _journals(db,tables):
     for key,version,payload,sha in rows:
         channel=json.loads(key)
         if channel!='bot_shared' and not _channel(channel):continue
-        if not isinstance(payload,str) or hashlib.sha256(payload.encode()).hexdigest()!=sha:raise ValueError('semantic_collection_journal_integrity')
-        def blob(scope,digest):
-            row=db.execute('SELECT data FROM fishbot_readonly_journal_blobs WHERE scope=? AND sha=?',(scope,digest)).fetchone()
-            return row[0] if row else None
-        if version==1:value=json.loads(payload)
-        elif version==journal_storage.VERSION:value=journal_storage.decode(payload,key,blob)
-        else:raise ValueError('semantic_collection_journal_version')
-        if not isinstance(value,dict) or value.get('scope')!=key:raise ValueError('semantic_collection_journal_scope')
+        value=journal_storage.read_snapshot_payload(db,key,version,payload,sha,integrity='semantic_collection_journal_integrity',version_error='semantic_collection_journal_version',scope_error='semantic_collection_journal_scope')
         for field in ('base','wire'):
             messages=value.get(field)
             if not isinstance(messages,list):raise ValueError('semantic_collection_journal_messages')
