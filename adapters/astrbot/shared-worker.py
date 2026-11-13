@@ -102,6 +102,9 @@ async def main():
                 worker_lifecycle.record('member_cleanup_failed',member=id,step=name,reason=type(error).__name__)
         await cleanup('drain',lambda:behavior['drain'](id))
         active_store=behavior['stores'].get(id)
+        if active_store:
+            from semantic_async import drain_store
+            await cleanup('local_database_workers',lambda:drain_store(active_store))
         if active_store and not failures:
             for resource in (active_store.reflection,active_store.social):
                 try:resource.close()
@@ -158,6 +161,8 @@ async def main():
             if m['modelConfigured'] and 'provider-'+id not in core.provider_manager.inst_map:return
             try:
                 retained=raw.get('post_type','message')!='message' or getattr(message,'_hosted_ingress_retained',False) or behavior['retain_ingress'](id,platform.create_event(message))
+                import inspect
+                if inspect.isawaitable(retained):retained=await retained
             except Exception as error:
                 errors[id]='Ingress retention failed'
                 worker_lifecycle.record('ingress_retention_failed',member=id,reason=type(error).__name__)
@@ -253,5 +258,16 @@ async def main():
     task=asyncio.create_task(core.start());stop=asyncio.Event()
     worker_lifecycle.install_shutdown(stop)
     try:await worker_lifecycle.wait_for_shutdown(task,stop)
-    finally:await core.stop();task.cancel();await runner.cleanup();behavior['close']()
+    finally:
+        stop_fence.quiescing=True
+        core.event_bus.stopped_platforms.update(members)
+        # Join actual thread I/O before asyncio.run can cancel its wrapper
+        # Tasks on process shutdown. Cancellation of a wrapper is not proof
+        # that the underlying SQLite transaction has stopped.
+        from semantic_async import drain_store,settled
+        async def drain_local_databases():
+            for store in list(behavior['stores'].values()):await drain_store(store)
+        try:await settled(asyncio.create_task(drain_local_databases()))
+        finally:
+            await core.stop();task.cancel();await runner.cleanup();behavior['close']()
 asyncio.run(main())

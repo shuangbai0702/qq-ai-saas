@@ -1,6 +1,25 @@
 """Never operate on a PID unless its argv includes this bot's private absolute path."""
-import sys,json,os
+import sys,json,os,math,time
+from pathlib import Path
 import psutil
+def loop_activity(root,processes,now=None):
+    """Existing RuntimeCare telemetry proves recent loop activity, not task progress."""
+    now=time.time() if now is None else now
+    for file in (Path(root)/'ai/memory-activity.json',Path(root)/'memory-activity.json'):
+        try:
+            value=json.loads(file.read_text())
+            if not isinstance(value,dict):continue
+            stamp=float(value['at']);created=float(value['created'])
+            if not math.isfinite(stamp) or not math.isfinite(created) or stamp<created or stamp>now+5 or now-stamp>120:continue
+            source=next((p for p in processes if p.pid==value['pid']),None)
+            if source is None or abs(source.create_time()-created)>=.01:continue
+            work=value.get('work',{})
+            if not isinstance(work,dict):continue
+            if value.get('active') is not True or not any(isinstance(work.get(k),(int,float)) and not isinstance(work[k],bool) and math.isfinite(work[k]) and work[k]>0 for k in ('active','ingress','waiting','batches','background')):continue
+            return {'at':stamp,'pid':source.pid,'created':created,'active':True}
+        except (OSError,ValueError,KeyError,TypeError,OverflowError,psutil.Error):pass
+    return None
+
 def inspect(pid,root,created=None):
     try:
         p=psutil.Process(pid);root=os.path.normcase(os.path.abspath(root))
@@ -11,7 +30,7 @@ def inspect(pid,root,created=None):
         for child in [p,*children]:
             try:rss+=child.memory_info().rss;count+=1
             except psutil.NoSuchProcess:pass
-        return {'valid':True,'pid':pid,'rssBytes':rss,'processCount':count,'created':p.create_time()}
+        return {'valid':True,'pid':pid,'rssBytes':rss,'processCount':count,'created':p.create_time(),'loopActivity':loop_activity(root,[p,*children])}
     except psutil.NoSuchProcess:return {'valid':False}
 
 mode=sys.argv[1]

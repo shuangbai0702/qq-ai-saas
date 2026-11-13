@@ -3,7 +3,7 @@ Inspired by LivingMemory's ten-round reflection and source/revision fencing.
 Summaries are conversation evidence, never verified profile facts or instructions.
 """
 from model_cache import auxiliary_scope,adopted,discarded as record_discarded,SUMMARY_REQUEST_TIMEOUT_SECONDS
-import asyncio,json,time,hashlib
+import asyncio,json,time,hashlib,inspect
 from pathlib import Path
 import message_provenance
 from context_protocol import model_json
@@ -982,7 +982,7 @@ class Reflection:
         media='semantic_media_owned' in tables and self.db.execute("SELECT 1 FROM semantic_media_owned WHERE state='pending' LIMIT 1").fetchone()
         return bool(pending or media)
 
-    def retry(self,_inline=False,_manual=None):
+    def retry(self,_inline=False,_manual=None,_retirement_done=False):
         if not self.binding:return False
         cfg,provider,is_current,metrics,event_var=self.binding
         if self.closed or not is_current() or not _inline and self.task and not self.task.done():return False
@@ -993,25 +993,32 @@ class Reflection:
         now=time.time()
         recovery_retry=self.db.execute("SELECT next_at FROM memory_reflection_retry WHERE scope='__retirement__'").fetchone()
         recovery=self.retirement_pending() and (not recovery_retry or recovery_retry[0]<=now)
-        if callable(self.checkpoint_callback) and recovery and (_inline or not callable(admission)):
-            # Local retirement is independent of model availability and uses
-            # the existing persisted retry owner. Failure must not busy-spin
-            # through RuntimeCare's task-completion wakeup.
-            self.db.execute("INSERT OR REPLACE INTO memory_reflection_retry VALUES('__retirement__',1,?)",(now+60,));self.db.commit()
-            for (pending_scope,) in self.db.execute("SELECT DISTINCT scope FROM memory_semantic_batches WHERE state IN ('committed','retired')").fetchall():
-                try:self.checkpoint_callback(pending_scope)
-                except Exception as error:
-                    metrics['checkpointCallbackFailures']=metrics.get('checkpointCallbackFailures',0)+1
-                    self.checkpoint_issue(pending_scope,0,'retirement_recovery',{'type':type(error).__name__})
-            if not self.retirement_pending():self.db.execute("DELETE FROM memory_reflection_retry WHERE scope='__retirement__'")
-            recovery=False
+        if callable(self.checkpoint_callback) and recovery and not _retirement_done:
+            async def recover_pending():
+                async def execute():
+                    if self.closed or not is_current():return False
+                    self.db.execute("INSERT OR REPLACE INTO memory_reflection_retry VALUES('__retirement__',1,?)",(now+60,));self.db.commit()
+                    for (pending_scope,) in self.db.execute("SELECT DISTINCT scope FROM memory_semantic_batches WHERE state IN ('committed','retired')").fetchall():
+                        if self.closed or not is_current():return False
+                        try:
+                            outcome=self.checkpoint_callback(pending_scope)
+                            if inspect.isawaitable(outcome):await outcome
+                        except Exception as error:
+                            if self.closed or not is_current():return False
+                            metrics['checkpointCallbackFailures']=metrics.get('checkpointCallbackFailures',0)+1
+                            self.checkpoint_issue(pending_scope,0,'retirement_recovery',{'type':type(error).__name__})
+                    if self.closed or not is_current():return False
+                    if not self.retirement_pending():self.db.execute("DELETE FROM memory_reflection_retry WHERE scope='__retirement__'")
+                    self.db.commit()
+                    continuation=self.retry(_inline=True,_manual=_manual,_retirement_done=True)
+                    return await continuation if inspect.isawaitable(continuation) else continuation
+                if not _inline and callable(admission):
+                    async with admission():return await execute()
+                return await execute()
+            if _inline:return recover_pending()
+            self.task=asyncio.create_task(recover_pending());return True
         self.db.commit()
-        if not model_ready:
-            if recovery and callable(admission) and not _inline:
-                async def recover():
-                    async with admission():self.retry(_inline=True)
-                self.task=asyncio.create_task(recover());return True
-            return False
+        if not model_ready:return False
         # 35 is the due threshold. After accepted dialogue drains, include all
         # completed rounds through that idle boundary (possibly 36, 37, ...).
         configured=cfg.get('summaryRounds',DEFAULT_SUMMARY_ROUNDS)
@@ -1436,8 +1443,11 @@ class Reflection:
                     new_checkpoints=self.db.execute("SELECT id,scope FROM memory_reconstruction_checkpoints WHERE state='available'").fetchall()
                     for checkpoint_id,checkpoint_scope in new_checkpoints:
                         if checkpoint_id in available_before or not callable(self.checkpoint_callback):continue
-                        try:self.checkpoint_callback(checkpoint_scope)
+                        try:
+                            outcome=self.checkpoint_callback(checkpoint_scope)
+                            if inspect.isawaitable(outcome):await outcome
                         except Exception:metrics['checkpointCallbackFailures']=metrics.get('checkpointCallbackFailures',0)+1
+                        if self.closed or not is_current():return
                     adopted('merge_committed' if job=='big' else 'hold_recovery_committed' if job=='hold_recovery' else 'summary_committed')
                     self.checkpoint_issue(merge_scope or scope,0,'failure_'+job,{},resolved=True);self.db.commit()
                     # Drain only immediately due persisted work, never a per-bot timer.

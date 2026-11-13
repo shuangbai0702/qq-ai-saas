@@ -203,6 +203,18 @@ class BehaviorStore:
         if group and not mentioned and not text.startswith('/'):return False
         self.last[scope]=now;return True
     def close(self):
+        if getattr(self,'_closing',False):return
+        self._closing=True
+        if getattr(self,'_local_db_workers',None):
+            # Invalidate publication now, but keep storage and ownership alive
+            # until the local transaction has actually stopped.
+            self.reflection.closed=True;self.reflection.binding=None
+            if self.reflection.task:self.reflection.task.cancel()
+            return
+        self._close_storage()
+    def _close_storage(self):
+        if getattr(self,'_storage_closed',False):return
+        self._storage_closed=True
         probe=getattr(self,'_model_probe_task',None)
         if probe and not probe.done():probe.cancel()
         self.pipeline.close();self.planner.close();self.memory.close();self.reflection.close();self.social.close();autonomy.recover_unstarted(self.db);self.db.close()
@@ -550,12 +562,13 @@ def install_runtime(core,settings):
         provider=provider_for(id)
         stores[id].reflection.binding=({**(s['config'].get('behavior') or {}),'_persona':s['config'].get('systemPrompt','')},provider,lambda:settings.get(id) is s and id not in core.event_bus.stopped_platforms,metrics.setdefault(id,{}),current_message_event)
         stores[id].reflection.recapture=journal_recapture(stores[id])
-        def learned_checkpoint(scope):
+        async def learned_checkpoint(scope):
             st=stores[id];cfg=s['config'].get('behavior') or {}
             if settings.get(id) is s:
-                from semantic_runtime import finish_semantic_batches
+                from semantic_async import finish
                 st.semantic_native=(getattr(core,'conversation_manager',None),id)
-                metrics.setdefault(id,{})['semanticRetirement']=finish_semantic_batches(st,cfg,scope)
+                result=await finish(st,cfg,scope,lambda:settings.get(id) is s and stores.get(id) is st)
+                if settings.get(id) is s and stores.get(id) is st:metrics.setdefault(id,{})['semanticRetirement']=result
         stores[id].reflection.checkpoint_callback=learned_checkpoint
         if provider is not None:
             from model_cache import bind_system_contract
@@ -2325,6 +2338,8 @@ def install_runtime(core,settings):
         s=settings.get(id)
         if s is None:return {'error':'机器人当前未就绪','status':409}
         st=store(id,s)
+        from semantic_async import busy
+        if busy(st):return {'error':'语义检查点正在提交，请稍后重试','status':409}
         if data.get('action') in ('admin_model_probe','admin_model_probe_status'):
             from model_probe_admin import manage as manage_probe,request as request_probe
             return manage_probe(st,data,care,lambda value:request_probe(brain,id,st,s,value))
@@ -2347,10 +2362,19 @@ def install_runtime(core,settings):
         if str(event.get_sender_id())==str(event.get_self_id()):return False
         if bot_pipeline.is_transport_notification(getattr(event.message_obj,'raw_message',None)):return False
         st=store(id,lease);pipeline=st.pipeline
+        from semantic_async import busy,persist_input,settled,track_worker
+        if busy(st):
+            path=st.db.execute('PRAGMA database_list').fetchone()[2]
+            async def retain_during_retirement():
+                task=track_worker(st,asyncio.create_task(asyncio.to_thread(persist_input,path,pipeline,event,lease)))
+                if not await settled(task):raise ValueError('ingress_original_evidence_invalid')
+                # The existing compression boundary owns subsequent recovery.
+                return False
+            return retain_during_retirement()
         if not pipeline.persist_input(event,lease):raise ValueError('ingress_original_evidence_invalid')
         # persist_input retained the real input. Recovery will enqueue it after
         # this finite compression boundary, without creating another queue.
-        if st.compression_boundary is not None:return False
+        if getattr(st,'compression_boundary',None) is not None:return False
         scope=bot_pipeline.delivery_scope(event);identifier=str(event.message_obj.message_id)
         with st.db:
             # The native SDK queue owns this delivery for thirty seconds.
@@ -2362,7 +2386,17 @@ def install_runtime(core,settings):
     def acquire_raw_ingress(id,raw):
         from native_ingress import RawInput
         event=RawInput(id,raw)
-        if not retain_ingress(id,event):return None
+        retained=retain_ingress(id,event)
+        if inspect.isawaitable(retained):
+            async def finish_retention():
+                st=stores[id];st.ingress+=1;care.stamp(st.root)
+                try:
+                    await retained
+                    return None
+                finally:
+                    st.ingress-=1;care.stamp(st.root)
+            return finish_retention()
+        if not retained:return None
         st=stores[id];st.ingress+=1;care.stamp(st.root)
         def completed():
             st.ingress-=1

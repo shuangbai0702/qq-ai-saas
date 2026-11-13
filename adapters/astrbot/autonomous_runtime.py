@@ -542,6 +542,8 @@ class AutonomousRuntime:
 
     async def execute(self,id,data):
         identity=data['work'];action=data['action'];s=self.settings[id];st=self.store(id,s)
+        await st.wait_compression()
+        if self.settings.get(id) is not s or not self.valid(id,identity):raise PreflightRejected('stale_internal_work')
         moment=action.get('autonomousMoment') is True
         main_activation=moment or action.get('continuationOfMoment') is True
         main_scope=None
@@ -731,6 +733,10 @@ class AutonomousRuntime:
         return feedback
 
     async def handle(self,id,operation,data):
+        if operation!='cancel' and id in self.settings:
+            lease=self.settings[id];st=self.store(id,lease)
+            await st.wait_compression()
+            if self.settings.get(id) is not lease or getattr(st,'_closing',False):raise ValueError('stale_internal_work')
         if operation=='policy':return self.install(id,data)
         if operation=='snapshot':return self.snapshot(id,ledger_only=data.get('ledgerOnly') is True)
         if operation=='handoff_ack':
