@@ -41,6 +41,33 @@ class Reliability(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(st.compression_boundary);self.assertFalse(st.compression_active)
         st.active=0
 
+    async def test_later_sdk_notice_waits_outside_draining_ingress(self):
+        # Execute the real installed wrapper with its closure dependencies;
+        # no QQ transport, model or replacement admission implementation.
+        import ast,bot_pipeline
+        st=self.st;st.active=1;lease=object();extra={}
+        event=NS(get_platform_id=lambda:'member',get_group_id=lambda:'',
+            get_sender_id=lambda:'12345678',get_extra=lambda k,d=None:extra.get(k,d),
+            message_obj=NS(message_id='sdk-notice'))
+        entered=asyncio.Event();release=asyncio.Event();executed=[]
+        async def compress():
+            async with st.compression_admission():entered.set();await release.wait()
+        async def execute(_,event):executed.append(event)
+        tree=ast.parse((Path(__file__).resolve().parents[1]/'adapters/astrbot/behavior.py').read_text(encoding='utf-8'))
+        node=next(n for n in ast.walk(tree)if isinstance(n,ast.AsyncFunctionDef)and n.name=='guarded_execute')
+        namespace={'setting':lambda e:lease,'current':lambda e:True,'store':lambda *args:st,
+            'stores':{'member':st},'settings':{'member':lease},'care':NS(stamp=lambda root:st.slot_changed.set()),
+            'execute':execute,'asyncio':asyncio,'bot_pipeline':bot_pipeline,'metrics':{}}
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[node],type_ignores=[])),'behavior.py','exec'),namespace)
+        comp=asyncio.create_task(compress());await asyncio.sleep(0)
+        notice=asyncio.create_task(namespace['guarded_execute'](None,event));await asyncio.sleep(0)
+        self.assertEqual(st.ingress,0);self.assertFalse(notice.done())
+        st.active=0;st.slot_changed.set()
+        await asyncio.wait_for(entered.wait(),2)
+        self.assertEqual(executed,[])
+        release.set();await comp;await notice
+        self.assertEqual(executed,[event]);self.assertEqual(st.ingress,0)
+
     async def test_local_reserved_crash_window_recovers_exact_checkpoint(self):
         r=self.st.reflection;db=self.st.db
         permit=r.reserve_context_reconstruction(fixture.SCOPE,'semantic-retire:dead-process',checkpoint_id=1)
