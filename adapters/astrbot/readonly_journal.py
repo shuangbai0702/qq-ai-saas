@@ -436,10 +436,7 @@ class ReadonlyJournal:
                 return
             if state=='retired':self.retired_reason='persisted_retirement'
             try:
-                def read_blob(scope,digest):
-                    row=self.db.execute('SELECT data FROM fishbot_readonly_journal_blobs WHERE scope=? AND sha=?',(scope,digest)).fetchone()
-                    return row[0] if row else None
-                value=json.loads(payload) if version==1 else journal_storage.decode(payload,self.scope_key,read_blob)
+                value=journal_storage.read_snapshot_payload(self.db,self.scope_key,version,payload,sha)
             except (TypeError,ValueError,KeyError,IndexError):self.recovery_error='journal_snapshot_invalid';return
             required={'scope','base','wire','state','turns','at','group_turn','base_chars','detail','usage','authority','retirement'}
             if not isinstance(value,dict) or set(value)-{'main_conversation'}!=required or type(value.get('main_conversation',False)) is not bool or value['scope']!=self.scope_key or not isinstance(value['base'],list) or not isinstance(value['wire'],list) or not isinstance(value['state'],dict) or type(value['turns']) is not int or not isinstance(value['at'],(int,float)):

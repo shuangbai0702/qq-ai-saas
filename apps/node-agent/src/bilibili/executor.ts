@@ -1,3 +1,4 @@
+import {SingleFlight} from '../../../../packages/shared/single-flight.js';
 import {randomUUID} from 'node:crypto';
 import {cycleModelBudget,cycleModelBudgetInTransaction,type ModelRequestBudget} from '../../../../packages/database/model-request-budget.js';
 import {mkdir,writeFile,rename} from 'node:fs/promises';
@@ -16,11 +17,11 @@ const cursorId=(v:any)=>typeof v==='number'&&!Number.isSafeInteger(v)?null:/^[0-
 const videoRows=(v:any,n=5)=>(Array.isArray(v)?v:[]).slice(0,n).map(r=>({bvid:r.bvid,cover:r.pic??r.cover,aid:String(r.aid??r.id??''),title:clean(r.title),author:clean(r.author??r.owner?.name,80),description:clean(r.description??r.desc,300),duration:r.duration,url:r.bvid?'https://www.bilibili.com/video/'+r.bvid:undefined}));
 export class BilibiliExecutor {
  mediaBusy?:Promise<void>;mediaController?:AbortController;mediaReady=false;
- repo:ToolEffects;accounts:BiliAccounts;owner=randomUUID();busy?:Promise<void>;controller?:AbortController;lastBridge=0;lastAccount=0;nextRun=0;stopped=false;
+ repo:ToolEffects;accounts:BiliAccounts;owner=randomUUID();private flight=new SingleFlight();get busy(){return this.flight.pending};controller?:AbortController;lastBridge=0;lastAccount=0;nextRun=0;stopped=false;
  constructor(public db:Sql,public root:string,private key:Buffer,public web=new BiliWeb()) {this.repo=new ToolEffects(db);this.accounts=new BiliAccounts(db,key,web)}
  // Called by the existing Agent tick. The network task is detached from that
  // tick, bounded, and joined on shutdown. No per-bot tasks or timers.
- tick(){if(this.stopped||this.busy||Date.now()<this.nextRun)return;this.nextRun=Date.now()+3000;this.controller=new AbortController();this.busy=this.run(this.controller.signal).catch(e=>{console.error('B站工具执行器失败',e instanceof BiliError?e.code:'executor_error')}).finally(()=>{this.busy=undefined;this.controller=undefined})}
+ tick(){if(this.stopped||this.busy||Date.now()<this.nextRun)return;this.nextRun=Date.now()+3000;this.controller=new AbortController();const signal=this.controller.signal;void this.flight.run(()=>this.run(signal).catch(e=>{console.error('B站工具执行器失败',e instanceof BiliError?e.code:'executor_error')}).finally(()=>{this.controller=undefined}))}
  async stop(){this.stopped=true;this.controller?.abort();this.mediaController?.abort();await this.busy;await this.mediaBusy}
  async recover(){await this.accounts.recover();await recoverMedia(this.root,this.db)}
  async run(signal:AbortSignal){

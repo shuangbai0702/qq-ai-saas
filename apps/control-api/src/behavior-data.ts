@@ -1,3 +1,4 @@
+import {runtimeIpc} from '../../../packages/shared/runtime-ipc.js';
 import type {FastifyInstance} from 'fastify';
 import {execFile} from 'node:child_process';
 import path from 'node:path';
@@ -27,7 +28,7 @@ export function registerBehaviorData(app:FastifyInstance,root:string,owned:(req:
   if(!(bot.desired_state==='stopped'&&bot.observed_state==='stopped')&&processId&&await agent.host.inspect(processId,'ai')){
    const ctx=await agent.context(bot);let port=ctx.aiPort+1,route='/behavior-data',token=ctx.token,groupGeneration='';
    if(bot.runtime_mode==='shared'){const group=await agent.shared.group(id);if(!group)throw Object.assign(new Error('运行组尚未就绪'),{statusCode:409});port=group.health_port;token=group.token;groupGeneration=String(group.generation);route=`/members/${id}/behavior-data`}
-   const response=await fetch(`http://127.0.0.1:${port}${route}`,{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json','X-Group-Generation':groupGeneration,'X-Member-Generation':String(bot.generation),'X-Member-Revision':String(bot.applied_revision)},body:JSON.stringify(input),signal:AbortSignal.timeout(4000)});
+   const response=await runtimeIpc(port,route,{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json','X-Group-Generation':groupGeneration,'X-Member-Generation':String(bot.generation),'X-Member-Revision':String(bot.applied_revision)},body:input,timeoutMs:4000});
    if(!response.ok)throw Object.assign(new Error('机器人正在切换状态，请稍后重试'),{statusCode:409});const result:any=await response.json();if(result.error)throw Object.assign(new Error(result.error),{statusCode:result.status||400});return {...result,accessMode:'runtime-owner'};
   }
   if(runtimeOnly||bot.desired_state==='running')throw Object.assign(new Error('运行实例尚未就绪，请稍后重试'),{statusCode:409});

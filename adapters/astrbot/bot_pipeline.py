@@ -441,11 +441,8 @@ def waiting_reconciliation_plan(db,only_scope=None):
         try:
             import journal_storage
             from context_protocol import source
-            for scope,version,payload in db.execute("SELECT scope,version,payload FROM fishbot_readonly_journals WHERE payload IS NOT NULL AND state='ready'"):
-                def blob(channel,digest):
-                    row=db.execute('SELECT data FROM fishbot_readonly_journal_blobs WHERE scope=? AND sha=?',(channel,digest)).fetchone()
-                    return row[0] if row else None
-                value=json.loads(payload) if version==1 else journal_storage.decode(payload,scope,blob)
+            for scope,version,payload,sha in db.execute("SELECT scope,version,payload,sha FROM fishbot_readonly_journals WHERE payload IS NOT NULL AND state='ready'"):
+                value=journal_storage.read_snapshot_payload(db,scope,version,payload,sha,scope_error='journal_snapshot_invalid')
                 for message in value.get('base',[])+value.get('wire',[]):
                     origin=source(message)
                     if origin:referenced.add((origin['scope'],str(origin['event_id'])))

@@ -74,6 +74,18 @@ class WaitingReconciliation(unittest.TestCase):
         self.db.execute('CREATE TABLE memory_message_sources(scope TEXT,event TEXT,direction TEXT,data TEXT)')
         self.db.execute('INSERT INTO memory_message_sources VALUES(?,?,?,?)',('bot_shared','key','model',json.dumps({'source_scope':'group:23456','event_id':'other'})))
         self.assertEqual(self.p.reconcile_waiting(),0)
+    def test_corrupt_journal_hash_protects_waiting_responsibility_without_writes(self):
+        from readonly_journal import ReadonlyJournal
+        ReadonlyJournal(self.db,'bot_shared')
+        payload=json.dumps({'scope':json.dumps('bot_shared'),'base':[],'wire':[]})
+        self.db.execute("INSERT INTO fishbot_readonly_journals VALUES(?,1,'ready',?,?,0)",(json.dumps('bot_shared'),payload,'0'*64))
+        self.waiting()
+        before=self.db.total_changes
+        plan=waiting_reconciliation_plan(self.db)
+        self.assertEqual(plan['actions'],[])
+        self.assertEqual(plan['protected'],{'journal_or_unreadable':1})
+        self.assertEqual(self.db.total_changes,before)
+
     def test_plan_does_not_write_and_dispatch_or_unknown_never_closes(self):
         self.waiting('unsafe',attempted=1);self.waiting('tools',stage='model_tools')
         changes=self.db.total_changes

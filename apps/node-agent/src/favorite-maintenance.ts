@@ -1,3 +1,4 @@
+import {SingleFlight} from '../../../packages/shared/single-flight.js';
 /** Bounded maintenance on the existing Agent tick, no per-bot timer/Agent.
  * Semantics (D8): QQ raw text (modifyWord/desc/ocrWord) is stored as rawText
  * and never enables automatic selection; only a manual entry or a vision
@@ -16,10 +17,10 @@ const UNCERTAIN_ATTEMPT_LIMIT=3,FAILURE_ATTEMPT_LIMIT=5,MAX_QUEUE_TICKS=2;
 const deferError=(error:unknown)=>/pressure|chat_busy/.test(String((error as Error)?.message||error));
 async function contentHash(file:string){const bytes=await readFile(file);return createHash('sha256').update(bytes).digest('hex')}
 export class FavoriteMaintenance{
- closed=false;job?:Promise<void>;controller?:AbortController;next=0;cursor='';
+ closed=false;private flight=new SingleFlight();get job(){return this.flight.pending};controller?:AbortController;next=0;cursor='';
  caption:ReturnType<typeof createFavoriteCaptioner>;
  constructor(public db:Sql,public root:string,key:Buffer,public deps={call:nativeCall,download:downloadFavorite,convert:normalize}){this.caption=createFavoriteCaptioner(db,key,root)}
- tick(){if(this.closed||this.job||Date.now()<this.next)return;this.next=Date.now()+60000;this.controller=new AbortController();const signal=AbortSignal.any([this.controller.signal,AbortSignal.timeout(120000)]);this.job=this.run(signal).catch(()=>{/* retries persisted; no protocol restart */}).finally(()=>{this.job=undefined;this.controller=undefined})}
+ tick(){if(this.closed||this.job||Date.now()<this.next)return;this.next=Date.now()+60000;this.controller=new AbortController();const signal=AbortSignal.any([this.controller.signal,AbortSignal.timeout(120000)]);void this.flight.run(()=>this.run(signal).catch(()=>{/* retries persisted; no protocol restart */}).finally(()=>{this.controller=undefined}))}
  async stop(){this.closed=true;this.controller?.abort();await this.job}
  async valid(bot:any,signal:AbortSignal){signal.throwIfAborted();const [current]=await this.db.query('SELECT b.*,q.qq_uin FROM bots b JOIN qq_bindings q ON q.bot_id=b.id WHERE b.id=$1 AND b.tenant_id=$2 AND b.deleted_at IS NULL',[bot.id,bot.tenant_id]);if(!current||current.generation!==bot.generation||current.revision!==bot.revision||current.qq_uin!==bot.qq_uin||!runtimeStatus(current).online)throw new Error('favorite_owner_changed')}
  async run(signal:AbortSignal){

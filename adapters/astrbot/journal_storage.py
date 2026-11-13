@@ -200,16 +200,29 @@ def retire_archived_members(db,checkpoint_id,*,verify_active=True):
     except BaseException:
         db.execute('ROLLBACK TO semantic_archive_cleanup');db.execute('RELEASE semantic_archive_cleanup');raise
 
+def read_snapshot_payload(db,scope,version,payload,sha,*,integrity='journal_snapshot_integrity',
+                          version_error=None,scope_error=None):
+    """Decode a stored row or archive through the same integrity/blob reader.
+
+    Enumeration, archive admission and business-specific message validation
+    remain with the caller. No table creation, mutation or recovery fallback.
+    """
+    if not isinstance(payload,str) or hashlib.sha256(payload.encode('utf-8')).hexdigest()!=sha:raise ValueError(integrity)
+    if version not in (1,VERSION):raise ValueError(version_error or integrity)
+    def read_blob(key,digest):
+        blob=db.execute('SELECT data FROM fishbot_readonly_journal_blobs WHERE scope=? AND sha=?',(key,digest)).fetchone()
+        return blob[0] if blob else None
+    value=json.loads(payload) if version==1 else decode(payload,scope,read_blob)
+    if scope_error and (not isinstance(value,dict) or value.get('scope')!=scope):raise ValueError(scope_error)
+    return value
+
+
 def read_snapshot(db,scope):
     """Read a committed snapshot without creating tables or rewriting data."""
     row=db.execute('SELECT version,payload,sha FROM fishbot_readonly_journals WHERE scope=?',(scope,)).fetchone()
     if not row or row[1] is None:return None
     version,payload,sha=row
-    if version not in (1,VERSION) or not isinstance(payload,str) or hashlib.sha256(payload.encode('utf-8')).hexdigest()!=sha:raise ValueError('journal_snapshot_integrity')
-    def read_blob(key,digest):
-        blob=db.execute('SELECT data FROM fishbot_readonly_journal_blobs WHERE scope=? AND sha=?',(key,digest)).fetchone()
-        return blob[0] if blob else None
-    value=json.loads(payload) if version==1 else decode(payload,scope,read_blob)
+    value=read_snapshot_payload(db,scope,version,payload,sha)
     if not isinstance(value,dict) or value.get('scope')!=scope or not isinstance(value.get('base'),list):raise ValueError('journal_snapshot_invalid')
     if any(not isinstance(m,dict) or not isinstance(m.get('role'),str) for m in value['base']):raise ValueError('journal_snapshot_invalid')
     return value
