@@ -1,9 +1,11 @@
 """Protocol-bound mentions and owner-requested group messages, no scheduler."""
 from tool_outcome import rejected
 import asyncio,json,re,time,copy,hashlib,base64
+from contextvars import ContextVar
 from group_freshness import PreDispatchRejected
 
 MARKER=re.compile(r'\[AT:([^\]\r\n]*)(?:\]|$)',re.I)
+tool_action_id=ContextVar('hosted_group_tool_action_id',default=None)
 
 
 def owner_request(event,cfg):
@@ -105,7 +107,8 @@ def owns_reply(db,event,scope):
     """An attempted tool delivery owns only its exact destination, including
     uncertain ACKs. A provable pre-dispatch rejection leaves the reply free."""
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='group_message_attempts'").fetchone():return False
-    return bool(db.execute("SELECT 1 FROM group_message_attempts WHERE event=? AND scope=? AND state IN ('attempted','confirmed','unknown')",(attempt_key(event),scope)).fetchone())
+    source=attempt_key(event)
+    return bool(db.execute("SELECT 1 FROM group_message_attempts WHERE (event=? OR event GLOB ?) AND scope=? AND state IN ('attempted','confirmed','unknown')",(source,source+':action:*',scope)).fetchone())
 
 
 def prior_receipt(db,key):
@@ -127,17 +130,21 @@ async def send(event,cfg,db,group,text,mention,current,on_sent,include_prepared_
     from output_clean import clean
     text=clean(text)
     text=re.sub(r'\[(?:AT|MEME|IMAGE|QQ_FACE):[^\]\r\n]*(?:\]|$)|\[NO_REPLY\]','',text,flags=re.I).strip()
+    source_id=getattr(event.message_obj,'message_id',None)
+    if isinstance(source_id,bool) or not isinstance(source_id,(int,str)) or not str(source_id).strip():return rejected('group_send_preflight','未发送：缺少真实请求消息编号。')
+    action=tool_action_id.get()
+    if not isinstance(action,str) or not action.strip():return rejected('group_send_preflight','未发送：缺少当前工具调用身份。')
+    # Keep retries of this SDK call durable, while allowing a subsequent call
+    # from the same inbound event (even with identical arguments).
+    source=attempt_key(event)
+    key=source+':action:'+hashlib.sha256(action.encode()).hexdigest()
+    initialize(db)
+    # Legacy rows have no action identity; never reinterpret an uncertain send.
+    prior=prior_receipt(db,source) or prior_receipt(db,key)
+    if prior:return prior
     prepared=event.get_extra('_hosted_tool_sticker') if include_prepared_image else None
     if include_prepared_image and (not prepared or not isinstance(prepared.get('bytes'),bytes) or not 0<len(prepared['bytes'])<=8*1048576 or not social):return rejected('group_send_preflight','未发送：尚未从真实QQ收藏准备图片，不能接受路径或URL。')
     if (not text and not prepared) or mention and (not re.fullmatch(r'\d{5,20}',mention) or mention==str(event.get_self_id())):return rejected('group_send_preflight','未发送：消息或艾特对象无效。')
-    source_id=getattr(event.message_obj,'message_id',None)
-    if isinstance(source_id,bool) or not isinstance(source_id,(int,str)) or not str(source_id).strip():return rejected('group_send_preflight','未发送：缺少真实请求消息编号。')
-    # Private and group OneBot message IDs can collide; bind the author and
-    # source session too, without ever accepting a caller-supplied bot/session.
-    key=attempt_key(event)
-    initialize(db)
-    prior=prior_receipt(db,key)
-    if prior:return prior
     try:
         await group_access(event,cfg,group,current)
         if mention and mention!=str((cfg.get('behavior') or {})['ownerUin']):
@@ -167,7 +174,7 @@ async def send(event,cfg,db,group,text,mention,current,on_sent,include_prepared_
     from message_layout import split_messages,without_boundaries
     parts=split_messages(text) if (cfg.get('behavior') or {}).get('splitMessages',False) and text else [without_boundaries(text)]
     receipts=[];confirmed_parts=[];inflight=False;work_attempt=None;settled=False
-    # One source-event reservation owns the whole plan. Confirmed prefixes and
+    # One tool-action reservation owns the whole plan. Confirmed prefixes and
     # uncertain tails survive cancellation/restart without replaying any bubble.
     from bot_pipeline import Work
     work=event.get_extra('_hosted_pipeline')
