@@ -1,0 +1,116 @@
+{
+  "sourceCommit": "bd054e4ff71964dc2fc66df742b847be60cbefb9",
+  "qq": "2773013974",
+  "metrics": {
+    "before": {
+      "turns": 62,
+      "messages": 211,
+      "wireChars": 336175,
+      "payloadBytes": 513485
+    },
+    "after": {
+      "turns": 1,
+      "messages": 9,
+      "wireChars": 39996,
+      "payloadBytes": 95186
+    }
+  },
+  "journal": {
+    "turns": 1,
+    "messageCount": 9,
+    "wireChars": 39996,
+    "foundationPackets": 4,
+    "foundationChars": 26661,
+    "regions": [
+      "big_summary",
+      "small_summaries",
+      "conversation_continuity",
+      "long_term_facts"
+    ],
+    "foundationKeys": [
+      "completed_experience",
+      "conversation_continuity",
+      "conversation_summaries",
+      "core_note",
+      "execution_experience",
+      "expression_hints",
+      "facts",
+      "meaning",
+      "region",
+      "relations",
+      "selection"
+    ],
+    "hasCallingPreferenceEvidence": true,
+    "summaryIds": [
+      43,
+      44
+    ]
+  },
+  "compression": {
+    "ok": true,
+    "state": "completed",
+    "startedAt": 1794579510.781418,
+    "started": true,
+    "reason": "started",
+    "finishedAt": 1794579535.9282126,
+    "result": {
+      "ok": true,
+      "reason": "summary_committed",
+      "checkpoint": {
+        "id": 20,
+        "roundCount": 29,
+        "state": "consumed"
+      },
+      "discarded": {
+        "full_original": 0,
+        "incomplete_original": 1,
+        "conflicting_originals": 0
+      }
+    },
+    "accessMode": "runtime-owner"
+  },
+  "checkpoint": {
+    "id": 20,
+    "scope": "bot_shared",
+    "through_round_id": 1209,
+    "round_count": 29,
+    "epoch": 0,
+    "state": "consumed",
+    "request_id": null,
+    "created": 1794579535.6498067,
+    "summary_id": 44,
+    "conversation_continuity_chars": 178
+  },
+  "batch": {
+    "checkpoint_id": 20,
+    "scope": "bot_shared",
+    "digest": "46f359becf02f2de21a350ebaaee07c70743243ee5994f17bd51bdbe267e44ac",
+    "cutoff": 1794579119.1162934,
+    "state": "retired",
+    "created": 1794579535.652916,
+    "completed": 1794579535.8200603,
+    "membersCount": 65
+  },
+  "longTermCounts": {
+    "memory_summaries": 2,
+    "memory_core_notes": 1,
+    "facts": 12,
+    "relations": 12
+  },
+  "production": {
+    "held": false,
+    "stage": "resumed",
+    "runningOnline": 4,
+    "memberErrors": {},
+    "activity": {
+      "queued": 0,
+      "pending": 0,
+      "busyMembers": 0,
+      "idle": true,
+      "maintenanceActive": false,
+      "lastActivity": 1794579535.9271483
+    },
+    "protocolOwnersPreserved": true
+  },
+  "targetedTests": 55
+}
