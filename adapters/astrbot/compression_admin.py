@@ -29,18 +29,28 @@ def manage(store,data,care):
     elif (not isinstance(scope,str) or not re.fullmatch(r'(?:private:\d{5,20}|group:\d{4,20})',scope)
           or not store.db.execute('SELECT 1 FROM fishbot_readonly_journals WHERE scope=? AND state=\'ready\'',(json.dumps(scope),)).fetchone()):
         return {'error':'需要指定该账号实际存在的会话Scope','status':409}
-    if len(jobs)>=32:return {'error':'本次运行维护请求已达上限','status':429}
+    # A diagnostic cache must never veto an authorized compression. Committed
+    # request IDs remain idempotent in the existing checkpoint override table.
+    finished=[key for key,value in jobs.items() if value.get('state') not in ('running','queued')]
+    for key in finished[:-31]:jobs.pop(key,None)
     reflection=store.reflection
     from autonomy import decision_token_limit
     limit_token=decision_token_limit.set(ADMIN_COMPRESSION_OUTPUT_TOKENS)
+    failure=None
     try:
         # create_task inside force_compress_once inherits this request budget;
         # the API caller and unrelated foreground tasks keep their own context.
         result=reflection.force_compress_once(scope,allow_partial=data['allowPartial'],administrator=administrator,request_id=request_id,discard_unavailable=data.get('discardUnavailable',False))
+    except Exception as error:
+        failure=type(error).__name__
+        result={'started':False,'reason':failure}
     finally:
         decision_token_limit.reset(limit_token)
     job={'ok':True,'requestId':request_id,'state':'running' if result.get('started') else 'not_started','startedAt':time.time(),**result}
     jobs[request_id]=job
+    if failure:
+        job.update(state='failed',finishedAt=time.time())
+        return dict(job)
     if not result.get('started'):return dict(job)
     task=reflection.task
     care.track(store,task)
