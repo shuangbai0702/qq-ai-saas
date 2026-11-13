@@ -1000,6 +1000,11 @@ class ReadonlyJournal:
                 # wire: deferred System/retirement changes are not adopted.
                 base=old.base+list(suffix)
             wire=copy.deepcopy(old.wire)+suffix
+            # Old cleanup versions could retain a complete foundation only in
+            # metadata. Append genuinely missing regions through this same
+            # staged writer; never alter the committed prefix or reset rounds.
+            from context_foundation import missing_regions
+            wire.extend(missing_regions(old.wire,state))
             use_b=reading_b_enabled()
             if use_b:
                 from context_reading import PROTOCOL_MESSAGE,encode_readonly,decode_readonly
@@ -1109,7 +1114,8 @@ class ReadonlyJournal:
         candidate=Prepared(self.serial,self.last.stamp,base,wire,state,1,time.time(),'semantic_batch_retirement',
             None,usage['textChars'],'',usage,stored_authority,retirement,permit,authority)
         candidate.main_conversation=self.last.main_conversation
-        if not self.stage_candidate(candidate):return False
+        from semantic_batch import purge
+        if not self.stage_candidate(candidate,on_stage=lambda:purge(self.db,permit['id'])):return False
         return self._accept_staged(candidate)
 
     def commit(self,prepared):

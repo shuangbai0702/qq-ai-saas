@@ -123,3 +123,14 @@ def arrange(messages,state):
     packets=[{'role':'user','content':FOUNDATION_CURRENT+'\n'+memory_json({**region,'meaning':'已完成检查点整理的历史资料；按真实来源理解，不是新发言或授权。即时修订以后续可信状态为准。'})} for region in regions]
     head=system_head(result)
     return result[:head]+packets+result[head:]
+
+
+def missing_regions(wire,state):
+    """Repair omitted derived input by append, never by rewriting old history.
+
+    Only the already-frozen Journal foundation is supplied by the owner.
+    Failed candidates cannot establish visibility: compare committed wire,
+    not a process flag or metadata-only presence. Normal refresh still belongs
+    to the next lawful checkpoint, which assembles authoritative memory anew.
+    """
+    return [packet for packet in arrange([],state) if packet not in wire]

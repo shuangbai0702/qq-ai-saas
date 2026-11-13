@@ -120,6 +120,25 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.st.db.execute('SELECT state FROM memory_reconstruction_checkpoints').fetchone()[0],'available')
         journal._staged=None
         self.assertEqual(finish_semantic_batches(self.st,{},SCOPE)['retired'],1)
+    def test_cleanup_failure_rolls_back_journal_and_permit_then_retry_finishes(self):
+        from unittest.mock import patch
+        import semantic_batch,journal_storage
+        before=journal_storage.read_snapshot(self.st.db,model_json(SCOPE))
+        purge=semantic_batch.purge
+        def fail_cleanup(db,checkpoint_id,*,preview=False):
+            if not preview:raise OSError('injected archive cleanup failure')
+            return purge(db,checkpoint_id,preview=True)
+        with patch.object(semantic_batch,'purge',side_effect=fail_cleanup):
+            result=finish_semantic_batches(self.st,{},SCOPE)
+        self.assertEqual(result['retired'],0,result);self.assertEqual(result['pending'],1)
+        self.assertEqual(journal_storage.read_snapshot(self.st.db,model_json(SCOPE)),before)
+        self.assertEqual(self.st.db.execute('SELECT state FROM memory_reconstruction_checkpoints').fetchone()[0],'available')
+        self.assertEqual(self.st.db.execute('SELECT state FROM memory_semantic_batches').fetchone()[0],'committed')
+        self.assertTrue(self.st.db.execute("SELECT 1 FROM memory_pending WHERE event='old'").fetchone())
+        self.assertEqual(finish_semantic_batches(self.st,{},SCOPE)['retired'],1)
+        self.assertNotIn('original old',model_json(self.st.model_journals[SCOPE].last.wire))
+        self.assertIn('semantic summary',model_json(self.st.model_journals[SCOPE].last.wire))
+
     def scoped_journal(self,scope,db=None):
         journal=ReadonlyJournal(db or self.st.db,scope);journal.serial=1
         foreign={'role':'user','content':SOURCE+model_json({'scope':'group:87654321','sender_id':'12345678','event_id':'old'})+'\nforeign old'}
@@ -129,22 +148,23 @@ class RuntimeTests(unittest.TestCase):
         prepared=Prepared(1,None,messages,messages,state,1,time.time(),'initial')
         self.assertTrue(journal.commit(prepared));self.st.model_journals[scope]=journal
         return journal
-    def test_all_scope_cache_adopts_exact_disk_projection_and_fences_late_candidate(self):
+    def test_cross_scope_active_copy_requires_its_owner_reconstruction(self):
         import journal_storage
-        from dataclasses import replace
         other=self.scoped_journal('group:12345')
-        late=replace(other.last,serial=other.serial)
+        before=copy.deepcopy(other.last);serial=other.serial
+        primary=copy.deepcopy(self.st.model_journals[SCOPE].last)
         result=finish_semantic_batches(self.st,{},SCOPE)
-        self.assertEqual(result['retired'],1,result)
-        self.assertIs(self.st.model_journals['group:12345'],other)
-        self.assertNotIn('original old',model_json(other.last.wire))
-        self.assertIn('original new',model_json(other.last.wire));self.assertIn('foreign old',model_json(other.last.wire))
-        self.assertEqual(other.last.wire[0],self.base[0])
-        persisted=journal_storage.read_snapshot(self.st.db,model_json('group:12345'))
-        self.assertEqual(other.last.wire,persisted['wire']);self.assertEqual(other.last.state,persisted['state'])
-        self.assertFalse(other.commit(late))
-        self.assertNotIn('original old',model_json(journal_storage.read_snapshot(self.st.db,model_json('group:12345'))))
-    def test_other_scope_staged_candidate_defers_entire_retirement(self):
+        self.assertEqual(result['retired'],0,result);self.assertEqual(result['pending'],1)
+        # A different Scope's checkpoint cannot edit this submitted history.
+        self.assertEqual(other.last,before);self.assertEqual(other.serial,serial)
+        self.assertEqual(journal_storage.read_snapshot(self.st.db,model_json('group:12345'))['wire'],before.wire)
+        self.assertEqual(journal_storage.read_snapshot(self.st.db,model_json(SCOPE))['wire'],primary.wire)
+        self.assertEqual(self.st.db.execute('SELECT state FROM memory_reconstruction_checkpoints').fetchone()[0],'available')
+        self.assertTrue(self.st.db.execute("SELECT 1 FROM memory_pending WHERE event='old'").fetchone())
+        detail=self.st.db.execute("SELECT detail FROM memory_checkpoint_issues WHERE kind='semantic_retirement'").fetchone()[0]
+        self.assertIn('semantic_active_journal_reconstruction_required',detail)
+
+    def test_other_scope_staged_candidate_and_unlicensed_history_both_defer(self):
         other=self.scoped_journal('group:12345')
         self.assertTrue(other.stage_candidate(other.last));serial=other.serial
         result=finish_semantic_batches(self.st,{},SCOPE)
@@ -153,8 +173,11 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn('original old',model_json(other.last.wire))
         self.assertTrue(self.st.db.execute("SELECT 1 FROM memory_pending WHERE event='old'").fetchone())
         self.assertTrue(other.commit(other.last))
-        self.assertEqual(finish_semantic_batches(self.st,{},SCOPE)['retired'],1)
-        self.assertNotIn('original old',model_json(other.last.wire))
+        # Settling an unrelated staged request is not a reconstruction permit.
+        result=finish_semantic_batches(self.st,{},SCOPE)
+        self.assertEqual(result['retired'],0,result);self.assertEqual(result['pending'],1)
+        self.assertIn('original old',model_json(other.last.wire))
+        self.assertTrue(self.st.db.execute("SELECT 1 FROM memory_pending WHERE event='old'").fetchone())
     def test_foreign_store_journal_is_untouched(self):
         from behavior import BehaviorStore
         foreign_store=BehaviorStore(self.root/'foreign.sqlite')

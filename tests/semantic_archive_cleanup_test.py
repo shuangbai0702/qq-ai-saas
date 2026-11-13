@@ -34,8 +34,15 @@ class SemanticArchiveCleanup(unittest.TestCase):
           'fishbot_system_scope_contract':{'columns':['scope','system'],'rows':[[self.scope,'exact contract']]}}}
         self.archive=model_json(archive)
         self.db.execute("INSERT INTO fishbot_operator_session_archives VALUES('grant',?,?,?,'consumed')",(self.key,self.archive,self.sha(self.archive)))
-        active=copy.deepcopy(self.value);active['base']=[self.system,self.new];active['wire']=active['base'];active['state']={}
-        self.db.execute('INSERT INTO fishbot_readonly_journals VALUES(?,2,?)',(self.key,self.encode(active)))
+        active=copy.deepcopy(self.value);active['base']=[self.system,self.new]
+        foundation={'facts':[{'value':'persisted semantic fact'}],'conversation_summaries':[{'text':'persisted summary'}]}
+        active['state']={'memory_foundation':foundation}
+        active['wire']=[self.system,*[{'role':'user','content':prefix+'\n'+model_json(body)} for prefix,body in (
+            (FOUNDATION_CURRENT,foundation),(READONLY_CURRENT,{'readonlyChanges':[]}),
+            (EVENT_CONTEXT_CURRENT,{'event':'new'}))],self.new]
+        active.update(retirement='checkpoint:1',revision=12,updated=100.5,pending_system=None)
+        self.active_payload=self.encode(active)
+        self.db.execute('INSERT INTO fishbot_readonly_journals VALUES(?,2,?)',(self.key,self.active_payload))
         self.db.commit()
 
     def tearDown(self):self.db.close()
@@ -57,10 +64,12 @@ class SemanticArchiveCleanup(unittest.TestCase):
         self.assertEqual(archive['evidence']['memory_round_material']['rows'],[[self.scope,'new','new material'],['group:67890','old','other group']])
         self.assertEqual(archive['evidence']['fishbot_system_scope_contract']['rows'],[[self.scope,'exact contract']])
         self.assertEqual(self.db.execute('SELECT count(*) FROM fishbot_readonly_journal_blobs').fetchone()[0],1)
+        self.assertEqual(self.db.execute('SELECT payload FROM fishbot_readonly_journals').fetchone()[0],self.active_payload)
         with self.assertRaises(sqlite3.IntegrityError):self.db.execute("UPDATE fishbot_operator_session_archives SET archive='bad'")
         with self.assertRaises(sqlite3.IntegrityError):self.db.execute('DELETE FROM fishbot_operator_session_archives')
         self.db.rollback()
         with self.db:self.assertEqual(storage.retire_archived_members(self.db,1),0)
+        self.assertEqual(self.db.execute('SELECT payload FROM fishbot_readonly_journals').fetchone()[0],self.active_payload)
 
     def test_unretired_batch_never_changes_archive(self):
         self.db.execute("UPDATE memory_semantic_batches SET state='committed'")
@@ -73,6 +82,7 @@ class SemanticArchiveCleanup(unittest.TestCase):
         self.assertEqual(self.db.execute('SELECT archive FROM fishbot_operator_session_archives').fetchone()[0],self.archive)
         self.assertEqual(self.db.execute('SELECT payload FROM memory_checkpoint_archives').fetchone()[0],self.payload)
         self.assertEqual(self.db.execute('SELECT count(*) FROM fishbot_readonly_journal_blobs').fetchone()[0],2)
+        self.assertEqual(self.db.execute('SELECT payload FROM fishbot_readonly_journals').fetchone()[0],self.active_payload)
         with self.assertRaises(sqlite3.IntegrityError):self.db.execute("UPDATE fishbot_operator_session_archives SET archive='bad'")
 
     def test_identityless_delta_and_other_derived_packets_are_removed_whole(self):
