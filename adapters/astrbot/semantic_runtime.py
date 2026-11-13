@@ -82,6 +82,10 @@ def _fresh_state(st,cfg,scope,checkpoint,journal):
         permit={**semantic_batch.permit(st.db,checkpoint),'scope':scope}
         st.model_journals[scope]=SimpleNamespace(last=replace(journal.last,base=semantic_retire_projection(journal.last.base,permit)))
         shared=bot_pipeline.conversation_context(st,cfg,scope,subject,'',time.time())
+        # Only this lawful reconstruction retires legacy ledger copies from
+        # the frozen cognitive basis. Ordinary appends keep old wire intact.
+        for field in ('completed_experience','execution_experience'):
+            shared['memory_foundation'].pop(field,None)
         # Never use the old Journal fallback for summaries at a legal cutover.
         from memory_reflection import summary_foundation
         shared['memory_foundation']['conversation_summaries']=summary_foundation(st.db,scope,str(cfg.get('ownerUin') or ''))

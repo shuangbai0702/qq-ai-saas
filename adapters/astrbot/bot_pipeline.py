@@ -294,24 +294,20 @@ def experience_context(store,scope,cfg):
         if scope=='self' or action and allowed({**action,'sourceScope':item.get('sourceScope')}):decisions.append(item)
         elif not action:decisions.append({k:item.get(k) for k in ('cycleId','at','cycleStartedAt','wait')})
     from context_transport import experience_view
-    local_ids={a['id'] for a in local}
-    selected=[];protected_ids=set()
+    selected=[]
     for action in local+list(actions.values()):
         if not allowed(action):continue
-        # Current local settlements and incomplete/error work must remain
-        # visible immediately, including a task's successful terminal result.
-        # Ordinary completed history keeps only a settlement link; its prose
-        # belongs to the checkpoint foundation, not a new per-turn projection.
+        # Unfinished/unknown work stays live. Completed ledger entries are
+        # recalled explicitly, not copied into cognitive memory foundations.
         uncertain=any(e.get('status') in ('unknown','dispatching','partial','uncertain') or isinstance(e.get('receipt'),dict) and e['receipt'].get('status')=='unknown' for e in action.get('effects',[]) if isinstance(e,dict))
-        critical=action.get('id') in local_ids or action.get('unfinished') or action.get('status')!='completed' or uncertain
-        if critical:protected_ids.add(action['id'])
-        selected.append(action if critical else {k:action[k] for k in ('id','goalId','kind','sourceScope','target','status','finishedAt') if k in action})
-    if owner_brief:
-        # Protected first: anything unfinished/unknown plus protocol receipts;
-        # the remainder narrows to the two latest finished items.
-        keep=[a for a in selected if a.get('id') in protected_ids]
-        rest=[a for a in selected if a not in keep and a.get('status')=='completed'][:2]
-        selected=keep+rest[:max(0,8-len(keep))]
+        critical=action.get('unfinished') or action.get('status') in ('planned','executing','pending','partial','unknown','uncertain') or uncertain
+        if not critical:continue
+        selected.append(action)
+    # Only decisions linked to current responsibility belong in automatic
+    # context. Settled decisions and actions stay in their original ledger.
+    decisions=[decision for decision in decisions if isinstance(decision.get('action'),dict) and any(
+        decision['action'].get('id') and decision['action']['id']==a.get('id') or decision['action'].get('goalId') and decision['action']['goalId']==a.get('goalId')
+        or decision.get('cycleId') and decision['cycleId']==(a.get('outerDecision') or {}).get('cycleId') for a in selected)]
     # A decision remains an intention, even if a matching execution exists.
     # Preserve its attribution/wait/rationale but reference the selected action
     # instead of repeating that action's complete objective and result.

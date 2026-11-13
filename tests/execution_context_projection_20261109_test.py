@@ -9,23 +9,23 @@ from context_foundation import execution_view
 from decision_history import apply_changes
 
 class ExecutionProjection(unittest.TestCase):
- def test_complete_current_view_and_exact_basis_overlay(self):
+ def test_settled_history_excluded_without_creating_foundation(self):
   done={'actionId':'a','execution':'completed','receipt':{'status':'confirmed'},'summary':'完整观察结果','coverage':{'audioAnalyzed':False},'future':{'keep':True}}
   uncertain={'actionId':'b','execution':'completed','receipt':{'status':'unknown'},'summary':'仍需确认的完整结果','errorCode':'ACK_UNKNOWN'}
   original={'sampledAt':1,'experiences':[done,uncertain]};before=copy.deepcopy(original);basis={}
   hot=context_projection(original,basis)
-  self.assertEqual(original,before);self.assertEqual(hot,{'experiences':[done,uncertain]})
+  self.assertEqual(original,before);self.assertEqual(hot,{'experiences':[uncertain]});self.assertEqual(basis,{})
   state=execution_view({'memory_foundation':basis,'execution_experience':hot})
-  self.assertEqual(apply_changes(basis['execution_experience'],state['execution_experience']['changes']),hot)
+  self.assertEqual(state['execution_experience'],hot)
   self.assertNotIn('完整观察结果',json.dumps(state['execution_experience'],ensure_ascii=False))
   self.assertEqual(context_projection({**original,'sampledAt':2},basis),hot)
  def test_new_completion_correction_and_removal_do_not_rewrite_basis(self):
   basis={'execution_experience':{'experiences':[{'actionId':'old','summary':'保留原始整理'}],'obsolete':'旧值'}};before=copy.deepcopy(basis)
   current={'experiences':[{'actionId':'new','execution':'completed','receipt':{'status':'confirmed'},'summary':'新增完整经历','future':None}]}
   hot=context_projection(current,basis)
-  self.assertEqual(basis,before);self.assertEqual(hot,current)
+  self.assertEqual(basis,before);self.assertEqual(hot,{'experiences':[]})
   state=execution_view({'memory_foundation':basis,'execution_experience':hot})
-  self.assertEqual(apply_changes(before['execution_experience'],state['execution_experience']['changes']),current)
+  self.assertEqual(apply_changes(before['execution_experience'],state['execution_experience']['changes']),hot)
   # Existing transport may choose an equivalent root replacement when shorter.
   self.assertNotIn('obsolete',apply_changes(before['execution_experience'],state['execution_experience']['changes']))
  def test_pending_failed_unavailable_and_missing_legacy_basis(self):
@@ -61,7 +61,7 @@ class ProviderWire(unittest.IsolatedAsyncioTestCase):
     provider=ProviderOpenAIOfficial({'id':'fixture','type':'openai_chat_completion','model':'fixture','key':['fixture'],'api_base':'https://fixture.invalid/v1'}, {})
     try:
      journal=ReadonlyJournal();basis={};native=[{'role':'user','content':'第一问'}]
-     done={'actionId':'a','execution':'completed','receipt':{'status':'confirmed'},'summary':'UNIQUE_COMPLETE_PROSE_'+'完整经历'*300,'future':{'keep':True}}
+     done={'actionId':'a','execution':'completed','receipt':{'status':'unknown'},'summary':'UNIQUE_COMPLETE_PROSE_'+'完整经历'*300,'future':{'keep':True}}
      current={'experiences':[done],'visibility':'private'};original=copy.deepcopy(current)
      def effective_wire(messages):
       readonly={};foundation={}
@@ -87,7 +87,7 @@ class ProviderWire(unittest.IsolatedAsyncioTestCase):
      first=await submit(current)
      self.assertEqual(effective_wire(first),current)
      self.assertEqual(json.dumps(first,ensure_ascii=False).count(done['summary']),1)
-     self.assertEqual(journal.last.state['execution_experience']['changes'],[])
+     self.assertEqual(basis,{});self.assertEqual(journal.last.state['execution_experience'],current)
      committed=copy.deepcopy(journal.last.wire)
      native.extend([{'role':'assistant','content':'答复'},{'role':'user','content':'继续'}])
      second=await submit(current)
@@ -99,19 +99,20 @@ class ProviderWire(unittest.IsolatedAsyncioTestCase):
      # Tool continuation has no new human turn; actual call/result adjacency stays.
      native.extend([{'role':'assistant','tool_calls':[{'id':'call-1','type':'function','function':{'name':'fixture','arguments':'{}'}}]},{'role':'tool','tool_call_id':'call-1','content':'真实回执'}])
      third=await submit(updated)
-     self.assertEqual(effective_wire(third),updated)
+     expected={**updated,'experiences':[updated['experiences'][0]]}
+     self.assertEqual(effective_wire(third),expected)
      self.assertEqual(third[:len(second)],second)
      encoded=json.dumps(third,ensure_ascii=False)
-     self.assertIn('CORRECTED_COMPLETE_PROSE',encoded);self.assertIn('NEW_COMPLETE_PROSE',encoded)
+     self.assertIn('CORRECTED_COMPLETE_PROSE',encoded);self.assertNotIn('NEW_COMPLETE_PROSE',encoded)
      call=next(i for i,m in enumerate(third) if m.get('tool_calls'))
      self.assertEqual(third[call+1]['tool_call_id'],'call-1')
-     effective=apply_changes(basis['execution_experience'],journal.last.state['execution_experience']['changes'])
-     self.assertEqual(effective,updated);self.assertEqual(current,original)
+     effective=journal.last.state['execution_experience']
+     self.assertEqual(effective,expected);self.assertEqual(current,original);self.assertEqual(basis,{})
      native.extend([{'role':'assistant','content':'工具结果已知'},{'role':'user','content':'再问'}])
      fourth=await submit({'status':'unavailable','reason':'read_failed'})
      self.assertEqual(effective_wire(fourth),{'status':'unavailable','reason':'read_failed'})
      self.assertEqual(fourth[:len(third)],third)
-     self.assertEqual(apply_changes(basis['execution_experience'],journal.last.state['execution_experience']['changes']),{'status':'unavailable','reason':'read_failed'})
+     self.assertEqual(journal.last.state['execution_experience'],{'status':'unavailable','reason':'read_failed'})
      native.extend([{'role':'assistant','content':'读取失败不代表没有经历'},{'role':'user','content':'重试读取'}])
      fifth=await submit(current)
      self.assertEqual(effective_wire(fifth),current)

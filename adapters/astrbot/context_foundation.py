@@ -44,12 +44,9 @@ def read(store,cfg,scope,subject):
         facts.append(item);used+=size
     relations=[{'source_scope':r[0],'subject':r[1],'affinity':r[2],'emotion':r[3],'emotion_expires':r[4],'observed_at':r[5],'trust':r[6],'impression':r[7],'semantic_updated':r[8]} for r in store.db.execute('SELECT scope,subject,affinity,emotion,expires,last_seen,trust,impression,semantic_updated FROM relations ORDER BY last_seen DESC')]
     styles=[{'source_scope':r[0],'expression':r[1],'situation':r[2],'updated':r[3]} for r in store.db.execute('SELECT scope,expression,situation,updated FROM social_patterns ORDER BY updated DESC LIMIT 24')]
-    completed=[item for item in getattr(store,'autonomous_experience',{}).get('actions',[]) if isinstance(item,dict) and item.get('status')=='completed' and not item.get('unfinished')][:2]
-    from context_transport import experience_view
     from conversation_continuity import view as continuity_view
     continuity=continuity_view(store.db,logical) if cfg.get('memorySummary',True) else None
     return {**({'conversation_continuity':continuity} if continuity else {}),'conversation_summaries':summary_rows,'facts':facts,'relations':relations,'expression_hints':styles,
-            'completed_experience':experience_view({'actions':completed}),
             'core_note':store.reflection.core_note(logical,subject,owner=str(cfg.get('ownerUin') or '')),
             'selection':{'facts_available':len(rows),'facts_included':len(facts)}}
 

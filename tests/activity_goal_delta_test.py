@@ -29,13 +29,15 @@ def snapshot_with_history():
 
 def assert_goal_only(case,payload,value):
     case.assertEqual(payload,necessary_goals(value))
-    case.assertEqual(set(payload),{'goals'})
+    case.assertLessEqual(set(payload),{'goals','currentResponsibilities'})
     for goal in payload['goals']:
-        case.assertLessEqual(set(goal),{'id','title','revision','reason','success_condition','successCondition','source'})
-        case.assertLessEqual(set(goal.get('source',{})),{'originalGoal','constraints','restrictions'})
+        case.assertLessEqual(set(goal),{'id','title','revision','reason','success_condition','successCondition','source','status','progress','updated_at'})
+        case.assertLessEqual(set(goal.get('source',{})),{'originalGoal','constraints','restrictions','nextIntention'})
     rendered=model_json(payload)
-    for excluded in ('action-exact-uuid','effect-exact-uuid','closed-action','closed-effect','closed-goal','COMPLETED_HISTORICAL_BODY_','Actual finding'):
+    for excluded in ('closed-action','closed-effect','COMPLETED_HISTORICAL_BODY_'):
         case.assertNotIn(excluded,rendered)
+    case.assertEqual(payload['goals'][0]['progress'],value['goals'][0]['progress'])
+    case.assertNotIn('actions',payload);case.assertNotIn('effects',payload)
 
 
 def service(value,event='activation-1',scope='private:12345678'):

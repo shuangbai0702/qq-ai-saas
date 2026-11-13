@@ -12,10 +12,10 @@ GUIDANCE = ('execution_experience 是自己的真实工具经历，不是当前�
 
 
 def context_projection(result,foundation):
-    """Checkpoint-owned ordinary experience; live execution state stays live.
+    """Automatic context carries unresolved work, never settled ledger history.
 
-    Only automatic context is projected. Explicit recall and real tool results
-    remain complete. The Journal freezes foundation until lawful retirement.
+    Explicit recall and tool results remain complete. Existing frozen bases
+    survive unchanged until their next lawful checkpoint.
     """
     if not isinstance(result,dict):return result
     current={k:v for k,v in result.items() if k!='sampledAt'}
@@ -24,11 +24,7 @@ def context_projection(result,foundation):
     import copy
     def settled(row):
         return isinstance(row,dict) and row.get('execution')=='completed' and (row.get('receipt') or {}).get('status') in ('confirmed','not_applicable')
-    if isinstance(foundation,dict) and 'execution_experience' not in foundation:
-        foundation['execution_experience']={**copy.deepcopy(current),'experiences':[copy.deepcopy(row) for row in rows if settled(row)]}
-    # Keep the complete current view, including newly completed prose and
-    # future fields. Presentation deduplication follows Journal foundation
-    # freezing, so it can only reference a basis actually visible on the wire.
+    current['experiences']=[copy.deepcopy(row) for row in rows if not settled(row)]
     return copy.deepcopy(current)
 
 

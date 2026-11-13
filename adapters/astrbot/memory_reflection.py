@@ -1229,6 +1229,7 @@ class Reflection:
                     from output_clean import memory_projection
                     prompt=memory_projection(prompt)
                     system+=' 机器人输出中的推理控制块是平台内部内容，不是人物事实、关系或经历；主动研究和主动选题不等于用户曾经提出。'
+                    system+=' 当前目标、进度与未完责任由原目标工具维护；本次只提炼必要认知，不复制Goal、Action或ToolEffects条目，不另建或更新目标清单。'
                     from datetime import datetime
                     current=datetime.now().astimezone()
                     prompt['current_time']={'unix_seconds':current.timestamp(),'iso8601':current.isoformat(),'timezone':str(current.tzinfo)}

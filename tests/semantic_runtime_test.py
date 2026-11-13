@@ -62,14 +62,16 @@ class RuntimeTests(unittest.TestCase):
         frozen=j.prepare(later,('later',),reconstruction_authority=self.st.reflection,
             reconstruction_scope=SCOPE,retirement=j.last.retirement,system_transition_authorized=True)
         self.assertEqual(frozen.wire[0],new_system)
-    def test_callback_retires_without_next_message_and_preserves_execution(self):
+    def test_callback_retires_without_next_message_without_copying_settled_execution(self):
         result=finish_semantic_batches(self.st,{},SCOPE)
         self.assertEqual(result['retired'],1,result)
         journal=self.st.model_journals[SCOPE]
         self.assertNotIn('original old',model_json(journal.last.wire))
         self.assertNotIn('original old',model_json(journal.last.state))
         self.assertIn('semantic summary',model_json(journal.last.wire))
-        self.assertIn('keep exact execution experience',model_json(journal.last.wire))
+        self.assertNotIn('keep exact execution experience',model_json(journal.last.wire))
+        self.assertNotIn('completed_experience',journal.last.state['memory_foundation'])
+        self.assertNotIn('execution_experience',journal.last.state['memory_foundation'])
         self.assertIn('original new',model_json(journal.last.wire))
         self.assertEqual(self.st.db.execute('SELECT count(*) FROM memory_pending WHERE event=?',('old',)).fetchone()[0],0)
         self.assertEqual(self.st.db.execute('SELECT state FROM memory_semantic_batches').fetchone()[0],'retired')
