@@ -2162,7 +2162,8 @@ def install_runtime(core,settings):
         if not event.get_extra('_hosted_initiative',False):
             import periodic_guidance,shared_context
             periodic_guidance.record(st.db,work,shared_context.JOURNAL_SCOPE if st.shared_context else work.scope)
-        if not rhythm.get('memory',True):return
+        # Completed business rounds drive mandatory checkpoint maintenance,
+        # even when optional long-term fact capture is disabled.
         answer='\n'.join(work.confirmed_reply_parts)
         if not answer.strip():
             kinds=list(dict.fromkeys(work.confirmed_media_kinds))
