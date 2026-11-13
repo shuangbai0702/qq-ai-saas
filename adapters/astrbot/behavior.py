@@ -104,6 +104,7 @@ class BehaviorStore:
         self.social=SocialStore(self.db,Path(path).parent)
         self.last={};self.active=0;self.ingress=0;self.batches={};self.batch_flush={};self.ambient=Ambient();self.slot_changed=asyncio.Event();self.waiting=0
         self.compression_active=False
+        self.compression_boundary=None
         self.reflection.admission=self.compression_admission
         self.freshness=group_freshness.GroupFreshness()
         self.scope_turns={}
@@ -111,29 +112,37 @@ class BehaviorStore:
     def conversation_pending(self):
         if self.active or self.ingress or self.batches or self.waiting or any(s['users'] for s in self.scope_turns.values()):return True
         # Accepted native inputs belong to the existing durable ingress queue.
-        return self.db.execute("SELECT 1 FROM pipeline_work_inputs WHERE status='queued' LIMIT 1").fetchone() is not None
+        return self.db.execute("SELECT 1 FROM pipeline_work_inputs WHERE status='queued' AND (? IS NULL OR rowid<=?) LIMIT 1",(self.compression_boundary,self.compression_boundary)).fetchone() is not None
 
-    async def wait_compression(self):
-        while self.compression_active:
+    def before_compression(self,event):
+        if self.compression_boundary is None:return True
+        if event is None:return False
+        if event.get_extra('_hosted_scope_owner') or event.get_extra('_hosted_scope_continuation'):return True
+        scope=bot_pipeline.delivery_scope(event)
+        identifier=str(getattr(event.message_obj,'message_id',''))
+        return self.db.execute('SELECT 1 FROM pipeline_work_inputs WHERE scope=? AND event=? AND rowid<=?',(scope,identifier,self.compression_boundary)).fetchone() is not None
+
+    async def wait_compression(self,event=None):
+        while self.compression_active or not self.before_compression(event):
             self.slot_changed.clear()
-            if self.compression_active:await self.slot_changed.wait()
+            if self.compression_active or not self.before_compression(event):await self.slot_changed.wait()
 
     @asynccontextmanager
     async def compression_admission(self):
-        # Drain already accepted conversation work before taking the SAME
-        # Journal writer. Later ingress remains durably queued behind this turn.
-        while self.conversation_pending():
-            self.slot_changed.clear()
-            if not self.conversation_pending():break
-            try:await asyncio.wait_for(self.slot_changed.wait(),1)
-            except asyncio.TimeoutError:pass
-        self.compression_active=True
+        # Freeze admission, not history. New inputs stay in the SAME durable
+        # inbox; only the finite already accepted prefix drains before writer.
+        self.compression_boundary=self.db.execute('SELECT coalesce(max(rowid),0) FROM pipeline_work_inputs').fetchone()[0]
         try:
+            while self.conversation_pending():
+                self.slot_changed.clear()
+                if not self.conversation_pending():break
+                await self.slot_changed.wait()
+            self.compression_active=True
             await self.model_writer.acquire()
             yield
         finally:
             self.model_writer.release()
-            self.compression_active=False;self.slot_changed.set()
+            self.compression_active=False;self.compression_boundary=None;self.slot_changed.set()
     async def acquire_scope(self,scope,valid,timeout=120):
         """FIFO main execution ownership; ingress observations stay concurrent."""
         slot=self.scope_turns.setdefault(scope,{'lock':asyncio.Lock(),'users':0})
@@ -852,7 +861,7 @@ def install_runtime(core,settings):
         raw=getattr(event.message_obj,'raw_message',{}) or {}
         if not event.get_extra('_hosted_initiative',False) and not event.get_extra('_hosted_scope_continuation') and not admitted(raw,cfg):return
         id=event.get_platform_id();st=store(id,s);group=str(event.get_group_id() or '');subject=str(event.get_sender_id());scope='group:'+group if group else 'private:'+subject
-        await st.wait_compression()
+        await st.wait_compression(event)
         if not current(event):return
         if group and cfg.get('groups') and group not in cfg['groups']:
             # The retained ingress row can never bind in this scope; settle it
@@ -2339,6 +2348,9 @@ def install_runtime(core,settings):
         if bot_pipeline.is_transport_notification(getattr(event.message_obj,'raw_message',None)):return False
         st=store(id,lease);pipeline=st.pipeline
         if not pipeline.persist_input(event,lease):raise ValueError('ingress_original_evidence_invalid')
+        # persist_input retained the real input. Recovery will enqueue it after
+        # this finite compression boundary, without creating another queue.
+        if st.compression_boundary is not None:return False
         scope=bot_pipeline.delivery_scope(event);identifier=str(event.message_obj.message_id)
         with st.db:
             # The native SDK queue owns this delivery for thirty seconds.

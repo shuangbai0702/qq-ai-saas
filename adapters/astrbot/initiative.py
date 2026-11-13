@@ -239,7 +239,8 @@ async def resume_scope_input(core,id,lease,store,settings):
           AND NOT EXISTS (SELECT 1 FROM pipeline_events e WHERE e.scope=i.scope AND e.subject=i.subject AND e.event=i.event)""",(time.time(),))
         for failed_scope,failed_event,count in store.db.execute("SELECT scope,min(event),max(retry_count) FROM pipeline_work_inputs WHERE status='blocked_recovery' GROUP BY scope").fetchall():
             store.reflection.checkpoint_issue('bot_shared',0,'input_recovery:'+failed_scope+':'+failed_event,{'scope':failed_scope,'event':failed_event,'reason':'ingress_not_accepted','state':'blocked_recovery','retry_count':count,'external_replay':False})
-    row=store.db.execute("SELECT scope,event,payload,observed_at,retry_count FROM pipeline_work_inputs i WHERE status='pending' AND coalesce(retry_at,0)<=? AND NOT EXISTS (SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope) ORDER BY created LIMIT 1",(time.time(),)).fetchone()
+    boundary=getattr(store,'compression_boundary',None)
+    row=store.db.execute("SELECT scope,event,payload,observed_at,retry_count FROM pipeline_work_inputs i WHERE status='pending' AND coalesce(retry_at,0)<=? AND (? IS NULL OR i.rowid<=?) AND NOT EXISTS (SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope) ORDER BY created LIMIT 1",(time.time(),boundary,boundary)).fetchone()
     if not row:return False
     scope,event_id,payload,observed_at,retries=row
     binding=store.db.execute('SELECT identity,payload_sha,addressed_self FROM pipeline_work_inputs WHERE scope=? AND event=?',(scope,event_id)).fetchone()
@@ -331,6 +332,7 @@ def start(core,settings,store,metrics):
                     from bilibili_tools import resume_completion
                     st=store(id,s)
                     if await resume_scope_input(core,id,s,st,settings):continue
+                    if getattr(st,'compression_boundary',None) is not None:continue
                     if getattr(getattr(core,'_hosted_stop_fence',None),'quiescing',False):break
                     if not st.active and await resume_completion(core,id,s,st,settings):continue
                     if getattr(getattr(core,'_hosted_stop_fence',None),'quiescing',False):break

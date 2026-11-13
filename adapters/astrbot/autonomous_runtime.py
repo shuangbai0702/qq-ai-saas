@@ -345,6 +345,8 @@ class AutonomousRuntime:
         return RunControl(int(b['modelCalls']),int(b['toolCalls']),int(b['tokens']),b['seconds'],lambda:self.valid(id,identity))
 
     async def invoke(self,id,identity,prompt,system,tools=(),context=None,contexts=None,cache_phase=None,cache_namespace=None):
+        # Service activations use the same admission boundary as real chats.
+        await self.store(id,self.settings[id]).wait_compression()
         control=self.control(id,identity);s=self.settings[id];st=self.store(id,s)
         control.trace={'botId':s.get('botId',id),'cycleId':identity.get('cycleId'),'workId':identity.get('id'),'phase':cache_phase or 'inner_execution','systemSha':hashlib.sha256(system.encode()).hexdigest()[:16]}
         control.diagnostic_lease={key:s.get(key) for key in ('root','tenantId','botId','generation','revision')}
