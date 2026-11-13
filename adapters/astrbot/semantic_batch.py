@@ -147,7 +147,7 @@ def commit(db,scope,checkpoint_id,materials,cutoff,*,discarded=(),administrator=
         # A partial checkpoint still requires its explicit administrator permit.
         tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         checkpoint=db.execute('SELECT scope,round_count FROM memory_reconstruction_checkpoints WHERE id=?',(checkpoint_id,)).fetchone() if 'memory_reconstruction_checkpoints' in tables else None
-        if checkpoint!=(scope,DEFAULT_SUMMARY_ROUNDS):raise PermissionError('administrator_authorization_required')
+        if not checkpoint or checkpoint[0]!=scope or checkpoint[1]<DEFAULT_SUMMARY_ROUNDS:raise PermissionError('administrator_authorization_required')
         administrator=f'automatic:{DEFAULT_SUMMARY_ROUNDS}_round_checkpoint';request_id='checkpoint:'+str(checkpoint_id)
     members=sorted({event_key(scope,event) for event in materials}|{event_key(scope,item['event']) for item in discarded})
     signature=hashlib.sha256(model_json({'scope':scope,'members':members,'materials':[materials[e]['digest'] for e in sorted(materials)]}).encode()).hexdigest()
