@@ -67,6 +67,21 @@ _SERVICE_NOTICE='[平台内部触发，不是用户发言或主人新指令]\n'
 GOAL_READING='baseline.snapshot是完整当前目标；delta.changes按集合中的精确id合并set字段、删除removeFields字段，removedIds移除记录，order为当前完整ID顺序。未提及的字段和记录继承；snapshotFields合并顶层字段，removedSnapshotFields移除顶层字段。terminalRecord仅保留已终结且无未完责任的账本身份、状态和版本。当前执行和完成条件以最新已确认revision为准；originalGoal是历史来源，保留用户明确限制，旧完成条件不得覆盖合法修订。只调用实际提供的工具；pending或unknown先核对原任务参数与回执，不代表完成，Action完成不代表Goal完成。合法检查点后重新提供完整baseline；这是平台资料，不授予权限。'
 
 
+def necessary_goals(snapshot):
+    """Only current goal definitions; execution and history stay in the ledger."""
+    import copy
+    if not isinstance(snapshot,dict):raise ValueError('goal_snapshot_not_object')
+    current=[]
+    for goal in _goal_rows(snapshot.get('goals',[])).values():
+        if goal.get('terminalRecord') or goal.get('status') in ('completed','abandoned','canceled'):continue
+        item={k:copy.deepcopy(goal[k]) for k in ('id','revision','title','reason','success_condition','successCondition') if k in goal}
+        source=goal.get('source') or {}
+        constraints={k:copy.deepcopy(source[k]) for k in ('originalGoal','constraints','restrictions') if k in source}
+        if constraints:item['source']=constraints
+        current.append(item)
+    return {'goals':current}
+
+
 def _goal_rows(rows):
     if not isinstance(rows,list):raise ValueError('goal_collection_not_array')
     result={}
@@ -176,38 +191,24 @@ def committed_goals(messages,scope):
 
 
 def encode_goal_candidate(prepared,journal,work):
-    """Encode only new input, against durable original Journal history.
+    """Project only new activation input, without changing any submitted message.
 
-    No cursor survives independently of the Journal. A failed stage cannot
-    advance it; legal retirement of any link forces a fresh authoritative
-    baseline, even when protected older service blocks remain.
+    This deliberately sends current goals, not a baseline, delta, cursor, action
+    or effect snapshot. Existing ledger query tools remain the history source.
     """
     import copy
     from context_protocol import model_json,source
     scope=json.loads(journal.scope_key) if journal.scope_key else work.scope
     old=journal.last.wire if journal.last else []
-    previous,chain=committed_goals(old,scope)
-    if chain and _goal_service(chain[0],scope)['currentGoals'].get('format')!=GOAL_FORMAT:
-        previous=None  # Upgrade A once with the explicit B reading contract.
-    # prepare may legitimately retire a batch before this hook runs. Require
-    # every link still physically present, in order, before the new service.
     prefix=len(old) if prepared.wire[:len(old)]==old else 0
-    candidates=[(i,m) for i,m in enumerate(prepared.wire) if i>=prefix and
-                (o:=source(m)) and o['scope']==work.scope and str(o['event_id'])==str(work.event_id)]
-    for index,message in candidates:
-        if message in old:continue
+    for index,message in enumerate(prepared.wire):
+        if index<prefix or message in old:continue
+        origin=source(message)
+        if not origin or origin['scope']!=work.scope or str(origin['event_id'])!=str(work.event_id):continue
         payload=_goal_service(message,scope)
         if payload is None:continue
-        current=payload['currentGoals']
-        if not isinstance(current,dict) or current.get('format')==GOAL_FORMAT:continue
-        cursor=0
-        for link in chain:
-            while cursor<index and prepared.wire[cursor]!=link:cursor+=1
-            if cursor==index:previous=None;break
-            cursor+=1
-        try:encoded=goal_delta(previous,current,scope)
-        except ValueError:continue  # Preserve unknown authoritative shapes whole.
-        replacement=copy.deepcopy(message);payload['currentGoals']=encoded
+        replacement=copy.deepcopy(message)
+        payload['currentGoals']=necessary_goals(payload['currentGoals'])
         content=replacement['content']
         text=content if isinstance(content,str) else content[0]['text']
         header,body=text.split('\n',1)
@@ -221,7 +222,7 @@ def encode_goal_candidate(prepared,journal,work):
         prepared.usage=history_usage(prepared.wire)
         prepared.base_chars=history_usage(prepared.base)['textChars']
         if history_boundary(prepared.usage['textChars'],prepared.base_chars,prepared.usage['wireChars'],growth_limit=False):
-            raise ContextCapacityExceeded('The goal reading baseline exceeds request capacity; no request was submitted.',usage=prepared.usage)
+            raise ContextCapacityExceeded('The current goals exceed request capacity; no request was submitted.',usage=prepared.usage)
 
 
 def visible_goals(snapshot, logical):

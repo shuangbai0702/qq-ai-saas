@@ -639,9 +639,9 @@ class AutonomousRuntime:
             system+='\n'+bot_pipeline.EXECUTION_DISCLOSURE_POLICY
             if main_activation:
                 system=s['config'].get('systemPrompt','')
-                from activity_context import visible_goals
+                from activity_context import visible_goals,necessary_goals
                 prompt=json.dumps({'kind':'autonomous_activation' if moment else 'autonomous_tool_continuation','activationId':identity['id'],
-                    'currentGoals':visible_goals(action.get('goalSnapshot'),main_scope),'continuation':action.get('continuation'),
+                    'currentGoals':necessary_goals(visible_goals(action.get('goalSnapshot'),main_scope)),'continuation':action.get('continuation'),
                     'meaning':'平台激活，不是用户消息。结合原主对话、人格、目标和真实回执自主行动、修订目标或休息，不必制造任务；最终文字仅记录当前思考，不代表已发QQ。'},ensure_ascii=False)
                 if action.get('goalSnapshot') is None:raise ValueError('activation_goals_not_loaded')
             if kind=='message':system+='\n本轮聊天任务及固定会话已通过当前初始准入，最终投递仍由公共管线实时校验并记录回执。历史任务的失败不是本轮的发送状态；你的最终内容将作为消息发给当前对象，不要替平台编造投递结果。'
