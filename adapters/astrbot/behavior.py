@@ -1870,7 +1870,9 @@ def install_runtime(core,settings):
                     metrics.setdefault(image_event.get_platform_id(),{})['contextCapacity']={**capacity_evidence(prepared.usage),'candidate':True}
             except BaseException as error:
                 from readonly_journal import ContextCapacityExceeded
-                if foreground and journal.last is not None and isinstance(error,ContextCapacityExceeded):owned.pipeline.wait_for_compression(work,key)
+                if foreground and journal.last is not None and isinstance(error,ContextCapacityExceeded):
+                    owned.pipeline.wait_for_compression(work,key)
+                    owned.reflection.record_capacity_wait(key,error.capacity)
                 if getattr(error,'capacity',None):
                     metrics.setdefault(image_event.get_platform_id(),{})['contextCapacity']={**error.capacity,'candidateRejected':True}
                 if foreground and journal.last is None:owned.model_journals.pop(key,None)

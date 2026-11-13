@@ -1101,7 +1101,8 @@ class ReadonlyJournal:
         messages=base+([copy.deepcopy(event_authority)] if event_authority is not None else [])
         messages.append({'role':'user','content':READONLY_CURRENT+'\n'+model_json(state)})
         wire=reading_baseline(messages,state);usage=history_usage(wire)
-        if history_boundary(usage['textChars'],usage['textChars'],usage['wireChars'],growth_limit=False):return False
+        if history_boundary(usage['textChars'],usage['textChars'],usage['wireChars'],growth_limit=False):
+            raise ContextCapacityExceeded('The complete lawful reconstruction candidate exceeds Journal capacity; the existing Journal and checkpoint remain unchanged.',usage=usage)
         self.serial+=1
         stored_authority=copy.deepcopy(event_authority)
         if stored_authority is None and self.last.authority is not None:
