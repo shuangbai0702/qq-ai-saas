@@ -1,4 +1,4 @@
-"""Current goal progress and minimal outstanding execution enter activation input."""
+"""Current Goals remain complete without a second responsibility list."""
 import copy,json,sys,unittest
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
@@ -6,11 +6,12 @@ from activity_context import necessary_goals,visible_goals
 class CurrentGoals(unittest.TestCase):
  def value(self):
   return {'goals':[{'id':'active','status':'active','revision':9,'title':'当前目标','success_condition':'当前合法条件','progress':'HISTORICAL_PROGRESS','source':{'scope':'private:12345','constraints':'用户限制'}},{'id':'closed','status':'completed','title':'HISTORICAL_GOAL'},{'id':'abandoned','status':'abandoned','title':'HISTORICAL_GOAL'},{'id':'removed','terminalRecord':True}], 'actions':[{'id':'running','goal_id':'active','status':'executing','result':{'unfinished':['HISTORICAL_ACTION']}}], 'effects':[{'id':'pending','work_id':'running','state':'unknown','result':'HISTORICAL_RESULT'}]}
- def test_current_progress_and_unresolved_responsibility_are_sent(self):
+ def test_current_goal_complete_without_parallel_execution_list(self):
   raw=self.value();before=copy.deepcopy(raw);v=necessary_goals(raw)
   self.assertEqual(raw,before);self.assertEqual(necessary_goals(v),v)
   self.assertEqual(v['goals'][0],{'id':'active','revision':9,'status':'active','progress':'HISTORICAL_PROGRESS','title':'当前目标','success_condition':'当前合法条件','source':{'constraints':'用户限制'}})
-  self.assertEqual(v['currentResponsibilities'],[{'id':'running','goalId':'active','status':'executing','unfinished':['HISTORICAL_ACTION'],'effects':[{'id':'pending','state':'unknown'}]}])
+  self.assertEqual(set(v),{'goals'})
+  self.assertNotIn('HISTORICAL_ACTION',json.dumps(v))
   self.assertNotIn('HISTORICAL_RESULT',json.dumps(v));self.assertNotIn('actions',v);self.assertNotIn('effects',v)
  def test_no_current_goals_means_only_empty_goal_list(self):
   self.assertEqual(necessary_goals({'goals':self.value()['goals'][1:]}),{'goals':[]})
@@ -21,10 +22,10 @@ class CurrentGoals(unittest.TestCase):
  def test_scope_filter_precedes_projection(self):
   raw=self.value();raw['goals'].append({'id':'foreign','status':'active','source':{'scope':'group:999'}})
   self.assertNotIn('foreign',[g['id']for g in necessary_goals(visible_goals(raw,'private:12345'))['goals']])
- def test_terminal_goal_with_pending_effect_keeps_only_current_identity(self):
+ def test_terminal_goal_not_revived_by_pending_effect(self):
   raw=self.value();raw['goals'][0].update(status='completed',source={'originalGoal':'OLD_BODY'})
   value=necessary_goals(raw)
-  self.assertEqual(value['goals'][0],{'id':'active','revision':9,'status':'completed','progress':'HISTORICAL_PROGRESS'})
+  self.assertEqual(value,{'goals':[]})
   self.assertEqual(necessary_goals(value),value);self.assertNotIn('OLD_BODY',json.dumps(value))
  def test_latest_progress_next_intention_and_settlement_replace_old_state(self):
   raw=self.value();raw['goals'][0].update(progress='新确认进展',updated_at='2026-11-13')

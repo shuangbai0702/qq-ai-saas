@@ -29,7 +29,7 @@ def snapshot_with_history():
 
 def assert_goal_only(case,payload,value):
     case.assertEqual(payload,necessary_goals(value))
-    case.assertLessEqual(set(payload),{'goals','currentResponsibilities'})
+    case.assertEqual(set(payload),{'goals'})
     for goal in payload['goals']:
         case.assertLessEqual(set(goal),{'id','title','revision','reason','success_condition','successCondition','source','status','progress','updated_at'})
         case.assertLessEqual(set(goal.get('source',{})),{'originalGoal','constraints','restrictions','nextIntention'})

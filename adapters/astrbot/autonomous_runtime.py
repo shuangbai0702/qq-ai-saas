@@ -642,7 +642,7 @@ class AutonomousRuntime:
                 from activity_context import visible_goals,necessary_goals
                 prompt=json.dumps({'kind':'autonomous_activation' if moment else 'autonomous_tool_continuation','activationId':identity['id'],
                     'currentGoals':necessary_goals(visible_goals(action.get('goalSnapshot'),main_scope)),'continuation':action.get('continuation'),
-                    'meaning':'平台激活，不是用户消息。结合原主对话、人格、目标和真实回执自主行动、修订目标或休息，不必制造任务；最终文字仅记录当前思考，不代表已发QQ。'},ensure_ascii=False)
+                    'meaning':'平台激活，不是用户消息。结合原主对话、人格、目标和真实回执自主行动、修订目标或休息，不必制造任务；最终文字仅记录当前思考，不代表已发QQ。'},ensure_ascii=False,separators=(',',':'))
                 if action.get('goalSnapshot') is None:raise ValueError('activation_goals_not_loaded')
             if kind=='message':system+='\n本轮聊天任务及固定会话已通过当前初始准入，最终投递仍由公共管线实时校验并记录回执。历史任务的失败不是本轮的发送状态；你的最终内容将作为消息发给当前对象，不要替平台编造投递结果。'
             if kind=='research' and not main_activation:system+='\n本任务为内部研究，最后只输出JSON：{"status":"completed或blocked或partial","summary":"已证实的结果或受阻原因","unfinished":["实际未完成项"]}。这是当前任务步骤的结果，不是长期目标的终态。检索成功但无匹配时，准确报告无匹配；这不表示长期目标已实现。工具拒绝、失败或未执行时必须blocked或partial，不能用通用常识替代任务完成。引用和证据以平台实际工具回执为准。摘要中区分工具实际返回的内容、未经核验的推测与缺失材料；只得到目录、标题、摘要或检索元数据时，不得声称已读取完整内容或验证其中事实，获取具体知识所需的原文或媒体未读取则列入unfinished。'

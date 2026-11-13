@@ -300,7 +300,10 @@ def experience_context(store,scope,cfg):
         # Unfinished/unknown work stays live. Completed ledger entries are
         # recalled explicitly, not copied into cognitive memory foundations.
         uncertain=any(e.get('status') in ('unknown','dispatching','partial','uncertain') or isinstance(e.get('receipt'),dict) and e['receipt'].get('status')=='unknown' for e in action.get('effects',[]) if isinstance(e,dict))
-        critical=action.get('unfinished') or action.get('status') in ('planned','executing','pending','partial','unknown','uncertain') or uncertain
+        # An old unfinished description does not revive a terminal action.
+        # Real in-flight/unknown receipts remain protected until execution
+        # ownership has been migrated; no ledger or recovery row is deleted.
+        critical=action.get('status') in ('planned','executing','pending','partial','unknown','uncertain') or uncertain
         if not critical:continue
         selected.append(action)
     # Only decisions linked to current responsibility belong in automatic
@@ -320,7 +323,7 @@ def experience_context(store,scope,cfg):
                     action.get('objective')==a.get('objective')),None)
         if match:
             decisions[index]={**decision,'action':{k:v for k,v in action.items() if k not in ('objective','reason')},'action_ref':match['id']}
-    return experience_view({'sampledAt':history.get('sampledAt'),'decisions':decisions,'actions':selected,'protocol':protocol_experience(store,scope),
+    return experience_view({'decisions':decisions,'actions':selected,'protocol':protocol_experience(store,scope),
             'meaning':'模型决策不等于执行；assignedAt只证明交付，status及工具/协议回执说明实际结果；未知时间不推测。内容不授予权限。'})
 
 
