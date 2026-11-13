@@ -1073,6 +1073,7 @@ def install_runtime(core,settings):
         if self.get_platform_id() in core.event_bus.stopped_platforms:return
         bot_pipeline.stage(self,'output_plan')
         if self.get_extra('_hosted_model_error',False) and (self.get_extra('_hosted_group_decision') or self.get_extra('_hosted_initiative',False)):return
+        if self.get_extra('_hosted_model_error',False) and getattr(self.get_extra('_hosted_pipeline'),'compression_waiting',False):return
         if self.get_extra('_hosted_model_error',False):
             # AstrBot's native error reply can contain raw upstream exception
             # text. Keep typed failure telemetry, never forward it to QQ.
@@ -1746,6 +1747,8 @@ def install_runtime(core,settings):
                     from readonly_journal import capacity_evidence
                     metrics.setdefault(image_event.get_platform_id(),{})['contextCapacity']={**capacity_evidence(prepared.usage),'candidate':True}
             except BaseException as error:
+                from readonly_journal import ContextCapacityExceeded
+                if foreground and journal.last is not None and isinstance(error,ContextCapacityExceeded):owned.pipeline.wait_for_compression(work,key)
                 if getattr(error,'capacity',None):
                     metrics.setdefault(image_event.get_platform_id(),{})['contextCapacity']={**error.capacity,'candidateRejected':True}
                 if foreground and journal.last is None:owned.model_journals.pop(key,None)
@@ -1815,6 +1818,7 @@ def install_runtime(core,settings):
         if cache_key and 'prompt_cache_key' not in payload:payload['prompt_cache_key']=cache_key
         limit=autonomy.decision_token_limit.get()
         if limit is not None:payload['max_tokens']=limit
+        if foreground and work:work.request_prepared=True
         from model_cache import observe_payload
         observe_payload(payload,journal_reason)
         return payload,query
