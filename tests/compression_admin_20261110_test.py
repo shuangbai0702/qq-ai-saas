@@ -117,7 +117,8 @@ class CompressionAdmin(unittest.IsolatedAsyncioTestCase):
     async def test_budget_restored_when_start_raises(self):
         def start(scope,**kwargs):raise RuntimeError('start failed')
         self.reflection.force_compress_once=start
-        with self.assertRaises(RuntimeError):manage(self.store,self.data,self.care)
+        status=manage(self.store,self.data,self.care)
+        self.assertEqual(status['state'],'failed');self.assertEqual(status['reason'],'RuntimeError')
         self.assertIsNone(autonomy.decision_token_limit.get())
 
     async def test_real_sdk_wire_uses_admin_budget_without_mutating_provider(self):
