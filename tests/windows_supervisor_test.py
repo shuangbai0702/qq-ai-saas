@@ -8,6 +8,8 @@ import sys
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock,patch
 
 import psutil
 
@@ -17,6 +19,20 @@ supervisor=importlib.util.module_from_spec(spec);spec.loader.exec_module(supervi
 
 
 class Authority(unittest.TestCase):
+    def test_postgres_probe_failure_does_not_stop_services_and_next_probe_recovers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);(root/'postmaster.pid').write_text('123\n')
+            process=Mock(pid=123);process.poll.return_value=None
+            service=SimpleNamespace(process=process)
+            for failure in (subprocess.TimeoutExpired('probe',3),OSError('probe unavailable')):
+                with patch.object(supervisor.subprocess,'run',side_effect=failure):
+                    self.assertFalse(supervisor.postgres_ready(service,root,root,{}))
+                process.terminate.assert_not_called();process.kill.assert_not_called()
+            with patch.object(supervisor.subprocess,'run',return_value=SimpleNamespace(returncode=0)):
+                self.assertTrue(supervisor.postgres_ready(service,root,root,{}))
+                (root/'postmaster.pid').write_text('124\n')
+                self.assertFalse(supervisor.postgres_ready(service,root,root,{}))
+
     def test_preflight_never_runs_agent_even_when_authorized(self):
         with tempfile.TemporaryDirectory() as tmp:
             file=Path(tmp)/'authority';file.write_text('target-host\n')

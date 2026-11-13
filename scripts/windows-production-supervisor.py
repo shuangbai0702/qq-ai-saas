@@ -198,6 +198,16 @@ def healthy(url):
         return False
 
 
+def postgres_ready(service,pg,pgdata,env):
+    """A failed readiness observation must not tear down healthy service trees."""
+    if service.process is None:return False
+    try:
+        probe=subprocess.run([str(pg/'pg_isready.exe'),'-h','127.0.0.1','-p',env.get('PGPORT','5432')],env=env,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=3,creationflags=0x08000000)
+        return probe.returncode==0 and service.process.poll() is None and int((pgdata/'postmaster.pid').read_text().splitlines()[0])==service.process.pid
+    except (OSError,ValueError,IndexError,subprocess.SubprocessError):
+        return False
+
+
 def run(config, preflight=False):
     for key in ('sourceRoot','dataRoot','stateRoot','node','python','postgresBin','postgresData'):
         if not isinstance(config.get(key),str) or not Path(config[key]).is_absolute():
@@ -254,12 +264,7 @@ def run(config, preflight=False):
                 if agent.process and not permitted:
                     agent.stop();agent.next=now+10
                 if postgres.process is None and now>=postgres.next:postgres.start()
-                pg_ready=False
-                if postgres.process:
-                    probe=subprocess.run([str(pg/'pg_isready.exe'),'-h','127.0.0.1','-p',env.get('PGPORT','5432')],env=env,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=3,creationflags=0x08000000)
-                    try:
-                        pg_ready=probe.returncode==0 and postgres.process.poll() is None and int((pgdata/'postmaster.pid').read_text().splitlines()[0])==postgres.process.pid
-                    except (OSError,ValueError,IndexError):pass
+                pg_ready=postgres_ready(postgres,pg,pgdata,env)
                 if pg_ready and api.process is None and now>=api.next:api.start()
                 if api_ready and permitted and agent.process is None and now>=agent.next:agent.start()
                 # Preflight has no Agent record; guard correctly suspends memory
@@ -270,6 +275,10 @@ def run(config, preflight=False):
                     if tunnel and tunnel.process is None and now>=tunnel.next:tunnel.start()
                     if dns_sync and permitted and tunnel.process and tunnel.process.poll() is None and dns_sync.process is None and now>=dns_sync.next:dns_sync.start()
                 time.sleep(.5)
+        except BaseException as error:
+            try:atomic(state/'last-failure.json',dict(service='supervisor',errorType=type(error).__name__,winerror=getattr(error,'winerror',None),at=time.time()))
+            except OSError:pass
+            raise
         finally:
             # Keep Job protection until every managed tree has actually exited.
             pg_fast = None
