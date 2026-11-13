@@ -15,6 +15,7 @@ import {verifyBridge} from '../../../packages/shared/tool-bridge.js';
 import {encrypt} from '../../../packages/shared/security.js';
 import {registerAutonomousGoals} from './autonomous-goals.js';
 import {registerExecutionMemory} from './execution-memory.js';
+import {bilibiliModelConfigured} from '../../../packages/shared/bilibili-model.js';
 
 export function registerBilibili(app:FastifyInstance,db:Sql,key:Buffer,owned:(req:any,id:string)=>Promise<any>,root:string){
  const repo=new ToolEffects(db),broker=new BiliAccounts(db,key,new BiliWeb());
@@ -25,7 +26,7 @@ export function registerBilibili(app:FastifyInstance,db:Sql,key:Buffer,owned:(re
   const [cooldown]=await db.query("SELECT until_at,reason FROM tool_service_cooldowns WHERE service='bilibili' AND until_at>now()");
   let mediaReady=false,mediaReason='媒体状态尚未核实',mediaDependencies:any=null;try{const raw=await readFile(path.join(root,'media-status.json'),'utf8');if(raw.length<4096){const m=JSON.parse(raw);mediaReady=m.ready===true&&Date.now()-m.at<15000;mediaDependencies=m;mediaReason=String(m.reason||mediaReason)}}catch{}
   const [botModel]=await db.query('SELECT r.config,(s.ciphertext IS NOT NULL) AS has_key FROM bot_config_revisions r LEFT JOIN secrets s ON s.bot_id=r.bot_id AND s.tenant_id=$3 WHERE r.bot_id=$1 AND r.revision=$2',[b.id,b.revision,b.tenant_id]);
-  const modelConfigured=s.config.model.provider==='openai'?!!(s.model_secret&&s.config.model.baseUrl&&s.config.model.model):s.config.model.provider==='bot'&&!!(botModel?.has_key&&botModel.config?.baseUrl&&botModel.config?.model);
+  const modelConfigured=bilibiliModelConfigured(s,botModel?.config,botModel?.has_key);
   const mediaExecutable=mediaReady&&modelConfigured;
   const jobs=await db.query('SELECT id,operation,state,result,cancel_requested,created_at,updated_at FROM tool_effects WHERE bot_id=$1 AND tenant_id=$2 ORDER BY created_at DESC LIMIT 20',[b.id,b.tenant_id]);
   return{config:s.config,revision:s.revision,hasModelKey:!!s.model_secret,account:await publicAccount(b.tenant_id,b.id),login:login?{...login,state:+new Date(login.expires_at)<Date.now()&&['created','waiting_scan','waiting_confirm'].includes(login.state)?'expired':login.state}:null,cooldown:cooldown??null,jobs,
@@ -71,7 +72,7 @@ export function registerBilibili(app:FastifyInstance,db:Sql,key:Buffer,owned:(re
  app.post<{Params:{id:string}}>('/internal/v1/bots/:id/tools/completion',async req=>{const b=await runtime(req);return{completion:await repo.completion(b)}});
  app.post<{Params:{id:string}}>('/internal/v1/bots/:id/tools/completion-ack',async req=>{const b=await runtime(req),v=z.object({id:z.string().uuid(),owner:z.string().uuid(),status:z.enum(['done','unknown'])}).strict().parse(req.body);return repo.acknowledgeCompletion(b,v.id,v.owner,v.status)});
  app.post<{Params:{id:string}}>('/internal/v1/bots/:id/tools/cancel-work',async req=>{const b=await runtime(req),v=z.object({workId:z.string().min(1).max(200),stepId:z.string().min(1).max(200)}).strict().parse(req.body);return repo.cancelWork(b,v.workId,v.stepId)});
- app.post<{Params:{id:string}}>('/internal/v1/bots/:id/tools',async req=>{const b=await runtime(req);return repo.admit(b,BiliCallSchema.parse(req.body))});
+ app.post<{Params:{id:string}}>('/internal/v1/bots/:id/tools',async(req,reply)=>{const b=await runtime(req),call=BiliCallSchema.parse(req.body);try{return await repo.admit(b,call)}catch(error){if((error as any).code!=='model_not_configured')throw error;return reply.code(409).send({execution:'failed',receipt:{status:'rejected'},error:{code:'model_not_configured',retry:'never',userMessage:(error as Error).message}})}});
  app.get<{Params:{id:string;job:string}}>('/internal/v1/bots/:id/tools/:job',async req=>{const b=await runtime(req),r=await repo.get(b.tenant_id,b.id,req.params.job);if(!r)throw toolConflict('工具任务不存在',404);return r});
  app.delete<{Params:{id:string;job:string}}>('/internal/v1/bots/:id/tools/:job',async req=>{const b=await runtime(req);await db.query("UPDATE tool_effects SET cancel_requested=true,updated_at=now() WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND state IN ('queued','claimed','dispatching')",[req.params.job,b.id,b.tenant_id]);return{cancelRequested:true}});
 }

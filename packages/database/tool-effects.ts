@@ -4,6 +4,7 @@ import type {Sql} from './index.js';
 import {digest} from '../shared/security.js';
 import {BilibiliConfigSchema,biliOperations,biliOperationAllowed,biliAccessAllowed,type BiliCall,type ToolResult} from '../contracts/bilibili.js';
 import {runtimeStatus} from '../shared/runtime-status.js';
+import {bilibiliModelConfigured,bilibiliModelRequired} from '../shared/bilibili-model.js';
 
 export const toolConflict=(message:string,code=409)=>Object.assign(new Error(message),{statusCode:code});
 export function canonical(value:any):string{return JSON.stringify(value,(_,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.keys(v).sort().map(k=>[k,v[k]])):v)}
@@ -74,6 +75,10 @@ export class ToolEffects {
         AND original.tenant_id=e.tenant_id AND original.goal_id IS NOT NULL))
      ORDER BY e.created_at,e.id LIMIT 1`,[bot.id,bot.tenant_id,hash,call.authority,call.senderId??null,call.epoch??null,call.origin?.scope??'',bot.generation,bot.revision,s.revision,call.workId,account?.revision??null,account?.uid??null]);
     if(pending)return pending;
+   }
+   if(call.operation==='analyze'){
+    const [model]=await tx.query('SELECT r.config,(s.ciphertext IS NOT NULL) AS has_key FROM bot_config_revisions r LEFT JOIN secrets s ON s.bot_id=r.bot_id AND s.tenant_id=$3 WHERE r.bot_id=$1 AND r.revision=$2',[bot.id,bot.revision,bot.tenant_id]);
+    if(!bilibiliModelConfigured(s,model?.config,model?.has_key))throw Object.assign(toolConflict(bilibiliModelRequired),{code:'model_not_configured'});
    }
    const [row]=await tx.query('INSERT INTO tool_effects(id,tenant_id,bot_id,work_id,step_id,operation,args,args_digest,authority,sender_id,mode_epoch,generation,config_revision,settings_revision,account_revision,deadline_at,account_uid,origin_scope,origin_event,continuation) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *',[randomUUID(),bot.tenant_id,bot.id,call.workId,call.stepId,call.operation,JSON.stringify(args),hash,call.authority,call.senderId??null,call.epoch??null,bot.generation,bot.revision,s.revision,account?.revision??null,new Date(call.deadlineAt),account?.uid??null,call.origin?.scope??'',call.origin?.eventId??'',JSON.stringify(record.continuation)]);
    return row;

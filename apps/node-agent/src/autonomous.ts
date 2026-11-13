@@ -9,7 +9,7 @@ import {runtimeStatus} from '../../../packages/shared/runtime-status.js';
  * from: an actual reported usage, an estimate the inner runtime returned, or
  * an unknown request whose reserved ceiling was applied instead of zero.
  * Repeated results for the same request never charge twice. */
-export type UsageCharge={requestId:string;kind:string;source:'actual'|'estimated'|'unknown';tokens:number;modelCalls:number;toolCalls:number;externalActions:number;reported:{tokens:boolean;modelCalls:boolean;toolCalls:boolean}};
+export type UsageCharge={requestId:string;kind:string;source:'actual'|'estimated'|'unknown';estimateReason?:'execution_outcome_unknown'|'missing_model_usage'|'invalid_model_usage';tokens:number;modelCalls:number;toolCalls:number;externalActions:number;reported:{tokens:boolean;modelCalls:boolean;toolCalls:boolean}};
 type Usage={tokens:number;modelCalls:number;toolCalls:number;externalActions:number;conservative?:boolean;charges?:UsageCharge[]};
 type RuntimeCall=(bot:any,operation:string,body:unknown,timeoutMs?:number)=>Promise<any>;
 const emptyUsage=():Usage=>({tokens:0,modelCalls:0,toolCalls:0,externalActions:0});
@@ -169,7 +169,8 @@ export class AutonomyCoordinator {
   usage.externalActions+=externalActions;
   const source:UsageCharge['source']=raw.estimated?'estimated':'actual';
   if(source==='estimated')usage.conservative=true;
-  record(source,{tokens:raw.tokens,modelCalls:raw.modelCalls,toolCalls:raw.toolCalls,externalActions,reported:{tokens:reported('tokens'),modelCalls:reported('modelCalls'),toolCalls:reported('toolCalls')}});
+  const estimateReason=source==='estimated'&&['execution_outcome_unknown','missing_model_usage','invalid_model_usage'].includes(raw.estimateReason)?raw.estimateReason:undefined;
+  record(source,{...(estimateReason?{estimateReason}:{}),tokens:raw.tokens,modelCalls:raw.modelCalls,toolCalls:raw.toolCalls,externalActions,reported:{tokens:reported('tokens'),modelCalls:reported('modelCalls'),toolCalls:reported('toolCalls')}});
  }
  /** One wake = one bounded slice of event-driven work. No orientation or
   * planning model call exists: the single durable work item is an accepted
@@ -233,18 +234,24 @@ export class AutonomyCoordinator {
        await this.call(c,'policy',await this.policy(c,c.cycleId,action.id),2000);
        const goalSnapshot=await this.repo.readGoals({id:c.bot_id,...c},{scope:c.runtime_mode==='shared'?'self':c.config.activityScope||'self',senderId:'0',work:{id:action.id,epoch:c.epoch}});
        executeStarted=true;feedback=await this.call(c,'execute',{work,action:{...action,goalSnapshot,autonomousMoment:true,outerDecision:{at:new Date().toISOString(),reason:'autonomous_moment',cycleId:c.cycleId}}},Math.max(1000,deadline-Date.now()+2000))}
-      catch{
+      catch(error){
+       const fault=classifyFault(error);
+       faultContext={class:fault.faultClass,reason:fault.reason,phase:'activity_execute',configRevision:c.revision,epoch:c.epoch,generation:c.generation,at:Date.now()};
        if(!executeStarted)feedback=notStarted(action.objective);
        else{
        await this.call(c,'cancel',{},2000).catch(()=>{});
        const receipt=await this.call(c,'receipt',{id:action.id},2000).catch(()=>null);
-       feedback=receipt?.result||{status:'unknown',summary:'自主活动结果未知；保留回执，不重复派发',effects:receipt?.effects||[],evidence:[],unfinished:[],usage:{tokens:work.budget.tokens,modelCalls:work.budget.modelCalls,toolCalls:work.budget.toolCalls,estimated:true}};
+       feedback=receipt?.result||{status:'unknown',summary:'自主活动结果未知；保留回执，不重复派发',effects:receipt?.effects||[],evidence:[],unfinished:[],usage:{tokens:work.budget.tokens,modelCalls:work.budget.modelCalls,toolCalls:work.budget.toolCalls,estimated:true,estimateReason:'execution_outcome_unknown'}};
        }
       }
-      if(!feedback.usage||['tokens','modelCalls','toolCalls'].some(name=>!Number.isSafeInteger(feedback.usage[name])||feedback.usage[name]<0))feedback={...feedback,usage:{tokens:work.budget.tokens,modelCalls:work.budget.modelCalls,toolCalls:work.budget.toolCalls,estimated:true}};
+      if(!feedback.usage||['tokens','modelCalls','toolCalls'].some(name=>!Number.isSafeInteger(feedback.usage[name])||feedback.usage[name]<0)){
+       const usageReason=feedback.usage?'invalid_model_usage':'missing_model_usage';
+       faultContext??={class:'contract',reason:usageReason,phase:'activity_execute',configRevision:c.revision,epoch:c.epoch,generation:c.generation,at:Date.now()};
+       feedback={...feedback,usage:{tokens:work.budget.tokens,modelCalls:work.budget.modelCalls,toolCalls:work.budget.toolCalls,estimated:true,estimateReason:usageReason}};
+      }
       feedback=await this.repo.withExternalEffects(c,action.id,feedback);
       this.charge(usage,action.id,'execute',feedback);usage.externalActions=await externalCount(this.db,c.cycleId);await this.repo.feedback(c,action.id,feedback);
-      reason=feedback.status==='completed'?'activity_completed':feedback.status==='canceled'?'activity_canceled':'activity_'+feedback.status;
+      reason=faultContext?.reason||(feedback.status==='completed'?'activity_completed':feedback.status==='canceled'?'activity_canceled':'activity_'+feedback.status);
       sleep=Number.isSafeInteger(feedback.restSeconds)?Math.max(300,Math.min(config.maxSleepSeconds,feedback.restSeconds)):config.activityIntervalMinutes*60;
      }
      break;
@@ -330,7 +337,9 @@ export class AutonomyCoordinator {
     if(feedback.status==='canceled'){reason='foreground_or_mode_changed';sleep=15;break}
     reason='waiting_receipt';sleep=300;break;
    }
-   if(usage.modelCalls>=config.cycleModelCalls||usage.tokens>=tokenBudget){reason='budget_exhausted';sleep=15}
+   // An unknown execution may reserve the full ceiling. That accounting is
+   // not evidence that budget exhaustion caused the execution failure.
+   if(!faultContext&&(usage.modelCalls>=config.cycleModelCalls||usage.tokens>=tokenBudget)){reason='budget_exhausted';sleep=15}
   }catch(error){
    // Unknown model work was charged at its IPC boundary. A rejected decision
    // with returned usage must retain the known cost, not invent a full bill.

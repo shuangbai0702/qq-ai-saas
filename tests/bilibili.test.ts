@@ -16,6 +16,31 @@ const json=(data:any,headers?:HeadersInit)=>new Response(JSON.stringify({code:0,
 const barrier=()=>{let release!:()=>void;const promise=new Promise<void>(resolve=>release=resolve);return{promise,release}};
 const signingNav={wbi_img:{img_url:'https://i0.hdslb.com/bfs/wbi/0123456789abcdef0123456789abcdef.png',sub_url:'https://i0.hdslb.com/bfs/wbi/fedcba9876543210fedcba9876543210.png'}};
 
+test('analysis admission rejects missing model before insertion and preserves configured identity and scope fences',async t=>{
+ const f=await fixture(t),origin={scope:'private:768687099',eventId:'original',objective:'inspect frames'};
+ await f.repo.configure(f.bot.tenant_id,f.id,2,{enabled:true,allowAnonymous:true,scopes:['public.read','media.analyze']});
+ const call=f.call('analyze',{bvid:'BV1xx411c7mD',question:'inspect frames'},{origin});
+ await assert.rejects(()=>f.repo.admit(f.bot,call),(e:any)=>e.code==='model_not_configured');
+ assert.equal((await f.db.query('SELECT id FROM tool_effects WHERE bot_id=$1',[f.id])).length,0);
+ assert.equal((await f.app.inject({method:'GET',url:'/v1/bots/'+f.id+'/bilibili',cookies:f.cookies})).json().modelConfigured,false);
+ const headers={authorization:'Bearer '+bridgeToken(f.key,f.id,f.bot.generation,f.bot.revision)};
+ const rejected=await f.app.inject({method:'POST',url:'/internal/v1/bots/'+f.id+'/tools',headers,payload:call});
+ assert.equal(rejected.statusCode,409);assert.equal(rejected.json().error.code,'model_not_configured');assert.equal(rejected.json().receipt.status,'rejected');assert.equal(rejected.json().execution,'failed');
+ await f.repo.configure(f.bot.tenant_id,f.id,3,{enabled:true,scopes:['public.read','media.analyze'],model:{provider:'bot'}});
+ const row=await f.repo.admit(f.bot,call);assert.equal((await f.repo.admit(f.bot,call)).id,row.id);
+ assert.equal((await f.app.inject({method:'GET',url:'/v1/bots/'+f.id+'/bilibili',cookies:f.cookies})).json().modelConfigured,true);
+ await assert.rejects(()=>f.repo.admit(f.bot,{...call,origin:{...origin,scope:'private:999999'}}),/身份或会话不一致/);
+ await f.db.query('DELETE FROM secrets WHERE bot_id=$1',[f.id]);
+ assert.equal((await f.repo.admit(f.bot,call)).id,row.id,'same admitted action remains queryable without a new model dispatch');
+ await assert.rejects(()=>f.repo.admit(f.bot,{...call,stepId:'new',args:{...call.args,bvid:'BV1xx411c7mE'}}),(e:any)=>e.code==='model_not_configured');
+ await f.repo.configure(f.bot.tenant_id,f.id,4,{enabled:true,scopes:['public.read','media.analyze'],model:{provider:'openai',baseUrl:'https://fixture.invalid/v1',model:'fixture-image'}});
+ await assert.rejects(()=>f.repo.admit(f.bot,{...call,stepId:'independent'}),(e:any)=>e.code==='model_not_configured');
+ await f.repo.configure(f.bot.tenant_id,f.id,5,{enabled:true,scopes:['public.read','media.analyze'],model:{provider:'openai',baseUrl:'https://fixture.invalid/v1',model:'fixture-image'}},'encrypted-fixture');
+ assert.ok((await f.repo.admit(f.bot,{...call,stepId:'independent'})).id);
+ await f.repo.configure(f.bot.tenant_id,f.id,6,{enabled:true,scopes:['public.read'],model:{provider:'openai',baseUrl:'https://fixture.invalid/v1',model:'fixture-image'}});
+ await assert.rejects(()=>f.repo.admit(f.bot,{...call,stepId:'unauthorized'}),/未授权/);
+});
+
 test('unresolved exact analysis reuses responsibility across model steps while changed observations remain legal',async t=>{
  const f=await fixture(t);
  await f.repo.configure(f.bot.tenant_id,f.id,2,{enabled:true,scopes:['public.read','media.analyze'],model:{provider:'bot'}});
@@ -124,7 +149,7 @@ async function fixture(t:any){
  const root=await mkdtemp(path.join(os.tmpdir(),'fishbot-bili-')),value=await createApp({root,agent:false});t.after(async()=>{await value.app.close();await rm(root,{recursive:true,force:true})});
  const register=async(email:string)=>{const r=await value.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(value.db,3),email,password:'test-password-123',name:'tester'}});assert.equal(r.statusCode,200,r.body);return{fish_session:r.cookies[0].value}};
  const cookies=await register('bili-a@example.com'),other=await register('bili-b@example.com');
- const create=await value.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'bili bot',protocol:'mock'}});assert.equal(create.statusCode,201,create.body);
+ const create=await value.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'bili bot',protocol:'mock',apiKey:'fixture-only-key'}});assert.equal(create.statusCode,201,create.body);
  const id=create.json().id,key=Buffer.from((await readFile(path.join(root,'master.key'),'utf8')).trim(),'hex');
  await value.db.query("UPDATE bot_config_revisions SET config=jsonb_set(config,'{behavior,ownerUin}','\"768687099\"') WHERE bot_id=$1",[id]);
  await value.db.query("UPDATE bots SET desired_state='running',health=$2 WHERE id=$1",[id,JSON.stringify({sampledAt:new Date().toISOString(),protocol:{online:true}})]);
