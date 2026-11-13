@@ -148,7 +148,14 @@ class RuntimeCare:
                     if st.reflection.retry():
                         self.track(st,st.reflection.task);break
                 self.sweep()
-            except (OSError,sqlite3.Error):self.failures+=1
+            except Exception as error:
+                self.failures+=1
+                # The maintenance owner must survive a bad local callback.
+                # Cancellation still propagates (it is a BaseException).
+                for st in list(self.stores.values()):
+                    try:
+                        with st.db:st.reflection.checkpoint_issue('bot_shared' if st.shared_context else 'self',0,'maintenance_failure',{'type':type(error).__name__})
+                    except (sqlite3.Error,RuntimeError):pass
     def close(self): self.closed = True
 
 

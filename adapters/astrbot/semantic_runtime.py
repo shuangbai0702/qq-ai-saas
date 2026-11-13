@@ -129,6 +129,14 @@ def finish_semantic_batches(st,cfg,scope):
             except ValueError as error:
                 _issue(st,scope,checkpoint,str(error));result['pending']+=1
             continue
+        if checkpoint_state=='reserved' and batch_state=='committed':
+            # This exact local-only path has no HTTP between reservation and
+            # stage. Stage atomically consumes the permit with Journal+batch;
+            # a still-reserved local permit therefore cannot have been staged.
+            # Generic (possibly submitted) model permits are never refunded.
+            with st.db:
+                changed=st.db.execute("UPDATE memory_reconstruction_checkpoints SET state='available',request_id=NULL WHERE id=? AND scope=? AND state='reserved' AND request_id LIKE 'semantic-retire:%' AND EXISTS(SELECT 1 FROM memory_semantic_batches b WHERE b.checkpoint_id=memory_reconstruction_checkpoints.id AND b.state='committed')",(checkpoint,scope)).rowcount
+            if changed:checkpoint_state='available'
         if checkpoint_state!='available':result['pending']+=1;continue
         journal=st.model_journals.get(scope)
         if journal is None:

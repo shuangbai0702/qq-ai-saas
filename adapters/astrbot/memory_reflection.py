@@ -973,19 +973,45 @@ class Reflection:
         started=self.retry(_manual=manual)
         return {'started':bool(started),'reason':'started' if started else 'no_eligible_material'}
 
+    def retirement_pending(self):
+        tables={r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        pending='memory_semantic_batches' in tables and self.db.execute("""SELECT 1 FROM memory_semantic_batches b WHERE state='committed'
+          OR (state='retired' AND EXISTS (SELECT 1 FROM memory_checkpoint_issues i
+            WHERE i.checkpoint_id=b.checkpoint_id AND i.scope=b.scope AND i.status='open'
+            AND i.kind IN ('semantic_retirement','native_legacy_cleanup','native_history_cleanup'))) LIMIT 1""").fetchone()
+        media='semantic_media_owned' in tables and self.db.execute("SELECT 1 FROM semantic_media_owned WHERE state='pending' LIMIT 1").fetchone()
+        return bool(pending or media)
+
     def retry(self,_inline=False,_manual=None):
         if not self.binding:return False
         cfg,provider,is_current,metrics,event_var=self.binding
-        if self.closed or cfg.get('memory') is False or not cfg.get('memorySummary') or not callable(getattr(provider,'text_chat_stream',None)) or not is_current() or not _inline and self.task and not self.task.done():return False
+        if self.closed or not is_current() or not _inline and self.task and not self.task.done():return False
+        model_ready=cfg.get('memory') is not False and cfg.get('memorySummary') and callable(getattr(provider,'text_chat_stream',None))
         admission=getattr(self,'admission',None)
         # Resume already committed replacements without another model call,
         # a new round or a separate compression cycle.
         now=time.time()
-        if callable(self.checkpoint_callback) and (_inline or not callable(admission)):
+        recovery_retry=self.db.execute("SELECT next_at FROM memory_reflection_retry WHERE scope='__retirement__'").fetchone()
+        recovery=self.retirement_pending() and (not recovery_retry or recovery_retry[0]<=now)
+        if callable(self.checkpoint_callback) and recovery and (_inline or not callable(admission)):
+            # Local retirement is independent of model availability and uses
+            # the existing persisted retry owner. Failure must not busy-spin
+            # through RuntimeCare's task-completion wakeup.
+            self.db.execute("INSERT OR REPLACE INTO memory_reflection_retry VALUES('__retirement__',1,?)",(now+60,));self.db.commit()
             for (pending_scope,) in self.db.execute("SELECT DISTINCT scope FROM memory_semantic_batches WHERE state IN ('committed','retired')").fetchall():
                 try:self.checkpoint_callback(pending_scope)
-                except Exception:metrics['checkpointCallbackFailures']=metrics.get('checkpointCallbackFailures',0)+1
+                except Exception as error:
+                    metrics['checkpointCallbackFailures']=metrics.get('checkpointCallbackFailures',0)+1
+                    self.checkpoint_issue(pending_scope,0,'retirement_recovery',{'type':type(error).__name__})
+            if not self.retirement_pending():self.db.execute("DELETE FROM memory_reflection_retry WHERE scope='__retirement__'")
+            recovery=False
         self.db.commit()
+        if not model_ready:
+            if recovery and callable(admission) and not _inline:
+                async def recover():
+                    async with admission():self.retry(_inline=True)
+                self.task=asyncio.create_task(recover());return True
+            return False
         # 35 is the due threshold. After accepted dialogue drains, include all
         # completed rounds through that idle boundary (possibly 36, 37, ...).
         configured=cfg.get('summaryRounds',DEFAULT_SUMMARY_ROUNDS)
@@ -1010,10 +1036,6 @@ class Reflection:
                 batch=self.db.execute('SELECT id,subject,event,question,answer,at FROM memory_rounds WHERE scope=? AND id>? ORDER BY id',(candidate,progress[0])).fetchall()
                 if len(batch)>=summary_rounds or (batch and _manual is not None and _manual['allow_partial']):
                     scope=candidate;job='summary';rows=batch;summary_from=progress[0];break
-        recovery=self.db.execute("""SELECT 1 FROM memory_semantic_batches b WHERE state='committed'
-          OR (state='retired' AND EXISTS (SELECT 1 FROM memory_checkpoint_issues i
-            WHERE i.checkpoint_id=b.checkpoint_id AND i.scope=b.scope AND i.status='open'
-            AND i.kind IN ('semantic_retirement','native_legacy_cleanup','native_history_cleanup'))) LIMIT 1""").fetchone()
         if not _inline and callable(admission) and (scope or recovery):
             async def admitted():
                 async with admission():

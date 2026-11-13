@@ -38,7 +38,8 @@ class CompressionAdmin(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.calls[0][1]['allow_partial'])
         self.gate.set();await self.reflection.task;await asyncio.sleep(0)
         status=manage(self.store,{'action':'admin_force_compress_status','requestId':self.data['requestId']},self.care)
-        self.assertEqual(status['state'],'completed');self.assertEqual(status['result']['checkpointId'],7)
+        # A successful summary receipt alone cannot prove physical retirement.
+        self.assertEqual(status['state'],'pending_cleanup');self.assertEqual(status['result']['checkpointId'],7)
 
     async def test_strict_command_and_known_runtime_only(self):
         for data in ({**self.data,'is_admin':True},{**self.data,'allowPartial':'true'},{**self.data,'administrator':''}):
