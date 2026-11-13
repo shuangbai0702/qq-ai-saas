@@ -83,6 +83,8 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
                 })
             if self.mode=='network_error':
                 return httpx.Response(503,json={'error':{'message':'fixture unavailable'}})
+            if self.mode=='stream_disconnect' and self.requests[-1].get('stream'):
+                raise httpx.ReadError('fixture stream connection interrupted',request=request)
             if self.requests[-1].get('stream'):
                 chunk={'id':'semantic-wire-fixture','object':'chat.completion.chunk','created':1,'model':'fixture',
                        'choices':[{'index':0,'delta':{'role':'assistant','content':json.dumps(output,ensure_ascii=False)},'finish_reason':None}]}
@@ -91,7 +93,7 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
                 return httpx.Response(200,headers={'content-type':'text/event-stream'},content='data: '+json.dumps(chunk)+'\n\ndata: '+json.dumps(terminal)+'\n\ndata: [DONE]\n\n')
             return httpx.Response(200, json={
                 'id':'semantic-wire-fixture','model':'fixture',
-                'choices':[{'index':0,'message':{'role':'assistant','content':json.dumps(output,ensure_ascii=False)},'finish_reason':self.mode}]})
+                'choices':[{'index':0,'message':{'role':'assistant','content':json.dumps(output,ensure_ascii=False)},'finish_reason':'stop' if self.mode=='stream_disconnect' else self.mode}]})
 
 
         self.http_patch = patch.object(
@@ -121,6 +123,20 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
                 await summary_model_output(self.provider,dict(prompt='fixture',contexts=[],func_tool=None,request_max_retries=0),lambda:True,{},800)
         self.assertEqual(len(self.requests),2)
         self.assertTrue(all(r['stream'] is True for r in self.requests))
+
+    async def test_stream_read_error_recovers_through_same_sdk_nonstream_request(self):
+        from memory_reflection import summary_model_output
+        async def no_retry(provider,error,*args,**kwargs):raise error
+        self.mode='stream_disconnect';metrics={}
+        with patch.object(type(self.provider),'_handle_api_error',no_retry):
+            result=await summary_model_output(self.provider,dict(prompt='original fixture',contexts=[],func_tool=None,request_max_retries=0),lambda:True,metrics,800)
+        self.assertEqual(result[2],SUMMARY)
+        self.assertEqual(len(self.requests),2)
+        self.assertTrue(self.requests[0]['stream'])
+        self.assertFalse(self.requests[1].get('stream',False))
+        for field in ('model','messages'):
+            self.assertEqual(self.requests[0][field],self.requests[1][field])
+        self.assertEqual(metrics['summaryNonstreamFallbacks'],1)
 
     async def test_complete_json_without_terminal_reason_never_commits(self):
         self.populate()

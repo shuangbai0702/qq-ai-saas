@@ -405,6 +405,8 @@ class Work:
     summary_materials:list=field(default_factory=list)
     on_stage:object=field(default=None,repr=False)
     unadopted_at_request:object=field(default=None,repr=False)
+    request_prepared:bool=False
+    compression_waiting:bool=False
 
     @property
     def work_id(self):
@@ -633,6 +635,42 @@ class BotPipeline:
             if changed and self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_checkpoint_issues'").fetchone():
                 self.db.execute("UPDATE memory_checkpoint_issues SET status='resolved',updated=? WHERE kind=? AND status='open'",(time.time(),'input_recovery:'+scope+':'+identifier))
         return bool(changed)
+
+    def wait_for_compression(self,work,journal_scope):
+        """Only a first request refused before HTTP can await lawful cutover."""
+        if work.source!='message' or not work.ledger_owner or work.request_prepared or work.attempted or work.confirmed:return False
+        # QQ profile actions also retain an independent external-effect fence.
+        if self.db.execute("SELECT 1 FROM sqlite_master WHERE name='qq_action_attempts'").fetchone():
+            origin='v2:'+json.dumps([work.scope,work.subject,work.event_id],ensure_ascii=False,separators=(',',':'))
+            if self.db.execute('SELECT 1 FROM qq_action_attempts WHERE event IN (?,?)',(origin,work.event_id)).fetchone():return False
+        with self.db:
+            owned=self.db.execute("SELECT 1 FROM pipeline_work_inputs WHERE scope=? AND event=? AND identity IS NOT NULL AND payload IS NOT NULL",(work.scope,work.event_id)).fetchone()
+            if not owned:return False
+            watermark=self.compression_watermark(journal_scope)
+            waiting='context_capacity_waiting:'+json.dumps([journal_scope,watermark],separators=(',',':'))
+            self.db.execute("UPDATE pipeline_events SET status='blocked',reason=?,updated_at=? WHERE scope=? AND subject=? AND event=?",(waiting,time.time(),work.scope,work.subject,work.event_id))
+            self.db.execute("UPDATE pipeline_work_inputs SET status='waiting_compression' WHERE scope=? AND owner=? AND status='owned'",(work.scope,work.event_id))
+        work.compression_waiting=True
+        return True
+
+    def compression_watermark(self,scope):
+        if not self.db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_semantic_batches'").fetchone():return 0
+        return self.db.execute("SELECT coalesce(max(checkpoint_id),0) FROM memory_semantic_batches WHERE scope=? AND state='retired'",(scope,)).fetchone()[0]
+
+    def resume_compression_inputs(self,scope):
+        """A newer durable retirement releases only its bound original inputs."""
+        watermark=self.compression_watermark(scope)
+        if not watermark:return 0
+        with self.db:
+            owners=self.db.execute("SELECT scope,event,reason FROM pipeline_events WHERE reason LIKE 'context_capacity_waiting:%' AND attempted=0 AND confirmed=0").fetchall()
+            changed=0
+            for input_scope,event,waiting in owners:
+                try:journal_scope,previous=json.loads(waiting.split(':',1)[1])
+                except (ValueError,TypeError):continue
+                if journal_scope!=scope or type(previous) is not int or watermark<=previous:continue
+                self.db.execute("UPDATE pipeline_events SET reason='context_capacity_ready' WHERE scope=? AND event=? AND reason=?",(input_scope,event,waiting))
+                changed+=self.db.execute("UPDATE pipeline_work_inputs SET status='pending',owner=NULL,retry_at=0 WHERE scope=? AND owner=? AND status='waiting_compression' AND identity IS NOT NULL AND payload IS NOT NULL",(input_scope,event)).rowcount
+        return changed
 
     def execution_boundary(self,work,name):
         # observe starts background learning/tool preparation before the main
@@ -975,7 +1013,7 @@ class BotPipeline:
             # Only explicitly unstarted, authenticated queue redispatch can
             # reactivate a cancelled root. Old rows have NULL, never permission.
             if recoverable:
-                work.ledger_owner=bool(self.db.execute("UPDATE pipeline_events SET status='received',reason='input_recovery',stage='ingress',finished_at=NULL,updated_at=? WHERE scope=? AND subject=? AND event=? AND execution_started=0 AND attempted=0 AND confirmed=0 AND status IN ('blocked','interrupted') AND reason IN ('cancelled','runtime_restarted') AND EXISTS(SELECT 1 FROM pipeline_work_inputs i WHERE i.scope=pipeline_events.scope AND i.event=pipeline_events.event AND i.status='queued')",(now,scope,subject,work.event_id)).rowcount)
+                work.ledger_owner=bool(self.db.execute("UPDATE pipeline_events SET status='received',reason='input_recovery',stage='ingress',finished_at=NULL,updated_at=? WHERE scope=? AND subject=? AND event=? AND (execution_started=0 AND reason IN ('cancelled','runtime_restarted') OR reason='context_capacity_ready') AND attempted=0 AND confirmed=0 AND status IN ('blocked','interrupted') AND EXISTS(SELECT 1 FROM pipeline_work_inputs i WHERE i.scope=pipeline_events.scope AND i.event=pipeline_events.event AND i.status='queued')",(now,scope,subject,work.event_id)).rowcount)
             work.ledger_owner=bool(self.db.execute("INSERT OR IGNORE INTO pipeline_events(scope,subject,event,at,source,stage,status,reason,updated_at,execution_started) VALUES(?,?,?,?,?,'ingress','received','',?,?)",(scope,subject,work.event_id,now,source,now,0 if recoverable else None)).rowcount) or work.ledger_owner
             # Retain exact recovery evidence while its model input lacks final
             # provenance; a blanket 24h/2048 prune caused irreparable Holds.
@@ -983,7 +1021,7 @@ class BotPipeline:
             # Blocked inputs retain their own duplicate guard. Missing-input
             # activations have only this content-free key: pruning it would
             # silently turn an unresolved old delivery into a new execution.
-            terminal="status IN ('sent','silent','superseded','blocked','error','interrupted','combined') AND attempted=confirmed AND coalesce(reason,'')<>'waiting_responsibility_missing'"
+            terminal="status IN ('sent','silent','superseded','blocked','error','interrupted','combined') AND attempted=confirmed AND coalesce(reason,'') NOT IN ('waiting_responsibility_missing','context_capacity_ready') AND coalesce(reason,'') NOT LIKE 'context_capacity_waiting:%'"
             self.db.execute('DELETE FROM pipeline_events WHERE at<? AND '+terminal+' AND '+protected,(now-86400,))
             self.db.execute('DELETE FROM pipeline_events WHERE rowid NOT IN (SELECT rowid FROM pipeline_events ORDER BY at DESC LIMIT 2048) AND '+terminal+' AND '+protected)
         if not work.ledger_owner:
@@ -1041,6 +1079,9 @@ class BotPipeline:
         finished_at is the observed activation return/settlement boundary.
         Deferred admission clears it before the same event runs again.
         """
+        if work.compression_waiting:
+            row=self.db.execute('SELECT reason FROM pipeline_events WHERE scope=? AND subject=? AND event=?',(work.scope,work.subject,work.event_id)).fetchone()
+            work.stop(row[0] if row and (row[0]=='context_capacity_ready' or row[0].startswith('context_capacity_waiting:')) else 'context_capacity_waiting:'+work.scope,'blocked')
         if work.attempted>work.confirmed:
             work.status='partial' if work.confirmed else 'unknown'
             if not work.reason:work.reason='unconfirmed_protocol_outcome'

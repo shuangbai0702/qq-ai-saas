@@ -66,7 +66,13 @@ async def summary_model_output(provider,request,live,metrics,limit,on_decode=Non
     from contextlib import aclosing
     from companion_insights import decode
     from output_clean import clean
+    nonstream=False
     async def read():
+        if nonstream:
+            # Same bound Provider/transport, identity, budget and diagnostics.
+            # Only read-only summarization may retry; no product is committed
+            # until the complete response passes the normal validation below.
+            return await provider.text_chat(**request)
         final=None
         async with aclosing(provider.text_chat_stream(**request)) as responses:
             async for response in responses:
@@ -94,9 +100,17 @@ async def summary_model_output(provider,request,live,metrics,limit,on_decode=Non
             if len(text)>limit:raise ValueError('summary_output_capacity_exceeded_material_retained')
             return response,data,text
         except asyncio.CancelledError:raise
-        except Exception:
+        except Exception as error:
             if not live():return None
             if attempt:raise
+            from httpx import TransportError
+            from openai import APIConnectionError
+            if callable(getattr(provider,'text_chat',None)) and (
+                isinstance(error,(TransportError,APIConnectionError,OSError,asyncio.TimeoutError))
+                or isinstance(error,ValueError) and str(error)=='incomplete_summary_stream'
+            ):
+                nonstream=True
+                metrics['summaryNonstreamFallbacks']=metrics.get('summaryNonstreamFallbacks',0)+1
             metrics['summaryImmediateRetries']=metrics.get('summaryImmediateRetries',0)+1
 
 

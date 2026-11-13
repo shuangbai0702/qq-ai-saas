@@ -169,6 +169,8 @@ def finish_semantic_batches(st,cfg,scope):
             for checkpoint,native_scope in st.db.execute("SELECT checkpoint_id,scope FROM memory_semantic_batches WHERE state='retired'").fetchall():
                 st.reflection.checkpoint_issue(native_scope,checkpoint,'native_history_cleanup',result['native'],resolved=result['native'].get('result')=='clean')
     st.semantic_retirement_status=result
+    pipeline=getattr(st,'pipeline',None)
+    if pipeline and not result['pending']:pipeline.resume_compression_inputs(scope)
     if result['retired']:
         print('FISHBOT_SEMANTIC_RETIREMENT '+model_json({'scope':scope,**result}),flush=True)
     return result

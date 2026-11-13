@@ -219,16 +219,16 @@ async def resume_scope_input(core,id,lease,store,settings):
           WHERE i.status IN ('queued','owned') AND i.identity IS NOT NULL
           AND NOT EXISTS(SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope)
           AND EXISTS(SELECT 1 FROM pipeline_events e WHERE e.scope=i.scope AND e.subject=i.subject AND e.event=i.event
-            AND e.execution_started=0 AND e.attempted=0 AND e.confirmed=0
-            AND e.status IN ('blocked','interrupted') AND e.reason IN ('cancelled','runtime_restarted'))""")
+            AND (e.execution_started=0 AND e.reason IN ('cancelled','runtime_restarted') OR e.reason='context_capacity_ready') AND e.attempted=0 AND e.confirmed=0
+            AND e.status IN ('blocked','interrupted'))""")
         store.db.execute("""UPDATE pipeline_work_inputs AS i SET status=CASE WHEN EXISTS
           (SELECT 1 FROM pipeline_events e WHERE e.scope=i.scope AND e.subject=i.subject AND e.event=i.event
            AND e.status IN ('sent','silent','superseded','combined') AND e.attempted=e.confirmed)
           THEN 'settled_duplicate' ELSE 'blocked_unknown' END
           WHERE i.status IN ('pending','queued') AND NOT EXISTS (SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope)
           AND NOT EXISTS(SELECT 1 FROM pipeline_events e WHERE e.scope=i.scope AND e.subject=i.subject AND e.event=i.event
-            AND e.execution_started=0 AND e.attempted=0 AND e.confirmed=0
-            AND e.status IN ('blocked','interrupted') AND e.reason IN ('cancelled','runtime_restarted') AND i.identity IS NOT NULL)
+            AND (e.execution_started=0 AND e.reason IN ('cancelled','runtime_restarted') OR e.reason='context_capacity_ready') AND e.attempted=0 AND e.confirmed=0
+            AND e.status IN ('blocked','interrupted') AND i.identity IS NOT NULL)
           AND EXISTS (SELECT 1 FROM pipeline_events e WHERE e.scope=i.scope AND e.subject=i.subject AND e.event=i.event)""")
         store.db.execute("""UPDATE pipeline_work_inputs AS i SET retry_count=coalesce(retry_count,0)+1,
           status=CASE WHEN coalesce(retry_count,0)>=4 THEN 'blocked_recovery' ELSE 'pending' END
