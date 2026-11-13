@@ -103,7 +103,7 @@ def _fresh_state(st,cfg,scope,checkpoint,journal):
 
 
 def _issue(st,scope,checkpoint,reason,resolved=False):
-    with st.db:st.reflection.checkpoint_issue(scope,checkpoint,'semantic_retirement',{'result':reason},resolved=resolved)
+    with st.db:st.reflection.checkpoint_issue(scope,checkpoint,'semantic_retirement',reason if isinstance(reason,dict) else {'result':reason},resolved=resolved)
 
 
 def _journals_busy(st):
@@ -165,7 +165,9 @@ def finish_semantic_batches(st,cfg,scope):
             if permit:
                 row=st.db.execute('SELECT state FROM memory_reconstruction_checkpoints WHERE id=?',(permit['id'],)).fetchone()
                 if row and row[0]=='reserved':st.reflection.settle_context_reconstruction(permit,False)
-            reason=str(error) if str(error)=='semantic_active_journal_reconstruction_required' else 'error:'+type(error).__name__
+            from readonly_journal import ContextCapacityExceeded
+            reason=({'result':'reconstruction_capacity_exceeded','capacity':error.capacity,'automatic_recovery':'local_retry_without_model','history_unchanged':True}
+                    if isinstance(error,ContextCapacityExceeded) else str(error) if str(error)=='semantic_active_journal_reconstruction_required' else 'error:'+type(error).__name__)
             _issue(st,scope,checkpoint,reason);result['pending']+=1
     import semantic_media
     _prune_hot_memory(st)
@@ -185,7 +187,10 @@ def finish_semantic_batches(st,cfg,scope):
                 st.reflection.checkpoint_issue(native_scope,checkpoint,'native_history_cleanup',result['native'],resolved=result['native'].get('result')=='clean')
     st.semantic_retirement_status=result
     pipeline=getattr(st,'pipeline',None)
-    if pipeline and not result['pending']:pipeline.resume_compression_inputs(scope)
+    if pipeline and not result['pending']:
+        pipeline.resume_compression_inputs(scope)
+        if result['retired']:
+            with st.db:st.reflection.checkpoint_issue(scope,0,'capacity_before_checkpoint',{'recoveredByCheckpoint':True},resolved=True)
     if result['retired']:
         print('FISHBOT_SEMANTIC_RETIREMENT '+model_json({'scope':scope,**result}),flush=True)
     return result

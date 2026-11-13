@@ -874,6 +874,16 @@ class Reflection:
           WHERE status<>excluded.status OR detail<>excluded.detail''',
           (scope,identifier,kind,status,raw,now,now))
 
+    def record_capacity_wait(self,scope,capacity):
+        progress=self.db.execute('SELECT summary_watermark FROM memory_reflection_progress WHERE scope=?',(scope,)).fetchone()
+        completed=self.db.execute('SELECT count(*) FROM memory_rounds WHERE scope=? AND id>?',(scope,progress[0] if progress else 0)).fetchone()[0]
+        committed=self.db.execute("SELECT 1 FROM memory_semantic_batches WHERE scope=? AND state='committed' LIMIT 1",(scope,)).fetchone()
+        blocked=completed<DEFAULT_SUMMARY_ROUNDS and not committed
+        detail={'completedRounds':completed,'requiredRounds':DEFAULT_SUMMARY_ROUNDS,'capacity':capacity,
+                'automaticCheckpointAvailable':not blocked,'historyRewriteAllowed':False}
+        with self.db:self.checkpoint_issue(scope,0,'capacity_before_checkpoint',detail,resolved=not blocked)
+        return detail
+
     def operational_health(self):
         now=time.time()
         cached=getattr(self,'_operational_health',None)

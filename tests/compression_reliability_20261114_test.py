@@ -61,6 +61,34 @@ class Reliability(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(db.execute('SELECT state FROM memory_reconstruction_checkpoints').fetchone()[0],'reserved')
         self.assertEqual(self.st.model_journals[fixture.SCOPE].last.wire,before)
 
+    async def test_oversized_reconstruction_preserves_history_and_records_capacity(self):
+        from unittest.mock import patch
+        import json
+        before=copy.deepcopy(self.st.model_journals[fixture.SCOPE].last.wire)
+        from decision_history import MAX_RETAINED_TEXT_CHARS
+        candidate={'memory_foundation':{'relations':[{'impression':'x'*(MAX_RETAINED_TEXT_CHARS+1)}]}}
+        with patch('semantic_runtime._fresh_state',return_value=candidate):
+            result=finish_semantic_batches(self.st,{},fixture.SCOPE)
+        self.assertEqual(result['pending'],1)
+        self.assertEqual(self.st.model_journals[fixture.SCOPE].last.wire,before)
+        self.assertEqual(self.st.db.execute('SELECT state FROM memory_reconstruction_checkpoints').fetchone()[0],'available')
+        self.assertEqual(self.st.db.execute('SELECT state FROM memory_semantic_batches').fetchone()[0],'committed')
+        detail=json.loads(self.st.db.execute("SELECT detail FROM memory_checkpoint_issues WHERE kind='semantic_retirement'").fetchone()[0])
+        self.assertEqual(detail['result'],'reconstruction_capacity_exceeded')
+        self.assertGreater(detail['capacity']['wireChars'],0)
+        self.assertEqual(finish_semantic_batches(self.st,{},fixture.SCOPE)['retired'],1)
+
+    async def test_capacity_before_35_is_visible_without_fabricating_rounds(self):
+        r=self.st.reflection;db=self.st.db
+        # Another scope's committed checkpoint is not authority for this one.
+        scope='private:87654321'
+        detail=r.record_capacity_wait(scope,{'textChars':123})
+        self.assertFalse(detail['automaticCheckpointAvailable'])
+        self.assertEqual(detail['completedRounds'],0)
+        self.assertEqual(db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],0)
+        self.assertEqual(db.execute("SELECT status FROM memory_checkpoint_issues WHERE scope=? AND kind='capacity_before_checkpoint'",(scope,)).fetchone()[0],'open')
+        self.assertTrue(r.record_capacity_wait(fixture.SCOPE,{})['automaticCheckpointAvailable'])
+
     async def test_committed_retirement_needs_no_provider_or_memory_switch(self):
         r=self.st.reflection
         r.binding=({'memory':False,'memorySummary':False},NS(),lambda:True,{},contextvars.ContextVar('recovery',default=None))
