@@ -1475,7 +1475,10 @@ class Reflection:
                     else:asyncio.get_running_loop().call_soon(self.retry)
                     if _manual is not None:
                         checkpoint=self.db.execute('SELECT id,round_count,state FROM memory_reconstruction_checkpoints WHERE scope=? AND epoch=? ORDER BY through_round_id DESC LIMIT 1',(_manual['scope'],epoch)).fetchone()
-                        return {'ok':True,'reason':'summary_committed','checkpoint':dict(zip(('id','roundCount','state'),checkpoint)) if checkpoint else None,'discarded':_manual.get('discarded',{})}
+                        health=self.health_snapshot(_manual['scope'])
+                        return {'ok':True,'reason':'summary_committed','checkpoint':dict(zip(('id','roundCount','state'),checkpoint)) if checkpoint else None,'discarded':_manual.get('discarded',{}),
+                                'remainingCompleteRounds':health['newCompleteRounds'],
+                                'allCompletedRoundsSummarized':health['newCompleteRounds']==0}
                 except asyncio.CancelledError:
                     if operation_audit and not audit_committed and not self.closed:
                         operation_audit.persist(self.db,'rolled_back','canceled',details=self.epoch()==epoch)
