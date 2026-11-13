@@ -13,6 +13,7 @@ export type UsageCharge={requestId:string;kind:string;source:'actual'|'estimated
 type Usage={tokens:number;modelCalls:number;toolCalls:number;externalActions:number;conservative?:boolean;charges?:UsageCharge[]};
 type RuntimeCall=(bot:any,operation:string,body:unknown,timeoutMs?:number)=>Promise<any>;
 const emptyUsage=():Usage=>({tokens:0,modelCalls:0,toolCalls:0,externalActions:0});
+const notStarted=(objective:string)=>({status:'canceled',stopReason:'not_started',summary:'目标资料读取或执行前准备失败，尚未派发；保留原任务责任供合法重试',effects:[],evidence:[],unfinished:[objective],continuationAccepted:false,usage:emptyUsage()});
 function online(bot:any){return runtimeStatus(bot).online}
 function cycleTokens(claim:any):number{return claim.tokenLimit??claim.config.cycleTokenBudget}
 
@@ -187,22 +188,58 @@ export class AutonomyCoordinator {
     const fresh=await this.freshSnapshot(c);
     if(fresh.foregroundBusy){reason='foreground_work_busy';sleep=15;break}
     active.feedbackVersion=Number(fresh.feedbackVersion||0);
+    const continuation=await this.repo.planToolContinuation(c,usage);
+    if(continuation){
+     if(!await this.repo.markExecuting(c,continuation.id)){await this.repo.settleToolContinuation(c,continuation,'pending');reason='continuation_invalidated';break}
+     active.actionId=continuation.id;
+     const work=this.work(active,usage,continuation.id,deadline);
+     let result:any,executeStarted=false;
+     try{
+      await this.call(c,'policy',await this.policy(c,c.cycleId,continuation.id),2000);
+      const goalSnapshot=await this.repo.readGoals({id:c.bot_id,...c},{scope:continuation.continuationOfMoment?(c.runtime_mode==='shared'?'self':c.config.activityScope||'self'):continuation.requestSource?.scope||'self',senderId:'0',work:{id:continuation.id,epoch:c.epoch}});
+      executeStarted=true;result=await this.call(c,'execute',{work,action:{...continuation,goalSnapshot}},Math.max(1000,deadline-Date.now()+2000));
+      await this.repo.settleToolContinuation(c,continuation,result.continuationAccepted===false?'pending':'done');
+     }catch{
+      if(!executeStarted){
+       result=notStarted(continuation.objective);
+       await this.repo.settleToolContinuation(c,continuation,'pending');
+       await this.repo.wake(c.tenant_id,c.bot_id,c.epoch,'tool-completed',30,continuation.continuation.id);
+      }else{
+      await this.call(c,'cancel',{},2000).catch(()=>{});
+      const receipt=await this.call(c,'receipt',{id:continuation.id},2000).catch(()=>null);
+      // A durable original receipt may settle the race. An absent receipt does
+      // not prove no model ran; retain unknown instead of replaying the effect.
+      result=receipt?.result||{status:'unknown',summary:'异步结果续接回执未知；保留原结果和责任，不重复派发',effects:receipt?.effects||[],evidence:[],unfinished:[continuation.objective],usage:{tokens:work.budget.tokens,modelCalls:work.budget.modelCalls,toolCalls:work.budget.toolCalls,estimated:true}};
+      await this.repo.settleToolContinuation(c,continuation,receipt?.result?(result.continuationAccepted===false?'pending':'done'):'unknown');
+      }
+     }
+     if(!result.usage||['tokens','modelCalls','toolCalls'].some(name=>!Number.isSafeInteger(result.usage[name])||result.usage[name]<0))result={...result,usage:{tokens:work.budget.tokens,modelCalls:work.budget.modelCalls,toolCalls:work.budget.toolCalls,estimated:true}};
+     this.charge(usage,continuation.id,'execute',result);usage.externalActions=await externalCount(this.db,c.cycleId);await this.repo.feedback(c,continuation.id,result);
+     reason='tool_continuation_'+result.status;break;
+    }
     const goal=(await this.repo.dueHandoffs(c))[0];
     if(!goal){
      if(config.activityEnabled&&c.wakes.some((w:any)=>w.reason==='activity')&&usage.modelCalls===0){
       const action=await this.repo.planActivity(c,usage);
       if(!await this.repo.markExecuting(c,action.id)){await this.repo.cancelPlanned(c,action.id,'自主时刻身份变化');reason='action_invalidated';break}
-      active.actionId=action.id;await this.call(c,'policy',await this.policy(c,c.cycleId,action.id),2000);
+      active.actionId=action.id;
       const work=this.work(active,usage,action.id,deadline);
       work.budget.modelCalls=Math.min(work.budget.modelCalls,config.activityModelCalls);
       work.budget.toolCalls=Math.min(work.budget.toolCalls,config.activityToolCalls);
       work.budget.tokens=Math.min(work.budget.tokens,config.activityTokenBudget);
       work.budget.externalActions=Math.min(work.budget.externalActions,config.activityExternalActions);
-      try{feedback=await this.call(c,'execute',{work,action:{...action,autonomousMoment:true,outerDecision:{at:new Date().toISOString(),reason:'autonomous_moment',cycleId:c.cycleId}}},Math.max(1000,deadline-Date.now()+2000))}
+      let executeStarted=false;
+      try{
+       await this.call(c,'policy',await this.policy(c,c.cycleId,action.id),2000);
+       const goalSnapshot=await this.repo.readGoals({id:c.bot_id,...c},{scope:c.runtime_mode==='shared'?'self':c.config.activityScope||'self',senderId:'0',work:{id:action.id,epoch:c.epoch}});
+       executeStarted=true;feedback=await this.call(c,'execute',{work,action:{...action,goalSnapshot,autonomousMoment:true,outerDecision:{at:new Date().toISOString(),reason:'autonomous_moment',cycleId:c.cycleId}}},Math.max(1000,deadline-Date.now()+2000))}
       catch{
+       if(!executeStarted)feedback=notStarted(action.objective);
+       else{
        await this.call(c,'cancel',{},2000).catch(()=>{});
        const receipt=await this.call(c,'receipt',{id:action.id},2000).catch(()=>null);
        feedback=receipt?.result||{status:'unknown',summary:'自主活动结果未知；保留回执，不重复派发',effects:receipt?.effects||[],evidence:[],unfinished:[],usage:{tokens:work.budget.tokens,modelCalls:work.budget.modelCalls,toolCalls:work.budget.toolCalls,estimated:true}};
+       }
       }
       if(!feedback.usage||['tokens','modelCalls','toolCalls'].some(name=>!Number.isSafeInteger(feedback.usage[name])||feedback.usage[name]<0))feedback={...feedback,usage:{tokens:work.budget.tokens,modelCalls:work.budget.modelCalls,toolCalls:work.budget.toolCalls,estimated:true}};
       feedback=await this.repo.withExternalEffects(c,action.id,feedback);
@@ -220,10 +257,13 @@ export class AutonomyCoordinator {
      if(unsettled){
       // A real dispatch is awaiting its authoritative receipt. The tick loop
       // keeps checking it; this cycle only re-arms a bounded retry.
-      if(Number(prior.result?.receiptCheck?.attempts||0)>=10||prior.actions>=4){await this.repo.abandonGoal(c,goal.id);reason='handoff_blocked';continue}
+      // Unknown effects remain the original ledger's responsibility; retry limits never abandon them.
       reason='waiting_receipt';sleep=300;break;
      }
      if(prior.status==='completed'){
+      if(prior.kind==='research'){
+       await this.repo.markGoalReview(c,prior.id,goal.revision);reason='research_step_completed';continue;
+      }
        await this.repo.completeGoal(c,goal.id,taskResultFacts(prior.kind,prior.result)?.summary||prior.result?.summary||'');
       reason='handoff_executed';continue;
      }
@@ -242,8 +282,8 @@ export class AutonomyCoordinator {
       // manual handling via chat cancellation or a config revision.
       reason='handoff_partial_open';sleep=900;break;
      }
-     if(prior.status==='blocked'||prior.actions>=4){
-      await this.repo.abandonGoal(c,goal.id);reason='handoff_blocked';continue;
+     if((prior.status==='blocked'||prior.actions>=4)&&Number(prior.result?.goalRevision||1)===goal.revision){
+      await this.repo.markGoalReview(c,prior.id,goal.revision);reason='handoff_needs_review';continue;
      }
      // A settled cancellation never dispatched its effect; one bounded retry.
     }
@@ -251,17 +291,24 @@ export class AutonomyCoordinator {
     const prepared=await this.repo.planHandoff(c,goal,usage);
     const action=prepared.action;
     if(!await this.repo.markExecuting(c,action.id)){await this.repo.cancelPlanned(c,action.id,'身份已变化，或该对象有未确认的历史动作');reason='action_invalidated';break}
-    active.actionId=action.id;await this.call(c,'policy',await this.policy(c,c.cycleId,action.id),2000);
+    active.actionId=action.id;
     // Source comes from the durable accepted goal, never from a model action.
     // D1: the dereferenced goal source describes where the task came from; it
     // never widens the requestSource same-scope delivery rule.
     deadline=this.deadline(c,usage);
     const task={id:action.id,kind:action.kind,target:action.target,goalId:goal.id,objective:action.objective,sourceScope:prepared.source?.scope,outerDecision:{at:new Date().toISOString(),reason:'handoff_due',cycleId:c.cycleId},requestSource:prepared.source,...(prepared.evidenceSources?.length?{evidenceSources:prepared.evidenceSources}:{})};
-    try{feedback=await this.call(c,'execute',{work:this.work(active,usage,action.id,deadline),action:task,feedback},Math.max(1000,deadline-Date.now()+2000))}
+    let executeStarted=false;
+    try{
+     await this.call(c,'policy',await this.policy(c,c.cycleId,action.id),2000);
+     const goalSnapshot=await this.repo.readGoals({id:c.bot_id,...c},{scope:prepared.source?.scope||'self',senderId:'0',work:{id:action.id,epoch:c.epoch}});
+     executeStarted=true;feedback=await this.call(c,'execute',{work:this.work(active,usage,action.id,deadline),action:{...task,goalSnapshot},feedback},Math.max(1000,deadline-Date.now()+2000))}
     catch{
+     if(!executeStarted)feedback=notStarted(action.objective);
+     else{
      await this.call(c,'cancel',{},2000).catch(()=>{});
      const receipt=await this.call(c,'receipt',{id:action.id},2000).catch(()=>null);
      feedback=receipt?.result||{status:'unknown',summary:'执行连接中断，未得到完整结果；不得重复投递',effects:receipt?.effects||[],evidence:[],unfinished:[action.objective]};
+     }
     }
     if(!feedback.usage||['tokens','modelCalls','toolCalls'].some(name=>!Number.isSafeInteger(feedback.usage[name])||feedback.usage[name]<0)){
      const reported=feedback.usage||{};
@@ -273,8 +320,13 @@ export class AutonomyCoordinator {
     // The settled result decides the goal's ledger state immediately: a
     // delivered reply completes the accepted handoff, a final refusal frees
     // its slot, an uncertain effect waits for its authoritative receipt.
-     if(feedback.status==='completed'){await this.repo.completeGoal(c,goal.id,taskResultFacts(task.kind,feedback)?.summary||feedback.summary||'');reason='handoff_executed';continue}
-    if(feedback.status==='blocked'){await this.repo.abandonGoal(c,goal.id);reason='handoff_blocked';continue}
+     if(feedback.status==='completed'){
+      // A research step's completion is not the long-term cognitive goal's
+      // completion. The model may commit that separately with the goal tool.
+      if(task.kind==='research'){await this.repo.markGoalReview(c,action.id,goal.revision);reason='research_step_completed';continue}
+      await this.repo.completeGoal(c,goal.id,taskResultFacts(task.kind,feedback)?.summary||feedback.summary||'');reason='handoff_executed';continue;
+     }
+    if(feedback.status==='blocked'){await this.repo.markGoalReview(c,action.id,goal.revision);reason='handoff_needs_review';continue}
     if(feedback.status==='canceled'){reason='foreground_or_mode_changed';sleep=15;break}
     reason='waiting_receipt';sleep=300;break;
    }

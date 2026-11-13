@@ -1,0 +1,50 @@
+{
+  "identity": "nt authority\\network service",
+  "tests": [
+    {
+      "name": "corrupt",
+      "exitCode": 1,
+      "elapsedSeconds": 0.422,
+      "ok": true,
+      "outputCreated": false
+    },
+    {
+      "name": "truncated",
+      "exitCode": 1,
+      "elapsedSeconds": 0.406,
+      "ok": true,
+      "outputCreated": false
+    },
+    {
+      "name": "non16k",
+      "exitCode": 1,
+      "elapsedSeconds": 0.375,
+      "ok": true,
+      "outputCreated": false
+    },
+    {
+      "name": "over120s",
+      "exitCode": 1,
+      "elapsedSeconds": 0.438,
+      "ok": true,
+      "outputCreated": false
+    },
+    {
+      "name": "existing-output",
+      "exitCode": 1,
+      "elapsedSeconds": 0.391,
+      "ok": true,
+      "outputCreated": true,
+      "preserved": true
+    },
+    {
+      "name": "silence-real-vad",
+      "exitCode": 0,
+      "elapsedSeconds": 2.406,
+      "ok": true,
+      "outputCreated": true,
+      "segments": [],
+      "duration": 2.0
+    }
+  ]
+}

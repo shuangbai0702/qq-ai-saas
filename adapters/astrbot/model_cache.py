@@ -42,7 +42,9 @@ def loaded_build():
                             ('memory_scope','pending_messages'),('memory_scope','retained_context_visible'),
                             ('agreement_state','context_view'),('bot_pipeline','conversation_context'),
                             ('memory_reflection','Reflection.recent'),('memory_reflection','Reflection.retry'),('summary_material','register_nonround_images'),('shared_context','compose'),
-                            ('shared_context','Writer.acquire'),('readonly_journal','ReadonlyJournal.append_completion')):
+                            ('shared_context','Writer.acquire'),('readonly_journal','ReadonlyJournal.append_completion'),
+                            ('activity_context','encode_goal_candidate'),('activity_context','committed_goals'),
+                            ('activation_rounds','record'),('model_request_budget','bind')):
         module=sys.modules.get(name);target=module
         for part in function.split('.'):target=getattr(target,part,None)
         code=getattr(target,'__code__',None)
@@ -243,7 +245,9 @@ def discarded(reason):
     if value:value.update(adoption='not_adopted',reason=reason)
 
 def is_foreground_event(event):
-    if not event or event.get_extra('_hosted_internal_work'):return False
+    if not event:return False
+    if event.get_extra('_hosted_internal_work'):
+        return event.get_extra('_hosted_main_activation') is True
     work=event.get_extra('_hosted_pipeline')
     if getattr(work,'source',None)=='admin_debug':return event.get_extra('_hosted_admin_debug') is True
     # These all enter the same native conversation. Timer/owner/tool wakeups

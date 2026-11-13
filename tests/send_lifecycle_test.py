@@ -92,8 +92,8 @@ async def run():
     assert len(calls)==before+(0 if stale else 1),'late media conversion crossed configuration lease'
     assert extra.get('_hosted_protocol_blocked',False)==bool(stale),'blocked dispatch is visible to the outer send recorder'
   finally:AiocqhttpMessageEvent._parse_onebot_json=old_parse
-  # First bubble confirmed, second uncertain: preserve actual interaction
-  # timing without recording an unsent suffix as a completed conversation.
+  # First bubble confirmed, second uncertain: count the real interaction and
+  # retain only the portion confirmed by the protocol.
   cfg={'behavior':{'splitMessages':True,'typingSimulation':False,'sendIntervalMs':0,'memory':True,'qqFaces':False}}
   lease={'root':temp.name,'botId':'bot-A','generation':1,'config':cfg};settings['qq']=lease
   extra={'_hosted_lease':lease,'_hosted_generation':1,'_partial_fixture':True}
@@ -108,11 +108,13 @@ async def run():
   st.pipeline.finish(work,runtime['metrics'].setdefault('qq',{}))
   runtime['settle_work_round'](st,event,work,lease)
   assert work.status=='partial' and work.confirmed_messages==1
-  assert st.db.execute("SELECT count(*) FROM memory_rounds WHERE event='partial-fixture'").fetchone()[0]==0,'an uncertain suffix never mints a completed round'
+  round_row=st.db.execute("SELECT question,answer FROM memory_rounds WHERE event='partial-fixture'").fetchone()
+  assert round_row==('继续聊天','第一条已经到达。'),'a confirmed partial reply remains one business interaction with only its confirmed prefix'
   last_bot,last_output=st.db.execute("SELECT last_bot,last_output FROM contacts WHERE scope='group:55555'").fetchone()
   assert last_bot>=before and last_output=='第一条已经到达。','partial receipt lost actual timing or invented unsent text'
   assert st.presence.snapshot('group:55555')[1]>=before,'partial reply did not refresh local interaction clock'
-  assert st.db.execute("SELECT count(*) FROM memory_pending WHERE event='partial-fixture'").fetchone()[0]==0,'failed suffix became completed reply memory'
+  pending=st.db.execute("SELECT question,answer FROM memory_pending WHERE event='partial-fixture'").fetchone()
+  assert pending==('继续聊天','第一条已经到达。'),'memory records the confirmed prefix and never the uncertain suffix'
   # A delivered error notice is not a completed model reply. Keep its actual
   # protocol receipt while exposing the real failure to the common ledger.
   extra={'_hosted_lease':lease,'_hosted_generation':1,'_partial_fixture':True,'_hosted_model_error':True}

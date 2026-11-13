@@ -6,6 +6,7 @@ from behavior import BehaviorStore
 from companion_insights import apply,snapshot
 from sticker_collection import manage
 import companion_state,initiative
+from summary_stream_fixture import summary_provider
 
 class Upgrades(unittest.IsolatedAsyncioTestCase):
  def setUp(self):
@@ -33,7 +34,7 @@ class Upgrades(unittest.IsolatedAsyncioTestCase):
   async def chat(**kw):
    calls.append(kw);return NS(completion_text=json.dumps({'summary':'11111说自己搬到了苏州，机器人喜欢昆曲。','facts':[{'event':'0','name':'居住城市','value':'苏州','quote':'我搬到了苏州'}],'interests':[{'event':'0','topic':'昆曲','quote':'我喜欢昆曲的水磨腔。'}]}))
   metrics={}
-  self.store.reflection.maybe_start('group:12345',cfg,NS(text_chat=chat),lambda:True,metrics,self.var);await self.store.reflection.task
+  self.store.reflection.maybe_start('group:12345',cfg,summary_provider(chat),lambda:True,metrics,self.var);await self.store.reflection.task
   self.assertEqual(len(calls),1,(metrics,self.db.execute('SELECT * FROM memory_checkpoint_issues').fetchall()));self.assertEqual(self.db.execute('SELECT value FROM facts WHERE active=1').fetchall(),[('苏州',)])
   self.assertEqual(self.db.execute('SELECT topic FROM companion_interests').fetchall(),[('昆曲',)])
   self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1)

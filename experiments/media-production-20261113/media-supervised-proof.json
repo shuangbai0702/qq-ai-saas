@@ -1,0 +1,53 @@
+{
+  "at": "2026-11-13T08:51:05.688Z",
+  "identity": "nt authority\\network service",
+  "tests": [
+    {
+      "name": "actual-production-guard",
+      "ok": true,
+      "admitted": true
+    },
+    {
+      "name": "missing-guard-rejects",
+      "ok": true,
+      "code": "guard_unavailable"
+    },
+    {
+      "name": "nested-job-real-asr",
+      "ok": true,
+      "result": {
+        "segments": [
+          {
+            "start": 0.37,
+            "end": 5.37,
+            "text": "開放時間早上9點至下午5點"
+          }
+        ],
+        "engine": "faster-whisper",
+        "version": "1.2.1",
+        "language": "zh",
+        "duration": 5.616,
+        "timestampBasis": "model segment estimate; not sample alignment"
+      }
+    },
+    {
+      "name": "nested-job-cancel-drains-descendants",
+      "ok": true,
+      "ownedPids": [
+        21400,
+        18956
+      ],
+      "survivors": []
+    },
+    {
+      "name": "nested-job-timeout",
+      "ok": true,
+      "error": "TimeoutError"
+    },
+    {
+      "name": "workspace-cleaned",
+      "ok": true,
+      "entries": 0
+    }
+  ]
+}

@@ -35,7 +35,10 @@ def summary_author_witnesses(scope,rows,discarded=()):
         previous=witnesses.get(event)
         if previous and previous['sender_id']!=person:raise ValueError('semantic_summary_author_conflict')
         witnesses[event]={'event':event,'sender_id':person,'source':{'sender_id':person,'source_scope':channel,'event_id':identifier}}
-    for row in rows:add(row['event'],row['sender_id'],row.get('source') or {})
+    for row in rows:
+        metadata=row.get('source') or {}
+        if metadata.get('kind')=='platform_service_not_user':continue
+        add(row['event'],row['sender_id'],metadata)
     for item in discarded:
         people=item.get('sender_ids',[])
         if len(people)>1:raise ValueError('semantic_summary_author_conflict')
@@ -1045,6 +1048,8 @@ class Reflection:
                 progress=self.db.execute('SELECT summary_watermark,insight_watermark FROM memory_reflection_progress WHERE scope=?',(candidate,)).fetchone() or (0,0)
                 # Only new completed rounds earn the next checkpoint.
                 batch=self.db.execute('SELECT id,subject,event,question,answer,at FROM memory_rounds WHERE scope=? AND id>? ORDER BY id LIMIT ?',(candidate,progress[0],summary_rounds)).fetchall()
+                from activation_rounds import settled
+                if not settled(self.db,candidate,batch):continue
                 if len(batch)>=summary_rounds or (batch and _manual is not None and _manual['allow_partial']):
                     scope=candidate;job='summary';rows=batch;summary_from=progress[0];break
         if not scope:
@@ -1139,9 +1144,14 @@ class Reflection:
                             previous_products=previous_summaries(self.db)
                             previous_dependency=self.context_dependency([p['id'] for p in previous_products],scope)
                             legacy_product_ids=[p['id'] for p in previous_products if p['scope']!='bot_shared']
-                        author_payload=summary_author_witnesses(scope,input_authors+payload,discarded)
+                        from activation_rounds import split_material
+                        dialogue_payload,activity_material=split_material(self.db,scope,payload)
+                        input_authors,_=split_material(self.db,scope,input_authors)
+                        from activation_rounds import metadata as activation_metadata
+                        author_payload=summary_author_witnesses(scope,input_authors+dialogue_payload,[d for d in discarded if not activation_metadata(self.db,scope,d['event'])])
                         persona=str(cfg.get('_persona',''))
-                        prompt={'source_scope':scope,'persona':persona[:5000],'persona_visibility':{'total_chars':len(persona),'shown_chars':min(5000,len(persona)),'partial':len(persona)>5000},'turns':payload}
+                        prompt={'source_scope':scope,'persona':persona[:5000],'persona_visibility':{'total_chars':len(persona),'shown_chars':min(5000,len(persona)),'partial':len(persona)>5000},'turns':dialogue_payload}
+                        if activity_material:prompt['autonomous_activations']=activity_material
                         if discarded:
                             prompt['incomplete_material']=[{k:v for k,v in item.items() if k!='images'} for item in discarded]
                         if scope=='bot_shared':prompt['previous_summaries']=previous_products
@@ -1397,7 +1407,8 @@ class Reflection:
                             admin_partial=bool(_manual is not None and _manual['allow_partial'] and 0<len(new_rows)<DEFAULT_SUMMARY_ROUNDS)
                             if not (summary_rounds==DEFAULT_SUMMARY_ROUNDS and (len(new_rows)==DEFAULT_SUMMARY_ROUNDS or admin_partial)):
                                 raise RuntimeError('semantic_batch_requires_legal_rounds')
-                            if not all(isinstance(r[1],str) and r[1] and isinstance(r[2],str) and r[2] and isinstance(r[3],str) and r[3].strip() and isinstance(r[4],str) and r[4].strip() and isinstance(r[5],(int,float)) for r in new_rows):
+                            from activation_rounds import valid as valid_round
+                            if not all(valid_round(self.db,scope,r) for r in new_rows):
                                 raise RuntimeError('semantic_batch_incomplete_business_round')
                             self.db.execute('UPDATE memory_reflection_progress SET summary_watermark=?,insight_watermark=? WHERE scope=?',(rows[-1][0],rows[-1][0],scope))
                             self.db.execute('INSERT INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,created,summary_id,pending_events) VALUES(?,?,?,?,?,?,?,NULL)',(scope,rows[-1][0],len(new_rows),epoch,'pending_merge' if pending_merge else 'available',time.time(),identifier))

@@ -16,6 +16,25 @@ const json=(data:any,headers?:HeadersInit)=>new Response(JSON.stringify({code:0,
 const barrier=()=>{let release!:()=>void;const promise=new Promise<void>(resolve=>release=resolve);return{promise,release}};
 const signingNav={wbi_img:{img_url:'https://i0.hdslb.com/bfs/wbi/0123456789abcdef0123456789abcdef.png',sub_url:'https://i0.hdslb.com/bfs/wbi/fedcba9876543210fedcba9876543210.png'}};
 
+test('unresolved exact analysis reuses responsibility across model steps while changed observations remain legal',async t=>{
+ const f=await fixture(t);
+ await f.repo.configure(f.bot.tenant_id,f.id,2,{enabled:true,scopes:['public.read','media.analyze'],model:{provider:'bot'}});
+ const args={bvid:'BV1xx411c7mD',question:'inspect evidence'},origin={scope:'private:768687099',eventId:'original',objective:'inspect evidence'};
+ const first=await f.repo.admit(f.bot,f.call('analyze',args,{origin}));
+ for(const state of ['queued','claimed','dispatching','unknown']){
+  await f.db.query('UPDATE tool_effects SET state=$2 WHERE id=$1',[first.id,state]);
+  const repeated=await f.repo.admit(f.bot,f.call('analyze',args,{origin,stepId:'new-step-'+state}));
+  assert.equal(repeated.id,first.id);assert.equal(repeated.state,state);
+ }
+ const changed=await f.repo.admit(f.bot,f.call('analyze',{...args,question:'inspect a different detail'},{origin,stepId:'new-question'}));
+ assert.notEqual(changed.id,first.id);
+ const independent=await f.repo.admit(f.bot,f.call('analyze',args,{origin,workId:'independent-responsibility',stepId:'independent'}));
+ assert.notEqual(independent.id,first.id);
+ await f.db.query("UPDATE tool_effects SET state='finished' WHERE id=$1",[first.id]);
+ const fresh=await f.repo.admit(f.bot,f.call('analyze',args,{origin,stepId:'fresh-after-confirmation'}));
+ assert.notEqual(fresh.id,first.id,'completed analysis does not prohibit a later deliberate observation');
+});
+
 test('identical cross-Work searches reuse original receipts without refreshing age or crossing audience and account fences',async t=>{
  const f=await fixture(t);let searches=0;
  const executor=new BilibiliExecutor(f.db,f.root,f.key,new BiliWeb(async url=>String(url).includes('/nav')?json(signingNav):(searches++,json({result:[{bvid:'BV1xx411c7mD',title:'original evidence',pic:'https://i0.hdslb.com/bfs/archive/fixture.jpg'}]}))));
@@ -606,4 +625,21 @@ test('QQ unknown cannot be refunded or billed twice across replay and late recei
  await f.db.query("UPDATE autonomy_cycles SET finished_at=now(),usage='{\"externalActions\":1}' WHERE id=$1",[cycle]);
  assert.equal((await update('confirmed')).status,'confirmed');
  assert.equal(await externalCount(f.db,cycle),1);
+});
+
+
+test('anonymous WBI navigation accepts only actual logged-out signing metadata',async()=>{
+ const images={img_url:'https://i0.hdslb.com/bfs/wbi/0123456789abcdef0123456789abcdef.png',sub_url:'https://i0.hdslb.com/bfs/wbi/fedcba9876543210fedcba9876543210.png'};
+ let requested=0;
+ const web=new BiliWeb(async(url)=>{requested++;return new Response(JSON.stringify(String(url).includes('/nav')?{code:-101,data:{isLogin:false,wbi_img:images}}:{code:0,data:{verified:true}}),{headers:{'Content-Type':'application/json'}})});
+ assert.deepEqual(await web.signed('/x/player/wbi/v2',{aid:'1',cid:'2'}),{verified:true});assert.equal(requested,2);
+ // No sign-in exception for expired account identity, malformed signing material,
+ // other platform errors, or another endpoint carrying the same data.
+ for(const [code,data] of [[-101,{isLogin:false,wbi_img:{...images,img_url:'https://evil.test/a.png'}}],[-101,{isLogin:false}],[-352,{isLogin:false,wbi_img:images}],[-101,{isLogin:true,wbi_img:images}]] as const){
+  const rejected=new BiliWeb(async()=>new Response(JSON.stringify({code,data})));
+  await assert.rejects(()=>rejected.signed('/x/player/wbi/v2',{aid:'1'}));
+ }
+ const expired=new BiliWeb(async()=>new Response(JSON.stringify({code:-101,data:{isLogin:false,wbi_img:images}})));
+ await assert.rejects(()=>expired.signed('/x/player/wbi/v2',{aid:'1'},{cookies:{SESSDATA:'expired'},refreshToken:''}));
+ await assert.rejects(()=>expired.get('/x/web-interface/view'),(error:any)=>error.code==='auth_required');
 });

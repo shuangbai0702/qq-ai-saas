@@ -1,0 +1,17 @@
+{
+  "ffmpegSha256": "3256173f3f8bffd7df12227c68adf68025edb1832273a9530688a7bb1ed8edec",
+  "ffprobeSha256": "f0d36ecbbdd3bcfac3efa078c96c7271c2e68b3810595552ac3b7f17e9a65c52",
+  "ffprobe": "C:/FishBotPredeploy20261112/media-asr-20261113/ffmpeg-runtime/ffmpeg-9.0.2-essentials_build/bin/ffprobe.exe",
+  "exitCodes": [
+    0,
+    0
+  ],
+  "ffmpeg": "C:/FishBotPredeploy20261112/media-asr-20261113/ffmpeg-runtime/ffmpeg-9.0.2-essentials_build/bin/ffmpeg.exe",
+  "extractorSha256": "256feca8e274e5da655e2a284fabafd9f554365eb164862089dacd4e8276d282",
+  "archiveBytes": 35430500,
+  "versions": [
+    "ffmpeg version 9.0.2-essentials_build-www.gyan.dev Copyright (c) 2000-2026 the FFmpeg developers",
+    "ffprobe version 9.0.2-essentials_build-www.gyan.dev Copyright (c) 2007-2026 the FFmpeg developers"
+  ],
+  "archiveSha256": "4705843ccaaf54257c16ad90f3e952ece33c17df964ecf7bfdbb0f49c7171077"
+}

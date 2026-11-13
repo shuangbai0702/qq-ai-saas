@@ -15,6 +15,7 @@ import readonly_journal as journal_module
 from readonly_journal import ReadonlyJournal,ContextReconstructionDenied
 from context_protocol import READONLY_CURRENT,model_json,SOURCE
 import summary_material as material
+from summary_stream_fixture import summary_provider
 from behavior import BehaviorStore
 
 SCOPE='private:12345678'
@@ -172,7 +173,7 @@ class ReserveFallbackTests(unittest.IsolatedAsyncioTestCase):
                 event=f'fb-{index}';reply=f'真实回复{index}'
                 rows=material.snapshots([sourced(event,f'真实问题{index}'),{'role':'assistant','content':reply}],SCOPE)
                 store.reflection.record(SCOPE,'12345678',event,f'真实问题{index}',reply,materials=rows)
-            self.assertTrue(store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=summarize),lambda:True,{},var))
+            self.assertTrue(store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},summary_provider(summarize),lambda:True,{},var))
             for _ in range(8):await asyncio.sleep(0)
             if store.reflection.task:await asyncio.wait_for(store.reflection.task,5)
             row=store.db.execute('SELECT id,summary_id FROM memory_reconstruction_checkpoints WHERE scope=?',(SCOPE,)).fetchone()
@@ -207,7 +208,7 @@ class PendingCoverageTests(unittest.IsolatedAsyncioTestCase):
             event=f'held-{index}';reply=f'已确认回复{index}'
             rows=material.snapshots([sourced(event,f'真实问题{index}'),{'role':'assistant','content':reply}],scope)
             self.store.reflection.record(scope,'12345678',rows[0]['event'],f'真实问题{index}',reply,materials=rows)
-        self.assertTrue(self.store.reflection.maybe_start(scope,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=summarize),lambda:True,metrics,self.var))
+        self.assertTrue(self.store.reflection.maybe_start(scope,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},summary_provider(summarize),lambda:True,metrics,self.var))
         await self.store.reflection.task
         row=self.db.execute('SELECT id,state,pending_events,round_count FROM memory_reconstruction_checkpoints WHERE scope=?',(scope,)).fetchone()
         self.assertIsNotNone(row,(metrics,self.db.execute("SELECT * FROM memory_checkpoint_issues").fetchall()));self.assertEqual(row[1:],('available',None,35))

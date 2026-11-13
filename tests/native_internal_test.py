@@ -21,6 +21,46 @@ class Provider:
 
 class NativeTests(unittest.IsolatedAsyncioTestCase):
     def control(self,**kw):return RunControl(**{'model_calls':4,'tool_calls':3,'tokens':24000,'seconds':10,'current':lambda:True,**kw})
+    async def test_unknown_tool_and_invalid_arguments_return_feedback_then_recover(self):
+        observed=[]
+        class Read(FunctionTool):
+            async def call(self,context,**arguments):observed.append(arguments);return 'verified-result'
+        tool=Read(name='bilibili_video_info',description='real registered fixture',parameters={'type':'object','properties':{'page':{'type':'integer','minimum':1}},'required':['page'],'additionalProperties':False})
+        async def reply(n,kw):
+            if n==1:return LLMResponse(role='assistant',tools_call_name=['公开视频画面核查'],tools_call_args=[{}],tools_call_ids=['unknown'])
+            if n==2:
+                self.assertIn('Available tools are: bilibili_video_info',str(kw))
+                return LLMResponse(role='assistant',tools_call_name=['bilibili_video_info'],tools_call_args=[{'page':'wrong'}],tools_call_ids=['invalid'])
+            if n==3:
+                self.assertIn('invalid_tool_arguments',str(kw))
+                return LLMResponse(role='assistant',tools_call_name=['bilibili_video_info'],tools_call_args=[{'page':1}],tools_call_ids=['valid'])
+            self.assertIn('verified-result',str(kw));return LLMResponse(role='assistant',completion_text='recovered')
+        result=await run(Provider(reply),self.control(),'read','system',tools=[tool])
+        self.assertEqual(result['status'],'completed');self.assertEqual(observed,[{'page':1}]);self.assertEqual(result['usage']['modelCalls'],4)
+
+    async def test_cycle_reserve_precedes_provider_and_settles_actual_usage(self):
+        events=[]
+        async def budget(request,phase,tokens):events.append((request,phase,tokens))
+        async def reply(n,kw):
+            self.assertEqual(events[-1][1],'reserve')
+            return LLMResponse(role='assistant',completion_text='done',usage=TokenUsage(input_other=10,output=3))
+        await BoundedProvider(Provider(reply),self.control(model_budget=budget)).text_chat(prompt='fixture')
+        self.assertEqual([v[1] for v in events],['reserve','settled']);self.assertEqual(events[-1][2],13);self.assertEqual(events[0][0],events[1][0])
+
+    async def test_cycle_failures_release_only_proven_not_sent(self):
+        for stage,phase in [('request_not_sent','released'),(None,'unknown')]:
+            events=[]
+            async def budget(request,state,tokens):events.append(state)
+            async def reply(n,kw):
+                error=RuntimeError('fixture');error._fishbot_submission_stage=stage;raise error
+            with self.assertRaises(RuntimeError):await BoundedProvider(Provider(reply),self.control(model_budget=budget)).text_chat(prompt='fixture')
+            self.assertEqual(events,['reserve',phase])
+
+    async def test_failed_cycle_reserve_never_calls_provider(self):
+        async def budget(*args):raise RuntimeError('budget exhausted')
+        provider=Provider(None)
+        with self.assertRaises(RuntimeError):await BoundedProvider(provider,self.control(model_budget=budget)).text_chat(prompt='fixture')
+        self.assertEqual(provider.calls,0)
     async def test_diagnostics_correlate_usage_without_logging_prompt_or_changing_request(self):
         seen=[]
         async def reply(n,kw):

@@ -1,0 +1,145 @@
+{
+  "at": "2026-11-13T10:57:02.902Z",
+  "boundedProviderCalls": 1,
+  "providerCalls": 1,
+  "wrapperPythonConfigured": true,
+  "tests": [
+    {
+      "name": "media-readiness",
+      "ok": true,
+      "result": {
+        "ready": true,
+        "code": "ready",
+        "reason": "FFmpeg/ffprobe与受监督进程树已通过本机准入；模型接口支持仍以真实执行为准",
+        "asrConfigured": true
+      }
+    },
+    {
+      "name": "real-public-subtitle-pagination",
+      "ok": false,
+      "error": "Error",
+      "message": "No pageable public subtitles supplied"
+    },
+    {
+      "name": "real-four-frame-audio-asr-provider",
+      "ok": true,
+      "result": {
+        "modality": "frames+asr",
+        "bvid": "BV1WigzztEyx",
+        "cid": 25827875444,
+        "part": 1,
+        "requestedClip": [
+          30,
+          38
+        ],
+        "clip": [
+          30,
+          38
+        ],
+        "frameTimes": [
+          30.046,
+          32.046,
+          34.046,
+          36.046
+        ],
+        "requestedFrameCount": 4,
+        "requestedTimes": [
+          30,
+          32,
+          34,
+          36
+        ],
+        "missingFrames": [],
+        "timestampBasis": "decoded source PTS",
+        "frameOffsets": [
+          0.045999999999999375,
+          0.045999999999999375,
+          0.045999999999999375,
+          0.045999999999999375
+        ],
+        "frameImageMaxEdge": 256,
+        "crop": null,
+        "sourceSize": {
+          "width": 640,
+          "height": 360
+        },
+        "analysisComplete": true,
+        "finishReason": "stop",
+        "frameCount": 4,
+        "coveredRanges": [
+          [
+            30.046,
+            30.046
+          ],
+          [
+            32.046,
+            32.046
+          ],
+          [
+            34.046,
+            34.046
+          ],
+          [
+            36.046,
+            36.046
+          ]
+        ],
+        "audio": {
+          "trackDownloaded": true,
+          "analyzed": true,
+          "source": {
+            "bvid": "BV1WigzztEyx",
+            "cid": 25827875444,
+            "part": 1
+          },
+          "segments": [
+            {
+              "from": 30,
+              "to": 33.24,
+              "textLength": 15
+            },
+            {
+              "from": 33.24,
+              "to": 36.04,
+              "textLength": 11
+            },
+            {
+              "from": 36.04,
+              "to": 38,
+              "textLength": 11
+            }
+          ],
+          "kind": "asr",
+          "clip": [
+            30,
+            38
+          ],
+          "timestampBasis": "ASR片段相对时间加源片段start；不是采样级对齐",
+          "limitations": [
+            "ASR为转写推断，可能错字；声音情绪、音乐及非语音未分析"
+          ]
+        },
+        "limitations": [
+          "只分析指定片段的离散采样帧",
+          "帧间动作、完整时间段未获验证",
+          "ASR为转写推断，可能错字；声音情绪、音乐及非语音未分析",
+          "未观看完整视频"
+        ],
+        "usage": {
+          "modelRequests": 1,
+          "downloadBytes": 8057091,
+          "imageBytes": 17119,
+          "providerUsage": {
+            "prompt_tokens": 5121,
+            "completion_tokens": 1002,
+            "total_tokens": 6123
+          },
+          "costStatus": "unknown"
+        }
+      }
+    }
+  ],
+  "sentFrameCount": 4,
+  "model": "gemini-3.8-flash",
+  "providerOrigin": "https://api.llmgo.net"
+}

@@ -6,6 +6,10 @@ from behavior import BehaviorStore
 from memory_reflection import Reflection
 from memory_scope import fact_rows,summary_rows
 from data_admin import run
+from context_protocol import event_message
+from summary_material import snapshots
+from readonly_journal import Prepared,ReadonlyJournal
+from summary_stream_fixture import summary_provider
 
 
 class SharedMemory(unittest.IsolatedAsyncioTestCase):
@@ -27,6 +31,18 @@ class SharedMemory(unittest.IsolatedAsyncioTestCase):
     def summary(self,text,scope,people=(),events=('old',)):
         identifier=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated) VALUES(?,?,?,?)',(scope,text,json.dumps(events),self.now)).lastrowid
         self.db.executemany('INSERT INTO memory_summary_people VALUES(?,?)',[(identifier,p) for p in people]);self.db.commit();return identifier
+    def record_summary_batch(self,question,answer):
+        history=[{'role':'system','content':'fixture policy'}]
+        for i in range(35):
+            event='round'+str(i)
+            user=event_message({'scope':self.group,'sender_id':self.person,'event_id':event},question)
+            reply={'role':'assistant','content':answer}
+            history.extend([user,reply])
+            self.store.reflection.record(self.group,self.person,event,question,answer,materials=snapshots([user,reply],self.group))
+        journal=ReadonlyJournal(self.db,self.group);journal.serial=1
+        if not journal.commit(Prepared(1,None,history,history,{},1,self.now,'initial')):
+            raise AssertionError('35 confirmed fixture rounds must commit to the real Journal')
+        self.store.model_journals[self.group]=journal
     def test_trusted_same_qq_group_private_group_and_other_people(self):
         self.say('我喜欢喝红茶')
         for scope in [self.private]:
@@ -103,11 +119,16 @@ class SharedMemory(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.memory.recall(self.private,self.person,'木雕师',self.now),[])
         self.assertFalse(self.db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_search'").fetchone())
     async def test_new_reflection_persists_real_participants_and_survives_restart(self):
-        for i in range(35):self.store.reflection.record(self.group,self.person,'round'+str(i),'平江路夜景','夜景很好')
+        self.record_summary_batch('平江路夜景','夜景很好')
         async def text_chat(**kw):return NS(completion_text=json.dumps({'summary':'平江路夜景，提到87654321但此人未参与。'}))
-        self.store.reflection.maybe_start(self.group,{'memorySummary':True,'summaryRounds':35},NS(text_chat=text_chat),lambda:True,{},contextvars.ContextVar('event',default=None))
+        from semantic_runtime import finish_semantic_batches
+        cfg={'memory':True,'memoryAutoCapture':True,'memorySummary':True,'selfDevelopment':True,'summaryRounds':35,'ownerUin':self.person}
+        self.store.reflection.checkpoint_callback=lambda scope:finish_semantic_batches(self.store,cfg,scope)
+        self.assertTrue(self.store.reflection.maybe_start(self.group,cfg,summary_provider(text_chat),lambda:True,{},contextvars.ContextVar('event',default=None)))
         await self.store.reflection.task
         self.assertEqual([r[0] for r in self.db.execute('SELECT subject FROM memory_summary_people')],[self.person])
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds WHERE scope=?',(self.group,)).fetchone()[0],0)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material WHERE scope=?',(self.group,)).fetchone()[0],0)
         self.store.close();self.store=BehaviorStore(self.path);self.db=self.store.db
         self.assertFalse(self.store.reflection.recall(self.private,'夜景',subject=self.person))
         # Merely mentioning a QQ cannot disclose this group's history to it.
@@ -117,11 +138,11 @@ class SharedMemory(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r[0] for r in self.db.execute('SELECT subject FROM memory_summary_people')],[self.person])
     async def test_late_reflection_cannot_restore_shared_forgotten_sources(self):
         self.say('记住：夜景=平江路')
-        for i in range(35):self.store.reflection.record(self.group,self.person,'round'+str(i),'平江路','夜景')
+        self.record_summary_batch('平江路','夜景')
         entered=asyncio.Event();release=asyncio.Event()
-        async def text_chat(**kw):entered.set();await release.wait();return NS(completion_text='平江路旧摘要')
-        self.store.reflection.maybe_start(self.group,{'memorySummary':True,'summaryRounds':35},NS(text_chat=text_chat),lambda:True,{},contextvars.ContextVar('event',default=None))
-        await entered.wait();self.say('忘记：夜景',self.private);release.set();await self.store.reflection.task
+        async def text_chat(**kw):entered.set();await release.wait();return NS(completion_text=json.dumps({'summary':'平江路旧摘要'},ensure_ascii=False))
+        self.assertTrue(self.store.reflection.maybe_start(self.group,{'memorySummary':True,'summaryRounds':35},summary_provider(text_chat),lambda:True,{},contextvars.ContextVar('event',default=None)))
+        await asyncio.wait_for(entered.wait(),3);self.say('忘记：夜景',self.private);release.set();await self.store.reflection.task
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],0)
     async def test_late_cross_scope_fact_vector_is_discarded(self):
         self.say('记住事件：爱好=红茶',self.private)

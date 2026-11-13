@@ -1,0 +1,26 @@
+{
+  "guardRoot": "C:/FishBotPredeploy20261112/control",
+  "ffmpeg": "C:/FishBotPredeploy20261112/media-asr-20261113/ffmpeg-runtime/ffmpeg-9.0.2-essentials_build/bin/ffmpeg.exe",
+  "ffprobe": "C:/FishBotPredeploy20261112/media-asr-20261113/ffmpeg-runtime/ffmpeg-9.0.2-essentials_build/bin/ffprobe.exe",
+  "asr": {
+    "executable": "C:/FishBotPredeploy20261112/media-asr-20261113/venv/Scripts/python.exe",
+    "args": [
+      "-B",
+      "C:/FishBotPredeploy20261112/media-asr-20261113/media-asr.py",
+      "--model",
+      "C:/FishBotPredeploy20261112/media-asr-20261113/model-small",
+      "--audio",
+      "{audio}",
+      "--output",
+      "{output}"
+    ],
+    "checkArgs": [
+      "-B",
+      "C:/FishBotPredeploy20261112/media-asr-20261113/media-asr.py",
+      "--model",
+      "C:/FishBotPredeploy20261112/media-asr-20261113/model-small",
+      "--check"
+    ],
+    "timeoutMs": 180000
+  }
+}

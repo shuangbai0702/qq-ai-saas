@@ -61,7 +61,7 @@ export async function installFavoriteRuntime(agent:NodeAgent,release:string){
 }
 
 const marker=Symbol.for('fishbot.autonomous.maintenance');
-export async function installAutonomousRuntime(agent:NodeAgent,release:string){
+export async function installAutonomousRuntime(agent:NodeAgent,release:string,options:{start?:boolean}={}){
  if(!/^[a-f0-9]{64}$/.test(release)||agent.closed)throw new Error('Invalid maintenance owner or release');
  const live=agent as any,previous=live[marker];
  if(previous?.release===release&&!agent.autonomy.closed)return{unchanged:true,pid:process.pid,release};
@@ -86,7 +86,9 @@ export async function installAutonomousRuntime(agent:NodeAgent,release:string){
   installed=new AutonomyCoordinator(agent.db,runtimeClient(agent.db));agent.autonomy=installed;
   for(const owned of children){if(agent.host.children.get(owned.id)!==owned.child||owned.child.pid!==owned.pid||owned.child.exitCode!==null)throw new Error('A child owner changed during maintenance')}
   live[marker]={release,at:new Date().toISOString()};
-  installed.start();
+  // A release may replace all owners while the existing Agent remains held.
+  // Do not start the immediate coordinator tick until that release resumes.
+  if(options.start!==false)installed.start();else installed.closed=true;
   return{pid:process.pid,release,preservedChildren:children.map(({id,pid})=>({id,pid})),coordinator:installed.owner};
  }catch(error){
   await installed?.stop();agent.host.start=old.start;agent.ai.applyConfig=old.apply;agent.shared.attach=old.attach;prototype.health=old.health;prototype.context=old.context;

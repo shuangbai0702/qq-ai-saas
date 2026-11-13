@@ -111,7 +111,7 @@ class SocialTests(unittest.TestCase):
   self.assertEqual(self.s.image_status('group:1',cfg,1000,'家人重病了')['reason'],'sensitive')
   self.assertEqual(self.s.image_status('group:1',{**cfg,'memeEnabled':False},1000)['reason'],'disabled')
   self.s.reserve_image('group:1',1000)
-  self.assertEqual(self.s.image_status('group:1',cfg,1001),{'reason':'cooldown','retryAfterSeconds':19})
+  self.assertEqual(self.s.image_status('group:1',{**cfg,'memeCooldownSeconds':3600},1001),{'reason':'available'})
   self.assertTrue(self.s.image_available('group:2',cfg,1001))
   self.assertTrue(self.s.image_available('group:1',cfg,1020))
  def test_no_candidates_cannot_send_invented_marker(self):
@@ -129,7 +129,7 @@ class SocialTests(unittest.TestCase):
  def test_valid_image_and_internal_tag_removed(self):text,img=self.s.select_image('哈哈[MEME:'+FISH_ID+']','private:1',{'memeEnabled':True,'memeProbability':1},1000);self.assertEqual(text,'哈哈');self.assertTrue(Path(img['path']).is_file());self.assertEqual(Path(img['path']).suffix,'.gif')
  def test_invalid_id_cannot_read_path(self):text,img=self.s.select_image('你好[MEME:../../master.key]','p',{'memeEnabled':True,'memeProbability':1},1000);self.assertEqual(text,'你好');self.assertIsNone(img)
  def test_disabled_always_strips_marker(self):self.assertEqual(self.s.select_image('[MEME:laugh]','p',{},1000),('',None))
- def test_cooldown_attempt_reservation(self):self.s.reserve_image('p',1000);self.assertIsNone(self.s.select_image('[MEME:'+FISH_ID+']','p',{'memeEnabled':True},1001)[1]);self.assertIsNotNone(self.s.select_image('[MEME:'+FISH_ID+']','p',{'memeEnabled':True,'memeProbability':1},1061)[1])
+ def test_attempt_statistics_do_not_block_immediate_image_selection(self):self.s.reserve_image('p',1000);self.assertIsNotNone(self.s.select_image('[MEME:'+FISH_ID+']','p',{'memeEnabled':True,'memeCooldownSeconds':3600},1000)[1]);self.assertIsNotNone(self.s.select_image('[MEME:'+FISH_ID+']','p',{'memeEnabled':True},1001)[1])
  def test_old_daily_cap_and_zero_probability_do_not_block_or_erase_stats(self):
   for i in range(80):self.s.reserve_image('p',1000+i*20)
   self.assertIsNotNone(self.s.select_image('[MEME:'+FISH_ID+']','other',{'memeEnabled':True,'dailyMemeLimit':0,'memeProbability':0},3000)[1])

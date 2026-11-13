@@ -1,3 +1,4 @@
+import {execFileSync} from 'node:child_process';
 import test from 'node:test';import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {mkdtemp,mkdir,writeFile,readFile} from 'node:fs/promises';import path from 'node:path';
@@ -90,4 +91,27 @@ test('queue diagnostics expose evidence fields without changing any gate',async(
  assert.ok(info);assert.equal(info.accountMatched,true);assert.equal(info.providerReady,true);assert.equal(info.revision,1);
  assert.equal(info.queueSize,1);const item=info.items[0];
  assert.equal(item.uncertainAttempts,1);assert.equal(item.manual,false);assert.ok(item.fileReadable,'image readability is part of the diagnosis');
+});
+
+
+test('automatic clear annotation is immediately selectable without approval and ignores legacy send caps',async()=>{
+ const {root,bot,owner}=await fixture();owner.caption=async()=>semantic;
+ await owner.maintain(bot,new AbortController().signal);
+ const index=await readFavoriteIndex(root,'a');assert.equal(index.items[0].enabled,true);assert.equal(index.items[0].manual,undefined);
+ const python=path.resolve(`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`);
+ const probe=String.raw`import sys,json,sqlite3
+sys.path.insert(0,'adapters/astrbot')
+from social import SocialStore
+from qq_favorites import catalog
+root=sys.argv[1];s=SocialStore(sqlite3.connect(':memory:'),root)
+cfg={'memeEnabled':True,'memePacks':[],'_qqAccount':'90000','memeCooldownSeconds':3600,'dailyMemeLimit':0,'memeProbability':0}
+items=catalog(root,'90000');assert len(items)==1
+s.reserve_image('private:12345',1000)
+clean,image=s.select_image('[MEME:'+items[0]['id']+']','private:12345',cfg,1000,candidates=items)
+assert image and image['id']==items[0]['id']
+assert catalog(root,'90001')==[]
+s.close()
+print(json.dumps({'selected':image['id'],'approved':False}))`;
+ const out=JSON.parse(execFileSync(python,['-B','-c',probe,path.join(root,'bots','a')],{encoding:'utf8',windowsHide:true}));
+ assert.equal(out.selected,index.items[0].id);assert.equal(out.approved,false);
 });

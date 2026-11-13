@@ -1,0 +1,8 @@
+# CPU-only bounded subprocess; validated on Windows Python 3.11 and 3.13.
+faster-whisper==1.2.1
+ctranslate2==4.9.0
+av==16.0.1
+numpy==2.4.6
+onnxruntime==1.31.1
+tokenizers==0.23.3
+huggingface-hub==2.4.0

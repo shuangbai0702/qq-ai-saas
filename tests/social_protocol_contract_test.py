@@ -335,6 +335,23 @@ class SocialContract(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.extra['_hosted_tool_sticker'])
         await group_actions.send(self.event,cfg,self.st.db,'55555','重复', '',lambda:True,lambda *args:None)
         self.assertEqual(len(self.sent),2)
+    async def test_consecutive_owned_events_can_send_images_without_a_cooldown(self):
+        self.event.get_group_id=lambda:''
+        async def groups():return [{'group_id':55555}]
+        async def member(**kw):return {'user_id':kw['user_id']}
+        async def send(**kw):self.sent.append(kw);return {'message_id':len(self.sent)+320}
+        self.event.bot.get_group_list=groups;self.event.bot.get_group_member_info=member;self.event.bot.send_group_msg=send
+        cfg={'groups':['55555'],'behavior':{'ownerUin':'12345678','memeEnabled':True,'memeCooldownSeconds':3600,'dailyMemeLimit':0}}
+        for event_id in ('image-one','image-two'):
+            self.extra.clear();self.event.message_obj.message_id=event_id
+            self.extra['_hosted_tool_sticker']={'id':'qf_test','bytes':self.raw}
+            self.st.social.reserve_image('group:55555')
+            result=json.loads(await group_actions.send(self.event,cfg,self.st.db,'55555','', '',lambda:True,lambda *args:None,True,self.st.social))
+            self.assertEqual(result['status'],'confirmed');self.assertTrue(result['image'])
+        self.assertEqual(len(self.sent),2)
+        for message in self.sent:
+            self.assertEqual(base64.b64decode(message['message'][0]['data']['file'][9:]),self.raw)
+
     async def test_captured_gif_sends_original_while_preview_stays_png(self):
         raw={'message_id':42,'message':[{'type':'image','data':{'url':'https://qpic.cn/fixture.gif','sub_type':1}}]}
         with patch.object(sticker_collection,'download',return_value=self.raw):

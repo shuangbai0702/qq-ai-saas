@@ -1,0 +1,76 @@
+{
+  "kind": "real-postgresql-budget-evidence",
+  "passed": 7,
+  "exitCode": 0,
+  "schemaRemoved": true,
+  "schema": "fishbot_budget_probe_5c0d6c2a59bb4a1fa273f37a764016ef",
+  "bundleSha256": "26291bedd989b414e4348b3aa907d02a52fd3d435a1e8ad38e467c01ff8c3fa8",
+  "scenarios": [
+    {
+      "name": "same-cycle-call-limit:main",
+      "distinctConnections": true,
+      "secondWaitedForDatabaseLock": true
+    },
+    {
+      "name": "same-cycle-call-limit:media",
+      "distinctConnections": true,
+      "secondWaitedForDatabaseLock": true
+    },
+    {
+      "name": "same-cycle-token-limit",
+      "distinctConnections": true,
+      "secondWaitedForDatabaseLock": true
+    },
+    {
+      "name": "cycle-finish-media:true",
+      "distinctConnections": true,
+      "secondWaitedForDatabaseLock": true
+    },
+    {
+      "name": "cycle-finish-media:false",
+      "distinctConnections": true,
+      "secondWaitedForDatabaseLock": true
+    },
+    {
+      "name": "different-cycles-daily-used-plus-reserved",
+      "distinctConnections": true,
+      "secondWaitedForDatabaseLock": true
+    },
+    {
+      "name": "same-goal-revision-cas",
+      "distinctConnections": true,
+      "secondWaitedForDatabaseLock": true
+    }
+  ],
+  "paidModelCalls": 0,
+  "externalWrites": 0,
+  "productionBusinessRowsModified": false,
+  "notes": [
+    "Synthetic fixture rows existed only in a random exclusive search_path schema.",
+    "pg_stat_activity confirmed real lock waits on distinct backend PIDs.",
+    "No production schema was included in the application search_path."
+  ],
+  "executedSourceHashes": {
+    ".local/pg-budget-probe/probe.ts": "e450a7001a16c635c55b80c59e2f2b967e4acf5294007ee40f573ebadd9c941c",
+    "packages/database/model-request-budget.ts": "9f8ac2e746e9603b3e95adba62e87a77c1216baef45694cd7b2dfffaab086de4",
+    "packages/database/autonomous.ts": "ba816bc2c191b8bd4a85107f601b0fa6953ed3cde1fe69de944175d17e8e48a0",
+    "packages/database/tool-effects.ts": "ec6dea51306c257670e6141f3966fa8d6e6d18d8a3caf6ca3510ec60907b679a",
+    "packages/database/index.ts": "a7bec11a8ce815527486cc9b4b6477892751ce934112753243bbc8f342b1aba2"
+  },
+  "executedArtifactHashes": {
+    "probe.mjs": "26291bedd989b414e4348b3aa907d02a52fd3d435a1e8ad38e467c01ff8c3fa8",
+    "migrations/001_initial.sql": "a80a876aca5473eb82fa594ad1e1d2bc8d262bcc4bf41a42b2c3ae6ce2034207",
+    "migrations/002_runtime_groups.sql": "910a5ab5d1f0de36b1e8b8864fd373f349aaea33ff8ba7cb2008b38d1f9ea55f",
+    "migrations/003_invitations.sql": "fe1e443227c6bdd4675376add12cc8028e93a9aeaf25501014787cf7143c4cb9",
+    "migrations/004_bot_quotas.sql": "c903be16e95f60c9b1104aff506886e931786526b61ba6deb0c4ebb27aa28757",
+    "migrations/005_qq_binding_kinds.sql": "e0c416145e19f56801820c4b6e43f95a42fd10eded778c227d5aec148a490f51",
+    "migrations/006_autonomous_lifecycle.sql": "18a1501d34e629de51643160a506607ea07c24f1ad02b846700d66568961e68a",
+    "migrations/007_shared_autonomous_policy.sql": "fe843839ce7703887df81b8f0e9f47f112119e432594ae8ef010ec8aae43e2cf",
+    "migrations/008_inner_owned_capabilities.sql": "eb8c097df61613879d92249b13d84a22fbec3fb48d439ed7e77318e26968952c",
+    "migrations/009_bilibili_tools.sql": "1ba5b26df4b09727bd6aff7e48c96a166cede44ac948f84c8d31b93b5fc7a7bc",
+    "migrations/010_bilibili_media_jobs.sql": "41a5e2f81bbfba50cd95e1cbcc9dbda45acdc3425c94c42598d8f557635a8cee",
+    "migrations/011_outer_context_cycles.sql": "c09d3c41a078ad398954394060a445338fdabff5b63e75ae4b49c22a0dd10e68",
+    "migrations/012_external_action_budget.sql": "c2b43a6388e537f71096cbf2e1bc04d09b194f861d3c682980f0d0b26cd6e84e"
+  },
+  "sourceRelocatedWithoutRerun": true
+}

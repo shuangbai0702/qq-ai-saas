@@ -18,7 +18,7 @@ test('self interest choices use actual reads, preserve persona, remain scoped an
 test('pinned native internal runner feeds tools, stops at barriers and respects budgets',{timeout:60000},async()=>{
  const python=path.resolve('references/astrbot/.venv/'+(process.platform==='win32'?'Scripts/python.exe':'bin/python'));
  const result=await promisify(execFile)(python,['-B','tests/native_internal_test.py'],{windowsHide:true,timeout:45000,maxBuffer:1024*1024});
- assert.match(result.stderr,/Ran 15 tests/);assert.match(result.stderr,/\bOK\b/);
+ assert.match(result.stderr,/Ran 19 tests/);assert.match(result.stderr,/\bOK\b/);
 });
 test('native output preserves service identity, actual receipts, unknown and hot-switch fences',{timeout:120000},async()=>{
  const python=path.resolve('references/astrbot/.venv/'+(process.platform==='win32'?'Scripts/python.exe':'bin/python'));

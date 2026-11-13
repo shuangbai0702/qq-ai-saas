@@ -65,7 +65,7 @@ export async function managedProcess(executable:string,args:string[],options:{cw
  const kill=()=>{if(closed||!child.pid)return;if(process.platform==='win32')child.stdin.end();else{try{process.kill(-child.pid,'SIGTERM')}catch{}}killer??=setTimeout(()=>{if(!closed&&child.pid)try{if(process.platform==='win32')child.kill('SIGKILL');else process.kill(-child.pid,'SIGKILL')}catch{}},2000);killer.unref()};
  const max=options.maxOutput??65536;
  child.stdout.on('data',chunk=>{if(Buffer.byteLength(output)+chunk.length>max){overflow=true;kill();return}output+=chunk.toString('utf8')});
- child.stderr.on('data',chunk=>{if(errors.length<4096)errors+=chunk.toString('utf8').slice(0,4096-errors.length)});
+ child.stderr.on('data',chunk=>{errors=(errors+chunk.toString('utf8')).slice(-16384)});
  signal.addEventListener('abort',kill,{once:true});if(signal.aborted)kill();
  try{
   const code=await new Promise<number|null>((resolve,reject)=>{child.once('error',reject);child.once('close',resolve)});closed=true;

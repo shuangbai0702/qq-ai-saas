@@ -72,7 +72,7 @@ class Preflight(unittest.IsolatedAsyncioTestCase):
         with patch('companion_schedule.discarded',side_effect=self.reasons.append):await self.planner.task
         self.assertEqual(len(self.calls),1,'no automatic repair request')
         self.assertEqual(self.calls[0]['max_tokens'],8192)
-        self.assertEqual(autonomy.DECISION_OUTPUT_TOKENS,2048,'group budget stays unchanged')
+        self.assertEqual(autonomy.DECISION_OUTPUT_TOKENS,8192,'current shared decision cap stays unchanged')
         self.assertIsNone(autonomy.decision_token_limit.get())
         return metrics
     async def test_owner_uses_separate_budget_and_adopts_complete_decision(self):

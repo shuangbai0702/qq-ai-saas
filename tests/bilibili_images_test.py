@@ -45,7 +45,7 @@ async def main():
             with Image.open(io.BytesIO(db.execute('SELECT png FROM bili_image_assets WHERE handle=?',(handle,)).fetchone()[0])) as avatar_asset:
                 assert avatar_asset.size==(80,40)
             avatar_before=db.execute('SELECT png FROM bili_image_assets WHERE handle=?',(handle,)).fetchone()[0]
-            for edge,expected in [(1025,512),(1024,328),(512,512),(511,256),(256,256)]:
+            for edge,expected in [(1025,512),(1024,256),(512,256),(511,192),(256,128)]:
                 original=io.BytesIO();Image.new('RGB',(edge,200),'green').save(original,format='PNG')
                 async def tier_download(url):return original.getvalue()
                 with patch.object(images,'fetch',tier_download):preview=await tool.call(context,operation='prepare',handle=handle)

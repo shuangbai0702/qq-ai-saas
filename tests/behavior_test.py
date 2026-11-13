@@ -23,10 +23,14 @@ class BehaviorTests(unittest.TestCase):
   self.s.observe('p1','u1','记住：秘密=甲','e1');self.assertEqual(self.s.observe('g1','u1','秘密','e2')['facts'],[])
  def test_no_speculative_fact(self):self.assertEqual(self.s.observe('g','u','主人刚才夸你了，你应该记得','e')['facts'],[])
  def test_relation_normal_chat_dedup_cooldown_persistence_and_memory_off(self):
-  self.assertEqual(self.s.observe('g','u','你好','e',now=100,memory_enabled=False)['affinity'],1)
-  self.assertEqual(self.s.observe('g','u','谢谢','e',now=200)['affinity'],1)
-  self.assertEqual(self.s.observe('g','u','你好','e2',now=200)['affinity'],1)
+  # Observation supplies evidence; the existing semantic checkpoint owns
+  # relationship changes. Text keywords must never invent affinity.
+  self.assertEqual(self.s.observe('g','u','你好','e',now=100,memory_enabled=False)['affinity'],0)
+  self.s.db.execute("UPDATE relations SET affinity=2 WHERE scope='g' AND subject='u'");self.s.db.commit()
+  self.assertEqual(self.s.observe('g','u','谢谢','e',now=200)['affinity'],2)
+  self.assertEqual(self.s.observe('g','u','你好','e2',now=200)['affinity'],2)
   self.assertEqual(self.s.observe('g','u','今天天气真好','e3',now=401)['affinity'],2)
+  self.assertEqual(self.s.db.execute("SELECT count(*) FROM relation_events WHERE scope='g'").fetchone()[0],3)
   self.s.close();self.s=BehaviorStore(self.file)
   self.assertEqual(self.s.observe('g','u','路过','e4',now=402,directed=False)['affinity'],2)
   self.assertEqual(self.s.observe('other','u','路过','e4',now=402,directed=False)['affinity'],0)
@@ -35,20 +39,23 @@ class BehaviorTests(unittest.TestCase):
   self.s.observe('g','u','记住：饮料=茶','e',now=100)
   self.assertTrue(run(self.file,{'action':'reset_relation','scope':'g','subject':'u','expectedLastSeen':100},self.s.db)['ok'])
   self.assertEqual(self.s.observe('g','u','你好','e',now=101)['affinity'],0)
-  self.assertEqual(self.s.observe('g','u','你好','new',now=102)['affinity'],1)
+  self.assertEqual(self.s.observe('g','u','你好','new',now=102)['affinity'],0)
   self.assertEqual(self.s.memory.recall('g','u','饮料',103)[0]['value'],'茶')
  def test_emotion_expiry_not_extended_by_neutral_traffic_or_internal_timer(self):
-  self.s.observe('g','u','谢谢','e',now=100)
+  self.s.db.execute("INSERT INTO relations(scope,subject,affinity,emotion,expires,last_seen) VALUES('g','u',2,'开心',400,100)");self.s.db.commit()
   self.s.observe('g','u','路过','e2',now=350,directed=False)
   self.assertEqual(self.s.observe('g','u','普通话题','e3',now=401)['emotion'],'平静')
   self.s.observe('internal','u','','timer',now=500)
   self.assertIsNone(self.s.db.execute("SELECT 1 FROM relations WHERE scope='internal'").fetchone())
  def test_negated_emotional_phrases_do_not_invert_emotion(self):
   rejected=self.s.observe('p1','u','我不喜欢你','e1',now=100)
-  self.assertEqual(rejected['emotion'],'有点委屈');self.assertEqual(rejected['affinity'],-1)
+  self.assertEqual(rejected['emotion'],'平静');self.assertEqual(rejected['affinity'],0)
   self.assertEqual(self.s.observe('p2','u','我没有讨厌你','e2',now=100)['emotion'],'平静')
   self.assertEqual(self.s.observe('p3','u','不是喜欢你','e3',now=100)['emotion'],'平静')
- def test_emotion_real_state(self):self.assertEqual(self.s.observe('g','u','谢谢','e',now=100)['emotion'],'开心');self.assertEqual(self.s.observe('g','u','你好','e2',now=500)['emotion'],'平静')
+ def test_emotion_real_state(self):
+  self.s.db.execute("INSERT INTO relations(scope,subject,affinity,emotion,expires,last_seen) VALUES('g','u',2,'开心',400,90)");self.s.db.commit()
+  self.assertEqual(self.s.observe('g','u','谢谢','e',now=100)['emotion'],'开心')
+  self.assertEqual(self.s.observe('g','u','你好','e2',now=500)['emotion'],'平静')
  def test_rolling_hour_limit_persists_across_groups_and_isolates_bots(self):
   cfg={'behavior':{'hourlyInterjectionLimit':20}}
   for i in range(20):
