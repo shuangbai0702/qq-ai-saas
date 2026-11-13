@@ -32,7 +32,7 @@ await mkdir('dist-server/packages/contracts',{recursive:true});
 for(const name of Object.keys(contracts))await copyFile(name,path.join('dist-server',name));
 for(const file of await readdir('packages/database/migrations'))if(file.endsWith('.sql'))migrations['packages/database/migrations/'+file]=sha(await readFile('packages/database/migrations/'+file));
 const artifactHashes={};
-async function artifacts(dir){for(const item of await readdir(dir,{withFileTypes:true})){const name=path.join(dir,item.name);if(item.isDirectory())await artifacts(name);else if(name!=='dist-server/build.json')artifactHashes[name.split(path.sep).join('/')]=sha(await readFile(name))}}
+async function artifacts(dir){for(const item of await readdir(dir,{withFileTypes:true})){const name=path.join(dir,item.name);if(item.isDirectory())await artifacts(name);else if(name.split(path.sep).join('/')!=='dist-server/build.json')artifactHashes[name.split(path.sep).join('/')]=sha(await readFile(name))}}
 await artifacts('dist-server');await artifacts('apps/web/dist');
 const revision=spawnSync('git',['rev-parse','HEAD'],{encoding:'utf8',windowsHide:true});
 let exported;
