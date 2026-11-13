@@ -160,21 +160,22 @@ def commit(db,scope,checkpoint_id,materials,cutoff,*,discarded=(),administrator=
     return media
 
 
-def purge(db,checkpoint_id):
+def purge(db,checkpoint_id,*,preview=False):
     """After the replacement Journal commits, release exact batch rows."""
     # Keep transaction ownership with the caller even when this is its first
     # mutation: releasing an outermost SQLite savepoint would otherwise commit.
+    if preview and not db.in_transaction:raise ValueError('semantic_preview_transaction_required')
     if not db.in_transaction:db.execute('BEGIN')
     db.execute('SAVEPOINT semantic_batch_purge')
     try:
-        result=_purge(db,checkpoint_id)
+        result=_purge(db,checkpoint_id,preview=preview)
         db.execute('RELEASE semantic_batch_purge')
         return result
     except BaseException:
         db.execute('ROLLBACK TO semantic_batch_purge');db.execute('RELEASE semantic_batch_purge');raise
 
 
-def _purge(db,checkpoint_id):
+def _purge(db,checkpoint_id,*,preview=False):
     row=db.execute("SELECT scope,members FROM memory_semantic_batches WHERE checkpoint_id=? AND state='retired'",(checkpoint_id,)).fetchone()
     if not row:return False
     scope,members=row[0],set(json.loads(row[1]))
@@ -288,5 +289,5 @@ def _purge(db,checkpoint_id):
     # Recovery archives obey the same successful exact-batch retirement.
     # They may keep uncompressed evidence and System, never a retired copy.
     import journal_storage
-    journal_storage.retire_archived_members(db,checkpoint_id)
+    journal_storage.retire_archived_members(db,checkpoint_id,verify_active=not preview)
     return True

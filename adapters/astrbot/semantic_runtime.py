@@ -78,7 +78,7 @@ def _fresh_state(st,cfg,scope,checkpoint,journal):
     previous=st.model_journals.get(scope)
     try:
         st.db.execute("UPDATE memory_semantic_batches SET state='retired' WHERE checkpoint_id=?",(checkpoint,))
-        semantic_batch.purge(st.db,checkpoint)
+        semantic_batch.purge(st.db,checkpoint,preview=True)
         permit={**semantic_batch.permit(st.db,checkpoint),'scope':scope}
         st.model_journals[scope]=SimpleNamespace(last=replace(journal.last,base=semantic_retire_projection(journal.last.base,permit)))
         shared=bot_pipeline.conversation_context(st,cfg,scope,subject,'',time.time())
@@ -109,24 +109,6 @@ def _journals_busy(st):
                for journal in st.model_journals.values())
 
 
-def _refresh_projected_journals(st):
-    """Adopt committed disk projections and fence any unstaged old candidate."""
-    import journal_storage
-    updates=[]
-    for journal in st.model_journals.values():
-        if getattr(journal,'db',None) is not st.db or journal.last is None:continue
-        if journal._staged is not None:raise ValueError('semantic_journal_still_staged')
-        value=journal_storage.read_snapshot(st.db,journal.scope_key)
-        if value is None:continue
-        fields={name:copy.deepcopy(value[name]) for name in ('base','wire','state','turns','at','group_turn','base_chars','detail','usage','authority','retirement')}
-        if fields['group_turn'] is not None:fields['group_turn']=tuple(fields['group_turn'])
-        # Build every replacement before changing memory, so malformed disk
-        # evidence cannot leave only a subset of cached scopes refreshed.
-        updates.append((journal,replace(journal.last,serial=journal.serial+1,**fields)))
-    for journal,prepared in updates:
-        journal.serial+=1;journal.last=prepared
-
-
 def finish_semantic_batches(st,cfg,scope):
     """Synchronous owner callback: reserve, replace, purge, retry safely."""
     if st.db.in_transaction:return {'result':'transaction_busy'}
@@ -138,8 +120,10 @@ def finish_semantic_batches(st,cfg,scope):
         if _journals_busy(st):
             _issue(st,scope,checkpoint,'journal_busy_or_unavailable');result['pending']+=1;continue
         if batch_state=='retired':
-            with st.db:semantic_batch.purge(st.db,checkpoint)
-            _refresh_projected_journals(st)
+            try:
+                with st.db:semantic_batch.purge(st.db,checkpoint)
+            except ValueError as error:
+                _issue(st,scope,checkpoint,str(error));result['pending']+=1
             continue
         if checkpoint_state!='available':result['pending']+=1;continue
         journal=st.model_journals.get(scope)
@@ -159,7 +143,6 @@ def finish_semantic_batches(st,cfg,scope):
                 st.reflection.settle_context_reconstruction(permit,False)
                 _issue(st,scope,checkpoint,'journal_replace_refused');result['pending']+=1;continue
             with st.db:semantic_batch.purge(st.db,checkpoint)
-            _refresh_projected_journals(st)
             _issue(st,scope,checkpoint,'retired',resolved=True);result['retired']+=1
         except Exception as error:
             # No HTTP exists on this path. Refund only a still-reserved permit;
@@ -167,7 +150,8 @@ def finish_semantic_batches(st,cfg,scope):
             if permit:
                 row=st.db.execute('SELECT state FROM memory_reconstruction_checkpoints WHERE id=?',(permit['id'],)).fetchone()
                 if row and row[0]=='reserved':st.reflection.settle_context_reconstruction(permit,False)
-            _issue(st,scope,checkpoint,'error:'+type(error).__name__);result['pending']+=1
+            reason=str(error) if str(error)=='semantic_active_journal_reconstruction_required' else 'error:'+type(error).__name__
+            _issue(st,scope,checkpoint,reason);result['pending']+=1
     import semantic_media
     _prune_hot_memory(st)
     result['media']=semantic_media.drain(st.db)

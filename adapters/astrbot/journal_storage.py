@@ -41,7 +41,7 @@ def prune_unreferenced_blobs(db,scope,replacement=None,dry_run=False):
     return released
 
 
-def retire_archived_members(db,checkpoint_id):
+def retire_archived_members(db,checkpoint_id,*,verify_active=True):
     """Erase successfully retired members from active and recovery copies.
 
     Runs inside the caller's retirement transaction. Archive authorization,
@@ -102,8 +102,14 @@ def retire_archived_members(db,checkpoint_id):
         for field in ('base','wire'):
             value[field]=semantic_retire_projection(value[field],permit)
         value['state']=context(value.get('state'),default)
-        fresh_canonical=active and default==scope and value==original
-        if not fresh_canonical and (scope=='bot_shared' or default==scope or value!=original):
+        if active:
+            # Cleanup owns archives, never a committed conversation. The
+            # Journal owner must already have replaced this exact batch under
+            # its checkpoint transaction. Even a state-only change cannot
+            # license rewriting the submitted base/wire or another Scope.
+            if value!=original:raise ValueError('semantic_active_journal_reconstruction_required')
+            return None
+        if scope=='bot_shared' or default==scope or value!=original:
             # Submitted context packets are derived presentation caches, including
             # positional deltas that cannot identify a turn on their own. A legal
             # batch cutover discards these packets whole, as native cleanup does;
@@ -123,15 +129,11 @@ def retire_archived_members(db,checkpoint_id):
 
     db.execute('SAVEPOINT semantic_archive_cleanup')
     try:
-        if 'fishbot_readonly_journals' in tables:
+        if verify_active and 'fishbot_readonly_journals' in tables:
             columns={r[1] for r in db.execute('PRAGMA table_info(fishbot_readonly_journals)')}
             checksum='sha' if 'sha' in columns else 'NULL'
             for key,version,payload,sha in db.execute('SELECT scope,version,payload,'+checksum+' FROM fishbot_readonly_journals WHERE payload IS NOT NULL').fetchall():
-                update=snapshot(version,payload,key,sha,active=True)
-                if update:
-                    if 'sha' in columns:db.execute('UPDATE fishbot_readonly_journals SET version=?,payload=?,sha=? WHERE scope=?',(*update,key))
-                    else:db.execute('UPDATE fishbot_readonly_journals SET version=?,payload=? WHERE scope=?',(*update[:2],key))
-                    changed+=1
+                snapshot(version,payload,key,sha,active=True)
         if 'memory_checkpoint_archives' in tables:
             columns={r[1] for r in db.execute('PRAGMA table_info(memory_checkpoint_archives)')}
             checksum='sha' if 'sha' in columns else 'NULL'
