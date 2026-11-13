@@ -50,3 +50,24 @@ test('interval cannot be less than five minutes and internal provenance is stric
  assert.equal(AutonomyConfigSchema.safeParse({activityIntervalMinutes:4}).success,false);
  assert.equal(TaskHandoffSchema.safeParse({scope:'self',senderId:'0'}).success,false);
 });
+
+test('activity preserves IPC failure and conservative ceiling instead of reporting budget exhaustion',async()=>{
+ const f=await fixture();let calls=0;
+ const c=new AutonomyCoordinator(f.db,async(_b,op)=>{
+  if(op==='execute'){calls++;throw Error('autonomous_ipc_409')}
+  if(op==='receipt')return null;
+  return{};
+ });
+ try{
+  await c.repo.configure('t','b',1,{mode:'active',cycleTokenBudget:9000,activityTokenBudget:9000,cycleModelCalls:2,activityModelCalls:2});
+  await c.tick();await c.active?.task;
+  await f.db.query("UPDATE autonomy_wakes SET due_at=now()-interval '1 second' WHERE reason='activity'");
+  await c.tick();await c.active?.task;
+  const view=await c.repo.view('t','b'),cycle=view.cycles.find((x:any)=>x.reason==='autonomous_ipc_409');
+  assert.equal(calls,1);assert.ok(cycle,JSON.stringify(view.cycles));
+  assert.equal(cycle.fault.class,'protocol');assert.equal(cycle.fault.phase,'activity_execute');
+  assert.equal(cycle.usage.tokens,9000);assert.equal(cycle.usage.modelCalls,2);assert.equal(cycle.usage.conservative,true);
+  assert.equal(cycle.usage.charges[0].estimateReason,'execution_outcome_unknown');
+  assert.equal(view.actions[0].status,'unknown');
+ }finally{await c.stop();await f.close()}
+});

@@ -26,3 +26,13 @@ test('media process is joined after cancellation; canceled caller cannot leave a
 test('Linux media startup fails closed before spawn without explicit delegation',{skip:process.platform!=='linux'},async()=>{
  await assert.rejects(()=>managedProcess('/usr/bin/ffmpeg',[],{cwd:os.tmpdir(),signal:new AbortController().signal,timeoutMs:1000}),/专属进程归属/);
 });
+
+test('playurl selects a safe backup without permitting PCDN ports or arbitrary hosts',async()=>{
+ const{playableMediaSource}=await import('../apps/node-agent/src/bilibili/video-evidence.js');
+ const unsafe='https://vu5bt87a.edge.mountaintoys.cn:4483/video';
+ const safe='https://upos-sz-estgoss.bilivideo.com/video?signature=kept';
+ assert.equal(playableMediaSource([{bandwidth:98,baseUrl:unsafe,backupUrl:[safe]},{bandwidth:138,baseUrl:'https://x.bilivideo.com/other'}]),safe);
+ assert.equal(playableMediaSource([{base_url:unsafe,backup_url:['http://x.bilivideo.com/video',safe]}]),safe);
+ assert.equal(playableMediaSource([{url:unsafe,backup_url:['https://bilivideo.com.attacker.example/a','https://u:p@x.bilivideo.com/a']}]),undefined);
+ assert.equal(playableMediaSource([{url:safe}]),safe);
+});

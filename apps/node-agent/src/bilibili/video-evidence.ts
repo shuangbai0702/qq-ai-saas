@@ -4,13 +4,25 @@ import path from 'node:path';
 import {rangeSource} from '../media/range-source.js';
 import {asrSegments} from '../media/asr.js';
 import {modelImageTargetEdge} from '../../../../packages/shared/model-media.js';
+import {bilibiliModelConfigured,bilibiliModelRequired} from '../../../../packages/shared/bilibili-model.js';
 import {mkdir,readFile,readdir,stat,statfs,access,writeFile,rmdir,rm} from 'node:fs/promises';
 import {decrypt} from '../../../../packages/shared/security.js';
 import {modelHttp} from '../../../../packages/shared/model-http.js';
 import {boundedJson,BiliError,type BiliWeb,type Credential} from './web-adapter.js';
-import {downloadMedia,managedProcess,mediaAdmission,mediaWorkspace} from '../media/lifecycle.js';
+import {downloadMedia,managedProcess,mediaAdmission,mediaWorkspace,mediaUrl} from '../media/lifecycle.js';
 import type {Sql} from '../../../../packages/database/index.js';
 
+/** Select only already-authorized HTTPS CDN objects from this playurl track. */
+export function playableMediaSource(tracks:any[]):string|undefined{
+ for(const track of [...tracks].sort((a,b)=>Number(a.bandwidth||0)-Number(b.bandwidth||0))){
+  const backups=track.backupUrl??track.backup_url??[];
+  for(const value of [track.baseUrl||track.base_url||track.url,...(Array.isArray(backups)?backups:[])]){
+   if(typeof value!=='string'||!value)continue;
+   try{return mediaUrl(value).href}catch(error){if(!(error instanceof BiliError)&&!(error instanceof TypeError))throw error}
+  }
+ }
+ return undefined;
+}
 export type MediaResources={cgroupRoot?:string;guardRoot:string;ffmpeg:string;ffprobe:string;asr?:{executable:string;args:string[];checkArgs?:string[];timeoutMs?:number}};
 export async function mediaResources(root:string):Promise<MediaResources>{
  const file=path.join(root,'media-resources.json');let saved:any={};try{saved=JSON.parse(await readFile(file,'utf8'))}catch(e){if((e as any).code!=='ENOENT')throw new BiliError('media_configuration','媒体资源配置无法读取')}
@@ -53,7 +65,7 @@ export class VideoEvidence {
   const [botConfig]=await this.db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[job.bot_id,job.config_revision]);
   const [secret]=await this.db.query('SELECT ciphertext FROM secrets WHERE bot_id=$1 AND tenant_id=$2',[job.bot_id,job.tenant_id]);
   const independent=settings.config.model.provider==='openai';
-  if(independent?!settings.model_secret||!settings.config.model.baseUrl||!settings.config.model.model:!secret||!botConfig?.config?.baseUrl||!botConfig.config.model)throw new BiliError('model_not_configured','没有可用的图片模型配置或Key');
+  if(!bilibiliModelConfigured(settings,botConfig?.config,!!secret?.ciphertext))throw new BiliError('model_not_configured',bilibiliModelRequired);
   const apiKey=independent?decrypt(this.key,`bilibili:model:${job.tenant_id}:${job.bot_id}`,settings.model_secret):decrypt(this.key,`${job.tenant_id}:${job.bot_id}`,secret.ciphertext),model=independent?settings.config.model.model:botConfig.config.model,baseUrl=independent?settings.config.model.baseUrl:botConfig.config.baseUrl;
   const abort=new AbortController(),signal=AbortSignal.any([parent,abort.signal]);let monitoring=false;
   const monitor=setInterval(()=>{if(monitoring)return;monitoring=true;void mediaAdmission(resources.guardRoot,resources.cgroupRoot||'').then(async()=>{
@@ -69,7 +81,7 @@ export class VideoEvidence {
    if(requestedTimes.some(t=>t<start||t>=end))throw new BiliError('frame_range_conflict','精确时间点超出当前资源允许片段或真实视频时长；请修正start/seconds/timestamps');
    const play=await this.web.get('/x/player/playurl',{bvid:job.args.bvid,cid:part.cid,qn:16,fnval:16,fourk:0},credential,signal);
    const candidates=(play.dash?.video||[]).filter((v:any)=>v.baseUrl||v.base_url).sort((a:any,b:any)=>Number(a.bandwidth)-Number(b.bandwidth));
-   const source=candidates[0]?.baseUrl||candidates[0]?.base_url||play.durl?.[0]?.url;if(!source)throw new BiliError('media_unavailable','平台未提供允许读取的公开视频流');
+   const source=playableMediaSource(candidates.length?candidates:play.durl||[]);if(!source)throw new BiliError('media_unavailable','平台未提供允许读取的公开视频流');
    const budget={remaining:downloadMiB*1048576,received:0};
    const run=(exe:string,args:string[],id:string,maxOutput=65536,timeoutMs=45000)=>(this.io.process||managedProcess)(exe,args,{cwd:dir,signal,timeoutMs,cgroupRoot:resources.cgroupRoot,jobId:job.id+'-'+id,maxOutput});
    const withSource=async<T>(url:string,label:string,action:(input:string)=>Promise<T>)=>{
@@ -100,7 +112,7 @@ export class VideoEvidence {
    let audio:any={trackDownloaded:false,analyzed:false,source:{bvid:job.args.bvid,cid:part.cid,part:job.args.part},segments:[]};
    if(job.args.audio==='transcribe'){
     const audios=(play.dash?.audio||[]).filter((a:any)=>a.baseUrl||a.base_url).sort((a:any,b:any)=>Number(a.bandwidth)-Number(b.bandwidth));
-    const audioUrl=audios[0]?.baseUrl||audios[0]?.base_url||(!play.dash?source:null);
+    const audioUrl=playableMediaSource(audios)||(!play.dash?source:null);
     if(!audioUrl)throw new BiliError('audio_track_missing','平台未提供允许读取的音轨');
     const wav=path.join(dir,'audio.wav'),out=path.join(dir,'asr.json');
     await withSource(audioUrl,'audio',input=>run(resources.ffmpeg,['-hide_banner','-nostdin','-loglevel','error','-threads','1','-ss',String(start),'-format_whitelist','mov,flv','-i',input,'-t',String(duration),'-vn','-ac','1','-ar','16000',wav],'audio'));

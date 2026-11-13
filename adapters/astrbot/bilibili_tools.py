@@ -109,10 +109,16 @@ def tools(settings,event,current,evidence,identity=None,db=None):
                     raw=await response.content.read(131073)
                     if len(raw)>131072:raise ValueError('bridge_response_too_large')
                     value=json.loads(raw)
-                    if response.status>=400:raise ValueError('tool_bridge_rejected')
+                    if response.status>=400:
+                        if 400<=response.status<500 and isinstance(value,dict) and value.get('execution')=='failed' and value.get('receipt')=={'status':'rejected'} and isinstance(value.get('error'),dict) and value['error'].get('code')=='model_not_configured' and value['error'].get('retry')=='never' and isinstance(value['error'].get('userMessage'),str):
+                            return {'execution':'failed','receipt':{'status':'rejected'},'error':{'code':'model_not_configured','retry':'never','userMessage':value['error']['userMessage'][:500]}}
+                        raise ValueError('tool_bridge_rejected')
                     return value
                 try:
                     async with client.post(base,json=payload,allow_redirects=False) as response:job=await small(response)
+                    if job.get('execution')=='failed' and job.get('receipt',{}).get('status')=='rejected':
+                        if not current():raise asyncio.CancelledError('stale Bilibili rejection')
+                        return json.dumps(job,ensure_ascii=False)
                     job_id=job['id']
                     # Even durable queue admission is an async boundary. A late
                     # response must cancel its original Work before returning

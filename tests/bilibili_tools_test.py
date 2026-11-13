@@ -7,9 +7,10 @@ sys.path.insert(0,str(Path('adapters/astrbot').resolve()))
 import bilibili_tools
 
 async def main():
-    admitted=asyncio.Event();canceled=asyncio.Event();late_admitted=asyncio.Event();release_admission=asyncio.Event()
+    admitted=asyncio.Event();canceled=asyncio.Event();late_admitted=asyncio.Event();release_admission=asyncio.Event();reject_model=False
     async def submit(request):
         payload=await request.json();admitted.set()
+        if reject_model:return web.json_response({'execution':'failed','receipt':{'status':'rejected'},'error':{'code':'model_not_configured','retry':'never','userMessage':'configure image model'}},status=409)
         if payload['operation']=='analyze':late_admitted.set();await release_admission.wait()
         return web.json_response({'id':'job','state':'queued'})
     async def get(request):return web.json_response({'id':'job','state':'queued'})
@@ -40,6 +41,11 @@ async def main():
             except asyncio.CancelledError:pass
             assert canceled.is_set(),'late admission did not cancel original Work'
             assert evidence==[],'stale admission leaked pending evidence'
+            reject_model=True;live=True
+            rejection=json.loads(await tool.call(None))
+            assert rejection=={'execution':'failed','receipt':{'status':'rejected'},'error':{'code':'model_not_configured','retry':'never','userMessage':'configure image model'}}
+            assert evidence==[],'rejected admission must not publish a pending task'
+            print('PASS missing model 409 remains failed/rejected without queue evidence')
             print('PASS Bilibili cancellation propagates, cancels original job, and stale configuration cannot submit')
             print('PASS delayed media admission cancels stale Work before pending evidence')
     finally:await runner.cleanup()
