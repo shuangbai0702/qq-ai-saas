@@ -40,17 +40,10 @@ export class AutonomyRepository {
  }
  async readGoals(bot:any,value:unknown,tx=this.db){
   const audience=await this.goalAudience(bot,value,tx);
-  const all=await tx.query("SELECT g.* FROM autonomy_goals g WHERE g.bot_id=$1 AND g.tenant_id=$2 AND (g.status NOT IN ('completed','abandoned','canceled') OR EXISTS(SELECT 1 FROM autonomy_actions a WHERE a.goal_id=g.id AND a.bot_id=g.bot_id AND a.tenant_id=g.tenant_id AND (a.status IN ('planned','executing','partial','unknown') OR jsonb_array_length(COALESCE(a.result->'unfinished','[]'::jsonb))>0)) OR EXISTS(SELECT 1 FROM tool_effects e JOIN autonomy_actions a ON a.id=e.work_id AND a.bot_id=e.bot_id AND a.tenant_id=e.tenant_id WHERE a.goal_id=g.id AND e.bot_id=g.bot_id AND e.tenant_id=g.tenant_id AND (e.state IN ('queued','claimed','dispatching','unknown') OR e.completion_state IN ('pending','claimed')))) ORDER BY g.created_at,g.id",[bot.id,bot.tenant_id]);
-  const goals=all.filter(g=>this.goalVisible(g,audience));
-  const actions=await tx.query("SELECT a.* FROM autonomy_actions a WHERE a.bot_id=$1 AND a.tenant_id=$2 AND (a.goal_id=ANY($3::text[]) OR a.goal_id IS NULL AND ($4 OR a.id=$5 OR EXISTS(SELECT 1 FROM autonomy_cycles c WHERE c.id=a.cycle_id AND c.bot_id=a.bot_id AND c.tenant_id=a.tenant_id AND c.budget->>'activityScope'=$6) OR EXISTS(SELECT 1 FROM tool_effects e WHERE e.work_id=a.id AND e.bot_id=a.bot_id AND e.tenant_id=a.tenant_id AND e.origin_scope=$6)) AND (a.status IN ('planned','executing','partial','unknown') OR jsonb_array_length(COALESCE(a.result->'unfinished','[]'::jsonb))>0)) ORDER BY a.created_at,a.id",[bot.id,bot.tenant_id,goals.map(g=>g.id),audience.scope==='self',audience.action?.id||'',audience.scope]);
-  const effects=await tx.query('SELECT id,work_id,step_id,operation,args,args_digest,authority,mode_epoch,state,result,completion_state,origin_scope,origin_event,continuation,lease_owner,lease_until,deadline_at,cancel_requested,created_at,updated_at FROM tool_effects WHERE bot_id=$1 AND tenant_id=$2 AND work_id=ANY($3::text[]) ORDER BY created_at,id',[bot.id,bot.tenant_id,actions.map(a=>a.id)]);
-  // Keep exact terminal identity/revision distinct from an actual deletion.
-  // Historical execution text remains in the main Journal; closed goals with
-  // no outstanding responsibility need only their current ledger state.
-  const ended=await tx.query("SELECT id,origin,status,revision,source FROM autonomy_goals WHERE bot_id=$1 AND tenant_id=$2 AND status IN ('completed','abandoned','canceled') ORDER BY created_at,id",[bot.id,bot.tenant_id]);
-  const present=new Set(goals.map(g=>g.id));
-  for(const goal of ended)if(!present.has(goal.id)&&this.goalVisible(goal,audience))goals.push({id:goal.id,status:goal.status,revision:goal.revision,terminalRecord:true,source:{scope:goal.source?.scope||'self',senderId:goal.source?.senderId}});
-  return{goals,actions,effects,complete:true};
+  // Goal cognition has one owner. Execution recovery and effect receipts keep
+  // their existing lifecycle; reading goals must not replay those histories.
+  const current=await tx.query("SELECT g.* FROM autonomy_goals g WHERE g.bot_id=$1 AND g.tenant_id=$2 AND g.status NOT IN ('completed','abandoned','canceled') ORDER BY g.created_at,g.id",[bot.id,bot.tenant_id]);
+  return{goals:current.filter(g=>this.goalVisible(g,audience)),complete:true};
  }
  async updateGoal(bot:any,value:unknown,change:unknown){
   const update=AutonomousGoalUpdateSchema.parse(change);
