@@ -5,16 +5,15 @@ derives administrator from the authenticated session, never a browser field.
 """
 import re
 import time
-import json
 
 ADMIN_COMPRESSION_OUTPUT_TOKENS=16384
 
 
 def manage(store,data,care):
     status_only=data.get('action')=='admin_force_compress_status'
-    allowed={'action','requestId'} if status_only else {'action','requestId','administrator','allowPartial','discardUnavailable','scope'}
+    allowed={'action','requestId'} if status_only else {'action','requestId','administrator','allowPartial','discardUnavailable'}
     request_id=data.get('requestId')
-    if set(data)-allowed or not (allowed-{'discardUnavailable','scope'})<=set(data) or not isinstance(request_id,str) or not re.fullmatch(r'[a-fA-F0-9-]{36}',request_id):
+    if set(data)-allowed or not (allowed-{'discardUnavailable'})<=set(data) or not isinstance(request_id,str) or not re.fullmatch(r'[a-fA-F0-9-]{36}',request_id):
         return {'error':'维护请求无效','status':400}
     jobs=getattr(store,'_compression_jobs',None)
     if jobs is None:jobs={};store._compression_jobs=jobs
@@ -23,12 +22,7 @@ def manage(store,data,care):
     administrator=data.get('administrator')
     if not isinstance(administrator,str) or not administrator.strip() or type(data.get('allowPartial')) is not bool or type(data.get('discardUnavailable',False)) is not bool:
         return {'error':'管理员维护凭据无效','status':400}
-    scope=data.get('scope','bot_shared')
-    if store.shared_context:
-        if scope!='bot_shared':return {'error':'共享主线维护Scope不符','status':400}
-    elif (not isinstance(scope,str) or not re.fullmatch(r'(?:private:\d{5,20}|group:\d{4,20})',scope)
-          or not store.db.execute('SELECT 1 FROM fishbot_readonly_journals WHERE scope=? AND state=\'ready\'',(json.dumps(scope),)).fetchone()):
-        return {'error':'需要指定该账号实际存在的会话Scope','status':409}
+    if not store.shared_context:return {'error':'当前账号不属于统一主Journal','status':409}
     # A diagnostic cache must never veto an authorized compression. Committed
     # request IDs remain idempotent in the existing checkpoint override table.
     finished=[key for key,value in jobs.items() if value.get('state') not in ('running','queued')]
@@ -40,7 +34,7 @@ def manage(store,data,care):
     try:
         # create_task inside force_compress_once inherits this request budget;
         # the API caller and unrelated foreground tasks keep their own context.
-        result=reflection.force_compress_once(scope,allow_partial=data['allowPartial'],administrator=administrator,request_id=request_id,discard_unavailable=data.get('discardUnavailable',False))
+        result=reflection.force_compress_once('bot_shared',allow_partial=data['allowPartial'],administrator=administrator,request_id=request_id,discard_unavailable=data.get('discardUnavailable',False))
     except Exception as error:
         failure=type(error).__name__
         result={'started':False,'reason':failure}

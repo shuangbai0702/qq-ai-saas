@@ -496,17 +496,14 @@ class ReadonlyJournal:
 
     def _snapshot(self,prepared):return self._snapshot_parts(prepared)[0]
 
-    def _persist(self,prepared,state='ready',settle_permit=False,consume_permit=False,tombstone=True,settle_cutover=True,model_origin=None,on_stage=None,retirement_transaction=False):
+    def _persist(self,prepared,state='ready',settle_permit=False,consume_permit=False,tombstone=True,settle_cutover=True,model_origin=None,on_stage=None):
         if self.db is None or self.scope_key is None:return True
         try:payload,blobs=self._snapshot_parts(prepared)
         except (TypeError,ValueError):self.recovery_error='journal_snapshot_serialize';return False
         encoded=payload.encode('utf-8');sha=hashlib.sha256(encoded).hexdigest()
         # Capacity accounting and snapshot/permit commit share the same write
         # lock, including separate connections serving different scopes.
-        if retirement_transaction:
-            if not (self.db.in_transaction and consume_permit and prepared.reconstruction_permit.get('semanticBatch')):
-                raise ContextPrefixViolation('semantic_retirement_transaction_required')
-        else:self.db.execute('BEGIN IMMEDIATE')
+        self.db.execute('BEGIN IMMEDIATE')
         try:
             # Blob and referencing snapshot share one transaction. Never GC:
             # older protected snapshots/operator archives may retain references.
@@ -545,8 +542,7 @@ class ReadonlyJournal:
             allowed=(next_total<=MAX_PERSISTED_JOURNAL_BYTES and
                      (existing is not None or (used[1] or 0)<MAX_PERSISTED_JOURNALS) and (existing is not None or count<MAX_JOURNAL_TOMBSTONES) and not archive_overflow)
             if not allowed:
-                if not tombstone:
-                    if not retirement_transaction:self.db.rollback()
+                if not tombstone:self.db.rollback()
                 else:
                     if existing is None and count>=MAX_JOURNAL_TOMBSTONES:
                         self.db.execute('UPDATE fishbot_readonly_journal_meta SET overflow=1 WHERE id=1')
@@ -579,11 +575,9 @@ class ReadonlyJournal:
                 # A crash/unknown response cannot offer it to another baseline.
                 self.db.execute("UPDATE fishbot_operator_session_archives SET new_session_state='consumed' WHERE scope=? AND new_session_state='available'",(self.scope_key,))
             if settle_permit and not self._settle(prepared,True,in_transaction=True):
-                if not retirement_transaction:self.db.rollback()
-                return False
+                self.db.rollback();return False
             if consume_permit and not prepared.reconstruction_authority.settle_context_reconstruction(prepared.reconstruction_permit,True,in_transaction=True):
-                if not retirement_transaction:self.db.rollback()
-                return False
+                self.db.rollback();return False
             if consume_permit and prepared.reconstruction_permit.get('kind')=='summary_checkpoint':
                 self.db.execute('''CREATE TABLE IF NOT EXISTS memory_checkpoint_retirements(
                   checkpoint_id INTEGER PRIMARY KEY,scope TEXT,request_id TEXT,
@@ -623,13 +617,10 @@ class ReadonlyJournal:
                 from message_provenance import prune_retired_model_owners
                 prune_retired_model_owners(self.db,'bot_shared',prepared.base)
             if on_stage is not None:on_stage()
-            if not retirement_transaction:self.db.commit()
-            return True
-        except BaseException:
-            if not retirement_transaction:self.db.rollback()
-            raise
+            self.db.commit();return True
+        except BaseException:self.db.rollback();raise
 
-    def stage_candidate(self,prepared,on_stage=None,*,retirement_transaction=False):
+    def stage_candidate(self,prepared,on_stage=None):
         """Persist the exact outgoing candidate before any HTTP submission.
 
         Once a request may leave the process, the next request must never fall
@@ -654,7 +645,7 @@ class ReadonlyJournal:
                      and prepared.reconstruction_authority is not None
                      and getattr(prepared.reconstruction_authority,'db',None) is self.db)
         saved=(self.recovery_error,self.retired_reason)
-        ok=self._persist(prepared,'ready',consume_permit=consume,tombstone=False,settle_cutover=False,on_stage=on_stage,retirement_transaction=retirement_transaction)
+        ok=self._persist(prepared,'ready',consume_permit=consume,tombstone=False,settle_cutover=False,on_stage=on_stage)
         self.recovery_error,self.retired_reason=saved
         if not ok:return False
         self._staged=prepared.serial
@@ -1093,7 +1084,7 @@ class ReadonlyJournal:
         candidate.main_conversation=bool(old and old.main_conversation)
         return candidate
 
-    def retire_semantic_batch(self,permit,authority,state,retirement=None,event_authority=None,*,retirement_transaction=False):
+    def retire_semantic_batch(self,permit,authority,state,retirement=None,event_authority=None):
         """Immediately rebuild a settled Journal from a committed summary.
 
         The owner supplies freshly assembled state, never the old readonly
@@ -1124,8 +1115,7 @@ class ReadonlyJournal:
             None,usage['textChars'],'',usage,stored_authority,retirement,permit,authority)
         candidate.main_conversation=self.last.main_conversation
         from semantic_batch import purge
-        # A coordinated owner purges all members before its single commit.
-        if not self.stage_candidate(candidate,on_stage=None if retirement_transaction else lambda:purge(self.db,permit['id']),retirement_transaction=retirement_transaction):return False
+        if not self.stage_candidate(candidate,on_stage=lambda:purge(self.db,permit['id'])):return False
         return self._accept_staged(candidate)
 
     def commit(self,prepared):
