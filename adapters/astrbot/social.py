@@ -359,9 +359,17 @@ class SocialStore:
         # Always strip internal controls, including invalid IDs and unterminated tails.
         clean = re.sub(r'\[MEME:[^\]\n]*(?:\]|$)', '', text)
         if not ids or not self.image_available(scope,cfg,now,request_text+'\n'+clean):return clean,None
-        if candidates is not None and ids[0] not in {x.get('id') for x in candidates}:return clean,None
+        identifier=ids[0]
+        if candidates is not None:
+            from context_reading import _key
+            # Reading-format version keys identify the exact offered definition.
+            # Resolve only this Work's candidates, never a historical pool.
+            offered=next((row for row in candidates if identifier in (row.get('id'),_key(row))),None)
+            if offered is None:return clean,None
+            identifier=offered['id']
+        elif identifier.startswith('v_'):return clean,None
         items=self.catalog(scope,packs=cfg.get('memePacks'),favorite_account=cfg.get('_qqAccount'))
-        image=next((x for x in items if ids and x['id']==ids[0]),None)
+        image=next((x for x in items if x['id']==identifier),None)
         return clean,image
 
     def image_sent(self,scope,identifier,now=None):

@@ -60,7 +60,7 @@ export function registerQQFavorites(app:FastifyInstance,root:string,owned:(req:a
      if(override&&(!initial||JSON.stringify(override)!==JSON.stringify(initial))){for(const key of Object.keys(item))if(!(key in override))delete (item as any)[key];Object.assign(item,override);staged.delete(item.id)}
      if(staged.has(item.id))await rename(path.join(stage,item.file),path.join(favoriteDirectory(root,bot.id),'images',item.file));
     }
-    await active(req,bot,signal);await writeFavoriteIndex(root,bot.id,{account:account(bot),enabled:current.account===account(bot)?current.enabled:false,items,syncedAt:new Date().toISOString(),failed,limitReached:list.length>=200});
+    await active(req,bot,signal);await writeFavoriteIndex(root,bot.id,{account:account(bot),enabled:current.account===account(bot)?current.enabled:true,items,syncedAt:new Date().toISOString(),failed,limitReached:list.length>=200});
     const keep=new Set(items.map(i=>i.file));for(const name of await readdir(path.join(favoriteDirectory(root,bot.id),'images')))if(safeFile(name)&&!keep.has(name))await rm(path.join(favoriteDirectory(root,bot.id),'images',name),{force:true});
    });await atomic(path.join(favoriteDirectory(root,bot.id),'sync.json'),{syncing:false,processed,total:selected.length});
   }catch(e:any){app.log.warn({botId:bot.id,code:typeof e?.code==='string'?e.code:'sync_failed'},'QQ favorite sync failed');if(!signal.aborted)await atomic(path.join(favoriteDirectory(root,bot.id),'sync.json'),{syncing:false,processed,error:'同步未完成，原收藏库保留。请确认QQ在线后重试。'}).catch(()=>{})}

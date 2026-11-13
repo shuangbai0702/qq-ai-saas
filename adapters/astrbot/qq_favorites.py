@@ -29,7 +29,7 @@ def catalog(root,account):
  folder=Path(root)/'qq-favorites'
  try:
   index=json.loads((folder/'index.json').read_text(encoding='utf8'))
-  if str(index.get('account',''))!=str(account) or not index.get('enabled',False):return []
+  if str(index.get('account',''))!=str(account) or not index.get('enabled',True):return []
   items=[]
   for item in index.get('items',[])[:200]:
    identifier=item.get('id','');file=item.get('file','')

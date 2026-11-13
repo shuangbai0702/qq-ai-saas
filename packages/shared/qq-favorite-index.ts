@@ -11,7 +11,7 @@ export async function withFavoriteIndex<T>(root:string,id:string,run:()=>Promise
  try{return await run()}finally{await release()}
 }
 export async function readFavoriteIndex(root:string,id:string):Promise<any>{
- try{return JSON.parse(await readFile(path.join(favoriteDirectory(root,id),'index.json'),'utf8'))}catch(e:any){if(e.code==='ENOENT')return{account:'',enabled:false,items:[]};throw e}
+ try{const value=JSON.parse(await readFile(path.join(favoriteDirectory(root,id),'index.json'),'utf8'));return{...value,enabled:value.enabled??true}}catch(e:any){if(e.code==='ENOENT')return{account:'',enabled:true,items:[]};throw e}
 }
 export async function writeFavoriteIndex(root:string,id:string,value:unknown){
  await atomicJson(path.join(favoriteDirectory(root,id),'index.json'),value);
