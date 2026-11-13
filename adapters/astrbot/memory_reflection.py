@@ -1286,7 +1286,10 @@ class Reflection:
                                 # batch elsewhere must not fail this recovery.
                                 if progress_now[0]!=summary_from or held_now!=rows:raise RuntimeError('summary_checkpoint_stale')
                             else:
-                                live_rows=held_now+self.db.execute('SELECT id,subject,event,question,answer,at FROM memory_rounds WHERE scope=? AND id>? ORDER BY id LIMIT ?',(scope,summary_from,summary_rounds)).fetchall()
+                                # New completed dialogue may append while the
+                                # model summarizes an authorized partial batch.
+                                # Fence the selected prefix, not the later tail.
+                                live_rows=held_now+self.db.execute('SELECT id,subject,event,question,answer,at FROM memory_rounds WHERE scope=? AND id>? AND id<=? ORDER BY id LIMIT ?',(scope,summary_from,rows[-1][0],summary_rounds)).fetchall()
                                 if progress_now[0]!=summary_from or live_rows!=rows:raise RuntimeError('summary_checkpoint_stale')
                         if job=='big':
                             ids=[r[0] for r in big_rows];marks=','.join('?' for _ in ids)

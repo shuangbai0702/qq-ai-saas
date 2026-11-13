@@ -71,4 +71,57 @@ class Catchup(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(final['allCompletedRoundsSummarized'])
         self.assertEqual([r[0] for r in self.store.db.execute('SELECT round_count FROM memory_reconstruction_checkpoints ORDER BY id')],[35,8])
 
+    async def partial_concurrent(self,change_original=False):
+        import contextvars
+        self.populate(8);db=self.store.db;r=self.store.reflection
+        r.binding=(self.cfg,self.provider,lambda:True,self.metrics,contextvars.ContextVar('partial_concurrent',default=None))
+        entered=asyncio.Event();release=asyncio.Event()
+        original=self.provider.text_chat_stream
+        async def gated(*args,**kwargs):
+            entered.set();await release.wait()
+            async for response in original(*args,**kwargs):yield response
+        initial=db.execute('SELECT id FROM memory_rounds ORDER BY id').fetchall()
+        journal=self.store.model_journals['bot_shared'];before=copy.deepcopy(journal.last.base)
+        with patch.object(self.provider,'text_chat_stream',gated):
+            self.assertTrue(r.force_compress_once(allow_partial=True,administrator='fixture-admin',request_id='partial-concurrent')['started'])
+            task=r.task
+            await entered.wait()
+            if change_original:
+                db.execute('UPDATE memory_rounds SET question=? WHERE id=?',('Changed original during model await',initial[0][0]));db.commit()
+            else:
+                appended=[]
+                for i in range(8,11):
+                    message=event_message({'scope':fixture.SCOPE,'sender_id':'12345678','event_id':str(i),'at':100+i},'Later dialogue '+str(i))
+                    block=[message,{'role':'assistant','content':'Later confirmed reply'}];appended.extend(block)
+                    r.record('bot_shared','12345678',model_json([fixture.SCOPE,str(i)]),'Later dialogue '+str(i),'Later confirmed reply',now=100+i,materials=snapshots(block,'bot_shared',db=db))
+                # Real concurrent requests have extended the committed Journal;
+                # the older summary may retire only its fixed original batch.
+                from readonly_journal import Prepared
+                native=copy.deepcopy(before)+appended;journal.serial+=1
+                self.assertTrue(journal.commit(Prepared(journal.serial,None,copy.deepcopy(native),copy.deepcopy(native),{},11,time.time(),'append')))
+            release.set();result=await task
+        self.assertEqual(len(self.requests),1)
+        if change_original:
+            self.assertFalse(result['ok']);self.assertEqual(result['reason'],'RuntimeError')
+            self.assertEqual(self.metrics['summaryFailures'],1)
+            self.assertEqual(db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints').fetchone()[0],0)
+            self.assertEqual((db.execute("SELECT summary_watermark FROM memory_reflection_progress WHERE scope='bot_shared'").fetchone() or (0,))[0],0)
+            self.assertEqual(journal.last.base,before)
+            self.assertEqual(db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],8)
+        else:
+            self.assertTrue(result['ok'],result)
+            self.assertEqual(db.execute('SELECT round_count,through_round_id FROM memory_reconstruction_checkpoints').fetchone(),(8,initial[-1][0]))
+            self.assertEqual(result['remainingCompleteRounds'],3);self.assertFalse(result['allCompletedRoundsSummarized'])
+            self.assertEqual(db.execute('SELECT event FROM memory_rounds ORDER BY id').fetchall(),[(model_json([fixture.SCOPE,str(i)]),) for i in range(8,11)])
+            wire=model_json(journal.last.wire)
+            self.assertNotIn('Completed dialogue 0',wire)
+            for i in range(8,11):self.assertIn('Later dialogue '+str(i),wire)
+            self.assertFalse(r.retry())
+
+    async def test_partial_concurrent_later_rounds_keep_original_batch_valid(self):
+        await self.partial_concurrent()
+
+    async def test_partial_concurrent_original_mutation_still_rejects_stale_batch(self):
+        await self.partial_concurrent(change_original=True)
+
 if __name__=='__main__':unittest.main()
