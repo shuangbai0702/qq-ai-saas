@@ -173,12 +173,9 @@ export class AutonomyCoordinator {
   const estimateReason=source==='estimated'&&['execution_outcome_unknown','missing_model_usage','invalid_model_usage'].includes(raw.estimateReason)?raw.estimateReason:undefined;
   record(source,{...(estimateReason?{estimateReason}:{}),tokens:raw.tokens,modelCalls:raw.modelCalls,toolCalls:raw.toolCalls,externalActions,reported:{tokens:reported('tokens'),modelCalls:reported('modelCalls'),toolCalls:reported('toolCalls')}});
  }
- /** One wake = one bounded slice of event-driven work. No orientation or
-  * planning model call exists: the single durable work item is an accepted
-  * handoff goal whose notBefore has passed. The action is built from the
-  * goal's own accepted source (never model output), executed through the
-  * existing work/policy/execute IPC with budget and usage accounting, and
-  * the settled result determines the goal's terminal ledger state. */
+ /** Transitional dispatch still owns existing receipts and budgets. A tool or
+  * delivery result settles execution only; the model's CAS Goal tool alone
+  * decides whether its cognitive goal is complete. */
  private async cycle(active:{claim:any;actionId?:string;feedbackVersion?:number}){
   const c=active.claim,config=c.config,tokenBudget=cycleTokens(c),usage=emptyUsage();let deadline=this.deadline(c,usage);
   let reason='no_due_work',sleep=0,feedback:any=null,faultContext:any=undefined;
@@ -269,19 +266,16 @@ export class AutonomyCoordinator {
       reason='waiting_receipt';sleep=300;break;
      }
      if(prior.status==='completed'){
-      if(prior.kind==='research'){
-       await this.repo.markGoalReview(c,prior.id,goal.revision);reason='research_step_completed';continue;
-      }
-       await this.repo.completeGoal(c,goal.id,taskResultFacts(prior.kind,prior.result)?.summary||prior.result?.summary||'');
-      reason='handoff_executed';continue;
+      await this.repo.markGoalReview(c,prior.id,goal.revision);
+      reason='goal_awaits_model_decision';continue;
      }
      if(prior.status==='partial'){
       // An honest completion: the only outward action of a message handoff is
       // its delivery, and every effect was protocol-confirmed. The runtime may
       // have crashed after sending, before recording its terminal status.
       if(prior.kind==='message'&&prior.result?.deliveryComplete===true&&!(prior.result?.unfinished||[]).length&&effects.length&&effects.every((effect:any)=>effect.status==='confirmed')){
-       await this.repo.completeGoal(c,goal.id,prior.result?.summary||'此前不明的投递回执已全部确认为已送达');
-       reason='handoff_executed';continue;
+       await this.repo.markGoalReview(c,prior.id,goal.revision);
+       reason='goal_awaits_model_decision';continue;
       }
       // Any other partial (e.g. research with unfinished items) is not a
       // completion: the goal keeps its confirmed effects and remaining items,
@@ -325,14 +319,10 @@ export class AutonomyCoordinator {
     }
     feedback=await this.repo.withExternalEffects(c,action.id,feedback);
     this.charge(usage,action.id,'execute',feedback);usage.externalActions=await externalCount(this.db,c.cycleId);await this.repo.feedback(c,action.id,feedback);
-    // The settled result decides the goal's ledger state immediately: a
-    // delivered reply completes the accepted handoff, a final refusal frees
-    // its slot, an uncertain effect waits for its authoritative receipt.
+    // Confirmed execution never implicitly completes or rewrites a Goal.
+    // Review fencing prevents replay while its current revision awaits the model.
      if(feedback.status==='completed'){
-      // A research step's completion is not the long-term cognitive goal's
-      // completion. The model may commit that separately with the goal tool.
-      if(task.kind==='research'){await this.repo.markGoalReview(c,action.id,goal.revision);reason='research_step_completed';continue}
-      await this.repo.completeGoal(c,goal.id,taskResultFacts(task.kind,feedback)?.summary||feedback.summary||'');reason='handoff_executed';continue;
+      await this.repo.markGoalReview(c,action.id,goal.revision);reason='goal_awaits_model_decision';continue;
      }
     if(feedback.status==='blocked'){await this.repo.markGoalReview(c,action.id,goal.revision);reason='handoff_needs_review';continue}
     if(feedback.status==='canceled'){reason='foreground_or_mode_changed';sleep=15;break}

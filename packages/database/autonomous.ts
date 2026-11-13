@@ -400,15 +400,16 @@ export class AutonomyRepository {
    const [media]=await tx.query("SELECT COALESCE(sum(COALESCE((e.usage_checkpoint->>'settledModelRequests')::int,0)),0)::int AS calls,COALESCE(sum(COALESCE((e.usage_checkpoint->>'settledTokens')::bigint,0)),0)::bigint AS tokens,count(*) FILTER (WHERE COALESCE((e.usage_checkpoint->>'settledModelRequests')::int,0)>0 AND COALESCE(e.usage_checkpoint->>'tokenStatus','unknown')='unknown')::int AS unknown FROM tool_effects e JOIN autonomy_actions a ON a.id=e.work_id AND a.bot_id=e.bot_id AND a.tenant_id=e.tenant_id WHERE a.cycle_id=$1 AND e.authority='autonomous' AND NOT (e.id::text=ANY($2::text[]))",[claim.cycleId,journalEffects]);
    usage={...usage,modelCalls:usage.modelCalls+mediaRequests.modelCalls+Number(media.calls),tokens:usage.tokens+mediaRequests.tokens+Number(media.tokens),externalActions:await externalCount(tx,claim.cycleId),...{mediaModelCalls:mediaRequests.modelCalls+Number(media.calls),mediaTokens:mediaRequests.tokens+Number(media.tokens),mediaTokenStatus:Number(media.unknown)>0||Object.values(lockedCycle.budget.modelRequests||{}).some((r:any)=>r.source==='media'&&!['settled','released'].includes(r.status))?'unknown':'actual'}};
    const faultJson=JSON.stringify(fault?{fault:{...fault}}:{});
-   const done=await tx.query("UPDATE autonomy_cycles SET state=$2,usage=$3,reason=$4,finished_at=now(),decision=COALESCE(decision,'{}'::jsonb)||$5::jsonb WHERE id=$1 AND bot_id=$6 AND tenant_id=$7 AND finished_at IS NULL RETURNING id",[claim.cycleId,reason==='no_due_work'||reason==='handoff_executed'||reason==='activity_completed'?'completed':'ended',JSON.stringify(usage),reason,faultJson,claim.bot_id,claim.tenant_id]);
+   const settled=['no_due_work','handoff_executed','activity_completed','goal_awaits_model_decision'].includes(reason);
+   const done=await tx.query("UPDATE autonomy_cycles SET state=$2,usage=$3,reason=$4,finished_at=now(),decision=COALESCE(decision,'{}'::jsonb)||$5::jsonb WHERE id=$1 AND bot_id=$6 AND tenant_id=$7 AND finished_at IS NULL RETURNING id",[claim.cycleId,settled?'completed':'ended',JSON.stringify(usage),reason,faultJson,claim.bot_id,claim.tenant_id]);
    if(!done.length)return;
    await tx.query('UPDATE autonomy_daily_usage SET reserved_tokens=GREATEST(0,reserved_tokens-$3),used_tokens=used_tokens+$4,model_calls=model_calls+$5,tool_calls=tool_calls+$6,external_actions=external_actions+$7 WHERE bot_id=$1 AND tenant_id=$2 AND day=$8',[claim.bot_id,claim.tenant_id,claim.tokenLimit??claim.config.cycleTokenBudget,Math.max(0,usage.tokens),usage.modelCalls,usage.toolCalls,usage.externalActions,claim.day]);
    // No polling wake: the event-driven cycle re-arms 'handoff-due' itself
    // before finishing whenever due work remains. next_wake_at keeps pointing
    // at the nearest future handoff deadline, or nothing until the next
    // accepted handoff / event / config change writes a wake.
-   const sleepState=reason==='waiting_receipt'||reason==='handoff_retry_wait'?'waiting_receipt':reason==='no_due_work'||reason==='handoff_executed'||reason==='activity_completed'?'sleeping':'backoff';
-   await tx.query("UPDATE autonomy_settings SET lease_owner=NULL,lease_until=NULL,state=$5,last_error=$6,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND lease_owner=$4 RETURNING epoch",[claim.bot_id,claim.tenant_id,claim.epoch,claim.owner,sleepState,reason==='no_due_work'||reason==='handoff_executed'||reason==='activity_completed'?null:reason]);
+   const sleepState=reason==='waiting_receipt'||reason==='handoff_retry_wait'?'waiting_receipt':settled?'sleeping':'backoff';
+   await tx.query("UPDATE autonomy_settings SET lease_owner=NULL,lease_until=NULL,state=$5,last_error=$6,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND lease_owner=$4 RETURNING epoch",[claim.bot_id,claim.tenant_id,claim.epoch,claim.owner,sleepState,settled?null:reason]);
   });
  }
 }
