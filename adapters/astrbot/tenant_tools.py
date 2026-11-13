@@ -72,6 +72,30 @@ def _install_tool_catalog(active):
                 request.func_tool.tools.sort(key=lambda tool:tool.name)
         return await original(*bound.args,**bound.kwargs)
     ToolLoopAgentRunner.reset=reset
+    # The SDK announces each call before invoking its executor, but does not
+    # pass its ID to FunctionTool.call. Carry that existing identity only while
+    # advancing this runner; no event-global mutable ID or model-facing data.
+    handle=ToolLoopAgentRunner._handle_function_tools
+    @wraps(handle)
+    async def handle_tools(self,*args,**kwargs):
+        from group_actions import tool_action_id
+        iterator=handle(self,*args,**kwargs)
+        action=None
+        try:
+            while True:
+                token=tool_action_id.set(action)
+                try:result=await anext(iterator)
+                except StopAsyncIteration:return
+                finally:tool_action_id.reset(token)
+                chain=getattr(result,'message_chain',None)
+                if chain is not None and chain.type=='tool_call':
+                    components=chain.chain
+                    data=getattr(components[0],'data',None) if len(components)==1 else None
+                    action=data.get('id') if isinstance(data,dict) else None
+                yield result
+        finally:
+            await iterator.aclose()
+    ToolLoopAgentRunner._handle_function_tools=handle_tools
 
 def install(members):
     if getattr(install,'installed',False):return
