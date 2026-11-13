@@ -45,7 +45,9 @@ class GoalCheckpoint(unittest.IsolatedAsyncioTestCase):
         tail_service(prepared,restored,NS(scope=scope,event_id=event))
         self.assertEqual(prepared.wire[:len(before)],before)
         current=_goal_service(prepared.wire[-1],scope)['currentGoals']
-        self.assertEqual(current,necessary_goals(value));self.assertEqual(set(current),{'goals'})
+        self.assertEqual(current,necessary_goals(value));self.assertLessEqual(set(current),{'goals','currentResponsibilities'})
+        self.assertEqual(current['goals'][0]['progress'],'Actual finding')
+        self.assertNotIn('actions',current);self.assertNotIn('effects',current)
         self.assertEqual(committed_goals(prepared.wire,scope)[0],necessary_goals(value))
 
 

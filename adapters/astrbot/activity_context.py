@@ -68,18 +68,47 @@ GOAL_READING='baseline.snapshot是完整当前目标；delta.changes按集合中
 
 
 def necessary_goals(snapshot):
-    """Only current goal definitions; execution and history stay in the ledger."""
+    """Current goal progress and unresolved responsibility, never execution history."""
     import copy
     if not isinstance(snapshot,dict):raise ValueError('goal_snapshot_not_object')
+    pending=('queued','claimed','dispatching','unknown','pending')
+    responsibilities=[]
+    # A second projection occurs at the Provider boundary. Preserve the same
+    # minimal current responsibility there, without needing historical rows.
+    for row in snapshot.get('currentResponsibilities',[]):
+        responsibilities.append(copy.deepcopy(row))
+    effects={}
+    for effect in _goal_rows(snapshot.get('effects',[])).values():
+        if effect.get('state',effect.get('status')) not in pending and effect.get('completion_state') not in ('pending','claimed'):continue
+        work=effect.get('work_id',effect.get('action_id',effect.get('actionId')))
+        effects.setdefault(work,[]).append({k:copy.deepcopy(effect[k]) for k in ('id','operation','state','status','completion_state') if k in effect})
+    for action in _goal_rows(snapshot.get('actions',[])).values():
+        result=action.get('result') or {}
+        unfinished=result.get('unfinished',[])
+        unresolved=effects.get(action['id'],[])
+        # Canonical tool_effects are primary; local feedback may lead them.
+        for effect in result.get('effects',[]):
+            if effect.get('status') in pending and not any(e.get('id')==effect.get('id') for e in unresolved):
+                unresolved.append({k:copy.deepcopy(effect[k]) for k in ('id','status') if k in effect})
+        if action.get('status') not in ('planned','executing','partial','unknown') and not unfinished and not unresolved:continue
+        item={k:copy.deepcopy(action[k]) for k in ('id','status') if k in action}
+        goal=action.get('goal_id',action.get('goalId'))
+        if goal:item['goalId']=goal
+        if unfinished:item['unfinished']=copy.deepcopy(unfinished)
+        if unresolved:item['effects']=unresolved
+        responsibilities.append(item)
+    responsible_goals={r.get('goalId') for r in responsibilities}
     current=[]
     for goal in _goal_rows(snapshot.get('goals',[])).values():
-        if goal.get('terminalRecord') or goal.get('status') in ('completed','abandoned','canceled'):continue
-        item={k:copy.deepcopy(goal[k]) for k in ('id','revision','title','reason','success_condition','successCondition') if k in goal}
+        terminal=goal.get('status') in ('completed','abandoned','canceled')
+        if goal.get('terminalRecord') or terminal and goal['id'] not in responsible_goals:continue
+        fields=('id','revision','status','progress','updated_at') if terminal else ('id','revision','title','reason','success_condition','successCondition','status','progress','updated_at')
+        item={k:copy.deepcopy(goal[k]) for k in fields if k in goal}
         source=goal.get('source') or {}
-        constraints={k:copy.deepcopy(source[k]) for k in ('originalGoal','constraints','restrictions') if k in source}
+        constraints={k:copy.deepcopy(source[k]) for k in ('originalGoal','constraints','restrictions','nextIntention') if k in source} if not terminal else {}
         if constraints:item['source']=constraints
         current.append(item)
-    return {'goals':current}
+    return {'goals':current,**({'currentResponsibilities':responsibilities} if responsibilities else {})}
 
 
 def _goal_rows(rows):
