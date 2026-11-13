@@ -349,10 +349,11 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False):
             if _time(upper):bounds[model_json([o['scope'],str(o['event_id'])])]=upper
         for item in snapshots(messages,'bot_shared',db=db):
             if valid_material(item,'bot_shared'):
-                capture(item,'bot_shared',bounds.get(item['event']));continue
-            if not discard_unavailable:raise ValueError('semantic_collection_material_invalid')
+                capture(item,'bot_shared',bounds.get(item['event']))
+                if item.get('complete') or not discard_unavailable:continue
+            elif not discard_unavailable:raise ValueError('semantic_collection_material_invalid')
             # The verified Journal is real original material even when its
-            # tool result exceeds the old bounded capture schema. Offer the
+            # input or tool result exceeds the bounded capture schema. Offer the
             # exact physical blocks, never truncate them to pass validation.
             pair=identity('bot_shared',item['event'])
             if not pair or not eligible(pair):continue
