@@ -1,0 +1,88 @@
+{
+  "kind": "actual-production-release",
+  "success": true,
+  "commit": "b2a1542c317278693473c59c286e37ad71bcb807",
+  "builtAt": "2026-11-13T11:12:36.446Z",
+  "gitDirty": false,
+  "deployedFiles": 520,
+  "manifestSha256": "10376a99dc82e38cd87abb9e01b83316ee93352b858984efca06774faaf8b2ad",
+  "maintenanceBundleSha256": "a59f6d4d2b98a12e9751f9075780ab08c3be62240eae0fc2c0ce5375c2c71466",
+  "api": {
+    "oldApiPid": 18620,
+    "newApiPid": 19280,
+    "newApiRecord": {
+      "pid": 19280,
+      "created": 1794568924.9653516,
+      "root": "C:\\FishBotPredeploy20261112\\releases\\8b582b61ec9a69f044bceb298a1f59448757f9ff"
+    },
+    "apiReady": true,
+    "agentUnchanged": true,
+    "postgresUnchanged": true
+  },
+  "backup": {
+    "ok": true,
+    "complete": true,
+    "heldAgentPid": 6672,
+    "holdCapturedAt": "2026-11-13T11:20:24.517Z",
+    "directory": "C:\\FishBotPredeploy20261112\\control\\backups\\b-release-20261113T112048Z-ef46a473a87e483d91348881cf0fd0b0",
+    "manifestSha256": "d751c51e6e26d31e57925f3b6101069db8a2be2f9de75d23dbdbbb7f815c775f",
+    "postgresVerified": true,
+    "sqliteVerified": 13,
+    "qqBackedUp": 12,
+    "aclRestricted": true,
+    "vssRemoved": true
+  },
+  "postflight": {
+    "ok": true,
+    "commit": "b2a1542c317278693473c59c286e37ad71bcb807",
+    "builtAt": "2026-11-13T11:12:36.446Z",
+    "gitDirty": false,
+    "loadedFunctions": [
+      {
+        "count": 20,
+        "allSourceMatchesLoaded": true,
+        "BEntryBehaviorLoaded": true,
+        "autonomousRuntimeLoaded": true,
+        "deltaHelperLazyLoaded": false
+      }
+    ],
+    "journals": {
+      "same": 6,
+      "appended": 0,
+      "changedNeedsReview": 0,
+      "new": 0
+    },
+    "activeTestMessagesSent": 0,
+    "apiHealth": true,
+    "mediaConfigInstalled": true,
+    "guardArmed": true,
+    "backupManifestSha256": "d751c51e6e26d31e57925f3b6101069db8a2be2f9de75d23dbdbbb7f815c775f",
+    "at": 1794568951.4372036
+  },
+  "runtime": {
+    "agentPid": 6672,
+    "held": false,
+    "database": {
+      "ok": 1
+    },
+    "runningBots": 2,
+    "onlineBots": 2,
+    "group": {
+      "generation": 281,
+      "ready": true,
+      "ownerPid": 24728,
+      "workerPid": 25592,
+      "memberErrors": {}
+    },
+    "protocolOwnersPreserved": true,
+    "autonomyClosed": false,
+    "bilibiliStopped": false,
+    "favoritesClosed": false
+  },
+  "knownLimits": [
+    "No artificial production activity activation or live 35-round test; isolated SDK evidence reused.",
+    "Delta helper imports lazily; startup attests the behavior/autonomous entry code, not an executed production delta.",
+    "Single 120-second ASR timed out under unchanged CPU/timeout protection.",
+    "Full matrix intentionally not rerun; unresolved older fixture failures remain documented."
+  ]
+}
