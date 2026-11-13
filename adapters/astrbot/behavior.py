@@ -25,6 +25,7 @@ import execution_memory
 import reply_voice
 import message_provenance
 import group_freshness
+from contextlib import asynccontextmanager
 
 def emotional_phrase(text,pattern):
     for match in re.finditer(pattern,text):
@@ -102,8 +103,37 @@ class BehaviorStore:
         qq_favorite_tools.initialize(self.db)
         self.social=SocialStore(self.db,Path(path).parent)
         self.last={};self.active=0;self.ingress=0;self.batches={};self.batch_flush={};self.ambient=Ambient();self.slot_changed=asyncio.Event();self.waiting=0
+        self.compression_active=False
+        self.reflection.admission=self.compression_admission
         self.freshness=group_freshness.GroupFreshness()
         self.scope_turns={}
+
+    def conversation_pending(self):
+        if self.active or self.ingress or self.batches or self.waiting or any(s['users'] for s in self.scope_turns.values()):return True
+        # Accepted native inputs belong to the existing durable ingress queue.
+        return self.db.execute("SELECT 1 FROM pipeline_work_inputs WHERE status='queued' LIMIT 1").fetchone() is not None
+
+    async def wait_compression(self):
+        while self.compression_active:
+            self.slot_changed.clear()
+            if self.compression_active:await self.slot_changed.wait()
+
+    @asynccontextmanager
+    async def compression_admission(self):
+        # Drain already accepted conversation work before taking the SAME
+        # Journal writer. Later ingress remains durably queued behind this turn.
+        while self.conversation_pending():
+            self.slot_changed.clear()
+            if not self.conversation_pending():break
+            try:await asyncio.wait_for(self.slot_changed.wait(),1)
+            except asyncio.TimeoutError:pass
+        self.compression_active=True
+        try:
+            await self.model_writer.acquire()
+            yield
+        finally:
+            self.model_writer.release()
+            self.compression_active=False;self.slot_changed.set()
     async def acquire_scope(self,scope,valid,timeout=120):
         """FIFO main execution ownership; ingress observations stay concurrent."""
         slot=self.scope_turns.setdefault(scope,{'lock':asyncio.Lock(),'users':0})
@@ -123,6 +153,7 @@ class BehaviorStore:
     def release_scope(self,scope):
         slot=self.scope_turns[scope];slot['lock'].release();slot['users']-=1
         if not slot['users']:self.scope_turns.pop(scope,None)
+        self.slot_changed.set()
     async def wait_capacity(self,valid,timeout=15):
         if self.waiting>=8:return False
         self.waiting+=1;deadline=time.monotonic()+timeout
@@ -821,6 +852,8 @@ def install_runtime(core,settings):
         raw=getattr(event.message_obj,'raw_message',{}) or {}
         if not event.get_extra('_hosted_initiative',False) and not event.get_extra('_hosted_scope_continuation') and not admitted(raw,cfg):return
         id=event.get_platform_id();st=store(id,s);group=str(event.get_group_id() or '');subject=str(event.get_sender_id());scope='group:'+group if group else 'private:'+subject
+        await st.wait_compression()
+        if not current(event):return
         if group and cfg.get('groups') and group not in cfg['groups']:
             # The retained ingress row can never bind in this scope; settle it
             # instead of leaving it to five futile recovery passes.

@@ -76,6 +76,22 @@ class RuntimeCare:
     def stamp(self, root):
         if self.closed: return
         self.last_activity = time.time()
+        try:loop=asyncio.get_running_loop()
+        except RuntimeError:loop=None
+        for st in self.stores.values():
+            if st.root!=Path(root):continue
+            st.slot_changed.set()
+            if loop is None or getattr(st,'_compression_wakeup',False):continue
+            st._compression_wakeup=True
+            def wake(st=st):
+                st._compression_wakeup=False
+                if self.closed or self.stop_requested():return
+                try:
+                    if st.reflection.retry():self.track(st,st.reflection.task)
+                except Exception as error:
+                    self.failures+=1
+                    with st.db:st.reflection.checkpoint_issue('bot_shared' if st.shared_context else 'self',0,'compression_wakeup',{'type':type(error).__name__})
+            loop.call_soon(wake)
         # Root is supplied by the platform adapter, never by a QQ message.
         roots = {Path(root)}
         if os.getenv('ASTRBOT_ROOT'): roots.add(Path(os.environ['ASTRBOT_ROOT']))
@@ -129,7 +145,7 @@ class RuntimeCare:
                 # Existing process-wide maintenance clock, one bounded summary
                 # at a time. Persisted rounds/retry state survive a restart.
                 for st in list(self.stores.values()):
-                    if not self.busy(st) and st.reflection.retry():
+                    if st.reflection.retry():
                         self.track(st,st.reflection.task);break
                 self.sweep()
             except (OSError,sqlite3.Error):self.failures+=1

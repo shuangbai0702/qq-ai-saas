@@ -32,8 +32,9 @@ class CompressionAdmin(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manage(self.store,self.data,self.care)['state'],'running')
         self.assertEqual(manage(self.store,self.data,self.care)['state'],'running')
         other={**self.data,'requestId':'22222222-2222-4222-8222-222222222222'}
-        self.assertEqual(manage(self.store,other,self.care)['status'],409)
-        self.assertEqual(len(self.calls),1);self.assertEqual(len(self.tracked),1)
+        # Background busy telemetry no longer has veto power over admission.
+        self.assertEqual(manage(self.store,other,self.care)['state'],'running')
+        self.assertEqual(len(self.calls),2);self.assertEqual(len(self.tracked),2)
         self.assertFalse(self.calls[0][1]['allow_partial'])
         self.gate.set();await self.reflection.task;await asyncio.sleep(0)
         status=manage(self.store,{'action':'admin_force_compress_status','requestId':self.data['requestId']},self.care)
@@ -45,6 +46,17 @@ class CompressionAdmin(unittest.IsolatedAsyncioTestCase):
         self.store.shared_context=False
         self.assertEqual(manage(self.store,self.data,self.care)['status'],409)
         self.assertEqual(self.calls,[])
+
+    async def test_nonshared_uses_only_an_existing_real_journal_scope(self):
+        import sqlite3,json
+        self.store.shared_context=False;self.store.db=sqlite3.connect(':memory:')
+        self.store.db.execute('CREATE TABLE fishbot_readonly_journals(scope,state)')
+        self.store.db.execute('INSERT INTO fishbot_readonly_journals VALUES(?,?)',(json.dumps('private:12345678'),'ready'))
+        try:
+            self.assertEqual(manage(self.store,{**self.data,'scope':'private:87654321'},self.care)['status'],409)
+            self.assertEqual(manage(self.store,{**self.data,'scope':'private:12345678'},self.care)['state'],'running')
+            self.assertEqual(self.calls[0][0],'private:12345678')
+        finally:self.store.db.close()
 
     async def test_discard_unavailable_is_explicit_boolean_and_forwarded(self):
         self.assertEqual(manage(self.store,{**self.data,'discardUnavailable':'true'},self.care)['status'],400)

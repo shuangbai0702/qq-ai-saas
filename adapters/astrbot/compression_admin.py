@@ -5,15 +5,16 @@ derives administrator from the authenticated session, never a browser field.
 """
 import re
 import time
+import json
 
 ADMIN_COMPRESSION_OUTPUT_TOKENS=16384
 
 
 def manage(store,data,care):
     status_only=data.get('action')=='admin_force_compress_status'
-    allowed={'action','requestId'} if status_only else {'action','requestId','administrator','allowPartial','discardUnavailable'}
+    allowed={'action','requestId'} if status_only else {'action','requestId','administrator','allowPartial','discardUnavailable','scope'}
     request_id=data.get('requestId')
-    if set(data)-allowed or not (allowed-{'discardUnavailable'})<=set(data) or not isinstance(request_id,str) or not re.fullmatch(r'[a-fA-F0-9-]{36}',request_id):
+    if set(data)-allowed or not (allowed-{'discardUnavailable','scope'})<=set(data) or not isinstance(request_id,str) or not re.fullmatch(r'[a-fA-F0-9-]{36}',request_id):
         return {'error':'维护请求无效','status':400}
     jobs=getattr(store,'_compression_jobs',None)
     if jobs is None:jobs={};store._compression_jobs=jobs
@@ -22,8 +23,12 @@ def manage(store,data,care):
     administrator=data.get('administrator')
     if not isinstance(administrator,str) or not administrator.strip() or type(data.get('allowPartial')) is not bool or type(data.get('discardUnavailable',False)) is not bool:
         return {'error':'管理员维护凭据无效','status':400}
-    if not store.shared_context:return {'error':'当前机器人未启用共享上下文','status':409}
-    if care.busy(store):return {'error':'机器人正在处理工作，请稍后重试','status':409}
+    scope=data.get('scope','bot_shared')
+    if store.shared_context:
+        if scope!='bot_shared':return {'error':'共享主线维护Scope不符','status':400}
+    elif (not isinstance(scope,str) or not re.fullmatch(r'(?:private:\d{5,20}|group:\d{4,20})',scope)
+          or not store.db.execute('SELECT 1 FROM fishbot_readonly_journals WHERE scope=? AND state=\'ready\'',(json.dumps(scope),)).fetchone()):
+        return {'error':'需要指定该账号实际存在的会话Scope','status':409}
     if len(jobs)>=32:return {'error':'本次运行维护请求已达上限','status':429}
     reflection=store.reflection
     from autonomy import decision_token_limit
@@ -31,7 +36,7 @@ def manage(store,data,care):
     try:
         # create_task inside force_compress_once inherits this request budget;
         # the API caller and unrelated foreground tasks keep their own context.
-        result=reflection.force_compress_once('bot_shared',allow_partial=data['allowPartial'],administrator=administrator,request_id=request_id,discard_unavailable=data.get('discardUnavailable',False))
+        result=reflection.force_compress_once(scope,allow_partial=data['allowPartial'],administrator=administrator,request_id=request_id,discard_unavailable=data.get('discardUnavailable',False))
     finally:
         decision_token_limit.reset(limit_token)
     job={'ok':True,'requestId':request_id,'state':'running' if result.get('started') else 'not_started','startedAt':time.time(),**result}
