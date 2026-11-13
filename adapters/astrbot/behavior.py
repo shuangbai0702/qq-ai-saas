@@ -2199,9 +2199,15 @@ def install_runtime(core,settings):
     async def guarded_execute(self,event):
         lease=setting(event)
         admitted=store(event.get_platform_id(),lease) if lease is not None and current(event) else None
-        if admitted is not None:
-            admitted.ingress+=1;care.stamp(admitted.root)
+        ingress_owned=False
         try:
+            if admitted is not None:
+                # Later SDK notices have no durable message row. They wait
+                # outside the draining prefix, otherwise their own ingress
+                # count prevents the compression they are waiting for.
+                await admitted.wait_compression(event)
+                if setting(event) is not lease or not current(event):return
+                admitted.ingress+=1;ingress_owned=True;care.stamp(admitted.root)
             passes=0
             while True:
                 passes+=1
@@ -2254,7 +2260,7 @@ def install_runtime(core,settings):
             record_execution_error(lease,error,work_id=getattr(work,'event_id',None))
             bot_pipeline.stop(event,type(error).__name__,'error');raise
         finally:
-            if admitted is not None:
+            if ingress_owned:
                 admitted.ingress-=1
                 if stores.get(event.get_platform_id()) is admitted:care.stamp(admitted.root)
             try:
