@@ -5,6 +5,7 @@ import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {openDatabase} from '../packages/database/index.js';
 import {AutonomyRepository} from '../packages/database/autonomous.js';
+import {qqExternalBudget} from '../packages/database/external-action-budget.js';
 import {MAX_CURRENT_GOALS,defaultAutonomyConfig,AutonomyConfigSchema,ActionIntentSchema} from '../packages/contracts/autonomous.js';
 
 async function fixture(){
@@ -223,7 +224,7 @@ test('expired lease recovers pending effects as unknown and conservatively settl
   const c=await repo.claim('old-node');
   const out={action:await repo.planActivity(c,{})};await repo.markExecuting(c,out.action.id);
   // A pre-dispatch reservation survives the process crash as unknown cost.
-  await db.query('UPDATE autonomy_actions SET external_effects=$2 WHERE id=$1',[out.action.id,JSON.stringify({'fixture-effect':{status:'reserved'}})]);
+  await qqExternalBudget(db,{id:'a',tenant_id:'ta'},{workId:out.action.id,epoch:c.epoch,logicalActionId:'fixture-effect',phase:'reserve'});
   await db.query("UPDATE autonomy_settings SET lease_until=now()-interval '1 second' WHERE bot_id='a'");
   await repo.wake('ta','a',2,'recovery',0);const restored=await repo.claim('new-node');assert.ok(restored);
   assert.equal((await db.query('SELECT status FROM autonomy_actions WHERE id=$1',[out.action.id]))[0].status,'unknown');

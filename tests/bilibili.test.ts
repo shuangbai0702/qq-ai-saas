@@ -638,6 +638,35 @@ test('autonomous QQ and Bili reserve one shared cycle budget before dispatch; la
  assert.equal(await externalCount(f.db,cycle),1);
 });
 
+test('cycle reservation migration is atomic and reversible without changing receipts or model reservations',async t=>{
+ const f=await fixture(t),cycle='migration-cycle',works=['migration-a','migration-b'];
+ const modelRequests={'actual-request':{workId:works[0],status:'unknown',tokens:91,source:'main'}};
+ const budget={cycleExternalActions:4,day:'fixture',modelRequests};
+ await f.db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget) VALUES($1,$2,$3,1,1,1,'fixture','waiting',$4)",[cycle,f.id,f.bot.tenant_id,JSON.stringify(budget)]);
+ // An isolated database at the old schema boundary; production is untouched.
+ await f.db.query("ALTER TABLE autonomy_actions ADD COLUMN external_effects JSONB NOT NULL DEFAULT '{}'");
+ const effects=[{same:{status:'confirmed'},uncertain:{status:'unknown'},stopped:{status:'released'}},{same:{status:'reserved'}}];
+ for(let i=0;i<works.length;i++)await f.db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at,external_effects,result,receipt) VALUES($1,$2,$3,$4,1,'research','','fixture','partial',now(),$5,'{\"summary\":\"actual result\"}','[{\"status\":\"unknown\"}]')",[works[i],cycle,f.id,f.bot.tenant_id,JSON.stringify(effects[i])]);
+ const before=await f.db.query('SELECT id,result,receipt,external_effects FROM autonomy_actions ORDER BY id');
+ const migration=await readFile(new URL('../packages/database/migrations/013_cycle_external_reservations.sql',import.meta.url),'utf8');
+ const apply=async(tx:any,sql:string)=>{for(const statement of sql.split(';').filter(x=>x.trim()))await tx.query(statement)};
+ await assert.rejects(f.db.transaction(async tx=>{await apply(tx,migration);throw Error('fixture crash before commit')}),/fixture crash/);
+ assert.deepEqual(await f.db.query('SELECT id,result,receipt,external_effects FROM autonomy_actions ORDER BY id'),before);
+ assert.deepEqual((await f.db.query('SELECT budget FROM autonomy_cycles WHERE id=$1',[cycle]))[0].budget,budget);
+ await f.db.transaction(tx=>apply(tx,migration));
+ assert.equal(await externalCount(f.db,cycle),3,'same logical key in different Works remains distinct');
+ const [migrated]=await f.db.query('SELECT budget FROM autonomy_cycles WHERE id=$1',[cycle]);
+ assert.deepEqual(migrated.budget,{...budget,qqExternalRequests:{[works[0]]:effects[0],[works[1]]:effects[1]}});
+ assert.deepEqual(await f.db.query('SELECT id,result,receipt FROM autonomy_actions ORDER BY id'),before.map(({external_effects,...row})=>row));
+ await assert.rejects(f.db.transaction(tx=>apply(tx,migration)),/division by zero/,'cannot overwrite current reservations on a repeat');
+ const rollback=await readFile(new URL('../scripts/rollback-cycle-external-reservations.sql',import.meta.url),'utf8');
+ await f.db.transaction(tx=>apply(tx,rollback));
+ assert.deepEqual(await f.db.query('SELECT id,result,receipt,external_effects FROM autonomy_actions ORDER BY id'),before);
+ assert.deepEqual((await f.db.query('SELECT budget FROM autonomy_cycles WHERE id=$1',[cycle]))[0].budget,budget);
+ await f.db.transaction(tx=>apply(tx,migration));
+ assert.equal(await externalCount(f.db,cycle),3,'roll forward neither refunds unknown nor bills twice');
+});
+
 test('QQ unknown cannot be refunded or billed twice across replay and late receipt',async t=>{
  const f=await fixture(t),cycle='qq-cycle',work='qq-work';
  await f.db.query("INSERT INTO autonomy_settings(bot_id,tenant_id,epoch,config) VALUES($1,$2,1,'{\"mode\":\"active\"}')",[f.id,f.bot.tenant_id]);

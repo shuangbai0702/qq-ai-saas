@@ -6,6 +6,7 @@ import {openDatabase} from '../packages/database/index.js';
 import {AutonomyRepository} from '../packages/database/autonomous.js';
 import {cycleModelBudget} from '../packages/database/model-request-budget.js';
 import {ToolEffects} from '../packages/database/tool-effects.js';
+import {qqExternalBudget,externalCount} from '../packages/database/external-action-budget.js';
 
 const cycleId='00000000-0000-4000-8000-000000000011',actionId='00000000-0000-4000-8000-000000000012',effectId='00000000-0000-4000-8000-000000000013';
 async function fixture(t:any){
@@ -35,6 +36,21 @@ for(const order of ['main','media'])test('shared cycle admits one concurrent '+o
  assert.equal(outcomes.filter(x=>x.status==='fulfilled').length,1);
  assert.equal(dispatched,1,'the rejected in-flight request cannot reach the provider');
  assert.match(String((outcomes.find(x=>x.status==='rejected') as PromiseRejectedResult).reason),/model_budget_exhausted/);
+});
+
+test('main, media and QQ reservations preserve each other in the same cycle budget',async t=>{
+ const {db,bot}=await fixture(t);
+ await db.query("UPDATE autonomy_cycles SET budget=budget||'{\"cycleModelCalls\":2,\"cycleExternalActions\":1}'::jsonb WHERE id=$1",[cycleId]);
+ await Promise.all([cycleModelBudget(db,bot,main),cycleModelBudget(db,bot,media),qqExternalBudget(db,bot,{workId:actionId,epoch:2,logicalActionId:'qq-output',phase:'reserve'})]);
+ const [cycle]=await db.query('SELECT budget FROM autonomy_cycles WHERE id=$1',[cycleId]);
+ assert.deepEqual(Object.keys(cycle.budget.modelRequests).sort(),['main:1','media:1']);
+ assert.equal(cycle.budget.qqExternalRequests[actionId]['qq-output'].status,'reserved');
+ assert.equal(await externalCount(db,cycleId),1);
+ await Promise.all([cycleModelBudget(db,bot,{...main,phase:'settled',tokens:40}),cycleModelBudget(db,bot,{...media,phase:'released'}),qqExternalBudget(db,bot,{workId:actionId,epoch:2,logicalActionId:'qq-output',phase:'unknown'})]);
+ const [settled]=await db.query('SELECT budget FROM autonomy_cycles WHERE id=$1',[cycleId]);
+ assert.equal(settled.budget.modelRequests['main:1'].tokens,40);
+ assert.equal(settled.budget.modelRequests['media:1'].status,'released');
+ assert.equal(settled.budget.qqExternalRequests[actionId]['qq-output'].status,'unknown');
 });
 
 test('failure release is monotonic, unknown survives restart and late receipt settles original day once',async t=>{

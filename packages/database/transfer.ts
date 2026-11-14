@@ -20,7 +20,7 @@ export const transferSchema={
  autonomy_settings:['bot_id','tenant_id','epoch','runtime_epoch','config','state','goal_revision','summary','wait','observation','last_error','last_event_at','lease_owner','lease_until','next_wake_at','updated_at','context_cycle_seq','context_checkpoint'],
  autonomy_goals:['id','bot_id','tenant_id','origin','status','title','reason','progress','success_condition','source','revision','created_at','updated_at'],
  autonomy_cycles:['id','bot_id','tenant_id','epoch','generation','config_revision','owner','state','budget','usage','reason','decision','started_at','finished_at','cycle_seq'],
- autonomy_actions:['id','cycle_id','bot_id','tenant_id','epoch','kind','target','objective','goal_id','status','expires_at','receipt','result','created_at','finished_at','external_effects'],
+ autonomy_actions:['id','cycle_id','bot_id','tenant_id','epoch','kind','target','objective','goal_id','status','expires_at','receipt','result','created_at','finished_at'],
  autonomy_wakes:['bot_id','tenant_id','dedupe_key','epoch','due_at','reason','scope','created_at'],
  autonomy_daily_usage:['bot_id','tenant_id','day','reserved_tokens','used_tokens','model_calls','tool_calls','external_actions'],
  bilibili_settings:['bot_id','tenant_id','revision','config','model_secret','updated_at'],
@@ -32,7 +32,7 @@ export const transferSchema={
 } as const;
 export type TransferTable=keyof typeof transferSchema;
 export const transferTables=Object.keys(transferSchema) as TransferTable[];
-export const expectedSchemaVersions=['001','002','003','004','005','006','007','008','009','010','011','012'];
+export const expectedSchemaVersions=['001','002','003','004','005','006','007','008','009','010','011','012','013'];
 
 function canonical(value:any):any{
  if(value instanceof Date)return value.toISOString();
