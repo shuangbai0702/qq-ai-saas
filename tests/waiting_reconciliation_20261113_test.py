@@ -1,7 +1,7 @@
 import json,sqlite3,sys,time,unittest
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
-from bot_pipeline import BotPipeline,waiting_reconciliation_plan
+from bot_pipeline import BotPipeline,Work,waiting_reconciliation_plan
 from autonomy import GroupPresence
 
 class WaitingReconciliation(unittest.TestCase):
@@ -13,6 +13,55 @@ class WaitingReconciliation(unittest.TestCase):
     def waiting(self,event='old',**kw):
         row={'scope':'group:12345','subject':'12345678','event':event,'at':1,'source':'message','stage':'admission','status':'waiting','reason':'group_waiting','attempted':0,'confirmed':0,'updated_at':1,**kw}
         self.db.execute('INSERT INTO pipeline_events('+','.join(row)+') VALUES('+','.join('?' for _ in row)+')',tuple(row.values()));self.db.commit()
+    def admission_input(self,event='old',**kw):
+        row={'scope':'group:12345','event':event,'subject':'12345678','status':'blocked_unknown','seen':0,'payload':'original protocol','identity':'{}',**kw}
+        self.db.execute('INSERT INTO pipeline_work_inputs('+','.join(row)+') VALUES('+','.join('?' for _ in row)+')',tuple(row.values()));self.db.commit()
+    def test_admission_wait_root_is_deferred_before_finish_can_poison_it(self):
+        from unittest.mock import patch
+        self.waiting();self.admission_input(status='owned',owner='old')
+        work=Work('bot','group:12345','12345678','99999','old','message',1,{})
+        work.ledger_owner=True;work.stage('admission');work.stop('group_waiting','waiting')
+        with patch('model_cache.record_diagnostic'):
+            self.p.finish(work,{})
+        self.assertEqual(self.db.execute('SELECT status,payload,seen FROM pipeline_work_inputs').fetchone(),('deferred','original protocol',0))
+        self.assertEqual(self.p.reconcile_waiting(),0)
+        self.assertEqual(self.db.execute('SELECT status,reason FROM pipeline_events').fetchone(),('waiting','group_waiting'))
+        # The real group inbox may re-admit the SAME event, with no fabricated
+        # send/model result and no second input or independent recovery queue.
+        from types import SimpleNamespace as NS
+        extra={'_hosted_deferred_group':{'event':'old'}}
+        event=NS(get_group_id=lambda:'12345',get_sender_id=lambda:'12345678',get_self_id=lambda:'99999',get_platform_id=lambda:'qq',get_extra=lambda k,d=None:extra.get(k,d),set_extra=lambda k,v:extra.update({k:v}),message_obj=NS(message_id='old',timestamp=1))
+        self.assertEqual(self.p.bind(event,{}).status,'received')
+        self.assertEqual(self.db.execute('SELECT count(*) FROM pipeline_events').fetchone()[0],1)
+    def test_proven_historical_admission_hold_is_recoverable_without_rewriting_work(self):
+        self.waiting(status='blocked',reason='waiting_input_blocked',exit_reason='admission_blocked')
+        self.admission_input()
+        before=self.db.execute('SELECT * FROM pipeline_events').fetchall()
+        self.p.reconcile_waiting()
+        self.assertEqual(self.db.execute('SELECT status,payload,seen FROM pipeline_work_inputs').fetchone(),('deferred','original protocol',0))
+        self.assertEqual(self.db.execute('SELECT * FROM pipeline_events').fetchall(),before)
+        self.assertEqual(self.p.reconcile_admission_inputs(),0)
+        # A new real Work adopts this original unseen input, without replaying
+        # an old activation or touching any committed Journal prefix.
+        from unittest.mock import patch
+        next_work=Work('bot','group:12345','12345678','99999','new','message',2,{})
+        with patch('shared_context.active',return_value=True):self.assertTrue(self.p.claim_scope(next_work))
+        self.assertEqual(self.db.execute('SELECT status,owner,payload FROM pipeline_work_inputs').fetchone(),('owned','new','original protocol'))
+    def test_admission_recovery_does_not_reclassify_execution_unknown_or_live_owner(self):
+        cases=[{'attempted':1},{'stage':'model_tools'},{'status':'error','reason':'model_error'}, {'reason':'waiting_input_blocked','status':'blocked','exit_reason':'model_error'}]
+        for n,changes in enumerate(cases):
+            self.waiting(str(n),**changes);self.admission_input(str(n))
+        for name in ('seen','effect','live','model'):
+            self.waiting(name);self.admission_input(name,seen=1 if name=='seen' else 0)
+        self.db.execute("INSERT INTO pipeline_action_effects VALUES('effect',1,'send','target','unknown',NULL,1)")
+        self.db.execute("INSERT INTO pipeline_scope_work VALUES('group:12345','live','person','owner',1)")
+        self.assertEqual(self.p.reconcile_admission_inputs(),0)
+        self.db.execute('DELETE FROM pipeline_scope_work')
+        self.db.execute('CREATE TABLE memory_message_sources(direction TEXT,data TEXT)')
+        self.db.execute('INSERT INTO memory_message_sources VALUES(?,?)',('model',json.dumps({'source_scope':'group:12345','event_id':'model','input_digest':'real-input','outputs':[{'digest':'real-output'}]})))
+        self.db.execute('INSERT INTO memory_message_sources VALUES(?,?)',('model',json.dumps({'source_scope':'group:12345','event_id':'live','input_digest':'observed-before-admission','outputs':[],'settlement':{'attempted':0,'confirmed':0}})))
+        self.assertEqual(self.p.reconcile_admission_inputs(),1) # observe's input binding and terminal metadata do not prove model execution
+        self.assertEqual(self.db.execute("SELECT count(*) FROM pipeline_work_inputs WHERE status='blocked_unknown'").fetchone()[0],7)
     def test_settled_children_close_activation_without_claiming_a_send(self):
         self.waiting()
         self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,owner,status,seen) VALUES('group:12345','joined','old','settled',1)")

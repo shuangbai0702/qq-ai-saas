@@ -77,8 +77,6 @@ class AutonomousRuntime:
         if type(observed) not in (int,float) or not 0<=observed<=wall+60000:raise ValueError('invalid_observation_ack')
         if old and value['epoch']==old['epoch']:observed=max(observed,old.get('observedThrough',0))
         self.policies[id]={**value,'observedThrough':observed,'lease':s,'_permit_deadline':time.monotonic()+(value['until']-wall)/1000}
-        experience=value.get('experience')
-        if isinstance(experience,dict):self.store(id,s).autonomous_experience=json.loads(json.dumps(experience))
         feedback=value.get('latestFeedback')
         if isinstance(feedback,dict) and feedback.get('phase')=='foreground_result' and isinstance(feedback.get('result'),dict) and type(feedback.get('at')) in (int,float) and 0<feedback['at']<=wall+60000 and feedback['at']>self.feedbacks.get(id,{}).get('at',0):
             self.feedbacks[id]=json.loads(json.dumps(feedback))
@@ -552,15 +550,15 @@ class AutonomousRuntime:
         model_origin=(action.get('requestSource') or {}).get('origin')=='model'
         if moment and action.get('activationTrigger','activity')=='activity' and not self.policies.get(id,{}).get('config',{}).get('activityEnabled',True):raise PreflightRejected('activity_disabled')
         if model_origin and not continuation and not s['config'].get('proactive'):
-            return {'status':'blocked','summary':'自主模式已关闭，未发起自主研究模型调用','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE)}
+            return {'status':'blocked','summary':'自主模式已关闭，未发起自主研究模型调用','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE),'continuationAccepted':False,'stopReason':'not_started'}
         identity={**identity,'_model_origin':model_origin,'_continuation':continuation}
         if not self.valid(id,identity):raise PreflightRejected('stale_internal_work')
         kind=action['kind'];target=''
         import agreement_state
         if not st.pipeline.handoff_current(action.get('goalId')):
-            return {'status':'canceled','summary':'原请求已取消，未继续执行','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE)}
+            return {'status':'canceled','summary':'原请求已取消，未继续执行','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE),'continuationAccepted':False,'stopReason':'not_started'}
         if not agreement_state.task_current(st.db,(action.get('requestSource') or {}).get('agreement')):
-            return {'status':'canceled','summary':'约定已取消或修订，旧版本任务未执行','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE)}
+            return {'status':'canceled','summary':'约定已取消或修订，旧版本任务未执行','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE),'continuationAccepted':False,'stopReason':'not_started'}
         identity={**identity,'kind':kind}
         previous=st.pipeline.internal_result(identity['id'])
         if previous:
@@ -574,10 +572,10 @@ class AutonomousRuntime:
             platform=next(p for p in self.core.platform_manager.get_insts() if p.meta().id==id)
             try:login=await asyncio.wait_for(platform.bot.get_login_info(),5)
             except asyncio.CancelledError:raise
-            except Exception:return {'status':'blocked','summary':'当前绑定协议的QQ登录身份读取失败，未执行任务。','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE),'contextScope':scope}
-            if not self.valid(id,identity):return {'status':'canceled','summary':'读取QQ身份期间任务身份或配置已变化，未执行任务。','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE),'contextScope':scope}
+            except Exception:return {'status':'blocked','summary':'当前绑定协议的QQ登录身份读取失败，未执行任务。','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE),'continuationAccepted':False,'stopReason':'not_started','contextScope':scope}
+            if not self.valid(id,identity):return {'status':'canceled','summary':'读取QQ身份期间任务身份或配置已变化，未执行任务。','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE),'continuationAccepted':False,'stopReason':'not_started','contextScope':scope}
             self_id=str(login.get('user_id') or '') if isinstance(login,dict) else ''
-            if not re.fullmatch(r'[1-9][0-9]{4,19}',self_id):return {'status':'blocked','summary':'当前绑定协议未返回有效QQ身份，未执行任务。','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE),'contextScope':scope}
+            if not re.fullmatch(r'[1-9][0-9]{4,19}',self_id):return {'status':'blocked','summary':'当前绑定协议未返回有效QQ身份，未执行任务。','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE),'continuationAccepted':False,'stopReason':'not_started','contextScope':scope}
         event=self.make_event(id,identity,scope if scope!='self' else 'private:0',action['objective'],self_id)
         if main_activation:
             event.set_extra('_hosted_main_activation',True)
@@ -666,7 +664,7 @@ class AutonomousRuntime:
             if id in self.tasks:raise ValueError('background_work_busy')
             self.tasks[id]=asyncio.current_task()
             try:return await self.execute(id,data)
-            except PreflightRejected as error:return {'status':'canceled','reason':str(error),'preflightReason':self.validation_error(id,data.get('work') or {}),'summary':'执行前身份已失效，未调用模型或协议','effects':[],'evidence':[],'unfinished':[],'usage':dict(ZERO_USAGE)}
+            except PreflightRejected as error:return {'status':'canceled','reason':str(error),'stopReason':'not_started','continuationAccepted':False,'preflightReason':self.validation_error(id,data.get('work') or {}),'summary':'执行前准入未通过，未调用模型或协议','effects':[],'evidence':[],'unfinished':[],'usage':dict(ZERO_USAGE)}
             finally:self.tasks.pop(id,None)
         if operation=='receipt':
             if id not in self.tasks and self.store(id,self.settings[id]).db.execute("SELECT 1 FROM qq_favorite_writes WHERE action=? AND state='unknown' LIMIT 1",(data['id'],)).fetchone():

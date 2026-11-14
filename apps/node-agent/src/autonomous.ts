@@ -67,8 +67,7 @@ export class AutonomyCoordinator {
  async stop(){this.closed=true;if(this.timer)clearInterval(this.timer);if(this.heartbeatTimer)clearInterval(this.heartbeatTimer);this.timer=undefined;this.heartbeatTimer=undefined;await this.heartbeatTask;while(this.busy)await new Promise(resolve=>setTimeout(resolve,10));const active=this.active;if(active){await this.call(active.claim,'cancel',{},2000).catch(()=>{});await active.task.catch(()=>{})}}
  private async policy(bot:any,cycleId='',actionId=''){
   const issuedAt=this.policySerial=Math.max(Date.now(),this.policySerial+1);
-  const experience=await this.repo.experience(bot.tenant_id,bot.bot_id);
-  return{tenantId:bot.tenant_id,botId:bot.bot_id,epoch:bot.epoch,generation:bot.generation,revision:bot.revision,config:AutonomyConfigSchema.parse(bot.config),observedThrough:Number(bot.observation?.at||0),latestFeedback:bot.observation?.latestFeedback||(bot.observation?.phase==='foreground_result'?bot.observation:undefined),experience,issuedAt,until:Date.now()+14000,cycleId,actionId};
+  return{tenantId:bot.tenant_id,botId:bot.bot_id,epoch:bot.epoch,generation:bot.generation,revision:bot.revision,config:AutonomyConfigSchema.parse(bot.config),observedThrough:Number(bot.observation?.at||0),latestFeedback:bot.observation?.latestFeedback||(bot.observation?.phase==='foreground_result'?bot.observation:undefined),issuedAt,until:Date.now()+14000,cycleId,actionId};
  }
  private async freshSnapshot(bot:any){
   const snapshot=await this.call(bot,'snapshot',{ledgerOnly:true},3000);
@@ -194,7 +193,9 @@ export class AutonomyCoordinator {
      try{
       await this.call(c,'policy',await this.policy(c,c.cycleId,continuation.id),2000);
       executeStarted=true;result=await this.call(c,'execute',{work,action:{...continuation}},Math.max(1000,deadline-Date.now()+2000));
-      await this.repo.settleToolContinuation(c,continuation,result.continuationAccepted===false?'pending':'done');
+      if(typeof result.continuationAccepted!=='boolean')result={...result,status:'unknown',summary:'续接缺少主Journal接收确认；保留原回执供核对，不重复派发'};
+      await this.repo.settleToolContinuation(c,continuation,result.continuationAccepted===true?'done':result.continuationAccepted===false?'pending':'unknown');
+      if(result.continuationAccepted===false)await this.repo.wake(c.tenant_id,c.bot_id,c.epoch,'tool-completed',30,continuation.continuation.id);
      }catch{
       if(!executeStarted){
        result=notStarted(continuation.objective);
@@ -206,7 +207,9 @@ export class AutonomyCoordinator {
       // A durable original receipt may settle the race. An absent receipt does
       // not prove no model ran; retain unknown instead of replaying the effect.
       result=receipt?.result||{status:'unknown',summary:'异步结果续接回执未知；保留原结果和责任，不重复派发',effects:receipt?.effects||[],evidence:[],unfinished:[continuation.objective],usage:{tokens:work.budget.tokens,modelCalls:work.budget.modelCalls,toolCalls:work.budget.toolCalls,estimated:true}};
-      await this.repo.settleToolContinuation(c,continuation,receipt?.result?(result.continuationAccepted===false?'pending':'done'):'unknown');
+      if(typeof result.continuationAccepted!=='boolean')result={...result,status:'unknown'};
+      await this.repo.settleToolContinuation(c,continuation,receipt?.result&&result.continuationAccepted===true?'done':receipt?.result&&result.continuationAccepted===false?'pending':'unknown');
+      if(receipt?.result&&result.continuationAccepted===false)await this.repo.wake(c.tenant_id,c.bot_id,c.epoch,'tool-completed',30,continuation.continuation.id);
       }
      }
      if(!result.usage||['tokens','modelCalls','toolCalls'].some(name=>!Number.isSafeInteger(result.usage[name])||result.usage[name]<0))result={...result,usage:{tokens:work.budget.tokens,modelCalls:work.budget.modelCalls,toolCalls:work.budget.toolCalls,estimated:true}};
