@@ -1584,7 +1584,7 @@ def install_runtime(core,settings):
                 except (TypeError,ValueError):ids=[]
                 scope=event.get_extra('_hosted_pipeline').scope
                 import periodic_guidance,shared_context
-                context=periodic_guidance.attach(context,owner.db,shared_context.JOURNAL_SCOPE if owner.shared_context else scope)
+                context=periodic_guidance.attach(context,owner.db,shared_context.JOURNAL_SCOPE if owner.shared_context else scope,prepared=event.get_extra('_hosted_periodic_guidance'))
                 if event.get_extra('_hosted_agreement_fence') is None:
                     import agreement_state
                     event.set_extra('_hosted_agreement_fence',(scope,agreement_state.agreements_stamp(owner.db,scope)))
@@ -2019,6 +2019,9 @@ def install_runtime(core,settings):
         writer=None
         try:
             writer=await writer_enter(system_store,event,foreground)
+            if foreground and system_store:
+                import periodic_guidance
+                await periodic_guidance.prepare_goals(system_store,event,setting(event),lambda:current(event) and delivery_current(event))
             b=inject(chat,self,args,kwargs)
             response=await chat(*b.args,**b.kwargs)
             e=current_message_event.get()
@@ -2089,6 +2092,9 @@ def install_runtime(core,settings):
         last_response=None;writer=None;completion_done=False
         try:
             writer=await writer_enter(system_store,event,foreground)
+            if foreground and system_store:
+                import periodic_guidance
+                await periodic_guidance.prepare_goals(system_store,event,setting(event),lambda:current(event) and delivery_current(event))
             b=inject(stream,self,args,kwargs)
             from contextlib import aclosing
             async with aclosing(stream(*b.args,**b.kwargs)) as responses:

@@ -91,6 +91,19 @@ class Activity(unittest.IsolatedAsyncioTestCase):
         finally:self.st.active=0
         self.assertEqual(busy['reason'],'foreground_work_busy');self.assertEqual(len(self.requests),before)
         self.assertEqual(self.st.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],2)
+    async def test_periodic_goal_read_enters_sdk_once_and_survives_restart(self):
+        from unittest.mock import AsyncMock
+        self.st.db.execute("INSERT INTO fishbot_guidance_cadence VALUES('bot_shared',7)");self.st.db.commit()
+        read=AsyncMock(return_value=(200,{'goals':[{'id':'periodic-g','title':'SHORT_PERIODIC_GOAL','status':'active','revision':3,'reason':'NOT_REPEATED_REASON'}],'complete':True}))
+        with patch('autonomous_goals.manifest',return_value={'botId':'bot','url':'https://fixture.invalid','token':'fixture'}),patch('bridge_http.post',read):
+            first=await self.activate();self.assertEqual(first['status'],'completed',first)
+            wire=self.requests[-1]['messages'];self.assertIn('SHORT_PERIODIC_GOAL',model_json(wire));self.assertNotIn('NOT_REPEATED_REASON',model_json(wire))
+            self.assertEqual(read.await_count,1)
+            self.st.model_journals.clear()
+            second=await self.activate();self.assertEqual(second['status'],'completed',second)
+            self.assertEqual(read.await_count,1)
+            self.assertEqual(self.requests[-1]['messages'][:len(wire)],wire)
+
     async def test_activation_and_journal_stage_rollback_atomically(self):
         await self.activate();journal=self.st.model_journals['bot_shared'];before=copy.deepcopy(journal.last.wire)
         with patch('activation_rounds.record',side_effect=RuntimeError('injected_transaction_failure')):
