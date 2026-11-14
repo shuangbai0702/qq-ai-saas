@@ -148,7 +148,8 @@ def tools(event,cfg,db,root,current):
     initialize(db)
     lease=event.get_extra('_hosted_lease') or {}
     from astrbot.core.agent.tool import FunctionTool
-    source_ids=context(event,db)['source_ids']
+    def source_context():return context(event,db)
+    source_ids=source_context()['source_ids']
     meanings={}
     async def details():
         nonlocal meanings
@@ -189,6 +190,8 @@ def tools(event,cfg,db,root,current):
             if not current() or context.context.event is not event:return rejected('tool_preflight_rejected','未操作：配置或执行身份已变化。')
             submitted=False;phase='source';digest=None;account=str(event.get_self_id())
             try:
+                if operation=='sources':
+                    return json.dumps(source_context(),ensure_ascii=False)
                 if operation=='list':
                     phase='list'
                     rows=await details()
@@ -274,4 +277,4 @@ def tools(event,cfg,db,root,current):
                     if current() and digest in checked['confirmed']:return confirmed(checked['confirmed'][digest])
                 code='favorite_confirmation_pending' if submitted else str(error) if isinstance(error,ValueError) and str(error).startswith(('media_','unsupported_')) else 'favorite_'+phase+'_unavailable'
                 return json.dumps({'status':'unknown' if submitted else 'blocked','code':code,'submitted':submitted,'phase':phase,'meaning':('请求已经发起，结果未确认；后台仅核查真实收藏，不会重复上传。等待确认不能解释为保存失败或QQ网络故障。' if submitted else '操作在提交前受阻，没有写入QQ收藏。')+'单张上限8MiB、首帧4百万像素，保留原动图。'},ensure_ascii=False)
-    return [Favorites(name='hosted_qq_favorites',description='当前登录QQ的真实自定义表情：list读取收藏并核实历史未确认写入；prepare用list返回的favorite_handle选择收藏随本轮回复发送，也可由群发工具将已选图发往授权群；save用source_id保存收到的原图。current取本条图片，无图时只取当前发送者最近15分钟最新消息中唯一的图片；多图需选可信句柄。source_id与favorite_handle不能混用，都不是URL或路径。保存不是平台收图；按实际回执说明结果。unknown只表示待确认，不是失败或网络故障；confirmed才可报告成功。当前来源、近期图片和真实收藏记录见本轮可信上下文tool_context.qq_favorites；执行时仍校验账号、会话与真实来源。',parameters={'type':'object','properties':{'operation':{'type':'string','enum':['list','prepare','save']},'source_id':{'type':'string','maxLength':128,'description':'仅save使用；current或近期可信图片/已审核素材句柄。'},'favorite_handle':{'type':'string','pattern':'^qf_[a-f0-9]{20}$','description':'仅prepare使用；从list或save真实返回的handle选择。'}},'required':['operation'],'additionalProperties':False})]
+    return [Favorites(name='hosted_qq_favorites',description='当前登录QQ的真实自定义表情：list读取收藏并核实历史未确认写入；prepare用list返回的favorite_handle选择收藏随本轮回复发送，也可由群发工具将已选图发往授权群；save用source_id保存收到的原图。current取本条图片，无图时只取当前发送者最近15分钟最新消息中唯一的图片；多图需选可信句柄。source_id与favorite_handle不能混用，都不是URL或路径。保存不是平台收图；按实际回执说明结果。unknown只表示待确认，不是失败或网络故障；confirmed才可报告成功。sources只读查询当前来源、近期图片及本会话收藏写入回执，不访问QQ网络；list查询真实收藏。执行时仍校验账号、会话与真实来源。',parameters={'type':'object','properties':{'operation':{'type':'string','enum':['sources','list','prepare','save']},'source_id':{'type':'string','maxLength':128,'description':'仅save使用；current或近期可信图片/已审核素材句柄。'},'favorite_handle':{'type':'string','pattern':'^qf_[a-f0-9]{20}$','description':'仅prepare使用；从list或save真实返回的handle选择。'}},'required':['operation'],'additionalProperties':False})]
