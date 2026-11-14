@@ -539,6 +539,8 @@ class AutonomousRuntime:
         if self.settings.get(id) is not s or not self.valid(id,identity):raise PreflightRejected('stale_internal_work')
         moment=action.get('autonomousMoment') is True
         main_activation=moment or bool(action.get('continuation'))
+        if not main_activation or action.get('kind')!='research' or action.get('target'):
+            raise PreflightRejected('independent_execution_retired')
         main_scope=None
         if main_activation:
             if st.active or getattr(st,'waiting',0) or id in self.running or self.provider(id) is None:
@@ -553,33 +555,18 @@ class AutonomousRuntime:
             return {'status':'blocked','summary':'自主模式已关闭，未发起自主研究模型调用','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE)}
         identity={**identity,'_model_origin':model_origin,'_continuation':continuation}
         if not self.valid(id,identity):raise PreflightRejected('stale_internal_work')
-        p=self.policies[id];kind=action['kind'];target=action.get('target','');candidates=self.candidates(id)
+        kind=action['kind'];target=''
         import agreement_state
         if not st.pipeline.handoff_current(action.get('goalId')):
             return {'status':'canceled','summary':'原请求已取消，未继续执行','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE)}
         if not agreement_state.task_current(st.db,(action.get('requestSource') or {}).get('agreement')):
             return {'status':'canceled','summary':'约定已取消或修订，旧版本任务未执行','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE)}
         identity={**identity,'kind':kind}
-        request=st.pipeline.request_reply(identity,action.get('goalId'),action.get('requestSource'),identity['id'],current_lease=s) if kind=='message' else None
-        if request and request['scope']!=target:request=None
-        if request and target.startswith('group:') and s['config'].get('groups') and target[6:] not in s['config']['groups']:request=None
         previous=st.pipeline.internal_result(identity['id'])
         if previous:
-            st.pipeline.bind_internal(None,s,identity,target if kind=='message' else 'self',action['objective'])
+            st.pipeline.bind_internal(None,s,identity,'self',action['objective'])
             return previous['result'] or {'status':'unknown','summary':'已有动作尚未完整结算；禁止重新执行','effects':previous['effects'],'evidence':[],'unfinished':[action['objective']],'usage':{'modelCalls':0,'toolCalls':0,'tokens':0}}
-        if kind=='message' and action.get('requestSource') and not request and not continuation:return {'status':'blocked','summary':'原请求回复许可无效或已使用；不能降级为主动发送重试','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE),'contextScope':target}
-        candidate=next((c for c in candidates if c['scope']==target),None)
-        if request:
-            row=st.db.execute('SELECT self_id,last_user FROM contacts WHERE scope=?',(target,)).fetchone()
-            if row:candidate={'scope':target,'selfId':row[0],'lastUserAt':row[1],'requested':True}
-            else:request=None
-        if kind=='message' and not candidate:return {'status':'blocked','summary':'当前对象不在允许且到期的真实联系人中','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE),'contextScope':target}
-        b=s['config'].get('behavior') or {}
-        if kind=='profile_signature' and not (b.get('qqProfile') and b.get('autoSignature',True)):raise ValueError('inner_signature_disabled')
-        if kind=='qzone_publish' and not b.get('qzone'):raise ValueError('inner_qzone_disabled')
-        if p['config']['rollout']=='shadow' and kind!='research':return {'status':'completed','summary':'影子模式：已记录对外意图，未实际发送或执行','effects':[],'evidence':[],'unfinished':[],'shadow':True,'usage':dict(ZERO_USAGE)}
-        if kind!='research' and not self.valid(id,identity,effect=True):raise ValueError('effect_permit_expired')
-        scope=target if kind=='message' else main_scope if main_activation and main_scope!='bot_shared' else 'self';self_id=candidate['selfId'] if candidate else str(s.get('expectedUin') or '')
+        scope=main_scope if main_scope!='bot_shared' else 'self';self_id=str(s.get('expectedUin') or '')
         if not self_id:
             # Older valid QQ sessions may have no persisted expectedUin. Bind
             # self work to this member's real protocol, never a model argument
@@ -600,19 +587,6 @@ class AutonomousRuntime:
             result=st.pipeline.internal_result(identity['id']);return result['result'] or {'status':'unknown' if result['effects'] else 'canceled','summary':'同一动作已有执行记录，禁止重新执行','effects':result['effects'],'evidence':[],'unfinished':[action['objective']]}
         work=bound;work.stage('observe');work.stage('admission')
         event.set_extra('_hosted_autonomous_action',action)
-        if candidate:event.set_extra('_hosted_internal_last_user',candidate['lastUserAt'])
-        if request:
-            if not st.pipeline.request_reply(identity,action.get('goalId'),action.get('requestSource'),identity['id'],reserve=True,current_lease=s):
-                feedback={'status':'blocked','summary':'原请求的回复许可已被其他动作持有','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE)};st.pipeline.finish_internal(work,feedback);return feedback
-            event.set_extra('_hosted_requested_reply',True)
-        if kind=='message' and not request:
-            if not autonomy.reserve_send(st.db,scope,identity['id'],s['config']):
-                feedback={'status':'blocked','summary':'现有主动发送额度已用完','effects':[],'evidence':[],'unfinished':[],'usage':dict(ZERO_USAGE)};st.pipeline.finish_internal(work,feedback);return feedback
-            event.set_extra('_hosted_autonomy_reservation',identity['id'])
-            now=time.time();day=initiative.datetime.fromtimestamp(now,initiative.ZONE).date().isoformat()
-            event.set_extra('_hosted_timer_item',{'scope':scope,'reserved_at':now})
-            st.db.execute('UPDATE contacts SET last_attempt=?,unanswered=unanswered+1 WHERE scope=?',(now,scope))
-            st.db.execute('INSERT INTO deliveries VALUES(?,?,1,?) ON CONFLICT(scope,day) DO UPDATE SET count=count+1,last_sent=excluded.last_sent',(scope,day,now));st.db.commit()
         memory_epoch=st.reflection.epoch()
         result={'status':'blocked','reason':'task_not_started','text':'','usage':{'tokens':0,'modelCalls':0,'toolCalls':0},'evidence':[]}
         failure=''
@@ -621,39 +595,15 @@ class AutonomousRuntime:
             work.stage('context');context=self.prepare_context(id,event,scope,action['objective'])
             tools=self.task_tools(id,identity,scope,event)
             context_object=SimpleNamespace(event=event)
-            prior=data.get('feedback')
-            # A prior conversation's dispatch failure is not this task's admission
-            # result, even when the two tasks contact the same person. Current chat
-            # history comes from ContextBuilder; only internal research may supply
-            # separate findings to a newly admitted outgoing conversation.
-            if kind=='message' and prior and prior.get('contextScope')!='self':prior=None
-            # The provider hook assembles the same ContextBuilder result once.
-            prompt=json.dumps({'task':action,'priorFeedback':prior,'allowedContacts':self.candidates(id)},ensure_ascii=False)
-            if moment:prompt+='\n现在是一次自主活动时刻。请根据当前状态、记忆、经历、关系、目标及可用工具，结合当前目标为何形成、已确认成果、实际阻塞和最近反馈，判断有没有值得做的事情。可以继续、修订、结束或放下目标，也可形成后续目标或休息；不必每次从零策划或制造任务。放下不等于完成，休息不取消已有任务。最终文字是内部活动记录，不会自动发给任何人。'
-            system=s['config'].get('systemPrompt','')+'\n这是平台授权的内部任务，不是主人发来一条新消息。sender=0是服务身份，不拥有主人权限；真实联系人是recipient。以当前任务为范围，结合已有反馈选择下一步；自主研究不冒充主人委托，自己的新观点可由真实经历形成，不虚构刚发生的事件。工具返回才是实际结果。对话任务最后输出要实际发给目标的一轮自然内容，允许[MEME:真实候选id]及[QQ_BREAK]，不假装已经发送。研究任务返回有证据的结论、未完成事项，不能用虚构检索结果。没有工具能力时如实说明。'
-            system+='\n'+bot_pipeline.EXECUTION_DISCLOSURE_POLICY
-            if main_activation:
-                system=s['config'].get('systemPrompt','')
-                prompt=json.dumps({'kind':'autonomous_activation' if moment else 'autonomous_tool_continuation','activationId':identity['id'],
-                    **({'continuation':action['continuation']} if action.get('continuation') else {}),
-                    'meaning':'平台激活，不是用户消息。结合原主对话、人格、目标和真实回执自主行动、修订目标或休息，不必制造任务；最终文字仅记录当前思考，不代表已发QQ。'},ensure_ascii=False,separators=(',',':'))
-            if kind=='message':system+='\n本轮聊天任务及固定会话已通过当前初始准入，最终投递仍由公共管线实时校验并记录回执。历史任务的失败不是本轮的发送状态；你的最终内容将作为消息发给当前对象，不要替平台编造投递结果。'
-            if kind=='research' and not main_activation:system+='\n本任务为内部研究，最后只输出JSON：{"status":"completed或blocked或partial","summary":"已证实的结果或受阻原因","unfinished":["实际未完成项"]}。这是当前任务步骤的结果，不是长期目标的终态。检索成功但无匹配时，准确报告无匹配；这不表示长期目标已实现。工具拒绝、失败或未执行时必须blocked或partial，不能用通用常识替代任务完成。引用和证据以平台实际工具回执为准。摘要中区分工具实际返回的内容、未经核验的推测与缺失材料；只得到目录、标题、摘要或检索元数据时，不得声称已读取完整内容或验证其中事实，获取具体知识所需的原文或媒体未读取则列入unfinished。'
+            system=s['config'].get('systemPrompt','')
+            prompt=json.dumps({'kind':'autonomous_activation' if moment else 'autonomous_tool_continuation','activationId':identity['id'],
+                **({'continuation':action['continuation']} if action.get('continuation') else {}),
+                'meaning':'平台激活，不是用户消息。结合原主对话、人格、目标和真实回执自主行动、修订目标或休息，不必制造任务；最终文字仅记录当前思考，不代表已发QQ。'},ensure_ascii=False,separators=(',',':'))
             result=await self.invoke(id,identity,prompt,system,tools=tools,context=context_object)
-            if self.settings.get(id) is s and result['status']=='completed' and kind=='message' and result['text'].strip():
-                from astrbot.api.event import MessageChain
-                from astrbot.core.message.components import Plain
-                from astrbot.core.platform.astr_message_event import current_message_event
-                token=current_message_event.set(event)
-                try:await event.send(MessageChain([Plain(result['text'])]))
-                finally:current_message_event.reset(token)
         except asyncio.CancelledError:failure='task_canceled'
         except Exception as error:
             from native_internal import WorkBudgetExceeded,WorkStopped
             failure=str(error) if isinstance(error,(WorkBudgetExceeded,WorkStopped)) else type(error).__name__
-        finally:
-            if self.settings.get(id) is s:
-                initiative.release_unstarted(st.db,event.get_extra('_hosted_timer_item') or {},event.get_extra('_hosted_autonomy_reservation'))
         if self.settings.get(id) is not s:
             # drain() keeps this original store alive until the task returns.
             # Only settle its immutable action; never write a replacement
@@ -662,7 +612,6 @@ class AutonomousRuntime:
             effects=await external_action_budget.effects(s,identity,st.pipeline.internal_result(identity['id'])['effects'])
             status='partial' if any(e['status']=='confirmed' for e in effects) else 'unknown' if effects else 'canceled'
             feedback={'status':status,'summary':'成员已卸载；原动作回执已保留，未派发部分已撤销。','stopReason':'member_unloaded','effects':effects,'evidence':result['evidence'],'unfinished':['核对原任务剩余部分；不得重复已经确认的操作。'] if effects else [action['objective']],'usage':result['usage'],'contextScope':scope,'toolResults':result.get('toolResults',[]),'checkpoints':result.get('checkpoints',[])}
-            if kind=='message':feedback['response']='' if event.get_extra('_hosted_final_reply_suppressed') else result['text'][:1600]
             st.pipeline.finish_internal(work,feedback)
             return feedback
         import external_action_budget
@@ -670,32 +619,16 @@ class AutonomousRuntime:
         status='canceled' if failure=='task_canceled' else 'blocked' if failure else result['status']
         if any(e['status']=='unknown' for e in effects):status='partial' if any(e['status']=='confirmed' for e in effects) else 'unknown'
         elif (failure or result['status']!='completed') and any(e['status']=='confirmed' for e in effects):status='partial'
-        elif kind=='message' and effects and work.confirmed_messages<work.planned_messages:status='partial'
-        elif kind!='research' and not effects:status='blocked'
         summary=result['text'][:1600] or result['reason']
-        if kind=='message':summary='协议投递：确认'+str(sum(e['status']=='confirmed' for e in effects))+'，不明'+str(sum(e['status']=='unknown' for e in effects))+'；投递状态为'+status+'。是否完成用户任务需另对照实际内容。'
         unfinished=[] if status=='completed' else [action['objective']]
         # An internal tool task can perform an authorized QQ operation. Its
         # real protocol receipt is evidence too, not an unverified model claim.
         for effect in effects:
             if effect['status']=='confirmed':result['evidence'].append({'source':'qq_protocol_receipt','reference':effect['id']})
-        if kind=='research' and not main_activation and status=='completed':
-            try:
-                reported=json_object(result['text'])
-                if reported.get('status') not in ('completed','blocked','partial') or not isinstance(reported.get('summary'),str) or not isinstance(reported.get('unfinished'),list):raise ValueError('invalid_task_feedback')
-                status=reported['status'];summary=reported['summary'][:1600];unfinished=[str(x)[:500] for x in reported['unfinished'][:6]]
-                if not any(x['status']=='returned' for x in result.get('toolResults',[])) or not result['evidence']:
-                    status='blocked';unfinished=unfinished or [action['objective']]
-                elif status=='completed' and any(x['status'] in ('failed','unavailable') for x in result.get('toolResults',[])):
-                    status='partial';unfinished=unfinished or [action['objective']]
-            except (ValueError,TypeError):status='blocked';summary='内层未返回有效的结构化研究结果；实际工具回执保留。';unfinished=[action['objective']]
-        if kind!='research' and not effects:summary='未确认任何对外操作。'+(failure or result['reason'])
         if status=='partial' and effects and all(e['status']=='confirmed' for e in effects) and (failure or result['status']!='completed'):
             summary='已有'+str(len(effects))+'项对外操作获得协议确认；后续计算已停止（'+(failure or result['reason'])+'）。不得重复执行已确认操作。'
             unfinished=['核对已有回执并决定后续步骤；已确认的对外操作不可重复执行。']
         feedback={'status':status,'summary':summary,'stopReason':failure or result['reason'],'evidence':result['evidence'],'evidenceLimits':evidence_limits(result['evidence']),'effects':effects,'unfinished':unfinished,'usage':result['usage'],'contextScope':scope,'toolResults':result.get('toolResults',[]),'checkpoints':result.get('checkpoints',[])}
-        feedback['deliveryComplete']=bool(kind=='message' and status=='completed' and effects and work.planned_messages>0 and work.confirmed_messages==work.planned_messages and all(e['status']=='confirmed' for e in effects))
-        if kind=='message':feedback['response']='' if event.get_extra('_hosted_final_reply_suppressed') else result['text'][:1600]
         if kind=='research' and status=='completed' and feedback['evidence']:
             # Research outcomes stay in the authoritative action ledger and in
             # execution-memory recall, both source-attributed. They are tool
@@ -711,9 +644,6 @@ class AutonomousRuntime:
             feedback['autonomousMoment']=True
             feedback['restSeconds']=event.get_extra('_hosted_activity_rest')
         st.pipeline.finish_internal(work,feedback,action.get('goalId'));st.pipeline.finish(work,self.metrics.setdefault(id,{}))
-        if kind=='message' and not main_activation:
-            binding=getattr(self.core,'_hosted_runtime_binding',None)
-            if binding:binding['runtime']['settle_work_round'](st,event,work,s)
         if main_activation and event.get_extra('_hosted_activation_admitted'):
             from astrbot.core.platform.astr_message_event import current_message_event
             b=s['config'].get('behavior') or {}

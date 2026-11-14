@@ -48,7 +48,7 @@ class Activity(unittest.IsolatedAsyncioTestCase):
         self.brain.close()
         self.runtime['release']('qq')
         await self.provider.client.close()
-    async def activate(self,identifier=None,continuation=False):
+    async def activate(self,identifier=None,continuation=False,action_patch=None):
         identifier=identifier or str(uuid.uuid4());cycle=str(uuid.uuid4())
         policy={'tenantId':'tenant','botId':'bot','generation':1,'revision':1,'epoch':1,'until':time.time()*1000+14000,'cycleId':cycle,'actionId':identifier,'config':{'mode':'active','rollout':'live','activityEnabled':True,'maxSleepSeconds':86400}}
         self.brain.install('qq',policy)
@@ -56,7 +56,20 @@ class Activity(unittest.IsolatedAsyncioTestCase):
         work.update(id=identifier,principal='autonomous-service',expiresAt=time.time()*1000+30000,budget={'modelCalls':4,'toolCalls':4,'tokens':100000,'seconds':15,'externalActions':1})
         action={'kind':'research','target':'','objective':'Choose autonomously','autonomousMoment':not continuation,'continuationOfMoment':continuation,'goalSnapshot':{'goals':[{'id':'goal-one','title':'EXACT_CURRENT_GOAL','source':{'scope':'self'}}],'actions':[],'effects':[]}}
         if continuation:action['continuation']={'id':'effect-complete','parentActionId':'original','result':{'status':'completed','evidence':['actual result']}}
+        if action_patch:action.update(action_patch)
         return await self.brain.execute('qq',{'work':work,'action':action})
+    async def test_retired_independent_execution_has_no_work_or_model_side_effect(self):
+        from autonomous_runtime import PreflightRejected
+        before=self.st.db.execute('SELECT count(*) FROM pipeline_events').fetchone()[0]
+        for change in ({'autonomousMoment':False},{'kind':'message','target':'private:12345678'},{'kind':'profile_signature'},{'target':'group:12345678'}):
+            with self.subTest(change=change),self.assertRaisesRegex(PreflightRejected,'independent_execution_retired'):
+                await self.activate(action_patch=change)
+        self.st.shared_context=False
+        blocked=await self.activate()
+        self.assertEqual(blocked['reason'],'shared_main_context_required')
+        self.assertEqual(self.requests,[])
+        self.assertEqual(self.st.db.execute('SELECT count(*) FROM pipeline_events').fetchone()[0],before)
+        self.assertEqual(self.st.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],0)
     async def test_same_main_wire_silent_count_tools_restart_and_busy(self):
         self.tool_step=True
         with patch('execution_memory.context',side_effect=AssertionError('automatic execution replay is forbidden')) as replay:
@@ -114,16 +127,6 @@ class Activity(unittest.IsolatedAsyncioTestCase):
         reloaded=ReadonlyJournal(self.st.db,'bot_shared')
         self.assertEqual(reloaded.last.wire,before)
 
-    async def test_scoped_goals_preserve_real_unknown_effects(self):
-        from activity_context import visible_goals
-        value={'goals':[{'id':'a','source':{'scope':'private:12345678'}},{'id':'b','source':{'scope':'group:87654321'}}],
-               'actions':[{'id':'action-a','goal_id':'a'},{'id':'action-b','goal_id':'b'}],
-               'effects':[{'id':'effect-a','work_id':'action-a','status':'unknown'},{'id':'effect-b','work_id':'action-b','status':'confirmed'}]}
-        result=visible_goals(value,'private:12345678')
-        self.assertEqual([g['id'] for g in result['goals']],['a'])
-        self.assertEqual(result['effects'],[value['effects'][0]])
-        self.assertEqual(len(value['effects']),2)
-
     async def test_concurrent_activation_skips_while_real_provider_in_flight(self):
         entered=asyncio.Event();release=asyncio.Event();self.request_gate=(entered,release)
         first=asyncio.create_task(self.activate())
@@ -137,29 +140,29 @@ class Activity(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.requests),1)
         self.assertEqual(self.st.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],1)
 
-    async def test_nonshared_reuses_existing_full_private_conversation(self):
+    async def test_shared_main_preserves_private_source_and_following_human_input(self):
         from context_transport import EVENT_CONTEXT_CURRENT
         from readonly_journal import Prepared
         scope='private:12345678'
-        self.st.shared_context=False;self.st.reflection.shared_context=False
+        main='bot_shared'
         original=[{'role':'system','content':'Synthetic stable persona'},
                   {'role':'user','content':SOURCE+model_json({'scope':scope,'sender_id':'12345678','event_id':'human-before-activation'})+'\nRemember our exact ongoing conversation'},
                   {'role':'assistant','content':'The same main conversation remains here.'}]
-        journal=ReadonlyJournal(self.st.db,scope);journal.serial=1
+        journal=ReadonlyJournal(self.st.db,main);journal.serial=1
         prior_packet={'role':'user','content':EVENT_CONTEXT_CURRENT+'\n'+model_json({'authority':{'identity':{'scope':scope}},'policy':{},'currentGuidance':'Prior private conversation','meaning':'Trusted prior platform data'})}
         prior_state={'memory_foundation':{'conversation_summaries':[]}}
-        self.assertTrue(journal.commit(Prepared(1,None,copy.deepcopy(original),copy.deepcopy(original)+[prior_packet],prior_state,1,time.time(),'initial',authority=prior_packet,retirement=self.st.reflection.reconstruction_stamp(scope))))
+        self.assertTrue(journal.commit(Prepared(1,None,copy.deepcopy(original),copy.deepcopy(original)+[prior_packet],prior_state,1,time.time(),'initial',authority=prior_packet,retirement=self.st.reflection.reconstruction_stamp(main))))
         old_wire=copy.deepcopy(journal.last.wire)
         result=await self.activate()
-        self.assertEqual(result['status'],'completed',(result,self.st.model_journals[scope].refusal_evidence()))
+        self.assertEqual(result['status'],'completed',(result,self.st.model_journals[main].refusal_evidence()))
         self.assertEqual(self.requests[0]['messages'][:len(old_wire)],old_wire)
         self.assertEqual(source(self.requests[0]['messages'][-1])['kind'],'platform_service_not_user')
-        self.assertEqual(self.st.db.execute('SELECT scope FROM memory_rounds').fetchall(),[(scope,)])
+        self.assertEqual(self.st.db.execute('SELECT scope FROM memory_rounds').fetchall(),[(main,)])
         self.assertFalse(any(isinstance(k,tuple) for k in self.st.model_journals))
         # The SDK's private window never received the internal activation.
         # A real following input must still append to that exact main Journal.
-        saved=copy.deepcopy(self.st.model_journals[scope].last.wire)
-        service_policy=json.loads(self.st.model_journals[scope].last.authority['content'].split('\n',1)[1])['policy']
+        saved=copy.deepcopy(self.st.model_journals[main].last.wire)
+        service_policy=json.loads(self.st.model_journals[main].last.authority['content'].split('\n',1)[1])['policy']
         self.st.model_journals.clear()
         from astrbot.core.platform.astrbot_message import MessageMember
         from astrbot.core.platform.astr_message_event import current_message_event
@@ -169,6 +172,8 @@ class Activity(unittest.IsolatedAsyncioTestCase):
         event.set_extra('_hosted_internal_work',None);event.set_extra('_hosted_initiative',False)
         from context_foundation import read
         event.set_extra('_hosted_context',model_json({'identity':{'scope':scope,'sender_id':'12345678','self_id':'90000000','owner':False},'memory_foundation':read(self.st,self.settings['qq']['config']['behavior'],scope,'12345678'),'state':{}}))
+        import shared_context
+        shared_context.observe(self.st.db,event,self.settings['qq']['config'])
         work=self.st.pipeline.bind(event,self.settings['qq'])
         token=current_message_event.set(event)
         try:
@@ -176,7 +181,7 @@ class Activity(unittest.IsolatedAsyncioTestCase):
                 prompt=SOURCE+model_json({'scope':scope,'sender_id':'12345678','event_id':work.event_id})+'\nContinue our conversation')
         finally:current_message_event.reset(token)
         self.assertEqual(self.requests[-1]['messages'][:len(saved)],saved)
-        human_policy=json.loads(self.st.model_journals[scope].last.authority['content'].split('\n',1)[1])['policy']
+        human_policy=json.loads(self.st.model_journals[main].last.authority['content'].split('\n',1)[1])['policy']
         self.assertEqual(human_policy,service_policy)
         self.assertIn('仅当本轮身份为自主服务任务时',human_policy)
         from decision_history import apply_changes

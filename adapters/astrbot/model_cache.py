@@ -43,7 +43,7 @@ def loaded_build():
                             ('agreement_state','context_view'),('bot_pipeline','conversation_context'),
                             ('memory_reflection','Reflection.recent'),('memory_reflection','Reflection.retry'),('summary_material','register_nonround_images'),('shared_context','compose'),
                             ('shared_context','Writer.acquire'),('readonly_journal','ReadonlyJournal.append_completion'),
-                            ('activity_context','encode_goal_candidate'),('activity_context','committed_goals'),
+                            ('activity_context','tail_service'),('activity_context','canonical_main'),
                             ('activation_rounds','record'),('model_request_budget','bind')):
         module=sys.modules.get(name);target=module
         for part in function.split('.'):target=getattr(target,part,None)
