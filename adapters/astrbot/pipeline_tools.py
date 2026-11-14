@@ -208,27 +208,52 @@ def cancel(pipeline,settings,work,step):
     return {'cancelRequested':True}
 
 
+def retire_ready(db,value):
+    """Use the existing legal batch proof, including a delayed final ACK."""
+    r=value['request'];c=r.get('completion',{})
+    if c.get('state') not in ('done','stale'):return
+    from context_protocol import scoped_event_hash,model_json
+    channel=value['scope'] or ('self' if r['authority']=='autonomous' else '')
+    event=(c.get('consumerWorkId') or 'bilibili-result:'+value['event']) if c['state']=='done' else r.get('origin_event') or (value['work_id'] if r['authority']=='autonomous' else '')
+    if channel and event and db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_semantic_batches'").fetchone():
+        for scope,logical in ((channel,event),('bot_shared',model_json([channel,event]))):
+            member=scoped_event_hash(scope,logical)
+            if db.execute("SELECT 1 FROM memory_semantic_batches b,json_each(b.members) m WHERE b.state='retired' AND b.scope=? AND m.value=? LIMIT 1",(scope,member)).fetchone():retire_batch(db,scope,{member});break
+
+
+def refresh_completions(db,settings,data):
+    """Reconcile original consumers before applying current admission fences."""
+    now=time.time()
+    for value in rows(db):
+        r=value['request']
+        if not r or r['operation']!='analyze' or value['status'] in ACTIVE:continue
+        c=r.get('completion',{})
+        if c.get('state')=='claimed' and c.get('until',0)<=now:
+            consumer=c.get('consumerWorkId') or 'bilibili-result:'+value['event']
+            executed=db.execute('SELECT status,execution_started,attempted FROM pipeline_events WHERE event=? AND scope=?',(consumer,'self' if r['authority']=='autonomous' else value['scope'])).fetchone()
+            if executed and (executed[1] or executed[2]):
+                c['state']='done' if executed[0] in ('sent','silent','completed','combined','superseded') else 'unknown'
+            else:c['state']='pending'
+            save_request(db,value)
+        stale=any(r.get(k)!=settings[v] for k,v in (('generation','generation'),('config_revision','revision')))
+        stale=stale or ('settingsRevision' in data and r.get('settings_revision')!=data['settingsRevision']) or data.get('enabled') is False
+        if r['authority']=='autonomous' and 'autonomyEpoch' in data:
+            stale=stale or r.get('mode_epoch')!=data['autonomyEpoch'] or data.get('autonomyEnabled') is False
+        if stale and c.get('state')=='pending':
+            c['state']='stale';save_request(db,value)
+        retire_ready(db,value)
+
+
 def completion(pipeline,settings,data):
     db=pipeline.db;now=time.time()
     with db:
-        recover(db)
+        recover(db);refresh_completions(db,settings,data)
         for value in rows(db):
             r=value['request']
             if not r or r['operation']!='analyze' or r['authority']!=data.get('authority','foreground') or value['status'] in ACTIVE:continue
             if any(r.get(k)!=settings[v] for k,v in (('generation','generation'),('config_revision','revision'))):continue
             if r['authority']=='autonomous' and r.get('mode_epoch')!=data.get('epoch'):continue
-            c=r.get('completion',{})
-            if c.get('state')=='claimed' and c.get('until',0)<=now:
-                consumer=c.get('consumerWorkId') or 'bilibili-result:'+value['event']
-                executed=db.execute('SELECT status,execution_started,attempted FROM pipeline_events WHERE event=? AND scope=?',(consumer,'self' if r['authority']=='autonomous' else value['scope'])).fetchone()
-                if executed and (executed[1] or executed[2]):
-                    # The original Work is the receipt authority. Reconcile a
-                    # lost ACK from its known terminal outcome, never replay it.
-                    c['state']='done' if executed[0] in ('sent','silent','completed','combined','superseded') else 'unknown'
-                    save_request(db,value);continue
-            elif c.get('state')!='pending':continue
-            if r.get('settings_revision')!=data.get('settingsRevision'):
-                c['state']='stale';save_request(db,value);continue
+            if r.get('completion',{}).get('state')!='pending':continue
             owner=str(uuid.uuid4())
             r['completion']={'state':'claimed','owner':owner,'until':now+120,**({'consumerWorkId':data['consumerWorkId']} if data.get('consumerWorkId') else {})}
             save_request(db,value)
@@ -247,6 +272,7 @@ def acknowledge(pipeline,id,owner,status,consumer=None):
         c['state']=status;c.pop('until',None)
         if consumer:c['consumerWorkId']=consumer
         save_request(pipeline.db,value)
+        retire_ready(pipeline.db,value)
         return {'ok':True,'updated':True}
 
 
@@ -260,7 +286,7 @@ def retire_batch(db,scope,members):
     retired=0
     for (id,) in db.execute("SELECT event FROM pipeline_events WHERE source='tool' AND request IS NOT NULL AND status IN ('completed','canceled')").fetchall():
         value=row(db,id);request=value['request'];completion=request.get('completion',{})
-        if request['operation']=='analyze':
+        if request['operation']=='analyze' and completion.get('state')!='stale':
             if completion.get('state')!='done':continue
             consumer=completion.get('consumerWorkId') or 'bilibili-result:'+id
             channel='self' if request['authority']=='autonomous' else value['scope']
@@ -287,7 +313,7 @@ def retire_batch(db,scope,members):
 
 def handle(pipeline,settings,operation,data):
     if operation=='admit':return admit(pipeline,settings,data['record'])
-    if operation=='get':return view(row(pipeline.db,data['id']))
+    if operation=='get':return view(row(pipeline.db,data['id'] if data.get('id') else key(settings['botId'],data['workId'],data['stepId'])))
     if operation=='budget_receipt':
         value=row(pipeline.db,data['id'])
         if not value:return None
@@ -306,6 +332,8 @@ def handle(pipeline,settings,operation,data):
     if operation=='completion':return completion(pipeline,settings,data)
     if operation=='ack':return acknowledge(pipeline,data['id'],data['owner'],data['status'],data.get('consumerWorkId'))
     if operation=='pending':
+        with pipeline.db:
+            recover(pipeline.db);refresh_completions(pipeline.db,settings,data)
         pending=[]
         for v in rows(pipeline.db):
             r=v['request']

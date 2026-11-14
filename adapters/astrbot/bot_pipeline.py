@@ -1056,9 +1056,9 @@ class BotPipeline:
             # activations have only this content-free key: pruning it would
             # silently turn an unresolved old delivery into a new execution.
             protected+=" AND NOT EXISTS(SELECT 1 FROM pipeline_action_effects e WHERE e.action=pipeline_events.event AND e.state IN ('dispatching','unknown'))"
-            terminal="(status IN ('sent','silent','superseded','blocked','error','interrupted','combined') OR source='autonomous' AND status IN ('completed','canceled')) AND attempted=confirmed AND coalesce(reason,'') NOT IN ('waiting_responsibility_missing','context_capacity_ready') AND coalesce(reason,'') NOT LIKE 'context_capacity_waiting:%'"
-            self.db.execute('DELETE FROM pipeline_events WHERE at<? AND '+terminal+' AND '+protected,(now-86400,))
-            self.db.execute('DELETE FROM pipeline_events WHERE rowid NOT IN (SELECT rowid FROM pipeline_events ORDER BY at DESC LIMIT 2048) AND '+terminal+' AND '+protected)
+            terminal="((status IN ('sent','silent','superseded','blocked','error','interrupted','combined') OR source='autonomous' AND status IN ('completed','canceled')) AND attempted=confirmed OR source='tool' AND status IN ('completed','canceled') AND request IS NULL AND result IS NULL AND expires_at<?) AND coalesce(reason,'') NOT IN ('waiting_responsibility_missing','context_capacity_ready') AND coalesce(reason,'') NOT LIKE 'context_capacity_waiting:%'"
+            self.db.execute('DELETE FROM pipeline_events WHERE at<? AND '+terminal+' AND '+protected,(now-86400,now))
+            self.db.execute('DELETE FROM pipeline_events WHERE rowid NOT IN (SELECT rowid FROM pipeline_events ORDER BY at DESC LIMIT 2048) AND '+terminal+' AND '+protected,(now,))
         if not work.ledger_owner:
             work.stop('duplicate_input','duplicate')
             # A queued redelivery whose original Work already ended cannot

@@ -20,6 +20,14 @@ class Pipeline(unittest.TestCase):
   self.assertEqual(self.bind().status,'duplicate')
   self.assertEqual(self.bind(group='22222').status,'received');self.assertEqual(self.bind(group='33333').status,'received')
   self.assertEqual(self.bind(sender='54321').status,'received');self.assertEqual(self.bind(sender='99999').reason,'self_message')
+ def test_prune_only_retired_tool_keys_and_expired_cancel_tombstones(self):
+  now=time.time()
+  for identifier,request,result in [('retired',None,None),('raw','{}',None),('accounting',None,'{"budgetOwner":"owner"}')]:
+   self.db.execute("INSERT INTO pipeline_events(scope,subject,event,at,source,stage,status,reason,expires_at,request,result) VALUES('self','service',?,?,'tool','model_tools','completed','',?,?,?)",(identifier,now-90000,now-1,request,result))
+  self.db.execute("INSERT INTO pipeline_events(scope,subject,event,at,source,stage,status,reason,expires_at) VALUES('self','service','tombstone',?,'tool','model_tools','canceled','canceled_before_admission',?)",(now-90000,now-1))
+  self.bind()
+  remaining={row[0] for row in self.db.execute("SELECT event FROM pipeline_events WHERE source='tool'")}
+  self.assertEqual(remaining,{'raw','accounting'})
  def test_no_output_and_confirmed_reply_have_distinct_outcomes(self):
   silent=self.bind();self.p.finish(silent,{})
   self.assertEqual((silent.status,silent.reason),('silent','no_output'))

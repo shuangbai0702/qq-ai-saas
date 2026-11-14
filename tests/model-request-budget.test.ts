@@ -4,23 +4,28 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import path from 'node:path';
 import {openDatabase} from '../packages/database/index.js';
 import {AutonomyRepository} from '../packages/database/autonomous.js';
-import {cycleModelBudget} from '../packages/database/model-request-budget.js';
-import {ToolEffects} from '../packages/database/tool-effects.js';
+import {cycleModelBudgetInTransaction,type ModelRequestBudget} from '../packages/database/model-request-budget.js';
+import {openToolWork} from './helpers/tool-work.js';
 import {qqExternalBudget,externalCount} from '../packages/database/external-action-budget.js';
 
-const cycleId='00000000-0000-4000-8000-000000000011',actionId=cycleId,effectId='00000000-0000-4000-8000-000000000013';
+const cycleId='00000000-0000-4000-8000-000000000011',actionId=cycleId,effectId='299786bd-5764-5ef8-9201-8e90440a52e6';
+const NATIVE=Symbol('isolated-original-tool-work');
+const original=(db:any)=>db[NATIVE] as Awaited<ReturnType<typeof openToolWork>>;
+const cycleModelBudget=(db:any,bot:any,v:ModelRequestBudget)=>db.transaction((tx:any)=>cycleModelBudgetInTransaction(tx,bot,v,original(db).transport));
 async function fixture(t:any){
  const root=await mkdtemp(path.resolve('.local/model-request-'));let db=await openDatabase(root);
- t.after(async()=>{await db.close();await rm(root,{recursive:true,force:true})});
  await db.query("INSERT INTO tenants(id,name) VALUES('tenant','tenant')");
- await db.query("INSERT INTO bots(id,tenant_id,name,protocol,desired_state,health) VALUES('bot','tenant','bot','mock','running',$1)",[JSON.stringify({sampledAt:new Date().toISOString(),protocol:{online:true}})]);
+ await db.query("INSERT INTO bots(id,tenant_id,name,protocol,desired_state,health) VALUES('bot','tenant','bot','mock','running',$1)",[JSON.stringify({sampledAt:new Date().toISOString(),protocol:{online:true},ai:{ready:true}})]);
  await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) VALUES('bot',1,'{}')");
  const repo=new AutonomyRepository(db);await repo.configure('tenant','bot',1,{mode:'active'});
  const [bot]=await db.query("SELECT * FROM bots WHERE id='bot'");
  await db.query("INSERT INTO autonomy_daily_usage(bot_id,tenant_id,day,reserved_tokens) VALUES('bot','tenant','fixture',1000)");
  await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,work_expires_at,budget) VALUES($1,'bot','tenant',2,$2,$3,'test','acting',now()+interval '5 minutes','{\"day\":\"fixture\",\"cycleTokenBudget\":1000,\"cycleModelCalls\":1}')",[cycleId,bot.generation,bot.revision]);
- await db.query("INSERT INTO tool_effects(id,tenant_id,bot_id,work_id,cycle_id,step_id,operation,args,args_digest,authority,mode_epoch,generation,config_revision,settings_revision,deadline_at,state,lease_owner,lease_until,origin_scope) VALUES($1,'tenant','bot',$2,$2,'analysis','analyze','{}','hash','autonomous',2,$3,$4,1,now()+interval '5 minutes','claimed','worker',now()+interval '5 minutes','private:12345678')",[effectId,actionId,bot.generation,bot.revision]);
- return{db,repo,bot,root,reopen:async()=>{await db.close();db=await openDatabase(root);return db}};
+ const native=await openToolWork(root,db,bot,actionId,2);Object.assign(db,{[NATIVE]:native});
+ await native.call('admit',{record:{bot_id:bot.id,tenant_id:bot.tenant_id,generation:bot.generation,config_revision:bot.revision,work_id:actionId,step_id:'analysis',args_digest:'hash',operation:'analyze',args:{},write:false,authority:'autonomous',mode_epoch:2,settings_revision:1,deadlineAt:Date.now()+300000,continuation:{}}});
+ assert.equal((await native.call('claim',{owner:'worker'})).id,effectId);
+ t.after(async()=>{await native.close();await db.close();await rm(root,{recursive:true,force:true})});
+ return{db,repo,bot,root,native,reopen:async()=>{await db.close();db=await openDatabase(root);native.repo.db=db;Object.assign(db,{[NATIVE]:native});return db}};
 }
 const main={workId:actionId,epoch:2,requestId:'main:1',phase:'reserve' as const,source:'main' as const,tokens:200};
 const media={...main,requestId:'media:1',source:'media' as const,effectId,owner:'worker'};
@@ -86,28 +91,29 @@ test('request identity, bot ownership, expired effects and configuration generat
 });
 
 test('lost dispatched analyze publishes unknown completion and duplicate receipt cannot reopen consumed completion',async t=>{
- const {db}=await fixture(t),effects=new ToolEffects(db);
- await db.query("UPDATE tool_effects SET state='dispatching',lease_until=now()-interval '1 second' WHERE id=$1",[effectId]);
+ const {db}=await fixture(t),effects=original(db).repo;
+ await original(db).sql("UPDATE pipeline_events SET status='sending',execution_started=1,lease_until=0 WHERE source='tool' AND event=?",[effectId]);
  assert.equal(await effects.claim('replacement'),null);
- const [job]=await db.query('SELECT * FROM tool_effects WHERE id=$1',[effectId]);
+ const job=await resultJob(db);
  assert.equal(job.state,'unknown');assert.equal(job.completion_state,'pending');
- await db.query("UPDATE tool_effects SET completion_state='done' WHERE id=$1",[effectId]);
+ await original(db).sql("UPDATE pipeline_events SET request=json_set(request,'$.completion.state','done') WHERE event=?",[effectId]);
  const unknown=job.result;await effects.finish(job,unknown);
- assert.equal((await db.query('SELECT completion_state FROM tool_effects WHERE id=$1',[effectId]))[0].completion_state,'done');
+ assert.equal((await resultJob(db)).completion_state,'done');
  const receipt={...unknown,execution:'completed',receipt:{status:'not_applicable'},data:{analysis:'late authoritative result'}};
  await effects.finish(job,receipt);
- assert.equal((await db.query('SELECT completion_state FROM tool_effects WHERE id=$1',[effectId]))[0].completion_state,'pending','a genuinely new authoritative result needs cognition');
- await db.query("UPDATE tool_effects SET completion_state='done' WHERE id=$1",[effectId]);
+ assert.equal((await resultJob(db)).completion_state,'pending','a genuinely new authoritative result needs cognition');
+ await original(db).sql("UPDATE pipeline_events SET request=json_set(request,'$.completion.state','done') WHERE event=?",[effectId]);
  await effects.finish(job,receipt);
- assert.equal((await db.query('SELECT completion_state FROM tool_effects WHERE id=$1',[effectId]))[0].completion_state,'done');
+ assert.equal((await resultJob(db)).completion_state,'done');
 });
 
 test('media crash after model reservation keeps unknown responsibility and cannot replay claimed work',async t=>{
- const {db,bot}=await fixture(t),effects=new ToolEffects(db);
+ const {db,bot}=await fixture(t),effects=original(db).repo;
  await cycleModelBudget(db,bot,media);
- await db.query("UPDATE tool_effects SET usage_checkpoint='{\"modelRequests\":1}',lease_until=now()-interval '1 second' WHERE id=$1",[effectId]);
+ await original(db).call('advance',{id:effectId,owner:'worker',phase:'checkpoint',usage:{modelRequests:1}});
+ await original(db).sql("UPDATE pipeline_events SET lease_until=0 WHERE source='tool' AND event=?",[effectId]);
  assert.equal(await effects.claim('new-process'),null);
- const [job]=await db.query('SELECT * FROM tool_effects WHERE id=$1',[effectId]);
+ const job=await resultJob(db);
  assert.equal(job.state,'unknown');assert.equal(job.completion_state,'pending');
  assert.equal(job.lease_owner,'worker','the crashed original owner retains the only authoritative late receipt path');
  await assert.rejects(()=>cycleModelBudget(db,bot,{...main,requestId:'after-crash'}),/budget_exhausted/);
@@ -116,7 +122,7 @@ test('media crash after model reservation keeps unknown responsibility and canno
 const claim={cycleId,bot_id:'bot',tenant_id:'tenant',epoch:2,owner:'test',tokenLimit:1000,config:{cycleTokenBudget:1000},day:'fixture'};
 const zeroUsage={tokens:0,modelCalls:0,toolCalls:0,externalActions:0};
 async function balance(db:any){return (await db.query("SELECT * FROM autonomy_daily_usage WHERE bot_id='bot' AND day='fixture'"))[0]}
-async function resultJob(db:any){return (await db.query('SELECT * FROM tool_effects WHERE id=$1',[effectId]))[0]}
+async function resultJob(db:any){return original(db).repo.get('tenant','bot',effectId)}
 const mediaReceipt:any={schemaVersion:'fishbot.tool-result.v1',actionId:effectId,execution:'completed',receipt:{status:'not_applicable'},usage:{modelRequests:1,providerUsage:{total_tokens:75}},versions:{adapter:'bilibili-web-v1'}};
 
 test('finished cycle admits its live media owner, reacquires original-day capacity and settles once across effect receipt',async t=>{
@@ -127,13 +133,13 @@ test('finished cycle admits its live media owner, reacquires original-day capaci
  await cycleModelBudget(db,bot,media);
  assert.equal(Number((await balance(db)).used_tokens),200);
  await cycleModelBudget(db,bot,{...media,phase:'settled',tokens:75});
- const effects=new ToolEffects(db),job=await resultJob(db);
+ const effects=original(db).repo,job=await resultJob(db);
  await effects.finish(job,mediaReceipt);await effects.finish(job,mediaReceipt);
  const day=await balance(db),[cycle]=await db.query('SELECT * FROM autonomy_cycles WHERE id=$1',[cycleId]);
  assert.equal(Number(day.used_tokens),75);assert.equal(day.model_calls,1);
  assert.equal(Number(cycle.usage.tokens),75);assert.equal(cycle.usage.modelCalls,1);
  assert.equal(Number(cycle.usage.mediaTokens),75);assert.equal(cycle.usage.mediaModelCalls,1);assert.equal(cycle.usage.mediaTokenStatus,'actual');
- assert.equal((await resultJob(db)).usage_checkpoint.settledTokens,75);
+ assert.equal(cycle.budget.modelRequests['media:1'].tokens,75,'actual cost has one authority in the original cycle budget');
 });
 
 for(const finishFirst of [false,true])test('cycle finish and media reserve preserve daily charge in either serialized order '+finishFirst,async t=>{
@@ -144,7 +150,7 @@ for(const finishFirst of [false,true])test('cycle finish and media reserve prese
  await Promise.all(finishFirst?[finish(),reserve()]:[reserve(),finish()]);
  const day=await balance(db);assert.equal(Number(day.used_tokens),200);assert.equal(Number(day.reserved_tokens),0);assert.equal(day.model_calls,1);
  await cycleModelBudget(db,bot,{...media,phase:'settled',tokens:75});
- await new ToolEffects(db).finish(await resultJob(db),mediaReceipt);
+ await original(db).repo.finish(await resultJob(db),mediaReceipt);
  assert.equal(Number((await balance(db)).used_tokens),75);assert.equal((await balance(db)).model_calls,1);
 });
 
@@ -197,7 +203,7 @@ test('recovery full-ceiling charge covers prior media receipt and blocks additio
  assert.equal(Number((await balance(db)).used_tokens),1000);assert.equal((await balance(db)).model_calls,1);
  await assert.rejects(()=>cycleModelBudget(db,bot,{...media,requestId:'late-after-recovery'}),/token_budget_exhausted/);
  await cycleModelBudget(db,bot,{...media,phase:'settled',tokens:75});
- await new ToolEffects(db).finish(await resultJob(db),mediaReceipt);
+ await original(db).repo.finish(await resultJob(db),mediaReceipt);
  assert.equal(Number((await balance(db)).used_tokens),1000);assert.equal((await balance(db)).model_calls,1);
 });
 
@@ -224,8 +230,9 @@ test('concurrent main and media reserve share tokens even when both call slots f
 test('media process loss after finished-cycle reservation retains charge and late successful receipt corrects it once',async t=>{
  const f=await fixture(t);let db=f.db;
  await f.repo.finish(claim,zeroUsage,'activity_completed');await cycleModelBudget(db,f.bot,media);
- await db.query("UPDATE tool_effects SET usage_checkpoint='{\"modelRequests\":1}',lease_until=now()-interval '1 second' WHERE id=$1",[effectId]);
- db=await f.reopen();const effects=new ToolEffects(db);assert.equal(await effects.claim('replacement'),null);
+ await original(db).call('advance',{id:effectId,owner:'worker',phase:'checkpoint',usage:{modelRequests:1}});
+ await original(db).sql("UPDATE pipeline_events SET lease_until=0 WHERE source='tool' AND event=?",[effectId]);
+ db=await f.reopen();const effects=original(db).repo;assert.equal(await effects.claim('replacement'),null);
  const job=await resultJob(db);assert.equal(job.state,'unknown');assert.equal(Number((await balance(db)).used_tokens),200);
  await cycleModelBudget(db,f.bot,{...media,phase:'settled',tokens:75});
  await effects.finish(job,mediaReceipt);await effects.finish(job,mediaReceipt);

@@ -34,8 +34,9 @@ export async function settleCycleExternal(db:Sql,cycle:any){
  }
  return count;
 }
-export async function qqExternalBudget(db:Sql,bot:any,v:{workId:string;epoch:number;logicalActionId:string;phase:'reserve'|'confirmed'|'unknown'|'released'}){
- return db.transaction(async tx=>{
+type ExternalBudget={workId:string;epoch:number;logicalActionId:string;phase:'reserve'|'confirmed'|'unknown'|'released'};
+export async function qqExternalBudget(db:Sql,bot:any,v:ExternalBudget){return db.transaction(tx=>qqExternalBudgetInTransaction(tx,bot,v))}
+export async function qqExternalBudgetInTransaction(tx:Sql,bot:any,v:ExternalBudget){
   const cycle=await lockExternalCycle(tx,bot,v.workId,v.epoch,v.phase==='reserve');
   const requests={...(cycle.budget.qqExternalRequests||{})};
   const effects={...(requests[v.workId]||{})},old=effects[v.logicalActionId];
@@ -50,7 +51,6 @@ export async function qqExternalBudget(db:Sql,bot:any,v:{workId:string;epoch:num
   requests[v.workId]=effects;
   await tx.query('UPDATE autonomy_cycles SET budget=$2 WHERE id=$1',[cycle.id,JSON.stringify({...cycle.budget,qqExternalRequests:requests})]);
   return{reserved:status!=='released',status,used:await settleCycleExternal(tx,cycle)};
- });
 }
 export async function biliWorkEffects(db:Sql,bot:string,tenant:string,workId:string){
  const [current]=await db.query('SELECT id AS bot_id,tenant_id,generation,revision FROM bots WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL',[bot,tenant]);

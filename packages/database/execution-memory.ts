@@ -18,9 +18,10 @@ export class ExecutionMemory {
   const share=owner&&audience.shareOwnerActivity===true;
   const query=(audience.query??'').trim().slice(0,100).toLocaleLowerCase();
   const [account]=await this.db.query('SELECT uid FROM bilibili_accounts WHERE bot_id=$1 AND tenant_id=$2',[bot,tenant]);
-  const rows=(await new BilibiliTools(this.db).list({id:bot,tenant_id:tenant},48,true))
+  const [identity]=await this.db.query('SELECT id FROM bots WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL',[bot,tenant]);
+  const rows=(identity?await new BilibiliTools(this.db).list({id:bot,tenant_id:tenant},48,true):[])
    .filter(e=>!['analysis_history','task_result'].includes(e.operation)&&(!e.account_uid||e.account_uid===account?.uid))
-   .filter(e=>self||e.origin_scope===audience.scope||share&&e.sender_id===audience.ownerId&&(!e.origin_scope||e.origin_scope==='private:'+audience.ownerId))
+   .filter(e=>self||e.origin_scope===audience.scope||e.authority==='autonomous'&&e.origin_scope==='self'||share&&e.sender_id===audience.ownerId&&(!e.origin_scope||e.origin_scope==='private:'+audience.ownerId))
    .filter(e=>!query||[e.operation,e.args?.bvid,e.args?.query,e.result?.data?.analysis,e.result?.data?.title].some(v=>String(v??'').toLocaleLowerCase().includes(query)))
    .map(e=>({...e,source_scope:e.origin_scope,bvid:e.args?.bvid,part:e.args?.part,query:e.args?.query,execution:e.result?.execution,receipt:e.result?.receipt,evidence_at:e.result?.evidence?.at,data:e.result?.data,error_code:e.result?.error?.code}));
   const experiences=[];let used=0;

@@ -8,20 +8,28 @@ import {issueTestInvite} from './helpers/invitations.js';
 import {bridgeToken} from '../packages/shared/tool-bridge.js';
 import {ExecutionMemory} from '../packages/database/execution-memory.js';
 import {AutonomyRepository} from '../packages/database/autonomous.js';
+import {openToolWork,attachToolIpc} from './helpers/tool-work.js';
 
 test('shared execution memory recalls durable receipts with disabled tools and preserves audience, account and tenant fences',async t=>{
- const root=await mkdtemp(path.resolve('.local/execution-memory-'));let app=await createApp({root,agent:false});t.after(()=>app.app.close());
+ const root=await mkdtemp(path.resolve('.local/execution-memory-'));let app=await createApp({root,agent:false});
+ const cleanup:Array<()=>Promise<any>>=[];t.after(async()=>{for(const close of cleanup)await close();await app.app.close()});
  const auth=await app.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(app.db,3),email:'memory@fixture.test',password:'memory-fixture-123',name:'fixture'}});
  const cookies={fish_session:auth.cookies[0].value};
  const make=async()=>{const r=await app.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'memory bot',protocol:'mock'}});assert.equal(r.statusCode,201,r.body);return r.json().id};
  const id=await make(),sibling=await make(),[bot]=await app.db.query('SELECT * FROM bots WHERE id=$1',[id]);
+ const [siblingBot]=await app.db.query('SELECT * FROM bots WHERE id=$1',[sibling]);
+ const native=await openToolWork(root,app.db,bot,'parent',1);cleanup.unshift(()=>native.close());
+ const siblingNative=await openToolWork(path.join(root,'sibling'),app.db,siblingBot,'parent',1);cleanup.unshift(()=>siblingNative.close());
+ const closeIpc=await attachToolIpc(app.db,bot,native);
+ cleanup.unshift(closeIpc);
  await app.db.query("UPDATE bot_config_revisions SET config=jsonb_set(config,'{behavior,ownerUin}','\"12345678\"') WHERE bot_id=$1",[id]);
  const key=Buffer.from((await readFile(path.join(root,'master.key'),'utf8')).trim(),'hex'),headers={authorization:'Bearer '+bridgeToken(key,id,bot.generation,bot.revision)};
  const url='/internal/v1/bots/'+id+'/memory/experience';
  const get=async(body:any,custom=headers)=>app.app.inject({method:'POST',url,headers:custom,payload:body});
  const memory=new ExecutionMemory(app.db);
  const add=async(operation:string,scope:string,result:any,options:any={})=>{
-  const aid=randomUUID();await app.db.query("INSERT INTO tool_effects(id,tenant_id,bot_id,work_id,step_id,operation,args,args_digest,authority,sender_id,generation,config_revision,settings_revision,state,deadline_at,result,origin_scope,account_uid) VALUES($1,$2,$3,$1,'step',$4,$5,'fixture','foreground',$6,1,1,1,$7,now()+interval '1 hour',$8,$9,$10)",[aid,bot.tenant_id,options.bot??id,operation,JSON.stringify({bvid:options.bvid??'BV1Nn436kEPz',text:'PRIVATE-COMMENT-SECRET'}),options.sender??'12345678',options.state??'finished',JSON.stringify(result),scope,options.account??null]);return aid;
+  const aid=randomUUID(),target=options.bot===sibling?siblingNative:native;
+  await target.seed(aid,aid,{scope,state:options.state??'completed',result,request:{operation,args:{bvid:options.bvid??'BV1Nn436kEPz',text:'PRIVATE-COMMENT-SECRET'},authority:'foreground',sender_id:options.sender??'12345678',account_uid:options.account??null}});return aid;
  };
  const complete={execution:'completed',receipt:{status:'not_applicable'},data:{bvid:'BV1Nn436kEPz',clip:[0,10],part:1,audio:{analyzed:false},analysis:'画面是聊天界面 PRIVATE-QUESTION-SECRET'}};
  const own=await add('analyze','private:12345678',complete),group=await add('like','group:963105233',{execution:'completed',receipt:{status:'confirmed'}});
@@ -32,27 +40,24 @@ test('shared execution memory recalls durable receipts with disabled tools and p
  const legacy=await add('comment','',{execution:'completed',receipt:{status:'confirmed'}});
  // Autonomous public work is shared as receipt metadata, never a private
  // goal's narrative. Use the actual linked lifecycle, not a fake authority flag.
- const cycle=randomUUID(),work=randomUUID();
- await app.db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget) VALUES($1,$2,$3,1,1,1,'fixture','executing','{}')",[cycle,id,bot.tenant_id]);
- await app.db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at) VALUES($1,$2,$3,$4,1,'research','','self exploration','executing',now()+interval '1 hour')",[work,cycle,id,bot.tenant_id]);
+ const cycle=randomUUID(),work=cycle;
+ await app.db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget,work_expires_at) VALUES($1,$2,$3,1,1,1,'fixture','acting','{}',now()+interval '1 hour')",[cycle,id,bot.tenant_id]);
  const repo=new AutonomyRepository(app.db);await repo.ensure(bot.tenant_id,id);
  const internal={scope:'self',senderId:'0',work:{id:work,epoch:1}};
  assert.equal((await get(internal)).statusCode,403,'passive mode cannot claim an internal task');
- await app.db.query("UPDATE autonomy_settings SET config=jsonb_set(config,'{mode}','\"active\"') WHERE bot_id=$1",[id]);
+ await app.db.query("UPDATE autonomy_settings SET config=jsonb_set(config,'{mode}','\"active\"'),lease_owner='fixture',lease_until=now()+interval '1 hour' WHERE bot_id=$1",[id]);
  assert.equal((await get(internal)).statusCode,200);
  assert.equal((await get({...internal,work:{id:work,epoch:2}})).statusCode,403,'stale internal epoch was accepted');
  await app.db.query("UPDATE autonomy_settings SET config=jsonb_set(config,'{mode}','\"passive\"') WHERE bot_id=$1",[id]);
  const selfActivity=await add('analyze','self',complete);
- await app.db.query("UPDATE tool_effects SET authority='autonomous',work_id=$2,sender_id='0' WHERE id=$1",[selfActivity,work]);
+ await native.sql("UPDATE pipeline_events SET work_id=?,request=json_set(request,'$.authority','autonomous','$.work_id',?,'$.sender_id','0') WHERE event=?",[work,work,selfActivity]);
  const unrelated=await get({scope:'group:55555555',senderId:'23456789'});
  assert.equal(unrelated.statusCode,200,unrelated.body);
  assert.deepEqual(unrelated.json().experiences.map((x:any)=>x.actionId),[selfActivity]);
  assert.ok(!unrelated.body.includes('PRIVATE-QUESTION-SECRET'));
  const privateGoal=randomUUID();
  await app.db.query("INSERT INTO autonomy_goals(id,bot_id,tenant_id,origin,status,title,reason,source) VALUES($1,$2,$3,'owner_request','active','private task','real source',$4)",[privateGoal,id,bot.tenant_id,JSON.stringify({scope:'private:12345678'})]);
- await app.db.query('UPDATE autonomy_actions SET goal_id=$2 WHERE id=$1',[work,privateGoal]);
- assert.equal((await get({scope:'group:55555555',senderId:'23456789'})).json().experiences.length,0,'a private goal was laundered into independent public activity');
- await app.db.query('UPDATE autonomy_actions SET goal_id=NULL WHERE id=$1',[work]);
+ assert.ok(!(await get({scope:'group:55555555',senderId:'23456789'})).body.includes(own),'a private Goal cannot reclassify its original private Work as public activity');
  const body={scope:'group:963105233',senderId:'12345678'};
  const reply=await get(body);assert.equal(reply.statusCode,200,reply.body);
  assert.deepEqual(new Set(reply.json().experiences.map((x:any)=>x.actionId)),new Set([group,unknown,selfActivity]));
@@ -74,7 +79,7 @@ test('shared execution memory recalls durable receipts with disabled tools and p
  // absence of Bilibili settings, a model or an enabled autonomous policy.
  assert.ok((await new ExecutionMemory(app.db).recall(bot.tenant_id,id,{scope:'group:963105233',senderId:'12345678',ownerId:'12345678'})).experiences.some((x:any)=>x.actionId===group));
  const wildcard=await get({...body,query:'%'});assert.equal(wildcard.statusCode,200);assert.equal(wildcard.json().experiences.length,0);
- await app.db.query("UPDATE tool_effects SET result=jsonb_set(result,'{receipt,status}','\"confirmed\"'),updated_at=now() WHERE id=$1",[unknown]);
+ await native.sql("UPDATE pipeline_events SET result=json_set(result,'$.receipt.status','confirmed'),updated_at=? WHERE event=?",[Date.now()/1000,unknown]);
  assert.equal((await get(body)).json().experiences.find((x:any)=>x.actionId===unknown).receipt.status,'confirmed','a later authoritative receipt replaces the old unknown snapshot by the same action ID');
  await app.db.query("UPDATE bot_config_revisions SET config=jsonb_set(config,'{behavior,memory}','false') WHERE bot_id=$1",[id]);
  assert.equal((await get(body)).json().memoryEnabled,false);

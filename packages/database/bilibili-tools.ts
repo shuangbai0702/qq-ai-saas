@@ -4,7 +4,7 @@ import {runtimeStatus} from '../shared/runtime-status.js';
 import {digest} from '../shared/security.js';
 import {BilibiliConfigSchema,biliOperations,biliOperationAllowed,biliAccessAllowed,type BiliCall,type ToolResult} from '../contracts/bilibili.js';
 import {bilibiliModelConfigured,bilibiliModelRequired} from '../shared/bilibili-model.js';
-import {qqExternalBudget} from './external-action-budget.js';
+import {qqExternalBudget,qqExternalBudgetInTransaction} from './external-action-budget.js';
 import {cycleModelBudget} from './model-request-budget.js';
 
 export const toolConflict=(message:string,code=409)=>Object.assign(new Error(message),{statusCode:code});
@@ -40,7 +40,7 @@ export class BilibiliTools {
    await this.validate(value,s,tx);
    if(call.operation==='analyze'){
     const [model]=await tx.query('SELECT r.config,(s.ciphertext IS NOT NULL) AS has_key FROM bot_config_revisions r LEFT JOIN secrets s ON s.bot_id=r.bot_id AND s.tenant_id=$3 WHERE r.bot_id=$1 AND r.revision=$2',[bot.id,bot.revision,bot.tenant_id]);
-    if(!bilibiliModelConfigured(s,model?.config,model?.has_key))throw Object.assign(toolConflict(bilibiliModelRequired),{code:'model_not_configured'});
+    if(!bilibiliModelConfigured(s,model?.config,model?.has_key)&&!await this.rpc(bot,'get',{workId:call.workId,stepId:call.stepId},tx))throw Object.assign(toolConflict(bilibiliModelRequired),{code:'model_not_configured'});
    }
    // Versions/permissions commit before admission to the existing member Work.
    // A later revision is revalidated before claim/dispatch/model invocation.
@@ -84,7 +84,10 @@ export class BilibiliTools {
  }
  async get(tenant:string,bot:string,id:string,db=this.db){return this.rpc({id:bot,tenant_id:tenant},'get',{id},db)}
  async list(bot:any,limit=20,summary=false){return(await this.rpc(bot,'list',{limit,summary})).jobs as any[]}
- async pending(bot:any,workId?:string){return(await this.rpc(bot,'pending',{workId})).pending as any[]}
+ async pending(bot:any,workId?:string){
+  const s=await this.settings(bot.tenant_id,bot.id??bot.bot_id),[a]=await this.db.query('SELECT epoch,config FROM autonomy_settings WHERE bot_id=$1 AND tenant_id=$2',[bot.id??bot.bot_id,bot.tenant_id]);
+  return(await this.rpc(bot,'pending',{workId,settingsRevision:s.revision,enabled:s.config.enabled,autonomyEpoch:a?.epoch??null,autonomyEnabled:a?.config?.mode==='active'})).pending as any[];
+ }
  async cancelWork(bot:any,workId:string,stepId:string){return this.rpc(bot,'cancel',{workId,stepId})}
  async cancel(bot:any,id:string){const job=await this.get(bot.tenant_id,bot.id??bot.bot_id,id);if(!job)throw toolConflict('工具任务不存在',404);return this.cancelWork(bot,job.work_id,job.step_id)}
  async claim(owner:string,excludeMedia=false){
@@ -109,16 +112,23 @@ export class BilibiliTools {
  async beginDispatch(job:any,signal:AbortSignal){
   return this.db.transaction(async tx=>{
    await tx.query('SELECT id FROM bots WHERE id=$1 AND tenant_id=$2 FOR UPDATE',[job.bot_id,job.tenant_id]);await this.validate(job,undefined,tx);if(signal.aborted)return false;
+   await this.rpc(job,'advance',{id:job.id,owner:job.lease_owner,phase:'check'},tx);
    const reserve=job.authority==='autonomous'&&biliOperations[job.operation as keyof typeof biliOperations].write;
-   if(reserve)await qqExternalBudget(tx,{id:job.bot_id,tenant_id:job.tenant_id},{workId:job.work_id,epoch:job.mode_epoch,logicalActionId:'bilibili:'+job.id,phase:'reserve'});
-   if(signal.aborted)return false;
+   if(reserve)await qqExternalBudgetInTransaction(tx,{id:job.bot_id,tenant_id:job.tenant_id},{workId:job.work_id,epoch:job.mode_epoch,logicalActionId:'bilibili:'+job.id,phase:'reserve'});
+   if(signal.aborted){
+    // Never let a late former owner release a replacement's reservation.
+    // A failed native owner check rolls this PG transaction back instead.
+    await this.rpc(job,'advance',{id:job.id,owner:job.lease_owner,phase:'check'},tx);
+    if(reserve)await qqExternalBudgetInTransaction(tx,{id:job.bot_id,tenant_id:job.tenant_id},{workId:job.work_id,epoch:job.mode_epoch,logicalActionId:'bilibili:'+job.id,phase:'released'});
+    return false;
+   }
    const response=await this.rpc(job,'advance',{id:job.id,owner:job.lease_owner,phase:'dispatch'},tx);
    return response.accepted===true;
   });
  }
  async finish(job:any,result:ToolResult,dispatchStarted?:boolean){
   const finished=await this.rpc(job,'advance',{id:job.id,owner:job.lease_owner,phase:'finish',result});
-  if(job.authority==='autonomous'&&biliOperations[job.operation as keyof typeof biliOperations].write){
+  if(finished.accepted===true&&job.authority==='autonomous'&&biliOperations[job.operation as keyof typeof biliOperations].write){
    const [cycle]=await this.db.query('SELECT budget FROM autonomy_cycles WHERE id=$1 AND bot_id=$2 AND tenant_id=$3',[job.work_id,job.bot_id,job.tenant_id]);
    if(cycle?.budget?.qqExternalRequests?.[job.work_id]?.['bilibili:'+job.id])await qqExternalBudget(this.db,{id:job.bot_id,tenant_id:job.tenant_id},{workId:job.work_id,epoch:job.mode_epoch,logicalActionId:'bilibili:'+job.id,phase:result.receipt.status==='unknown'?'unknown':dispatchStarted===false?'released':'confirmed'});
   }

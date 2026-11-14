@@ -115,5 +115,33 @@ class ToolWork(unittest.TestCase):
         self.assertTrue(tools.acknowledge(self.p,job['id'],item['owner'],'done','new-cycle')['updated'])
         self.assertEqual(tools.view(tools.row(self.db,job['id']))['completion_state'],'done')
 
+    def test_changed_configuration_never_replays_completion_and_retires_at_legal_parent(self):
+        import semantic_batch
+        from context_protocol import scoped_event_hash,model_json
+        semantic_batch.initialize(self.db)
+        job=self.admit();tools.claim(self.p,'owner')
+        tools.advance(self.p,job['id'],'owner','finish',{'result':self.result(job['id'])})
+        newer={**self.settings,'revision':2}
+        self.assertEqual(tools.handle(self.p,newer,'pending',{'settingsRevision':1})['pending'],[])
+        self.assertEqual(tools.view(tools.row(self.db,job['id']))['completion_state'],'stale')
+        self.assertIsNotNone(tools.row(self.db,job['id'])['request'],'no legal boundary yet')
+        members={scoped_event_hash('bot_shared',model_json(['self','parent']))}
+        self.assertEqual(tools.retire_batch(self.db,'bot_shared',members),1)
+        self.assertIsNone(tools.row(self.db,job['id'])['request'])
+
+    def test_late_ack_after_exact_consumer_retirement_drops_raw_result(self):
+        import semantic_batch
+        from context_protocol import scoped_event_hash,model_json
+        semantic_batch.initialize(self.db)
+        job=self.admit();tools.claim(self.p,'owner')
+        result=self.result(job['id']);result['data']={'analysis':'raw private analysis'}
+        tools.advance(self.p,job['id'],'owner','finish',{'result':result})
+        item=tools.completion(self.p,self.settings,{'authority':'autonomous','epoch':2,'settingsRevision':1,'consumerWorkId':'consumer'})
+        members=[scoped_event_hash('bot_shared',model_json(['self','consumer']))]
+        self.db.execute("INSERT INTO memory_semantic_batches VALUES(1,'bot_shared','digest',?,?,'retired',?,?)",(json.dumps(members),time.time(),time.time(),time.time()))
+        self.assertTrue(tools.acknowledge(self.p,job['id'],item['owner'],'done','consumer')['updated'])
+        self.assertIsNone(tools.row(self.db,job['id'])['request'])
+        self.assertNotIn('raw private analysis',json.dumps(tools.row(self.db,job['id'])))
+
 
 if __name__=='__main__':unittest.main()

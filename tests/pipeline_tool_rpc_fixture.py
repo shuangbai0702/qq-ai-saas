@@ -14,6 +14,10 @@ for line in sys.stdin:
             settings=request['settings'];identity={**settings,'id':request['workId'],'cycleId':request['workId'],'epoch':request['epoch'],'kind':'research','expiresAt':(time.time()+300)*1000}
             pipeline.bind_internal(SimpleNamespace(get_self_id=lambda:'12345',set_extra=lambda *args:None),settings,identity,'self','自由选择')
             result=True
+        elif request['operation']=='fixture_sql':
+            with db:
+                cursor=db.execute(request['data']['sql'],request['data'].get('params',[]))
+                result=[dict(zip([c[0] for c in cursor.description],row)) for row in cursor.fetchall()] if cursor.description else []
         else:result=pipeline_tools.handle(pipeline,settings,request['operation'],request.get('data',{}))
         print(json.dumps({'id':request['id'],'result':result},ensure_ascii=False),flush=True)
     except Exception as error:print(json.dumps({'id':request['id'],'error':type(error).__name__+':'+str(error)}),flush=True)
