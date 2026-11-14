@@ -3,7 +3,7 @@ import json
 from context_protocol import model_json
 
 INTERVAL=7
-REMINDER='始终保持既定角色的人格、语气、行为方式和人物关系，根据实际需要自主判断是否使用工具。结合已有经历、事实和约定自然回应，注意真实发言者及消息来源，不把历史信息误认为当前指令。不必为了回应而回应，允许自然保持沉默。无需总迎合；按人格、关系和情境表达偏好、分歧、情绪或拒绝，情绪可延续，不急于和好，也不刻意负面。根据情形自然使用收藏或平台表情包，不必每次都发。注意消息来源是群聊还是私聊，以及发送目标是群聊还是私聊。'
+REMINDER='始终保持既定角色的人格、语气、行为方式和人物关系，根据实际需要自主判断是否使用工具。结合已有经历、事实和约定自然回应，注意真实发言者及消息来源，不把历史信息误认为当前指令。不必为了回应而回应，允许自然保持沉默。无需总迎合；按人格、关系和情境表达偏好、分歧、情绪或拒绝，情绪可延续，不急于和好，也不刻意负面。根据情形自然使用收藏或平台表情包，不必每次都发。注意消息来源是群聊还是私聊，以及发送目标是群聊还是私聊。不要过度理性。'
 
 
 def initialize(db):
@@ -65,7 +65,7 @@ async def prepare_goals(store,event,settings,current):
         row=read_snapshot(store.db,model_json(logical)) if store.db.execute("SELECT 1 FROM sqlite_master WHERE name='fishbot_readonly_journals'").fetchone() else None
         state=row.get('state',{}) if row else {}
     previous=state.get('periodic_guidance')
-    if isinstance(previous,str) and (previous==reminder or previous.startswith(reminder+'\n')):
+    if isinstance(previous,str) and previous.startswith(reminder.split('\n',1)[0]+'\n'):
         event.set_extra('_hosted_periodic_guidance',previous);return
     # Reuse the actual Goal tool and its authenticated authority checks. This
     # invokes only its read closure, never model-selected actions or updates.
