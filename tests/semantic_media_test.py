@@ -109,6 +109,30 @@ class OwnedOriginals(unittest.TestCase):
         self.assertIn('PermissionError',self.db.execute('SELECT error FROM semantic_media_owned').fetchone()[0])
         self.assertEqual(media.drain(self.db)['deleted'],1)
 
+    def test_retired_diagnostics_wait_for_purge_and_recover_after_restart(self):
+        self.release(state='committed')
+        self.assertEqual(media.drain(self.db)['retired_untracked_records'],0)
+        with self.db:self.db.execute("UPDATE memory_semantic_batches SET state='retired' WHERE checkpoint_id=1")
+        self.assertEqual(media.drain(self.db)['retired_untracked_records'],0)
+        with self.db:self.db.execute('INSERT INTO memory_semantic_purges VALUES(1,0)')
+        self.db.close();self.db=sqlite3.connect(self.root/'behavior.sqlite')
+        self.assertEqual(media.drain(self.db)['retired_untracked_records'],1)
+        self.assertEqual(self.db.execute('SELECT untracked FROM semantic_media_batches').fetchone()[0],'[]')
+        self.assertEqual(media.drain(self.db)['retired_untracked_records'],0)
+        self.assertTrue(self.file.exists())  # No invented ownership from a hash.
+
+    def test_retiring_diagnostics_preserves_failed_file_and_protocol_recovery(self):
+        self.bind();self.db.execute('BEGIN IMMEDIATE')
+        media.retire_batch(self.db,['resized-model-image'],1,[media.event_key('bot_shared','event-A')])
+        batch_state(self.db,1)
+        self.db.execute('INSERT INTO memory_semantic_purges VALUES(1,0)')
+        self.db.execute("INSERT INTO semantic_media_protocol_issues VALUES('event','file','TimeoutError',0)")
+        self.db.commit()
+        with patch.object(Path,'unlink',side_effect=PermissionError('busy')):result=media.drain(self.db)
+        self.assertEqual((result['retired_untracked_records'],result['errors'],result['pending'],result['protocol_unresolved']),(1,1,1,1))
+        self.assertTrue(self.file.exists())
+        self.assertEqual(media.drain(self.db)['deleted'],1)
+
     def test_path_replacement_is_never_deleted(self):
         self.bind();self.release();self.file.write_bytes(b'another caller replacement')
         result=media.drain(self.db);self.assertEqual(result['errors'],1);self.assertTrue(self.file.exists())

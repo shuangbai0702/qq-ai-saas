@@ -246,6 +246,16 @@ def retire_batch(db,material_images,checkpoint_id,event_hashes,*,scope=None):
     return {'untracked':len(untracked)}
 
 
+def retired_diagnostics(db):
+    """Obsolete capture diagnostics, not file-deletion ownership or receipts."""
+    tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if not {'semantic_media_batches','memory_semantic_batches','memory_semantic_purges'}<=tables:return []
+    return db.execute('''SELECT m.checkpoint_id,m.untracked FROM semantic_media_batches m
+       JOIN memory_semantic_batches b ON b.checkpoint_id=m.checkpoint_id
+       JOIN memory_semantic_purges p ON p.checkpoint_id=m.checkpoint_id
+       WHERE b.state='retired' AND m.untracked<>'[]' ''').fetchall()
+
+
 def drain(db):
     """Retry retired Journal releases; lock reference admission across unlink.
 
@@ -255,7 +265,18 @@ def drain(db):
     if db.in_transaction:raise ValueError('media_drain_requires_committed_batch')
     initialize(db);db.commit()
     result={'deleted':0,'pending':0,'errors':0,'protected':0,
-            'protocol_unresolved':db.execute('SELECT count(*) FROM semantic_media_protocol_issues').fetchone()[0]}
+            'protocol_unresolved':db.execute('SELECT count(*) FROM semantic_media_protocol_issues').fetchone()[0],
+            'retired_untracked_records':0}
+    # Capture-time hash misses are immutable observations, not retry jobs.
+    # Once lawful retirement and raw-row purge both commit, discard this stale
+    # diagnostic list. File ownership, pending/errors and protocol issues remain
+    # authoritative and untouched; removing diagnostics proves no file deletion.
+    with db:
+        for checkpoint,raw in retired_diagnostics(db):
+            values=json.loads(raw)
+            if not isinstance(values,list):raise ValueError('invalid_media_untracked_diagnostics')
+            changed=db.execute("UPDATE semantic_media_batches SET untracked='[]' WHERE checkpoint_id=? AND untracked=?",(checkpoint,raw)).rowcount
+            if changed:result['retired_untracked_records']+=len(values)
     rows=db.execute("SELECT path FROM semantic_media_owned WHERE state='pending'").fetchall()
     for (name,) in rows:
         db.execute('BEGIN IMMEDIATE')

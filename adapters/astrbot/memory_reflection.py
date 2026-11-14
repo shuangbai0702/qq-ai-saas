@@ -991,7 +991,8 @@ class Reflection:
             WHERE i.checkpoint_id=b.checkpoint_id AND i.scope=b.scope AND i.status='open'
             AND i.kind IN ('semantic_retirement','native_legacy_cleanup','native_history_cleanup')))) LIMIT 1""").fetchone()
         media='semantic_media_owned' in tables and self.db.execute("SELECT 1 FROM semantic_media_owned WHERE state='pending' LIMIT 1").fetchone()
-        return bool(pending or media)
+        from semantic_media import retired_diagnostics
+        return bool(pending or media or retired_diagnostics(self.db))
 
     def retry(self,_inline=False,_manual=None,_retirement_done=False):
         if not self.binding:return False
