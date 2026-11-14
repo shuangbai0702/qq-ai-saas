@@ -34,25 +34,20 @@ test('configuration epoch change re-arms future handoffs from their ledger',asyn
  }finally{await f.close()}
 });
 
-test('plan re-reads a completed goal and refuses its stale active snapshot',async()=>{
+test('Goal mutation uses current authority and CAS; a wake never turns its source into a send instruction',async()=>{
  const f=await fixture();try{
+  const [identity]=await f.db.query("SELECT id,tenant_id,generation,revision FROM bots WHERE id='review-bot'");
+  const audience={scope:f.source.scope,senderId:f.source.senderId};
+  const goal=(await f.repo.readGoals(identity,audience)).goals[0];
+  assert.equal(goal.progress,f.objective);assert.deepEqual(goal.source,f.source);
+  const settled=await f.repo.updateGoal(identity,audience,{goalId,expectedRevision:goal.revision,changes:{status:'completed',progress:'already handled'}});
+  assert.equal(settled.status,'updated');
+  assert.equal((await f.repo.updateGoal(identity,audience,{goalId,expectedRevision:goal.revision,changes:{status:'active'}})).reason,'goal_revision_changed');
   const claim=await f.repo.claim('review-worker');assert.ok(claim);
-  const [stale]=await f.repo.dueHandoffs(claim);assert.ok(stale);
-  assert.equal(await f.repo.completeGoal(claim,goalId,'already handled'),true);
-  await assert.rejects(f.repo.planHandoff(claim,stale,{}),/取消|暂停/);
-  assert.equal((await f.db.query('SELECT count(*)::int AS n FROM autonomy_actions'))[0].n,0);
- }finally{await f.close()}
-});
-
-test('canonical source and full handoff objective survive planning; canceled goal cannot execute',async()=>{
- const f=await fixture();try{
-  const claim=await f.repo.claim('review-worker');assert.ok(claim);
-  const [goal]=await f.repo.dueHandoffs(claim);
-  const prepared=await f.repo.planHandoff(claim,{...goal,source:{...goal.source,scope:'group:99999999'}},{});
-  assert.equal(prepared.action.target,f.source.scope);assert.equal(prepared.source.scope,f.source.scope);
-  assert.equal(prepared.action.objective,f.objective);
-  assert.equal(await f.repo.abandonGoal(claim,goalId),true);
-  assert.equal(await f.repo.markExecuting(claim,prepared.action.id),false);
+  const activity=await f.repo.planActivity(claim,{});
+  assert.equal(activity.kind,'research');assert.equal(activity.target,'');assert.equal('goalId' in activity,false);
+  assert.equal((await f.repo.readGoals(identity,audience)).goals.length,0);
+  for(const method of ['dueHandoffs','goalAction','planHandoff','markGoalReview','completeGoal','abandonGoal'])assert.equal(method in f.repo,false);
  }finally{await f.close()}
 });
 

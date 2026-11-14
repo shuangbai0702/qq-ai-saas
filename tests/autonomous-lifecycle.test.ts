@@ -5,7 +5,7 @@ import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {openDatabase} from '../packages/database/index.js';
 import {AutonomyRepository} from '../packages/database/autonomous.js';
-import {defaultAutonomyConfig,AutonomyConfigSchema,ActionIntentSchema} from '../packages/contracts/autonomous.js';
+import {MAX_CURRENT_GOALS,defaultAutonomyConfig,AutonomyConfigSchema,ActionIntentSchema} from '../packages/contracts/autonomous.js';
 
 async function fixture(){
  const db=await openDatabase(await mkdtemp(path.resolve('.local/autonomous-state-')));
@@ -106,7 +106,7 @@ test('remaining daily tokens form a bounded reservation without changing config 
  }finally{await db.close()}
 });
 
-test('foreground handoff registers one persistent goal and due wake; forged identity and early dispatch are rejected',async()=>{
+test('foreground handoff registers one persistent goal and due wake; forged identity is rejected and registration never dispatches',async()=>{
  const{db,repo}=await fixture();try{
   await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) SELECT id,revision,$1 FROM bots",[JSON.stringify({behavior:{ownerUin:'12345678'}})]);
   await repo.configure('ta','a',1,{mode:'active'});await repo.applied('ta','a',2);
@@ -120,7 +120,8 @@ test('foreground handoff registers one persistent goal and due wake; forged iden
   let view=await repo.view('ta','a');assert.equal(view.goals.length,1);assert.equal(view.goals[0].origin,'contact_request');assert.equal(view.goals[0].source.owner,false);assert.equal(view.goals[0].source.senderId,'23456789');
   assert.equal((await db.query("SELECT * FROM autonomy_wakes WHERE bot_id='a' AND reason='handoff-due'")).length,1);
   const claim=await repo.claim('handoff-worker');assert.ok(claim);
-  await assert.rejects(repo.planHandoff(claim,view.goals[0],{}),/最早执行时间/,'a delay-registered handoff cannot dispatch early');
+  assert.ok(view.goals[0].source.notBefore>Date.now());
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM autonomy_actions'))[0].n,0,'registration creates a Goal and wake, never an execution');
   await repo.finish(claim,{tokens:0,modelCalls:0,toolCalls:0,externalActions:0},'no_due_work');
   view=await repo.view('ta','a');assert.ok(new Date(view.settings.next_wake_at).getTime()<Date.now()+301000,'the earlier handoff due wake keeps its own schedule');
   await repo.configure('ta','a',2,{mode:'passive'});assert.equal((await repo.acceptHandoff(bot,{...request,id:randomUUID()})).status,'rejected');
@@ -128,25 +129,7 @@ test('foreground handoff registers one persistent goal and due wake; forged iden
  }finally{await db.close()}
 });
 
-test('legacy model origin reaches the request fence without rewriting accepted source',async()=>{
- const{db,repo}=await fixture();try{
-  await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) SELECT id,revision,$1 FROM bots",[JSON.stringify({proactive:true})]);
-  await repo.configure('ta','a',1,{mode:'active'});await repo.applied('ta','a',2);
-  const goalId=randomUUID();await handoffGoal(db,'a','ta',goalId);
-  await db.query("UPDATE autonomy_goals SET origin='model',source=source||$2::jsonb WHERE id=$1",[goalId,JSON.stringify({kind:'research',handoffFingerprint:'original-accepted-fingerprint'})]);
-  const before=(await db.query('SELECT source FROM autonomy_goals WHERE id=$1',[goalId]))[0].source;
-  assert.equal(before.origin,undefined);
-  const claim=await repo.claim('legacy-origin');assert.ok(claim);
-  const goal=(await repo.dueHandoffs(claim)).find(g=>g.id===goalId)!;
-  const prepared=await repo.planHandoff(claim,goal,{});
-  assert.equal(prepared.source.origin,'model','Python must recognize autonomous work after config changes during execution');
-  assert.equal(prepared.action.kind,'research');
-  assert.deepEqual(prepared.source,{...before,origin:'model'});
-  assert.deepEqual((await db.query('SELECT source FROM autonomy_goals WHERE id=$1',[goalId]))[0].source,before,'accepted source and fingerprint remain unchanged');
- }finally{await db.close()}
-});
-
-test('proactive disables model-origin registration and dispatch while user reminder authority stays independent',async()=>{
+test('proactive disables model-origin registration while user reminder provenance stays independent',async()=>{
  const{db,repo}=await fixture();try{
   await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) SELECT id,revision,$1 FROM bots",[JSON.stringify({proactive:false,behavior:{ownerUin:'12345678'}})]);
   await repo.configure('ta','a',1,{mode:'active'});await repo.applied('ta','a',2);
@@ -161,16 +144,11 @@ test('proactive disables model-origin registration and dispatch while user remin
   assert.deepEqual(await repo.acceptHandoff(bot,request),accepted,'existing accepted acknowledgement remains idempotent after disabling');
   assert.equal((await repo.acceptHandoff(bot,reminder)).status,'accepted','user-source reminders do not inherit proactive permission');
   const claim=await repo.claim('proactive-switch');assert.ok(claim);
-  assert.deepEqual((await repo.dueHandoffs(claim)).map(g=>g.id),[reminder.id]);
-  const modelGoal=(await repo.view('ta','a')).goals.find(g=>g.id===request.id)!;
-  await assert.rejects(repo.planHandoff(claim,modelGoal,{}),/主动模式已关闭/,'dispatch rechecks latest config after due selection');
   const goals=(await repo.view('ta','a')).goals;
-  assert.equal(goals.find(g=>g.id===request.id)!.status,'active','disabled model work is retained, not falsely canceled or completed');
-  assert.equal((await db.query('SELECT count(*)::int AS n FROM autonomy_actions'))[0].n,0);
-  const userGoal=goals.find(g=>g.id===reminder.id)!;
-  const planned=await repo.planHandoff(claim,userGoal,{});
-  assert.equal(planned.source.senderId,reminder.senderId);assert.equal(planned.action.target,reminder.scope);
-  assert.equal(planned.source.origin,undefined,'user-source authority is never relabeled as model-origin');
+  assert.equal(goals.find(g=>g.id===request.id)!.status,'active');
+  const activity=await repo.planActivity(claim,{});
+  assert.equal(activity.target,'');assert.equal(activity.kind,'research');
+  assert.equal(goals.find(g=>g.id===reminder.id)!.source.origin,undefined,'user Goal provenance is preserved rather than becoming a fixed send target');
   assert.equal((await repo.view('tb','b')).goals.length,0);
  }finally{await db.close()}
 });
@@ -221,14 +199,14 @@ test('a tenant backlog yields the next turn to another due tenant without delayi
   assert.equal(await repo.claim('one-worker'),null);
  }finally{await db.close()}
 });
-test('handoff dispatch CAS and immutable action ownership reject stale or foreign updates',async()=>{
+test('wake dispatch CAS and immutable execution ownership reject stale or foreign updates',async()=>{
  const{db,repo}=await fixture();try{
   await repo.configure('ta','a',1,{mode:'active'});await repo.applied('ta','a',2);
   const goalId=randomUUID();await handoffGoal(db,'a','ta',goalId);
   const c=await repo.claim('node-1');assert.ok(c);
   const goals=await repo.view('ta','a');
-  const prepared=await repo.planHandoff(c,goals.goals[0],{tokens:10});assert.ok(prepared.action);
-  await assert.rejects(repo.planHandoff(c,goals.goals[0],{}),'the same goal cannot own two live actions');
+  const prepared={action:await repo.planActivity(c,{tokens:10})};assert.ok(prepared.action);
+  await assert.rejects(repo.planActivity(c,{}),'the same wake cycle cannot own two live executions');
   assert.equal(await repo.markExecuting({...c,tenant_id:'tb'},prepared.action.id),false);
   assert.equal(await repo.markExecuting(c,prepared.action.id),true);assert.equal(await repo.markExecuting(c,prepared.action.id),false);
   await repo.feedback(c,prepared.action.id,{status:'unknown',summary:'connection lost',effects:[{id:prepared.action.id,status:'unknown'}]});
@@ -243,7 +221,7 @@ test('expired lease recovers pending effects as unknown and conservatively settl
   await repo.configure('ta','a',1,{mode:'active'});await repo.applied('ta','a',2);
   const goalId=randomUUID();await handoffGoal(db,'a','ta',goalId);
   const c=await repo.claim('old-node');
-  const out=await repo.planHandoff(c,(await repo.view('ta','a')).goals[0],{});await repo.markExecuting(c,out.action.id);
+  const out={action:await repo.planActivity(c,{})};await repo.markExecuting(c,out.action.id);
   // A pre-dispatch reservation survives the process crash as unknown cost.
   await db.query('UPDATE autonomy_actions SET external_effects=$2 WHERE id=$1',[out.action.id,JSON.stringify({'fixture-effect':{status:'reserved'}})]);
   await db.query("UPDATE autonomy_settings SET lease_until=now()-interval '1 second' WHERE bot_id='a'");
@@ -256,14 +234,14 @@ test('expired lease recovers pending effects as unknown and conservatively settl
  }finally{await db.close()}
 });
 
-test('a known partial delivery does not permanently block a new handoff action; uncertain effects still do',async()=>{
+test('fresh self wakes do not replay partial or uncertain prior deliveries',async()=>{
  const{db,repo}=await fixture();try{
   await repo.configure('ta','a',1,{mode:'active',rollout:'live'});await repo.applied('ta','a',2);
   const first=await repo.claim('delivery-owner');assert.ok(first);
   const goalOne=randomUUID(),goalTwo=randomUUID();
   await handoffGoal(db,'a','ta',goalOne);await handoffGoal(db,'a','ta',goalTwo,3600000);
   const view=await repo.view('ta','a');
-  const out=await repo.planHandoff(first,view.goals.find((g:any)=>g.id===goalOne),{});assert.equal(await repo.markExecuting(first,out.action.id),true);
+  const out={action:await repo.planActivity(first,{})};assert.equal(await repo.markExecuting(first,out.action.id),true);
   await repo.feedback(first,out.action.id,{status:'partial',summary:'one confirmed bubble; remaining output canceled before dispatch',effects:[{id:out.action.id+':0',status:'confirmed',receipt:'actual-first-receipt'}]});
   await repo.finish(first,{tokens:100,modelCalls:1,toolCalls:0,externalActions:1},'handoff_executed');
   // A settled partial no longer blocks the target; a distinct uncertain one does.
@@ -271,7 +249,7 @@ test('a known partial delivery does not permanently block a new handoff action; 
   await repo.wake('ta','a',2,'fixture',0);
   const second=await repo.claim('delivery-owner-2');assert.ok(second);
   const view2=await repo.view('ta','a');
-  const next=await repo.planHandoff(second,view2.goals.find((g:any)=>g.id===goalTwo),{});
+  const next={action:await repo.planActivity(second,{})};
   assert.equal(await repo.markExecuting(second,next.action.id),true,'a settled partial was treated as a permanently unknown send');
   await repo.feedback(second,next.action.id,{status:'partial',summary:'one confirmed and one uncertain effect',effects:[{id:next.action.id+':0',status:'confirmed',receipt:'actual-next-receipt'},{id:next.action.id+':1',status:'unknown'}]});
   await repo.finish(second,{tokens:100,modelCalls:1,toolCalls:0,externalActions:2},'waiting_receipt');
@@ -279,8 +257,8 @@ test('a known partial delivery does not permanently block a new handoff action; 
   await repo.wake('ta','a',2,'fixture',0);
   const third=await repo.claim('delivery-owner-3');assert.ok(third);
   const view3=await repo.view('ta','a');
-  const blocked=await repo.planHandoff(third,view3.goals.find((g:any)=>g.id===goalOne),{});
-  assert.equal(await repo.markExecuting(third,blocked.action.id),false);
+  const blocked={action:await repo.planActivity(third,{})};
+  assert.equal(await repo.markExecuting(third,blocked.action.id),true,'a fresh self wake is not a replay of the uncertain send; step recovery keeps its original identity');
   assert.equal(await repo.markExecuting(first,out.action.id),false,'settled actions must never be replayed');
   assert.deepEqual((await repo.unconfirmed('ta','a')).map((a:any)=>a.id),[next.action.id]);
  }finally{await db.close()}
@@ -324,20 +302,18 @@ test('goal slots free on settle or abandon so accepted handoffs keep flowing',as
   await repo.configure('ta','a',1,{mode:'active'});await repo.applied('ta','a',2);
   const bot=(await repo.policies()).find(b=>b.bot_id==='a')!;
   const request=(id:string)=>({id,tenantId:'ta',botId:'a',epoch:2,generation:bot.generation,revision:bot.revision,eventId:'true-event',scope:'private:23456789',senderId:'23456789',at:Date.now(),objective:'read actual state later',delaySeconds:0});
-  const ids=Array.from({length:12},()=>randomUUID());
+  const ids=Array.from({length:MAX_CURRENT_GOALS},()=>randomUUID());
   for(const id of ids)assert.equal((await repo.acceptHandoff(bot,request(id))).status,'accepted');
   assert.equal((await repo.acceptHandoff(bot,request(randomUUID()))).reason,'active_goal_limit');
-  const claim=await repo.claim('slot-frees');assert.ok(claim);
-  const view=await repo.view('ta','a');
-  const goal=view.goals.find((g:any)=>g.id===ids[0]);
-  const out=await repo.planHandoff(claim,goal,{});
-  assert.equal(await repo.completeGoal(claim,goal.id,'delivered the actual result'),true);
+  const identity={id:'a',tenant_id:'ta',generation:bot.generation,revision:bot.revision};
+  const audience={scope:'private:23456789',senderId:'23456789'};
+  const goal=(await repo.view('ta','a')).goals.find(g=>g.id===ids[0]);
+  const settle=await repo.updateGoal(identity,audience,{goalId:goal.id,expectedRevision:goal.revision,changes:{status:'completed',progress:'delivered the actual result'}});
+  assert.equal(settle.status,'updated');
   assert.equal((await repo.acceptHandoff(bot,request(randomUUID()))).status,'accepted','completed goal freed its slot');
-  assert.equal(await repo.abandonGoal(claim,ids[1]),true);
-  assert.equal(await repo.abandonGoal(claim,randomUUID()),false,'foreign or settled goals cannot be abandoned again');
-  await repo.markExecuting(claim,out.action.id);
-  await repo.feedback(claim,out.action.id,{status:'completed',summary:'delivered',effects:[],evidence:[],unfinished:[]});
-  assert.equal(await repo.completeGoal(claim,goal.id,'idempotent settle'),false,'completed goals are not re-settled');
+  assert.equal((await repo.updateGoal(identity,audience,{goalId:ids[1],expectedRevision:1,changes:{status:'abandoned'}})).status,'updated');
+  assert.equal((await repo.updateGoal(identity,audience,{goalId:randomUUID(),expectedRevision:1,changes:{status:'abandoned'}})).reason,'goal_not_authorized');
+  assert.equal((await repo.updateGoal(identity,audience,{goalId:goal.id,expectedRevision:settle.goal.revision,changes:{status:'completed'}})).reason,'goal_terminal');
  }finally{await db.close()}
 });
 
@@ -365,7 +341,7 @@ test('finalized-cycle executing orphan becomes receipt-only unknown, with tenant
   await repo.configure('ta','a',1,{mode:'active'});await repo.applied('ta','a',2);
   const id=randomUUID();await handoffGoal(db,'a','ta',id);
   const claim=await repo.claim('orphan-owner');assert.ok(claim);
-  const action=(await repo.planHandoff(claim,(await repo.view('ta','a')).goals[0],{})).action;
+  const action=({action:await repo.planActivity(claim,{})}).action;
   assert.equal(await repo.markExecuting(claim,action.id),true);
   assert.equal((await repo.unconfirmed('ta','a')).length,0,'a live execution is not an orphan');
   await repo.finish(claim,{tokens:0,modelCalls:0,toolCalls:0,externalActions:0},'fixture_feedback_lost');
@@ -383,7 +359,7 @@ test('chat cancellation projection abandons only its source-bound goal and prese
  const{db,repo}=await fixture();try{
   await repo.configure('ta','a',1,{mode:'active'});await repo.applied('ta','a',2);
   const id=randomUUID();await handoffGoal(db,'a','ta',id);
-  const c=await repo.claim('cancel-owner');const action=(await repo.planHandoff(c,(await repo.view('ta','a')).goals[0],{})).action;
+  const c=await repo.claim('cancel-owner');const action=({action:await repo.planActivity(c,{})}).action;
   await repo.markExecuting(c,action.id);
   await repo.feedback(c,action.id,{status:'unknown',summary:'external ACK unknown',effects:[{id:'original-effect',status:'unknown'}]});
   const request={id,botId:'a',tenantId:'ta',scope:'private:23456789',senderId:'23456789',eventId:'true-event'};

@@ -167,20 +167,11 @@ async def main():
             st.db.execute("INSERT INTO pipeline_events(scope,subject,event,at,source,stage,status,reason,attempted,confirmed) VALUES(?,?,?,?,'message','commit','sent','',1,1)",(scope,subject,event,at))
         st.db.commit()
         brain.observe('qq',NS(get_group_id=lambda:'',get_sender_id=lambda:'23456789',get_message_str=lambda:'ordinary friend search',message_obj=NS(message_id='friend-result')),True)
-        snapshot=brain.snapshot('qq');observed={c['scope']:c for c in snapshot['observedConversations']}
-        assert snapshot['contacts']==[],'recent conversations incorrectly granted early contact permission'
-        assert [c['scope'] for c in snapshot['deferredContacts']]==['private:12345678']
-        assert snapshot['deferredContacts'][0]['notBefore']>int(now*1000),'current cooldown was hidden from planning'
-        assert snapshot['identity']['ownerId']=='12345678' and snapshot['event']['owner'] is False
-        assert observed['private:12345678']['owner'] is True and observed['private:12345678']['lastReply']=='actual owner result link'
-        assert observed['private:23456789']['owner'] is False and observed['private:23456789']['outcome']['eventId']=='friend-result'
-        assert observed['private:23456789']['lastReply']=='search unavailable; no result'
-        assert len(snapshot['observedConversations'])==2 and 'event' in snapshot,'observation slot mutated the authoritative snapshot'
-        st.db.execute("UPDATE contacts SET last_user=? WHERE scope='private:23456789'",(now,));st.db.commit()
-        latest={c['scope']:c for c in brain.observed_conversations('qq')}
-        assert latest['private:23456789']['lastReply'] is None and latest['private:23456789']['outcome'] is None,'old reply masqueraded as the result of a new in-flight request'
-        assert latest['private:12345678']['lastReply']=='actual owner result link' and calls==[]
-        print('PIPELINE actual conversation sources survive contact cooldown; pending requests have no stale result passed')
+        assert brain.candidates('qq')==[]
+        deferred=brain.candidates('qq',include_waiting=True)
+        assert [c['scope'] for c in deferred]==['private:12345678']
+        assert deferred[0]['notBefore']>int(now*1000)
+        assert brain.snapshot('qq')['event']['owner'] is False and calls==[]
 
         p,w,st=setup('common-group-policy')
         cfg=settings['qq']['config'];cfg['behavior'].update(groupParticipationEnabled=True,groupParticipationGroups=['34567890'],groupParticipationIntervalMinutes=10,ownerContactEnabled=False)
@@ -279,56 +270,10 @@ async def main():
         print('PIPELINE interrupted computation preserves confirmed self effect as partial, retains stop reason and never repeats delivery passed')
         mode='normal';calls.clear();message_requests.clear()
 
-        p,w,st=setup('actual-tool-catalog')
-        initial=brain.snapshot('qq')
-        with patch.object(brain,'candidates',side_effect=AssertionError('ledger poll built retired planner context')):
-            ledger=await brain.handle('qq','snapshot',{'ledgerOnly':True})
+        p,w,st=setup('scheduler-metadata-only')
+        with patch.object(brain,'candidates',side_effect=AssertionError('scheduler built retired planner context')):
+            ledger=await brain.handle('qq','snapshot',{})
             assert set(ledger)=={'pendingHandoffs','agreementStates','canceledHandoffs','foregroundFeedback','event','nextEventCheckSeconds','feedbackVersion','foregroundBusy'}
-        assert 'bilibili_search' not in initial['availableTools']
-        assert next(t for t in initial['innerTools'] if t['name']=='bilibili_search')['code']=='feature_disabled'
-        p['config']['capabilities']=['research','contact_owner','profile_signature','qzone_publish'];w['capabilities']=list(p['config']['capabilities'])
-        cfg=settings['qq']['config'];cfg['behavior'].update(qqProfile=True,autoSignature=True,qzone=True,memory=True,bilibiliSearchEnabled=True)
-        snapshot=brain.snapshot('qq');catalog={c['kind']:c for c in snapshot['capabilityCatalog']}
-        assert all(catalog[k]['available'] for k in ('research','message','profile_signature','qzone_publish'))
-        for kind in catalog:
-            identity={**w,'kind':kind};scope='private:12345678' if kind=='message' else 'self'
-            event=brain.make_event('qq',identity,scope if scope!='self' else 'private:0','metadata check','90000000');event.set_extra('_hosted_autonomous_action',{'kind':kind})
-            assert catalog[kind]['tools']==[t.name for t in brain.task_tools('qq',identity,scope,event)],'outer and actual inner tool assembly diverged'
-        descriptions={t['name']:t for t in snapshot['innerTools']}
-        assert 'hosted_qq_publish' in snapshot['availableTools'] and 'hosted_qq_signature' in snapshot['availableTools']
-        assert '自主空间任务' in descriptions['hosted_qq_publish']['description']
-        assert descriptions['hosted_qq_publish']['parameters']['required']==['content']
-        assert 'hosted_qq_avatar' in descriptions
-        import inner_tools
-        original_features=inner_tools.features
-        from astrbot.core.agent.tool import FunctionTool
-        extension=FunctionTool(name='future_inner_capability',description='fixture registered only at the common inner assembly',parameters={'type':'object','properties':{}})
-        def with_extension(*args,**kwargs):return original_features(*args,**kwargs)+[extension]
-        with patch.object(inner_tools,'features',with_extension):
-            extended=brain.snapshot('qq')
-            assert any(t['name']=='future_inner_capability' for t in extended['innerTools'])
-            assert extended['capabilityRevision']!=snapshot['capabilityRevision']
-        assert brain.snapshot('qq')['capabilityRevision']==snapshot['capabilityRevision']
-        cfg['behavior']['bilibiliSearchEnabled']=False
-        disabled=brain.snapshot('qq')
-        assert 'bilibili_search' not in disabled['availableTools']
-        assert next(t for t in disabled['innerTools'] if t['name']=='bilibili_search')['code']=='feature_disabled'
-        for kind in catalog:
-            identity={**w,'kind':kind};scope='private:12345678' if kind=='message' else 'self'
-            event=brain.make_event('qq',identity,scope if scope!='self' else 'private:0','metadata check','90000000');event.set_extra('_hosted_autonomous_action',{'kind':kind})
-            assert 'bilibili_search' not in [t.name for t in brain.task_tools('qq',identity,scope,event)]
-        cfg['behavior']['bilibiliSearchEnabled']=True
-        cfg['behavior']['qqProfile']=False;catalog={c['kind']:c for c in brain.snapshot('qq')['capabilityCatalog']}
-        assert not catalog['profile_signature']['available'] and 'hosted_qq_signature' not in catalog['profile_signature']['tools']
-        p['config']['rollout']='shadow';catalog={c['kind']:c for c in brain.snapshot('qq')['capabilityCatalog']}
-        assert not catalog['qzone_publish']['available'] and catalog['research']['available']
-        p['config']['capabilities']=['contact_owner'];snapshot=brain.snapshot('qq')
-        catalog={c['kind']:c for c in snapshot['capabilityCatalog']}
-        assert catalog['research']['authorized'] and catalog['qzone_publish']['authorized'],'outer vocabulary must not control inner features'
-        assert not catalog['profile_signature']['authorized'],'disabled inner feature must stay disabled'
-        assert any(t['name']=='hosted_qq_publish' for t in snapshot['innerTools'])
-        assert calls==[],'capability enumeration executed an external tool'
-        print('PIPELINE outer capability catalog matches actual inner tool factories, permissions, settings and shadow gates without effects passed')
 
         p,w,st=setup('directed-observation-ack')
         settings['qq']['config']['behavior'].update(groupParticipationEnabled=True,groupParticipationGroups=['34567890'])
@@ -351,11 +296,11 @@ async def main():
         assert brain.policies['qq']['observedThrough']==finished,'an old cycle policy regressed the durable observation ACK'
         assert brain.snapshot('qq')['feedbackVersion']==finished,'ambient promotion erased the latest actual inner feedback'
         assert not brain.valid('qq',w),'an old feedback version retained execution permission'
-        ledger=brain.snapshot('qq',ledger_only=True)
+        ledger=brain.snapshot('qq')
         assert ledger['feedbackVersion']==finished and ledger['foregroundFeedback']['at']==finished
         assert ledger['foregroundBusy'] is False
         st.active+=1
-        assert brain.snapshot('qq',ledger_only=True)['foregroundBusy'] is True
+        assert brain.snapshot('qq')['foregroundBusy'] is True
         st.active-=1
         rejected=await brain.handle('qq','execute',{'work':w,'action':{'kind':'message','target':'private:12345678','objective':'must not execute'}})
         assert rejected['reason']=='stale_internal_work' and rejected['preflightReason']=='cycle_interrupted',rejected
