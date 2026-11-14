@@ -73,6 +73,7 @@ class RuntimeCare:
         self.failures = 0
         self.favorite_reconciler = None
         self.maintenance_active=False
+        self._reflection_cursor=None
     def stamp(self, root):
         if self.closed: return
         self.last_activity = time.time()
@@ -144,7 +145,16 @@ class RuntimeCare:
                 if self.stop_requested():continue
                 # Existing process-wide maintenance clock, one bounded summary
                 # at a time. Persisted rounds/retry state survive a restart.
-                for st in list(self.stores.values()):
+                keys=list(self.stores)
+                if self._reflection_cursor in keys:
+                    start=keys.index(self._reflection_cursor)+1
+                    keys=keys[start:]+keys[:start]
+                for key in keys:
+                    # Advance before retry: a failing or persistently pending
+                    # member must not monopolize the shared maintenance clock.
+                    self._reflection_cursor=key
+                    st=self.stores.get(key)
+                    if st is None:continue
                     if st.reflection.retry():
                         self.track(st,st.reflection.task);break
                 self.sweep()
