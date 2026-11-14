@@ -114,9 +114,10 @@ async def collect_protocol_originals(event,live,db=None,*,shared=False):
             info=path.lstat()
             if not stat.S_ISREG(info.st_mode) or not 0<info.st_size<=POLICY['maxSourceBytes']:
                 raise ValueError('protocol_image_size_or_type')
-            size=result.get('file_size')
-            if size not in (None,'') and (not str(size).isdigit() or int(size)!=info.st_size):
-                raise ValueError('protocol_image_size_mismatch')
+            # NapCat may report the transfer/thumbnail size while `file` names
+            # the locally downloaded original (confirmed on Windows). The
+            # isolated path, actual bounded stat, MIME and repeated byte hash
+            # establish ownership; protocol metadata cannot veto that proof.
             raw_bytes=path.read_bytes()
             with Image.open(io.BytesIO(raw_bytes)) as image:
                 mime=Image.MIME.get(image.format,'');image.verify()
