@@ -8,7 +8,7 @@ import {AutonomousGoalUpdateSchema} from '../packages/contracts/autonomous.js';
 import {ToolEffects} from '../packages/database/tool-effects.js';
 import {qqExternalBudget} from '../packages/database/external-action-budget.js';
 import {AutonomyCoordinator} from '../apps/node-agent/src/autonomous.js';
-const goalId='00000000-0000-4000-8000-000000000001',actionId='00000000-0000-4000-8000-000000000002',cycleId='00000000-0000-4000-8000-000000000003',effectId='00000000-0000-4000-8000-000000000004';
+const goalId='00000000-0000-4000-8000-000000000001',cycleId='00000000-0000-4000-8000-000000000003',actionId=cycleId,effectId='00000000-0000-4000-8000-000000000004';
 async function fixture(t:any){
  const root=await mkdtemp(path.resolve('.local/goal-management-')),db=await openDatabase(root);
  t.after(async()=>{await db.close();await rm(root,{recursive:true,force:true})});
@@ -48,18 +48,17 @@ test('goal exact-ID permissions, original intent preservation and stale revision
  await db.query("UPDATE autonomy_goals SET progress=$2 WHERE id=$1",[goalId,'full evidence '.repeat(1500)]);
  const snapshot=await repo.readGoals(bot,audience);assert.equal(snapshot.complete,true);assert.ok(snapshot.goals[0].progress.length>12000,'read never silently clips existing content');
  await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget) VALUES($1,'bot','tenant',2,$2,$3,'test','ended','{}')",[cycleId,bot.generation,bot.revision]);
- await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at,goal_id,result) VALUES($1,$2,'bot','tenant',2,'research','','original responsibility','unknown',now(),$3,'{\"effects\":[{\"status\":\"unknown\"}],\"unfinished\":[\"receipt reconciliation\"]}')",[actionId,cycleId,goalId]);
+ await db.query("UPDATE autonomy_cycles SET decision=jsonb_build_object('continuation',jsonb_build_object('goalId',$2::text),'receiptPending',true) WHERE id=$1",[cycleId,goalId]);
+ await db.query("INSERT INTO tool_effects(id,tenant_id,bot_id,work_id,cycle_id,step_id,operation,args,args_digest,authority,mode_epoch,generation,config_revision,settings_revision,deadline_at,state,lease_owner) VALUES($1,'tenant','bot',$2,$2,'exact-step','analyze',$3,'exact-digest','autonomous',2,$4,$5,1,now()+interval '5 minutes','claimed','exact-worker')",[effectId,actionId,JSON.stringify({bvid:'BV1xx411c7mD',question:'specific observation',start:0,seconds:30,frameCount:4}),bot.generation,bot.revision]);
  const beforeEnd=await repo.readGoals(bot,audience);assert.deepEqual(Object.keys(beforeEnd).sort(),['complete','goals']);
  assert.equal(beforeEnd.goals[0].id,goalId);assert.equal(beforeEnd.goals[0].revision,2);assert.equal(beforeEnd.goals[0].success_condition,'current milestone');assert.equal(beforeEnd.goals[0].source.originalGoal.successCondition,'original constraints');
  const ended=await repo.updateGoal(bot,audience,{goalId,expectedRevision:2,changes:{status:'completed'}});assert.equal(ended.status,'updated');assert.equal(ended.retainedExecutionResponsibility,true);
  const retained=await repo.readGoals(bot,audience);assert.deepEqual(retained,{goals:[],complete:true});
- const [unresolved]=await db.query('SELECT * FROM autonomy_actions WHERE id=$1',[actionId]);assert.equal(unresolved.status,'unknown');assert.deepEqual(unresolved.result.unfinished,['receipt reconciliation']);
- await db.query("INSERT INTO tool_effects(id,tenant_id,bot_id,work_id,step_id,operation,args,args_digest,authority,mode_epoch,generation,config_revision,settings_revision,deadline_at,state,lease_owner) VALUES($1,'tenant','bot',$2,'exact-step','analyze',$3,'exact-digest','autonomous',2,$4,$5,1,now()+interval '5 minutes','claimed','exact-worker')",[effectId,actionId,JSON.stringify({bvid:'BV1xx411c7mD',question:'specific observation',start:0,seconds:30,frameCount:4}),bot.generation,bot.revision]);
+ assert.equal((await db.query('SELECT state FROM tool_effects WHERE id=$1',[effectId]))[0].state,'claimed','ending a Goal does not retire its live original tool responsibility');
  assert.deepEqual(await repo.readGoals(bot,audience),{goals:[],complete:true});
  const [pending]=await db.query('SELECT * FROM tool_effects WHERE id=$1',[effectId]);
  assert.equal(pending.id,effectId);assert.equal(pending.work_id,actionId);assert.equal(pending.step_id,'exact-step');assert.equal(pending.args.frameCount,4);assert.equal(pending.args.question,'specific observation');assert.equal(pending.args_digest,'exact-digest');assert.equal(pending.lease_owner,'exact-worker');assert.equal(pending.mode_epoch,2);assert.equal(pending.state,'claimed');assert.equal(pending.cancel_requested,false);assert.ok(pending.deadline_at);
  await db.query("UPDATE tool_effects SET state='finished',completion_state='done' WHERE id=$1",[effectId]);
- await db.query("UPDATE autonomy_actions SET status='completed',result='{}' WHERE id=$1",[actionId]);
  const closed=await repo.readGoals(bot,audience);
  assert.deepEqual(closed,{goals:[],complete:true});
  const [closedGoal]=await db.query('SELECT * FROM autonomy_goals WHERE id=$1',[goalId]);assert.equal(closedGoal.status,'completed');assert.equal(closedGoal.revision,3);assert.ok(closedGoal.progress.length>12000,'reading goals never deletes authoritative history');
@@ -69,8 +68,7 @@ test('goal exact-ID permissions, original intent preservation and stale revision
 for(const {terminal,accepted} of [{terminal:'finished',accepted:true},{terminal:'unknown',accepted:true},{terminal:'canceled',accepted:true},{terminal:'finished',accepted:false},{terminal:'finished',accepted:undefined}])test('tool-completed '+terminal+' acceptance='+accepted+' keeps receipt ownership without replaying effects',async t=>{
  const {db,repo}=await fixture(t);
  await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget,decision,finished_at) VALUES($1,'bot','tenant',2,1,1,'old','completed','{}','{\"reason\":\"autonomous_moment\"}',now())",[cycleId]);
- await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at,result) VALUES($1,$2,'bot','tenant',2,'research','','original unfinished video task','partial',now()-interval '1 minute','{\"unfinished\":[\"understand result\"]}')",[actionId,cycleId]);
- await db.query("INSERT INTO tool_effects(id,tenant_id,bot_id,work_id,step_id,operation,args,args_digest,authority,mode_epoch,generation,config_revision,settings_revision,deadline_at,state,result,completion_state) VALUES($1,'tenant','bot',$2,'analysis','analyze','{}','hash','autonomous',2,1,1,1,now(),$4,$3,'pending')",[effectId,actionId,JSON.stringify(terminal==='finished'?{execution:'completed',receipt:{status:'not_applicable'},data:{analysis:'real result'}}:{execution:terminal==='canceled'?'canceled':'failed',receipt:{status:terminal==='unknown'?'unknown':'rejected'}}),terminal]);
+ await db.query("INSERT INTO tool_effects(id,tenant_id,bot_id,work_id,cycle_id,step_id,operation,args,args_digest,authority,mode_epoch,generation,config_revision,settings_revision,deadline_at,state,result,completion_state) VALUES($1,'tenant','bot',$2,$2,'analysis','analyze','{}','hash','autonomous',2,1,1,1,now(),$4,$3,'pending')",[effectId,actionId,JSON.stringify(terminal==='finished'?{execution:'completed',receipt:{status:'not_applicable'},data:{analysis:'real result'}}:{execution:terminal==='canceled'?'canceled':'failed',receipt:{status:terminal==='unknown'?'unknown':'rejected'}}),terminal]);
  await db.query("UPDATE autonomy_cycles SET generation=(SELECT generation FROM bots WHERE id='bot') WHERE id=$1",[cycleId]);
  await db.query("UPDATE tool_effects SET generation=(SELECT generation FROM bots WHERE id='bot') WHERE id=$1",[effectId]);
  await db.query("DELETE FROM autonomy_wakes WHERE bot_id='bot'");await repo.wake('tenant','bot',2,'tool-completed');
@@ -85,7 +83,7 @@ for(const {terminal,accepted} of [{terminal:'finished',accepted:true},{terminal:
  });t.after(()=>coordinator.stop());
  await coordinator.tick();await coordinator.active?.task;assert.equal(calls,1,JSON.stringify(await repo.view('tenant','bot')));
  assert.equal((await db.query('SELECT completion_state FROM tool_effects WHERE id=$1',[effectId]))[0].completion_state,accepted===true?'done':accepted===false?'pending':'unknown');
- if(accepted===undefined)assert.equal((await db.query('SELECT status FROM autonomy_actions WHERE id<>$1 ORDER BY created_at DESC LIMIT 1',[actionId]))[0].status,'unknown','missing acknowledgement must retain receipt reconciliation');
+ assert.equal((await db.query('SELECT state FROM autonomy_cycles WHERE id=$1',[cycleId]))[0].state,'completed','original cycle is not dispatched again');
  if(accepted===true)await repo.wake('tenant','bot',2,'tool-completed');
  if(accepted===false){const wakes=await db.query("SELECT scope,due_at>now() AS delayed FROM autonomy_wakes WHERE bot_id='bot' AND reason='tool-completed'");assert.deepEqual(wakes,[{scope:effectId,delayed:true}]);}
  // Advance past the existing receipt sampling interval without sleeping.
@@ -93,15 +91,15 @@ for(const {terminal,accepted} of [{terminal:'finished',accepted:true},{terminal:
  await coordinator.tick();await coordinator.active?.task;assert.equal(calls,1);
  clock?.mock.restore();
  if(accepted===undefined)assert.equal((await db.query('SELECT completion_state FROM tool_effects WHERE id=$1',[effectId]))[0].completion_state,'done','authoritative late acceptance settles the original result without executing again');
- assert.equal((await db.query('SELECT status FROM autonomy_actions WHERE id=$1',[actionId]))[0].status,'partial','original action is never replayed or forged completed');
+ assert.equal((await db.query('SELECT state FROM autonomy_cycles WHERE id=$1',[cycleId]))[0].state,'completed','original cycle is not dispatched again');
 });
 
 test('shadow blocks actual Bili and QQ write permits after admission while reads remain usable',async t=>{
  const {db,bot}=await fixture(t),effects=new ToolEffects(db);
  await effects.configure('tenant','bot',1,{enabled:true,allowAutonomous:true,scopes:['public.read','like.write']});
  await db.query("INSERT INTO bilibili_accounts(bot_id,tenant_id,uid,label,secret) VALUES('bot','tenant','123','test','unused')");
- await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget) VALUES($1,'bot','tenant',2,$2,$3,'test','acting','{\"cycleExternalActions\":2}')",[cycleId,bot.generation,bot.revision]);
- await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at) VALUES($1,$2,'bot','tenant',2,'research','','read or write','executing',now()+interval '5 minutes')",[actionId,cycleId]);
+ await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,work_expires_at,budget) VALUES($1,'bot','tenant',2,$2,$3,'test','acting',now()+interval '5 minutes','{\"cycleExternalActions\":2}')",[cycleId,bot.generation,bot.revision]);
+ await db.query("UPDATE autonomy_settings SET lease_owner='test',lease_until=now()+interval '5 minutes' WHERE bot_id='bot'");
  const call={workId:actionId,stepId:'like',operation:'like' as const,args:{bvid:'BV1xx411c7mD',value:true},authority:'autonomous' as const,epoch:2,deadlineAt:Date.now()+90000};
  const admitted=await effects.admit(bot,call),owned=await effects.claim('writer');assert.equal(owned.id,admitted.id);
  await db.query("UPDATE autonomy_settings SET config=jsonb_set(config,'{rollout}','\"shadow\"') WHERE bot_id='bot'");
@@ -115,9 +113,9 @@ test('shadow blocks actual Bili and QQ write permits after admission while reads
 for(const late of [false,true])test('media provider usage settles '+(late?'after':'before')+' original cycle finish exactly once',async t=>{
  const {db,bot,repo}=await fixture(t),effects=new ToolEffects(db);
  await db.query("INSERT INTO autonomy_daily_usage(bot_id,tenant_id,day,used_tokens,model_calls) VALUES('bot','tenant','fixture',$1,$2)",[late?100:0,late?2:0]);
- await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget,usage,finished_at) VALUES($1,'bot','tenant',2,$2,$3,'test','acting','{\"day\":\"fixture\",\"cycleTokenBudget\":1000}','{\"modelCalls\":2,\"tokens\":100}',CASE WHEN $4 THEN now() ELSE NULL END)",[cycleId,bot.generation,bot.revision,late]);
- await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at) VALUES($1,$2,'bot','tenant',2,'research','','media','completed',now())",[actionId,cycleId]);
- await db.query("INSERT INTO tool_effects(id,tenant_id,bot_id,work_id,step_id,operation,args,args_digest,authority,mode_epoch,generation,config_revision,settings_revision,deadline_at,state,lease_owner,usage_checkpoint) VALUES($1,'tenant','bot',$2,'analysis','analyze','{}','hash','autonomous',2,$3,$4,1,now(),'claimed','worker','{\"modelRequests\":1}')",[effectId,actionId,bot.generation,bot.revision]);
+ await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,work_expires_at,budget,usage,finished_at) VALUES($1,'bot','tenant',2,$2,$3,'test','acting',now()+interval '5 minutes','{\"day\":\"fixture\",\"cycleTokenBudget\":1000}','{\"modelCalls\":2,\"tokens\":100}',CASE WHEN $4 THEN now() ELSE NULL END)",[cycleId,bot.generation,bot.revision,late]);
+ await db.query("UPDATE autonomy_settings SET lease_owner='test',lease_until=now()+interval '5 minutes' WHERE bot_id='bot'");
+ await db.query("INSERT INTO tool_effects(id,tenant_id,bot_id,work_id,cycle_id,step_id,operation,args,args_digest,authority,mode_epoch,generation,config_revision,settings_revision,deadline_at,state,lease_owner,usage_checkpoint) VALUES($1,'tenant','bot',$2,$2,'analysis','analyze','{}','hash','autonomous',2,$3,$4,1,now(),'claimed','worker','{\"modelRequests\":1}')",[effectId,actionId,bot.generation,bot.revision]);
  const [job]=await db.query('SELECT * FROM tool_effects WHERE id=$1',[effectId]);
  const result={schemaVersion:'fishbot.tool-result.v1' as const,actionId:effectId,execution:'completed' as const,receipt:{status:'not_applicable' as const},usage:{modelRequests:1,costStatus:'actual' as const,providerUsage:{total_tokens:75}},versions:{adapter:'fixture'}};
  await effects.finish(job,result);await effects.finish(job,result);
@@ -126,48 +124,44 @@ for(const late of [false,true])test('media provider usage settles '+(late?'after
  assert.equal(cycle.usage.modelCalls,3);assert.equal(Number(cycle.usage.tokens),175);assert.equal(day.model_calls,3);assert.equal(Number(day.used_tokens),175);
 });
 
-for(const entry of ['activity','handoff','continuation'])test(entry+' readGoals failure is not started, costs zero and keeps safe retry',async t=>{
+for(const entry of ['activity','handoff','continuation'])test(entry+' permit preparation failure is not started, costs zero and keeps safe retry',async t=>{
  const {db,repo,bot}=await fixture(t);await db.query("DELETE FROM autonomy_wakes WHERE bot_id='bot'");
  if(entry==='handoff')await db.query("UPDATE autonomy_goals SET source=source||jsonb_build_object('kind','research','notBefore',0) WHERE id=$1",[goalId]);
  if(entry==='continuation'){
   await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget,decision,finished_at) VALUES($1,'bot','tenant',2,$2,$3,'old','completed','{}','{\"reason\":\"autonomous_moment\"}',now())",[cycleId,bot.generation,bot.revision]);
-  await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at,result) VALUES($1,$2,'bot','tenant',2,'research','','original video responsibility','partial',now(),'{}')",[actionId,cycleId]);
-  await db.query("INSERT INTO tool_effects(id,tenant_id,bot_id,work_id,step_id,operation,args,args_digest,authority,mode_epoch,generation,config_revision,settings_revision,deadline_at,state,result,completion_state) VALUES($1,'tenant','bot',$2,'analysis','analyze','{}','hash','autonomous',2,$3,$4,1,now(),'finished','{\"execution\":\"completed\"}','pending')",[effectId,actionId,bot.generation,bot.revision]);
+  await db.query("INSERT INTO tool_effects(id,tenant_id,bot_id,work_id,cycle_id,step_id,operation,args,args_digest,authority,mode_epoch,generation,config_revision,settings_revision,deadline_at,state,result,completion_state) VALUES($1,'tenant','bot',$2,$2,'analysis','analyze','{}','hash','autonomous',2,$3,$4,1,now(),'finished','{\"execution\":\"completed\"}','pending')",[effectId,actionId,bot.generation,bot.revision]);
  }
  await repo.wake('tenant','bot',2,entry==='activity'?'activity':entry==='handoff'?'handoff-due':'tool-completed');
  let calls=0,fail=true;
- const coordinator=new AutonomyCoordinator(db,async(_b,op)=>{if(op==='policy'||op==='snapshot')return{};assert.equal(op,'execute','preparation failure must not cancel or query a runtime never dispatched');calls++;return{status:'completed',continuationAccepted:true,summary:'real model result',effects:[],unfinished:[],evidence:[],usage:{tokens:10,modelCalls:1,toolCalls:0}}});t.after(()=>coordinator.stop());
- const read=coordinator.repo.readGoals.bind(coordinator.repo);coordinator.repo.readGoals=async(...args)=>{if(fail)throw Error('injected snapshot DB failure');return read(...args)};
+ const coordinator=new AutonomyCoordinator(db,async(_b,op,body:any)=>{if(op==='policy'){if(body.actionId&&fail)throw Error('injected permit transport failure');return{}}if(op==='snapshot')return{};assert.equal(op,'execute','preparation failure must not cancel or query a runtime never dispatched');calls++;return{status:'completed',continuationAccepted:true,summary:'real model result',effects:[],unfinished:[],evidence:[],usage:{tokens:10,modelCalls:1,toolCalls:0}}});t.after(()=>coordinator.stop());
  for(let i=0;i<(entry==='handoff'?5:1);i++){
   await db.query("UPDATE autonomy_wakes SET due_at=now()-interval '1 second' WHERE bot_id='bot'");await coordinator.tick();await coordinator.active?.task;
-  assert.equal(calls,0);const view=await repo.view('tenant','bot');assert.equal(view.actions[0].status,'canceled');assert.equal(view.actions[0].result.stopReason,'not_started');assert.equal(view.actions[0].result.continuationAccepted,false);assert.equal(view.cycles[0].usage.modelCalls,0);assert.equal(view.cycles[0].usage.tokens,0);assert.equal(view.goals[0].status,'active');
+  assert.equal(calls,0);const view=await repo.view('tenant','bot');assert.equal(view.cycles[0].reason,entry==='continuation'?'tool_continuation_canceled':'runtime_or_decision_failed');assert.equal(view.cycles[0].usage.modelCalls,0);assert.equal(view.cycles[0].usage.tokens,0);assert.equal(view.goals[0].status,'active');
   if(entry==='continuation')assert.equal((await db.query('SELECT completion_state FROM tool_effects WHERE id=$1',[effectId]))[0].completion_state,'pending');
  }
  fail=false;await db.query("UPDATE autonomy_wakes SET due_at=now()-interval '1 second' WHERE bot_id='bot'");await coordinator.tick();await coordinator.active?.task;assert.equal(calls,1);
  if(entry==='continuation')assert.equal((await db.query('SELECT completion_state FROM tool_effects WHERE id=$1',[effectId]))[0].completion_state,'done');
 });
-test('blocked goal waits for model review, leaves activity available and revision change reopens execution',async t=>{
- const {db,repo,bot}=await fixture(t);await db.query("UPDATE autonomy_goals SET source=source||jsonb_build_object('kind','research','notBefore',0) WHERE id=$1",[goalId]);
- let executions=0,activities=0,block=true;
+test('blocked activation leaves Goal decisions to the model; only a committed Goal tool revises or ends it',async t=>{
+ const {db,repo,bot}=await fixture(t);let executions=0,block=true;
  const coordinator=new AutonomyCoordinator(db,async(_b,op,body:any)=>{
-  if(op==='policy'||op==='snapshot')return{};assert.equal(op,'execute');if(body.action.autonomousMoment)activities++;else executions++;
-  return{status:block&&!body.action.autonomousMoment?'blocked':'completed',summary:'actual decision',effects:[],unfinished:[],evidence:[],usage:{tokens:10,modelCalls:1,toolCalls:0}};
+  if(op==='policy'||op==='snapshot')return{};assert.equal(op,'execute');executions++;
+  assert.equal(body.action.goalId,undefined);assert.equal(body.action.target,'');
+  return{status:block?'blocked':'completed',summary:'actual decision',effects:[],unfinished:[],evidence:[],usage:{tokens:10,modelCalls:1,toolCalls:0}};
  });t.after(()=>coordinator.stop());
- await coordinator.tick();await coordinator.active?.task;assert.equal(executions,1);assert.equal((await repo.view('tenant','bot')).goals[0].status,'active');
- await repo.wake('tenant','bot',2,'handoff-due');await coordinator.tick();await coordinator.active?.task;assert.equal(executions,1,'same revision is not blindly retried');
- await repo.wake('tenant','bot',2,'activity');await coordinator.tick();await coordinator.active?.task;assert.equal(activities,1,'review goal does not starve legitimate activity');
+ await repo.wake('tenant','bot',2,'operator-wake');await coordinator.tick();await coordinator.active?.task;
+ assert.equal(executions,1);assert.equal((await repo.view('tenant','bot')).goals[0].status,'active');
  const changed=await repo.updateGoal(bot,{scope:'private:12345678',senderId:'12345678'},{goalId,expectedRevision:1,changes:{progress:'new user instruction/evidence'}});assert.equal(changed.status,'updated');
- block=false;await coordinator.tick();await coordinator.active?.task;assert.equal(executions,2);
- const reviewed=await repo.view('tenant','bot');
- assert.equal(reviewed.goals[0].status,'active','a completed research step is not a committed goal completion');
- assert.equal(reviewed.actions[0].status,'completed');assert.equal(reviewed.actions[0].result.reviewGoalRevision,changed.goal.revision);
- await repo.wake('tenant','bot',2,'handoff-due');await coordinator.tick();await coordinator.active?.task;assert.equal(executions,2,'completed step is not rerun while model goal review remains available');
+ block=false;await repo.wake('tenant','bot',2,'operator-wake');await coordinator.tick();await coordinator.active?.task;assert.equal(executions,2);
+ const reviewed=await repo.view('tenant','bot');assert.equal(reviewed.goals[0].status,'active');assert.equal(reviewed.goals[0].revision,changed.goal.revision);assert.equal(reviewed.cycles[0].reason,'activity_completed');
+ await coordinator.tick();await coordinator.active?.task;assert.equal(executions,2,'no automatic Goal execution or result replay');
  const done=await repo.updateGoal(bot,{scope:'private:12345678',senderId:'12345678'},{goalId,expectedRevision:changed.goal.revision,changes:{status:'completed'}});assert.equal(done.status,'updated');
 });
+
 test('legitimate main activity may update visible user goals while isolated research keeps source authority',async t=>{
  const {db,repo,bot}=await fixture(t);
- await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget,decision) VALUES($1,'bot','tenant',2,$2,$3,'test','acting','{}','{\"reason\":\"handoff_due\"}')",[cycleId,bot.generation,bot.revision]);
- await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at) VALUES($1,$2,'bot','tenant',2,'research','','current activity','executing',now()+interval '5 minutes')",[actionId,cycleId]);
+ await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,work_expires_at,budget,decision) VALUES($1,'bot','tenant',2,$2,$3,'test','acting',now()+interval '5 minutes','{}','{\"reason\":\"handoff_due\"}')",[cycleId,bot.generation,bot.revision]);
+ await db.query("UPDATE autonomy_settings SET lease_owner='test',lease_until=now()+interval '5 minutes' WHERE bot_id='bot'");
  const audience={scope:'self',senderId:'0',work:{id:actionId,epoch:2}},update={goalId,expectedRevision:1,changes:{progress:'current reasoning'}};
  assert.equal((await repo.updateGoal(bot,audience,update)).status,'rejected');
  await db.query("UPDATE autonomy_cycles SET decision='{\"reason\":\"autonomous_moment\"}' WHERE id=$1",[cycleId]);

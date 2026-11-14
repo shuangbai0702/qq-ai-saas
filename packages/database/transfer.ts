@@ -19,20 +19,19 @@ export const transferSchema={
  audit_events:['id','tenant_id','event','bot_id','detail','created_at'],
  autonomy_settings:['bot_id','tenant_id','epoch','runtime_epoch','config','state','goal_revision','summary','wait','observation','last_error','last_event_at','lease_owner','lease_until','next_wake_at','updated_at','context_cycle_seq','context_checkpoint'],
  autonomy_goals:['id','bot_id','tenant_id','origin','status','title','reason','progress','success_condition','source','revision','created_at','updated_at'],
- autonomy_cycles:['id','bot_id','tenant_id','epoch','generation','config_revision','owner','state','budget','usage','reason','decision','started_at','finished_at','cycle_seq'],
- autonomy_actions:['id','cycle_id','bot_id','tenant_id','epoch','kind','target','objective','goal_id','status','expires_at','receipt','result','created_at','finished_at'],
+ autonomy_cycles:['work_expires_at','id','bot_id','tenant_id','epoch','generation','config_revision','owner','state','budget','usage','reason','decision','started_at','finished_at','cycle_seq'],
  autonomy_wakes:['bot_id','tenant_id','dedupe_key','epoch','due_at','reason','scope','created_at'],
  autonomy_daily_usage:['bot_id','tenant_id','day','reserved_tokens','used_tokens','model_calls','tool_calls','external_actions'],
  bilibili_settings:['bot_id','tenant_id','revision','config','model_secret','updated_at'],
  bilibili_accounts:['bot_id','tenant_id','uid','label','secret','revision','state','refresh_state','pending_confirm','updated_at'],
  bilibili_logins:['bot_id','tenant_id','id','secret','state','expires_at','updated_at'],
- tool_effects:['id','tenant_id','bot_id','work_id','step_id','operation','args','args_digest','authority','sender_id','mode_epoch','generation','config_revision','settings_revision','account_revision','account_uid','state','lease_owner','lease_until','cancel_requested','deadline_at','result','created_at','updated_at','origin_scope','origin_event','continuation','completion_state','completion_owner','completion_until','usage_checkpoint','budget_reserved'],
+ tool_effects:['cycle_id','id','tenant_id','bot_id','work_id','step_id','operation','args','args_digest','authority','sender_id','mode_epoch','generation','config_revision','settings_revision','account_revision','account_uid','state','lease_owner','lease_until','cancel_requested','deadline_at','result','created_at','updated_at','origin_scope','origin_event','continuation','completion_state','completion_owner','completion_until','usage_checkpoint','budget_reserved'],
  tool_service_cooldowns:['service','until_at','reason'],
  tool_cancellations:['bot_id','tenant_id','work_id','step_id','expires_at'],
 } as const;
 export type TransferTable=keyof typeof transferSchema;
 export const transferTables=Object.keys(transferSchema) as TransferTable[];
-export const expectedSchemaVersions=['001','002','003','004','005','006','007','008','009','010','011','012','013'];
+export const expectedSchemaVersions=['001','002','003','004','005','006','007','008','009','010','011','012','013','014'];
 
 function canonical(value:any):any{
  if(value instanceof Date)return value.toISOString();

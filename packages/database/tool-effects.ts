@@ -14,18 +14,15 @@ export class ToolEffects {
   // Only identical public video searches are reusable. Keep writes on their
   // existing action IDs; read reuse never grants permission to send a message.
   if(job.operation!=='search'||job.args.fresh===true)return null;
-  const [goal]=job.authority==='autonomous'?await this.db.query('SELECT g.source FROM autonomy_actions a JOIN autonomy_goals g ON g.id=a.goal_id AND g.bot_id=a.bot_id AND g.tenant_id=a.tenant_id WHERE a.id::text=$1 AND a.bot_id=$2 AND a.tenant_id=$3',[job.work_id,job.bot_id,job.tenant_id]):[];
-  const scope=job.origin_scope||goal?.source?.scope||'self';
+  const scope=job.origin_scope||'self';
   const [row]=await this.db.query(`SELECT e.id,e.result,e.updated_at FROM tool_effects e
-   LEFT JOIN autonomy_actions a ON a.id::text=e.work_id AND a.bot_id=e.bot_id AND a.tenant_id=e.tenant_id AND e.authority='autonomous'
-   LEFT JOIN autonomy_goals g ON g.id=a.goal_id AND g.bot_id=a.bot_id AND g.tenant_id=a.tenant_id
    WHERE e.tenant_id=$1 AND e.bot_id=$2 AND e.id<>$3 AND e.operation='search'
    AND e.args-'fresh'=($4::jsonb)-'fresh' AND e.state='finished' AND NOT e.cancel_requested
    AND e.result->>'execution'='completed' AND e.result->'data' IS NOT NULL
    AND e.result->'data'->'reused' IS NULL
    AND e.generation=$5 AND e.config_revision=$6 AND e.settings_revision=$7
    AND e.account_revision IS NOT DISTINCT FROM $8::integer AND e.account_uid IS NOT DISTINCT FROM $9::text
-   AND COALESCE(NULLIF(e.origin_scope,''),g.source->>'scope','self')=$10
+   AND COALESCE(NULLIF(e.origin_scope,''),'self')=$10
    AND e.updated_at BETWEEN now()-interval '2 minutes' AND now()
    ORDER BY e.updated_at DESC LIMIT 1`,[job.tenant_id,job.bot_id,job.id,JSON.stringify(job.args),job.generation,job.config_revision,job.settings_revision,job.account_revision??null,job.account_uid??null,scope]);
   return row??null;
@@ -54,7 +51,7 @@ export class ToolEffects {
    const s=await this.settings(bot.tenant_id,bot.id,tx),[account]=await tx.query('SELECT uid,revision,state FROM bilibili_accounts WHERE bot_id=$1 AND tenant_id=$2',[bot.id,bot.tenant_id]);
    if(call.origin&&call.authority==='foreground'&&call.origin.scope.startsWith('private:')&&call.origin.scope!=='private:'+call.senderId)throw toolConflict('恢复目标与真实发送者不符',403);
    if(operation.write){const [unknown]=await tx.query("SELECT id FROM tool_effects WHERE bot_id=$1 AND tenant_id=$2 AND args_digest=$3 AND state IN ('dispatching','unknown') LIMIT 1",[bot.id,bot.tenant_id,hash]);if(unknown)throw toolConflict('相同操作结果尚未确认，禁止再次提交')}
-   const record={...fresh,operation:call.operation,args,bot_id:bot.id,settings_revision:s.revision,account_revision:account?.revision,account_uid:account?.uid,authority:call.authority,sender_id:call.senderId,mode_epoch:call.epoch,work_id:call.workId,config_revision:bot.revision,cancel_requested:false,deadline_at:new Date(call.deadlineAt),origin_scope:call.origin?.scope??'',origin_event:call.origin?.eventId??'',continuation:{objective:call.origin?.objective??'',...(call.continuation?{sourceActionId:call.continuation.actionId,sourceOwner:call.continuation.owner}:{})}};
+   const record={...fresh,operation:call.operation,args,bot_id:bot.id,settings_revision:s.revision,account_revision:account?.revision,account_uid:account?.uid,authority:call.authority,sender_id:call.senderId,mode_epoch:call.epoch,work_id:call.workId,config_revision:bot.revision,cancel_requested:false,deadline_at:new Date(call.deadlineAt),origin_scope:call.origin?.scope??'',origin_event:call.origin?.eventId??'',cycle_id:call.authority==='autonomous'?call.workId:null,continuation:{objective:call.origin?.objective??'',...(call.continuation?{sourceActionId:call.continuation.actionId,sourceOwner:call.continuation.owner}:{})}};
    await this.validate(record,s,tx);
    // A different model step is not a new execution responsibility. Reuse only
    // unresolved analysis with exact arguments and the same work/goal owner.
@@ -68,11 +65,7 @@ export class ToolEffects {
       AND e.account_revision IS NOT DISTINCT FROM $12
       AND e.account_uid IS NOT DISTINCT FROM $13
       AND NOT e.cancel_requested AND e.state IN ('queued','claimed','dispatching','unknown')
-      AND (e.work_id=$11 OR EXISTS(SELECT 1 FROM autonomy_actions original
-       JOIN autonomy_actions candidate ON candidate.goal_id=original.goal_id
-        AND candidate.bot_id=original.bot_id AND candidate.tenant_id=original.tenant_id
-       WHERE original.id=e.work_id AND candidate.id=$11 AND original.bot_id=e.bot_id
-        AND original.tenant_id=e.tenant_id AND original.goal_id IS NOT NULL))
+      AND e.work_id=$11
      ORDER BY e.created_at,e.id LIMIT 1`,[bot.id,bot.tenant_id,hash,call.authority,call.senderId??null,call.epoch??null,call.origin?.scope??'',bot.generation,bot.revision,s.revision,call.workId,account?.revision??null,account?.uid??null]);
     if(pending)return pending;
    }
@@ -81,6 +74,7 @@ export class ToolEffects {
     if(!bilibiliModelConfigured(s,model?.config,model?.has_key))throw Object.assign(toolConflict(bilibiliModelRequired),{code:'model_not_configured'});
    }
    const [row]=await tx.query('INSERT INTO tool_effects(id,tenant_id,bot_id,work_id,step_id,operation,args,args_digest,authority,sender_id,mode_epoch,generation,config_revision,settings_revision,account_revision,deadline_at,account_uid,origin_scope,origin_event,continuation) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *',[randomUUID(),bot.tenant_id,bot.id,call.workId,call.stepId,call.operation,JSON.stringify(args),hash,call.authority,call.senderId??null,call.epoch??null,bot.generation,bot.revision,s.revision,account?.revision??null,new Date(call.deadlineAt),account?.uid??null,call.origin?.scope??'',call.origin?.eventId??'',JSON.stringify(record.continuation)]);
+   if(record.cycle_id){await tx.query('UPDATE tool_effects SET cycle_id=$2 WHERE id=$1',[row.id,record.cycle_id]);row.cycle_id=record.cycle_id}
    return row;
   });
  }
@@ -99,7 +93,7 @@ export class ToolEffects {
    // Only an already-admitted asynchronous read may outlive its parent task.
    // Admission records contain the bot's `id`; truthiness is not evidence that
    // a tool effect exists, and must never revive completed work for new writes.
-   const [a]=await db.query("SELECT a.id,s.config AS autonomy_config FROM autonomy_actions a JOIN autonomy_settings s ON s.bot_id=a.bot_id AND s.tenant_id=a.tenant_id WHERE a.id=$1 AND a.bot_id=$2 AND a.tenant_id=$3 AND a.epoch=$4 AND s.epoch=a.epoch AND s.config->>'mode'='active' AND ((a.status IN ('planned','executing') AND a.expires_at>now()) OR a.status IN ('completed','partial') AND EXISTS(SELECT 1 FROM tool_effects e WHERE e.id=$5 AND e.bot_id=a.bot_id AND e.tenant_id=a.tenant_id AND e.work_id=a.id AND e.mode_epoch=a.epoch AND e.operation='analyze' AND e.authority='autonomous' AND NOT e.cancel_requested AND e.deadline_at>now() AND e.state IN ('queued','claimed')))",[job.work_id,bot.id,bot.tenant_id,job.mode_epoch,job.id??null]);
+   const [a]=await db.query("SELECT c.id,s.config AS autonomy_config FROM autonomy_cycles c JOIN autonomy_settings s ON s.bot_id=c.bot_id AND s.tenant_id=c.tenant_id WHERE c.id=$1 AND c.bot_id=$2 AND c.tenant_id=$3 AND c.epoch=$4 AND s.epoch=c.epoch AND s.config->>'mode'='active' AND ((c.state='acting' AND c.finished_at IS NULL AND c.work_expires_at>now() AND s.lease_owner=c.owner AND s.lease_until>now()) OR c.finished_at IS NOT NULL AND EXISTS(SELECT 1 FROM tool_effects e WHERE e.id=$5 AND e.bot_id=c.bot_id AND e.tenant_id=c.tenant_id AND e.cycle_id=c.id AND e.work_id=$6 AND e.mode_epoch=c.epoch AND e.operation='analyze' AND e.authority='autonomous' AND NOT e.cancel_requested AND e.deadline_at>now() AND e.state IN ('queued','claimed')))",[job.cycle_id??job.work_id,bot.id,bot.tenant_id,job.mode_epoch,job.id??null,job.work_id]);
    if(op.write&&(a?.autonomy_config?.rollout??'live')!=='live')throw toolConflict('shadow禁止真实外部写入',403);
    if(!s.config.allowAutonomous||!a)throw toolConflict('自主工作授权已失效',403);
   }else if(op.write||op.scope!=='public.read'){

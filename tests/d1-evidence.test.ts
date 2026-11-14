@@ -25,19 +25,18 @@ test('D1 schema accepts at most eight evidence refs and nothing else',()=>{
  assert.equal(ActionIntentSchema.safeParse({kind:'research',objective:'read',sourceScope:'group:1'}).success,false,'the model cannot write authoritative source fields');
 });
 
-test('the accepted goal source is dereferenced once into evidenceSources and dispatched same-scope',async()=>{
+test('accepted Goal source remains queryable and is not projected as a new sender authority on wake',async()=>{
  const db=await fixture();let executions=0;
  const goalId='bf1086cd-91c4-40ec-8e42-75d80ae70a9d';
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
   if(op==='execute'){executions++;
-   assert.equal(body.action.sourceScope,'group:963105233','requestSource same-scope rule unchanged');
-   assert.equal(body.action.evidenceSources.length,1);
-   const source=body.action.evidenceSources[0];
-   assert.equal(source.ref,'event:real-source');assert.equal(source.scope,'group:963105233');
-   assert.equal(source.eventId,'real-source');assert.equal(source.senderId,'12345678');
-   assert.equal(source.kind,'goal_source');assert.match(source.digest,/^[0-9a-f]{64}$/);
-   assert.equal(body.action.requestSource.handoffId,goalId);
+   assert.equal(body.action.sourceScope,undefined);
+   assert.equal(body.action.evidenceSources,undefined);
+   assert.equal(body.action.requestSource,undefined);
+   assert.equal(body.action.goalId,undefined);
+   assert.equal(body.action.autonomousMoment,true);
+   assert.equal(body.work.principal,'autonomous-service');
    return{status:'completed',summary:'actual read',effects:[],evidence:[],unfinished:[],usage}}
   throw Error(op);
  });
@@ -48,22 +47,23 @@ test('the accepted goal source is dereferenced once into evidenceSources and dis
    [goalId,'read for the source group',JSON.stringify({eventId:'real-source',scope:'group:963105233',senderId:'12345678',owner:true,handoffId:goalId,notBefore:Date.now()-1000})]);
   await coordinator.repo.wake('tenant','bot',2,'handoff-due',0,goalId);
   await coordinator.tick();await coordinator.active?.task;assert.equal(executions,1);
-  const [cycle]=await db.query("SELECT decision FROM autonomy_cycles WHERE bot_id='bot' AND decision ? 'evidenceSources'");
-  assert.equal(cycle.decision.evidenceSources[0].eventId,'real-source');
+  const [goal]=await db.query('SELECT * FROM autonomy_goals WHERE id=$1',[goalId]);
+  assert.equal(goal.source.eventId,'real-source');assert.equal(goal.source.scope,'group:963105233');
+  assert.equal(goal.source.senderId,'12345678');assert.equal(goal.status,'active');
   const view=await coordinator.repo.view('tenant','bot');
-  assert.equal(view.goals[0].status,'completed');
-  assert.equal(view.actions[0].status,'completed');
+  assert.equal(view.cycles[0].reason,'activity_completed');
+  assert.equal(JSON.stringify(await db.query('SELECT decision FROM autonomy_cycles')).includes('evidenceSources'),false);
  }finally{await coordinator.stop();await db.close()}
 });
 
-test('no planning model exists, so the dispatch carries only the durable goal source and no invented refs',async()=>{
+test('no planning model exists and activation never grants a former sender permission',async()=>{
  const db=await fixture();let executions=0,thinkCalls=0;
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
   if(op==='think'){thinkCalls++;return{status:'completed',usage}}
   if(op==='execute'){executions++;
    assert.equal(body.action.evidenceRefs,undefined,'no model-supplied refs exist in the event-driven dispatch');
-   assert.equal(body.action.evidenceSources.length,1,'evidence comes only from the accepted goal source');
+   assert.equal(body.action.evidenceSources,undefined);assert.equal(body.action.requestSource,undefined);
    return{status:'completed',summary:'actual read',effects:[],evidence:[],unfinished:[],usage}}
   throw Error(op);
  });
@@ -75,12 +75,12 @@ test('no planning model exists, so the dispatch carries only the durable goal so
   await coordinator.repo.wake('tenant','bot',2,'handoff-due',0,'bf2086cd-91c4-40ec-8e42-75d80ae70a9d');
   await coordinator.tick();await coordinator.active?.task;
   assert.equal(executions,1);assert.equal(thinkCalls,0);
-  const actions=await db.query("SELECT id FROM autonomy_actions WHERE bot_id='bot'");
+  const actions=await db.query("SELECT id FROM autonomy_cycles WHERE work_expires_at IS NOT NULL AND bot_id='bot'");
   assert.equal(actions.length,1,'exactly the platform-dispatched action exists');
  }finally{await coordinator.stop();await db.close()}
 });
 
-test('an accepted handoff past its seven-day reply window is refused and frees the goal',async()=>{
+test('runtime refusal of an expired reply never completes or abandons a Goal',async()=>{
  const db=await fixture();let executions=0;
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
@@ -97,6 +97,6 @@ test('an accepted handoff past its seven-day reply window is refused and frees t
   assert.equal(executions,1,'the inner runtime is the authority that refuses the expired window');
   const view=await coordinator.repo.view('tenant','bot');
   assert.equal(view.goals[0].status,'active','an execution refusal cannot decide the semantic goal status');
-  assert.equal(view.actions[0].status,'blocked');assert.equal(view.cycles[0].reason,'handoff_needs_review');
+  assert.equal(view.cycles[0].reason,'activity_blocked');
  }finally{await coordinator.stop();await db.close()}
 });

@@ -50,6 +50,8 @@ test('shared-policy migration preserves goals and receipts, replaces old default
   await db.query("UPDATE autonomy_settings SET config=config||'{\"groupAllowlist\":[\"98765\"]}'::jsonb WHERE bot_id='b'");
   await repo.wake('ta','a',2,'old-sleep',3600);
   const oldUsage=await db.query('SELECT * FROM autonomy_daily_usage ORDER BY bot_id');
+  const historic=await readFile(new URL('../packages/database/migrations/006_autonomous_lifecycle.sql',import.meta.url),'utf8');
+  await db.query(historic.slice(historic.indexOf('CREATE TABLE autonomy_actions('),historic.indexOf('CREATE TABLE autonomy_wakes(')));
   const sql=await readFile(new URL('../packages/database/migrations/007_shared_autonomous_policy.sql',import.meta.url),'utf8');
   await db.transaction(async tx=>{await tx.query(sql)});
   const a=await repo.view('ta','a'),b=await repo.view('tb','b');
@@ -122,7 +124,7 @@ test('foreground handoff registers one persistent goal and due wake; forged iden
   assert.equal((await db.query("SELECT * FROM autonomy_wakes WHERE bot_id='a' AND reason='handoff-due'")).length,1);
   const claim=await repo.claim('handoff-worker');assert.ok(claim);
   assert.ok(view.goals[0].source.notBefore>Date.now());
-  assert.equal((await db.query('SELECT count(*)::int AS n FROM autonomy_actions'))[0].n,0,'registration creates a Goal and wake, never an execution');
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM autonomy_cycles WHERE work_expires_at IS NOT NULL'))[0].n,0,'registration creates a Goal and wake, never an execution');
   await repo.finish(claim,{tokens:0,modelCalls:0,toolCalls:0,externalActions:0},'no_due_work');
   view=await repo.view('ta','a');assert.ok(new Date(view.settings.next_wake_at).getTime()<Date.now()+301000,'the earlier handoff due wake keeps its own schedule');
   await repo.configure('ta','a',2,{mode:'passive'});assert.equal((await repo.acceptHandoff(bot,{...request,id:randomUUID()})).status,'rejected');
@@ -214,7 +216,7 @@ test('wake dispatch CAS and immutable execution ownership reject stale or foreig
   assert.equal(await repo.markExecuting(c,prepared.action.id),false,'unknown is never blindly resent');
   await repo.finish(c,{tokens:200,modelCalls:2,toolCalls:1,externalActions:0},'waiting_receipt');
   await repo.finish(c,{tokens:200,modelCalls:2,toolCalls:1,externalActions:0},'waiting_receipt');
-  const v=await repo.view('ta','a');assert.equal(v.usage.reserved_tokens,0);assert.equal(v.usage.used_tokens,200);assert.equal(v.actions[0].status,'unknown');
+  const v=await repo.view('ta','a');assert.equal(v.usage.reserved_tokens,0);assert.equal(v.usage.used_tokens,200);assert.equal((await repo.unconfirmed('ta','a'))[0].id,prepared.action.id);
  }finally{await db.close()}
 });
 test('expired lease recovers pending effects as unknown and conservatively settles tokens',async()=>{
@@ -227,7 +229,7 @@ test('expired lease recovers pending effects as unknown and conservatively settl
   await qqExternalBudget(db,{id:'a',tenant_id:'ta'},{workId:out.action.id,epoch:c.epoch,logicalActionId:'fixture-effect',phase:'reserve'});
   await db.query("UPDATE autonomy_settings SET lease_until=now()-interval '1 second' WHERE bot_id='a'");
   await repo.wake('ta','a',2,'recovery',0);const restored=await repo.claim('new-node');assert.ok(restored);
-  assert.equal((await db.query('SELECT status FROM autonomy_actions WHERE id=$1',[out.action.id]))[0].status,'unknown');
+  assert.equal((await db.query('SELECT reason FROM autonomy_cycles WHERE id=$1',[out.action.id]))[0].reason,'lease_expired');
   assert.equal((await repo.view('ta','a')).usage.used_tokens,c.config.cycleTokenBudget);
   assert.equal((await repo.view('ta','a')).usage.external_actions,1);
   assert.equal((await db.query('SELECT usage FROM autonomy_cycles WHERE id=$1',[c.cycleId]))[0].usage.externalActions,1);
@@ -325,6 +327,8 @@ test('inner-owned capability migration removes outer grants once and preserves m
   const before=await db.query('SELECT * FROM autonomy_settings ORDER BY bot_id');
   await db.query("UPDATE autonomy_settings SET config=config||'{\"capabilities\":[]}'::jsonb");
   const goals=await db.query('SELECT * FROM autonomy_goals'),usage=await db.query('SELECT * FROM autonomy_daily_usage');
+  const historic=await readFile(new URL('../packages/database/migrations/006_autonomous_lifecycle.sql',import.meta.url),'utf8');
+  await db.query(historic.slice(historic.indexOf('CREATE TABLE autonomy_actions('),historic.indexOf('CREATE TABLE autonomy_wakes(')));
   const sql=await readFile(new URL('../packages/database/migrations/008_inner_owned_capabilities.sql',import.meta.url),'utf8');
   await db.transaction(async tx=>{await tx.query(sql)});
   const after=await db.query('SELECT * FROM autonomy_settings ORDER BY bot_id');
@@ -348,7 +352,7 @@ test('finalized-cycle executing orphan becomes receipt-only unknown, with tenant
   await repo.finish(claim,{tokens:0,modelCalls:0,toolCalls:0,externalActions:0},'fixture_feedback_lost');
   assert.equal((await repo.unconfirmed('tb','a')).length,0,'wrong tenant cannot recover another action');
   const pending=await repo.unconfirmed('ta','a');assert.deepEqual(pending.map((a:any)=>a.id),[action.id]);
-  assert.equal((await db.query('SELECT status FROM autonomy_actions WHERE id=$1',[action.id]))[0].status,'unknown');
+  assert.equal((await db.query('SELECT decision FROM autonomy_cycles WHERE id=$1',[action.id]))[0].decision.receiptPending,true);
   assert.equal(await repo.markExecuting(claim,action.id),false,'receipt recovery must never replay');
   await repo.receiptChecked({bot_id:'a',tenant_id:'ta'},pending[0]);
   assert.equal((await repo.unconfirmed('ta','a')).length,0,'unresolved receipt uses existing backoff');
@@ -369,7 +373,7 @@ test('chat cancellation projection abandons only its source-bound goal and prese
   assert.equal((await repo.view('ta','a')).goals[0].status,'active');
   await repo.reconcileCancellations({bot_id:'a',tenant_id:'ta'},[request]);
   assert.equal((await repo.view('ta','a')).goals[0].status,'abandoned');
-  const saved=(await db.query('SELECT status,result FROM autonomy_actions WHERE id=$1',[action.id]))[0];
-  assert.equal(saved.status,'unknown');assert.equal(saved.result.effects[0].id,'original-effect');
+  const saved=(await db.query('SELECT decision FROM autonomy_cycles WHERE id=$1',[action.id]))[0];
+  assert.equal(saved.decision.receiptPending,true);assert.equal(JSON.stringify(saved).includes('original-effect'),false,'receipt content remains with original Work');
  }finally{await db.close()}
 });

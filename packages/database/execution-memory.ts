@@ -19,7 +19,7 @@ export class ExecutionMemory {
   const query=(audience.query??'').trim().slice(0,100).replace(/[\\%_]/g,'\\$&');
   const rows=await this.db.query(`SELECT e.id,e.operation,e.state,e.authority,e.sender_id,
    e.created_at,e.updated_at,e.account_uid,e.origin_scope,
-   COALESCE(NULLIF(e.origin_scope,''),g.source->>'scope','') AS source_scope,
+   e.origin_scope AS source_scope,
    e.args->>'bvid' AS bvid,e.args->>'part' AS part,e.args->>'query' AS query,
    e.result->>'execution' AS execution,e.result->'receipt' AS receipt,e.result->'evidence'->>'at' AS evidence_at,
    jsonb_build_object('bvid',e.result->'data'->>'bvid','part',e.result->'data'->'part',
@@ -31,13 +31,10 @@ export class ExecutionMemory {
      jsonb_build_object('bvid',e.result->'data'->'videos'->2->>'bvid','title',left(e.result->'data'->'videos'->2->>'title',100)))) AS data,
    e.result->'error'->>'code' AS error_code
    FROM tool_effects e
-   LEFT JOIN autonomy_actions a ON a.id::text=e.work_id AND a.bot_id=e.bot_id AND a.tenant_id=e.tenant_id AND e.authority='autonomous'
-   LEFT JOIN autonomy_goals g ON g.id=a.goal_id AND g.bot_id=a.bot_id AND g.tenant_id=a.tenant_id
    LEFT JOIN bilibili_accounts account ON account.bot_id=e.bot_id AND account.tenant_id=e.tenant_id
    WHERE e.tenant_id=$1 AND e.bot_id=$2 AND e.operation NOT IN ('analysis_history','task_result')
    AND (e.account_uid IS NULL OR e.account_uid=account.uid)
-   AND ($3 OR COALESCE(NULLIF(e.origin_scope,''),g.source->>'scope','')=$4
-     OR (e.authority='autonomous' AND a.id IS NOT NULL AND COALESCE(g.source->>'scope','')='' AND COALESCE(NULLIF(e.origin_scope,''),'self')='self')
+   AND ($3 OR e.origin_scope=$4
      OR ($5 AND e.sender_id=$6 AND (e.origin_scope='' OR e.origin_scope=$7)))
    AND ($8='' OR e.operation ILIKE $9 ESCAPE '\\' OR e.args->>'bvid' ILIKE $9 ESCAPE '\\'
      OR e.args->>'query' ILIKE $9 ESCAPE '\\' OR e.result->'data'->>'analysis' ILIKE $9 ESCAPE '\\' OR e.result->'data'->>'title' ILIKE $9 ESCAPE '\\')

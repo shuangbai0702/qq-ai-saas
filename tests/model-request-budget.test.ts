@@ -8,7 +8,7 @@ import {cycleModelBudget} from '../packages/database/model-request-budget.js';
 import {ToolEffects} from '../packages/database/tool-effects.js';
 import {qqExternalBudget,externalCount} from '../packages/database/external-action-budget.js';
 
-const cycleId='00000000-0000-4000-8000-000000000011',actionId='00000000-0000-4000-8000-000000000012',effectId='00000000-0000-4000-8000-000000000013';
+const cycleId='00000000-0000-4000-8000-000000000011',actionId=cycleId,effectId='00000000-0000-4000-8000-000000000013';
 async function fixture(t:any){
  const root=await mkdtemp(path.resolve('.local/model-request-'));let db=await openDatabase(root);
  t.after(async()=>{await db.close();await rm(root,{recursive:true,force:true})});
@@ -18,9 +18,8 @@ async function fixture(t:any){
  const repo=new AutonomyRepository(db);await repo.configure('tenant','bot',1,{mode:'active'});
  const [bot]=await db.query("SELECT * FROM bots WHERE id='bot'");
  await db.query("INSERT INTO autonomy_daily_usage(bot_id,tenant_id,day,reserved_tokens) VALUES('bot','tenant','fixture',1000)");
- await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget) VALUES($1,'bot','tenant',2,$2,$3,'test','acting','{\"day\":\"fixture\",\"cycleTokenBudget\":1000,\"cycleModelCalls\":1}')",[cycleId,bot.generation,bot.revision]);
- await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at) VALUES($1,$2,'bot','tenant',2,'research','','evidence','executing',now()+interval '5 minutes')",[actionId,cycleId]);
- await db.query("INSERT INTO tool_effects(id,tenant_id,bot_id,work_id,step_id,operation,args,args_digest,authority,mode_epoch,generation,config_revision,settings_revision,deadline_at,state,lease_owner,lease_until,origin_scope) VALUES($1,'tenant','bot',$2,'analysis','analyze','{}','hash','autonomous',2,$3,$4,1,now()+interval '5 minutes','claimed','worker',now()+interval '5 minutes','private:12345678')",[effectId,actionId,bot.generation,bot.revision]);
+ await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,work_expires_at,budget) VALUES($1,'bot','tenant',2,$2,$3,'test','acting',now()+interval '5 minutes','{\"day\":\"fixture\",\"cycleTokenBudget\":1000,\"cycleModelCalls\":1}')",[cycleId,bot.generation,bot.revision]);
+ await db.query("INSERT INTO tool_effects(id,tenant_id,bot_id,work_id,cycle_id,step_id,operation,args,args_digest,authority,mode_epoch,generation,config_revision,settings_revision,deadline_at,state,lease_owner,lease_until,origin_scope) VALUES($1,'tenant','bot',$2,$2,'analysis','analyze','{}','hash','autonomous',2,$3,$4,1,now()+interval '5 minutes','claimed','worker',now()+interval '5 minutes','private:12345678')",[effectId,actionId,bot.generation,bot.revision]);
  return{db,repo,bot,root,reopen:async()=>{await db.close();db=await openDatabase(root);return db}};
 }
 const main={workId:actionId,epoch:2,requestId:'main:1',phase:'reserve' as const,source:'main' as const,tokens:200};

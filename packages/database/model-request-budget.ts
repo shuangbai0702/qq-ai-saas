@@ -12,8 +12,8 @@ export function modelRequestTotals(budget:any,source?:'main'|'media'){
 export async function cycleModelBudget(db:Sql,bot:any,v:ModelRequestBudget){return db.transaction(tx=>cycleModelBudgetInTransaction(tx,bot,v))}
 export async function cycleModelBudgetInTransaction(tx:Sql,bot:any,v:ModelRequestBudget){
  const params=[v.workId,bot.id??bot.bot_id,bot.tenant_id,v.epoch];
- await tx.query('SELECT c.id FROM autonomy_cycles c JOIN autonomy_actions a ON a.cycle_id=c.id AND a.bot_id=c.bot_id AND a.tenant_id=c.tenant_id WHERE a.id=$1 AND a.bot_id=$2 AND a.tenant_id=$3 AND a.epoch=$4 FOR UPDATE OF c',params);
- const [c]=await tx.query(`SELECT c.*,a.status AS action_status,a.expires_at,s.epoch AS current_epoch,s.config AS current_config,b.generation AS current_generation,b.revision AS current_revision,b.health,b.desired_state,b.deleted_at FROM autonomy_cycles c JOIN autonomy_actions a ON a.cycle_id=c.id AND a.bot_id=c.bot_id AND a.tenant_id=c.tenant_id JOIN autonomy_settings s ON s.bot_id=a.bot_id AND s.tenant_id=a.tenant_id JOIN bots b ON b.id=a.bot_id AND b.tenant_id=a.tenant_id WHERE a.id=$1 AND a.bot_id=$2 AND a.tenant_id=$3 AND a.epoch=$4`,params);
+ await tx.query('SELECT id FROM autonomy_cycles WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND epoch=$4 FOR UPDATE',params);
+ const [c]=await tx.query(`SELECT c.*,c.state AS action_status,c.work_expires_at AS expires_at,s.epoch AS current_epoch,s.config AS current_config,b.generation AS current_generation,b.revision AS current_revision,b.health,b.desired_state,b.deleted_at FROM autonomy_cycles c JOIN autonomy_settings s ON s.bot_id=c.bot_id AND s.tenant_id=c.tenant_id JOIN bots b ON b.id=c.bot_id AND b.tenant_id=c.tenant_id WHERE c.id=$1 AND c.bot_id=$2 AND c.tenant_id=$3 AND c.epoch=$4`,params);
  if(!c)throw conflict('model_budget_owner_missing');
  const requests={...(c.budget.modelRequests||{})},old=requests[v.requestId];
  if(old&&(old.workId!==v.workId||old.source!==v.source||old.effectId!==(v.effectId??null)||old.owner!==(v.owner??null)))throw conflict('model_request_identity_conflict');
@@ -21,7 +21,7 @@ export async function cycleModelBudgetInTransaction(tx:Sql,bot:any,v:ModelReques
  if(v.phase==='reserve'){
   if(old)throw conflict('model_request_already_reserved'); // transport retries must never dispatch a request twice
   if((v.source==='main'&&c.finished_at)||c.current_epoch!==v.epoch||c.current_config.mode!=='active'||c.generation!==c.current_generation||c.config_revision!==c.current_revision||!runtimeStatus(c).online)throw conflict('model_budget_owner_expired');
-  if(v.source==='main'&&(!['executing'].includes(c.action_status)||+new Date(c.expires_at)<=Date.now()))throw conflict('model_budget_action_expired');
+  if(v.source==='main'&&(c.action_status!=='acting'||+new Date(c.expires_at)<=Date.now()))throw conflict('model_budget_action_expired');
   if(v.source==='media'){
    const [effect]=await tx.query("SELECT id FROM tool_effects WHERE id=$1 AND work_id=$2 AND bot_id=$3 AND tenant_id=$4 AND mode_epoch=$5 AND authority='autonomous' AND operation='analyze' AND lease_owner=$6 AND state='claimed' AND NOT cancel_requested AND lease_until>clock_timestamp() AND deadline_at>clock_timestamp() FOR UPDATE",[v.effectId,v.workId,c.bot_id,c.tenant_id,v.epoch,v.owner]);
    if(!effect)throw conflict('model_budget_effect_expired');
@@ -60,7 +60,7 @@ export async function cycleModelBudgetInTransaction(tx:Sql,bot:any,v:ModelReques
   if(v.source==='media'){
    const media=Object.values(requests).filter((r:any)=>r.source==='media') as any[];
    const ids=[...new Set(media.map(r=>r.effectId))];
-   const [legacy]=await tx.query("SELECT EXISTS(SELECT 1 FROM tool_effects e JOIN autonomy_actions a ON a.id=e.work_id AND a.bot_id=e.bot_id AND a.tenant_id=e.tenant_id WHERE a.cycle_id=$1 AND e.authority='autonomous' AND NOT (e.id::text=ANY($2::text[])) AND COALESCE((e.usage_checkpoint->>'settledModelRequests')::int,0)>0 AND COALESCE(e.usage_checkpoint->>'tokenStatus','unknown')='unknown') AS unknown",[c.id,ids]);
+   const [legacy]=await tx.query("SELECT EXISTS(SELECT 1 FROM tool_effects e WHERE e.cycle_id=$1 AND e.authority='autonomous' AND NOT (e.id::text=ANY($2::text[])) AND COALESCE((e.usage_checkpoint->>'settledModelRequests')::int,0)>0 AND COALESCE(e.usage_checkpoint->>'tokenStatus','unknown')='unknown') AS unknown",[c.id,ids]);
    await tx.query("UPDATE autonomy_cycles SET usage=usage||jsonb_build_object('mediaTokenStatus',$2::text) WHERE id=$1",[c.id,legacy.unknown||media.some(r=>!['settled','released'].includes(r.status))?'unknown':'actual']);
   }
  }

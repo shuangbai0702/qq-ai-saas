@@ -113,7 +113,10 @@ export class AutonomyCoordinator {
      this.sampled.set(bot.bot_id,{at:Date.now(),revision:bot.revision});
      for(const pending of await this.repo.unconfirmed(bot.tenant_id,bot.bot_id)){
       const receipt=await this.call(bot,'receipt',{id:pending.id},4000).catch(()=>null);
-      if(receipt?.result&&receipt.result.status!=='unknown')await this.repo.feedback({...bot,cycleId:pending.cycle_id},pending.id,receipt.result);
+      if(receipt?.result&&receipt.result.status!=='unknown'){
+       await this.repo.feedback({...bot,cycleId:pending.cycle_id},pending.id,receipt.result);
+       if((receipt.result.effects||[]).some((effect:any)=>effect.status==='unknown'))await this.repo.receiptChecked(bot,pending);
+      }
       else if(receipt&&receipt.active===false&&pending.kind==='research'&&!(receipt.effects||[]).length)await this.repo.feedback({...bot,cycleId:pending.cycle_id},pending.id,{...pending.result,status:'blocked',summary:'只读任务已不在执行；没有对外副作用，结束等待并重新评估。',stopReason:'read_execution_interrupted',effects:[],unfinished:[pending.objective]});
       else await this.repo.receiptChecked(bot,pending);
      }
@@ -186,7 +189,7 @@ export class AutonomyCoordinator {
     active.feedbackVersion=Number(fresh.feedbackVersion||0);
     const continuation=await this.repo.planToolContinuation(c,usage);
     if(continuation){
-     if(!await this.repo.markExecuting(c,continuation.id)){await this.repo.settleToolContinuation(c,continuation,'pending');reason='continuation_invalidated';break}
+     if(!await this.repo.markExecuting(c,continuation.id,deadline)){await this.repo.settleToolContinuation(c,continuation,'pending');reason='continuation_invalidated';break}
      active.actionId=continuation.id;
      const work=this.work(active,usage,continuation.id,deadline);
      let result:any,executeStarted=false;
@@ -219,7 +222,7 @@ export class AutonomyCoordinator {
     const trigger=c.wakes.find((w:any)=>(w.reason==='activity'&&config.activityEnabled)||w.reason==='handoff-due'||w.reason==='operator-wake');
     if(trigger&&usage.modelCalls===0){
       const action=await this.repo.planActivity(c,usage);
-      if(!await this.repo.markExecuting(c,action.id)){await this.repo.cancelPlanned(c,action.id,'自主时刻身份变化');reason='action_invalidated';break}
+      if(!await this.repo.markExecuting(c,action.id,deadline)){await this.repo.cancelPlanned(c,action.id,'自主时刻身份变化');reason='action_invalidated';break}
       active.actionId=action.id;
       const work=this.work(active,usage,action.id,deadline);
       work.budget.modelCalls=Math.min(work.budget.modelCalls,config.activityModelCalls);
@@ -248,7 +251,7 @@ export class AutonomyCoordinator {
       feedback=await this.repo.withExternalEffects(c,action.id,feedback);
       this.charge(usage,action.id,'execute',feedback);usage.externalActions=await externalCount(this.db,c.cycleId);await this.repo.feedback(c,action.id,feedback);
       reason=faultContext?.reason||(feedback.status==='completed'?'activity_completed':feedback.status==='canceled'?'activity_canceled':'activity_'+feedback.status);
-      sleep=Number.isSafeInteger(feedback.restSeconds)?Math.max(300,Math.min(config.maxSleepSeconds,feedback.restSeconds)):config.activityIntervalMinutes*60;
+      sleep=feedback.stopReason==='not_started'||feedback.continuationAccepted===false?30:Number.isSafeInteger(feedback.restSeconds)?Math.max(300,Math.min(config.maxSleepSeconds,feedback.restSeconds)):config.activityIntervalMinutes*60;
     }
     break;
    }
@@ -266,7 +269,7 @@ export class AutonomyCoordinator {
   }finally{
    // Unfinished due goals retain their task wake. Timed activity owns exactly
    // one separate wake, never a backlog or a fast retry/model polling loop.
-   if(reason==='foreground_work_busy'||reason==='action_invalidated'||feedback?.continuationAccepted===false||feedback?.stopReason==='not_started')for(const wake of c.wakes.filter((w:any)=>['handoff-due','operator-wake'].includes(w.reason)))await this.repo.wake(c.tenant_id,c.bot_id,c.epoch,wake.reason,Math.max(15,sleep),wake.scope).catch(()=>{});
+   if(reason==='foreground_work_busy'||reason==='action_invalidated'||feedback?.continuationAccepted===false||feedback?.stopReason==='not_started'||faultContext&&!active.actionId)for(const wake of c.wakes.filter((w:any)=>['handoff-due','operator-wake'].includes(w.reason)))await this.repo.wake(c.tenant_id,c.bot_id,c.epoch,wake.reason,Math.max(15,sleep),wake.scope).catch(()=>{});
    if(c.wakes.some((w:any)=>w.reason==='activity'))await this.repo.scheduleActivity(c,Math.max(300,sleep||config.activityIntervalMinutes*60),true).catch(()=>{});
    await this.repo.finish(c,usage,reason,faultContext);
    // Withdraw the short effect permit before releasing the global slot. A
