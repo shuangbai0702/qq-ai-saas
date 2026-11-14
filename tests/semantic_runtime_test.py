@@ -49,6 +49,29 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result['media']['retired_untracked_records'],1)
         self.assertFalse(self.st.reflection.retirement_pending())
         self.assertEqual(self.st.model_journals[SCOPE].last.wire,before)
+    def test_shared_maintenance_recovery_cannot_starve_later_members(self):
+        from runtime_care import RuntimeCare
+        from unittest.mock import patch
+        for raises in (False,True):
+            with self.subTest(first_member_raises=raises):
+                calls=[];ticks=0
+                def member(key):
+                    def retry():
+                        calls.append(key)
+                        if key=='first' and raises:raise RuntimeError('local cleanup unavailable')
+                        return True
+                    return NS(db=self.st.db,shared_context=True,reflection=NS(retry=retry,task=None,checkpoint_issue=lambda *a,**kw:None))
+                care=RuntimeCare({key:member(key) for key in ('first','second','third')})
+                care.busy=lambda st:False;care.track=lambda *a:None;care.sweep=lambda:None
+                async def clock(seconds):
+                    nonlocal ticks
+                    self.assertEqual(seconds,60);ticks+=1
+                    if ticks>3:raise asyncio.CancelledError
+                async def run():
+                    with patch('runtime_care.asyncio.sleep',side_effect=clock):
+                        with self.assertRaises(asyncio.CancelledError):await care.run()
+                asyncio.run(run())
+                self.assertEqual(calls,['first','second','third'])
     def test_checkpoint_system_adoption_requires_config_permit_and_no_new_submitted_turn(self):
         from context_protocol import READONLY_CURRENT
         j=self.st.model_journals[SCOPE]
