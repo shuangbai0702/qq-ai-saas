@@ -58,6 +58,16 @@ test('Bilibili maintenance keeps current coordinator and child owners, and rolls
    assert.equal(agent.tick,firstTick,'reinstall stacked another tick wrapper');
    assert.equal(agent.shutdown,firstShutdown,'reinstall stacked another shutdown wrapper');
   }
+  const heldPrevious=agent.bilibili;await heldPrevious.stop();
+  await installBilibiliRuntime(agent,'1'.repeat(64),{start:false});
+  const held=agent.bilibili;assert.equal(heldPrevious.stopped,true);assert.equal(held.stopped,true);
+  assert.equal((await installBilibiliRuntime(agent,'1'.repeat(64),{start:false})).unchanged,true);
+  await held.tick();assert.equal(held.busy,undefined,'held replacement must not claim a job');
+  db.query=async(sql:any,args?:any)=>{if(String(sql).includes('tool_service_cooldowns'))throw Error('held database interruption');return query(sql,args)};
+  await assert.rejects(()=>installBilibiliRuntime(agent,'2'.repeat(64),{start:false}),/held database interruption/);db.query=query;
+  assert.equal(agent.bilibili,held);assert.equal(held.stopped,true,'rollback must preserve the maintenance fence');
+  assert.equal(agent.autonomy,coordinator);assert.equal(agent.host.children.get('media-fixture:protocol'),child);
+  held.stopped=false;
   const current=agent.bilibili;let activeTicks=0;current.tick=()=>{activeTicks++};
   await agent.tick();assert.equal(activeTicks,1,'canonical tick owns exactly one current Bilibili admission');
   await new Promise(r=>setTimeout(r,150));await agent.host.logWrites.get('media-fixture');assert.match(await readFile(path.join(childRoot,'runtime.log'),'utf8'),/bili-pipe-alive/);

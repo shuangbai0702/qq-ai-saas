@@ -117,12 +117,12 @@ export async function installAutonomousRuntime(agent:NodeAgent,release:string,op
 
 /** Install only Bilibili jobs into the existing Agent. Keeps child pipe owners,
  * heartbeat wrapper and the current autonomous coordinator unchanged. */
-export async function installBilibiliRuntime(agent:NodeAgent,release:string){
+export async function installBilibiliRuntime(agent:NodeAgent,release:string,options:{start?:boolean}={}){
  if(!/^[a-f0-9]{64}$/.test(release)||agent.closed)throw new Error('Invalid Bilibili maintenance release');
  const marker=Symbol.for('fishbot.bilibili.maintenance'),live=agent as any;
- if(live[marker]?.release===release&&!live.bilibili?.stopped)return{unchanged:true,pid:process.pid,release};
+ if(live[marker]?.release===release&&live.bilibili?.stopped===(options.start===false))return{unchanged:true,pid:process.pid,release};
  const {BilibiliExecutor}=await import('./bilibili/executor.js');
- const timer=agent.timer,previous=live.bilibili;
+ const timer=agent.timer,previous=live.bilibili,wasStopped=previous?.stopped;
  if(timer)clearInterval(timer);agent.timer=undefined;
  const children=[...agent.host.children].map(([id,child])=>({id,child,pid:child.pid}));
  let installed:InstanceType<typeof BilibiliExecutor>|undefined;
@@ -130,9 +130,9 @@ export async function installBilibiliRuntime(agent:NodeAgent,release:string){
   const deadline=Date.now()+20000;while(controlBusy(agent)&&Date.now()<deadline)await new Promise(r=>setTimeout(r,20));
   if(controlBusy(agent)||agent.closed)throw new Error('Agent did not reach a Bilibili maintenance boundary');
   await previous?.stop();installed=new BilibiliExecutor(agent.db,agent.root,agent.key);await installed.recover();
-  await installed.publishBridges();live.bilibili=installed;
+  await installed.publishBridges();installed.stopped=options.start===false;live.bilibili=installed;
   for(const owned of children)if(agent.host.children.get(owned.id)!==owned.child||owned.child.pid!==owned.pid||owned.child.exitCode!==null)throw new Error('Runtime owner changed during Bilibili maintenance');
   live[marker]={release,at:Date.now()};return{pid:process.pid,release,preservedChildren:children.map(({id,pid})=>({id,pid})),autonomousCoordinator:agent.autonomy.owner};
- }catch(error){await installed?.stop();live.bilibili=previous;if(previous)previous.stopped=false;throw error}
+ }catch(error){await installed?.stop();live.bilibili=previous;if(previous)previous.stopped=wasStopped;throw error}
  finally{if(timer&&!agent.closed){agent.timer=setInterval(()=>void agent.tick().catch(error=>console.error('agent tick:',redact(String(error)))),500);agent.timer.unref()}}
 }
