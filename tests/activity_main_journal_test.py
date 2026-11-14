@@ -67,6 +67,12 @@ class Activity(unittest.IsolatedAsyncioTestCase):
         self.st.shared_context=False
         blocked=await self.activate()
         self.assertEqual(blocked['reason'],'shared_main_context_required')
+        with patch.object(self.brain,'execute',side_effect=PreflightRejected('fixture_before_submission')):
+            rejected=await self.brain.handle('qq','execute',{'work':{}})
+        self.assertIs(rejected['continuationAccepted'],False)
+        self.assertEqual(rejected['stopReason'],'not_started')
+        self.assertEqual(rejected['usage']['modelCalls'],0)
+        self.assertNotIn('qq',self.brain.tasks)
         self.assertEqual(self.requests,[])
         self.assertEqual(self.st.db.execute('SELECT count(*) FROM pipeline_events').fetchone()[0],before)
         self.assertEqual(self.st.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],0)

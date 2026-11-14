@@ -92,6 +92,7 @@ test('due goals coalesce into one main activation without selecting a goal or re
   const before=await f.db.query('SELECT * FROM autonomy_goals ORDER BY id');
   for(const goal of before)await c.repo.wake('t','b',bot.epoch,'handoff-due',0,goal.id);
   c.repo.readGoals=async()=>{throw Error('No automatic Goal snapshot')};
+  c.repo.experience=async()=>{throw Error('No automatic execution history transport')};
   c.repo.dueHandoffs=async()=>{throw Error('No Goal selection')};
   c.repo.planHandoff=async()=>{throw Error('No Goal dispatch')};
   await c.tick();await c.active?.task;assert.equal(n,1);

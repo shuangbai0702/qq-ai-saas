@@ -66,7 +66,7 @@ test('goal exact-ID permissions, original intent preservation and stale revision
  assert.equal((await repo.readGoals(bot,{scope:'private:88888888',senderId:'88888888'})).goals.length,0,'current goals obey the original scope authority');
 
 });
-for(const terminal of ['finished','unknown','canceled'])test('tool-completed '+terminal+' alone resumes original action cognition once without replaying effects',async t=>{
+for(const {terminal,accepted} of [{terminal:'finished',accepted:true},{terminal:'unknown',accepted:true},{terminal:'canceled',accepted:true},{terminal:'finished',accepted:false},{terminal:'finished',accepted:undefined}])test('tool-completed '+terminal+' acceptance='+accepted+' keeps receipt ownership without replaying effects',async t=>{
  const {db,repo}=await fixture(t);
  await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget,decision,finished_at) VALUES($1,'bot','tenant',2,1,1,'old','completed','{}','{\"reason\":\"autonomous_moment\"}',now())",[cycleId]);
  await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at,result) VALUES($1,$2,'bot','tenant',2,'research','','original unfinished video task','partial',now()-interval '1 minute','{\"unfinished\":[\"understand result\"]}')",[actionId,cycleId]);
@@ -77,14 +77,22 @@ for(const terminal of ['finished','unknown','canceled'])test('tool-completed '+t
  let calls=0;
  const coordinator=new AutonomyCoordinator(db,async(_bot,operation,body:any)=>{
   if(operation==='policy'||operation==='snapshot')return{};
+  if(operation==='receipt'&&accepted===undefined)return{exists:true,active:false,result:{status:'completed',summary:'durable staged receipt',effects:[],evidence:[],continuationAccepted:true,usage:{modelCalls:1,tokens:100,toolCalls:0}}};
   if(operation==='execute'){
-   calls++;assert.notEqual(body.action.id,actionId);assert.equal(body.action.continuation.parentActionId,actionId);assert.equal(body.action.continuation.id,effectId);assert.equal(body.action.continuationOfMoment,true);assert.equal(body.action.continuation.result.execution,terminal==='finished'?'completed':terminal==='canceled'?'canceled':'failed');assert.equal(body.action.goalSnapshot.complete,true);
-   return{status:'completed',summary:'understood',effects:[],unfinished:[],evidence:[],continuationAccepted:true,usage:{modelCalls:1,tokens:100,toolCalls:0}};
+   calls++;assert.notEqual(body.action.id,actionId);assert.equal(body.action.continuation.parentActionId,actionId);assert.equal(body.action.continuation.id,effectId);assert.equal(body.action.continuationOfMoment,true);assert.equal(body.action.continuation.result.execution,terminal==='finished'?'completed':terminal==='canceled'?'canceled':'failed');assert.equal('goalSnapshot' in body.action,false);
+   return{status:accepted===false?'canceled':'completed',summary:'completion acceptance fixture',effects:[],unfinished:[],evidence:[],...(accepted===undefined?{}:{continuationAccepted:accepted}),usage:{modelCalls:accepted===false?0:1,tokens:accepted===false?0:100,toolCalls:0}};
   }throw Error(operation);
  });t.after(()=>coordinator.stop());
  await coordinator.tick();await coordinator.active?.task;assert.equal(calls,1,JSON.stringify(await repo.view('tenant','bot')));
- assert.equal((await db.query('SELECT completion_state FROM tool_effects WHERE id=$1',[effectId]))[0].completion_state,'done');
- await repo.wake('tenant','bot',2,'tool-completed');await coordinator.tick();await coordinator.active?.task;assert.equal(calls,1);
+ assert.equal((await db.query('SELECT completion_state FROM tool_effects WHERE id=$1',[effectId]))[0].completion_state,accepted===true?'done':accepted===false?'pending':'unknown');
+ if(accepted===undefined)assert.equal((await db.query('SELECT status FROM autonomy_actions WHERE id<>$1 ORDER BY created_at DESC LIMIT 1',[actionId]))[0].status,'unknown','missing acknowledgement must retain receipt reconciliation');
+ if(accepted===true)await repo.wake('tenant','bot',2,'tool-completed');
+ if(accepted===false){const wakes=await db.query("SELECT scope,due_at>now() AS delayed FROM autonomy_wakes WHERE bot_id='bot' AND reason='tool-completed'");assert.deepEqual(wakes,[{scope:effectId,delayed:true}]);}
+ // Advance past the existing receipt sampling interval without sleeping.
+ const realNow=Date.now,clock=accepted===undefined?t.mock.method(Date,'now',()=>realNow()+31000):undefined;
+ await coordinator.tick();await coordinator.active?.task;assert.equal(calls,1);
+ clock?.mock.restore();
+ if(accepted===undefined)assert.equal((await db.query('SELECT completion_state FROM tool_effects WHERE id=$1',[effectId]))[0].completion_state,'done','authoritative late acceptance settles the original result without executing again');
  assert.equal((await db.query('SELECT status FROM autonomy_actions WHERE id=$1',[actionId]))[0].status,'partial','original action is never replayed or forged completed');
 });
 

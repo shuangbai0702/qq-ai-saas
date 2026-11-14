@@ -512,14 +512,6 @@ class BotPipeline:
           AND NOT EXISTS(SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope)
           AND EXISTS(SELECT 1 FROM pipeline_events e WHERE e.scope=i.scope AND e.subject=i.subject AND e.event=i.event
             AND coalesce(e.execution_started,1)<>0)""");db.commit()
-        # Repair only the exact original admission ledger, not guessed owners
-        # of old joined inputs. No model/send/response evidence is invented.
-        db.execute("""UPDATE pipeline_work_inputs AS i SET status='deferred'
-          WHERE i.status='blocked_unknown' AND i.seen=0 AND i.owner IS NULL
-          AND i.scope LIKE 'group:%' AND EXISTS (SELECT 1 FROM pipeline_events e
-            WHERE e.scope=i.scope AND e.subject=i.subject AND e.event=i.event
-            AND e.status='waiting' AND e.reason='group_waiting'
-            AND e.attempted=0 AND e.confirmed=0)""");db.commit()
         # One-time ownership transfer protects current activation provenance.
         # Future service and human Work use the same event lifecycle; no view,
         # second writer or ongoing old-version compatibility remains.
@@ -571,6 +563,7 @@ class BotPipeline:
             # Plan and apply under one writer reservation; another process
             # cannot install a fresh inbox/input between proof and metadata CAS.
             if not self.db.in_transaction:self.db.execute('BEGIN IMMEDIATE')
+            self.reconcile_admission_inputs(scope)
             plan=waiting_reconciliation_plan(self.db,scope)
             for item in plan['actions']:
                 changed+=self.db.execute("""UPDATE pipeline_events SET status=?,reason=?,updated_at=?
@@ -579,6 +572,32 @@ class BotPipeline:
                   AND NOT EXISTS(SELECT 1 FROM pipeline_scope_work w WHERE w.scope=pipeline_events.scope)""",
                   (item['status'],item['reason'],time.time(),item['scope'],item['subject'],item['event'],item['expectedReason'],item['expectedUpdated'])).rowcount
         return changed
+
+    def reconcile_admission_inputs(self,scope=None):
+        """Restore proven admission-only inputs to the original inbox lifecycle.
+
+        This grants no replay of a model or external operation. The next real
+        scope owner may adopt the original unseen input; Journal stays intact.
+        """
+        reasons=','.join('?' for _ in RECOVERABLE_ADMISSION_REASONS)
+        tables={r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        # observe() binds input_digest before admission, and finish() creates
+        # settlement-only metadata even without a model call. Neither proves
+        # execution. Actual owned outputs or effect receipts do prohibit repair.
+        model_guard="AND NOT EXISTS(SELECT 1 FROM memory_message_sources m WHERE m.direction='model' AND CASE WHEN json_valid(m.data) THEN json_extract(m.data,'$.source_scope')=i.scope AND json_extract(m.data,'$.event_id')=i.event AND (coalesce(json_array_length(m.data,'$.outputs'),0)>0 OR coalesce(json_extract(m.data,'$.settlement.attempted'),0)>0 OR coalesce(json_extract(m.data,'$.settlement.confirmed'),0)>0) ELSE 1 END)" if 'memory_message_sources' in tables else ''
+        return self.db.execute(f"""UPDATE pipeline_work_inputs AS i SET status='deferred'
+          WHERE i.status='blocked_unknown' AND i.seen=0 AND i.owner IS NULL
+          AND i.scope LIKE 'group:%' AND i.identity IS NOT NULL AND i.payload IS NOT NULL
+          AND (? IS NULL OR i.scope=?)
+          AND NOT EXISTS(SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope)
+          AND NOT EXISTS(SELECT 1 FROM pipeline_action_effects f WHERE f.action=i.event)
+          {model_guard}
+          AND EXISTS(SELECT 1 FROM pipeline_events e
+            WHERE e.scope=i.scope AND e.subject=i.subject AND e.event=i.event
+            AND e.stage='admission' AND e.attempted=0 AND e.confirmed=0
+            AND (e.status IN ('waiting','silent') AND e.reason IN ({reasons})
+              OR e.status='blocked' AND e.reason='waiting_input_blocked'
+                AND e.exit_reason='admission_blocked'))""",(scope,scope,*RECOVERABLE_ADMISSION_REASONS)).rowcount
 
     def retire_transport_notifications(self):
         # Repair old queue bookkeeping only when no live scope owns it and
@@ -1111,7 +1130,8 @@ class BotPipeline:
             self.db.execute('UPDATE pipeline_events SET stage=?,status=?,reason=?,attempted=?,confirmed=?,updated_at=?,finished_at=coalesce(finished_at,?) WHERE scope=? AND subject=? AND event=?',(value['stage'],work.status,work.reason,work.attempted,work.confirmed,finished,finished,work.scope,work.subject,work.event_id))
             if work.status=='blocked' and work.reason=='cancelled' and work.attempted==work.confirmed==0:
                 self.db.execute("UPDATE pipeline_work_inputs SET status=CASE WHEN coalesce(retry_count,0)>=4 THEN 'blocked_recovery' ELSE 'pending' END,owner=NULL,retry_count=coalesce(retry_count,0)+1,retry_at=? WHERE scope=? AND event=? AND identity IS NOT NULL AND EXISTS(SELECT 1 FROM pipeline_events e WHERE e.scope=pipeline_work_inputs.scope AND e.event=pipeline_work_inputs.event AND e.execution_started=0)",(finished+15,work.scope,work.event_id))
-            self.db.execute("UPDATE pipeline_work_inputs SET status=?,owner=NULL WHERE scope=? AND event=? AND identity IS NOT NULL AND status='owned'",('settled' if work.status in ('sent','silent','superseded','combined') else 'blocked_unknown',work.scope,work.event_id))
+            admission_wait=value['stage']=='admission' and work.scope.startswith('group:') and work.reason in RECOVERABLE_ADMISSION_REASONS and work.attempted==work.confirmed==0
+            self.db.execute("UPDATE pipeline_work_inputs SET status=?,owner=NULL WHERE scope=? AND event=? AND identity IS NOT NULL AND status='owned'",('deferred' if admission_wait else 'settled' if work.status in ('sent','silent','superseded','combined') else 'blocked_unknown',work.scope,work.event_id))
             from shared_context import active
             if active(self.db):
                 import message_provenance

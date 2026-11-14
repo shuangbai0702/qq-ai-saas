@@ -57,7 +57,6 @@ def _snapshot(store):
     value.reflection=copy.copy(store.reflection)
     value.memory=copy.copy(store.memory)
     value.pipeline=copy.copy(store.pipeline)
-    value.autonomous_experience=copy.deepcopy(getattr(store,'autonomous_experience',{}))
     value.db=None
     for helper in (value.reflection,value.memory,value.participation,value.pipeline):helper.db=None
     value.reflection.memory=value.memory
