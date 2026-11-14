@@ -128,7 +128,8 @@ class GoalReminder(unittest.IsolatedAsyncioTestCase):
             before=copy.deepcopy(journal.last.wire)
             # Restart reads the actual committed snapshot, not an event cache.
             store.model_journals={};db.execute("UPDATE fishbot_guidance_cadence SET completed=8");db.commit()
-            await guidance.prepare_goals(store,event,{},lambda:True)
+            with patch.object(guidance,'REMINDER',guidance.REMINDER+'新修订只在下个周期生效。'):
+                await guidance.prepare_goals(store,event,{},lambda:True)
             self.assertEqual(extras['_hosted_periodic_guidance'],reminder);self.assertEqual(read.await_count,1)
             self.assertEqual(ReadonlyJournal(db,'bot_shared').last.wire,before)
             db.execute("UPDATE fishbot_guidance_cadence SET completed=14");db.commit()
