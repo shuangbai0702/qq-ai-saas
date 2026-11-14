@@ -30,6 +30,14 @@ class RuntimeTests(unittest.TestCase):
         p=Prepared(1,None,copy.deepcopy(self.base),copy.deepcopy(self.base),state,1,time.time(),'initial')
         self.assertTrue(journal.commit(p));self.st.model_journals[SCOPE]=journal
     def tearDown(self):self.st.close();self.temp.cleanup()
+    def test_missing_purge_receipt_remains_pending_without_open_issue(self):
+        db=self.st.db
+        db.execute("UPDATE memory_semantic_batches SET state='retired'")
+        db.execute("UPDATE memory_reconstruction_checkpoints SET state='consumed'")
+        db.commit()
+        self.assertTrue(self.st.reflection.retirement_pending())
+        db.execute('INSERT INTO memory_semantic_purges VALUES(1,?)',(time.time(),));db.commit()
+        self.assertFalse(self.st.reflection.retirement_pending())
     def test_checkpoint_system_adoption_requires_config_permit_and_no_new_submitted_turn(self):
         from context_protocol import READONLY_CURRENT
         j=self.st.model_journals[SCOPE]
