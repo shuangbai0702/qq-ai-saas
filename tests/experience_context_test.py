@@ -28,10 +28,11 @@ class BriefExperience(unittest.TestCase):
         with patch('context_foundation.read',return_value={}),patch('semantic_runtime.filter_retired_context',side_effect=lambda s,c,v:v),patch('shared_context.delivery_context',return_value={}),patch('agreement_state.context_view',return_value=[]):
             private=conversation_context(store,{'memory':True,'ownerUin':'12345678'},'private:12345678','12345678','real input',200)
             group=conversation_context(store,{'memory':True,'ownerUin':'12345678'},'group:55555','55555555','different input',201)
-            self.assertEqual(private['autonomous_experience'],group['autonomous_experience'])
-            self.assertEqual(group['autonomous_experience']['actions'][0]['sourceScope'],'private:12345678')
-            from decision_history import changes
-            self.assertEqual(changes(private['autonomous_experience'],group['autonomous_experience']),[])
+            for value in (private,group):
+                self.assertNotIn('autonomous_experience',value)
+                self.assertNotIn('execution_experience',value)
+                self.assertIn('memory_foundation',value)
+                self.assertIn('active_agreements',value)
         self.assertEqual(store.autonomous_experience,raw)
 
     def test_terminal_unfinished_does_not_revive_history_but_unknown_receipt_survives(self):

@@ -83,7 +83,9 @@ class RuntimeTests(unittest.TestCase):
         packets=[json.loads(m['content'].split('\n',1)[1]) for m in journal.last.wire if isinstance(m.get('content'),str) and m['content'].startswith(READONLY_CURRENT+'\n')]
         self.assertEqual(len(packets),1)
         self.assertNotIn('readonlyChanges',packets[0])
-        self.assertEqual(packets[0]['execution_experience'],journal.last.state['execution_experience'])
+        for field in ('autonomous_experience','execution_experience'):
+            self.assertNotIn(field,packets[0])
+            self.assertNotIn(field,journal.last.state)
         self.assertNotIn('memory_foundation',packets[0])
         self.assertNotIn('original old',model_json(packets))
 

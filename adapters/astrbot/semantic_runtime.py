@@ -62,17 +62,9 @@ def _prune_hot_memory(st):
         if isinstance(state.get('turns'),list):state['turns']=[row for row in state['turns'] if not _retired_row(row,scope,members)]
 
 
-def _execution_current(previous):
-    value=previous.get('execution_experience')
-    if isinstance(value,dict) and value.get('basis')=='memory_foundation.execution_experience':
-        from decision_history import apply_changes
-        value=apply_changes(previous.get('memory_foundation',{}).get('execution_experience',{}),value.get('changes',[]))
-    return copy.deepcopy(value)
-
-
 def _fresh_state(st,cfg,scope,checkpoint,journal):
     """Read a post-retirement view, rolling back the temporary SQL preview."""
-    import bot_pipeline,execution_memory
+    import bot_pipeline
     subject=scope[8:] if scope.startswith('private:') else str(cfg.get('ownerUin') or '0')
     st.db.execute('SAVEPOINT semantic_state_preview')
     previous=st.model_journals.get(scope)
@@ -93,8 +85,6 @@ def _fresh_state(st,cfg,scope,checkpoint,journal):
         continuity=continuity_view(st.db,scope,checkpoint_id=checkpoint)
         shared['memory_foundation'].pop('conversation_continuity',None)
         if continuity:shared['memory_foundation']['conversation_continuity']=continuity
-        execution=_execution_current(journal.last.state)
-        if execution is not None:shared['execution_experience']=execution_memory.context_projection(execution,shared['memory_foundation'])
         return copy.deepcopy(filter_retired_context(st,scope,shared))
     finally:
         if previous is None:st.model_journals.pop(scope,None)

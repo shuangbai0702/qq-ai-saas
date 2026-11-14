@@ -21,7 +21,6 @@ from participation import Participation
 import qq_actions
 import group_actions
 import bot_pipeline
-import execution_memory
 import reply_voice
 import message_provenance
 import group_freshness
@@ -585,9 +584,7 @@ def install_runtime(core,settings):
         if event.get_extra('_hosted_main_activation') and isinstance(task,dict):task={k:v for k,v in task.items() if k not in ('goalSnapshot','continuation')}
         assembly.contribute('delivery',{'recipient':{'scope':scope,'owner':bool(subject and subject==str(b.get('ownerUin') or ''))},'task':task})
         shared=bot_pipeline.conversation_context(st,b,scope,subject,objective,now)
-        shared['execution_experience']=execution_memory.context_projection(event.get_extra('_hosted_execution_memory',{'status':'not_loaded'}),shared['memory_foundation'])
-        assembly.contribute('memory',{'execution_memory_guidance':execution_memory.GUIDANCE})
-        assembly.contribute('memory',{key:shared[key] for key in ('memory_foundation','state','recent_messages','recent_cross_session_messages','conversation_timeline','autonomous_experience','execution_experience','group_round_history','active_agreements')})
+        assembly.contribute('memory',{key:shared[key] for key in ('memory_foundation','state','recent_messages','recent_cross_session_messages','conversation_timeline','group_round_history','active_agreements')})
         assembly.contribute('conversation',{key:shared[key] for key in ('dialogue','ambient_group_messages')})
         if (event.get_extra('_hosted_autonomous_action') or {}).get('kind')=='message' or event.get_extra('_hosted_main_activation'):
             social_cfg={**b,'_qqAccount':str(event.get_self_id())}
@@ -1120,7 +1117,6 @@ def install_runtime(core,settings):
             social_context['image_expression']={'available':meme_allowed,'reason':gate['reason']}
             event.set_extra('_hosted_meme_gate',gate);event.set_extra('_hosted_meme_allowed',meme_allowed)
             memory_epoch=st.reflection.epoch()
-            execution=await execution_memory.context(s,event,scope,lambda:current(event) and st.reflection.epoch()==memory_epoch) if (cfg.get('behavior') or {}).get('memory',True) else {'memoryEnabled':False,'experiences':[]}
             if not current(event) or st.reflection.epoch()!=memory_epoch:return
             # Snapshot before the first context read/embedding await, so an
             # arrival during assembly cannot be silently blessed as old input.
@@ -1130,9 +1126,8 @@ def install_runtime(core,settings):
             # must see replies confirmed while it waited (including across a
             # debounce boundary); old wire itself remains immutable.
             shared=bot_pipeline.conversation_context(st,cfg.get('behavior') or {},scope,subject,event.get_message_str(),time.time(),state=state)
-            shared['execution_experience']=execution_memory.context_projection(execution,shared['memory_foundation'])
             state=shared['state']
-            assembly.contribute('memory',{key:shared[key] for key in ('memory_foundation','state','recent_messages','recent_cross_session_messages','conversation_timeline','autonomous_experience','execution_experience','group_round_history','active_agreements')})
+            assembly.contribute('memory',{key:shared[key] for key in ('memory_foundation','state','recent_messages','recent_cross_session_messages','conversation_timeline','group_round_history','active_agreements')})
             assembly.contribute('social',{'social':social_context})
             assembly.contribute('conversation',{'recent_image':recent_image,'ambient_group_messages':shared['ambient_group_messages'],'recent_burst':[{'sender_id':x['sender_id'],'source_event':str(getattr(x['event'].message_obj,'message_id','')),'text':x['text'],'at':float(getattr(x['event'].message_obj,'timestamp',0) or now),**x['source']} for x in batch]})
             assembly.contribute('delivery',{'contact_target':event.get_extra('_hosted_contact_subject'),'previous_proactive_output':event.get_extra('_hosted_previous_output',''),'topic_origin':event.get_extra('_hosted_topic_origin')})
@@ -1152,7 +1147,6 @@ def install_runtime(core,settings):
                 social_context.pop('expression_hints',None)
                 if not current(event):return
                 assembly.contribute('social',{'social':social_context})
-            assembly.contribute('memory',{'execution_memory_guidance':execution_memory.GUIDANCE})
             event.set_extra('_hosted_group_round_history',bool(shared.get('group_round_history')))
             if scope.startswith('group:'):
                 history=shared.get('group_round_history') or []
