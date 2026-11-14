@@ -6,19 +6,16 @@ const conflict=(message:string)=>Object.assign(new Error(message),{statusCode:40
 // Every platform locks that cycle before changing a reservation or settlement.
 export async function lockExternalCycle(db:Sql,bot:any,workId:string,epoch:number,active=true){
  const params=[workId,bot.id??bot.bot_id,bot.tenant_id,epoch];
- await db.query(`SELECT c.id FROM autonomy_actions a JOIN autonomy_cycles c ON c.id=a.cycle_id AND c.bot_id=a.bot_id AND c.tenant_id=a.tenant_id WHERE a.id=$1 AND a.bot_id=$2 AND a.tenant_id=$3 AND a.epoch=$4 FOR UPDATE OF c`,params);
- // Refresh in a new statement after a contended lock: joined action JSON read
- // before the lock wait is not evidence of the latest reservation ownership.
- const [row]=await db.query(`SELECT c.*,a.status AS action_status,a.expires_at,s.epoch AS current_epoch,s.config AS current_config,b.generation AS current_generation,b.revision AS current_revision,b.health,b.desired_state,b.deleted_at
- FROM autonomy_actions a JOIN autonomy_cycles c ON c.id=a.cycle_id AND c.bot_id=a.bot_id AND c.tenant_id=a.tenant_id
- JOIN autonomy_settings s ON s.bot_id=a.bot_id AND s.tenant_id=a.tenant_id JOIN bots b ON b.id=a.bot_id AND b.tenant_id=a.tenant_id
- WHERE a.id=$1 AND a.bot_id=$2 AND a.tenant_id=$3 AND a.epoch=$4`,params);
+ await db.query('SELECT id FROM autonomy_cycles WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND epoch=$4 FOR UPDATE',params);
+ const [row]=await db.query(`SELECT c.*,c.state AS action_status,c.work_expires_at AS expires_at,s.epoch AS current_epoch,s.config AS current_config,b.generation AS current_generation,b.revision AS current_revision,b.health,b.desired_state,b.deleted_at
+ FROM autonomy_cycles c JOIN autonomy_settings s ON s.bot_id=c.bot_id AND s.tenant_id=c.tenant_id JOIN bots b ON b.id=c.bot_id AND b.tenant_id=c.tenant_id
+ WHERE c.id=$1 AND c.bot_id=$2 AND c.tenant_id=$3 AND c.epoch=$4`,params);
  if(active&&row?.current_config?.rollout==='shadow')throw conflict('shadow禁止真实外部写入');
- if(!row||active&&(row.finished_at||!['planned','executing'].includes(row.action_status)||+new Date(row.expires_at)<=Date.now()||row.current_epoch!==epoch||row.current_config.mode!=='active'||(row.current_config.rollout??'live')!=='live'||row.current_generation!==row.generation||row.current_revision!==row.config_revision||!runtimeStatus(row).online))throw conflict('自主外部动作工作已失效');
+ if(!row||active&&(row.finished_at||row.action_status!=='acting'||+new Date(row.expires_at)<=Date.now()||row.current_epoch!==epoch||row.current_config.mode!=='active'||(row.current_config.rollout??'live')!=='live'||row.current_generation!==row.generation||row.current_revision!==row.config_revision||!runtimeStatus(row).online))throw conflict('自主外部动作工作已失效');
  return row;
 }
 export async function externalCount(db:Sql,cycleId:string){
- const [r]=await db.query(`SELECT (SELECT count(*) FROM autonomy_cycles c CROSS JOIN LATERAL jsonb_each(COALESCE(c.budget->'qqExternalRequests','{}'::jsonb)) work CROSS JOIN LATERAL jsonb_each(work.value) e WHERE c.id=$1 AND e.value->>'status'<>'released')+(SELECT count(*) FROM tool_effects e JOIN autonomy_actions a ON a.id=e.work_id AND a.bot_id=e.bot_id AND a.tenant_id=e.tenant_id WHERE a.cycle_id=$1 AND e.authority='autonomous' AND e.budget_reserved) AS total`,[cycleId]);
+ const [r]=await db.query(`SELECT (SELECT count(*) FROM autonomy_cycles c CROSS JOIN LATERAL jsonb_each(COALESCE(c.budget->'qqExternalRequests','{}'::jsonb)) work CROSS JOIN LATERAL jsonb_each(work.value) e WHERE c.id=$1 AND e.value->>'status'<>'released')+(SELECT count(*) FROM tool_effects e WHERE e.cycle_id=$1 AND e.authority='autonomous' AND e.budget_reserved) AS total`,[cycleId]);
  return Number(r.total);
 }
 export async function checkExternalCapacity(db:Sql,cycle:any){

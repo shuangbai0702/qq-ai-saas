@@ -68,11 +68,10 @@ test('identical cross-Work searches reuse original receipts without refreshing a
   await executor.execute(await f.repo.claim('reuse-reader'),new AbortController().signal);return(await f.repo.get(f.bot.tenant_id,f.id,row.id)).result;
  };
  const original=await run('first');
- const cycle='10000000-0000-4000-8000-000000000001',goal='10000000-0000-4000-8000-000000000002',work='10000000-0000-4000-8000-000000000003';
- await f.db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget) VALUES($1,$2,$3,1,1,1,'fixture','executing','{}')",[cycle,f.id,f.bot.tenant_id]);
+ const cycle='10000000-0000-4000-8000-000000000001',goal='10000000-0000-4000-8000-000000000002',work=cycle;
+ await f.db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget) VALUES($1,$2,$3,1,1,1,'fixture','completed','{}')",[cycle,f.id,f.bot.tenant_id]);
  await f.db.query("INSERT INTO autonomy_goals(id,bot_id,tenant_id,origin,status,title,reason,source) VALUES($1,$2,$3,'owner_request','active','actual source','delegated',$4)",[goal,f.id,f.bot.tenant_id,JSON.stringify({scope:'group:963105233'})]);
- await f.db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at,goal_id) VALUES($1,$2,$3,$4,1,'research','','actual query','completed',now()+interval '1 hour',$5)",[work,cycle,f.id,f.bot.tenant_id,goal]);
- await f.db.query("UPDATE tool_effects SET authority='autonomous',origin_scope='',work_id=$2 WHERE id=$1",[original.actionId,work]);
+ await f.db.query("UPDATE tool_effects SET authority='autonomous',origin_scope='group:963105233',work_id=$2 WHERE id=$1",[original.actionId,work]);
  assert.equal(original.data.videos[0].cover,'https://i0.hdslb.com/bfs/archive/fixture.jpg');
  const next=await run('second');assert.equal(searches,1);assert.equal(next.data.reused.actionId,original.actionId);assert.equal(next.evidence.at,original.evidence.at);
  await f.db.query("INSERT INTO tool_service_cooldowns(service,until_at,reason) VALUES('bilibili',now()+interval '15 minutes','fixture')");
@@ -380,12 +379,13 @@ test('controlled video permissions reject other videos and mismatched AV/BV befo
 test('completed autonomous tasks cannot admit new tools; only their existing asynchronous media can finish',async t=>{
  const f=await fixture(t);await f.repo.configure(f.bot.tenant_id,f.id,2,{enabled:true,allowAutonomous:true,scopes:['public.read','media.analyze','comment.write'],model:{provider:'bot'}});
  await f.db.query("INSERT INTO autonomy_settings(bot_id,tenant_id,epoch,config) VALUES($1,$2,1,'{\"mode\":\"active\"}') ON CONFLICT(bot_id) DO UPDATE SET epoch=1,config='{\"mode\":\"active\"}'",[f.id,f.bot.tenant_id]);
- await f.db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget) VALUES('bili-cycle',$1,$2,1,$3,$4,'test','executing','{}')",[f.id,f.bot.tenant_id,f.bot.generation,f.bot.revision]);
- await f.db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at) VALUES('bili-parent','bili-cycle',$1,$2,1,'research','','video','executing',now()+interval '5 minutes')",[f.id,f.bot.tenant_id]);
- const authority={authority:'autonomous',senderId:undefined,epoch:1,workId:'bili-parent'} as const;
+ await f.db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget) VALUES('bili-cycle',$1,$2,1,$3,$4,'test','acting','{}')",[f.id,f.bot.tenant_id,f.bot.generation,f.bot.revision]);
+ await f.db.query("UPDATE autonomy_cycles SET work_expires_at=now()+interval '5 minutes' WHERE id='bili-cycle'");
+ await f.db.query("UPDATE autonomy_settings SET lease_owner='test',lease_until=now()+interval '5 minutes' WHERE bot_id=$1",[f.id]);
+ const authority={authority:'autonomous',senderId:undefined,epoch:1,workId:'bili-cycle'} as const;
  const job=await f.repo.admit(f.bot,f.call('analyze',{bvid:'BV1xx411c7mD',question:'看图'},authority)),claimed=await f.repo.claim('media');
  assert.equal(claimed.id,job.id);
- await f.db.query("UPDATE autonomy_actions SET status='completed',expires_at=now()-interval '1 second' WHERE id='bili-parent'");
+ await f.db.query("UPDATE autonomy_cycles SET state='completed',finished_at=now(),work_expires_at=now()-interval '1 second' WHERE id='bili-cycle'");
  await f.repo.renew(claimed);
  await assert.rejects(()=>f.repo.admit(f.bot,f.call('comment',{aid:'170001',text:'new'},authority)),/自主工作授权/);
  await assert.rejects(()=>f.repo.admit(f.bot,f.call('analyze',{bvid:'BV1xx411c7mD',question:'new'},{...authority,stepId:'new-media'})),/自主工作授权/);
@@ -590,12 +590,12 @@ test('platform access requires login or explicit anonymous permission and never 
 
 
 test('autonomous QQ and Bili reserve one shared cycle budget before dispatch; late unknown is irrevocable',async t=>{
- const f=await fixture(t),cycle='budget-cycle',work='budget-work';
+ const f=await fixture(t),cycle='budget-cycle',work=cycle;
  await f.db.query("UPDATE bilibili_settings SET config=jsonb_set(config,'{allowAutonomous}','true') WHERE bot_id=$1",[f.id]);
  await f.db.query("INSERT INTO autonomy_settings(bot_id,tenant_id,epoch,config) VALUES($1,$2,1,'{\"mode\":\"active\"}')",[f.id,f.bot.tenant_id]);
  await f.db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget) VALUES($1,$2,$3,1,1,1,'fixture','acting','{\"cycleExternalActions\":0,\"day\":\"fixture\"}')",[cycle,f.id,f.bot.tenant_id]);
- await f.db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at) VALUES($1,$2,$3,$4,1,'research','','budget','executing',now()+interval '1 hour')",[work,cycle,f.id,f.bot.tenant_id]);
- await f.db.query('UPDATE autonomy_cycles SET generation=$2,config_revision=$3 WHERE id=$1',[cycle,f.bot.generation,f.bot.revision]);
+ await f.db.query("UPDATE autonomy_cycles SET generation=$2,config_revision=$3,work_expires_at=now()+interval '1 hour' WHERE id=$1",[cycle,f.bot.generation,f.bot.revision]);
+ await f.db.query("UPDATE autonomy_settings SET lease_owner='fixture',lease_until=now()+interval '1 hour' WHERE bot_id=$1",[f.id]);
  const qq=(logical:string,phase:any='reserve')=>qqExternalBudget(f.db,f.bot,{workId:work,epoch:1,logicalActionId:logical,phase});
  const row=await f.repo.admit(f.bot,f.call('like',{bvid:'BV1xx411c7mD',value:true},{workId:work,authority:'autonomous',senderId:undefined,epoch:1}));
  const job=await f.repo.claim('budget-owner');
@@ -644,6 +644,8 @@ test('cycle reservation migration is atomic and reversible without changing rece
  const budget={cycleExternalActions:4,day:'fixture',modelRequests};
  await f.db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget) VALUES($1,$2,$3,1,1,1,'fixture','waiting',$4)",[cycle,f.id,f.bot.tenant_id,JSON.stringify(budget)]);
  // An isolated database at the old schema boundary; production is untouched.
+ const historic=await readFile(new URL('../packages/database/migrations/006_autonomous_lifecycle.sql',import.meta.url),'utf8');
+ await f.db.query(historic.slice(historic.indexOf('CREATE TABLE autonomy_actions('),historic.indexOf('CREATE TABLE autonomy_wakes(')));
  await f.db.query("ALTER TABLE autonomy_actions ADD COLUMN external_effects JSONB NOT NULL DEFAULT '{}'");
  const effects=[{same:{status:'confirmed'},uncertain:{status:'unknown'},stopped:{status:'released'}},{same:{status:'reserved'}}];
  for(let i=0;i<works.length;i++)await f.db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at,external_effects,result,receipt) VALUES($1,$2,$3,$4,1,'research','','fixture','partial',now(),$5,'{\"summary\":\"actual result\"}','[{\"status\":\"unknown\"}]')",[works[i],cycle,f.id,f.bot.tenant_id,JSON.stringify(effects[i])]);
@@ -668,11 +670,11 @@ test('cycle reservation migration is atomic and reversible without changing rece
 });
 
 test('QQ unknown cannot be refunded or billed twice across replay and late receipt',async t=>{
- const f=await fixture(t),cycle='qq-cycle',work='qq-work';
+ const f=await fixture(t),cycle='qq-cycle',work=cycle;
  await f.db.query("INSERT INTO autonomy_settings(bot_id,tenant_id,epoch,config) VALUES($1,$2,1,'{\"mode\":\"active\"}')",[f.id,f.bot.tenant_id]);
  await f.db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget) VALUES($1,$2,$3,1,1,1,'fixture','acting','{\"cycleExternalActions\":1,\"day\":\"fixture\"}')",[cycle,f.id,f.bot.tenant_id]);
- await f.db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at) VALUES($1,$2,$3,$4,1,'research','','budget','executing',now()+interval '1 hour')",[work,cycle,f.id,f.bot.tenant_id]);
- await f.db.query('UPDATE autonomy_cycles SET generation=$2,config_revision=$3 WHERE id=$1',[cycle,f.bot.generation,f.bot.revision]);
+ await f.db.query("UPDATE autonomy_cycles SET generation=$2,config_revision=$3,work_expires_at=now()+interval '1 hour' WHERE id=$1",[cycle,f.bot.generation,f.bot.revision]);
+ await f.db.query("UPDATE autonomy_settings SET lease_owner='fixture',lease_until=now()+interval '1 hour' WHERE bot_id=$1",[f.id]);
  const update=(phase:any)=>qqExternalBudget(f.db,f.bot,{workId:work,epoch:1,logicalActionId:'same',phase});
  await update('reserve');await update('unknown');await update('released');await update('reserve');
  assert.equal(await externalCount(f.db,cycle),1);

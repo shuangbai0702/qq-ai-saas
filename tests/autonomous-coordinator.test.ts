@@ -15,8 +15,12 @@ async function fixture(count=1){
  return db;
 }
 const usage={modelCalls:1,toolCalls:0,tokens:400};
-/** One accepted handoff goal: the only durable work item the coordinator
- * dispatches. goalId doubles as the handoff id, exactly as acceptHandoff writes. */
+
+async function savedWork(db:any,id:string,pending:boolean){
+ await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget,decision,reason,work_expires_at,finished_at) VALUES($1,'bot-0','tenant',2,1,1,'old','completed','{}',$2,$3,now()+interval '1 hour',now())",[id,JSON.stringify({receiptPending:pending}),pending?'activity_unknown':'activity_partial']);
+}
+
+/** Accepted Goal metadata. A due wake activates the model, never dispatches this Goal. */
 async function handoffGoal(db:any,goalId:string,bot='bot-0',opts:{scope?:string;owner?:boolean;notBeforeOffsetMs?:number;objective?:string}={}){
  // Real accepted work always has its Bot's current configuration revision.
  // Goal reads now verify that authoritative identity before execute IPC.
@@ -51,8 +55,8 @@ test('a due handoff wakes the main AI without prescribing a Goal or send target'
   assert.equal(executions,1,'an accepted user reminder still runs with proactive=false');assert.equal(thinkCalls,0,'no orientation or planning model call exists');
   const view=await coordinator.repo.view('tenant','bot-0');
   assert.deepEqual((await db.query('SELECT * FROM autonomy_goals WHERE id=$1',[goalId]))[0],originalGoal,'delivery cannot modify Goal status, progress, revision or source');
-  assert.equal(view.goals[0].status,'active');assert.equal(view.actions[0].status,'completed');
-  assert.equal(view.cycles[0].reason,'activity_completed');assert.equal(view.actions.length,1,'one main activation, no Goal dispatcher');
+  assert.equal(view.goals[0].status,'active');assert.ok(view.cycles[0].finished_at);
+  assert.equal(view.cycles[0].reason,'activity_completed');assert.equal(view.cycles.filter(c=>c.work_expires_at).length,1,'one main activation, no Goal dispatcher');
  }finally{await coordinator.stop();await db.close()}
 });
 
@@ -67,45 +71,32 @@ test('proactive off and an idle active-mode wake never start a planning model',a
   await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});
   await coordinator.tick();await coordinator.active?.task;
   const view=await coordinator.repo.view('tenant','bot-0');
-  assert.equal(view.actions.length,0);assert.ok(operations.includes('snapshot'));
+  assert.equal(view.cycles.filter(c=>c.work_expires_at).length,0);assert.ok(operations.includes('snapshot'));
   assert.equal(view.cycles[0].usage.modelCalls,0);assert.equal(view.settings.config.mode,'active');
  }finally{await coordinator.stop();await db.close()}
 });
 
-test('config re-enable restores dormant model work without replaying an unknown action',async()=>{
- const db=await fixture(),executed:string[]=[];
- const pendingId='a1786cd0-91c4-40ec-8e42-75d80ae70a9d',unknownId='d1786cd0-91c4-40ec-8e42-75d80ae70a9d',actionId='e1786cd0-91c4-40ec-8e42-75d80ae70a9d';
+test('config re-enable preserves unknown Work while fresh accepted wakes carry no chosen Goal',async()=>{
+ const db=await fixture();let executes=0,receipts=0;
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
-  if(op==='receipt')return{active:true,effects:[{status:'unknown'}]};
-  if(op==='execute'){executed.push(body.action.goalId);return{status:'completed',summary:'read-only work settled',effects:[],evidence:[],unfinished:[],usage}}
+  if(op==='receipt'){receipts++;assert.equal(body.id,'unknown-work');return{active:true,effects:[{status:'unknown'}]}}
+  if(op==='execute'){executes++;assert.notEqual(body.work.id,'unknown-work');assert.equal(body.action.goalId,undefined);return{status:'completed',effects:[],usage}}
   throw Error(op);
- });
- try{
-  await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) SELECT id,revision,$1 FROM bots",[JSON.stringify({proactive:false})]);
+ });try{
   await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});
-  for(const id of [pendingId,unknownId]){
-   await handoffGoal(db,id);
-   await db.query("UPDATE autonomy_goals SET origin='model',source=source||$2::jsonb WHERE id=$1",[id,JSON.stringify({origin:'model',kind:'research'})]);
-  }
+  await handoffGoal(db,'pending-goal');await handoffGoal(db,'unknown-goal');
+  await savedWork(db,'unknown-work',true);
   await coordinator.tick();await coordinator.active?.task;
-  assert.deepEqual(executed,[]);
-  let view=await coordinator.repo.view('tenant','bot-0');
-  assert.equal(view.cycles[0].usage.modelCalls,0);
-  assert.equal((await db.query("SELECT count(*)::int AS n FROM autonomy_wakes WHERE bot_id='bot-0' AND reason<>'activity'"))[0].n,0,'disabled work consumed its old wake without a model request');
-  await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,goal_id,status,expires_at,result) VALUES($1,$2,'bot-0','tenant',2,'research','','unresolved old task',$3,'unknown',now(),$4)",[actionId,view.cycles[0].id,unknownId,JSON.stringify({effects:[{id:actionId+':0',status:'unknown'}]})]);
-  await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) VALUES('bot-0',2,$1)",[JSON.stringify({proactive:true})]);
+  await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) VALUES('bot-0',2,'{\"proactive\":true}')");
   await db.query("UPDATE bots SET revision=2 WHERE id='bot-0'");
   await coordinator.tick();await coordinator.active?.task;
-  assert.deepEqual(executed,[pendingId],'a config revision bypasses sampling delay and restores only unstarted work');
-  view=await coordinator.repo.view('tenant','bot-0');
-  assert.equal(view.goals.find((g:any)=>g.id===pendingId).status,'active','completed research step leaves cognitive completion to the goal tool');
-  const finished=view.actions.find((a:any)=>a.goal_id===pendingId);
-  assert.equal(finished.status,'completed');assert.equal(finished.result.reviewGoalRevision,view.goals.find((g:any)=>g.id===pendingId).revision);
-  assert.equal(view.actions.find((a:any)=>a.id===actionId).status,'unknown');
-  assert.equal((await db.query('SELECT count(*)::int AS n FROM autonomy_actions WHERE goal_id=$1',[unknownId]))[0].n,1);
+  assert.ok(receipts>=1);assert.equal(executes,2,'each accepted due wake is a fresh main activation; none redispatches the unknown Work');
+  assert.equal((await db.query("SELECT decision->>'receiptPending' AS pending FROM autonomy_cycles WHERE id='unknown-work'"))[0].pending,'true');
+  assert.equal((await coordinator.repo.view('tenant','bot-0')).goals.every(g=>g.status==='active'),true);
  }finally{await coordinator.stop();await db.close()}
 });
+
 
 test('a slow member policy cannot block the active lease heartbeat',async()=>{
  const db=await fixture(2);let releaseSlow!:()=>void,enteredSlow!:()=>void,executions=0;
@@ -119,7 +110,7 @@ test('a slow member policy cannot block the active lease heartbeat',async()=>{
    return{};
   }
   if(op==='snapshot'||op==='cancel')return{};
-  if(op==='execute'){executions++;assert.equal(body.action.goalId,goalId);return{status:'completed',summary:'actual result',effects:[],evidence:[],unfinished:[],usage}}
+  if(op==='execute'){executions++;assert.equal(body.action.goalId,undefined);return{status:'completed',summary:'actual result',effects:[],evidence:[],unfinished:[],usage}}
   throw Error(op);
  });
  try{
@@ -132,35 +123,32 @@ test('a slow member policy cannot block the active lease heartbeat',async()=>{
  }finally{releaseSlow();await coordinator.stop();await db.close()}
 });
 
-test('receipt recovery survives coordinator replacement without an automatic experience replay',async()=>{
- const db=await fixture(2);const goalId='1c9a1bd2-2a4b-4a35-9f7b-1c2d3e4f5a6c';
- const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
+test('coordinator replacement retains cycle diagnostics without copying execution history',async()=>{
+ const db=await fixture(2);
+ const coordinator=new AutonomyCoordinator(db,async(_bot,op)=>{
   if(op==='policy'||op==='snapshot')return{};
-  if(op==='execute')return{status:'blocked',summary:'actual public service limit',toolResults:[{tool:'bilibili_search',status:'unavailable',detail:'cooldown'}],effects:[],evidence:[],unfinished:['deliver the accepted result'],usage};
+  if(op==='execute')return{status:'blocked',summary:'PRIVATE-EXECUTION-RESULT',toolResults:[{tool:'bilibili_search',status:'unavailable'}],effects:[],usage};
   throw Error(op);
- });
- try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await coordinator.repo.applied('tenant','bot-0',2);
-  await handoffGoal(db,goalId);await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
+ });try{
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});
+  await coordinator.repo.wake('tenant','bot-0',2,'operator-wake',0);
   await coordinator.tick();await coordinator.active?.task;
   const replacement=new AutonomyCoordinator(db,async()=>({}));
-  assert.equal('experience' in replacement.repo,false,'automatic history projection has been retired');
-  const history=await replacement.repo.view('tenant','bot-0');
-  assert.equal(history.actions[0].status,'blocked');assert.equal(history.actions[0].result.toolResults[0].tool,'bilibili_search');assert.equal(history.actions[0].result.effects.length,0);
-  assert.ok(history.actions[0].created_at&&history.actions[0].finished_at);
-  assert.deepEqual((await replacement.repo.view('tenant','bot-1')).actions,[]);
-  await assert.rejects(replacement.repo.view('different-tenant','bot-0'));
-  const view=await coordinator.repo.view('tenant','bot-0');await coordinator.repo.configure('tenant','bot-0',view.settings.epoch,{mode:'passive'});
-  assert.ok((await coordinator.repo.policies()).some(b=>b.bot_id==='bot-0'),'mode switch hid durable experience from runtime recovery');
-  await replacement.stop();
+  assert.equal('experience' in replacement.repo,false);
+  const view=await replacement.repo.view('tenant','bot-0');
+  assert.equal(view.cycles[0].reason,'activity_blocked');assert.ok(view.cycles[0].finished_at);
+  assert.equal(JSON.stringify(await db.query('SELECT decision FROM autonomy_cycles')).includes('PRIVATE-EXECUTION-RESULT'),false);
+  assert.deepEqual((await replacement.repo.view('tenant','bot-1')).cycles,[]);
+  await assert.rejects(replacement.repo.view('different-tenant','bot-0'));await replacement.stop();
  }finally{await coordinator.stop();await db.close()}
 });
 
+
 test('four receipt-bearing bubbles consume one versioned logical chat action without completing the goal',async()=>{
- const db=await fixture();const goalId='2c9a1bd2-2a4b-4a35-9f7b-1c2d3e4f5a6c';
+ const receipts:string[]=[];const db=await fixture();const goalId='2c9a1bd2-2a4b-4a35-9f7b-1c2d3e4f5a6c';
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
-  if(op==='execute'){await qqExternalBudget(db,{id:body.work.botId,tenant_id:body.work.tenantId},{workId:body.work.id,epoch:body.work.epoch,logicalActionId:body.work.id+':message:private:12345678',phase:'reserve'});return{status:'completed',actionUnitVersion:2,summary:'four bubbles actually confirmed by fixture protocol',effects:Array.from({length:4},(_,n)=>({id:body.work.id+':'+n,logicalActionId:body.work.id+':message:private:12345678',method:'send_private_msg',target:'private:12345678',status:'confirmed',receipt:'real-fixture-'+n})),evidence:[],unfinished:[],usage};}
+  if(op==='execute'){receipts.push(...Array.from({length:4},(_,n)=>'real-fixture-'+n));await qqExternalBudget(db,{id:body.work.botId,tenant_id:body.work.tenantId},{workId:body.work.id,epoch:body.work.epoch,logicalActionId:body.work.id+':message:private:12345678',phase:'reserve'});return{status:'completed',actionUnitVersion:2,summary:'four bubbles actually confirmed by fixture protocol',effects:Array.from({length:4},(_,n)=>({id:body.work.id+':'+n,logicalActionId:body.work.id+':message:private:12345678',method:'send_private_msg',target:'private:12345678',status:'confirmed',receipt:'real-fixture-'+n})),evidence:[],unfinished:[],usage};}
   throw Error(op);
  });
  try{
@@ -168,54 +156,46 @@ test('four receipt-bearing bubbles consume one versioned logical chat action wit
   await handoffGoal(db,goalId);await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
   await coordinator.tick();await coordinator.active?.task;
   const view=await coordinator.repo.view('tenant','bot-0');
-  assert.equal(view.usage.external_actions,1);assert.equal(view.actions.length,1);
-  assert.equal(view.actions[0].result.effects.length,4);assert.equal(new Set(view.actions[0].result.effects.map((e:any)=>e.receipt)).size,4);
-  assert.equal(view.goals[0].status,'active');assert.equal(view.cycles[0].reason,'goal_awaits_model_decision');
+  assert.equal(view.usage.external_actions,1);assert.equal(view.cycles.filter(c=>c.work_expires_at).length,1);
+  assert.equal(receipts.length,4);assert.equal(new Set(receipts).size,4);assert.equal(JSON.stringify(view).includes('real-fixture-'),false,'protocol receipts are not copied into cycle diagnostics');
+  assert.equal(view.goals[0].status,'active');assert.equal(view.cycles[0].reason,'activity_completed');
  }finally{await coordinator.stop();await db.close()}
 });
 
-test('a completed handoff yields the next local dispatch to another due member without losing its own result',async()=>{
- const db=await fixture(2),executions:string[]=[];const goals=['3c9a1bd2-2a4b-4a35-9f7b-1c2d3e4f5a6c','4c9a1bd2-2a4b-4a35-9f7b-1c2d3e4f5a6c','5fc9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c'];
+test('coalesced handoffs yield the next activation to another due member',async()=>{
+ const db=await fixture(2),executed:string[]=[];
  const coordinator=new AutonomyCoordinator(db,async(bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
-  if(op==='execute'){executions.push(bot.bot_id+':'+body.action.goalId);return{status:'completed',summary:'actual result',effects:[],evidence:[],unfinished:[],usage}}
+  if(op==='execute'){executed.push(bot.bot_id);assert.equal(body.action.goalId,undefined);return{status:'completed',effects:[],usage}}
   throw Error(op);
- });
- try{
+ });try{
   for(let n=0;n<2;n++)await coordinator.repo.configure('tenant','bot-'+n,1,{mode:'active'});
-  await handoffGoal(db,goals[0],'bot-0');await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goals[0]);
-  await handoffGoal(db,goals[1],'bot-0');await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goals[1]);
-  await handoffGoal(db,goals[2],'bot-1');await coordinator.repo.wake('tenant','bot-1',2,'handoff-due',0,goals[2]);
-  await coordinator.tick();await coordinator.active?.task;
-  assert.equal(executions.length,1);assert.equal(executions[0],'bot-0:'+goals[0]);
-  const view=await coordinator.repo.view('tenant','bot-0');
-  assert.equal(view.goals.find((g:any)=>g.id===goals[0]).status,'active','yielding never loses the settled result');
-  assert.equal(view.cycles[0].reason,'fair_yield','a second due member shortens the local backlog wait');
-  assert.ok(new Date(view.settings.next_wake_at).getTime()<=Date.now()+2000,'yielded local work keeps an immediate wake');
-  await coordinator.tick();await coordinator.active?.task;
-  assert.equal(executions.length,2);assert.equal(executions[1],'bot-1:'+goals[2],'the other due member goes first after the yield');
-  await new Promise(resolve=>setTimeout(resolve,1100));
-  await coordinator.tick();await coordinator.active?.task;
-  assert.equal(executions.length,3);assert.equal(executions[2],'bot-0:'+goals[1]);
+  for(const [id,bot] of [['first','bot-0'],['second','bot-0'],['peer','bot-1']]){
+   await handoffGoal(db,id,bot);await coordinator.repo.wake('tenant',bot,2,'handoff-due',0,id);
+  }
+  await coordinator.tick();await coordinator.active?.task;await coordinator.tick();await coordinator.active?.task;
+  assert.deepEqual(executed,['bot-0','bot-1']);
+  await coordinator.tick();await coordinator.active?.task;assert.equal(executed.length,2,'no per-Goal automatic dispatch');
+  assert.equal((await coordinator.repo.view('tenant','bot-0')).goals.every(g=>g.status==='active'),true);
  }finally{await coordinator.stop();await db.close()}
 });
 
-test('an absent stopped read-only task closes unknown without replaying an external effect',async()=>{
+
+test('an absent stopped Work closes receipt waiting only when original runtime reports no effects',async()=>{
  const db=await fixture();let executed=0;
- const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
-  if(op==='policy'||op==='snapshot')return{};
+ const coordinator=new AutonomyCoordinator(db,async(_bot,op)=>{
+  if(op==='policy')return{};
   if(op==='receipt')return{exists:false,active:false,effects:[]};
-  if(op==='execute')executed++;
-  throw Error(op);
- });
- try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});
-  await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget,started_at,finished_at) VALUES('closed-cycle','bot-0','tenant',2,0,0,'old','ended','{}',now(),now())");
-  await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at,result,created_at,finished_at) VALUES('stale-read','closed-cycle','bot-0','tenant',2,'research','','read public facts','unknown',now()+interval '1 hour',$1,now(),now())",[JSON.stringify({status:'unknown',summary:'read interrupted',effects:[],usage})]);
-  await coordinator.repo.configure('tenant','bot-0',2,{mode:'passive'});(coordinator as any).sampled.clear();await coordinator.tick();
-  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(executed,0);assert.equal(view.actions[0].status,'blocked');assert.equal(view.actions[0].result.stopReason,'read_execution_interrupted');assert.equal(view.usage?.external_actions??0,0);
+  if(op==='execute')executed++;throw Error(op);
+ });try{
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await savedWork(db,'stopped',true);
+  await coordinator.repo.configure('tenant','bot-0',2,{mode:'passive'});await coordinator.tick();
+  assert.equal(executed,0);assert.deepEqual(await coordinator.repo.unconfirmed('tenant','bot-0'),[]);
+  assert.equal((await db.query("SELECT reason FROM autonomy_cycles WHERE id='stopped'"))[0].reason,'receipt_resolved');
+  assert.equal((await coordinator.repo.view('tenant','bot-0')).usage?.external_actions??0,0);
  }finally{await coordinator.stop();await db.close()}
 });
+
 
 test('foreground feedback advances the version fence; a canceled dispatch keeps its retry wake',async()=>{
  const db=await fixture();const goalId='5c9a1bd2-2a4b-4a35-9f7b-1c2d3e4f5a6c';const at=Date.now()-1000;
@@ -223,7 +203,7 @@ test('foreground feedback advances the version fence; a canceled dispatch keeps 
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy')return{};
   if(op==='snapshot'){snapshots++;latestVersion=at+snapshots;return{feedbackVersion:latestVersion,foregroundFeedback:{at:latestVersion,phase:'foreground_result',eventId:'reply-'+snapshots,scope:'private:12345678',senderId:'12345678',directed:true,result:{status:'sent'}}}}
-  if(op==='execute'){executions++;assert.equal(body.work.feedbackVersion,latestVersion,'work carries the version the cycle actually observed');return{status:'canceled',summary:'foreground invalidated work before side effects',effects:[],evidence:[],unfinished:[],usage:{tokens:0,modelCalls:0,toolCalls:0}}}
+  if(op==='execute'){executions++;assert.equal(body.work.feedbackVersion,latestVersion,'work carries the version the cycle actually observed');return{status:'canceled',continuationAccepted:false,stopReason:'not_started',summary:'foreground invalidated work before side effects',effects:[],evidence:[],unfinished:[],usage:{tokens:0,modelCalls:0,toolCalls:0}}}
   throw Error(op);
  });
  try{
@@ -231,9 +211,9 @@ test('foreground feedback advances the version fence; a canceled dispatch keeps 
   await handoffGoal(db,goalId);await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
   await coordinator.tick();await coordinator.active?.task;
   const view=await coordinator.repo.view('tenant','bot-0');
-  assert.equal(executions,1);assert.equal(view.actions[0].status,'canceled');assert.equal(view.goals[0].status,'active','a canceled dispatch is not a terminal result');
-  assert.equal(view.cycles[0].reason,'foreground_or_mode_changed');
-  const delay=new Date(view.settings.next_wake_at).getTime()-Date.now();assert.ok(delay>0&&delay<=16000,'foreground interruption must not strand the accepted handoff');
+  assert.equal(executions,1);assert.equal(view.cycles[0].reason,'activity_canceled');assert.equal(view.goals[0].status,'active','a canceled dispatch is not a terminal result');
+  assert.equal(view.cycles[0].reason,'activity_canceled');
+  const delay=new Date(view.settings.next_wake_at).getTime()-Date.now();assert.ok(delay>25000&&delay<=31000,'foreground interruption must not strand the accepted handoff');
  }finally{await coordinator.stop();await db.close()}
 });
 
@@ -286,7 +266,7 @@ test('accepted task result flows back, preserves the goal and leaves no polling 
   const view=await coordinator.repo.view('tenant','bot-0');
   assert.equal(view.goals[0].status,'active');assert.equal(view.settings.state,'sleeping');
   assert.equal(view.usage.used_tokens,1200);assert.equal(view.usage.reserved_tokens,0);assert.equal(coordinator.active,undefined);
-  assert.equal(view.cycles[0].reason,'goal_awaits_model_decision');
+  assert.equal(view.cycles[0].reason,'activity_completed');
   assert.equal(await db.query("SELECT count(*)::int AS n FROM autonomy_wakes WHERE bot_id=$1 AND reason<>'activity'",['bot-0']).then((r:any)=>r[0].n),0,'terminal handoff leaves no task retry wake; periodic activity has its own wake');
   // A new supervisor reads durable state only; the completed goal is not re-run.
   const next=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
@@ -298,138 +278,123 @@ test('accepted task result flows back, preserves the goal and leaves no polling 
  }finally{await coordinator.stop();await db.close()}
 });
 
-test('a blocked handoff preserves the goal for model review; receipts still settle through the tick loop',async()=>{
- const db=await fixture();const goalId='7c9a1bd2-2a4b-4a35-9f7b-1c2d3e4f5a6c';let actionId='';
+test('a blocked activation preserves the Goal while late original receipts settle through the tick loop',async()=>{
+ const db=await fixture();let executions=0,receipts=0;
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
-  if(op==='execute'){actionId=body.work.id;return{status:'blocked',summary:'原请求回复许可无效或已使用；不能降级为主动发送重试',effects:[],evidence:[],unfinished:[],usage:{tokens:0,modelCalls:0,toolCalls:0}}}
-  if(op==='receipt')return{result:{status:'completed',summary:'late authoritative receipt',effects:[{id:actionId+':0',status:'confirmed',receipt:'late-real-id'}],evidence:[],unfinished:[]}};
+  if(op==='execute'){executions++;return{status:'blocked',effects:[],usage}}
+  if(op==='receipt'){receipts++;assert.equal(body.id,'late-work');return{result:{status:'completed',effects:[{status:'confirmed',receipt:'real-late-id'}]}}}
   throw Error(op);
- });
- try{
+ });try{
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await handoffGoal(db,'blocked-goal');
+  await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,'blocked-goal');await coordinator.tick();await coordinator.active?.task;
+  assert.equal((await coordinator.repo.view('tenant','bot-0')).cycles[0].reason,'activity_blocked');
+  await savedWork(db,'late-work',true);(coordinator as any).sampled.clear();await coordinator.tick();
+  assert.equal(receipts,1);assert.equal(executions,1);assert.deepEqual(await coordinator.repo.unconfirmed('tenant','bot-0'),[]);
+  assert.equal((await coordinator.repo.view('tenant','bot-0')).goals[0].status,'active');
+ }finally{await coordinator.stop();await db.close()}
+});
+
+
+test('an uncertain effect remains owned by the original Work and idle wakes never re-dispatch it',async()=>{
+ const db=await fixture();let executions=0,workId='';
+ const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
+  if(op==='policy'||op==='snapshot')return{};
+  if(op==='receipt')return{active:true,result:{status:'unknown',effects:[{status:'unknown'}]}};
+  if(op==='execute'){executions++;workId=body.work.id;await qqExternalBudget(db,{id:body.work.botId,tenant_id:body.work.tenantId},{workId,epoch:body.work.epoch,logicalActionId:workId+':0',phase:'reserve'});return{status:'unknown',effects:[{status:'unknown'}],usage}}
+  throw Error(op);
+ });try{
   await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});
-  await handoffGoal(db,goalId);await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
-  await coordinator.tick();await coordinator.active?.task;
-  let view=await coordinator.repo.view('tenant','bot-0');
-  assert.equal(view.goals[0].status,'active','execution refusal cannot decide to abandon the cognitive goal');
-  assert.equal(view.actions[0].result.reviewGoalRevision,view.goals[0].revision);
-  assert.equal(view.cycles[0].reason,'handoff_needs_review');
-  // The receipt-settlement path remains for any action left uncertain.
-  await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget,started_at,finished_at) VALUES('closed-cycle','bot-0','tenant',2,0,0,'old','ended','{}',now(),now())");
-  await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at,result,created_at,finished_at) VALUES('later-unknown','closed-cycle','bot-0','tenant',2,'message','private:12345678','contact','unknown',now()+interval '1 hour',$1,now(),now())",[JSON.stringify({status:'unknown',summary:'protocol response lost',effects:[{id:'later-unknown:0',status:'unknown'}],usage})]);
-  (coordinator as any).sampled.clear();await coordinator.tick();
-  view=await coordinator.repo.view('tenant','bot-0');
-  assert.equal(view.actions.find((a:any)=>a.id==='later-unknown').status,'completed');assert.equal(view.actions.find((a:any)=>a.id==='later-unknown').result.effects[0].receipt,'late-real-id');
+  await coordinator.repo.wake('tenant','bot-0',2,'operator-wake',0);await coordinator.tick();await coordinator.active?.task;
+  (coordinator as any).sampled.clear();await coordinator.repo.wake('tenant','bot-0',2,'later',0);await coordinator.tick();await coordinator.active?.task;
+  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(executions,1);assert.equal(view.usage.external_actions,1);
+  const [original]=await db.query('SELECT decision,reason FROM autonomy_cycles WHERE id=$1',[workId]);
+  assert.equal(original.reason,'activity_unknown');assert.equal(original.decision.receiptPending,true);
+  assert.equal(original.decision.receiptCheck.attempts,1);assert.ok(original.decision.receiptCheck.nextAt>Date.now()/1000+25);
+  assert.deepEqual(await coordinator.repo.unconfirmed('tenant','bot-0'),[],'the next original receipt check observes backoff');
  }finally{await coordinator.stop();await db.close()}
 });
 
-test('an uncertain effect is recorded once and never re-dispatched by a later wake',async()=>{
- const db=await fixture();const goalId='8c9a1bd2-2a4b-4a35-9f7b-1c2d3e4f5a6c';let executions=0;
+
+test('partial Work recovery: confirmed_message never decides Goal completion or repeats execution',async()=>{
+ const db=await fixture();let executions=0,checks=0;
+ const uncertain=false;
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
-  if(op==='policy'||op==='snapshot')return{};
-  if(op==='execute'){executions++;await qqExternalBudget(db,{id:body.work.botId,tenant_id:body.work.tenantId},{workId:body.work.id,epoch:body.work.epoch,logicalActionId:body.work.id+':0',phase:'reserve'});return{status:'unknown',summary:'unconfirmed actual effect',effects:[{id:body.work.id+':0',status:'unknown'}],evidence:[],unfinished:['verify'],usage}}
-  throw Error(op);
- });
- try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',rollout:'live'});
-  await handoffGoal(db,goalId);await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
-  await coordinator.tick();await coordinator.active?.task;
-  await coordinator.repo.wake('tenant','bot-0',2,'later',0);await coordinator.tick();await coordinator.active?.task;
-  const view=await coordinator.repo.view('tenant','bot-0');
-  assert.equal(executions,1,'the reply permit is single-use; the goal waits for its receipt');assert.equal(view.actions.length,1);
-  assert.equal(view.actions[0].status,'unknown');assert.equal(view.cycles[0].reason,'waiting_receipt');
-  assert.equal(view.usage.external_actions,1);
-  const delay=(new Date(view.settings.next_wake_at).getTime()-Date.now())/1000;assert.ok(delay>250&&delay<=310,'bounded retry wake re-arms the unsettled receipt');
+  if(op==='policy')return{};
+  if(op==='receipt'){checks++;assert.equal(body.id,'partial-work');return{active:true,result:{status:'partial',effects:[{status:'unknown'}]}}}
+  if(op==='execute')executions++;throw Error(op);
+ });try{
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await handoffGoal(db,'partial-goal');
+  await savedWork(db,'partial-work',uncertain);
+  await coordinator.repo.configure('tenant','bot-0',2,{mode:'passive'});await coordinator.tick();
+  assert.equal(executions,0);assert.equal(checks,uncertain?1:0);
+  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(view.goals[0].status,'paused_mode','explicit mode pause is preserved; receipt recovery does not decide completion');
+  assert.equal(view.goals[0].progress,'');assert.equal(view.cycles.length,1);
+  assert.equal((await db.query('SELECT * FROM autonomy_wakes')).length,0);
+  assert.equal((await coordinator.repo.unconfirmed('tenant','bot-0')).length,0,'uncertain checks are bounded by backoff, settled results are never polled');
  }finally{await coordinator.stop();await db.close()}
 });
 
-test('a partial message handoff with every effect confirmed preserves the goal without a second dispatch',async()=>{
- const db=await fixture();const goalId='aec9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c';let executions=0;
+
+test('partial Work recovery: no_completion_evidence never decides Goal completion or repeats execution',async()=>{
+ const db=await fixture();let executions=0,checks=0;
+ const uncertain=false;
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
-  if(op==='policy'||op==='snapshot')return{};
-  if(op==='execute'){executions++;throw Error('a fully confirmed delivery must never be re-dispatched')}
-  throw Error(op);
- });
- try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',rollout:'live'});
-  await handoffGoal(db,goalId);
-  await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget,started_at,finished_at) VALUES('partial-cycle','bot-0','tenant',2,0,0,'old','ended','{}',now(),now())");
-  await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,goal_id,status,expires_at,result,created_at,finished_at) VALUES('confirmed-partial','partial-cycle','bot-0','tenant',2,'message','private:12345678','deliver the accepted task result',$1,'partial',now()+interval '1 hour',$2,now(),now())",[goalId,JSON.stringify({status:'partial',deliveryComplete:true,summary:'回复已按协议送达',effects:[{id:'confirmed-partial:0',status:'confirmed',receipt:'real-fixture-ack'}],evidence:[],unfinished:[]})]);
-  await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
-  await coordinator.tick();await coordinator.active?.task;
-  const view=await coordinator.repo.view('tenant','bot-0');
-  assert.equal(executions,0,'planHandoff would replay the already-confirmed outward send');
-  assert.equal(view.goals[0].status,'active');assert.equal(view.goals[0].progress,'');
-  assert.equal(view.cycles[0].reason,'goal_awaits_model_decision');
-  assert.equal(view.actions.length,1);assert.equal(view.actions[0].status,'partial','the settled action ledger is not rewritten');
+  if(op==='policy')return{};
+  if(op==='receipt'){checks++;assert.equal(body.id,'partial-work');return{active:true,result:{status:'partial',effects:[{status:'unknown'}]}}}
+  if(op==='execute')executions++;throw Error(op);
+ });try{
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await handoffGoal(db,'partial-goal');
+  await savedWork(db,'partial-work',uncertain);
+  await coordinator.repo.configure('tenant','bot-0',2,{mode:'passive'});await coordinator.tick();
+  assert.equal(executions,0);assert.equal(checks,uncertain?1:0);
+  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(view.goals[0].status,'paused_mode','explicit mode pause is preserved; receipt recovery does not decide completion');
+  assert.equal(view.goals[0].progress,'');assert.equal(view.cycles.length,1);
+  assert.equal((await db.query('SELECT * FROM autonomy_wakes')).length,0);
+  assert.equal((await coordinator.repo.unconfirmed('tenant','bot-0')).length,0,'uncertain checks are bounded by backoff, settled results are never polled');
  }finally{await coordinator.stop();await db.close()}
 });
 
-test('a legacy partial without business completion evidence stays open without re-dispatch',async()=>{
- const db=await fixture();const goalId='afc9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c';let executions=0;
+
+test('partial Work recovery: unfinished_read never decides Goal completion or repeats execution',async()=>{
+ const db=await fixture();let executions=0,checks=0;
+ const uncertain=false;
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
-  if(op==='policy'||op==='snapshot')return{};
-  if(op==='execute'){executions++;throw Error('a fully confirmed delivery must never be re-dispatched')}
-  throw Error(op);
- });
- try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',rollout:'live'});
-  await handoffGoal(db,goalId);
-  await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget,started_at,finished_at) VALUES('partial-blank-cycle','bot-0','tenant',2,0,0,'old','ended','{}',now(),now())");
-  await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,goal_id,status,expires_at,result,created_at,finished_at) VALUES('confirmed-blank','partial-blank-cycle','bot-0','tenant',2,'message','private:12345678','deliver the accepted task result',$1,'partial',now()+interval '1 hour',$2,now(),now())",[goalId,JSON.stringify({status:'partial',effects:[{id:'confirmed-blank:0',status:'confirmed',receipt:'real-fixture-ack'}],evidence:[],unfinished:[]})]);
-  await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
-  await coordinator.tick();await coordinator.active?.task;
-  const view=await coordinator.repo.view('tenant','bot-0');
-  assert.equal(executions,0);
-  assert.equal(view.goals[0].status,'active');
-  assert.equal(view.cycles[0].reason,'handoff_partial_open');
+  if(op==='policy')return{};
+  if(op==='receipt'){checks++;assert.equal(body.id,'partial-work');return{active:true,result:{status:'partial',effects:[{status:'unknown'}]}}}
+  if(op==='execute')executions++;throw Error(op);
+ });try{
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await handoffGoal(db,'partial-goal');
+  await savedWork(db,'partial-work',uncertain);
+  await coordinator.repo.configure('tenant','bot-0',2,{mode:'passive'});await coordinator.tick();
+  assert.equal(executions,0);assert.equal(checks,uncertain?1:0);
+  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(view.goals[0].status,'paused_mode','explicit mode pause is preserved; receipt recovery does not decide completion');
+  assert.equal(view.goals[0].progress,'');assert.equal(view.cycles.length,1);
+  assert.equal((await db.query('SELECT * FROM autonomy_wakes')).length,0);
+  assert.equal((await coordinator.repo.unconfirmed('tenant','bot-0')).length,0,'uncertain checks are bounded by backoff, settled results are never polled');
  }finally{await coordinator.stop();await db.close()}
 });
 
-test('a partial research handoff with unfinished items stays active and keeps a visible wake without re-dispatch',async()=>{
- const db=await fixture();const goalId='bec9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c';let executions=0;
+
+test('partial Work recovery: unknown_message never decides Goal completion or repeats execution',async()=>{
+ const db=await fixture();let executions=0,checks=0;
+ const uncertain=true;
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
-  if(op==='policy'||op==='snapshot')return{};
-  if(op==='execute'){executions++;throw Error('a partial research goal must not be re-dispatched')}
-  throw Error(op);
- });
- try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',rollout:'live'});
-  await handoffGoal(db,goalId);
-  await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget,started_at,finished_at) VALUES('partial-research-cycle','bot-0','tenant',2,0,0,'old','ended','{}',now(),now())");
-  await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,goal_id,status,expires_at,result,created_at,finished_at) VALUES('open-research','partial-research-cycle','bot-0','tenant',2,'research','','read the requested public facts',$1,'partial',now()+interval '1 hour',$2,now(),now())",[goalId,JSON.stringify({status:'partial',summary:'已读取部分公开来源',effects:[{id:'open-research:0',status:'confirmed'}],evidence:[{source:'fixture',reference:'checked'}],unfinished:['未能访问的其余来源']})]);
-  await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
-  await coordinator.tick();await coordinator.active?.task;
-  const view=await coordinator.repo.view('tenant','bot-0');
-  assert.equal(executions,0,'re-dispatching would replay confirmed sends; abandoning would drop them');
-  assert.equal(view.goals[0].status,'active','confirmed effects and remaining items stay visible');
-  assert.equal(view.cycles[0].reason,'handoff_partial_open');assert.equal(view.actions.length,1);
-  assert.equal(view.settings.state,'backoff');assert.equal(view.settings.last_error,'handoff_partial_open');
-  const delay=(new Date(view.settings.next_wake_at).getTime()-Date.now())/1000;assert.ok(delay>880&&delay<=900,'the open handoff keeps its own wake for manual handling');
+  if(op==='policy')return{};
+  if(op==='receipt'){checks++;assert.equal(body.id,'partial-work');return{active:true,result:{status:'partial',effects:[{status:'unknown'}]}}}
+  if(op==='execute')executions++;throw Error(op);
+ });try{
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await handoffGoal(db,'partial-goal');
+  await savedWork(db,'partial-work',uncertain);
+  await coordinator.repo.configure('tenant','bot-0',2,{mode:'passive'});await coordinator.tick();
+  assert.equal(executions,0);assert.equal(checks,uncertain?1:0);
+  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(view.goals[0].status,'paused_mode','explicit mode pause is preserved; receipt recovery does not decide completion');
+  assert.equal(view.goals[0].progress,'');assert.equal(view.cycles.length,1);
+  assert.equal((await db.query('SELECT * FROM autonomy_wakes')).length,0);
+  assert.equal((await coordinator.repo.unconfirmed('tenant','bot-0')).length,0,'uncertain checks are bounded by backoff, settled results are never polled');
  }finally{await coordinator.stop();await db.close()}
 });
 
-test('a partial message with an unknown effect still waits for its authoritative receipt',async()=>{
- const db=await fixture();const goalId='cec9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c';let executions=0;
- const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
-  if(op==='policy'||op==='snapshot')return{};
-  if(op==='execute'){executions++;throw Error('an unsettled delivery must not be re-dispatched')}
-  throw Error(op);
- });
- try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',rollout:'live'});
-  await handoffGoal(db,goalId);
-  await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget,started_at,finished_at) VALUES('partial-unknown-cycle','bot-0','tenant',2,0,0,'old','ended','{}',now(),now())");
-  await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,goal_id,status,expires_at,result,created_at,finished_at) VALUES('mixed-partial','partial-unknown-cycle','bot-0','tenant',2,'message','private:12345678','deliver the accepted task result',$1,'partial',now()+interval '1 hour',$2,now(),now())",[goalId,JSON.stringify({status:'partial',summary:'一条气泡已确认，另一条回执未明',effects:[{id:'mixed-partial:0',status:'confirmed',receipt:'real-fixture-ack'},{id:'mixed-partial:1',status:'unknown'}],evidence:[],unfinished:[]})]);
-  await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
-  await coordinator.tick();await coordinator.active?.task;
-  const view=await coordinator.repo.view('tenant','bot-0');
-  assert.equal(executions,0);assert.equal(view.actions.length,1);
-  assert.equal(view.goals[0].status,'active','an unknown receipt is not a completion');
-  assert.equal(view.cycles[0].reason,'waiting_receipt');
-  const delay=(new Date(view.settings.next_wake_at).getTime()-Date.now())/1000;assert.ok(delay>250&&delay<=310,'the unsettled receipt keeps its bounded retry wake');
- }finally{await coordinator.stop();await db.close()}
-});
 
 test('one hundred sleeping robots have no active work or per-bot timers; offline wake never starts QQ',async()=>{
  const db=await fixture(100);let modelCalls=0;
@@ -445,47 +410,44 @@ test('one hundred sleeping robots have no active work or per-bot timers; offline
  }finally{await coordinator.stop();await db.close()}
 });
 
-test('passive mode settles old receipts without a model call, new wake or repeat effect',async()=>{
+test('passive mode settles original Work receipts without a model call, new wake or repeat effect',async()=>{
  const db=await fixture();let receiptCalls=0,executions=0,settled=false;
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
-  if(op==='policy'||op==='snapshot')return{};
-  if(op==='receipt'){receiptCalls++;return settled?{result:{status:'completed',summary:'late authoritative receipt',effects:[{id:'kept-unknown:0',status:'confirmed',receipt:'late-real-id'}],evidence:[],unfinished:[]}}:{result:{status:'unknown',effects:[{id:'kept-unknown:0',status:'unknown'}]}}}
-  if(op==='execute')executions++;
-  throw Error(op);
- });
- try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',rollout:'live'});
-  await db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget,started_at,finished_at) VALUES('closed-cycle','bot-0','tenant',2,0,0,'old','ended','{}',now(),now())");
-  await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at,result,created_at,finished_at) VALUES('kept-unknown','closed-cycle','bot-0','tenant',2,'message','private:12345678','one greeting','unknown',now()+interval '1 hour',$1,now(),now())",[JSON.stringify({status:'unknown',summary:'protocol response lost',effects:[{id:'kept-unknown:0',status:'unknown'}],usage})]);
-  await coordinator.repo.configure('tenant','bot-0',2,{mode:'passive'});
-  (coordinator as any).sampled.clear();await coordinator.tick();assert.equal(receiptCalls,1);assert.equal(coordinator.active,undefined);assert.equal(executions,0);
-  assert.equal((await coordinator.repo.policies()).length,1,'pending old receipt disappeared once passive policy was applied');
-  settled=true;await db.query("UPDATE autonomy_actions SET result=jsonb_set(result,'{receiptCheck,nextAt}','0') WHERE id='kept-unknown'");(coordinator as any).sampled.clear();await coordinator.tick();
-  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(view.actions[0].status,'completed');assert.equal(view.actions[0].result.effects[0].receipt,'late-real-id');assert.equal(view.settings.config.mode,'passive');assert.equal(view.settings.runtime_epoch,3);assert.equal(executions,0);assert.equal(receiptCalls,2);
-  const policies=await coordinator.repo.policies();assert.equal(policies.length,0,'fully settled passive work needs no policy install');assert.equal((await db.query('SELECT * FROM autonomy_wakes')).length,0);assert.equal((await db.query('SELECT * FROM commands')).length,0);
+  if(op==='policy')return{};
+  if(op==='receipt'){receiptCalls++;assert.equal(body.id,'kept-unknown');return{result:{status:settled?'completed':'unknown',effects:[{status:settled?'confirmed':'unknown',receipt:settled?'real-late-id':undefined}]}}}
+  if(op==='execute')executions++;throw Error(op);
+ });try{
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await savedWork(db,'kept-unknown',true);
+  await coordinator.repo.configure('tenant','bot-0',2,{mode:'passive'});await coordinator.tick();
+  assert.equal(receiptCalls,1);assert.equal(executions,0);assert.equal((await coordinator.repo.policies()).length,1);
+  settled=true;await db.query("UPDATE autonomy_cycles SET decision=decision-'receiptCheck' WHERE id='kept-unknown'");
+  (coordinator as any).sampled.clear();await coordinator.tick();
+  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(view.settings.runtime_epoch,3);assert.equal(receiptCalls,2);
+  assert.equal((await coordinator.repo.policies()).length,0);assert.deepEqual(await coordinator.repo.unconfirmed('tenant','bot-0'),[]);
+  assert.equal((await db.query('SELECT * FROM autonomy_wakes')).length,0);assert.equal((await db.query('SELECT * FROM commands')).length,0);
  }finally{await coordinator.stop();await db.close()}
 });
 
-test('known partial read results cannot starve uncertain external receipts',async()=>{
+
+test('settled cycle diagnostics cannot starve uncertain original Work receipts',async()=>{
  const db=await fixture(),coordinator=new AutonomyCoordinator(db,async()=>({}));
  try{
   await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await coordinator.repo.applied('tenant','bot-0',2);
-  const claim=await coordinator.repo.claim('fixture-owner');assert.ok(claim);
-  for(let n=0;n<20;n++){
-   await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at,result) VALUES($1,$2,'bot-0','tenant',2,'research','','read','partial',now()+interval '1 day',$3)",['read-'+n,claim.cycleId,JSON.stringify({status:'partial',effects:[],unfinished:['unavailable source']})]);
-  }
-  await db.query("INSERT INTO autonomy_actions(id,cycle_id,bot_id,tenant_id,epoch,kind,target,objective,status,expires_at,result) VALUES('uncertain',$1,'bot-0','tenant',2,'message','private:12345678','contact','partial',now()+interval '1 day',$2)",[claim.cycleId,JSON.stringify({status:'partial',effects:[{id:'uncertain:0',status:'confirmed'},{id:'uncertain:1',status:'unknown'}]})]);
-  assert.deepEqual((await coordinator.repo.unconfirmed('tenant','bot-0')).map(a=>a.id),['uncertain']);assert.equal((await coordinator.repo.unconfirmed('other-tenant','bot-0')).length,0);
+  for(let n=0;n<20;n++)await savedWork(db,'settled-'+n,false);
+  await savedWork(db,'uncertain',true);
+  assert.deepEqual((await coordinator.repo.unconfirmed('tenant','bot-0')).map(w=>w.id),['uncertain']);
+  assert.deepEqual(await coordinator.repo.unconfirmed('other-tenant','bot-0'),[]);
   await coordinator.repo.configure('tenant','bot-0',2,{mode:'passive'});await coordinator.repo.applied('tenant','bot-0',3);
   assert.equal((await coordinator.repo.policies()).length,1);
  }finally{await coordinator.stop();await db.close()}
 });
 
+
 test('expired health never claims a cycle; recovery re-arms and dispatches the due handoff',async()=>{
  const db=await fixture();const goalId='9c9a1bd2-2a4b-4a35-9f7b-1c2d3e4f5a6c';let executions=0;
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
-  if(op==='execute'){executions++;assert.equal(body.action.goalId,goalId);return{status:'completed',summary:'delivered after recovery',effects:[],evidence:[],unfinished:[],usage}}
+  if(op==='execute'){executions++;assert.equal(body.action.goalId,undefined);return{status:'completed',summary:'delivered after recovery',effects:[],evidence:[],unfinished:[],usage}}
   throw Error(op);
  });
  try{
@@ -581,7 +543,7 @@ test('bounded work identity covers its remaining steps and the Goal stays unchan
   await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',cycleSeconds:30});Date.now=()=>realNow()+elapsed;
   await handoffGoal(db,goalId);await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
   await coordinator.tick();await coordinator.active?.task;
-  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(view.actions[0].status,'completed');assert.equal(view.goals[0].status,'active');assert.equal(view.cycles[0].reason,'goal_awaits_model_decision');
+  const view=await coordinator.repo.view('tenant','bot-0');assert.ok(view.cycles[0].finished_at);assert.equal(view.goals[0].status,'active');assert.equal(view.cycles[0].reason,'activity_completed');
  }finally{Date.now=realNow;await coordinator.stop();await db.close()}
 });
 
@@ -604,36 +566,31 @@ test('a handoff accepted with a delay stays dormant until its due wake, then exe
   await db.query("UPDATE autonomy_goals SET source=jsonb_set(source,'{notBefore}',to_jsonb((extract(epoch from now())*1000)::bigint)) WHERE id=$1",[goalId]);
   const second=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
    if(op==='policy'||op==='snapshot')return{};
-   if(op==='execute'){executions++;assert.equal(body.action.goalId,goalId);assert.ok(body.action.requestSource.handoffId===goalId);return{status:'completed',summary:'delivered after restart',effects:[],evidence:[],unfinished:[],usage}}
+   if(op==='execute'){executions++;assert.equal(body.action.goalId,undefined);assert.equal(body.action.requestSource,undefined);return{status:'completed',summary:'delivered after restart',effects:[],evidence:[],unfinished:[],usage}}
    throw Error(op);
   });
   await second.tick();await second.active?.task;
   assert.equal(executions,1);
-  const view=await second.repo.view('tenant','bot-0');assert.equal(view.goals[0].status,'active');assert.equal(view.cycles[0].reason,'goal_awaits_model_decision');
+  const view=await second.repo.view('tenant','bot-0');assert.equal(view.goals[0].status,'active');assert.equal(view.cycles[0].reason,'activity_completed');
   await second.stop();
  }finally{await db.close()}
 });
 
-test('a repeated wake never repeats the executed reply',async()=>{
- const db=await fixture();const goalId='fdc9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c';let executions=0;
- const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
+test('settled Work and unchanged Goals do not generate a second execution on idle ticks',async()=>{
+ const db=await fixture();let executions=0;
+ const coordinator=new AutonomyCoordinator(db,async(_bot,op)=>{
   if(op==='policy'||op==='snapshot')return{};
-  if(op==='execute'){executions++;return{status:'completed',summary:'single delivery',effects:[{id:body.work.id+':0',status:'confirmed',receipt:'once'}],evidence:[],unfinished:[],usage}}
+  if(op==='execute'){executions++;return{status:'completed',effects:[{status:'confirmed',receipt:'once'}],usage}}
   throw Error(op);
- });
- try{
-  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});
-  await handoffGoal(db,goalId);await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
-  await coordinator.tick();await coordinator.active?.task;
-  // A duplicate of the original wake (lost-ack redelivery) must be a no-op.
-  await coordinator.repo.wake('tenant','bot-0',2,'handoff-received',0,'');
-  await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
-  await coordinator.tick();
-  const recheck=coordinator.active as {task:Promise<void>}|undefined;await recheck?.task;assert.equal(coordinator.active,undefined,'completed goal produces no second cycle');
-  await coordinator.tick();const again=coordinator.active as {task:Promise<void>}|undefined;await again?.task;assert.equal(executions,1);
-  const view=await coordinator.repo.view('tenant','bot-0');assert.equal(view.actions.length,1);assert.equal(view.goals[0].status,'active');
+ });try{
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});await handoffGoal(db,'unchanged-goal');
+  await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,'unchanged-goal');await coordinator.tick();await coordinator.active?.task;
+  for(let n=0;n<3;n++){await coordinator.tick();await coordinator.active?.task}
+  assert.equal(executions,1);const view=await coordinator.repo.view('tenant','bot-0');
+  assert.equal(view.cycles.filter(c=>c.work_expires_at).length,1);assert.equal(view.goals[0].status,'active');
  }finally{await coordinator.stop();await db.close()}
 });
+
 
 test('two due handoffs coalesce into one activation and leave both Goals to the main model',async()=>{
  const db=await fixture();const goals=['0ec9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c','1ec9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c'];const executed:string[]=[];
@@ -648,7 +605,7 @@ test('two due handoffs coalesce into one activation and leave both Goals to the 
   await coordinator.tick();await coordinator.active?.task;
   assert.deepEqual(executed,[undefined],'one wake does not automatically iterate or select Goals');
   const view=await coordinator.repo.view('tenant','bot-0');
-  assert.equal(view.actions.length,1);assert.equal(view.goals.every((g:any)=>g.status==='active'),true);
+  assert.equal(view.cycles.filter(c=>c.work_expires_at).length,1);assert.equal(view.goals.every((g:any)=>g.status==='active'),true);
   assert.equal((await db.query("SELECT count(*)::int AS n FROM autonomy_wakes WHERE bot_id='bot-0' AND reason<>'activity'"))[0].n,0,'no polling wake survives settled work');
  }finally{await coordinator.stop();await db.close()}
 });
@@ -664,6 +621,6 @@ test('agreement cancellation fences its own goal without touching another tenant
   assert.equal((await db.query('SELECT status FROM autonomy_goals WHERE id=$1',[goalId]))[0].status,'active');
   await coordinator.repo.reconcileAgreements({bot_id:'bot-0',tenant_id:'tenant'},[{id:agreementId,handoffId:goalId,revision:3,taskRevision:2,status:'canceled'}]);
   assert.equal((await db.query('SELECT status FROM autonomy_goals WHERE id=$1',[goalId]))[0].status,'abandoned');
-  assert.equal((await db.query('SELECT count(*)::int AS n FROM autonomy_actions'))[0].n,0);
+  assert.equal((await db.query("SELECT count(*)::int AS n FROM information_schema.tables WHERE table_name='autonomy_actions'"))[0].n,0);
  }finally{await coordinator.stop();await db.close()}
 });

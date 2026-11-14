@@ -14,7 +14,7 @@ export function registerExecutionMemory(app:FastifyInstance,db:Sql,runtime:(req:
   if(behavior.memory===false)return{memoryEnabled:false,experiences:[],sampledAt:Date.now()};
   if(v.scope==='self'){
    if(!v.work)throw toolConflict('自主经历需要当前真实任务身份',403);
-   const [work]=await db.query("SELECT a.id FROM autonomy_actions a JOIN autonomy_settings s ON s.bot_id=a.bot_id AND s.tenant_id=a.tenant_id AND s.epoch=a.epoch WHERE a.id=$1 AND a.bot_id=$2 AND a.tenant_id=$3 AND a.epoch=$4 AND a.status IN ('planned','executing') AND a.expires_at>now() AND s.config->>'mode'='active'",[v.work.id,bot.id,bot.tenant_id,v.work.epoch]);
+   const [work]=await db.query("SELECT c.id FROM autonomy_cycles c JOIN autonomy_settings s ON s.bot_id=c.bot_id AND s.tenant_id=c.tenant_id AND s.epoch=c.epoch WHERE c.id=$1 AND c.bot_id=$2 AND c.tenant_id=$3 AND c.epoch=$4 AND c.state='acting' AND c.finished_at IS NULL AND c.work_expires_at>now() AND s.config->>'mode'='active' AND s.lease_owner=c.owner AND s.lease_until>now()",[v.work.id,bot.id,bot.tenant_id,v.work.epoch]);
    if(!work)throw toolConflict('自主经历任务已失效',403);
   }else if(v.scope.startsWith('private:')&&v.scope!=='private:'+v.senderId)throw toolConflict('记忆会话身份不一致',403);
   if(v.shareOwnerActivity&&(!owner||owner!==v.senderId))throw toolConflict('跨会话公开经历只允许真实主人查询',403);
