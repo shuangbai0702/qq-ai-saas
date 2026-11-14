@@ -23,7 +23,7 @@ def fixture():
 class BriefExperience(unittest.TestCase):
     def test_shared_journal_channel_switch_does_not_replay_execution_view(self):
         db=sqlite3.connect(':memory:');self.addCleanup(db.close)
-        db.execute('CREATE TABLE pipeline_actions(id TEXT,at REAL,state TEXT,result TEXT)')
+        db.execute('CREATE TABLE pipeline_events(event TEXT,at REAL,source TEXT,status TEXT,result TEXT)')
         raw=fixture();store=NS(db=db,shared_context=True,model_journals={},autonomous_experience=raw,reflection=NS(core_note=lambda *a,**k:{}))
         with patch('context_foundation.read',return_value={}),patch('semantic_runtime.filter_retired_context',side_effect=lambda s,c,v:v),patch('shared_context.delivery_context',return_value={}),patch('agreement_state.context_view',return_value=[]):
             private=conversation_context(store,{'memory':True,'ownerUin':'12345678'},'private:12345678','12345678','real input',200)
@@ -36,7 +36,7 @@ class BriefExperience(unittest.TestCase):
 
     def test_terminal_unfinished_does_not_revive_history_but_unknown_receipt_survives(self):
         db=sqlite3.connect(':memory:');self.addCleanup(db.close)
-        db.execute('CREATE TABLE pipeline_actions(id TEXT,at REAL,state TEXT,result TEXT)')
+        db.execute('CREATE TABLE pipeline_events(event TEXT,at REAL,source TEXT,status TEXT,result TEXT)')
         raw=fixture();row=raw['actions'][0]
         row.update(status='blocked',effects=[])
         store=NS(db=db,autonomous_experience=raw)
@@ -90,7 +90,7 @@ class BriefExperience(unittest.TestCase):
 
     def test_shared_entry_scopes_still_filter_before_compaction(self):
         db=sqlite3.connect(':memory:');self.addCleanup(db.close)
-        db.execute('CREATE TABLE pipeline_actions(id TEXT,at REAL,state TEXT,result TEXT)')
+        db.execute('CREATE TABLE pipeline_events(event TEXT,at REAL,source TEXT,status TEXT,result TEXT)')
         raw=fixture();other={**raw['actions'][0],'id':'other','sourceScope':'group:55555','target':'group:55555'};raw['actions'].append(other)
         store=NS(db=db,autonomous_experience=raw);cfg={'memory':True,'ownerUin':'12345678'}
         private=experience_context(store,'private:12345678',cfg);outer=experience_context(store,'self',cfg)
