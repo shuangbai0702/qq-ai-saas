@@ -38,6 +38,17 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(self.st.reflection.retirement_pending())
         db.execute('INSERT INTO memory_semantic_purges VALUES(1,?)',(time.time(),));db.commit()
         self.assertFalse(self.st.reflection.retirement_pending())
+    def test_retired_diagnostics_resume_original_cleanup_without_journal_change(self):
+        import semantic_media
+        finish_semantic_batches(self.st,{},SCOPE)
+        before=copy.deepcopy(self.st.model_journals[SCOPE].last.wire)
+        with self.st.db:
+            self.st.db.execute('INSERT INTO semantic_media_batches VALUES(?,?,?,?,?)',(1,'[]','[]',model_json(['historical-image-hash']),0))
+        self.assertTrue(self.st.reflection.retirement_pending())
+        result=finish_semantic_batches(self.st,{},SCOPE)
+        self.assertEqual(result['media']['retired_untracked_records'],1)
+        self.assertFalse(self.st.reflection.retirement_pending())
+        self.assertEqual(self.st.model_journals[SCOPE].last.wire,before)
     def test_checkpoint_system_adoption_requires_config_permit_and_no_new_submitted_turn(self):
         from context_protocol import READONLY_CURRENT
         j=self.st.model_journals[SCOPE]
