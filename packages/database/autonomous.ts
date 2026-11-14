@@ -297,7 +297,7 @@ export class AutonomyRepository {
  async planActivity(claim:any,usage:any){
   return this.db.transaction(async tx=>{
    const [s]=await tx.query("SELECT * FROM autonomy_settings WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND lease_owner=$4 AND lease_until>now() FOR UPDATE",[claim.bot_id,claim.tenant_id,claim.epoch,claim.owner]);
-   if(!s||!AutonomyConfigSchema.parse(s.config).activityEnabled)throw new AutonomyConflict();
+   if(!s||!AutonomyConfigSchema.parse(s.config).activityEnabled&&!claim.wakes?.some((w:any)=>['handoff-due','operator-wake'].includes(w.reason)))throw new AutonomyConflict();
    const [prior]=await tx.query('SELECT id FROM autonomy_actions WHERE cycle_id=$1 AND bot_id=$2 AND tenant_id=$3 AND goal_id IS NULL',[claim.cycleId,claim.bot_id,claim.tenant_id]);
    if(prior)throw new AutonomyConflict();
    const action={id:randomUUID(),kind:'research',target:'',objective:'根据当前真实状态自主选择行动或休息'};

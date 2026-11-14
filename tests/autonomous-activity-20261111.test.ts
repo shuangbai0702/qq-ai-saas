@@ -71,3 +71,44 @@ test('activity preserves IPC failure and conservative ceiling instead of reporti
   assert.equal(view.actions[0].status,'unknown');
  }finally{await c.stop();await f.close()}
 });
+
+
+test('due goals coalesce into one main activation without selecting a goal or replaying its fields',async()=>{
+ const f=await fixture();let n=0;
+ const c=new AutonomyCoordinator(f.db,async(_b,op,body:any)=>{
+  if(op==='policy'||op==='snapshot')return{};
+  if(op==='execute'){
+   n++;assert.equal(body.action.autonomousMoment,true);assert.equal(body.action.activationTrigger,'handoff-due');
+   assert.equal(body.action.goalId,undefined);assert.equal(body.action.target,'');assert.equal(body.action.goalSnapshot,undefined);
+   assert.ok(!JSON.stringify(body).includes('PRIVATE_GOAL_PAYLOAD'));
+   return{status:'completed',effects:[],evidence:[],unfinished:[],usage:{modelCalls:1,toolCalls:0,tokens:200}};
+  }throw Error(op);
+ });
+ try{
+  await c.repo.configure('t','b',1,{mode:'active',activityEnabled:false});
+  const bot=(await c.repo.policies())[0];
+  for(const id of ['00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000002'])
+   await f.db.query("INSERT INTO autonomy_goals(id,bot_id,tenant_id,origin,status,title,reason,success_condition,source) VALUES($1,'b','t','owner_request','active','PRIVATE_GOAL_PAYLOAD','why','condition',$2)",[id,JSON.stringify({handoffId:id,scope:'private:12345678',senderId:'12345678',owner:true,notBefore:Date.now()-1000})]);
+  const before=await f.db.query('SELECT * FROM autonomy_goals ORDER BY id');
+  for(const goal of before)await c.repo.wake('t','b',bot.epoch,'handoff-due',0,goal.id);
+  c.repo.readGoals=async()=>{throw Error('No automatic Goal snapshot')};
+  c.repo.dueHandoffs=async()=>{throw Error('No Goal selection')};
+  c.repo.planHandoff=async()=>{throw Error('No Goal dispatch')};
+  await c.tick();await c.active?.task;assert.equal(n,1);
+  assert.deepEqual(await f.db.query('SELECT * FROM autonomy_goals ORDER BY id'),before);
+  const rows=await f.db.query('SELECT goal_id,kind,target FROM autonomy_actions');assert.deepEqual(rows,[{goal_id:null,kind:'research',target:''}]);
+  await c.tick();await c.active?.task;assert.equal(n,1,'consumed due wakes do not loop over retained goals');
+ }finally{await c.stop();await f.close()}
+});
+
+test('busy due wake keeps its original durable identity without starting a model or dispatch',async()=>{
+ const f=await fixture();const c=new AutonomyCoordinator(f.db,async(_b,op)=>{if(op==='snapshot')return{foregroundBusy:true};if(op==='policy')return{};throw Error('no execution')});
+ try{
+  await c.repo.configure('t','b',1,{mode:'active',activityEnabled:false});
+  const bot=(await c.repo.policies())[0];await c.repo.wake('t','b',bot.epoch,'handoff-due',0,'exact-goal');
+  await c.tick();await c.active?.task;
+  assert.equal((await f.db.query('SELECT count(*)::int n FROM autonomy_actions'))[0].n,0);
+  const wakes=await f.db.query("SELECT reason,scope,extract(epoch FROM due_at-now()) AS wait FROM autonomy_wakes WHERE reason='handoff-due'");
+  assert.equal(wakes.length,1);assert.equal(wakes[0].scope,'exact-goal');assert.ok(Number(wakes[0].wait)>0);
+ }finally{await c.stop();await f.close()}
+});

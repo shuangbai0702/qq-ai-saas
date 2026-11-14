@@ -48,8 +48,8 @@ export function taskResultFacts(kind:string,result:any,limit=350){
 }
 
 /** One shared scheduler. PostgreSQL owns clocks and work; Python owns execution.
- * There is no outer planning model: due handoffs dispatch directly, and one
- * coalesced timed wake may activate the same native inner runtime. */
+ * Only coalesced service wakes activate the main AI; Goal semantics never
+ * select an execution plan or dispatch a message from this scheduler. */
 export class AutonomyCoordinator {
  readonly repo:AutonomyRepository;readonly owner='autonomy-'+randomUUID();
  timer?:NodeJS.Timeout;heartbeatTimer?:NodeJS.Timeout;heartbeatTask?:Promise<void>;closed=false;busy=false;active?:{claim:any;actionId?:string;feedbackVersion?:number;task:Promise<void>};
@@ -173,9 +173,7 @@ export class AutonomyCoordinator {
   const estimateReason=source==='estimated'&&['execution_outcome_unknown','missing_model_usage','invalid_model_usage'].includes(raw.estimateReason)?raw.estimateReason:undefined;
   record(source,{...(estimateReason?{estimateReason}:{}),tokens:raw.tokens,modelCalls:raw.modelCalls,toolCalls:raw.toolCalls,externalActions,reported:{tokens:reported('tokens'),modelCalls:reported('modelCalls'),toolCalls:reported('toolCalls')}});
  }
- /** Transitional dispatch still owns existing receipts and budgets. A tool or
-  * delivery result settles execution only; the model's CAS Goal tool alone
-  * decides whether its cognitive goal is complete. */
+ /** Wake only; existing transport owners still settle in-flight receipts and budgets. */
  private async cycle(active:{claim:any;actionId?:string;feedbackVersion?:number}){
   const c=active.claim,config=c.config,tokenBudget=cycleTokens(c),usage=emptyUsage();let deadline=this.deadline(c,usage);
   let reason='no_due_work',sleep=0,feedback:any=null,faultContext:any=undefined;
@@ -195,8 +193,7 @@ export class AutonomyCoordinator {
      let result:any,executeStarted=false;
      try{
       await this.call(c,'policy',await this.policy(c,c.cycleId,continuation.id),2000);
-      const goalSnapshot=await this.repo.readGoals({id:c.bot_id,...c},{scope:continuation.continuationOfMoment?(c.runtime_mode==='shared'?'self':c.config.activityScope||'self'):continuation.requestSource?.scope||'self',senderId:'0',work:{id:continuation.id,epoch:c.epoch}});
-      executeStarted=true;result=await this.call(c,'execute',{work,action:{...continuation,goalSnapshot}},Math.max(1000,deadline-Date.now()+2000));
+      executeStarted=true;result=await this.call(c,'execute',{work,action:{...continuation}},Math.max(1000,deadline-Date.now()+2000));
       await this.repo.settleToolContinuation(c,continuation,result.continuationAccepted===false?'pending':'done');
      }catch{
       if(!executeStarted){
@@ -216,9 +213,8 @@ export class AutonomyCoordinator {
      this.charge(usage,continuation.id,'execute',result);usage.externalActions=await externalCount(this.db,c.cycleId);await this.repo.feedback(c,continuation.id,result);
      reason='tool_continuation_'+result.status;break;
     }
-    const goal=(await this.repo.dueHandoffs(c))[0];
-    if(!goal){
-     if(config.activityEnabled&&c.wakes.some((w:any)=>w.reason==='activity')&&usage.modelCalls===0){
+    const trigger=c.wakes.find((w:any)=>(w.reason==='activity'&&config.activityEnabled)||w.reason==='handoff-due'||w.reason==='operator-wake');
+    if(trigger&&usage.modelCalls===0){
       const action=await this.repo.planActivity(c,usage);
       if(!await this.repo.markExecuting(c,action.id)){await this.repo.cancelPlanned(c,action.id,'自主时刻身份变化');reason='action_invalidated';break}
       active.actionId=action.id;
@@ -230,8 +226,7 @@ export class AutonomyCoordinator {
       let executeStarted=false;
       try{
        await this.call(c,'policy',await this.policy(c,c.cycleId,action.id),2000);
-       const goalSnapshot=await this.repo.readGoals({id:c.bot_id,...c},{scope:c.runtime_mode==='shared'?'self':c.config.activityScope||'self',senderId:'0',work:{id:action.id,epoch:c.epoch}});
-       executeStarted=true;feedback=await this.call(c,'execute',{work,action:{...action,goalSnapshot,autonomousMoment:true,outerDecision:{at:new Date().toISOString(),reason:'autonomous_moment',cycleId:c.cycleId}}},Math.max(1000,deadline-Date.now()+2000))}
+       executeStarted=true;feedback=await this.call(c,'execute',{work,action:{...action,activationTrigger:trigger.reason,autonomousMoment:true,outerDecision:{at:new Date().toISOString(),reason:'autonomous_moment',cycleId:c.cycleId}}},Math.max(1000,deadline-Date.now()+2000))}
       catch(error){
        const fault=classifyFault(error);
        faultContext={class:fault.faultClass,reason:fault.reason,phase:'activity_execute',configRevision:c.revision,epoch:c.epoch,generation:c.generation,at:Date.now()};
@@ -251,82 +246,8 @@ export class AutonomyCoordinator {
       this.charge(usage,action.id,'execute',feedback);usage.externalActions=await externalCount(this.db,c.cycleId);await this.repo.feedback(c,action.id,feedback);
       reason=faultContext?.reason||(feedback.status==='completed'?'activity_completed':feedback.status==='canceled'?'activity_canceled':'activity_'+feedback.status);
       sleep=Number.isSafeInteger(feedback.restSeconds)?Math.max(300,Math.min(config.maxSleepSeconds,feedback.restSeconds)):config.activityIntervalMinutes*60;
-     }
-     break;
     }
-    if((usage.modelCalls>0||usage.tokens>0)&&await this.repo.otherDue(c)){reason='fair_yield';sleep=1;break}
-    const prior=await this.repo.goalAction(c,goal.id);
-    if(prior){
-     const effects=Array.isArray(prior.result?.effects)?prior.result.effects:[];
-     const unsettled=prior.status==='unknown'||prior.status==='partial'&&effects.some((effect:any)=>effect.status==='unknown');
-     if(unsettled){
-      // A real dispatch is awaiting its authoritative receipt. The tick loop
-      // keeps checking it; this cycle only re-arms a bounded retry.
-      // Unknown effects remain the original ledger's responsibility; retry limits never abandon them.
-      reason='waiting_receipt';sleep=300;break;
-     }
-     if(prior.status==='completed'){
-      await this.repo.markGoalReview(c,prior.id,goal.revision);
-      reason='goal_awaits_model_decision';continue;
-     }
-     if(prior.status==='partial'){
-      // An honest completion: the only outward action of a message handoff is
-      // its delivery, and every effect was protocol-confirmed. The runtime may
-      // have crashed after sending, before recording its terminal status.
-      if(prior.kind==='message'&&prior.result?.deliveryComplete===true&&!(prior.result?.unfinished||[]).length&&effects.length&&effects.every((effect:any)=>effect.status==='confirmed')){
-       await this.repo.markGoalReview(c,prior.id,goal.revision);
-       reason='goal_awaits_model_decision';continue;
-      }
-      // Any other partial (e.g. research with unfinished items) is not a
-      // completion: the goal keeps its confirmed effects and remaining items,
-      // without a re-dispatch (a planned handoff would replay confirmed sends)
-      // or an abandon that would drop them. The wake keeps it visible for
-      // manual handling via chat cancellation or a config revision.
-      reason='handoff_partial_open';sleep=900;break;
-     }
-     if((prior.status==='blocked'||prior.actions>=4)&&Number(prior.result?.goalRevision||1)===goal.revision){
-      await this.repo.markGoalReview(c,prior.id,goal.revision);reason='handoff_needs_review';continue;
-     }
-     // A settled cancellation never dispatched its effect; one bounded retry.
-    }
-    if(usage.modelCalls>=config.cycleModelCalls||usage.tokens>=tokenBudget){reason='budget_exhausted';sleep=15;break}
-    const prepared=await this.repo.planHandoff(c,goal,usage);
-    const action=prepared.action;
-    if(!await this.repo.markExecuting(c,action.id)){await this.repo.cancelPlanned(c,action.id,'身份已变化，或该对象有未确认的历史动作');reason='action_invalidated';break}
-    active.actionId=action.id;
-    // Source comes from the durable accepted goal, never from a model action.
-    // D1: the dereferenced goal source describes where the task came from; it
-    // never widens the requestSource same-scope delivery rule.
-    deadline=this.deadline(c,usage);
-    const task={id:action.id,kind:action.kind,target:action.target,goalId:goal.id,objective:action.objective,sourceScope:prepared.source?.scope,outerDecision:{at:new Date().toISOString(),reason:'handoff_due',cycleId:c.cycleId},requestSource:prepared.source,...(prepared.evidenceSources?.length?{evidenceSources:prepared.evidenceSources}:{})};
-    let executeStarted=false;
-    try{
-     await this.call(c,'policy',await this.policy(c,c.cycleId,action.id),2000);
-     const goalSnapshot=await this.repo.readGoals({id:c.bot_id,...c},{scope:prepared.source?.scope||'self',senderId:'0',work:{id:action.id,epoch:c.epoch}});
-     executeStarted=true;feedback=await this.call(c,'execute',{work:this.work(active,usage,action.id,deadline),action:{...task,goalSnapshot},feedback},Math.max(1000,deadline-Date.now()+2000))}
-    catch{
-     if(!executeStarted)feedback=notStarted(action.objective);
-     else{
-     await this.call(c,'cancel',{},2000).catch(()=>{});
-     const receipt=await this.call(c,'receipt',{id:action.id},2000).catch(()=>null);
-     feedback=receipt?.result||{status:'unknown',summary:'执行连接中断，未得到完整结果；不得重复投递',effects:receipt?.effects||[],evidence:[],unfinished:[action.objective]};
-     }
-    }
-    if(!feedback.usage||['tokens','modelCalls','toolCalls'].some(name=>!Number.isSafeInteger(feedback.usage[name])||feedback.usage[name]<0)){
-     const reported=feedback.usage||{};
-     const known=(name:string,fallback:number)=>Number.isSafeInteger(reported[name])&&reported[name]>=0?reported[name]:Math.max(0,fallback);
-     feedback.usage={tokens:known('tokens',tokenBudget-usage.tokens),modelCalls:known('modelCalls',config.cycleModelCalls-usage.modelCalls),toolCalls:known('toolCalls',config.cycleToolCalls-usage.toolCalls),estimated:true};
-    }
-    feedback=await this.repo.withExternalEffects(c,action.id,feedback);
-    this.charge(usage,action.id,'execute',feedback);usage.externalActions=await externalCount(this.db,c.cycleId);await this.repo.feedback(c,action.id,feedback);
-    // Confirmed execution never implicitly completes or rewrites a Goal.
-    // Review fencing prevents replay while its current revision awaits the model.
-     if(feedback.status==='completed'){
-      await this.repo.markGoalReview(c,action.id,goal.revision);reason='goal_awaits_model_decision';continue;
-     }
-    if(feedback.status==='blocked'){await this.repo.markGoalReview(c,action.id,goal.revision);reason='handoff_needs_review';continue}
-    if(feedback.status==='canceled'){reason='foreground_or_mode_changed';sleep=15;break}
-    reason='waiting_receipt';sleep=300;break;
+    break;
    }
    // An unknown execution may reserve the full ceiling. That accounting is
    // not evidence that budget exhaustion caused the execution failure.
@@ -342,7 +263,7 @@ export class AutonomyCoordinator {
   }finally{
    // Unfinished due goals retain their task wake. Timed activity owns exactly
    // one separate wake, never a backlog or a fast retry/model polling loop.
-   if(!['no_due_work','handoff_executed','handoff_blocked'].includes(reason)&&!reason.startsWith('activity_')&&(await this.repo.dueHandoffs(c)).length)await this.repo.wake(c.tenant_id,c.bot_id,c.epoch,'handoff-due',Math.max(0,sleep),'').catch(()=>{});
+   if(reason==='foreground_work_busy'||reason==='action_invalidated'||feedback?.continuationAccepted===false||feedback?.stopReason==='not_started')for(const wake of c.wakes.filter((w:any)=>['handoff-due','operator-wake'].includes(w.reason)))await this.repo.wake(c.tenant_id,c.bot_id,c.epoch,wake.reason,Math.max(15,sleep),wake.scope).catch(()=>{});
    if(c.wakes.some((w:any)=>w.reason==='activity'))await this.repo.scheduleActivity(c,Math.max(300,sleep||config.activityIntervalMinutes*60),true).catch(()=>{});
    await this.repo.finish(c,usage,reason,faultContext);
    // Withdraw the short effect permit before releasing the global slot. A
