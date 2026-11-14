@@ -59,9 +59,14 @@ class Activity(unittest.IsolatedAsyncioTestCase):
         return await self.brain.execute('qq',{'work':work,'action':action})
     async def test_same_main_wire_silent_count_tools_restart_and_busy(self):
         self.tool_step=True
-        first=await self.activate();self.assertEqual(first['status'],'completed',first)
+        with patch('execution_memory.context',side_effect=AssertionError('automatic execution replay is forbidden')) as replay:
+            first=await self.activate()
+        replay.assert_not_called()
+        self.assertEqual(first['status'],'completed',first)
         self.assertEqual(len(self.requests),2)
         first_wire=self.requests[0]['messages'];second_wire=self.requests[1]['messages']
+        for field in ('autonomous_experience','execution_experience','execution_memory_guidance'):
+            self.assertNotIn(field,model_json(first_wire))
         self.assertEqual(second_wire[:len(first_wire)],first_wire)
         origin=source(first_wire[-1]);self.assertEqual(origin['kind'],'platform_service_not_user')
         self.assertIn('EXACT_CURRENT_GOAL',json.dumps(first_wire[-1],ensure_ascii=False))

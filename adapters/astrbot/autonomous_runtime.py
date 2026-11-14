@@ -617,8 +617,6 @@ class AutonomousRuntime:
         result={'status':'blocked','reason':'task_not_started','text':'','usage':{'tokens':0,'modelCalls':0,'toolCalls':0},'evidence':[]}
         failure=''
         try:
-            import execution_memory
-            event.set_extra('_hosted_execution_memory',await execution_memory.context(s,event,scope,lambda:self.valid(id,identity) and st.reflection.epoch()==memory_epoch,identity))
             if not self.valid(id,identity) or st.reflection.epoch()!=memory_epoch:raise asyncio.CancelledError('stale internal memory context')
             work.stage('context');context=self.prepare_context(id,event,scope,action['objective'])
             tools=self.task_tools(id,identity,scope,event)
