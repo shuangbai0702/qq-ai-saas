@@ -174,7 +174,7 @@ class Activity(unittest.IsolatedAsyncioTestCase):
 
     async def test_other_modes_count_only_real_dialogue(self):
         identifier='service-dialogue';scope='private:12345678'
-        self.st.db.execute('INSERT INTO pipeline_actions(id,scope,state,at) VALUES(?,?,?,?)',(identifier,scope,'completed',time.time()));self.st.db.commit()
+        self.st.db.execute("INSERT INTO pipeline_events(event,scope,subject,source,status,at) VALUES(?,?,'service','autonomous','completed',?)",(identifier,scope,time.time()));self.st.db.commit()
         extras={'_hosted_initiative':True,'_hosted_autonomous_action':{'kind':'message'}}
         event=NS(get_platform_id=lambda:'qq',get_extra=lambda key,default=None:extras.get(key,default),get_message_str=lambda:'Service invitation, not a QQ author')
         work=NS(event_id=identifier,scope=scope,source='autonomous',subject='12345678',confirmed_messages=0,confirmed_reply_parts=[],confirmed_media_kinds=[],summary_materials=[])

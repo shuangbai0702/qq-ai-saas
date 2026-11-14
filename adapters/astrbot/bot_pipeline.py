@@ -277,7 +277,7 @@ def experience_context(store,scope,cfg):
     # Local receipts close the interval before PG's next policy refresh. They
     # are the same execution ledger, not model-generated autobiographical text.
     local=[]
-    for id,at,status,raw in store.db.execute('SELECT id,at,state,result FROM pipeline_actions WHERE result IS NOT NULL ORDER BY at DESC LIMIT 6'):
+    for id,at,status,raw in store.db.execute("SELECT event,at,status,result FROM pipeline_events WHERE source='autonomous' AND result IS NOT NULL ORDER BY at DESC LIMIT 6"):
         result=json.loads(raw);task=result.get('task')
         if not task:continue
         persisted=actions.get(id,{})
@@ -500,7 +500,7 @@ class BotPipeline:
         db.execute('''CREATE TABLE IF NOT EXISTS pipeline_events(scope TEXT,subject TEXT,event TEXT,at REAL,source TEXT,stage TEXT,status TEXT,reason TEXT,attempted INTEGER DEFAULT 0,confirmed INTEGER DEFAULT 0,PRIMARY KEY(scope,subject,event))''')
         db.execute('CREATE INDEX IF NOT EXISTS pipeline_events_by_event ON pipeline_events(event)')
         columns={r[1] for r in db.execute('PRAGMA table_info(pipeline_events)')}
-        for name,kind in (('work_id','TEXT'),('passes','INTEGER DEFAULT 0'),('exit_reason','TEXT'),('updated_at','REAL'),('finished_at','REAL'),('execution_started','INTEGER')):
+        for name,kind in (('work_id','TEXT'),('passes','INTEGER DEFAULT 0'),('exit_reason','TEXT'),('updated_at','REAL'),('finished_at','REAL'),('execution_started','INTEGER'),('fingerprint','TEXT'),('authority_epoch','INTEGER'),('expires_at','REAL'),('result','TEXT')):
             if name not in columns:db.execute('ALTER TABLE pipeline_events ADD COLUMN '+name+' '+kind)
         # Recovery time is observable; an exited activation's actual finish is
         # not. Leave finished_at unknown rather than backfilling a false end.
@@ -521,10 +521,21 @@ class BotPipeline:
             WHERE e.scope=i.scope AND e.subject=i.subject AND e.event=i.event
             AND e.status='waiting' AND e.reason='group_waiting'
             AND e.attempted=0 AND e.confirmed=0)""");db.commit()
-        db.execute('CREATE TABLE IF NOT EXISTS pipeline_actions(id TEXT PRIMARY KEY,fingerprint TEXT,epoch INTEGER,scope TEXT,expires REAL,state TEXT,result TEXT,at REAL)')
+        # One-time ownership transfer protects current activation provenance.
+        # Future service and human Work use the same event lifecycle; no view,
+        # second writer or ongoing old-version compatibility remains.
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pipeline_actions'").fetchone():
+            with db:
+                collision=db.execute("SELECT 1 FROM pipeline_actions a JOIN pipeline_events e ON e.event=a.id AND e.source='autonomous' LIMIT 1").fetchone()
+                if collision:raise ValueError('service_work_owner_collision')
+                db.execute("""INSERT INTO pipeline_events(scope,subject,event,at,source,stage,status,reason,fingerprint,authority_epoch,expires_at,result)
+                  SELECT scope,'service',id,at,'autonomous','ingress',CASE WHEN state='working' THEN 'interrupted' ELSE state END,
+                    CASE WHEN state='working' THEN 'runtime_restarted' ELSE '' END,fingerprint,epoch,expires,result FROM pipeline_actions""")
+                db.execute('DROP TABLE pipeline_actions')
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS pipeline_service_event ON pipeline_events(event) WHERE source='autonomous'")
         db.execute('CREATE TABLE IF NOT EXISTS pipeline_action_effects(action TEXT,sequence INTEGER,method TEXT,target TEXT,state TEXT,receipt TEXT,at REAL,PRIMARY KEY(action,sequence))')
         db.execute("UPDATE pipeline_action_effects SET state='unknown' WHERE state='dispatching'")
-        db.execute("UPDATE pipeline_actions SET state='interrupted' WHERE state='working'");db.commit()
+        db.commit()
         db.execute('CREATE TABLE IF NOT EXISTS pipeline_handoffs(id TEXT PRIMARY KEY,epoch INTEGER NOT NULL,data TEXT NOT NULL,state TEXT NOT NULL,receipt TEXT,at REAL NOT NULL)');db.commit()
         self.retire_transport_notifications()
         self.resume_deferred_mentions()
@@ -801,8 +812,8 @@ class BotPipeline:
         model_research=isinstance(work,Work) and work.source in ('scheduled_contact','owner_contact') and request.get('kind')=='research'
         internal=isinstance(work,Work) and work.source=='autonomous' and request.get('parentActionId')==work.event_id
         if internal:
-            row=self.db.execute('SELECT state FROM pipeline_actions WHERE id=?',(work.event_id,)).fetchone()
-            if not row or row[0]!='working' or request.get('kind') not in ('research','message') or request.get('delaySeconds',0)<300 or request.get('agreement'):raise ValueError('invalid_internal_continuation')
+            row=self.db.execute("SELECT status FROM pipeline_events WHERE event=? AND source='autonomous'",(work.event_id,)).fetchone()
+            if not row or row[0] not in ('received','sending') or request.get('kind') not in ('research','message') or request.get('delaySeconds',0)<300 or request.get('agreement'):raise ValueError('invalid_internal_continuation')
         if not isinstance(work,Work) or not ((work.observes_input or model_research) and work.ledger_owner or internal) or not work.event_id:raise ValueError('handoff_requires_owned_input')
         if work.bot_id!=identity['botId'] or any(work.lease.get(k)!=identity[k] for k in ('tenantId','botId','generation','revision')):raise ValueError('handoff_identity_mismatch')
         stable=json.dumps([identity['tenantId'],identity['botId'],identity['generation'],work.scope,work.subject,work.event_id],separators=(',',':'))
@@ -851,7 +862,7 @@ class BotPipeline:
 
     def handoff_catalog(self,work):
         """Only the original human in the original scope can manage a task."""
-        internal=isinstance(work,Work) and work.source=='autonomous' and self.db.execute("SELECT 1 FROM pipeline_actions WHERE id=? AND state='working'",(work.event_id,)).fetchone()
+        internal=isinstance(work,Work) and work.source=='autonomous' and self.db.execute("SELECT 1 FROM pipeline_events WHERE event=? AND source='autonomous' AND status IN ('received','sending')",(work.event_id,)).fetchone()
         if not isinstance(work,Work) or not (work.observes_input and work.ledger_owner or internal):return []
         rows=self.db.execute("SELECT id,data,state,receipt FROM pipeline_handoffs WHERE state IN ('pending','accepted','canceled') ORDER BY at DESC LIMIT 256").fetchall()
         result=[]
@@ -944,11 +955,12 @@ class BotPipeline:
         now=time.time()
         if identity['expiresAt']/1000<=now:raise ValueError('expired_internal_work')
         with self.db:
-            added=self.db.execute("INSERT OR IGNORE INTO pipeline_actions VALUES(?,?,?,?,?,'working',NULL,?)",(identity['id'],fingerprint,identity['epoch'],scope,identity['expiresAt']/1000,now)).rowcount
-            existing=self.db.execute('SELECT fingerprint,state,result FROM pipeline_actions WHERE id=?',(identity['id'],)).fetchone()
+            added=self.db.execute("INSERT OR IGNORE INTO pipeline_events(scope,subject,event,at,source,stage,status,reason,fingerprint,authority_epoch,expires_at) VALUES(?,?,?,?,'autonomous','ingress','received','',?,?,?)",(scope,'service:'+identity['botId'],identity['id'],now,fingerprint,identity['epoch'],identity['expiresAt']/1000)).rowcount
+            existing=self.db.execute("SELECT fingerprint,status,result FROM pipeline_events WHERE event=? AND source='autonomous'",(identity['id'],)).fetchone()
         if existing[0]!=fingerprint:raise ValueError('action_identity_mismatch')
         if not added:return {'duplicate':True,'status':existing[1],'result':json.loads(existing[2]) if existing[2] else None}
         work=Work(identity['botId'],scope,'service:'+identity['botId'],str(event.get_self_id()),identity['id'],'autonomous',now,lease)
+        work.ledger_owner=True
         event.set_extra('_hosted_pipeline',work);work.stage('ingress');return work
 
     def internal_effect(self,work,method,target):
@@ -963,7 +975,7 @@ class BotPipeline:
         self.db.execute("UPDATE pipeline_action_effects SET state='confirmed',receipt=? WHERE action=? AND sequence=? AND state='dispatching'",(str(receipt)[:256],work.event_id,sequence));self.db.commit()
 
     def internal_result(self,id):
-        row=self.db.execute('SELECT state,result FROM pipeline_actions WHERE id=?',(id,)).fetchone()
+        row=self.db.execute("SELECT status,result FROM pipeline_events WHERE event=? AND source='autonomous'",(id,)).fetchone()
         if not row:return None
         effects=[{'id':id+':'+str(seq),'logicalActionId':id+':message:'+target if method in ('send_private_msg','send_group_msg') else id+':'+str(seq),'method':method,'target':target,'status':'unknown' if state=='dispatching' else state,'receipt':receipt} for seq,method,target,state,receipt in self.db.execute('SELECT sequence,method,target,state,receipt FROM pipeline_action_effects WHERE action=? ORDER BY sequence',(id,))]
         result=json.loads(row[1]) if row[1] else None
@@ -976,7 +988,7 @@ class BotPipeline:
     def finish_internal(self,work,result,handoff_id=None):
         result['actionUnitVersion']=2
         with self.db:
-            self.db.execute('UPDATE pipeline_actions SET state=?,result=? WHERE id=?',(result['status'],json.dumps(result,ensure_ascii=False),work.event_id))
+            self.db.execute("UPDATE pipeline_events SET status=?,result=?,updated_at=? WHERE event=? AND scope=? AND source='autonomous'",(result['status'],json.dumps(result,ensure_ascii=False),time.time(),work.event_id,work.scope))
             if handoff_id:
                 import agreement_state
                 agreement_state.settle_task(self.db,handoff_id,result)
@@ -1018,10 +1030,13 @@ class BotPipeline:
             # Retain exact recovery evidence while its model input lacks final
             # provenance; a blanket 24h/2048 prune caused irreparable Holds.
             protected="NOT EXISTS (SELECT 1 FROM memory_message_sources m WHERE m.direction='model' AND json_extract(m.data,'$.source_scope')=pipeline_events.scope AND json_extract(m.data,'$.event_id')=pipeline_events.event AND json_extract(m.data,'$.settlement') IS NULL)" if self.db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_message_sources'").fetchone() else '1'
+            if 'memory_message_sources' in {r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}:
+                protected+=" AND NOT EXISTS(SELECT 1 FROM memory_message_sources m WHERE m.direction='activation' AND CASE WHEN json_valid(m.data) THEN json_extract(m.data,'$.owner_work')=pipeline_events.event ELSE 1 END)"
             # Blocked inputs retain their own duplicate guard. Missing-input
             # activations have only this content-free key: pruning it would
             # silently turn an unresolved old delivery into a new execution.
-            terminal="status IN ('sent','silent','superseded','blocked','error','interrupted','combined') AND attempted=confirmed AND coalesce(reason,'') NOT IN ('waiting_responsibility_missing','context_capacity_ready') AND coalesce(reason,'') NOT LIKE 'context_capacity_waiting:%'"
+            protected+=" AND NOT EXISTS(SELECT 1 FROM pipeline_action_effects e WHERE e.action=pipeline_events.event AND e.state IN ('dispatching','unknown'))"
+            terminal="(status IN ('sent','silent','superseded','blocked','error','interrupted','combined') OR source='autonomous' AND status IN ('completed','canceled')) AND attempted=confirmed AND coalesce(reason,'') NOT IN ('waiting_responsibility_missing','context_capacity_ready') AND coalesce(reason,'') NOT LIKE 'context_capacity_waiting:%'"
             self.db.execute('DELETE FROM pipeline_events WHERE at<? AND '+terminal+' AND '+protected,(now-86400,))
             self.db.execute('DELETE FROM pipeline_events WHERE rowid NOT IN (SELECT rowid FROM pipeline_events ORDER BY at DESC LIMIT 2048) AND '+terminal+' AND '+protected)
         if not work.ledger_owner:
