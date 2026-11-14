@@ -83,4 +83,8 @@ async def prepare_goals(store,event,settings,current):
     if isinstance(goals,list):
         value['goals']=[{k:g[k] for k in ('id','title','status','revision') if k in g} for g in goals if isinstance(g,dict) and g.get('status') not in ('completed','abandoned','canceled')]
     else:value['status']='unknown'
-    event.set_extra('_hosted_periodic_guidance',reminder+'\n当前目标（本次读取，详情可用目标工具查询）：'+model_json(value))
+    from agreement_state import context_view,OPEN_STATUSES
+    owner=str(((settings.get('config') or {}).get('behavior') or {}).get('ownerUin') or '')
+    agreements=context_view(store.db,work.scope,owner=owner) if store.db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_agreements'").fetchone() else []
+    value['agreements']=[{k:a[k] for k in ('id','topic','status','revision','due','applies_here') if k in a} for a in agreements if a.get('status') in OPEN_STATUSES]
+    event.set_extra('_hosted_periodic_guidance',reminder+'\n当前目标与约定（本次读取，详情见原工具及有效上下文）：'+model_json(value))

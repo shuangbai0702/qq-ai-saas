@@ -14,7 +14,7 @@ import asyncio,hashlib,json,time,re
 
 STATUSES=('proposed','accepted','fulfilled','canceled','expired','uncertain')
 OPEN_STATUSES=('proposed','accepted','uncertain')
-MAX_OPEN=32
+MAX_OPEN=5
 MAX_TOPIC=120
 MAX_DETAIL=200
 MAX_AUDIENCES=8

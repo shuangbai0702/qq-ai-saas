@@ -1,5 +1,7 @@
 import {z} from 'zod';
 
+export const MAX_CURRENT_GOALS=3;
+
 export const AutonomyConfigSchema=z.object({
   mode:z.enum(['passive','active']).default('passive'),
   rollout:z.enum(['shadow','live']).default('live'),
