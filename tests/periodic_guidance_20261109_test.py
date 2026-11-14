@@ -87,7 +87,7 @@ class Settlement(unittest.IsolatedAsyncioTestCase):
             runtime=install_runtime(core,{'bot':lease})
             try:
                 runtime['manage']('bot',{'action':'list'});store=runtime['stores']['bot'];store.shared_context=True
-                event=NS(get_platform_id=lambda:'bot',get_extra=lambda k,d=None:d)
+                event=NS(get_platform_id=lambda:'bot',get_extra=lambda k,d=None:d,get_message_str=lambda:'fixture message')
                 for index in range(1,8):
                     scope='private:12345678' if index%2 else 'group:55555'
                     work=Work('bot',scope,'12345678','99999999',str(index),'message',time.time(),lease)
@@ -98,6 +98,51 @@ class Settlement(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(guidance.REMINDER,guidance.view(store.db,'bot_shared'))
                 self.assertEqual(store.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],0)
             finally:runtime['close']()
+
+
+class GoalReminder(unittest.IsolatedAsyncioTestCase):
+    async def test_goal_list_uses_committed_cadence_only_and_preserves_prefix(self):
+        from unittest.mock import patch,AsyncMock
+        from readonly_journal import Prepared
+        temp=tempfile.TemporaryDirectory();self.addCleanup(temp.cleanup)
+        db=sqlite3.connect(Path(temp.name)/'reminder.sqlite');self.addCleanup(db.close)
+        BotPipeline(db);guidance.initialize(db)
+        db.execute("INSERT INTO fishbot_guidance_cadence VALUES('bot_shared',7)");db.commit()
+        journal=ReadonlyJournal(db,'bot_shared');extras={};work=NS(scope='private:12345678')
+        event=NS(get_extra=lambda k,d=None:extras.get(k,d),set_extra=lambda k,v:extras.update({k:v}))
+        extras['_hosted_pipeline']=work
+        store=NS(db=db,shared_context=True,model_journals={'bot_shared':journal})
+        value={'goals':[{'id':'g','title':'当前目标','status':'active','revision':2,'progress':'not repeated','actions':['not repeated']}]}
+        read=AsyncMock(return_value=model_json(value));reader=NS(name='read_autonomous_goals',call=read)
+        with patch('autonomous_goals.tools',return_value=[reader]):
+            await guidance.prepare_goals(store,event,{},lambda:True)
+            reminder=extras['_hosted_periodic_guidance'];self.assertIn('当前目标',reminder);self.assertNotIn('not repeated',reminder)
+            self.assertIn(guidance.REMINDER,reminder)
+            state={'periodic_guidance':reminder};wire=[{'role':'system','content':'FIXED'},{'role':'user','content':reminder}]
+            journal.serial=1;p=Prepared(1,None,copy.deepcopy(wire),copy.deepcopy(wire),state,1,time.time(),'test');self.assertTrue(journal.commit(p))
+            before=copy.deepcopy(journal.last.wire)
+            # Restart reads the actual committed snapshot, not an event cache.
+            store.model_journals={};db.execute("UPDATE fishbot_guidance_cadence SET completed=8");db.commit()
+            await guidance.prepare_goals(store,event,{},lambda:True)
+            self.assertEqual(extras['_hosted_periodic_guidance'],reminder);self.assertEqual(read.await_count,1)
+            self.assertEqual(ReadonlyJournal(db,'bot_shared').last.wire,before)
+            db.execute("UPDATE fishbot_guidance_cadence SET completed=14");db.commit()
+            await guidance.prepare_goals(store,event,{},lambda:True);self.assertEqual(read.await_count,2)
+            self.assertIn('已完成14轮',extras['_hosted_periodic_guidance'])
+            print('GOAL_REMINDER_SYNTHETIC_CHARS '+str(len(reminder)-len(guidance.view(db,'bot_shared'))))
+
+    async def test_unavailable_is_unknown_and_stale_result_is_cancelled(self):
+        from unittest.mock import patch,AsyncMock
+        import asyncio
+        db=sqlite3.connect(':memory:');self.addCleanup(db.close);guidance.initialize(db)
+        db.execute("INSERT INTO fishbot_guidance_cadence VALUES('bot_shared',7)");db.commit()
+        extras={'_hosted_pipeline':NS(scope='group:55555')};event=NS(get_extra=lambda k,d=None:extras.get(k,d),set_extra=lambda k,v:extras.update({k:v}))
+        store=NS(db=db,shared_context=True,model_journals={})
+        with patch('autonomous_goals.tools',return_value=[]):
+            await guidance.prepare_goals(store,event,{},lambda:True)
+            value=extras['_hosted_periodic_guidance'];self.assertIn('"status":"unknown"',value);self.assertNotIn('"goals":[]',value)
+        with patch('autonomous_goals.tools',return_value=[NS(name='read_autonomous_goals',call=AsyncMock(return_value='{"goals":[]}'))]):
+            with self.assertRaises(asyncio.CancelledError):await guidance.prepare_goals(store,event,{},lambda:False)
 
 
 if __name__=='__main__':unittest.main()
