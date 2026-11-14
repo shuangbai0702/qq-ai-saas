@@ -1,11 +1,10 @@
 """Event-driven autonomous work inside the existing hosted runtime.
 
-PostgreSQL/Node owns the ledger and wakes: an accepted foreground handoff
-becomes a goal, its due wake dispatches one inner execution directly, and the
-actual result settles the goal. This adapter owns only that bounded model call
-and the current member's existing context, tools and pipeline. There is no
-outer orientation/planning loop. Timed activity and model-selected rest use
-the same durable scheduler; owner contact and group participation stay separate.
+Node owns scheduled wake identity and budget leases. Each legal wake resumes
+the member's original main Journal and Work; the model alone chooses action,
+rest and Goal changes. Tool completions return to that same pipeline. There is
+no independent thinking context or automatic Goal execution/settlement.
+Owner contact and group participation retain their separate business semantics.
 """
 import asyncio,hashlib,json,re,time
 from types import SimpleNamespace
@@ -27,23 +26,6 @@ def evidence_limits(evidence):
         'self_interest_choice':'只证明根据本轮真实读取形成了自主关注选择，不代表已掌握主题知识或获得新权限。',
     }
     return list(dict.fromkeys(levels.get(item.get('source'),'证据源能力范围未经声明，不应推断已验证其内容。') for item in evidence))[:6]
-
-
-def json_object(text):
-    value=text.strip()
-    if value.startswith('```'):
-        value=re.sub(r'^```(?:json)?\s*|\s*```$','',value,flags=re.I)
-    parsed=json.loads(value)
-    if not isinstance(parsed,dict):raise ValueError('decision_not_object')
-    return parsed
-
-
-def bounded(value,depth=0):
-    if depth>5:return None
-    if isinstance(value,str):return value[:350]
-    if isinstance(value,list):return [bounded(x,depth+1) for x in value[-4:]]
-    if isinstance(value,dict):return {k:bounded(v,depth+1) for k,v in list(value.items())[:20]}
-    return value
 
 
 class AutonomousRuntime:
@@ -280,55 +262,16 @@ class AutonomousRuntime:
             result.append(candidate)
         return result[:20]
 
-    def observed_conversations(self,id):
-        """Bounded existing facts, independent of permission to initiate contact."""
-        s=self.settings[id];st=self.store(id,s);owner=str((s['config'].get('behavior') or {}).get('ownerUin') or '')
-        event=self.events.get(id) or {};scopes=[]
-        if owner:scopes.append('private:'+owner)
-        if event.get('scope') and event['scope'] not in scopes:scopes.append(event['scope'])
-        result=[]
-        for scope in scopes[:2]:
-            row=st.db.execute('SELECT subject,last_user,last_bot,last_text,last_output FROM contacts WHERE scope=?',(scope,)).fetchone()
-            if not row:continue
-            subject,user,bot,text,output=row
-            receipt=st.db.execute("SELECT event,at,status,attempted,confirmed FROM pipeline_events WHERE scope=? AND subject=? AND source='message' ORDER BY at DESC LIMIT 1",(scope,subject)).fetchone()
-            # A previous reply must not be presented as the result of a newer
-            # message that is still in flight. The ledger has no message body;
-            # the existing contact row supplies only its last bounded summary.
-            outcome=None
-            if receipt and abs(receipt[1]-user)<1:
-                outcome={'eventId':receipt[0],'status':receipt[2],'protocolAttempts':receipt[3],'protocolConfirmed':receipt[4]}
-            result.append({'scope':scope,'senderId':subject,'owner':bool(owner and subject==owner),'lastUserAt':int(user*1000),'lastInput':text[:180],'lastReplyAt':int(bot*1000) if bot else None,'lastReply':output[:400] if bot>=user else None,'outcome':outcome})
-        return result
-
-    def snapshot(self,id,ledger_only=False):
-        s=self.settings[id];st=self.store(id,s);now=time.time()
-        if ledger_only:
-            import agreement_state
-            return {'pendingHandoffs':st.pipeline.pending_handoffs(self.policies[id]['epoch']),
-                    'agreementStates':agreement_state.task_states(st.db),'canceledHandoffs':st.pipeline.canceled_handoffs(),
-                    'foregroundFeedback':self.feedbacks.get(id),'event':self.events.get(id),
-                    'feedbackVersion':self.feedbacks.get(id,{}).get('at',0),
-                    'foregroundBusy':st.active>(1 if id in self.running else 0) or bool(getattr(st,'waiting',0)),
-                    'nextEventCheckSeconds':self.policies[id]['config'].get('minSleepSeconds',600)}
-        candidates=self.candidates(id)
-        # The supervisor sees private context, but the eventual task receives
-        # only its destination-scoped context. Group output never inherits a
-        # different person's private facts as a second injected memory.
-        contexts=[{'scope':c['scope'],'dialogue':bounded(st.participation.context(c['scope'],cfg=s['config'].get('behavior') or {})),'companion':bounded(companion_state.context(st.db,s['config'],c['scope'],now))} for c in candidates[:3]]
-        policy=self.policies[id]['config'];interval=policy.get('minSleepSeconds',600)
-        event=self.events.get(id);delay=interval
-        deferred=[{k:c[k] for k in ('scope','owner','notBefore')} for c in self.candidates(id,include_waiting=True) if not c['eligibleNow']][:3]
-        # Self experiences come from the authoritative action ledger (source-
-        # attributed tool tasks), never from persona facts: research results
-        # are task outcomes, not the bot's personal history.
-        experiences=bot_pipeline.experience_context(st,'self',s['config'].get('behavior') or {}).get('actions',[]) if (s['config'].get('behavior') or {}).get('memory',True) else []
-        catalog=self.capability_catalog(id,candidates)
-        available=[t['name'] for t in catalog['innerTools'] if t['available']]
-        unavailable=['web_search']+[t['name'] for t in catalog['innerTools'] if not t['available']]
-        behavior=s['config'].get('behavior') or {};start,end=behavior.get('quietStart',autonomy.BEHAVIOR_DEFAULTS['quietStart']),behavior.get('quietEnd',autonomy.BEHAVIOR_DEFAULTS['quietEnd'])
-        quiet_hours={'startHour':start,'endHour':end,'enabled':start!=end,'activeNow':initiative.quiet(s['config'],now),'timezone':str(initiative.ZONE),'scope':'unsolicited_outbound_messages','meaning':'真实配置的主动消息安静时段；不表示联系人正在休息，普通入站回复仍按原管线处理。'}
-        return {'foregroundBusy':st.active>(1 if id in self.running else 0),'feedbackVersion':self.feedbacks.get(id,{}).get('at',0),'foregroundFeedback':self.feedbacks.get(id), 'now':int(now*1000),'persona':s['config'].get('systemPrompt',''),'self':companion_state.context(st.db,s['config'],'self',now),'selfExperiences':experiences,'identity':{'ownerId':str((s['config'].get('behavior') or {}).get('ownerUin') or ''),'selfId':str(s.get('expectedUin') or '')},'contacts':candidates,'deferredContacts':deferred,'contexts':contexts,'observedConversations':self.observed_conversations(id),'event':event,'nextEventCheckSeconds':delay,'wakePolicy':{'idleCheckSeconds':interval,'maxSleepSeconds':policy.get('maxSleepSeconds',86400),'quietHours':quiet_hours},'availableTools':available,'unavailableTools':unavailable,**catalog,'pendingHandoffs':st.pipeline.pending_handoffs(self.policies[id]['epoch'])}
+    def snapshot(self,id):
+        """Scheduler metadata only; main cognition stays in the main Journal."""
+        s=self.settings[id];st=self.store(id,s)
+        import agreement_state
+        return {'pendingHandoffs':st.pipeline.pending_handoffs(self.policies[id]['epoch']),
+                'agreementStates':agreement_state.task_states(st.db),'canceledHandoffs':st.pipeline.canceled_handoffs(),
+                'foregroundFeedback':self.feedbacks.get(id),'event':self.events.get(id),
+                'feedbackVersion':self.feedbacks.get(id,{}).get('at',0),
+                'foregroundBusy':st.active>(1 if id in self.running else 0) or bool(getattr(st,'waiting',0)),
+                'nextEventCheckSeconds':self.policies[id]['config'].get('minSleepSeconds',600)}
 
     def can_reflect(self,id):
         p=self.policies.get(id);s=self.settings.get(id)
@@ -463,58 +406,6 @@ class AutonomousRuntime:
         if (event.get_extra('_hosted_autonomous_action') or {}).get('autonomousMoment'):
             tools.append(Rest(name='rest_until_next_activity',description='自主决定休息及下一次通用活动间隔。不会取消已有目标，不阻止正常聊天或到期任务。至少300秒，最多当前平台maxSleepSeconds。',parameters={'type':'object','properties':{'seconds':{'type':'integer','minimum':300,'maximum':self.policies[id]['config']['maxSleepSeconds']}},'required':['seconds'],'additionalProperties':False}))
         return tools
-
-    def capability_catalog(self,id,contacts):
-        from types import SimpleNamespace
-        from research_tools import availability
-        policy=self.policies[id]['config'];b=self.settings[id]['config'].get('behavior') or {}
-        entries=[];descriptions={}
-        from bilibili_tools import manifest as bilibili_manifest
-        bili_bridge=bilibili_manifest(self.settings[id])
-        search_enabled=b.get('bilibiliSearchEnabled',False) if bili_bridge is None else any(t.get('operation')=='search' for t in bili_bridge.get('operations',[])) and bili_bridge.get('allowAutonomous',False)
-        if not search_enabled:descriptions['bilibili_search']={'name':'bilibili_search','available':False,'reason':'机器人未开启B站公开搜索；主动模式不授予此能力','blockedScope':'tool','code':'feature_disabled'}
-        specs=[('research','内部工具任务：按目标查询、研究或执行已授权能力；最终文字不自动发聊天，工具可有真实写入，具体以innerTools和当前权限为准','research'),('message','自己选择本轮允许的对象和话题，交内层聊天并经公共管线发送',None),('profile_signature','按人物状态和意愿更新自己的QQ签名','profile_signature'),('qzone_publish','按自身经历、兴趣和意愿发布自己QQ空间的文字动态','qzone_publish')]
-        for kind,description,cap in specs:
-            # The catalogue describes inner configuration, never outer grants.
-            authorized={'research':True,'message':True,'profile_signature':bool(b.get('qqProfile') and b.get('autoSignature',True)),'qzone_publish':bool(b.get('qzone'))}[kind]
-            scope=contacts[0]['scope'] if kind=='message' and contacts else 'self'
-            # Metadata-only handles are never executed and contain no Work
-            # permit. QQ tool authorization is the same allowed() used at run.
-            identity={'id':'capability-catalog','kind':kind,'principal':'autonomous-service'}
-            extras={'_hosted_internal_work':identity,'_hosted_autonomous_action':{'kind':kind}}
-            event=SimpleNamespace(get_extra=lambda key,default=None:extras.get(key,default))
-            tools=self.task_tools(id,identity,scope,event) if authorized else []
-            reasons=[];names=[]
-            if not authorized:reasons.append('内层对应功能未开启')
-            if policy.get('rollout')=='shadow' and kind!='research':reasons.append('影子模式只记录意图，不执行对外操作')
-            for tool in tools:
-                name=tool.name;ready=True;reason=''
-                search_state=availability() if name=='bilibili_search' and bili_bridge is None else None
-                if name.startswith('bilibili_') and bili_bridge and bili_bridge.get('cooldownUntil'):
-                    from datetime import datetime,timezone
-                    try:
-                        remaining=(datetime.fromisoformat(bili_bridge['cooldownUntil'].replace('Z','+00:00'))-datetime.now(timezone.utc)).total_seconds()
-                        if remaining>0:search_state={'available':False,'retryAfterSeconds':int(remaining)+1}
-                    except (ValueError,TypeError):pass
-                if search_state and not search_state['available']:ready=False;reason='B站公开搜索暂处服务冷却，执行时再次核对'
-                if name=='recall_memory' and not b.get('memory',True):ready=False;reason='记忆已关闭，无可检索的记忆数据'
-                effect=bool(getattr(tool,'hosted_effect',False))
-                if effect and policy.get('rollout')=='shadow':ready=False;reason='影子模式不允许对外操作，读取能力仍可使用'
-                descriptions[name]={'name':name,'description':tool.description,'parameters':tool.parameters,'sideEffect':effect,'enabled':True,'authorized':authorized,'available':ready,'readiness':'available_to_attempt' if ready else 'temporarily_unavailable','evidence':'not_executed_by_catalog',**({'reason':reason} if reason else {})}
-                if search_state and not search_state['available']:descriptions[name].update(blockedScope='tool',code='service_cooldown',retryAfterSeconds=search_state['retryAfterSeconds'])
-                names.append(name)
-            if kind=='message' and not contacts:reasons.append('本轮没有可联系会话；可等待事件或选择其他能力')
-            expected={'profile_signature':'hosted_qq_signature','qzone_publish':'hosted_qq_publish'}.get(kind)
-            if authorized and expected and expected not in names:reasons.append('对应QQ功能开关或自动操作授权未开启')
-            limits={}
-            if kind=='message':limits={'targets':[c['scope'] for c in contacts],'delivery':'内层回复经OutputPlan投递，是否成功以协议回执为准'}
-            if kind=='profile_signature':limits={'maxChars':40,'dailyLimit':b.get('dailyAutoSignatureLimit',2),'remaining':'执行前查现有操作账本；不得假设仍有额度'}
-            if kind=='qzone_publish':limits={'maxChars':500,'visibility':b.get('qzoneVisibility','friends'),'protocolSupport':'尚未由本次调用验证；以实际QQ接口回执为准'}
-            if kind=='research':limits={'network':'以innerTools中的实际B站工具、权限和回执为准；字幕不等于观看声画，未列出的能力不可用' if any(n.startswith('bilibili_') for n in names) else '联网工具未开启；仅现有状态与已开启的记忆读取'}
-            entries.append({'kind':kind,'description':description,'authorized':authorized,'available':authorized and not reasons,'tools':names,'blockedReasons':reasons,'limits':limits})
-        catalog=list(descriptions.values())
-        revision=hashlib.sha256(json.dumps(catalog,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
-        return {'capabilityCatalog':entries,'innerTools':catalog,'capabilityRevision':revision}
 
     def make_event(self,id,identity,scope,objective,self_id):
         from astrbot.core.platform.astrbot_message import AstrBotMessage,MessageMember
@@ -655,7 +546,7 @@ class AutonomousRuntime:
             await st.wait_compression()
             if self.settings.get(id) is not lease or getattr(st,'_closing',False):raise ValueError('stale_internal_work')
         if operation=='policy':return self.install(id,data)
-        if operation=='snapshot':return self.snapshot(id,ledger_only=data.get('ledgerOnly') is True)
+        if operation=='snapshot':return self.snapshot(id)
         if operation=='handoff_ack':
             p=self.policies.get(id)
             if not p or p['lease'] is not self.settings.get(id) or data.get('epoch')!=p['epoch'] or not self.permit_current(p):raise ValueError('stale_handoff_ack')

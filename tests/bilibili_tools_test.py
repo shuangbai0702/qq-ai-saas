@@ -7,9 +7,9 @@ sys.path.insert(0,str(Path('adapters/astrbot').resolve()))
 import bilibili_tools
 
 async def main():
-    admitted=asyncio.Event();canceled=asyncio.Event();late_admitted=asyncio.Event();release_admission=asyncio.Event();reject_model=False
+    admitted=asyncio.Event();canceled=asyncio.Event();late_admitted=asyncio.Event();release_admission=asyncio.Event();reject_model=False;payloads=[]
     async def submit(request):
-        payload=await request.json();admitted.set()
+        payload=await request.json();payloads.append(payload);admitted.set()
         if reject_model:return web.json_response({'execution':'failed','receipt':{'status':'rejected'},'error':{'code':'model_not_configured','retry':'never','userMessage':'configure image model'}},status=409)
         if payload['operation']=='analyze':late_admitted.set();await release_admission.wait()
         return web.json_response({'id':'job','state':'queued'})
@@ -45,6 +45,22 @@ async def main():
             rejection=json.loads(await tool.call(None))
             assert rejection=={'execution':'failed','receipt':{'status':'rejected'},'error':{'code':'model_not_configured','retry':'never','userMessage':'configure image model'}}
             assert evidence==[],'rejected admission must not publish a pending task'
+            # Completion is not a semantic veto on further observation. Keep
+            # the original Work and completion lease; exact args retain the
+            # same idempotency key, a different range is a distinct observation.
+            reject_model=False
+            completion={'id':'original-job','owner':'original-completion-lease','workId':'original-work','scope':work.scope,'senderId':'123','originEvent':'real-event','objective':'analyze fixture'}
+            event.get_extra=lambda key:work if key=='_hosted_pipeline' else completion if key=='_hosted_tool_completion' else None
+            continued=bilibili_tools.tools(settings,event,lambda:True,[])[0]
+            before=len(payloads)
+            for start in (0,0,30):
+                result=json.loads(await continued.call(None,start=start))
+                assert result['execution']=='pending'
+            calls=payloads[before:]
+            assert len(calls)==3
+            assert calls[0]['stepId']==calls[1]['stepId'] and calls[0]['stepId']!=calls[2]['stepId']
+            assert all(c['workId']=='original-work' and c['senderId']=='123' and c['continuation']=={'actionId':'original-job','owner':'original-completion-lease'} and c['origin']['eventId']=='real-event' for c in calls)
+            print('PASS completion preserves exact Work/lease and param identity for model-chosen supplementary analysis')
             print('PASS missing model 409 remains failed/rejected without queue evidence')
             print('PASS Bilibili cancellation propagates, cancels original job, and stale configuration cannot submit')
             print('PASS delayed media admission cancels stale Work before pending evidence')

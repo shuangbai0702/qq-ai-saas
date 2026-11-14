@@ -70,7 +70,7 @@ export class AutonomyCoordinator {
   return{tenantId:bot.tenant_id,botId:bot.bot_id,epoch:bot.epoch,generation:bot.generation,revision:bot.revision,config:AutonomyConfigSchema.parse(bot.config),observedThrough:Number(bot.observation?.at||0),latestFeedback:bot.observation?.latestFeedback||(bot.observation?.phase==='foreground_result'?bot.observation:undefined),issuedAt,until:Date.now()+14000,cycleId,actionId};
  }
  private async freshSnapshot(bot:any){
-  const snapshot=await this.call(bot,'snapshot',{ledgerOnly:true},3000);
+  const snapshot=await this.call(bot,'snapshot',{},3000);
   await this.repo.reconcileCancellations(bot,Array.isArray(snapshot.canceledHandoffs)?snapshot.canceledHandoffs:[]);
   await this.repo.reconcileAgreements(bot,Array.isArray(snapshot.agreementStates)?snapshot.agreementStates:[]);
   for(const request of (Array.isArray(snapshot.pendingHandoffs)?snapshot.pendingHandoffs:[]).slice(0,16)){

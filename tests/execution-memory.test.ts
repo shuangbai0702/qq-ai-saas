@@ -67,7 +67,7 @@ test('shared execution memory recalls durable receipts with disabled tools and p
  assert.equal((await get({scope:'private:12345678',senderId:'23456789'})).statusCode,403);
  assert.equal((await get({scope:'self',senderId:'0'})).statusCode,403);
  assert.equal((await get(body,{authorization:'Bearer '+bridgeToken(key,sibling,bot.generation,bot.revision)})).statusCode,401);
- const outer=await new AutonomyRepository(app.db).experience(bot.tenant_id,id);assert.ok(outer.execution.experiences.some((x:any)=>x.actionId===own));
+ const outer=await memory.recall(bot.tenant_id,id,{scope:'self',senderId:'0',ownerId:''});assert.ok(outer.experiences.some((x:any)=>x.actionId===own));
  assert.ok(!JSON.stringify(outer).includes(siblingAction));
  assert.equal((await memory.recall('foreign-tenant',id,{scope:'self',senderId:'0',ownerId:''})).experiences.length,0);
  // Resetting the query/client has no effect on durable history, nor does the

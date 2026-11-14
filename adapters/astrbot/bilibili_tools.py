@@ -71,8 +71,6 @@ def tools(settings,event,current,evidence,identity=None,db=None):
             live=manifest(settings)
             if not live or live.get('settingsRevision')!=bridge.get('settingsRevision'):return json.dumps({'error':'configuration_changed','receipt':{'status':'rejected'}})
             operation=self.name[len('bilibili_'):]
-            if event is not None and event.get_extra('_hosted_tool_completion') and operation=='analyze':
-                return json.dumps({'error':'completion_cannot_resubmit_analysis','receipt':{'status':'rejected'}})
             spec=next((s for s in live.get('operations',[]) if s.get('operation')==operation),None)
             if spec is None:return json.dumps({'error':'capability_unavailable','receipt':{'status':'rejected'}})
             if not identity and (spec.get('write') or spec.get('scope')!='public.read'):

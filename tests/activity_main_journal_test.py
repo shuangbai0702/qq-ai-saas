@@ -58,6 +58,25 @@ class Activity(unittest.IsolatedAsyncioTestCase):
         if continuation:action['continuation']={'id':'effect-complete','parentActionId':'original','result':{'status':'completed','evidence':['actual result']}}
         if action_patch:action.update(action_patch)
         return await self.brain.execute('qq',{'work':work,'action':action})
+    async def test_scheduler_snapshot_never_builds_a_second_cognitive_context(self):
+        self.brain.install('qq',{'tenantId':'tenant','botId':'bot','generation':1,'revision':1,'epoch':1,'until':time.time()*1000+14000,'config':{'mode':'active','rollout':'live','minSleepSeconds':300}})
+        feedback={'at':123,'phase':'foreground_result','result':{'status':'unknown','protocolAttempts':1,'protocolConfirmed':0}}
+        self.brain.feedbacks['qq']=feedback
+        before=self.st.db.execute('SELECT count(*) FROM pipeline_events').fetchone()[0]
+        with patch.object(self.brain,'candidates',side_effect=AssertionError('scheduler must not project social history')),patch('companion_state.context',side_effect=AssertionError('scheduler must not repeat personality/memory')):
+            view=await self.brain.handle('qq','snapshot',{})
+        self.assertEqual(set(view),{'pendingHandoffs','agreementStates','canceledHandoffs','foregroundFeedback','event','feedbackVersion','foregroundBusy','nextEventCheckSeconds'})
+        self.assertIs(view['foregroundFeedback'],feedback)
+        self.assertEqual(view['feedbackVersion'],123)
+        self.assertEqual(view['foregroundFeedback']['result']['status'],'unknown')
+        self.st.active+=1
+        try:self.assertTrue(self.brain.snapshot('qq')['foregroundBusy'])
+        finally:self.st.active-=1
+        self.assertFalse(hasattr(self.brain,'capability_catalog'))
+        self.assertFalse(hasattr(self.brain,'observed_conversations'))
+        self.assertEqual(self.requests,[])
+        self.assertEqual(self.st.db.execute('SELECT count(*) FROM pipeline_events').fetchone()[0],before)
+
     async def test_retired_independent_execution_has_no_work_or_model_side_effect(self):
         from autonomous_runtime import PreflightRejected
         before=self.st.db.execute('SELECT count(*) FROM pipeline_events').fetchone()[0]
