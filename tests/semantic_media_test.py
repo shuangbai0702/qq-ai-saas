@@ -246,6 +246,21 @@ class ProtocolOwnership(unittest.IsolatedAsyncioTestCase):
         await self.bind();self.event.bot.get_image.assert_awaited_once_with(file='inbound-image-id')
         self.assertEqual(self.release()['deleted'],1);self.assertFalse(self.file.exists())
 
+    async def test_reported_transfer_size_does_not_reject_verified_local_original(self):
+        self.event.bot.get_image.return_value={'file':str(self.file),'file_size':'376865'}
+        await self.bind()
+        self.assertEqual(self.db.execute('SELECT count(*) FROM semantic_media_owned').fetchone()[0],1)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM semantic_media_protocol_issues').fetchone()[0],0)
+        self.assertEqual(self.release()['deleted'],1);self.assertFalse(self.file.exists())
+
+    async def test_small_reported_size_cannot_bypass_real_file_limit(self):
+        self.event.bot.get_image.return_value={'file':str(self.file),'file_size':'1'}
+        with patch.dict('model_images.POLICY',{'maxSourceBytes':len(self.bytes)-1}):
+            await self.bind()
+        self.assertEqual(self.db.execute('SELECT count(*) FROM semantic_media_owned').fetchone()[0],0)
+        self.assertEqual(self.db.execute('SELECT reason FROM semantic_media_protocol_issues').fetchone()[0],'protocol_image_size_or_type')
+        self.assertTrue(self.file.exists())
+
     async def test_protocol_new_owner_is_durable_before_resize_yields(self):
         await self.bind()
         with self.db:
