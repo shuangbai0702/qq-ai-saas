@@ -58,6 +58,40 @@ class StableCatalog(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('permit',expected)
         print('PASS 35 bridge operations and all configured feature schemas byte-identical across 24 event variants')
 
+    async def test_scene_switch_uses_on_demand_catalogs_without_automatic_replay(self):
+        import quote_reply,qq_favorite_tools
+        quote_reply.initialize(self.store.db)
+        now=time.time()
+        for group,subject,handle in (('55555','12345678','qr_group'),('','22345678','qr_private')):
+            event,scope=self.event(subject,group)
+            self.store.db.execute('INSERT INTO pipeline_quote_sources(handle,scope,sender,message,at,self_id,generation,preview,media) VALUES(?,?,?,?,?,?,?,?,?)',
+                (handle,scope,subject,handle,now,'99999999',1,'visible '+handle,'[]'))
+        for subject,group,expected in (('12345678','55555','qr_group'),('22345678','','qr_private'),('12345678','55555','qr_group')):
+            event,scope=self.event(subject,group)
+            event.set_extra('_hosted_context',json.dumps({'scope':scope,'sender_id':subject,'at':now}))
+            with patch('quote_reply.catalog',wraps=quote_reply.catalog) as catalog,patch('qq_favorite_tools.context',wraps=qq_favorite_tools.context) as sources:
+                tools={t.name:t for t in self.tools(event,scope)}
+                # No quote snapshot is automatically constructed. Favorite tools
+                # retain their private source validation; none enters the wire.
+                self.assertEqual(catalog.call_count,0)
+                wire=json.loads(inner_tools.request_context(event))
+                self.assertNotIn('quote_reply',wire.get('tool_context',{}))
+                self.assertNotIn('qq_favorites',wire.get('tool_context',{}))
+                self.assertEqual(wire['scope'],scope)
+                self.assertEqual(wire['sender_id'],subject)
+            context=NS(context=NS(event=event))
+            reply=json.loads(await tools['hosted_quote_reply'].call(context))
+            self.assertEqual([r['handle'] for r in reply['data']['messages']],[expected])
+            result=json.loads(await tools['hosted_qq_favorites'].call(context,operation='sources'))
+            self.assertEqual(result['receipt']['status'],'not_applicable')
+            self.assertEqual(result['data'],qq_favorite_tools.context(event,self.store.db))
+            self.assertIsNone(event.get_extra('_hosted_quote_handle'))
+            self.assertIn('sources',tools['hosted_qq_favorites'].parameters['properties']['operation']['enum'])
+        # An obsolete Work cannot even read fresh catalogs through this tool.
+        stale=qq_favorite_tools.tools(event,self.settings['config'],self.store.db,str(self.root),lambda:False)[0]
+        result=json.loads(await stale.call(context,operation='sources'))
+        self.assertEqual(result['receipt']['status'],'rejected')
+
     async def test_visible_tools_do_not_authorize_member_or_synthetic_effects(self):
         event,scope=self.event('22345678')
         tools={t.name:t for t in self.tools(event,scope)};context=NS(context=NS(event=event))
