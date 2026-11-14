@@ -209,7 +209,12 @@ async def resume_scope_input(core,id,lease,store,settings):
     # ledger row. Its queue/task still owns that delivery; a retry deadline is
     # not permission to enqueue it again while that owner is alive.
     queue=getattr(core,'event_queue',None)
-    if queue is not None and queue.qsize()>0:return False
+    if queue is not None and queue.qsize()>0:
+        # The shared SDK queue contains other members too. Only this member's
+        # already-enqueued input owns its recovery slot; unrelated continuous
+        # traffic must not prevent draining this member's compression boundary.
+        entries=getattr(queue,'_queue',None)
+        if entries is None or any(not callable(getattr(event,'get_platform_id',None)) or event.get_platform_id()==id for event in entries):return False
     for task,event in getattr(getattr(core,'event_bus',None),'_pending_tasks',{}).items():
         if not task.done() and event.get_platform_id()==id:return False
     from input_reconciliation import reconcile

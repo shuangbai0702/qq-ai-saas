@@ -32,6 +32,26 @@ class Recovery(unittest.IsolatedAsyncioTestCase):
     async def resume(self,lease=None):
         value=lease or self.lease
         return await initiative.resume_scope_input(self.core,'qq',value,self.store,{'qq':value})
+    async def test_other_members_continuous_queue_does_not_starve_original_recovery(self):
+        e=event();self.assertTrue(self.p.persist_input(e,self.lease));delivered=[]
+        queue=asyncio.Queue();self.core.event_queue=queue
+        for _ in range(20):queue.put_nowait(NS(get_platform_id=lambda:'other-member'))
+        async def convert(raw):return NS(message_id='101',timestamp=time.time(),raw_message=raw)
+        platform=NS(meta=lambda:NS(id='qq'),convert_message=convert,create_event=lambda m:m,commit_event=delivered.append)
+        self.core.platform_manager.get_insts=lambda:[platform]
+        with patch.dict(sys.modules,{'aiocqhttp':NS(Event=NS(from_payload=lambda raw:raw))}):
+            self.assertTrue(await self.resume())
+        self.assertEqual(len(delivered),1);self.assertEqual(queue.qsize(),20)
+        self.assertEqual(delivered[0].timestamp,e.message_obj.timestamp)
+        self.assertEqual(delivered[0].raw_message,e.message_obj.raw_message)
+        self.assertEqual(self.input(),'queued')
+
+    async def test_same_member_queued_input_keeps_its_owner_and_is_not_enqueued_twice(self):
+        e=event();self.assertTrue(self.p.persist_input(e,self.lease))
+        self.core.event_queue=asyncio.Queue();self.core.event_queue.put_nowait(e)
+        self.assertFalse(await self.resume());self.assertEqual(self.input(),'pending')
+        self.assertEqual(self.core.event_queue.qsize(),1)
+
     async def test_raw_retention_clock_does_not_replace_bound_sdk_time_on_recovery(self):
         from context_protocol import event_message,model_json
         import shared_context
