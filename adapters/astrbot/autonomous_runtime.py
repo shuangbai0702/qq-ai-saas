@@ -384,13 +384,6 @@ class AutonomousRuntime:
     def tools(self,id,identity,scope):
         from astrbot.core.agent.tool import FunctionTool
         runtime=self;s=self.settings[id];st=self.store(id,s)
-        class Inspect(FunctionTool):
-            async def call(self,context,**arguments):
-                if not runtime.valid(id,identity):raise WorkStopped('stale_internal_work')
-                data=companion_state.context(st.db,s['config'],scope,time.time())
-                receipt={'source':'existing_companion_state','scope':scope,'at':int(time.time()*1000)}
-                runtime.running[id].evidence.append({'source':receipt['source'],'reference':scope+':'+str(receipt['at'])})
-                return json.dumps({'data':data,'receipt':receipt},ensure_ascii=False)
         class Recall(FunctionTool):
             async def call(self,context,query):
                 if not runtime.valid(id,identity):raise WorkStopped('stale_internal_work')
@@ -401,7 +394,7 @@ class AutonomousRuntime:
                 summaries=st.reflection.recall(scope,query,limit=2,subject=subject) if enabled else []
                 runtime.running[id].evidence.append({'source':'existing_memory','reference':scope})
                 return json.dumps({'facts':facts,'summaries':summaries,'meaning':'已有记忆材料，不是网络检索或新的经历'},ensure_ascii=False)
-        tools=[Inspect(name='inspect_context',description='读取当前机器人真实兴趣、心境和未完话题，返回读取回执；不会改记忆或对外发送',parameters={'type':'object','properties':{},'additionalProperties':False}),Recall(name='recall_memory',description='在当前任务会话范围内查询现有长期记忆和摘要；非网络搜索',parameters={'type':'object','properties':{'query':{'type':'string','maxLength':160}},'required':['query'],'additionalProperties':False})]
+        tools=[companion_state.inspect_tool(st.db,s['config'],scope,lambda:runtime.valid(id,identity),on_read=lambda receipt:runtime.running[id].evidence.append({'source':receipt['source'],'reference':scope+':'+str(receipt['at'])})),Recall(name='recall_memory',description='在当前任务会话范围内查询现有长期记忆和摘要；非网络搜索',parameters={'type':'object','properties':{'query':{'type':'string','maxLength':160}},'required':['query'],'additionalProperties':False})]
         if self.can_reflect(id):
             memory_epoch=st.reflection.epoch()
             class ReflectInterest(FunctionTool):

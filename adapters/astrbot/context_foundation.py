@@ -79,12 +79,6 @@ def execution_view(state):
     return result
 
 
-def live_companion(value):
-    """Open conversational matters remain immediate; mood is not an authority."""
-    if not isinstance(value,dict):return value
-    return {k:v for k,v in value.items() if k in ('unfinished_topics','meaning')}
-
-
 def arrange(messages,state):
     """Used ONLY for a fresh or already-authorized reconstruction candidate."""
     from context_protocol import READONLY_CURRENT

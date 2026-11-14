@@ -584,7 +584,6 @@ def install_runtime(core,settings):
         task=event.get_extra('_hosted_autonomous_action')
         if event.get_extra('_hosted_main_activation') and isinstance(task,dict):task={k:v for k,v in task.items() if k not in ('goalSnapshot','continuation')}
         assembly.contribute('delivery',{'recipient':{'scope':scope,'owner':bool(subject and subject==str(b.get('ownerUin') or ''))},'task':task})
-        assembly.contribute('companion',{'companion':context_foundation.live_companion(companion_state.context(st.db,s['config'],scope,now,objective))})
         shared=bot_pipeline.conversation_context(st,b,scope,subject,objective,now)
         shared['execution_experience']=execution_memory.context_projection(event.get_extra('_hosted_execution_memory',{'status':'not_loaded'}),shared['memory_foundation'])
         assembly.contribute('memory',{'execution_memory_guidance':execution_memory.GUIDANCE})
@@ -1134,7 +1133,6 @@ def install_runtime(core,settings):
             shared['execution_experience']=execution_memory.context_projection(execution,shared['memory_foundation'])
             state=shared['state']
             assembly.contribute('memory',{key:shared[key] for key in ('memory_foundation','state','recent_messages','recent_cross_session_messages','conversation_timeline','autonomous_experience','execution_experience','group_round_history','active_agreements')})
-            assembly.contribute('companion',{'companion':context_foundation.live_companion(companion_state.context(st.db,cfg,scope,now,event.get_message_str()))})
             assembly.contribute('social',{'social':social_context})
             assembly.contribute('conversation',{'recent_image':recent_image,'ambient_group_messages':shared['ambient_group_messages'],'recent_burst':[{'sender_id':x['sender_id'],'source_event':str(getattr(x['event'].message_obj,'message_id','')),'text':x['text'],'at':float(getattr(x['event'].message_obj,'timestamp',0) or now),**x['source']} for x in batch]})
             assembly.contribute('delivery',{'contact_target':event.get_extra('_hosted_contact_subject'),'previous_proactive_output':event.get_extra('_hosted_previous_output',''),'topic_origin':event.get_extra('_hosted_topic_origin')})

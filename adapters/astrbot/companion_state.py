@@ -214,3 +214,19 @@ def select_member(db,cfg,scope,now,allow_without_topic=False):
 def member_current(db,scope,subject,seen,now):
     r=db.execute('SELECT seen,refused,pause FROM companion_members WHERE scope=? AND subject=?',(scope,subject)).fetchone()
     return bool(r and r[0]==seen and not r[1] and r[2]<=now)
+
+
+def inspect_tool(db,cfg,scope,current,*,event=None,on_read=None):
+    """One read-only implementation for foreground and service Work."""
+    from astrbot.core.agent.tool import FunctionTool
+    from tool_outcome import rejected
+    read_context=context
+    class Inspect(FunctionTool):
+        async def call(self,context,**arguments):
+            if not current() or event is not None and context.context.event is not event:
+                return rejected('tool_preflight_rejected','未读取：执行身份已变化。')
+            data=read_context(db,cfg,scope,time.time())
+            receipt={'status':'not_applicable','source':'existing_companion_state','scope':scope,'at':int(time.time()*1000)}
+            if on_read:on_read(receipt)
+            return json.dumps({'execution':'completed','data':data,'receipt':receipt},ensure_ascii=False)
+    return Inspect(name='inspect_context',description='按需读取当前会话的真实兴趣、心境和未完话题及来源；历史资料不代表当前状态。不会对外发送。',parameters={'type':'object','properties':{},'additionalProperties':False})
