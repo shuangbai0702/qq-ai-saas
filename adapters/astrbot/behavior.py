@@ -422,18 +422,21 @@ def install_runtime(core,settings):
         instances=getattr(getattr(core,'provider_manager',None),'inst_map',{})
         return instances.get('provider-'+id) or (instances.get('platform-model') if len(settings)==1 else None)
     async def admit_public(event,message):
-        from public_output import inspect as inspect_public,REGENERATE,pending_tools,Rejected
+        from public_output import inspect as inspect_public,REGENERATE,FACE_REGENERATE,pending_tools,Rejected
         st=stores.get(event.get_platform_id());s=setting(event);work=event.get_extra('_hosted_pipeline')
         provider=provider_for(event.get_platform_id())
         secrets=getattr(provider,'api_keys',[]) or []
-        if not inspect_public(message,secrets):return message
+        reason=inspect_public(message,secrets)
+        if not reason:return message
+        correction=FACE_REGENERATE if reason=='unresolved_qq_face' else REGENERATE
+        event.set_extra('_hosted_output_correction',correction)
         from model_cache import record_diagnostic
         # Reuse the original Work, Journal, provider, lease and request budget.
         # Only text generation is permitted; no Agent/tool loop is replayed.
         while event.get_extra('_hosted_output_retries',0)<2:
             count=event.get_extra('_hosted_output_retries',0)+1
             event.set_extra('_hosted_output_retries',count)
-            record_diagnostic(s,{'kind':'output_guard','workId':getattr(work,'event_id',None),'status':'blocked','reason':'internal_protocol','retry':count})
+            record_diagnostic(s,{'kind':'output_guard','workId':getattr(work,'event_id',None),'status':'blocked','reason':reason,'retry':count})
             if st is None or work is None or provider is None or not delivery_current(event):break
             journal=st.model_journals.get(event.get_extra('_hosted_main_journal_scope') or ('bot_shared' if st.shared_context else work.scope))
             if journal is None or journal.last is None:break
@@ -442,7 +445,7 @@ def install_runtime(core,settings):
                 # model. Starting another request here would break call/result
                 # adjacency (and can deadlock the Journal writer).
                 if count>=2:bot_pipeline.stop(event,'public_output_rejected','silent')
-                raise Rejected(REGENERATE)
+                raise Rejected(correction)
             event.set_extra('_hosted_output_regeneration',True)
             try:
                 response=await provider.text_chat(prompt=None,contexts=copy.deepcopy(journal.last.base),
@@ -1844,8 +1847,9 @@ def install_runtime(core,settings):
                             unprojected_for_journal=fixed_system+unprojected_for_journal[system_head(unprojected_for_journal):]
                 if image_event.get_extra('_hosted_output_regeneration',False):
                     from public_output import REGENERATE
-                    projected=[*projected,{'role':'user','content':REGENERATE}]
-                    if isinstance(unprojected_for_journal,list):unprojected_for_journal=[*unprojected_for_journal,{'role':'user','content':REGENERATE}]
+                    correction=image_event.get_extra('_hosted_output_correction') or REGENERATE
+                    projected=[*projected,{'role':'user','content':correction}]
+                    if isinstance(unprojected_for_journal,list):unprojected_for_journal=[*unprojected_for_journal,{'role':'user','content':correction}]
                 prepared=journal.prepare(projected,stamp,group_turn=group_turn,
                                          reconstruction_authority=owned.reflection,reconstruction_scope=key,
                                          retirement=owned.reflection.reconstruction_stamp(key) if foreground else dependency,

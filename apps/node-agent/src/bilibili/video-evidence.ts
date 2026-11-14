@@ -11,6 +11,8 @@ import {modelHttp} from '../../../../packages/shared/model-http.js';
 import {boundedJson,BiliError,type BiliWeb,type Credential} from './web-adapter.js';
 import {downloadMedia,managedProcess,mediaAdmission,mediaWorkspace,mediaUrl} from '../media/lifecycle.js';
 import type {Sql} from '../../../../packages/database/index.js';
+import {BilibiliTools} from '../../../../packages/database/bilibili-tools.js';
+import {runtimeStatus} from '../../../../packages/shared/runtime-status.js';
 
 /** Select only already-authorized HTTPS CDN objects from this playurl track. */
 export function playableMediaSource(tracks:any[]):string|undefined{
@@ -45,9 +47,12 @@ export async function mediaAvailable(root:string){return(await mediaReadiness(ro
 export async function recoverMedia(root:string,db:Sql){
  const resources=await mediaResources(root);
  if(process.platform==='linux'&&resources.cgroupRoot){
+  const tools=new BilibiliTools(db),bots=(await db.query("SELECT * FROM bots WHERE desired_state='running' AND deleted_at IS NULL")).filter(b=>runtimeStatus(b).online);
   const parent=path.resolve(resources.cgroupRoot);if(parent==='/sys/fs/cgroup'||!path.isAbsolute(resources.cgroupRoot))throw new Error('Invalid media recovery owner');
   for(const entry of await readdir(parent,{withFileTypes:true})){if(!entry.isDirectory())continue;const match=/^([a-f0-9-]{36})-(probe|frame[0-9]+|audio|asr|ready-ffmpeg|ready-ffprobe)$/.exec(entry.name);if(!match)continue;
-   const [job]=await db.query("SELECT id FROM tool_effects WHERE id=$1 AND operation='analyze'",[match[1]]);if(!job)continue;
+   let owned=false;
+   for(const bot of bots){const job=await tools.get(bot.tenant_id,bot.id,match[1]);if(job?.operation==='analyze'){owned=true;break}}
+   if(!owned){console.error('媒体进程归属未确认，保留专属cgroup等待原Work恢复');continue}
    const group=path.join(parent,entry.name);let procs=(await readFile(path.join(group,'cgroup.procs'),'utf8')).trim();
    if(procs){await writeFile(path.join(group,'cgroup.kill'),'1');for(let i=0;i<100&&procs;i++){await new Promise(r=>setTimeout(r,20));procs=(await readFile(path.join(group,'cgroup.procs'),'utf8')).trim()}if(procs)throw new Error('Orphan media process did not exit')}
    await rmdir(group);

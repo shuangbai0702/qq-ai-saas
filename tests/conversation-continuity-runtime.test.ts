@@ -1,4 +1,4 @@
-import {runtimeClient} from '../apps/node-agent/src/autonomous.js';
+import {runtimeClient} from '../packages/shared/runtime-client.js';
 import {permitModelFixture,nativeMessages} from './helpers/model-fixture.js';import {issueTestInvite} from './helpers/invitations.js';
 import test from 'node:test';import assert from 'node:assert/strict';import http from 'node:http';import path from 'node:path';import {mkdtemp,rm} from 'node:fs/promises';
 import {createApp} from '../apps/control-api/src/app.js';import {defaultConfig} from '../packages/contracts/index.js';import {MockProtocolAdapter} from '../adapters/mock/index.js';

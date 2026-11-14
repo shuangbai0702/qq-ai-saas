@@ -541,6 +541,15 @@ class AutonomousRuntime:
         return feedback
 
     async def handle(self,id,operation,data):
+        if operation=='tool':
+            # Execution receipts never acquire or rewrite the model Journal.
+            # Their original owner may settle while compression is running.
+            s=self.settings.get(id)
+            if not s or self.closed:raise ValueError('stale_internal_work')
+            st=self.store(id,s)
+            if getattr(st,'_closing',False):raise ValueError('stale_internal_work')
+            import pipeline_tools
+            return pipeline_tools.handle(st.pipeline,s,data['operation'],data.get('data',{}))
         if operation!='cancel' and id in self.settings:
             lease=self.settings[id];st=self.store(id,lease)
             await st.wait_compression()

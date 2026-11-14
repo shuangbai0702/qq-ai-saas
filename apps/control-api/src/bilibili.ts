@@ -7,7 +7,7 @@ import QRCode from 'qrcode';
 import {readFile} from 'node:fs/promises';
 import path from 'node:path';
 import type {Sql} from '../../../packages/database/index.js';
-import {ToolEffects,toolConflict} from '../../../packages/database/tool-effects.js';
+import {BilibiliTools,toolConflict} from '../../../packages/database/bilibili-tools.js';
 import {BilibiliConfigSchema,BiliCallSchema,biliOperations} from '../../../packages/contracts/bilibili.js';
 import {BiliAccounts} from '../../node-agent/src/bilibili/account-broker.js';
 import {BiliWeb} from '../../node-agent/src/bilibili/web-adapter.js';
@@ -16,9 +16,10 @@ import {encrypt} from '../../../packages/shared/security.js';
 import {registerAutonomousGoals} from './autonomous-goals.js';
 import {registerExecutionMemory} from './execution-memory.js';
 import {bilibiliModelConfigured} from '../../../packages/shared/bilibili-model.js';
+import {runtimeStatus} from '../../../packages/shared/runtime-status.js';
 
 export function registerBilibili(app:FastifyInstance,db:Sql,key:Buffer,owned:(req:any,id:string)=>Promise<any>,root:string){
- const repo=new ToolEffects(db),broker=new BiliAccounts(db,key,new BiliWeb());
+ const repo=new BilibiliTools(db),broker=new BiliAccounts(db,key,new BiliWeb());
  const publicAccount=async(t:string,b:string)=>{const [a]=await db.query('SELECT uid,label,revision,state,refresh_state,updated_at FROM bilibili_accounts WHERE tenant_id=$1 AND bot_id=$2',[t,b]);return a??null};
  app.get<{Params:{id:string}}>('/v1/bots/:id/bilibili',async req=>{
   const b=await owned(req,req.params.id),s=await repo.settings(b.tenant_id,b.id);
@@ -28,8 +29,9 @@ export function registerBilibili(app:FastifyInstance,db:Sql,key:Buffer,owned:(re
   const [botModel]=await db.query('SELECT r.config,(s.ciphertext IS NOT NULL) AS has_key FROM bot_config_revisions r LEFT JOIN secrets s ON s.bot_id=r.bot_id AND s.tenant_id=$3 WHERE r.bot_id=$1 AND r.revision=$2',[b.id,b.revision,b.tenant_id]);
   const modelConfigured=bilibiliModelConfigured(s,botModel?.config,botModel?.has_key);
   const mediaExecutable=mediaReady&&modelConfigured;
-  const jobs=await db.query('SELECT id,operation,state,result,cancel_requested,created_at,updated_at FROM tool_effects WHERE bot_id=$1 AND tenant_id=$2 ORDER BY created_at DESC LIMIT 20',[b.id,b.tenant_id]);
-  return{config:s.config,revision:s.revision,hasModelKey:!!s.model_secret,account:await publicAccount(b.tenant_id,b.id),login:login?{...login,state:+new Date(login.expires_at)<Date.now()&&['created','waiting_scan','waiting_confirm'].includes(login.state)?'expired':login.state}:null,cooldown:cooldown??null,jobs,
+  const workAvailable=runtimeStatus(b).online;
+  const jobs=(workAvailable?await repo.list(b):[]).map(({id,operation,state,result,cancel_requested,created_at,updated_at})=>({id,operation,state,result,cancel_requested,created_at,updated_at}));
+  return{config:s.config,revision:s.revision,hasModelKey:!!s.model_secret,account:await publicAccount(b.tenant_id,b.id),login:login?{...login,state:+new Date(login.expires_at)<Date.now()&&['created','waiting_scan','waiting_confirm'].includes(login.state)?'expired':login.state}:null,cooldown:cooldown??null,jobs,jobsUnavailable:!workAvailable,
    operations:Object.entries(biliOperations).map(([name,op])=>({name,scope:op.scope,write:op.write,implemented:name!=='analyze'||mediaExecutable,accountVerified:false})),mediaReady:mediaExecutable,mediaDependencies,modelConfigured,modelVerification:'configured_only_actual_vision_support_requires_provider_receipt',mediaReason:!mediaReady?mediaReason:!modelConfigured?'媒体依赖已就绪，图片模型或Key未配置':mediaReason};
  });
  app.put<{Params:{id:string}}>('/v1/bots/:id/bilibili',async req=>{
@@ -57,11 +59,11 @@ export function registerBilibili(app:FastifyInstance,db:Sql,key:Buffer,owned:(re
  app.delete<{Params:{id:string}}>('/v1/bots/:id/bilibili/account',async req=>{
   const b=await owned(req,req.params.id),v=z.object({expectedRevision:z.number().int().positive()}).strict().parse(req.body);
   return db.transaction(async tx=>{await tx.query('SELECT id FROM bots WHERE id=$1 FOR UPDATE',[b.id]);const r=await tx.query('DELETE FROM bilibili_accounts WHERE bot_id=$1 AND tenant_id=$2 AND revision=$3 RETURNING uid',[b.id,b.tenant_id,v.expectedRevision]);if(!r.length)throw toolConflict('账号已变化，请刷新');
-   await tx.query("UPDATE bilibili_logins SET state='canceled',secret='' WHERE bot_id=$1 AND tenant_id=$2",[b.id,b.tenant_id]);await tx.query("UPDATE tool_effects SET cancel_requested=true WHERE bot_id=$1 AND tenant_id=$2 AND state IN ('queued','claimed','dispatching')",[b.id,b.tenant_id]);
+   await tx.query("UPDATE bilibili_logins SET state='canceled',secret='' WHERE bot_id=$1 AND tenant_id=$2",[b.id,b.tenant_id]);
    await tx.query("UPDATE bilibili_settings SET revision=revision+1,config=jsonb_set(jsonb_set(jsonb_set(config,'{scopes}','[\"public.read\"]'),'{enabled}','false'),'{allowAnonymous}','false'),updated_at=now() WHERE bot_id=$1 AND tenant_id=$2",[b.id,b.tenant_id]);return{ok:true,remoteLogout:false};
   });
  });
- app.post<{Params:{id:string;job:string}}>('/v1/bots/:id/bilibili/jobs/:job/cancel',async req=>{const b=await owned(req,req.params.id);const rows=await db.query("UPDATE tool_effects SET cancel_requested=true,updated_at=now() WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND state IN ('queued','claimed','dispatching') RETURNING state",[req.params.job,b.id,b.tenant_id]);if(!rows.length)throw toolConflict('任务已结束或不存在',404);return{requested:true,mayHaveDispatched:rows[0].state==='dispatching'}});
+ app.post<{Params:{id:string;job:string}}>('/v1/bots/:id/bilibili/jobs/:job/cancel',async req=>{const b=await owned(req,req.params.id);const job=await repo.get(b.tenant_id,b.id,req.params.job);if(!job||!['queued','claimed','dispatching'].includes(job.state))throw toolConflict('任务已结束或不存在',404);await repo.cancel(b,job.id);return{requested:true,mayHaveDispatched:job.state==='dispatching'}});
  // Separate audience from user sessions and Agent->worker group credentials.
  const runtime=async(req:any)=>{const [b]=await db.query('SELECT * FROM bots WHERE id=$1 AND deleted_at IS NULL',[req.params.id]);const token=String(req.headers.authorization||'').replace(/^Bearer /,'');if(!b||!verifyBridge(key,b,token))throw toolConflict('工具运行身份无效',401);return b};
  registerExecutionMemory(app,db,runtime);
@@ -73,6 +75,6 @@ export function registerBilibili(app:FastifyInstance,db:Sql,key:Buffer,owned:(re
  app.post<{Params:{id:string}}>('/internal/v1/bots/:id/tools/completion-ack',async req=>{const b=await runtime(req),v=z.object({id:z.string().uuid(),owner:z.string().uuid(),status:z.enum(['done','unknown'])}).strict().parse(req.body);return repo.acknowledgeCompletion(b,v.id,v.owner,v.status)});
  app.post<{Params:{id:string}}>('/internal/v1/bots/:id/tools/cancel-work',async req=>{const b=await runtime(req),v=z.object({workId:z.string().min(1).max(200),stepId:z.string().min(1).max(200)}).strict().parse(req.body);return repo.cancelWork(b,v.workId,v.stepId)});
  app.post<{Params:{id:string}}>('/internal/v1/bots/:id/tools',async(req,reply)=>{const b=await runtime(req),call=BiliCallSchema.parse(req.body);try{return await repo.admit(b,call)}catch(error){if((error as any).code!=='model_not_configured')throw error;return reply.code(409).send({execution:'failed',receipt:{status:'rejected'},error:{code:'model_not_configured',retry:'never',userMessage:(error as Error).message}})}});
- app.get<{Params:{id:string;job:string}}>('/internal/v1/bots/:id/tools/:job',async req=>{const b=await runtime(req),r=await repo.get(b.tenant_id,b.id,req.params.job);if(!r)throw toolConflict('工具任务不存在',404);return r});
- app.delete<{Params:{id:string;job:string}}>('/internal/v1/bots/:id/tools/:job',async req=>{const b=await runtime(req);await db.query("UPDATE tool_effects SET cancel_requested=true,updated_at=now() WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND state IN ('queued','claimed','dispatching')",[req.params.job,b.id,b.tenant_id]);return{cancelRequested:true}});
+ app.get<{Params:{id:string;job:string}}>('/internal/v1/bots/:id/tools/:job',async req=>{const b=await runtime(req),r=await repo.get(b.tenant_id,b.id,req.params.job);if(!r)throw toolConflict('工具任务不存在',404);return Object.fromEntries(['id','state','operation','result','cancel_requested','created_at','updated_at'].map(k=>[k,r[k]]))});
+ app.delete<{Params:{id:string;job:string}}>('/internal/v1/bots/:id/tools/:job',async req=>{const b=await runtime(req);await repo.cancel(b,req.params.job);return{cancelRequested:true}});
 }

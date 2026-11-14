@@ -2,7 +2,7 @@ import type {FastifyInstance} from 'fastify';
 import {z} from 'zod';
 import type {Sql} from '../../../packages/database/index.js';
 import {ExecutionMemory} from '../../../packages/database/execution-memory.js';
-import {toolConflict} from '../../../packages/database/tool-effects.js';
+import {toolConflict} from '../../../packages/database/bilibili-tools.js';
 
 export function registerExecutionMemory(app:FastifyInstance,db:Sql,runtime:(req:any)=>Promise<any>){
  const repo=new ExecutionMemory(db);

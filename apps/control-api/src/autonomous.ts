@@ -3,7 +3,7 @@ import {z} from 'zod';
 import type {Sql} from '../../../packages/database/index.js';
 import {AutonomyRepository,AutonomyConflict} from '../../../packages/database/autonomous.js';
 import {MAX_CURRENT_GOALS,AutonomyConfigSchema} from '../../../packages/contracts/autonomous.js';
-import {runtimeClient} from '../../node-agent/src/autonomous.js';
+import {runtimeClient} from '../../../packages/shared/runtime-client.js';
 import {runtimeStatus} from '../../../packages/shared/runtime-status.js';
 
 /** Durable control only. No model request or QQ send runs in the public API. */

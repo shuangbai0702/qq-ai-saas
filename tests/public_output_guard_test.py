@@ -5,7 +5,7 @@ from types import SimpleNamespace as NS
 sys.path[:0]=[str(Path(__file__).resolve().parent),str(Path(__file__).resolve().parents[1]/'adapters/astrbot')]
 import activity_main_journal_test as fixture
 import httpx
-from public_output import inspect as inspect_public,HEADERS,Rejected,pending_tools,REGENERATE
+from public_output import inspect as inspect_public,HEADERS,Rejected,pending_tools,REGENERATE,FACE_REGENERATE
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
 from astrbot.core.platform.astr_message_event import current_message_event
 from astrbot.core.platform.astrbot_message import MessageMember
@@ -41,7 +41,7 @@ class Regeneration(unittest.IsolatedAsyncioTestCase):
     asyncTearDown=fixture.Activity.asyncTearDown
     activate=fixture.Activity.activate
 
-    async def scenario(self,answers,forward=False,pending=False):
+    async def scenario(self,answers,forward=False,pending=False,correction=REGENERATE):
         if not self.st.model_journals:
             activation=await self.activate()
             self.assertEqual(activation['status'],'completed',activation)
@@ -97,10 +97,23 @@ class Regeneration(unittest.IsolatedAsyncioTestCase):
         for payload in new_requests[1:]:
             self.assertNotIn('tools',payload)
             self.assertEqual(payload['messages'][:len(self.wire_before)],self.wire_before)
-            self.assertTrue(any(REGENERATE in str(m.get('content','')) for m in payload['messages']))
+            self.assertTrue(any(correction in str(m.get('content','')) for m in payload['messages']))
         self.assertEqual(self.st.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],rounds)
         self.st.pipeline.finish(work,self.runtime['metrics'].setdefault('qq',{}))
         return event,new_requests
+
+    async def test_unresolved_face_uses_original_journal_and_never_guesses_a_face(self):
+        from astrbot.core.message.components import Face
+        self.assertIsNone(inspect_public(Face(id=14)))
+        for text in ('这里的[QQ表情]是什么意思？','`[QQ表情]`','"[QQ表情]"','```text\n[QQ表情]\n```','{"text":"[QQ表情]"}'):
+            self.assertIsNone(inspect_public(text))
+        self.assertEqual(inspect_public(' [QQ表情] '),'unresolved_qq_face')
+        candidate='炸鸡这生意我举双手支持，只要别哪天把我这条鱼也挂上去卖\n\n[QQ表情]'
+        self.assertEqual(inspect_public(candidate),'unresolved_qq_face')
+        event,requests=await self.scenario([candidate,'嗯，我在。'],correction=FACE_REGENERATE)
+        self.assertEqual(len(requests),2);self.assertEqual(len(self.sent),1)
+        self.assertEqual(self.sent[0].chain[0].text,'嗯，我在。')
+        self.assertEqual(event.get_extra('_hosted_output_retries'),1)
 
     async def test_same_journal_regeneration_and_bounded_failure(self):
         event,requests=await self.scenario([LEAK,'正常的新答复'])

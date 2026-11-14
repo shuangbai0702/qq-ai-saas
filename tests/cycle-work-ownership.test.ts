@@ -7,7 +7,6 @@ import {openDatabase} from '../packages/database/index.js';
 import {AutonomyRepository} from '../packages/database/autonomous.js';
 import {cycleModelBudget} from '../packages/database/model-request-budget.js';
 import {qqExternalBudget,externalCount} from '../packages/database/external-action-budget.js';
-import {ToolEffects} from '../packages/database/tool-effects.js';
 
 async function fixture(t:any){
  const root=await mkdtemp(path.resolve('.local/cycle-work-'));let db=await openDatabase(root);
@@ -60,22 +59,18 @@ test('cycle owns one service permit; Goal CAS and late budgets do not need an Ac
 test('media completion binds the original cycle and resumes one Work without storing a second execution report',async t=>{
  const {db,repo,claim,bot}=await fixture(t);
  const activation=await repo.planActivity(claim,{});await repo.markExecuting(claim,activation.id);
- const effects=new ToolEffects(db),settings=await effects.settings('tenant','bot');
- await effects.configure('tenant','bot',settings.revision,{enabled:true,allowAutonomous:true,allowAnonymous:true,scopes:['public.read']});
- const call:any={workId:claim.cycleId,stepId:'search',operation:'search',args:{query:'公开只读样本'},authority:'autonomous',epoch:claim.epoch,deadlineAt:Date.now()+60000,origin:{scope:'self',eventId:claim.cycleId,objective:'真实查询'}};
- const admitted=await effects.admit(bot,call);assert.equal(admitted.cycle_id,claim.cycleId);
- assert.equal((await effects.admit(bot,call)).id,admitted.id);
- await db.query("UPDATE tool_effects SET state='finished' WHERE id=$1",[admitted.id]);
- const id=randomUUID();await db.query("INSERT INTO tool_effects(id,tenant_id,bot_id,work_id,cycle_id,step_id,operation,args,args_digest,authority,mode_epoch,generation,config_revision,settings_revision,deadline_at,state,result,origin_scope,origin_event,continuation,completion_state) VALUES($1,'tenant','bot',$2,$2,'analysis','analyze','{}','fixture','autonomous',2,$3,$4,2,now()+interval '2 minutes','finished',$5,'self',$2,'{\"objective\":\"理解已完成分析\"}','pending')",[id,claim.cycleId,bot.generation,bot.revision,JSON.stringify({execution:'completed',data:{analysis:'真实工具结果'},receipt:{status:'confirmed'}})]);
+ const id=randomUUID(),owner=randomUUID();
  await repo.finish(claim,{tokens:0,modelCalls:0,toolCalls:1,externalActions:0},'activity_completed');
  await repo.wake('tenant','bot',claim.epoch,'tool-completed',0,id);
  const next=await repo.claim('next-owner');assert.ok(next);
- const continuation=await repo.planToolContinuation(next,{});assert.ok(continuation);
+ const completion={id,owner,completion_owner:owner,completion_state:'claimed',bot_id:bot.id,tenant_id:bot.tenant_id,work_id:claim.cycleId,authority:'autonomous',mode_epoch:claim.epoch,generation:bot.generation,config_revision:bot.revision,origin_scope:'self',origin_event:claim.cycleId,continuation:{objective:'理解已完成分析'},result:{execution:'completed',data:{analysis:'真实工具结果'}}};
+ const continuation=await repo.planToolContinuation(next,{},completion);assert.ok(continuation);
  assert.equal(continuation.id,next.cycleId);assert.equal(continuation.continuation.parentActionId,claim.cycleId);assert.equal(continuation.continuation.result.data.analysis,'真实工具结果');
  assert.equal(await repo.markExecuting(next,continuation.id),true);
  const [saved]=await db.query('SELECT decision FROM autonomy_cycles WHERE id=$1',[next.cycleId]);
  assert.equal(JSON.stringify(saved).includes('真实工具结果'),false);assert.equal(saved.decision.continuation.id,id);
- await repo.settleToolContinuation(next,continuation,'pending');assert.equal((await db.query('SELECT completion_state FROM tool_effects WHERE id=$1',[id]))[0].completion_state,'pending');
+ await assert.rejects(()=>repo.planToolContinuation(next,{}, {...completion,tenant_id:'other'}),/tool_completion_identity_changed/);
+ assert.equal((await db.query('SELECT count(*)::int AS n FROM autonomy_cycles WHERE id=$1',[next.cycleId]))[0].n,1);
  await repo.finish(next,{tokens:0,modelCalls:0,toolCalls:0,externalActions:0},'not_started');
 });
 

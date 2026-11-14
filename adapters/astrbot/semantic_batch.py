@@ -316,5 +316,8 @@ def _purge(db,checkpoint_id,*,preview=False):
     # Recovery archives obey the same successful exact-batch retirement.
     # They may keep uncompressed evidence and System, never a retired copy.
     import journal_storage
+    if 'pipeline_events' in tables and 'request' in {r[1] for r in db.execute('PRAGMA table_info(pipeline_events)')}:
+        import pipeline_tools
+        pipeline_tools.retire_batch(db,scope,members)
     journal_storage.retire_archived_members(db,checkpoint_id,verify_active=not preview)
     return True

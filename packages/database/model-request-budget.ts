@@ -1,5 +1,6 @@
 import type {Sql} from './index.js';
 import {runtimeStatus} from '../shared/runtime-status.js';
+import {runtimeClient,type RuntimeCall} from '../shared/runtime-client.js';
 
 const conflict=(message:string)=>Object.assign(new Error(message),{statusCode:409});
 export type ModelRequestBudget={workId:string;epoch:number;requestId:string;phase:'reserve'|'settled'|'released'|'unknown';source:'main'|'media';tokens?:number;effectId?:string;owner?:string};
@@ -10,7 +11,7 @@ export function modelRequestTotals(budget:any,source?:'main'|'media'){
 // The request journal is part of the existing cycle budget, not a second ledger.
 // Retain reservations after process loss: a missing receipt cannot prove no call.
 export async function cycleModelBudget(db:Sql,bot:any,v:ModelRequestBudget){return db.transaction(tx=>cycleModelBudgetInTransaction(tx,bot,v))}
-export async function cycleModelBudgetInTransaction(tx:Sql,bot:any,v:ModelRequestBudget){
+export async function cycleModelBudgetInTransaction(tx:Sql,bot:any,v:ModelRequestBudget,call?:RuntimeCall){
  const params=[v.workId,bot.id??bot.bot_id,bot.tenant_id,v.epoch];
  await tx.query('SELECT id FROM autonomy_cycles WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND epoch=$4 FOR UPDATE',params);
  const [c]=await tx.query(`SELECT c.*,c.state AS action_status,c.work_expires_at AS expires_at,s.epoch AS current_epoch,s.config AS current_config,b.generation AS current_generation,b.revision AS current_revision,b.health,b.desired_state,b.deleted_at FROM autonomy_cycles c JOIN autonomy_settings s ON s.bot_id=c.bot_id AND s.tenant_id=c.tenant_id JOIN bots b ON b.id=c.bot_id AND b.tenant_id=c.tenant_id WHERE c.id=$1 AND c.bot_id=$2 AND c.tenant_id=$3 AND c.epoch=$4`,params);
@@ -23,8 +24,8 @@ export async function cycleModelBudgetInTransaction(tx:Sql,bot:any,v:ModelReques
   if((v.source==='main'&&c.finished_at)||c.current_epoch!==v.epoch||c.current_config.mode!=='active'||c.generation!==c.current_generation||c.config_revision!==c.current_revision||!runtimeStatus(c).online)throw conflict('model_budget_owner_expired');
   if(v.source==='main'&&(c.action_status!=='acting'||+new Date(c.expires_at)<=Date.now()))throw conflict('model_budget_action_expired');
   if(v.source==='media'){
-   const [effect]=await tx.query("SELECT id FROM tool_effects WHERE id=$1 AND work_id=$2 AND bot_id=$3 AND tenant_id=$4 AND mode_epoch=$5 AND authority='autonomous' AND operation='analyze' AND lease_owner=$6 AND state='claimed' AND NOT cancel_requested AND lease_until>clock_timestamp() AND deadline_at>clock_timestamp() FOR UPDATE",[v.effectId,v.workId,c.bot_id,c.tenant_id,v.epoch,v.owner]);
-   if(!effect)throw conflict('model_budget_effect_expired');
+   const effect=await (call??runtimeClient(tx))({bot_id:c.bot_id,tenant_id:c.tenant_id,generation:c.current_generation,revision:c.current_revision},'tool',{operation:'get',data:{id:v.effectId}});
+   if(!effect||effect.id!==v.effectId||effect.work_id!==v.workId||effect.bot_id!==c.bot_id||effect.tenant_id!==c.tenant_id||effect.mode_epoch!==v.epoch||effect.authority!=='autonomous'||effect.operation!=='analyze'||effect.lease_owner!==v.owner||effect.state!=='claimed'||effect.cancel_requested||+new Date(effect.lease_until)<=Date.now()||+new Date(effect.deadline_at)<=Date.now())throw conflict('model_budget_effect_expired');
   }
   const used=modelRequestTotals(c.budget),limit=c.budget.cycleModelCalls;
   if(!Number.isSafeInteger(limit)||limit<0||used.modelCalls+1>limit)throw conflict('model_budget_exhausted');
@@ -59,9 +60,7 @@ export async function cycleModelBudgetInTransaction(tx:Sql,bot:any,v:ModelReques
   }
   if(v.source==='media'){
    const media=Object.values(requests).filter((r:any)=>r.source==='media') as any[];
-   const ids=[...new Set(media.map(r=>r.effectId))];
-   const [legacy]=await tx.query("SELECT EXISTS(SELECT 1 FROM tool_effects e WHERE e.cycle_id=$1 AND e.authority='autonomous' AND NOT (e.id::text=ANY($2::text[])) AND COALESCE((e.usage_checkpoint->>'settledModelRequests')::int,0)>0 AND COALESCE(e.usage_checkpoint->>'tokenStatus','unknown')='unknown') AS unknown",[c.id,ids]);
-   await tx.query("UPDATE autonomy_cycles SET usage=usage||jsonb_build_object('mediaTokenStatus',$2::text) WHERE id=$1",[c.id,legacy.unknown||media.some(r=>!['settled','released'].includes(r.status))?'unknown':'actual']);
+   await tx.query("UPDATE autonomy_cycles SET usage=usage||jsonb_build_object('mediaTokenStatus',$2::text) WHERE id=$1",[c.id,media.some(r=>!['settled','released'].includes(r.status))?'unknown':'actual']);
   }
  }
  return{status,...modelRequestTotals(budget)};

@@ -1,5 +1,6 @@
 import type {Sql} from './index.js';
 import {runtimeStatus} from '../shared/runtime-status.js';
+import {runtimeClient} from '../shared/runtime-client.js';
 
 const conflict=(message:string)=>Object.assign(new Error(message),{statusCode:409});
 // QQ reservations belong to the original cycle budget, alongside model usage.
@@ -15,7 +16,7 @@ export async function lockExternalCycle(db:Sql,bot:any,workId:string,epoch:numbe
  return row;
 }
 export async function externalCount(db:Sql,cycleId:string){
- const [r]=await db.query(`SELECT (SELECT count(*) FROM autonomy_cycles c CROSS JOIN LATERAL jsonb_each(COALESCE(c.budget->'qqExternalRequests','{}'::jsonb)) work CROSS JOIN LATERAL jsonb_each(work.value) e WHERE c.id=$1 AND e.value->>'status'<>'released')+(SELECT count(*) FROM tool_effects e WHERE e.cycle_id=$1 AND e.authority='autonomous' AND e.budget_reserved) AS total`,[cycleId]);
+ const [r]=await db.query(`SELECT count(*) AS total FROM autonomy_cycles c CROSS JOIN LATERAL jsonb_each(COALESCE(c.budget->'qqExternalRequests','{}'::jsonb)) work CROSS JOIN LATERAL jsonb_each(work.value) e WHERE c.id=$1 AND e.value->>'status'<>'released'`,[cycleId]);
  return Number(r.total);
 }
 export async function checkExternalCapacity(db:Sql,cycle:any){
@@ -52,6 +53,7 @@ export async function qqExternalBudget(db:Sql,bot:any,v:{workId:string;epoch:num
  });
 }
 export async function biliWorkEffects(db:Sql,bot:string,tenant:string,workId:string){
- const rows=await db.query("SELECT id,operation,state,result FROM tool_effects WHERE bot_id=$1 AND tenant_id=$2 AND work_id=$3 AND authority='autonomous' AND budget_reserved ORDER BY created_at",[bot,tenant,workId]);
- return rows.map(r=>({id:r.id,logicalActionId:'bilibili:'+r.id,action:'bilibili_'+r.operation,status:r.result?.receipt?.status==='confirmed'?'confirmed':r.result?.receipt?.status==='rejected'?'rejected':'unknown',receipt:r.result?.receipt,source:'bilibili'}));
+ const [current]=await db.query('SELECT id AS bot_id,tenant_id,generation,revision FROM bots WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL',[bot,tenant]);
+ if(!current)throw conflict('外部回执机器人不存在');
+ return(await runtimeClient(db)(current,'tool',{operation:'effects',data:{workId}})).effects;
 }

@@ -503,7 +503,7 @@ class BotPipeline:
             if name not in columns:db.execute('ALTER TABLE pipeline_events ADD COLUMN '+name+' '+kind)
         # Recovery time is observable; an exited activation's actual finish is
         # not. Leave finished_at unknown rather than backfilling a false end.
-        db.execute("UPDATE pipeline_events SET status=CASE WHEN status='sending' THEN 'unknown' ELSE 'interrupted' END,reason='runtime_restarted',updated_at=? WHERE status IN ('received','sending') AND NOT EXISTS (SELECT 1 FROM pipeline_scope_work w WHERE w.scope=pipeline_events.scope)",(time.time(),));db.commit()
+        db.execute("UPDATE pipeline_events SET status=CASE WHEN status='sending' THEN 'unknown' ELSE 'interrupted' END,reason='runtime_restarted',updated_at=? WHERE status IN ('received','sending') AND source<>'tool' AND NOT EXISTS (SELECT 1 FROM pipeline_scope_work w WHERE w.scope=pipeline_events.scope)",(time.time(),));db.commit()
         # Batch windows live only in this process. A durable group-presence
         # wait can resume, but an old in-memory batch cannot still be waiting.
         db.execute("UPDATE pipeline_events SET status='interrupted',reason='runtime_restarted',updated_at=? WHERE status='waiting' AND reason='batch_waiting'",(time.time(),));db.commit()
@@ -526,6 +526,8 @@ class BotPipeline:
         db.execute("CREATE UNIQUE INDEX IF NOT EXISTS pipeline_service_event ON pipeline_events(event) WHERE source='autonomous'")
         db.execute('CREATE TABLE IF NOT EXISTS pipeline_action_effects(action TEXT,sequence INTEGER,method TEXT,target TEXT,state TEXT,receipt TEXT,at REAL,PRIMARY KEY(action,sequence))')
         db.execute("UPDATE pipeline_action_effects SET state='unknown' WHERE state='dispatching'")
+        import pipeline_tools
+        pipeline_tools.initialize(db)
         db.commit()
         db.execute('CREATE TABLE IF NOT EXISTS pipeline_handoffs(id TEXT PRIMARY KEY,epoch INTEGER NOT NULL,data TEXT NOT NULL,state TEXT NOT NULL,receipt TEXT,at REAL NOT NULL)');db.commit()
         self.retire_transport_notifications()

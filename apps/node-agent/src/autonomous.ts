@@ -1,4 +1,5 @@
-import {runtimeIpc} from '../../../packages/shared/runtime-ipc.js';
+import {BilibiliTools} from '../../../packages/database/bilibili-tools.js';
+import type {RuntimeCall} from '../../../packages/shared/runtime-client.js';
 import {externalCount} from '../../../packages/database/external-action-budget.js';
 import {randomUUID} from 'node:crypto';
 import type {Sql} from '../../../packages/database/index.js';
@@ -12,7 +13,6 @@ import {runtimeStatus} from '../../../packages/shared/runtime-status.js';
  * Repeated results for the same request never charge twice. */
 export type UsageCharge={requestId:string;kind:string;source:'actual'|'estimated'|'unknown';estimateReason?:'execution_outcome_unknown'|'missing_model_usage'|'invalid_model_usage';tokens:number;modelCalls:number;toolCalls:number;externalActions:number;reported:{tokens:boolean;modelCalls:boolean;toolCalls:boolean}};
 type Usage={tokens:number;modelCalls:number;toolCalls:number;externalActions:number;conservative?:boolean;charges?:UsageCharge[]};
-type RuntimeCall=(bot:any,operation:string,body:unknown,timeoutMs?:number)=>Promise<any>;
 const emptyUsage=():Usage=>({tokens:0,modelCalls:0,toolCalls:0,externalActions:0});
 const notStarted=(objective:string)=>({status:'canceled',stopReason:'not_started',summary:'目标资料读取或执行前准备失败，尚未派发；保留原任务责任供合法重试',effects:[],evidence:[],unfinished:[objective],continuationAccepted:false,usage:emptyUsage()});
 function online(bot:any){return runtimeStatus(bot).online}
@@ -51,12 +51,12 @@ export function taskResultFacts(kind:string,result:any,limit=350){
  * Only coalesced service wakes activate the main AI; Goal semantics never
  * select an execution plan or dispatch a message from this scheduler. */
 export class AutonomyCoordinator {
- readonly repo:AutonomyRepository;readonly owner='autonomy-'+randomUUID();
+ readonly tools:BilibiliTools;readonly repo:AutonomyRepository;readonly owner='autonomy-'+randomUUID();
  timer?:NodeJS.Timeout;heartbeatTimer?:NodeJS.Timeout;heartbeatTask?:Promise<void>;closed=false;busy=false;active?:{claim:any;actionId?:string;feedbackVersion?:number;task:Promise<void>};
  private policyCursor=0;
  private policySerial=0;
  private events=new Map<string,number>();private sampled=new Map<string,{at:number;revision:number}>();
- constructor(public db:Sql,private call:RuntimeCall){this.repo=new AutonomyRepository(db)}
+ constructor(public db:Sql,private call:RuntimeCall){this.repo=new AutonomyRepository(db);this.tools=new BilibiliTools(db,call)}
  start(){if(this.timer||this.closed)return;this.timer=setInterval(()=>void this.tick().catch(()=>{}),5000);this.timer.unref();this.heartbeatTimer=setInterval(()=>void this.heartbeat(),4000);this.heartbeatTimer.unref();void this.tick().catch(()=>{})}
  async heartbeat(){
   if(this.closed||this.heartbeatTask||!this.active)return;
@@ -114,6 +114,10 @@ export class AutonomyCoordinator {
      for(const pending of await this.repo.unconfirmed(bot.tenant_id,bot.bot_id)){
       const receipt=await this.call(bot,'receipt',{id:pending.id},4000).catch(()=>null);
       if(receipt?.result&&receipt.result.status!=='unknown'){
+       if(receipt.result.continuationAccepted===true){
+        const [cycle]=await this.db.query('SELECT decision FROM autonomy_cycles WHERE id=$1 AND bot_id=$2 AND tenant_id=$3',[pending.id,bot.bot_id,bot.tenant_id]);
+        if(cycle?.decision?.continuation)await this.settleToolContinuation({...bot,cycleId:pending.id},{continuation:cycle.decision.continuation},'done');
+       }
        await this.repo.feedback({...bot,cycleId:pending.cycle_id},pending.id,receipt.result);
        if((receipt.result.effects||[]).some((effect:any)=>effect.status==='unknown'))await this.repo.receiptChecked(bot,pending);
       }
@@ -140,6 +144,9 @@ export class AutonomyCoordinator {
     await this.repo.finish(claim,{tokens:cycleTokens(claim),modelCalls:claim.config.cycleModelCalls,toolCalls:0,externalActions:0},'runtime_unavailable').catch(()=>{});
    }).finally(()=>{if(this.active===active)this.active=undefined});
   }finally{this.busy=false}
+ }
+ private async settleToolContinuation(claim:any,action:any,status:'done'|'unknown'|'pending'){
+  return this.tools.acknowledgeCompletion(claim,action.continuation.id,action.continuation.owner,status,claim.cycleId);
  }
  private deadline(claim:any,usage:Usage){
   // A finite identity horizon covers all remaining bounded steps. Runtime
@@ -187,9 +194,13 @@ export class AutonomyCoordinator {
     const fresh=await this.freshSnapshot(c);
     if(fresh.foregroundBusy){reason='foreground_work_busy';sleep=15;break}
     active.feedbackVersion=Number(fresh.feedbackVersion||0);
-    const continuation=await this.repo.planToolContinuation(c,usage);
+    const completed=await this.tools.completion(c,'autonomous',c.epoch,c.cycleId);
+    let continuation:any;
+    try{continuation=await this.repo.planToolContinuation(c,usage,completed)}
+    catch(error){if(completed)await this.tools.acknowledgeCompletion(c,completed.id,completed.owner,'pending',c.cycleId);throw error}
+    if(completed&&!continuation)await this.tools.acknowledgeCompletion(c,completed.id,completed.owner,'pending',c.cycleId);
     if(continuation){
-     if(!await this.repo.markExecuting(c,continuation.id,deadline)){await this.repo.settleToolContinuation(c,continuation,'pending');reason='continuation_invalidated';break}
+     if(!await this.repo.markExecuting(c,continuation.id,deadline)){await this.settleToolContinuation(c,continuation,'pending');reason='continuation_invalidated';break}
      active.actionId=continuation.id;
      const work=this.work(active,usage,continuation.id,deadline);
      let result:any,executeStarted=false;
@@ -197,12 +208,12 @@ export class AutonomyCoordinator {
       await this.call(c,'policy',await this.policy(c,c.cycleId,continuation.id),2000);
       executeStarted=true;result=await this.call(c,'execute',{work,action:{...continuation}},Math.max(1000,deadline-Date.now()+2000));
       if(typeof result.continuationAccepted!=='boolean')result={...result,status:'unknown',summary:'续接缺少主Journal接收确认；保留原回执供核对，不重复派发'};
-      await this.repo.settleToolContinuation(c,continuation,result.continuationAccepted===true?'done':result.continuationAccepted===false?'pending':'unknown');
+      await this.settleToolContinuation(c,continuation,result.continuationAccepted===true?'done':result.continuationAccepted===false?'pending':'unknown');
       if(result.continuationAccepted===false)await this.repo.wake(c.tenant_id,c.bot_id,c.epoch,'tool-completed',30,continuation.continuation.id);
      }catch{
       if(!executeStarted){
        result=notStarted(continuation.objective);
-       await this.repo.settleToolContinuation(c,continuation,'pending');
+       await this.settleToolContinuation(c,continuation,'pending');
        await this.repo.wake(c.tenant_id,c.bot_id,c.epoch,'tool-completed',30,continuation.continuation.id);
       }else{
       await this.call(c,'cancel',{},2000).catch(()=>{});
@@ -211,7 +222,7 @@ export class AutonomyCoordinator {
       // not prove no model ran; retain unknown instead of replaying the effect.
       result=receipt?.result||{status:'unknown',summary:'异步结果续接回执未知；保留原结果和责任，不重复派发',effects:receipt?.effects||[],evidence:[],unfinished:[continuation.objective],usage:{tokens:work.budget.tokens,modelCalls:work.budget.modelCalls,toolCalls:work.budget.toolCalls,estimated:true}};
       if(typeof result.continuationAccepted!=='boolean')result={...result,status:'unknown'};
-      await this.repo.settleToolContinuation(c,continuation,receipt?.result&&result.continuationAccepted===true?'done':receipt?.result&&result.continuationAccepted===false?'pending':'unknown');
+      await this.settleToolContinuation(c,continuation,receipt?.result&&result.continuationAccepted===true?'done':receipt?.result&&result.continuationAccepted===false?'pending':'unknown');
       if(receipt?.result&&result.continuationAccepted===false)await this.repo.wake(c.tenant_id,c.bot_id,c.epoch,'tool-completed',30,continuation.continuation.id);
       }
      }
@@ -278,23 +289,4 @@ export class AutonomyCoordinator {
    if(latest)await this.call(latest,'policy',await this.policy(latest),2000).catch(()=>{});
   }
  }
-}
-
-export function runtimeClient(db:Sql):RuntimeCall{
- return async(bot,operation,body,timeoutMs=3000)=>{
-  const [current]=await db.query('SELECT runtime_mode,group_id,generation,revision FROM bots WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL',[bot.bot_id,bot.tenant_id]);
-  if(!current||current.generation!==bot.generation||current.revision!==bot.revision)throw new Error('runtime_identity_changed');
-  let port:number,route:string,token:string,groupGeneration:number|undefined;
-  if(current.runtime_mode==='shared'){
-   const [g]=await db.query('SELECT g.* FROM runtime_groups g JOIN group_members m ON m.group_id=g.id WHERE m.bot_id=$1',[bot.bot_id]);if(!g)throw new Error('runtime_group_missing');
-   port=g.health_port;route=`/members/${bot.bot_id}/autonomous/${operation}`;token=g.token;groupGeneration=g.generation;
-  }else{
-   const [i]=await db.query('SELECT ai_port,token FROM instances WHERE bot_id=$1',[bot.bot_id]);if(!i)throw new Error('runtime_instance_missing');
-   port=i.ai_port+1;route=`/autonomous/${operation}`;token=i.token;
-  }
-  const headers:Record<string,string>={Authorization:'Bearer '+token,'Content-Type':'application/json','X-Member-Generation':String(bot.generation),'X-Member-Revision':String(bot.revision)};
-  if(groupGeneration!==undefined)headers['X-Group-Generation']=String(groupGeneration);
-  const response=await runtimeIpc(port,route,{method:'POST',headers,body,timeoutMs});
-  if(!response.ok)throw new Error('autonomous_ipc_'+response.status);return response.json();
- };
 }

@@ -34,7 +34,8 @@ export class HeartbeatWriter{
  async stop(){this.stopped=true;await this.chain.catch(()=>{})}
 }
 import {SharedAstrBotAdapter} from '../../../adapters/astrbot/shared.js';
-import {AutonomyCoordinator,runtimeClient} from './autonomous.js';
+import {AutonomyCoordinator} from './autonomous.js';
+import {runtimeClient} from '../../../packages/shared/runtime-client.js';
 import {BilibiliExecutor} from './bilibili/executor.js';
 import {ProcessHost} from './process-host.js';import {AstrBotAdapter} from '../../../adapters/astrbot/index.js';import {MockProtocolAdapter} from '../../../adapters/mock/index.js';import {NapCatAdapter} from '../../../adapters/protocol/napcat/index.js';import {EulerAdapter} from '../../../adapters/protocol/euler/index.js';
 export class NodeAgent {

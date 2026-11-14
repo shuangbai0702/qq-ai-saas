@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {SingleFlight} from '../packages/shared/single-flight.js';
 import {runtimeIpc} from '../packages/shared/runtime-ipc.js';
-import {runtimeClient} from '../apps/node-agent/src/autonomous.js';
+import {runtimeClient} from '../packages/shared/runtime-client.js';
 import {lockOwnedBot} from '../apps/control-api/src/bot-access.js';
 import {FavoriteMaintenance} from '../apps/node-agent/src/favorite-maintenance.js';
 import {BilibiliExecutor} from '../apps/node-agent/src/bilibili/executor.js';

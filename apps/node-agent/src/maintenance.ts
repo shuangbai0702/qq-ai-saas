@@ -5,7 +5,8 @@
  * replaced. No process, database connection or account is recreated here.
  */
 import {NodeAgent,HeartbeatWriter} from './agent.js';
-import {AutonomyCoordinator,runtimeClient} from './autonomous.js';
+import {AutonomyCoordinator} from './autonomous.js';
+import {runtimeClient} from '../../../packages/shared/runtime-client.js';
 import {ProcessHost} from './process-host.js';
 import {AstrBotAdapter} from '../../../adapters/astrbot/index.js';
 import {SharedAstrBotAdapter} from '../../../adapters/astrbot/shared.js';
