@@ -13,6 +13,9 @@ def features(settings,event,db,scope,current,*,identity=None,evidence=None,memor
     result=qq_actions.tools(event,cfg,db,effect_current,settings)
     result+=group_actions.tools(event,cfg,db,current,on_sent or (lambda *args:None),social=social,review=review,effect_current=effect_current)
     result+=quote_reply.tools(event,cfg,db,settings,effect_current)+qq_favorite_tools.tools(event,cfg,db,settings['root'],effect_current)
+    if identity is None:
+        import companion_state
+        result.append(companion_state.inspect_tool(db,cfg,scope,current,event=event))
     result+=execution_memory.tools(settings,event,scope,memory_current or current,identity)
     result+=bili_tools(settings,event,current,evidence,identity,db=db)
     result+=image_tools(settings,event,db,current,identity)

@@ -92,6 +92,29 @@ class StableCatalog(unittest.IsolatedAsyncioTestCase):
         result=json.loads(await stale.call(context,operation='sources'))
         self.assertEqual(result['receipt']['status'],'rejected')
 
+    async def test_companion_query_tracks_current_scope_and_changed_state(self):
+        import companion_state
+        now=time.time()
+        for scope,subject,topic in (('group:55555','12345678','group_pending'),('private:22345678','22345678','private_pending')):
+            self.store.db.execute('INSERT INTO companion_motives VALUES(?,?,?,?,?,?,?)',(scope,subject,topic,now-1,now+300,'open',companion_state.motive_record('original-event','human_request')))
+        for subject,group,topic in (('12345678','55555','group_pending'),('22345678','','private_pending'),('12345678','55555','group_pending')):
+            event,scope=self.event(subject,group)
+            tools={t.name:t for t in self.tools(event,scope)}
+            self.assertEqual(sum(t.name=='inspect_context' for t in tools.values()),1)
+            result=json.loads(await tools['inspect_context'].call(NS(context=NS(event=event))))
+            self.assertEqual(result['receipt']['scope'],scope)
+            self.assertEqual(result['receipt']['status'],'not_applicable')
+            self.assertEqual([r['topic'] for r in result['data']['unfinished_topics']],[topic])
+            self.assertEqual(result['data']['unfinished_topics'][0]['author'],'human_request')
+        self.store.db.execute("UPDATE companion_motives SET status='closed' WHERE scope='group:55555'")
+        result=json.loads(await tools['inspect_context'].call(NS(context=NS(event=event))))
+        self.assertEqual(result['data']['unfinished_topics'],[])
+        result=json.loads(await tools['inspect_context'].call(NS(context=NS(event=object()))))
+        self.assertEqual(result['receipt']['status'],'rejected')
+        stale=companion_state.inspect_tool(self.store.db,self.settings['config'],scope,lambda:False,event=event)
+        result=json.loads(await stale.call(NS(context=NS(event=event))))
+        self.assertEqual(result['receipt']['status'],'rejected')
+
     async def test_visible_tools_do_not_authorize_member_or_synthetic_effects(self):
         event,scope=self.event('22345678')
         tools={t.name:t for t in self.tools(event,scope)};context=NS(context=NS(event=event))
