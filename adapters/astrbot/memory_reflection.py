@@ -986,9 +986,10 @@ class Reflection:
     def retirement_pending(self):
         tables={r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         pending='memory_semantic_batches' in tables and self.db.execute("""SELECT 1 FROM memory_semantic_batches b WHERE state='committed'
-          OR (state='retired' AND EXISTS (SELECT 1 FROM memory_checkpoint_issues i
+          OR (state='retired' AND (NOT EXISTS (SELECT 1 FROM memory_semantic_purges p
+            WHERE p.checkpoint_id=b.checkpoint_id) OR EXISTS (SELECT 1 FROM memory_checkpoint_issues i
             WHERE i.checkpoint_id=b.checkpoint_id AND i.scope=b.scope AND i.status='open'
-            AND i.kind IN ('semantic_retirement','native_legacy_cleanup','native_history_cleanup'))) LIMIT 1""").fetchone()
+            AND i.kind IN ('semantic_retirement','native_legacy_cleanup','native_history_cleanup')))) LIMIT 1""").fetchone()
         media='semantic_media_owned' in tables and self.db.execute("SELECT 1 FROM semantic_media_owned WHERE state='pending' LIMIT 1").fetchone()
         return bool(pending or media)
 
