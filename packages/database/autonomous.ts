@@ -4,7 +4,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import type {Sql} from './index.js';
 import {ExecutionMemory} from './execution-memory.js';
 import {runtimeOnlineSql} from '../shared/runtime-status.js';
-import {AutonomyConfigSchema,defaultAutonomyConfig,TaskHandoffSchema,ActionIntentSchema,AutonomousGoalAudienceSchema,AutonomousGoalUpdateSchema,type AutonomousGoalAudience} from '../contracts/autonomous.js';
+import {MAX_CURRENT_GOALS,AutonomyConfigSchema,defaultAutonomyConfig,TaskHandoffSchema,ActionIntentSchema,AutonomousGoalAudienceSchema,AutonomousGoalUpdateSchema,type AutonomousGoalAudience} from '../contracts/autonomous.js';
 
 const daySql="to_char(now() AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD')";
 // Match the existing 90-second health lifetime at every durable work boundary.
@@ -141,7 +141,7 @@ export class AutonomyRepository {
     if(r.delaySeconds<300)return{status:'rejected',reason:'continuation_interval_minimum'};
    }else if(r.origin==='model'&&s.bot_config.proactive!==true)return{status:'rejected',reason:'proactive_disabled'};
    const [{count}]=await tx.query("SELECT count(*)::int AS count FROM autonomy_goals WHERE bot_id=$1 AND tenant_id=$2 AND status NOT IN ('completed','abandoned','canceled')",[r.botId,r.tenantId]);
-   if(count>=10)return{status:'rejected',reason:'active_goal_limit'};
+   if(count>=MAX_CURRENT_GOALS)return{status:'rejected',reason:'active_goal_limit'};
    const owner=Boolean(s.bot_config.behavior?.ownerUin&&String(s.bot_config.behavior.ownerUin)===r.senderId);
    const notBefore=r.at+r.delaySeconds*1000;
    const source={eventId:r.eventId,scope:r.scope,senderId:r.senderId,owner:r.origin==='model'?false:owner,handoffId:r.id,handoffFingerprint:fingerprint,notBefore,kind:r.kind||'message',...(r.origin?{origin:r.origin}:{}),...(r.parentActionId?{parentActionId:r.parentActionId,continuationDepth:depth}:{}),...(r.agreement?{agreement:r.agreement}:{})};

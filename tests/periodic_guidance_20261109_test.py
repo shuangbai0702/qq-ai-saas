@@ -107,6 +107,10 @@ class GoalReminder(unittest.IsolatedAsyncioTestCase):
         temp=tempfile.TemporaryDirectory();self.addCleanup(temp.cleanup)
         db=sqlite3.connect(Path(temp.name)/'reminder.sqlite');self.addCleanup(db.close)
         BotPipeline(db);guidance.initialize(db)
+        from agreement_state import initialize,apply_update
+        initialize(db)
+        agreement,error=apply_update(db,'propose','真实约定','12345678',['12345678','bot'],'private:12345678','original',detail='FULL_DETAIL_NOT_REPEATED')
+        self.assertFalse(error)
         db.execute("INSERT INTO fishbot_guidance_cadence VALUES('bot_shared',7)");db.commit()
         journal=ReadonlyJournal(db,'bot_shared');extras={};work=NS(scope='private:12345678')
         event=NS(get_extra=lambda k,d=None:extras.get(k,d),set_extra=lambda k,v:extras.update({k:v}))
@@ -115,9 +119,10 @@ class GoalReminder(unittest.IsolatedAsyncioTestCase):
         value={'goals':[{'id':'g','title':'当前目标','status':'active','revision':2,'progress':'not repeated','actions':['not repeated']}]}
         read=AsyncMock(return_value=model_json(value));reader=NS(name='read_autonomous_goals',call=read)
         with patch('autonomous_goals.tools',return_value=[reader]):
-            await guidance.prepare_goals(store,event,{},lambda:True)
+            await guidance.prepare_goals(store,event,{'config':{'behavior':{'ownerUin':'12345678'}}},lambda:True)
             reminder=extras['_hosted_periodic_guidance'];self.assertIn('当前目标',reminder);self.assertNotIn('not repeated',reminder)
             self.assertIn(guidance.REMINDER,reminder)
+            self.assertIn('真实约定',reminder);self.assertIn(agreement['id'],reminder);self.assertNotIn('FULL_DETAIL_NOT_REPEATED',reminder)
             state={'periodic_guidance':reminder};wire=[{'role':'system','content':'FIXED'},{'role':'user','content':reminder}]
             journal.serial=1;p=Prepared(1,None,copy.deepcopy(wire),copy.deepcopy(wire),state,1,time.time(),'test');self.assertTrue(journal.commit(p))
             before=copy.deepcopy(journal.last.wire)
@@ -130,6 +135,18 @@ class GoalReminder(unittest.IsolatedAsyncioTestCase):
             await guidance.prepare_goals(store,event,{},lambda:True);self.assertEqual(read.await_count,2)
             self.assertIn('已完成14轮',extras['_hosted_periodic_guidance'])
             print('GOAL_REMINDER_SYNTHETIC_CHARS '+str(len(reminder)-len(guidance.view(db,'bot_shared'))))
+
+    async def test_agreement_write_limit_and_cancel_release(self):
+        from agreement_state import initialize,apply_update,MAX_OPEN
+        db=sqlite3.connect(':memory:');self.addCleanup(db.close);initialize(db)
+        self.assertEqual(MAX_OPEN,5)
+        for i in range(5):
+            row,error=apply_update(db,'propose','约定'+str(i),'12345678',['12345678','bot'],'private:12345678',str(i))
+            self.assertFalse(error)
+        self.assertEqual(apply_update(db,'propose','超额','12345678',['12345678','bot'],'private:12345678','sixth')[1],'agreement_slots_full')
+        canceled,error=apply_update(db,'cancel','约定0','12345678',['12345678','bot'],'private:12345678','0',expected_revision=1)
+        self.assertFalse(error);self.assertEqual(canceled['status'],'canceled')
+        self.assertFalse(apply_update(db,'propose','新约定','12345678',['12345678','bot'],'private:12345678','replacement')[1])
 
     async def test_unavailable_is_unknown_and_stale_result_is_cancelled(self):
         from unittest.mock import patch,AsyncMock
