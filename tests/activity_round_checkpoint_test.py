@@ -30,7 +30,7 @@ class ActivationCheckpoint(unittest.IsolatedAsyncioTestCase):
         db=self.store.db;native=[{'role':'system','content':'STABLE_MAIN_PERSONA'}]
         for i in range(start,start+count):
             event=f'activation-{i}'
-            db.execute('INSERT INTO pipeline_actions(id,scope,state,at) VALUES(?,?,?,?)',(event,fixture.SCOPE,'completed',time.time()))
+            db.execute("INSERT INTO pipeline_events(event,scope,subject,source,status,at) VALUES(?,?,'service','autonomous',?,?)",(event,fixture.SCOPE,'completed',time.time()))
             record(db,fixture.SCOPE,event,event,source_scope=fixture.SCOPE,subject='90000000')
             user={'role':'user','content':SOURCE+model_json({'scope':fixture.SCOPE,'sender_id':'90000000','event_id':event,'kind':'platform_service_not_user'})+'\nPlatform activation '+str(i)}
             assistant={'role':'assistant','content':'[NO_REPLY]' if i%2 else 'Actual internal observation '+str(i)}

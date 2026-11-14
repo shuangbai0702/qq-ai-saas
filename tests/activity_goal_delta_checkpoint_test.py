@@ -22,7 +22,7 @@ class GoalCheckpoint(unittest.IsolatedAsyncioTestCase):
         self.store.reflection.binding=(self.cfg,self.provider,lambda:True,self.metrics,contextvars.ContextVar('goal_checkpoint',default=None))
         for number in range(1,36):
             event='goal-activation-'+str(number)
-            db.execute('INSERT INTO pipeline_actions(id,scope,state,at) VALUES(?,?,?,?)',(event,scope,'completed',time.time()))
+            db.execute("INSERT INTO pipeline_events(event,scope,subject,source,status,at) VALUES(?,?,'service','autonomous',?,?)",(event,scope,'completed',time.time()))
             record(db,scope,event,event,source_scope=scope,subject='90000000')
             user=service(value,event,scope);assistant={'role':'assistant','content':'[NO_REPLY]'}
             remember(db,scope,snapshots([user,assistant],scope));db.commit()
