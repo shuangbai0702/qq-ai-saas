@@ -62,6 +62,18 @@ class WaitingReconciliation(unittest.TestCase):
         self.db.execute('INSERT INTO memory_message_sources VALUES(?,?)',('model',json.dumps({'source_scope':'group:12345','event_id':'live','input_digest':'observed-before-admission','outputs':[],'settlement':{'attempted':0,'confirmed':0}})))
         self.assertEqual(self.p.reconcile_admission_inputs(),1) # observe's input binding and terminal metadata do not prove model execution
         self.assertEqual(self.db.execute("SELECT count(*) FROM pipeline_work_inputs WHERE status='blocked_unknown'").fetchone()[0],7)
+    def test_unseen_admission_input_is_not_owned_by_an_exited_later_work(self):
+        self.waiting(status='blocked',reason='waiting_input_blocked',exit_reason='admission_blocked')
+        self.waiting('later',stage='commit',status='sent',reason='',attempted=2,confirmed=2)
+        self.admission_input(owner='later')
+        before=self.db.execute('SELECT * FROM pipeline_events').fetchall()
+        self.db.execute("INSERT INTO pipeline_scope_work VALUES('group:12345','later','person',?,?)",(self.p.runtime,__import__('os').getpid()))
+        self.assertEqual(self.p.reconcile_admission_inputs(),0)
+        self.db.execute('DELETE FROM pipeline_scope_work')
+        self.assertEqual(self.p.reconcile_admission_inputs(),1)
+        self.assertEqual(self.db.execute('SELECT status,owner,seen FROM pipeline_work_inputs').fetchone(),('deferred',None,0))
+        self.assertEqual(self.db.execute('SELECT * FROM pipeline_events').fetchall(),before)
+        self.assertEqual(self.p.reconcile_admission_inputs(),0)
     def test_settled_children_close_activation_without_claiming_a_send(self):
         self.waiting()
         self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,owner,status,seen) VALUES('group:12345','joined','old','settled',1)")
