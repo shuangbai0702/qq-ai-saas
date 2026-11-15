@@ -587,8 +587,11 @@ class BotPipeline:
         # settlement-only metadata even without a model call. Neither proves
         # execution. Actual owned outputs or effect receipts do prohibit repair.
         model_guard="AND NOT EXISTS(SELECT 1 FROM memory_message_sources m WHERE m.direction='model' AND CASE WHEN json_valid(m.data) THEN json_extract(m.data,'$.source_scope')=i.scope AND json_extract(m.data,'$.event_id')=i.event AND (coalesce(json_array_length(m.data,'$.outputs'),0)>0 OR coalesce(json_extract(m.data,'$.settlement.attempted'),0)>0 OR coalesce(json_extract(m.data,'$.settlement.confirmed'),0)>0) ELSE 1 END)" if 'memory_message_sources' in tables else ''
-        return self.db.execute(f"""UPDATE pipeline_work_inputs AS i SET status='deferred'
-          WHERE i.status='blocked_unknown' AND i.seen=0 AND i.owner IS NULL
+        # owner also records an exited Work's custody. Only scope_work is a
+        # live execution lease; an unseen child must not be held forever by
+        # the audit identity of a later Work that never adopted its input.
+        return self.db.execute(f"""UPDATE pipeline_work_inputs AS i SET status='deferred',owner=NULL
+          WHERE i.status='blocked_unknown' AND i.seen=0
           AND i.scope LIKE 'group:%' AND i.identity IS NOT NULL AND i.payload IS NOT NULL
           AND (? IS NULL OR i.scope=?)
           AND NOT EXISTS(SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope)

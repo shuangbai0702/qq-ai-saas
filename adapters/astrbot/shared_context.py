@@ -119,6 +119,30 @@ def observe(db,event,cfg,group_limit=2):
     if not included(scope,cfg,group_limit):return False
     identifier=str(getattr(event.message_obj,'message_id',''))
     if not identifier:raise ValueError('shared_context_event_id_missing')
+    # SDK redelivery may resolve the same image to a different transient URL,
+    # or stamp a new conversion time. The authenticated raw input and existing
+    # queue/Journal remain authoritative, not this second SDK rendering.
+    key=model_json([scope,identifier])
+    bound=db.execute("SELECT data FROM memory_message_sources WHERE scope=? AND event=? AND direction='model'",(JOURNAL_SCOPE,key)).fetchone()
+    if bound:
+        binding=json.loads(bound[0]);digest=binding.get('input_digest')
+        if digest:
+            retained=db.execute('SELECT subject,payload,payload_sha FROM pipeline_work_inputs WHERE scope=? AND event=?',(scope,identifier)).fetchone()
+            raw=getattr(event.message_obj,'raw_message',None)
+            signature=hashlib.sha256(json.dumps(raw,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+            if retained and (retained[0]!=str(event.get_sender_id()) or retained[2]!=signature or binding.get('sender_id')!=str(event.get_sender_id())):
+                raise ValueError('shared_context_protocol_input_changed')
+            if retained and retained[0]==str(event.get_sender_id()) and retained[1] is not None and retained[2]==signature and binding.get('sender_id')==str(event.get_sender_id()):
+                previous=db.execute('SELECT message FROM fishbot_shared_inputs WHERE scope=? AND event=?',(scope,identifier)).fetchone()
+                original=json.loads(previous[0]) if previous else None
+                if original is None and db.execute("SELECT 1 FROM sqlite_master WHERE name='fishbot_readonly_journals'").fetchone():
+                    from journal_storage import read_snapshot
+                    snapshot=read_snapshot(db,model_json(JOURNAL_SCOPE))
+                    original=next((m for m in (snapshot or {}).get('base',[]) if (o:=source(m)) and o['scope']==scope and str(o['event_id'])==identifier),None)
+                origin=source(original) if original else None
+                if origin and origin['scope']==scope and str(origin['event_id'])==identifier and str(origin['sender_id'])==str(event.get_sender_id()):
+                    event.set_extra('_hosted_shared_input_digest',digest)
+                    return True
     sender=str(event.get_sender_id());at=float(getattr(event.message_obj,'timestamp',0) or time.time())
     origin={'scope':scope,'sender_id':sender,'event_id':identifier,'at':at}
     parts=list(event.get_messages());mentions=[str(c.qq) for c in parts if isinstance(c,At)]
@@ -211,8 +235,33 @@ def settle_inputs(db,journal):
     db.executemany('DELETE FROM fishbot_shared_inputs WHERE scope=? AND event=?',known)
     window=getattr(journal,'_shared_input_window',None)
     if window and window[0]<=set(known):
+        # A committed background window also releases excluded ambient input
+        # custody. Previously only the display queue was erased, leaving an
+        # unseen responsibility which every subsequent Work adopted again.
+        # Directed/unknown inputs and actual model/effect evidence stay held.
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='pipeline_work_inputs'").fetchone():
+            boundaries={}
+            for scope,event in window[0]:
+                row=db.execute('SELECT created FROM pipeline_work_inputs WHERE scope=? AND event=?',(scope,event)).fetchone()
+                if scope.startswith('group:') and row and isinstance(row[0],(int,float)):
+                    boundaries[scope]=max(boundaries.get(scope,0),row[0])
+            for scope,boundary in boundaries.items():
+                rows=db.execute("""SELECT i.event FROM pipeline_work_inputs i
+                  JOIN pipeline_scope_work w ON w.scope=i.scope AND w.event=i.owner
+                  WHERE i.scope=? AND i.created<=? AND i.status='owned' AND i.seen=0
+                  AND i.addressed_self=0 AND i.event<>w.event
+                  AND NOT EXISTS(SELECT 1 FROM pipeline_action_effects f WHERE f.action=i.event)
+                  AND NOT EXISTS(SELECT 1 FROM memory_message_sources m WHERE m.direction='model'
+                    AND CASE WHEN json_valid(m.data) THEN json_extract(m.data,'$.source_scope')=i.scope
+                      AND json_extract(m.data,'$.event_id')=i.event
+                      AND (coalesce(json_array_length(m.data,'$.outputs'),0)>0
+                        OR coalesce(json_extract(m.data,'$.settlement.attempted'),0)>0)
+                    ELSE 1 END)""",(scope,boundary)).fetchall()
+                for event, in rows:
+                    if (scope,event) not in known:
+                        db.execute("UPDATE pipeline_work_inputs SET status='settled_window',payload=NULL WHERE scope=? AND event=? AND status='owned' AND seen=0",(scope,event))
         # Exact ingress IDs exclude arrivals after selection. Never touch the
-        # pending-memory or Work ledgers: these rows only staged background.
+        # pending-memory transcript or fabricate a model/send settlement.
         db.executemany('DELETE FROM fishbot_shared_inputs WHERE id=?',[(i,) for i in window[1]])
     db.commit()
     if window and window[0]<=set(known):

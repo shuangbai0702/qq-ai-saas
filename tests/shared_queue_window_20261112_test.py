@@ -93,5 +93,35 @@ class GroupQueueWindow(unittest.TestCase):
         self.assertEqual(self.count(),0)
         self.assertEqual(model_json(restarted.last.wire),prefix)
 
+    def test_window_commit_settles_excluded_custody_without_model_or_send_claim(self):
+        from bot_pipeline import BotPipeline
+        import message_provenance
+        BotPipeline(self.db);message_provenance.initialize(self.db)
+        self.db.execute("INSERT INTO pipeline_scope_work VALUES('group:12345','19','person','runtime',1)")
+        for n in range(20):
+            self.add('group:12345',n)
+            self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,owner,status,seen,addressed_self,created,payload) VALUES('group:12345',?,'19','owned',0,0,?,'original')",(str(n),n))
+        # A prior window lost its display row but left this same custody.
+        for event,created,addressed in [('orphan',-1,0),('late',21,0),('directed',0,1),('unknown',0,None)]:
+            self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,owner,status,seen,addressed_self,created,payload) VALUES('group:12345',?,'19','owned',0,?,?,'original')",(event,addressed,created))
+        self.db.execute("INSERT INTO pipeline_action_effects VALUES('2',1,'send','target','unknown',NULL,1)")
+        message_provenance.bind_model_input(self.db,'bot_shared','group:12345','3','12345678',self.messages[('group:12345','3')])
+        value={'source_scope':'group:12345','event_id':'3','sender_id':'12345678','outputs':[{'digest':'actual draft'}]}
+        self.db.execute("UPDATE memory_message_sources SET data=? WHERE direction='model'",(model_json(value),));self.db.commit()
+        selected=shared.queued(self.db,self.cfg,self.j)
+        # Failed/staged candidate cannot release any responsibility.
+        shared.settle_inputs(self.db,self.j)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM pipeline_work_inputs WHERE status='settled_window'").fetchone()[0],0)
+        self.j.last=NS(base=copy.deepcopy(selected));before=copy.deepcopy(self.j.last.base)
+        shared.settle_inputs(self.db,self.j)
+        settled={e for e, in self.db.execute("SELECT event FROM pipeline_work_inputs WHERE status='settled_window'")}
+        self.assertEqual(settled,{'0','1','4','5','6','7','orphan'})
+        for event in ('2','3','late','directed','unknown','19'):
+            self.assertEqual(self.db.execute('SELECT status FROM pipeline_work_inputs WHERE event=?',(event,)).fetchone()[0],'owned')
+        self.assertEqual(self.j.last.base,before)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM pipeline_events').fetchone()[0],0)
+        shared.settle_inputs(self.db,self.j)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM pipeline_work_inputs WHERE status='settled_window'").fetchone()[0],7)
+
 
 if __name__=='__main__':unittest.main()
