@@ -17,6 +17,16 @@ from context_protocol import SOURCE,model_json
 LEAK='正常开头\n\n'+HEADERS[0]+'\n'+json.dumps({'eventChanges':[['set',['authority'],{'identity':{'bot_id':'fixture'},'task':{'id':'invented'}}]]})
 
 class Admission(unittest.TestCase):
+    def test_face_id_description_is_not_a_protocol_component(self):
+        from astrbot.core.message.components import Face
+        for text in ('[QQ表情 id=479]','嗯。\n\n[QQ表情 id=479]',' [QQ表情 id = 479] '):
+            self.assertEqual(inspect_public(text),'unresolved_qq_face')
+        for value in (Face(id=479),'这里的[QQ表情 id=479]是什么意思？',
+                      '`[QQ表情 id=479]`','"[QQ表情 id=479]"',
+                      '> [QQ表情 id=479]','```text\n[QQ表情 id=479]\n```',
+                      '{"text":"[QQ表情 id=479]"}'):
+            self.assertIsNone(inspect_public(value))
+
     def test_protocol_and_split_nested_nodes(self):
         self.assertEqual(inspect_public(LEAK),'internal_event_envelope')
         node=NS(content=[Plain(LEAK[:38]),Plain(LEAK[38:])])
@@ -114,6 +124,16 @@ class Regeneration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(requests),2);self.assertEqual(len(self.sent),1)
         self.assertEqual(self.sent[0].chain[0].text,'嗯，我在。')
         self.assertEqual(event.get_extra('_hosted_output_retries'),1)
+
+    async def test_face_id_retry_is_bounded_and_sends_only_replacement(self):
+        event,requests=await self.scenario(['[QQ表情 id=479]','好，那我收回刚才那句。'],correction=FACE_REGENERATE)
+        self.assertEqual(len(requests),2)
+        self.assertEqual([m.chain[0].text for m in self.sent],['好，那我收回刚才那句。'])
+        self.assertEqual(event.get_extra('_hosted_output_retries'),1)
+        event,requests=await self.scenario(['[QQ表情 id=479]']*3,correction=FACE_REGENERATE)
+        self.assertEqual(len(requests),3)
+        self.assertEqual(self.sent,[])
+        self.assertEqual(event.get_extra('_hosted_output_retries'),2)
 
     async def test_same_journal_regeneration_and_bounded_failure(self):
         event,requests=await self.scenario([LEAK,'正常的新答复'])
