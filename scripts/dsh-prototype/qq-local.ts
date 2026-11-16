@@ -10,6 +10,9 @@ import {BilibiliTools} from '../../packages/database/bilibili-tools.js';
 import {BilibiliExecutor} from '../../apps/node-agent/src/bilibili/executor.js';
 import {runtimeClient} from '../../packages/shared/runtime-client.js';
 import {bilibiliSource} from './bilibili-source.js';
+import Fastify from 'fastify';
+import {registerBilibili} from '../../apps/control-api/src/bilibili.js';
+import {SingleFlight} from '../../packages/shared/single-flight.js';
 // @ts-ignore local native-module experiment
 import {createKernel,delegateLocal,sessionIdentity} from './kernel.mjs';
 // @ts-ignore installed native adapter
@@ -51,6 +54,15 @@ try{
 const kernel=await createKernel({storageRoot:path.join(root,'dsh-sessions'),adapter});
 const bridgeToken=createHash('sha256').update(identity.token+'local-dsh').digest('hex');
 const running=new Set<string>();let closing=false;
+// Reuse the existing account/login API and broker; no copied cookie store or QR flow.
+const accountApi=Fastify({logger:false}),accountFlight=new SingleFlight(),accountAbort=new AbortController();
+const accountRoutes=new Set(['GET /v1/bots/:id/bilibili','POST /v1/bots/:id/bilibili/login','GET /v1/bots/:id/bilibili/login/:login/qr']);
+accountApi.addHook('onRequest',async(req,reply)=>{
+ if(closing||req.headers.origin||req.headers.authorization!=='Bearer '+bridgeToken||!accountRoutes.has(req.method+' '+req.routeOptions.url))return reply.code(403).send({error:'local_account_access_denied'});
+});
+accountApi.addHook('preHandler',async()=>{await accountFlight.run(()=>executor.accounts.tick(accountAbort.signal));});
+registerBilibili(accountApi,db,key,async(_req,id)=>{if(id!==bot.id)throw Error('Foreign Bot denied');return bot;},root);
+await accountApi.listen({host:'127.0.0.1',port:24879});
 async function evidence(value:any){await appendFile(path.join(root,'acceptance.jsonl'),JSON.stringify({at:new Date().toISOString(),...value})+'\n');}
 const server=http.createServer(async(req,res)=>{
  if(req.method!=='POST'||req.headers.authorization!=='Bearer '+bridgeToken||req.headers.origin||closing){res.writeHead(403);res.end('{}');return;}
@@ -92,5 +104,5 @@ await writeFile(path.join(ctx.root,'ai/dsh-bridge.json'),JSON.stringify({version
 await astrbot.start(ctx);
 const healthTimer=setInterval(()=>void (async()=>{try{const health=await astrbot.probe(ctx);await db.query('UPDATE bots SET health=$2,observed_state=$3 WHERE id=$1',[bot.id,JSON.stringify({sampledAt:new Date().toISOString(),protocol:{online:true},ai:health}),health.ready?'running':'starting']);}catch(error:any){console.error('Local health:',error.message);}})(),10000);
 await writeFile(path.join(root,'runtime.pid'),String(process.pid));console.log('Local AstrBot and DSH bridge started; waiting for health.');
-async function close(){if(closing)return;closing=true;clearInterval(healthTimer);server.close();await astrbot.stop(bot.id);await kernel.close();await search.close();await adapter.close();await db.close();process.exit();}
+async function close(){if(closing)return;closing=true;clearInterval(healthTimer);server.close();accountAbort.abort();await accountApi.close();await accountFlight.pending;await astrbot.stop(bot.id);await kernel.close();await search.close();await adapter.close();await db.close();process.exit();}
 process.on('SIGINT',()=>void close());process.on('SIGTERM',()=>void close());

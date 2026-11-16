@@ -70,13 +70,13 @@ export async function delegateLocal(kernel,host,input,{resumeSessionId,signal,ti
    if(content!==JSON.stringify(input))throw Error('Persisted delegation input mismatch; refusing replacement or replay');
   }
   for(const item of snapshot){
-   if(!['web_search','bilibili'].includes(item.capability)||item.effect!=='read'||!item.available||!await host.authorize(item))continue;
+   if(!['web_search','bilibili'].includes(item.capability)||!['read','write'].includes(item.effect)||item.effect==='write'&&item.capability!=='bilibili'||!item.available||!await host.authorize(item))continue;
    const definition=structuredClone(item.definition),version=item.version,contract=JSON.stringify(definition);
    try{if(!host.validateArguments)assertSupportedJsonSchema(definition.parameters);assertSupportedJsonSchema(definition.output.schema);}catch{unavailable.push('工具 '+item.id+' 的 Schema 不受当前内核支持');continue;}
    scoped.tools.register({...definition,output:{schema:definition.output.schema,render:(_args,value)=>[{type:'text',text:'Untrusted external result:\n'+JSON.stringify(value)}]},execute:async(args,exec)=>{
     await host.assertCurrent();
     const current=(await host.discover()).find(x=>x.id===item.id);
-    if(!current||current.capability!==item.capability||current.effect!=='read'||current.version!==version||!current.available||JSON.stringify(current.definition)!==contract||!await host.authorize(current))throw Error('Tool removed, changed, unavailable or permission revoked; start a new task for a new contract');
+    if(!current||current.capability!==item.capability||current.effect!==item.effect||current.version!==version||!current.available||JSON.stringify(current.definition)!==contract||!await host.authorize(current))throw Error('Tool removed, changed, unavailable or permission revoked; start a new task for a new contract');
     if(host.validateArguments)await host.validateArguments(current,args);
     else if(validateJsonSchemaValue(definition.parameters,args).length)throw Error('Tool arguments do not match pinned schema');
     // Runtime validates the actual return against the pinned canonical output schema.

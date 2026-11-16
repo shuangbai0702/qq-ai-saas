@@ -81,3 +81,14 @@ test('revoked effect metadata cannot dispatch; completed session cannot be repla
  k=await rig(async function*(){throw Error('must not execute replacement');},root);
  try{await assert.rejects(delegateLocal(k,h,{goal:'different'},{resumeSessionId:sessionIdentity(h.identity)}),/input mismatch/);}finally{await k.close();}
 });
+
+test('Bilibili write requires host authorization and preserves original unknown receipt',async()=>{
+ const h=host();h.state.tools[0].capability='bilibili';h.state.tools[0].effect='write';
+ let n=0;h.authorize=async item=>item.capability==='bilibili'&&item.effect==='write';
+ h.execute=async(item,args)=>{h.state.calls.push({item,args});return{execution:'unknown',receipt:{status:'unknown'}};};
+ const k=await rig(async function*(o){if(!n++)yield*call('lookup',{query:'authorized'});else{const r=o.messages.findLast(m=>m.role==='tool');assert(JSON.stringify(r).includes('unknown'));yield*text({...final,unfinished:['写操作结果未知，未重试']});}});
+ try{const r=await delegateLocal(k,h,{goal:'明确授权的B站写入'});assert.equal(h.state.calls.length,1);assert.equal(r.unfinished.length,1);}finally{await k.close();}
+ const denied=host();denied.state.tools[0].capability='bilibili';denied.state.tools[0].effect='write';denied.authorize=async()=>false;
+ const k2=await rig(async function*(o){assert.equal(o.tools.length,0);yield*text(final);});
+ try{await delegateLocal(k2,denied,{goal:'no grant'});assert.equal(denied.state.calls.length,0);}finally{await k2.close();}
+});

@@ -64,3 +64,16 @@ test('Bilibili source preserves authoritative constraints, Bot identity and publ
  await source.validateArguments(tools[0],{bvid:'BV1GJ411x7h7'});
  manifest={...manifest,botId:'other-bot'};await assert.rejects(source.discover(),/Bot manifest/);assert.equal(calls,0);
 });
+
+test('authenticated Bilibili scopes require explicit host grant and current authoritative manifest',async()=>{
+ const identity={botId:'auth-bot',generation:1,revision:1};const dispatched:any[]=[];
+ const row=(operation:keyof typeof biliOperations)=>({operation,scope:biliOperations[operation].scope,write:biliOperations[operation].write,args:biliOperations[operation].args.toJSONSchema(),status:'available_to_attempt'});
+ let manifest:any={version:1,...identity,settingsRevision:1,operations:[row('account_info'),row('like'),row('comment'),row('coin'),row('dm_send')]};
+ const source=bilibiliSource({identity,allowedScopes:['private.read','like.write','comment.write'],readManifest:async()=>manifest,dispatch:async(r:any)=>{dispatched.push(r);return{execution:'unknown',receipt:{status:'unknown'}};}});
+ const tools=await source.discover();assert.deepEqual(tools.map((t:any)=>[t.id,t.effect]),[['account_info','read'],['like','write'],['comment','write']]);
+ const like=tools.find((t:any)=>t.id==='like');await source.validateArguments(like,{bvid:'BV1GJ411x7h7',value:true});
+ const result=await source.execute(like,{bvid:'BV1GJ411x7h7',value:true},{});assert.equal(result.execution,'unknown');assert.equal(result.receipt.status,'unknown');assert.equal(dispatched.length,1);
+ await assert.rejects(source.validateArguments(like,{bvid:'BV1GJ411x7h7',value:'true'}));
+ manifest={...manifest,settingsRevision:2,operations:manifest.operations.filter((r:any)=>r.operation!=='like')};
+ await assert.rejects(source.execute(like,{bvid:'BV1GJ411x7h7',value:true},{}),/permission/);assert.equal(dispatched.length,1);
+});
