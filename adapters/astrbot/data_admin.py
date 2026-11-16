@@ -151,12 +151,12 @@ def run(file, data, connection=None):
             db.execute('DELETE FROM social_patterns WHERE scope=?', (scope,))
             db.execute('DELETE FROM social_samples WHERE scope=?', (scope,))
         elif action == 'reset_relation':
-            old=db.execute('SELECT last_seen FROM relations WHERE scope=? AND subject=?',(scope,data['subject'])).fetchone()
+            old=db.execute('SELECT last_seen FROM relations WHERE subject=?',(data['subject'],)).fetchone()
             if not old or old[0]!=data['expectedLastSeen']:return {'error':'关系状态已变化，请刷新后重试','status':409}
             from memory_operation_audit import forget as forget_operation_audit
             forget_operation_audit(db,scope,data['subject'],relations_only=True)
             if 'rationale' in {r[1] for r in db.execute('PRAGMA table_info(autonomy_decisions)')}:db.execute('UPDATE autonomy_decisions SET rationale=NULL')
-            db.execute('DELETE FROM relations WHERE scope=? AND subject=?',(scope,data['subject']))
+            db.execute('DELETE FROM relations WHERE subject=?',(data['subject'],))
             if 'relation_progress' in tables:
                 db.execute('DELETE FROM relation_progress WHERE scope=? AND subject=?',(scope,data['subject']))
             if 'relation_evidence' in tables:

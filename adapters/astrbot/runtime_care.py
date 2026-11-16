@@ -17,8 +17,8 @@ class Ambient:
         if not scope.startswith('group:') or not text.strip(): return
         limit=max(1,min(50,int(limit)))
         rows = self.scopes.pop(scope, deque(maxlen=50))
-        rows.append({**{k:source[k] for k in ('source_event','sender_name','mentions','reply_to') if isinstance(source,dict) and k in source},
-                     'sender_id': sender, 'text': text[:180], 'at': now})
+        rows.append({**{k:source[k] for k in ('source_event','sender_name','mentions','reply_to','time_source','media') if isinstance(source,dict) and k in source},
+                     'sender_id': sender, 'text': text[:180], 'at': source.get('at',now) if isinstance(source,dict) else now})
         while len(rows)>limit:rows.popleft()
         self.scopes[scope] = rows
         while len(self.scopes) > 128: self.scopes.popitem(last=False)

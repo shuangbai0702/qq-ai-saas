@@ -136,29 +136,20 @@ def decision_memory(db,cfg,scope,subject,now,recent=True,subjects=()):
     unified=shared_active(db)
     people=[] if unified else relevant_people(db,scope,subject,now,owner)
     result={'facts':[fact_item(r,subject,'decision_context') for r in fact_rows(db,scope,subject,limit=3)],
-            'active_agreements':context_view(db,scope,owner=owner),
+            'active_agreements':[row for row in context_view(db,scope,owner=owner) if row.get('status') not in ('fulfilled','canceled','expired')],
             'cross_scope_guidance':CROSS_SCOPE_GUIDANCE}
-    from memory_scope import valid_scope,shared_person
-    participants={str(subject),*(str(x) for x in subjects)}
-    result['relations']=[{'source_scope':r[0],'subject':r[1],'affinity':r[2],'emotion':r[3],'emotion_expires':r[4],'observed_at':r[5],'trust':r[6],'impression':r[7],'semantic_updated':r[8]}
-        for r in db.execute('SELECT scope,subject,affinity,emotion,expires,last_seen,trust,impression,semantic_updated FROM relations ORDER BY scope,subject')
-        if valid_scope(r[0]) and shared_person(r[0],r[1]) and (r[0]==scope or r[1] in participants)]
-    if recent:result['recent_cross_session_messages']=shared_recent(db,8) if unified else pending_messages(db,scope,subject,now,limit=6,budget=1600,people=people,owner=owner)
+    from relationships import selected,latest_speakers
+    participants=latest_speakers(db,scope) if scope.startswith('group:') and not subjects else list(subjects) or [subject]
+    result['relations']=selected(db,participants[:6] if scope.startswith('group:') else participants)
+    if recent:result['recent_cross_session_messages']=shared_recent(db,8,auxiliary=True) if unified else pending_messages(db,scope,subject,now,limit=6,budget=1600,people=people,owner=owner)
     if unified:
         from shared_context import delivery_view
         # Current-scope confirmations already have a timeline/last_bot_text.
         # A cross-scope draft in shared_recent is explicitly NOT a send; pair
         # it with this small projection of existing actual protocol evidence.
-        result['cross_scope_deliveries']=delivery_view(db,limit=4,budget=3000,exclude_scope=scope)
-        # Each helper is stateless: retain current settlement/feedback even
-        # when another helper already saw it. Reference an exact text already
-        # present in THIS request rather than pretending it persists upstream.
-        for receipt in result['cross_scope_deliveries']:
-            for index,row in enumerate(result.get('recent_cross_session_messages',[])):
-                if receipt.get('text_complete') and receipt.get('confirmed_text')==row.get('text'):
-                    receipt.pop('confirmed_text');receipt['confirmed_text_ref']=['recent_cross_session_messages',index,'text'];break
+        result['cross_scope_deliveries']=delivery_view(db,limit=4,budget=3000,exclude_scope=scope,auxiliary=True)
         feedback=[]
-        for receipt in delivery_view(db,limit=4,budget=1600,only_scope=scope,text_limit=0):
+        for receipt in delivery_view(db,limit=4,budget=1600,only_scope=scope,text_limit=0,auxiliary=True):
             if 'feedback' not in receipt:continue
             feedback.append({k:v for k,v in receipt.items() if k not in ('confirmed_text','text_complete')})
         if feedback:result['current_scope_feedback']=feedback
@@ -170,7 +161,7 @@ def decision_memory(db,cfg,scope,subject,now,recent=True,subjects=()):
         try:detail=json.loads(raw)
         except (ValueError,TypeError):continue
         result['recent_autonomous_decisions'].append({'at':at,'kind':kind,'chose_contact':bool(reply),'cooldown_reason':reason,**detail})
-    result['decision_continuity_guidance']='近期判断是当时的模型意见，不是当前事实、授权或固定结论；结合时间及之后的真实互动修正，不机械继承。'
+    result['decision_continuity_guidance']='近期判断是当时的模型意见，不是当前事实、授权或固定结论；结合后续互动修正。真实交流统一见messages，草稿不等于已发送。'
     if cfg.get('memorySummary',True):
         from context_foundation import summaries
         from conversation_continuity import view as continuity_view

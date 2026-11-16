@@ -136,6 +136,16 @@ def initialize(db):
               WHERE scope=OLD.scope AND event=OLD.event AND direction='''+"'"+direction+"'"+'''; END''')
 
 
+def event_time(event):
+    """Use the protocol clock, not SDK conversion/processing time."""
+    message=getattr(event,'message_obj',None)
+    raw=getattr(message,'raw_message',None)
+    value=raw.get('time') if isinstance(raw,dict) else None
+    if isinstance(value,(int,float)) and not isinstance(value,bool) and 0<value<1e12:return float(value),'protocol'
+    value=getattr(message,'timestamp',None)
+    return (float(value),'adapter') if isinstance(value,(int,float)) and value>0 else (None,'unavailable')
+
+
 def capture(event):
     """Only called with the bound protocol event, never model arguments."""
     from astrbot.core.message.components import At,Reply
@@ -144,6 +154,11 @@ def capture(event):
     quoted=next((c for c in parts if isinstance(c,Reply)),None)
     source={'sender_id':str(event.get_sender_id()),'sender_name':str(event.get_sender_name())[:60],
             'mentions':mentions,'name_source':'protocol_at_ingress'}
+    from collections import Counter
+    media=Counter(type(c).__name__ for c in parts if type(c).__name__ not in ('Plain','At','Reply'))
+    if media:source['media']=[{'type':kind,'count':count} for kind,count in media.items()]
+    at,clock=event_time(event)
+    if at is not None:source.update(at=at,time_source=clock)
     if quoted is not None:
         text=str(getattr(quoted,'message_str','') or '')[:200]
         text=re.sub(r'(?i)\bsk-[A-Za-z0-9_-]{12,}|Bearer\s+\S+','[凭据已移除]',text)
@@ -165,7 +180,7 @@ def get(db,scope,event,direction='incoming'):
 
 def put(db,scope,event,direction,source):
     if not isinstance(source,dict):return
-    allowed=('sender_id','sender_name','name_source','mentions','reply_to','message_ids','receipt','complete','responded_events','source_scope','confirmed_media_kinds')
+    allowed=('sender_id','sender_name','name_source','mentions','reply_to','message_ids','receipt','complete','responded_events','source_scope','confirmed_media_kinds','at','time_source','media')
     data={k:source[k] for k in allowed if k in source}
     raw=json.dumps(data,ensure_ascii=False,separators=(',',':'))
     if len(raw)>3000:raise ValueError('message provenance exceeds bound')
@@ -180,7 +195,7 @@ def incoming_item(db,scope,person,event,text,at):
     source=get(db,scope,event)
     # Old rows have no protocol display name; never guess from another member.
     return {'role':'member','source_scope':scope,'source_event':str(event),
-            **source,'sender_id':person,'at':at,'text':text,
+            **source,'sender_id':person,'at':source.get('at',at),'text':text,
             'name_source':source.get('name_source','unavailable')}
 
 

@@ -349,18 +349,19 @@ class GroupPresence:
             if not text:
                 continue
             recent.append({'sender_id': str(message.get('sender_id', '')), 'text': text,
-                           **{k:message[k] for k in ('at','source_scope','source_event','role','sender_name','mentions','reply_to','attachments','images','media','content','parts') if k in message}})
+                           **{k:message[k] for k in ('at','time_source','source_scope','source_event','role','sender_name','mentions','reply_to','attachments','images','media','content','parts') if k in message}})
             remaining -= len(text)
             if remaining <= 0:
                 break
         from bot_pipeline import decision_memory
+        from relationships import latest_speakers
         from context_transport import decision_request
         # Keep both observations until the common projector establishes exact
         # attributed body/media equivalence; windows may truncate differently.
         dialogue=dict(dialogue or {})
         payload = {'persona': str(cfg.get('systemPrompt') or ''),'owner_id':str(b.get('ownerUin') or ''),
                    'current_time':datetime.fromtimestamp(now,timezone(timedelta(hours=8))).isoformat(),
-                   'memory':decision_memory(self.db,cfg,scope,str(messages[-1].get('sender_id','')),now,subjects=[m.get('sender_id','') for m in messages]),
+                   'memory':decision_memory(self.db,cfg,scope,str(messages[-1].get('sender_id','')),now,subjects=latest_speakers(self.db,scope,messages,self_id=(addressing or {}).get('self_id',''))),
                    'scope': scope, 'style': b.get('groupParticipationStyle', 'natural'),
                    'allow_side_comment': b.get('groupParticipationOtherConversations', False), 'messages': list(reversed(recent)),
                    'attention': dialogue if b.get('attentionEnabled', True) else {}, 'companion': companion,'platform_addressing':addressing or {}}

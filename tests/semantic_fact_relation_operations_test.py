@@ -173,16 +173,21 @@ class SemanticFactRelationOperations(unittest.TestCase):
         self.assertEqual(saved,1)
         self.assertEqual(fact_rows(self.db,SCOPE,PERSON)[0][1],'绘画')
 
-    def test_shared_relation_history_is_context_only_and_respects_people(self):
-        self.db.execute("INSERT INTO relations(scope,subject,affinity,emotion,expires,last_seen,trust,impression) VALUES(?,?,10,'平静',0,1,.4,'旧私聊印象')",('private:'+PERSON,PERSON))
+    def test_global_relation_is_shared_across_scopes_and_respects_people(self):
+        self.db.execute("INSERT INTO relations(scope,subject,affinity,emotion,expires,last_seen,trust,impression) VALUES(?,?,10,'平静',0,1,.4,'综合印象')",('private:'+PERSON,PERSON))
         self.db.execute("INSERT INTO relations(scope,subject,affinity,emotion,expires,last_seen) VALUES(?,?,30,'平静',0,1)",('group:12345','87654321'))
-        self.db.execute("INSERT INTO relations(scope,subject,affinity,emotion,expires,last_seen) VALUES(?,?,30,'平静',0,1)",('private:87654321',PERSON))
         self.db.commit()
         shared=self.before()['memory_state']
-        self.assertEqual([(r['scope'],r['subject']) for r in shared['relation_history']],[('private:'+PERSON,PERSON)])
-        self.assertEqual(shared['relations'],[])
         local=snapshot(self.db,'group:12345',{PERSON},CFG)['memory_state']
-        self.assertEqual(local['relation_history'],[])
+        self.assertNotIn('relation_history',shared)
+        self.assertEqual(shared['relations'],local['relations'])
+        self.assertEqual([r['subject'] for r in local['relations']],[PERSON])
+        before=snapshot(self.db,'group:12345',{PERSON},CFG)
+        operation={'op':'replace','scope':'group:12345','subject':PERSON,'expected':before['memory_state']['relations'][0],'affinity':15,'trust':.6,'impression':'新综合印象'}
+        with self.db:
+            apply_semantic_memory(self.db,self.store.memory,'group:12345',CFG,self.payload,{'relation_operations':[operation]},before,now=100)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM relations WHERE subject=?',(PERSON,)).fetchone(),(1,))
+        self.assertEqual(snapshot(self.db,SCOPE,{PERSON},CFG)['memory_state']['relations'][0]['impression'],'新综合印象')
         self.assertEqual(snapshot(self.db,SCOPE,{PERSON},{'memoryAutoCapture':False,'selfDevelopment':False})['memory_state']['writable'],{'facts':False,'relations':False})
 
     def test_audit_records_rejections_omission_and_changes_without_values(self):

@@ -47,7 +47,7 @@ class BehaviorStore:
         self.system_contract=SystemContract(self.db)
         self.db.executescript('''PRAGMA journal_mode=WAL;
         CREATE TABLE IF NOT EXISTS facts(scope TEXT,subject TEXT,name TEXT,value TEXT,event TEXT,updated REAL,version INTEGER,active INTEGER,PRIMARY KEY(scope,subject,name,version));
-        CREATE TABLE IF NOT EXISTS relations(scope TEXT,subject TEXT,affinity INTEGER,emotion TEXT,expires REAL,last_seen REAL,PRIMARY KEY(scope,subject));
+        CREATE TABLE IF NOT EXISTS relations(scope TEXT,subject TEXT PRIMARY KEY NOT NULL,affinity INTEGER,emotion TEXT,expires REAL,last_seen REAL);
         CREATE TABLE IF NOT EXISTS deliveries(scope TEXT,day TEXT,count INTEGER,last_sent REAL,PRIMARY KEY(scope,day));
         CREATE TABLE IF NOT EXISTS group_interjections(scope TEXT,at REAL);
         CREATE INDEX IF NOT EXISTS group_interjections_scope_at ON group_interjections(scope,at);
@@ -57,6 +57,8 @@ class BehaviorStore:
         relation_columns={row[1] for row in self.db.execute('PRAGMA table_info(relations)')}
         for name,definition in (('trust','REAL NOT NULL DEFAULT 0'),('impression',"TEXT NOT NULL DEFAULT ''"),('semantic_updated','REAL NOT NULL DEFAULT 0')):
             if name not in relation_columns:self.db.execute('ALTER TABLE relations ADD COLUMN '+name+' '+definition)
+        from relationships import migrate as migrate_relationships
+        self.relationship_migration=migrate_relationships(self.db)
         initiative.initialize(self.db)
         companion_state.initialize(self.db)
         autonomy.recover_unstarted(self.db)
@@ -178,7 +180,7 @@ class BehaviorStore:
     def observe(self,scope,subject,text,event,now=None,auto_capture=False,memory_enabled=True,directed=True,project_facts=True):
         now=time.time() if now is None else now
         status=self.memory.observe(scope,subject,text,event,now,auto_capture) if memory_enabled else '长期记忆已关闭'
-        previous=self.db.execute('SELECT affinity,emotion,expires FROM relations WHERE scope=? AND subject=?',(scope,subject)).fetchone()
+        previous=self.db.execute('SELECT affinity,emotion,expires FROM relations WHERE subject=?',(subject,)).fetchone()
         affinity=previous[0] if previous else 0;emotion=previous[1] if previous and previous[2]>now else '平静'
         expires=previous[2] if previous else 0
         fresh=False
@@ -191,7 +193,7 @@ class BehaviorStore:
         self.db.execute('DELETE FROM relation_events WHERE at<?',(now-7*86400,))
         self.db.execute('DELETE FROM relation_evidence WHERE at<?',(now-7*86400,))
         if text.strip():
-            self.db.execute('INSERT INTO relations(scope,subject,affinity,emotion,expires,last_seen) VALUES(?,?,?,?,?,?) ON CONFLICT(scope,subject) DO UPDATE SET last_seen=excluded.last_seen',(scope,subject,affinity,emotion,expires,now))
+            self.db.execute('INSERT INTO relations(scope,subject,affinity,emotion,expires,last_seen) VALUES(?,?,?,?,?,?) ON CONFLICT(subject) DO UPDATE SET last_seen=max(relations.last_seen,excluded.last_seen)',(scope,subject,affinity,emotion,expires,now))
         self.db.commit()
         facts=self.memory.recall(scope,subject,text,now) if memory_enabled and project_facts else []
         return {'memory_status':status,'facts':facts,'emotion':emotion,'relationship':'熟悉' if affinity>=5 else '初识','affinity':affinity}
@@ -483,7 +485,7 @@ def install_runtime(core,settings):
                 payload['conversation']=bot_pipeline.decision_conversation(st,s['config'].get('behavior') or {},scope,work.subject,time.time())
                 payload['memory']=bot_pipeline.decision_memory(st.db,s['config'],scope,work.subject,time.time())
                 payload['current_time']=datetime.fromtimestamp(time.time(),timezone(timedelta(hours=8))).isoformat()
-                if work.scope==scope:payload['original_message']={'event':work.event_id,'sender_id':work.subject,'text':event.get_message_str()[:600]}
+                if work.scope==scope:payload['original_message']={'source_scope':scope,'source_event':work.event_id,'sender_id':work.subject,'role':'member' if work.observes_input else 'service','at':work.source_at,**(message_provenance.capture(event) if work.observes_input else {}),'text':event.get_message_str()[:600]}
                 request=group_freshness.review_request(payload,s['config'].get('systemPrompt',''),(s['config'].get('behavior') or {}).get('ownerUin'),event.get_self_id(),group=is_group)
                 from model_cache import decision_scope
                 with decision_scope(provider,s,'group_freshness',work.event_id):
@@ -1067,7 +1069,7 @@ def install_runtime(core,settings):
             messages=st.ambient.context(scope,now)
             if deferred and not messages and (cfg.get('behavior') or {}).get('memory',True):
                 messages=[{'sender_id':r[0],'text':r[1],'at':r[2],'source_event':r[3]} for r in reversed(st.db.execute('SELECT subject,question,at,event FROM memory_pending WHERE scope=? AND at<=? ORDER BY at DESC LIMIT 12',(scope,now)).fetchall())]
-            if not messages or messages[-1].get('sender_id')!=subject or messages[-1].get('text')!=incoming[:180]:messages.append({'sender_id':subject,'text':incoming,'at':float(getattr(event.message_obj,'timestamp',0) or now),'source_event':event_id})
+            if not messages or messages[-1].get('sender_id')!=subject or messages[-1].get('text')!=incoming[:180]:messages.append({'sender_id':subject,'text':incoming,'at':message_provenance.event_time(event)[0],'source_event':event_id,**message_provenance.capture(event)})
             st.active+=1;care.stamp(s['root'])
             try:
                 semantic=await st.presence.evaluate(scope,cfg,event_id,provider,messages,companion_state.context(st.db,cfg,scope,now,event.get_message_str()),bot_pipeline.decision_conversation(st,cfg.get('behavior') or {},scope,subject,time.time()),lambda:current(event),metrics.setdefault(id,{}),current_message_event,now=decision_at,lease=s,on_silence=lambda events:st.pipeline.ignored_inputs(work,events),addressing={'self_id':str(event.get_self_id()),'mentions_other':any(isinstance(c,At) and str(c.qq)!=str(event.get_self_id()) for c in event.get_messages()),'replies_to_other':any(isinstance(c,Reply) and str(c.sender_id) not in ('','0',str(event.get_self_id())) for c in event.get_messages())})

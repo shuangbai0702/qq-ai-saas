@@ -196,7 +196,7 @@ def select_members(db,cfg,scope,now,allow_without_topic=False):
     for subject,seen,directed in rows:
         check=db.execute('SELECT checked FROM companion_membership_checks WHERE scope=? AND subject=?',(scope,subject)).fetchone()
         if check and now-check[0]<300:continue
-        relation=db.execute('SELECT affinity FROM relations WHERE scope=? AND subject=?',(scope,subject)).fetchone()
+        relation=db.execute('SELECT affinity FROM relations WHERE subject=?',(subject,)).fetchone()
         motive=db.execute("SELECT topic FROM companion_motives WHERE scope=? AND subject=? AND status='open' AND due<=? AND expires>? LIMIT 1",(scope,subject,now,now)).fetchone()
         interests=db.execute("SELECT topic,weight,hits,updated,source FROM companion_interests WHERE scope IN (?, '*') AND (source='persona' OR hits>=2) LIMIT 512",(scope,)).fetchall()
         interest=max(interests,key=lambda r:interest_strength(r[1],r[2],r[3],now,r[4]),default=None)

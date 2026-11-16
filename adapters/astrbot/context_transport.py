@@ -27,7 +27,8 @@ def decision_request(payload,system,reference_first=False):
     Helpers with different jobs can reuse the same bot configuration prefix.
     """
     if reference_first:
-        payload=copy.deepcopy(payload)
+        from decision_events import project
+        payload=project(payload)
         reference={};changes={}
         for name in ('memory','owner_memory'):
             if name not in payload:continue
@@ -44,6 +45,9 @@ def decision_request(payload,system,reference_first=False):
         context={k:payload.pop(k) for k in ('scope',) if k in payload}
         changes.update(payload)
         payload={**config,'reference':reference,'context':context,'changes':changes}
+    if not reference_first and isinstance(payload.get('reference'),dict):
+        from decision_events import project
+        payload=project(payload)
     if isinstance(payload.get('reference'),dict):payload={**payload,'reference':ordered_reference(payload['reference'])}
     payload=decision_context_view(payload)
     stable={k:payload[k] for k in ('persona','owner_id') if k in payload}

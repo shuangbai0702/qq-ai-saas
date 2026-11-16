@@ -82,9 +82,18 @@ class Receipts(unittest.TestCase):
         self.db.execute('UPDATE fishbot_readonly_journals SET payload=?,sha=?',(payload,hashlib.sha256(payload.encode()).hexdigest()))
         compact=bot_pipeline.decision_memory(self.db,cfg,'private:'+self.person,self.person,self.now)
         receipt=compact['cross_scope_deliveries'][0]
-        self.assertNotIn('confirmed_text',receipt)
+        self.assertEqual(receipt['confirmed_text'],'actual answer')
         self.assertEqual(receipt['delivery'],'confirmed')
-        self.assertEqual(compact['recent_cross_session_messages'][receipt['confirmed_text_ref'][1]]['text'],'actual answer')
+        # The projector, not text equality, owns event uniqueness. This old
+        # fixture intentionally lacks exact draft ownership: keep it unproven.
+        from context_transport import decision_request
+        view=json.loads(decision_request({'scope':'private:'+self.person,'owner_memory':compact},'duty',reference_first=True)['prompt'])
+        events=view['changes']['messages']
+        proven=[r for r in events if r.get('source_event')=='answer' and r['role']=='self']
+        self.assertEqual(len(proven),1)
+        self.assertEqual(proven[0]['delivery'],'confirmed')
+        self.assertEqual(proven[0]['text'],'actual answer')
+        self.assertTrue(any(r.get('identity_status')=='unproven' for r in events))
 
 
 if __name__=='__main__':unittest.main()

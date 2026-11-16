@@ -1,0 +1,113 @@
+"""One authoritative relationship per real person in this bot's database.
+
+scope is the latest cognitive source, never part of identity. Observation and
+semantic writers share this table; event provenance stays in its existing owner.
+"""
+import sqlite3
+from pathlib import Path
+from contextlib import closing
+
+FIELDS='scope,subject,affinity,emotion,expires,last_seen,trust,impression,semantic_updated'
+SCHEMA='relations(scope TEXT,subject TEXT PRIMARY KEY NOT NULL,affinity INTEGER,emotion TEXT,expires REAL,last_seen REAL,trust REAL NOT NULL DEFAULT 0,impression TEXT NOT NULL DEFAULT \'\',semantic_updated REAL NOT NULL DEFAULT 0)'
+
+
+def migrate(db):
+    """Atomic one-time merge. Preserve the old table in a rollback artifact only."""
+    info=db.execute('PRAGMA table_info(relations)').fetchall()
+    if [r[1] for r in info if r[5]]==['subject']:return None
+    db.commit()
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        rows=db.execute('SELECT '+FIELDS+' FROM relations').fetchall()
+        people={}
+        for row in rows:people.setdefault(row[1],[]).append(row)
+        # Latest semantic cognition wins as a whole (no stitched impressions).
+        # Ties use observed recency then source name, explicitly not a fabricated
+        # semantic chronology. The original rows are available for rollback.
+        merged=[];ties=0
+        for person,group in sorted(people.items()):
+            latest=max(float(r[8] or 0) for r in group)
+            top=[r for r in group if float(r[8] or 0)==latest]
+            ties+=len({(r[2],r[6],r[7]) for r in top})>1
+            winner=list(max(top,key=lambda r:(float(r[5] or 0),str(r[0]))))
+            winner[5]=max(float(r[5] or 0) for r in group)
+            merged.append(winner)
+        path=db.execute('PRAGMA database_list').fetchone()[2]
+        if path:
+            backup=Path(path+'.relations-before-global.sqlite')
+            if backup.exists():
+                with closing(sqlite3.connect(backup.as_uri()+'?mode=ro',uri=True)) as saved:
+                    if sorted(saved.execute('SELECT '+FIELDS+' FROM relations').fetchall())!=sorted(rows):raise RuntimeError('relationship_migration_backup_changed')
+            else:
+                with closing(sqlite3.connect(backup)) as saved:
+                    saved.execute('CREATE TABLE relations(scope TEXT,subject TEXT,affinity INTEGER,emotion TEXT,expires REAL,last_seen REAL,trust REAL,impression TEXT,semantic_updated REAL,PRIMARY KEY(scope,subject))')
+                    saved.executemany('INSERT INTO relations VALUES(?,?,?,?,?,?,?,?,?)',rows)
+                    saved.commit()
+                    if saved.execute('SELECT count(*) FROM relations').fetchone()[0]!=len(rows):raise RuntimeError('relationship_backup_incomplete')
+        db.execute('ALTER TABLE relations RENAME TO relations_migrating')
+        db.execute('CREATE TABLE '+SCHEMA)
+        db.executemany('INSERT INTO relations VALUES(?,?,?,?,?,?,?,?,?)',merged)
+        if db.execute('SELECT count(*) FROM relations').fetchone()[0]!=len(people):raise RuntimeError('relationship_migration_incomplete')
+        db.execute('DROP TABLE relations_migrating')
+        db.commit()
+        return {'before':len(rows),'after':len(merged),'semantic_ties':ties}
+    except BaseException:
+        db.rollback();raise
+
+
+def state(db,person):
+    row=db.execute('SELECT '+FIELDS+' FROM relations WHERE subject=?',(str(person),)).fetchone()
+    return dict(zip(FIELDS.split(','),row)) if row else None
+
+
+def selected(db,people):
+    """Explicit subjects only, never all rows merely sharing an event scope."""
+    result=[]
+    for person in dict.fromkeys(str(x) for x in people):
+        row=state(db,person)
+        if row:result.append({'source_scope':row['scope'],**{k:v for k,v in row.items() if k!='scope'}})
+    return result
+
+
+def latest_speakers(db,scope,current=(),limit=6,self_id=''):
+    """Read live event identities; the six-person cap never filters messages."""
+    import json
+    from context_protocol import source,model_json
+    from journal_storage import read_snapshot
+    from message_provenance import incoming_item
+    candidates=[]
+    tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if not self_id and 'contacts' in tables:
+        own=db.execute('SELECT self_id FROM contacts WHERE scope=?',(scope,)).fetchone()
+        if own:self_id=str(own[0])
+    if 'fishbot_readonly_journals' in tables:
+        snapshot=read_snapshot(db,model_json('bot_shared'))
+        for message in (snapshot or {}).get('base',[]):
+            origin=source(message)
+            if origin and origin['scope']==scope:
+                candidates.append({'source_scope':scope,'source_event':origin['event_id'],
+                    'sender_id':origin['sender_id'],'at':origin.get('at')})
+    if 'memory_pending' in tables:
+        candidates.extend(incoming_item(db,scope,p,e,'',at) for p,e,at in db.execute(
+            'SELECT subject,event,at FROM memory_pending WHERE scope=?',(scope,)))
+    candidates.extend(current)
+    events={}
+    for row in candidates:
+        if row.get('role','member') not in ('member','user') or row.get('source_scope',scope)!=scope:continue
+        event=row.get('source_event');person=str(row.get('sender_id',''))
+        if not event or not person.isdigit() or person==str(self_id):continue
+        at=row.get('at')
+        if 'pipeline_work_inputs' in tables:
+            raw=db.execute('SELECT payload FROM pipeline_work_inputs WHERE scope=? AND event=?',(scope,str(event))).fetchone()
+            if raw and raw[0]:
+                payload=json.loads(raw[0]);stamp=payload.get('time')
+                if str(payload.get('message_id'))==str(event) and str(payload.get('user_id'))==person and isinstance(stamp,(int,float)):at=stamp
+        if not isinstance(at,(int,float)):continue
+        key=str(event)
+        if key in events and events[key][0]!=person:raise ValueError('relationship_speaker_identity_conflict')
+        events[key]=(person,float(at),events[key][2] if key in events else len(events))
+    people=[]
+    for person,_,_ in sorted(events.values(),key=lambda r:(r[1],r[2]),reverse=True):
+        if person not in people:people.append(person)
+        if len(people)==limit:break
+    return people

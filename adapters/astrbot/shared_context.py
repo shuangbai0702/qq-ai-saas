@@ -143,8 +143,9 @@ def observe(db,event,cfg,group_limit=2):
                 if origin and origin['scope']==scope and str(origin['event_id'])==identifier and str(origin['sender_id'])==str(event.get_sender_id()):
                     event.set_extra('_hosted_shared_input_digest',digest)
                     return True
-    sender=str(event.get_sender_id());at=float(getattr(event.message_obj,'timestamp',0) or time.time())
-    origin={'scope':scope,'sender_id':sender,'event_id':identifier,'at':at}
+    from message_provenance import event_time
+    sender=str(event.get_sender_id());at,clock=event_time(event)
+    origin={'scope':scope,'sender_id':sender,'event_id':identifier,'at':at,'time_source':clock}
     parts=list(event.get_messages());mentions=[str(c.qq) for c in parts if isinstance(c,At)]
     if mentions:origin['mentions']=list(dict.fromkeys(mentions))
     quoted=next((c for c in parts if isinstance(c,Reply)),None)
@@ -268,28 +269,62 @@ def settle_inputs(db,journal):
         del journal._shared_input_window
 
 
-def recent(db,limit=12,budget=3000,scope=None):
+def recent(db,limit=12,budget=3000,scope=None,auxiliary=False):
     """Bounded auxiliary judgment view of the ONE committed Journal."""
     from journal_storage import read_snapshot
     snapshot=read_snapshot(db,model_json(JOURNAL_SCOPE))
     if snapshot is None:return []
-    messages=snapshot.get('base',[]);result=[]
-    for message in messages:
+    messages=snapshot.get('base',[]);result=[];selection=[]
+    if auxiliary:
+        from message_provenance import model_output_owners,incoming_item
+        owners=model_output_owners(db,JOURNAL_SCOPE,messages)
+    anchor=None;anchor_index=0
+    for index,message in enumerate(messages):
         origin=source(message)
         if origin:
+            anchor=event_key(origin);anchor_index=index
             if scope is not None and origin['scope']!=scope:continue
             content=message.get('content');text=content if isinstance(content,str) else '\n'.join(p.get('text','') for p in content if p.get('type')=='text')
             result.append({'source_scope':origin['scope'],'sender_id':origin['sender_id'],'at':origin.get('at'),
                            'source_event':origin['event_id'],'text':text.split('\n',1)[-1][:600],
                            **({'attention':'[important]'} if origin.get('attention')=='[important]' else {})})
+            selection.append(copy.deepcopy(result[-1]))
+            if auxiliary:
+                row=result[-1]
+                evidence=incoming_item(db,origin['scope'],origin['sender_id'],origin['event_id'],row['text'],row['at'])
+                row.update(evidence)
+                # Correct a request view from retained protocol data, never the
+                # committed Journal. Retired payloads are not reconstructed.
+                raw=db.execute('SELECT payload FROM pipeline_work_inputs WHERE scope=? AND event=?',(origin['scope'],str(origin['event_id']))).fetchone()
+                if raw and raw[0]:
+                    payload=json.loads(raw[0])
+                    if str(payload.get('user_id'))==str(origin['sender_id']) and str(payload.get('message_id'))==str(origin['event_id']) and isinstance(payload.get('time'),(int,float)):
+                        row.update(at=float(payload['time']),time_source='protocol')
+                content=message.get('content')
+                if isinstance(content,list) and not row.get('media'):
+                    media=[{'type':part.get('type'),'representation':'journal','source_event':str(origin['event_id'])} for part in content if isinstance(part,dict) and part.get('type')!='text']
+                    if media:row['media']=media
         elif scope is None and message.get('role')=='assistant' and isinstance(message.get('content'),str) and message['content'].strip() not in ('','[NO_REPLY]'):
-            result.append({'role':'self','text':message['content'][:600],'delivery':'model_output_not_send_receipt'})
-    result=result[-limit:]
-    while result and len(model_json(result))>budget:result.pop(0)
+            item={'role':'self','text':message['content'][:600],'delivery':'model_output_not_send_receipt'}
+            selection.append(copy.deepcopy(item))
+            if auxiliary:
+                owner=owners.get((anchor,index-anchor_index))
+                if owner:
+                    item.update(source_scope=owner['source_scope'],source_event=owner['event_id'])
+                    # A draft's identity is its exact existing binding; the
+                    # following receipt view owns actual destination and sends.
+                    at=db.execute('SELECT at FROM pipeline_events WHERE scope=? AND event=?',(owner['source_scope'],owner['event_id'])).fetchone()
+                    if at:item['at']=at[0]
+                else:item['identity_status']='unproven'
+            result.append(item)
+    result=result[-limit:];selection=selection[-limit:]
+    # Enrich selected events without reducing their former coverage merely
+    # because correct provenance uses more bytes than an anonymous draft.
+    while result and len(model_json(selection))>budget:result.pop(0);selection.pop(0)
     return result
 
 
-def delivery_view(db,journal=None,limit=8,budget=3000,exclude_scope=None,text_limit=1200,only_scope=None):
+def delivery_view(db,journal=None,limit=8,budget=3000,exclude_scope=None,text_limit=1200,only_scope=None,auxiliary=False):
     """Read existing settled protocol evidence, not another message history.
 
     Terminal assistant messages are model drafts. Freshness may replace/drop
@@ -327,14 +362,14 @@ def delivery_view(db,journal=None,limit=8,budget=3000,exclude_scope=None,text_li
             elif owner and isinstance(content,str) and content.strip()=='[NO_REPLY]':
                 silences.add((owner['source_scope'],str(owner['event_id'])))
     rows=db.execute('''SELECT p.scope,p.subject,p.event,p.status,p.attempted,p.confirmed,
-                      d.reply,d.at,s.data,d.state FROM pipeline_events p
+                      d.reply,d.at,s.data,d.state,p.at FROM pipeline_events p
                       LEFT JOIN dialogue_feedback d ON d.scope=p.scope AND d.event=p.event
                       LEFT JOIN memory_message_sources s ON s.scope=p.scope AND s.event=p.event AND s.direction='outgoing'
                       WHERE p.status NOT IN ('received','sending','waiting','duplicate')
                       ORDER BY p.at DESC LIMIT 64''').fetchall()
     result=[];used=0
     has_signals=bool(db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='companion_signals'").fetchone())
-    for scope,subject,event,status,attempted,confirmed,text,at,raw,feedback_state in rows:
+    for scope,subject,event,status,attempted,confirmed,text,at,raw,feedback_state,work_at in rows:
         if (scope,str(event)) not in known or only_scope is not None and scope!=only_scope:continue
         try:receipt=json.loads(raw) if raw else {}
         except (ValueError,TypeError):receipt={}
@@ -342,6 +377,10 @@ def delivery_view(db,journal=None,limit=8,budget=3000,exclude_scope=None,text_li
         ids=receipt.get('message_ids')
         proven=receipt.get('receipt')=='confirmed' and isinstance(ids,list) and bool(ids) and isinstance(text,str) and bool(text)
         item={'source_scope':scope,'source_event':str(event),'recipient_id':subject}
+        if auxiliary:
+            item.update(role='self',at=at if at is not None else work_at)
+            if isinstance(ids,list):item['message_ids']=ids
+            if receipt.get('confirmed_media_kinds'):item['confirmed_media_kinds']=receipt['confirmed_media_kinds']
         if proven:
             item.update(delivery='confirmed' if status=='sent' and receipt.get('complete') is True else 'partial',
                         confirmed_text=text[:text_limit],text_complete=len(text)<2000 and len(text)<=text_limit,at=at)
@@ -360,7 +399,9 @@ def delivery_view(db,journal=None,limit=8,budget=3000,exclude_scope=None,text_li
             if signal:
                 evidence=json.loads(signal[0])
                 if isinstance(evidence,dict) and evidence.get('state')==feedback_state:item['feedback']=evidence
-        size=len(model_json(item))
+        selection_item={k:v for k,v in item.items() if not auxiliary or k not in ('role','message_ids','confirmed_media_kinds')}
+        if auxiliary and not proven:selection_item.pop('at',None)
+        size=len(model_json(selection_item))
         if used+size>budget:continue
         result.append(item);used+=size
         if len(result)>=limit:break

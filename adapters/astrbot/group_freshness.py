@@ -112,7 +112,7 @@ class GroupFreshness:
         if not any(r['event']==str(event) and r['role']==role for r in rows):
             self.sequence+=1
             item={'cursor':self.sequence,'observed':now,'event':str(event),'sender_id':str(sender),'role':role,'text':str(text)[:600]}
-            if source:item.update({k:source[k] for k in ('sender_name','mentions','reply_to') if k in source})
+            if source:item.update({k:source[k] for k in ('sender_name','mentions','reply_to','at','time_source','media') if k in source})
             rows.append(item)
         self.groups[scope]=rows
         while len(self.groups)>128:self.groups.popitem(last=False)
