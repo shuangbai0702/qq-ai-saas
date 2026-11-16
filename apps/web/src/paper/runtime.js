@@ -63,7 +63,7 @@ class PaperRuntime{
  constructor({ground,drawing,motion}){
   this.alive=true;this.life=new AbortController();this.frame=0;this.time=0;this.last=0;this.accumulated=0;this.anchor=performance.now();this.reduced=matchMedia('(prefers-reduced-motion: reduce)');this.running=!this.reduced.matches;this.suspended=!this.running||document.hidden;
   this.pointer={x:-1000,y:-1000,inside:false};this.lastContact=null;this.pointerDown=false;this.surfaces=new Map();this.stamps=new Map();this.pending=new Set([document.body]);this.measureNeeded=true;this.force=true;
-  this.ground=ground;this.motion=motion;document.body.classList.add('paper-app');this.renderer=new PaperRenderer();this.feedback=new PigmentFeedback();
+  this.ground=ground;this.motion=motion;try{document.body.classList.add('paper-app');this.renderer=new PaperRenderer();this.feedback=new PigmentFeedback();
   this.drawing=new WallpaperPaint(drawing,()=>{if(this.alive){this.force=true;this.request();}});this.resize();
   this.ro=new ResizeObserver(entries=>{if(!this.alive)return;for(const {target}of entries){const surface=this.surfaces.get(target);surface?.resize?.();}this.measureNeeded=this.force=true;this.request();});
   this.io=new IntersectionObserver(entries=>{if(!this.alive)return;for(const entry of entries){const surface=this.surfaces.get(entry.target);if(surface){surface.visible=entry.isIntersecting;if(entry.isIntersecting){this.measureNeeded=true;const paper=surface.surface||surface;paper.drawn=false;}}}this.request();},{rootMargin:'100px'});
@@ -90,6 +90,7 @@ class PaperRuntime{
   });
   this.mo.observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true,attributeOldValue:true,attributeFilter:['class','disabled','open','d','viewBox']});
   this.syncMotion();document.body.dataset.paper='ready';document.body.dataset.paperRenderer=this.renderer.renderer;this.request();
+  }catch(error){this.destroy();throw error}
  }
  on(target,type,fn,options={}){target.addEventListener(type,fn,{...options,signal:this.life.signal});}
  now(){return this.accumulated+(this.suspended?0:(performance.now()-this.anchor)/1000);}
@@ -234,9 +235,9 @@ class PaperRuntime{
   this.on(window,'pageshow',event=>{if(event.persisted){this.suspendPage(false);this.measureNeeded=true;this.request();}});
  }
  destroy(){
-  if(!this.alive)return;this.alive=false;this.life.abort();cancelAnimationFrame(this.frame);this.frame=0;this.mo?.disconnect();this.ro.disconnect();this.io.disconnect();
-  this.details.destroy();
-  for(const [target,surface]of this.surfaces)this.remove(target,surface);this.feedback.destroy();this.drawing.destroy();this.renderer.destroy();this.ground.width=this.ground.height=0;
+  if(!this.alive)return;this.alive=false;this.life.abort();cancelAnimationFrame(this.frame);this.frame=0;this.mo?.disconnect();this.ro?.disconnect();this.io?.disconnect();
+  this.details?.destroy();
+  for(const [target,surface]of this.surfaces)this.remove(target,surface);this.feedback?.destroy();this.drawing?.destroy();this.renderer?.destroy();this.ground.width=this.ground.height=0;
   for(const stamp of this.stamps.values()){stamp.canvas.width=stamp.canvas.height=0;stamp.canvas.remove();}this.stamps.clear();this.pending.clear();
   document.body.classList.remove('paper-app');delete document.body.dataset.paper;delete document.body.dataset.paperMotion;delete document.body.dataset.paperRenderer;
  }

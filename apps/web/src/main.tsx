@@ -1,26 +1,40 @@
-import {useCallback,useEffect,useRef,useState} from 'react';import {createRoot} from 'react-dom/client';
-import {Fish,LayoutGrid,Plus,Server,LogOut,ChevronRight,X,Loader2} from 'lucide-react';
-import {api} from './api';import {Auth,Create,Admin} from './pages';import {BotList} from './bot-list';import {BotDetail} from './bot-detail';import {InvitationAdmin} from './invitation-admin';import './style.css';
-import {Announcements,AnnouncementPopup} from './announcements';
-import {PaperExperience} from './paper/PaperExperience';
-const botScope=(route:string)=>route.match(/^\/bots\/((?!new(?:\/|$))[^/]+)/)?.[1];
+import {Component,Suspense,lazy,useEffect,useRef,useState,type ReactNode} from 'react';
+import {createRoot} from 'react-dom/client';
+import {api,ApiError} from './api';
+import {Auth} from './auth';
+import './style.css';
+const Workspace=lazy(()=>import('./workspace'));
+class ScreenBoundary extends Component<{children:ReactNode},{failed:boolean}>{
+ state={failed:false};
+ static getDerivedStateFromError(){return {failed:true}}
+ render(){return this.state.failed?<Failure message="页面资源加载失败，请检查网络后重新加载。"/>:this.props.children}
+}
+function Failure({message,retry}:{message:string;retry?:()=>void}){return <div className="loading" role="alert"><h2>暂时未能加载</h2><p>{message}</p><button className="secondary" onClick={retry||(()=>location.reload())}>{retry?'重试连接':'重新加载'}</button></div>}
 function App(){
- const [route,setRoute]=useState(location.hash.slice(1)||'/bots'),[user,setUser]=useState<any>(),[loading,setLoading]=useState(true),[error,setError]=useState(''),[logoutBusy,setLogoutBusy]=useState(false);const currentRoute=useRef(route),dirty=useRef(false),dirtyWithinBot=useRef(false),authSequence=useRef(0),alive=useRef(true);
- const onDirtyChange=useCallback((value:boolean,guardWithinBot=false)=>{dirty.current=value;dirtyWithinBot.current=value&&guardWithinBot},[]);
- useEffect(()=>{alive.current=true;const navigate=()=>{const next=location.hash.slice(1)||'/bots';if(dirty.current&&(botScope(currentRoute.current)!==botScope(next)||dirtyWithinBot.current&&currentRoute.current!==next)&&!confirm('还有未保存的配置。离开将丢弃这些修改，是否继续？')){history.replaceState(null,'','#'+currentRoute.current);return}currentRoute.current=next;setError('');setRoute(next)};const unload=(event:BeforeUnloadEvent)=>{if(dirty.current){event.preventDefault();event.returnValue=''}};addEventListener('hashchange',navigate);addEventListener('beforeunload',unload);return()=>{alive.current=false;authSequence.current++;removeEventListener('hashchange',navigate);removeEventListener('beforeunload',unload)}},[]);
- const reloadUser=useCallback(async()=>{const order=++authSequence.current;try{const d=await api('/auth/me');if(alive.current&&order===authSequence.current)setUser(d.user)}catch{if(alive.current&&order===authSequence.current)setUser(null)}finally{if(alive.current&&order===authSequence.current)setLoading(false)}},[]);
- useEffect(()=>{void reloadUser()},[reloadUser]);
- async function logout(){if(logoutBusy)return;if(dirty.current&&!confirm('还有未保存的配置，退出会丢弃修改。确定退出？'))return;setLogoutBusy(true);try{await api('/auth/logout',{});dirty.current=false;authSequence.current++;setUser(null);location.hash='/bots'}catch(e){setError((e as Error).message)}finally{setLogoutBusy(false)}}
- if(loading)return <div className="loading"><Fish size={40}/><p><Loader2 className="spin" size={16}/> 正在连接工作区…</p></div>;
- if(!user)return <Auth done={reloadUser}/>;
- const id=botScope(route),pageName=route==='/announcements'?'公告':route==='/bots/new'?'创建机器人':route==='/admin/invitations'?'激活码管理':route.startsWith('/admin')?'平台管理':id?'机器人设置':'我的机器人';
- return <div className="shell"><AnnouncementPopup key={user.id} userId={String(user.id)}/><a className="skip-link" href="#main-content" onClick={e=>{e.preventDefault();document.getElementById('main-content')?.focus()}}>跳转到主要内容</a><header className="app-header"><div className="header-inner"><a className="brand" href="#/bots" aria-label="平台机器人管理平台首页"><span className="brand-icon"><Fish size={25}/></span><strong>平台机器人管理平台<small>QQ 机器人云托管</small></strong></a><nav className="main-nav" aria-label="主导航"><a href="#/announcements" className={route==='/announcements'?'active':''}>公告</a><a href="#/bots" className={route.startsWith('/bots')&&route!=='/bots/new'?'active':''}><LayoutGrid size={17}/>我的机器人</a><a href="#/bots/new" className={route==='/bots/new'?'active':''}><Plus size={17}/>创建机器人</a>{user.is_admin&&<><a href="#/admin" className={route.startsWith('/admin')?'active':''}><Server size={17}/>平台管理</a></>}</nav><div className="account"><span className="avatar">{user.name.slice(0,1)}</span><div><b>{user.name}</b><small>{user.is_admin?'平台管理员':'个人工作区'}</small></div><button className="icon" title="退出登录" aria-label="退出登录" disabled={logoutBusy} onClick={()=>void logout()}><LogOut size={18}/></button></div></div></header><div className="content"><div className="breadcrumb"><a href="#/bots">工作空间</a><ChevronRight size={14}/><span>{pageName}</span><span className="breadcrumb-end">你好，{user.name}。</span></div><main id="main-content" tabIndex={-1} key={user.id}>{error&&<div className="alert global-alert" role="alert"><span>{error}</span><button className="icon" aria-label="关闭错误提示" onClick={()=>setError('')}><X size={18}/></button></div>}{route==='/announcements'?<Announcements/>:route.startsWith('/admin')&&!user.is_admin?<section className="panel"><h1>无权访问</h1><p>此页面仅供平台管理员使用。</p><a className="secondary" href="#/bots">返回我的机器人</a></section>:route==='/bots/new'?<Create onError={setError}/>:(route==='/admin'||route==='/admin/memory'||route==='/admin/autonomous')?<Admin onError={setError} section={route==='/admin/memory'?'memory':route==='/admin/autonomous'?'autonomous':'operations'}/>:route==='/admin/invitations'?<InvitationAdmin onError={setError}/>:id?<BotDetail key={id} id={id} tab={route.split('/')[3]||'overview'} section={route.split('/')[4]||'profile'} onError={setError} onDirtyChange={onDirtyChange}/>:<BotList onError={setError}/>}</main><footer><a href="#/bots">平台机器人管理平台 <span>QQ 机器人云托管</span></a><span>QQ 登录、模型配置与运行管理。</span></footer></div></div>
+ const[user,setUser]=useState<any>(),[loading,setLoading]=useState(true),[error,setError]=useState('');
+ const request=useRef<AbortController|null>(null),sequence=useRef(0);
+ async function reloadUser(){
+  request.current?.abort();const owner=new AbortController(),order=++sequence.current;request.current=owner;setLoading(true);setError('');
+  try{const data=await api('/auth/me',undefined,undefined,owner.signal);if(!owner.signal.aborted&&order===sequence.current)setUser(data.user)}
+  catch(e){if(owner.signal.aborted||order!==sequence.current)return;if(e instanceof ApiError&&e.status===401)setUser(null);else setError((e as Error).message)}
+  finally{if(!owner.signal.aborted&&order===sequence.current)setLoading(false)}
+ }
+ useEffect(()=>{document.getElementById('root')!.dataset.mounted='true';void reloadUser();return()=>{sequence.current++;request.current?.abort()}},[]);
+ if(loading)return <div className="loading" role="status"><h2>正在连接工作区…</h2><p>首次连接可能需要几秒。</p></div>;
+ if(error)return <Failure message={error} retry={()=>void reloadUser()}/>;
+ if(!user)return <Auth done={()=>void reloadUser()}/>;
+ return <Suspense fallback={<div className="loading" role="status"><h2>正在加载工作区…</h2><p>网络较慢时请稍候；若持续无响应，可<a href="" onClick={e=>{e.preventDefault();location.reload()}}>重新加载</a>。</p></div>}><Workspace key={user.id} user={user} onLogout={()=>setUser(null)}/></Suspense>;
 }
 async function start(){
- // Reverse proxies may lose the original visitor scheme; use the API's configured public origin.
+ // Preserve the configured public-origin redirect without newer AbortSignal APIs.
  if(location.protocol==='http:'&&!['localhost','127.0.0.1','[::1]'].includes(location.hostname)){
-  try{const response=await fetch('/v1/health',{signal:AbortSignal.timeout(8000)});const info=await response.json();const target=new URL(info.publicOrigin);if(target.protocol==='https:'&&target.origin!==location.origin){target.pathname=location.pathname;target.search=location.search;target.hash=location.hash;location.replace(target.href);return}}catch{/* Render the existing error/retry UI if discovery is unavailable. */}
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),8000);
+  try{const response=await fetch('/v1/health',{signal:controller.signal});const info=await response.json();const target=new URL(info.publicOrigin);if(target.protocol==='https:'&&target.origin!==location.origin){target.pathname=location.pathname;target.search=location.search;target.hash=location.hash;location.replace(target.href);return}}catch{/* The UI offers its own connection retry. */}finally{clearTimeout(timer)}
  }
- createRoot(document.getElementById('root')!).render(<><PaperExperience/><App/></>);
+ createRoot(document.getElementById('root')!).render(<ScreenBoundary><App/></ScreenBoundary>);
+ // Decoration is optional: small/touch screens keep the static design and avoid GPU work.
+ if(!matchMedia('(max-width: 760px), (pointer: coarse), (prefers-reduced-motion: reduce)').matches){
+  setTimeout(()=>{void import('./paper/start').then(({startPaper})=>startPaper()).catch(()=>{/* Business UI stays available. */})},2000);
+ }
 }
 void start();
