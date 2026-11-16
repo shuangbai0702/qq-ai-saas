@@ -43,3 +43,12 @@ test('production host uses original model security transport, returns final only
  for(let i=0;i<2;i++){const result=await response();assert.equal(result.status,200);assert.deepEqual(await result.json(),final)}assert.equal(modelCalls,1);
  await host.stop();await host.stop();await assert.rejects(access(file));
 });
+
+
+test('cold boot retires only its own production bridge before optional DSH startup',async()=>{
+ const {DshHost}=await import('../apps/node-agent/src/dsh-host.js');const {mkdtemp,mkdir,writeFile,readFile,access}=await import('node:fs/promises');const path=await import('node:path');const os=await import('node:os');
+ const root=await mkdtemp(path.join(os.tmpdir(),'dsh-bridge-cold-'));const file=path.join(root,'bots',bot.id,'ai/dsh-bridge.json');await mkdir(path.dirname(file),{recursive:true});
+ const agent:any={root,db:{query:async()=>[bot]}};const host=new DshHost(agent);
+ await writeFile(file,JSON.stringify({mode:'production',botId:bot.id,tenantId:'foreign'}));await host.clearPreviousBridges();assert((await readFile(file,'utf8')).includes('foreign'));
+ await writeFile(file,JSON.stringify({mode:'production',botId:bot.id,tenantId:bot.tenant_id,generation:0}));await host.clearPreviousBridges();await assert.rejects(access(file));
+});

@@ -39,6 +39,15 @@ export class DshHost{
  private port=Number(process.env.FISHBOT_DSH_PORT||24878);
  private stopping?:Promise<void>;
  constructor(private agent:NodeAgent,private connectSearch=mcpSource){}
+ /** Cold boot only, after the canonical Agent lease is held. A failed MCP
+  * connection must not leave last process's bridge hiding working native tools. */
+ async clearPreviousBridges(){
+  for(const bot of await this.agent.db.query("SELECT id,tenant_id FROM bots WHERE deleted_at IS NULL")){
+   const file=path.join(this.agent.root,'bots',bot.id,'ai/dsh-bridge.json');
+   let value:any;try{value=JSON.parse(await readFile(file,'utf8'))}catch(error:any){if(error.code==='ENOENT')continue;throw error}
+   if(value.mode==='production'&&value.botId===bot.id&&value.tenantId===bot.tenant_id)await rm(file);
+  }
+ }
  async start(){
   if(this.server)return;
   await installedDsh();

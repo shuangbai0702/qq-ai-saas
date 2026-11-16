@@ -91,7 +91,7 @@ export class NodeAgent {
    await this.bilibili.recover();
    if(process.env.FISHBOT_DSH_ENABLED==='1'){
     const host=new DshHost(this);
-    try{await host.start();this.dsh=host}catch{await host.stop();console.error('DSH unavailable; existing QQ and tools remain active')}
+    try{await host.clearPreviousBridges();await host.start();this.dsh=host}catch{await host.stop();console.error('DSH unavailable; existing QQ and tools remain active')}
    }
    this.timer=setInterval(()=>void this.tick().catch(e=>console.error('agent tick:',redact(String(e)))),500);this.timer.unref();await this.tick();this.autonomy.start();}catch(error){if(this.timer)clearInterval(this.timer);await rm(path.join(this.root,'agent.lock'),{force:true});await this.releaseLease?.();this.releaseLease=undefined;throw error}
  }
