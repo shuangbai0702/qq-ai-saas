@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {mkdtemp} from 'node:fs/promises';import os from 'node:os';import path from 'node:path';
-import {createKernel,installedDsh,delegateLocal,sessionIdentity,delegateSchema} from '../scripts/dsh-prototype/kernel.mjs';
+import {createKernel,installedDsh,delegateLocal,sessionIdentity,delegateSchema} from '../packages/dsh/kernel.mjs';
 const final={result:'公开资料已核实',evidence:['https://example.com/source'],unfinished:[],limitations:[]};
 async function* text(value){const s=JSON.stringify(value);yield{type:'block-start',index:0,blockType:'text'};yield{type:'text-delta',index:0,text:s};yield{type:'block-end',index:0,block:{type:'text',text:s}};yield{type:'finish',reason:'stop'};}
 async function* call(name,args){yield{type:'block-start',index:0,blockType:'tool-call'};yield{type:'tool-call-delta',index:0,id:'call-1',name,argumentsDelta:JSON.stringify(args)};yield{type:'block-end',index:0,block:{type:'tool-call',id:'call-1',name,arguments:JSON.stringify(args)}};yield{type:'finish',reason:'tool-calls'};}

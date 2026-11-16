@@ -1,7 +1,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';import http from 'node:http';
 import {mkdtemp} from 'node:fs/promises';import os from 'node:os';import path from 'node:path';
-import {nativeModel} from '../scripts/dsh-prototype/native-model.mjs';
-import {createKernel,delegateLocal} from '../scripts/dsh-prototype/kernel.mjs';
+import {nativeModel} from '../packages/dsh/native-model.mjs';
+import {createKernel,delegateLocal} from '../packages/dsh/kernel.mjs';
 
 test('installed native adapter sends the corrected output allowance on the actual wire',async t=>{
  let wire;const report={result:'local fixture',evidence:[],unfinished:[],limitations:[]};

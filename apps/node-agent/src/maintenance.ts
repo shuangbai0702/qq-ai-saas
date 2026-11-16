@@ -12,6 +12,20 @@ import {AstrBotAdapter} from '../../../adapters/astrbot/index.js';
 import {SharedAstrBotAdapter} from '../../../adapters/astrbot/shared.js';
 import {redact} from '../../../packages/shared/security.js';
 import {FavoriteMaintenance} from './favorite-maintenance.js';
+import {DshHost} from './dsh-host.js';
+
+/** Add the native delegation host without replacing QQ owners or the heartbeat. */
+export async function installDshRuntime(agent:NodeAgent,release:string){
+ if(!/^[a-f0-9]{64}$/.test(release)||agent.closed||controlBusy(agent))throw new Error('Invalid DSH maintenance boundary');
+ if(agent.dsh)throw new Error('DSH already installed');
+ const host=new DshHost(agent);await host.start();
+ if(agent.closed){await host.stop();throw new Error('DSH maintenance owner changed')}
+ agent.dsh=host;
+ const previous=agent.tick.bind(agent);let published=0;
+ agent.tick=async()=>{await previous();if(!agent.closed&&Date.now()-published>3000){published=Date.now();await host.publish()}};
+ const shutdown=agent.shutdown.bind(agent);agent.shutdown=async()=>{await host.stop();await shutdown()};
+ return{pid:process.pid,release,enabled:true};
+}
 
 // Shutdown stays with the canonical Agent, which dynamically owns all three
 // maintenance workers in the verified deployment baseline.

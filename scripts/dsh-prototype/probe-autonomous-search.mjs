@@ -1,9 +1,9 @@
 /** Opt-in, bounded real-model experiment. No production, QQ or global DSH config. */
 import {mkdtemp} from 'node:fs/promises';
 import os from 'node:os';import path from 'node:path';
-import {createKernel,delegateLocal} from './kernel.mjs';
-import {nativeModel} from './native-model.mjs';
-import {mcpSource} from './mcp-source.mjs';
+import {createKernel,delegateLocal} from '../../packages/dsh/kernel.mjs';
+import {nativeModel} from '../../packages/dsh/native-model.mjs';
+import {mcpSource} from '../../packages/dsh/mcp-source.mjs';
 
 if(process.env.FISHBOT_DSH_REAL_MODEL!=='1')throw Error('Explicit real-model opt-in required');
 let adapter,source,kernel;const usage=[],calls=[];let modelCalls=0;

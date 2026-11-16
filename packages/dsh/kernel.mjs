@@ -1,4 +1,4 @@
-/** Local-only composition of the installed DSH kernel. Never imported by production. */
+/** Composition of the installed native DSH kernel; trusted host owns identity and execution. */
 import {createRequire} from 'node:module';
 import {createHash} from 'node:crypto';
 import {pathToFileURL} from 'node:url';
@@ -10,7 +10,7 @@ export async function installedDsh(root=process.env.FISHBOT_DSH_ROOT||path.join(
  const pkg=JSON.parse(await readFile(path.join(root,'package.json'),'utf8'));
  if(pkg.name!=='@deepseek-ai/dsh'||pkg.version!=='0.2.0-rc.2')throw Error('Unsupported installed DSH version: '+pkg.version);
  const require=createRequire(path.join(root,'package.json'));
- return {version:pkg.version,load:async name=>import(pathToFileURL(require.resolve('@deepseek-ai/'+name)).href)};
+ return {root,version:pkg.version,load:async name=>import(pathToFileURL(require.resolve('@deepseek-ai/'+name)).href)};
 }
 export async function createKernel({storageRoot,adapter,root}){
  const native=await installedDsh(root),{Context}=await native.load('cordis'),ctx=new Context();

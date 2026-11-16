@@ -9,16 +9,16 @@ import {AstrBotAdapter} from '../../adapters/astrbot/index.js';
 import {BilibiliTools} from '../../packages/database/bilibili-tools.js';
 import {BilibiliExecutor} from '../../apps/node-agent/src/bilibili/executor.js';
 import {runtimeClient} from '../../packages/shared/runtime-client.js';
-import {bilibiliSource} from './bilibili-source.js';
+import {bilibiliSource} from '../../packages/dsh/bilibili-source.js';
 import Fastify from 'fastify';
 import {registerBilibili} from '../../apps/control-api/src/bilibili.js';
 import {SingleFlight} from '../../packages/shared/single-flight.js';
 // @ts-ignore local native-module experiment
-import {createKernel,delegateLocal,sessionIdentity} from './kernel.mjs';
+import {createKernel,delegateLocal,sessionIdentity} from '../../packages/dsh/kernel.mjs';
 // @ts-ignore installed native adapter
-import {nativeModel} from './native-model.mjs';
+import {nativeModel} from '../../packages/dsh/native-model.mjs';
 // @ts-ignore installed native MCP client
-import {mcpSource} from './mcp-source.mjs';
+import {mcpSource} from '../../packages/dsh/mcp-source.mjs';
 
 if(process.env.FISHBOT_DSH_QQ_LOCAL!=='1'||!process.env.FISHBOT_DSH_TEST_API_KEY)throw Error('Explicit local QQ experiment and credential required');
 // This operator-selected model origin resolves to a local Clash fake-IP here.
@@ -122,7 +122,7 @@ const server=http.createServer(async(req,res)=>{
 });
 await new Promise<void>(resolve=>server.listen(24878,'127.0.0.1',resolve));
 await mkdir(path.join(ctx.root,'ai'),{recursive:true});
-await writeFile(path.join(ctx.root,'ai/dsh-bridge.json'),JSON.stringify({version:1,localPrototype:true,botId:bot.id,tenantId:bot.tenant_id,generation:bot.generation,revision:bot.revision,url:'http://127.0.0.1:24878/delegate',token:bridgeToken}),{mode:0o600});
+await writeFile(path.join(ctx.root,'ai/dsh-bridge.json'),JSON.stringify({version:1,mode:'local',botId:bot.id,tenantId:bot.tenant_id,generation:bot.generation,revision:bot.revision,url:'http://127.0.0.1:24878/delegate',token:bridgeToken}),{mode:0o600});
 await astrbot.start(ctx);
 const healthTimer=setInterval(()=>void (async()=>{try{const health=await astrbot.probe(ctx);await db.query('UPDATE bots SET health=$2,observed_state=$3 WHERE id=$1',[bot.id,JSON.stringify({sampledAt:new Date().toISOString(),protocol:{online:true},ai:health}),health.ready?'running':'starting']);}catch(error:any){console.error('Local health:',error.message);}})(),10000);
 await writeFile(path.join(root,'runtime.pid'),String(process.pid));console.log('Local AstrBot and DSH bridge started; waiting for health.');

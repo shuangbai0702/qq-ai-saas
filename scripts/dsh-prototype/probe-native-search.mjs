@@ -1,5 +1,5 @@
 /** Explicit one-search local probe. Credentials come only from the launching environment. */
-import {installedDsh} from './kernel.mjs';
+import {installedDsh} from '../../packages/dsh/kernel.mjs';
 import {nativePublicWeb} from './native-web.mjs';
 const apiKey=process.env.FISHBOT_DSH_TEST_API_KEY,baseURL=process.env.FISHBOT_DSH_TEST_BASE_URL;
 if(!apiKey||!baseURL)throw Error('Set test API key and trusted base URL in the environment');

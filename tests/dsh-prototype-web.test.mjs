@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp} from 'node:fs/promises';
 import os from 'node:os';import path from 'node:path';
-import {installedDsh,createKernel,delegateLocal} from '../scripts/dsh-prototype/kernel.mjs';
+import {installedDsh,createKernel,delegateLocal} from '../packages/dsh/kernel.mjs';
 import {nativePublicWeb} from '../scripts/dsh-prototype/native-web.mjs';
 
 test('native web provider blocks nonpublic addresses without disabling its guard',async()=>{

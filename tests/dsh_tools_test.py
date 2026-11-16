@@ -21,7 +21,7 @@ class DshBridge(unittest.IsolatedAsyncioTestCase):
             if self.delay:await self.release.wait()
             return web.json_response({'result':'真实结果','evidence':['https://example.org/'],'unfinished':[],'limitations':[]})
         app=web.Application();app.router.add_post('/delegate',submit);self.runner=web.AppRunner(app);await self.runner.setup();site=web.TCPSite(self.runner,'127.0.0.1',0);await site.start()
-        self.bridge={'version':1,'localPrototype':True,'botId':'bot','tenantId':'tenant','generation':1,'revision':1,'url':'http://127.0.0.1:'+str(site._server.sockets[0].getsockname()[1])+'/delegate','token':'a'*64}
+        self.bridge={'version':1,'mode':'production','botId':'bot','tenantId':'tenant','generation':1,'revision':1,'url':'http://127.0.0.1:'+str(site._server.sockets[0].getsockname()[1])+'/delegate','token':'a'*64}
         self.file=Path(self.temp.name)/'ai/dsh-bridge.json';self.file.parent.mkdir();self.file.write_text(json.dumps(self.bridge),encoding='utf8')
         self.event=SimpleNamespace(get_extra=lambda key:self.work if key=='_hosted_pipeline' else None)
         self.context=SimpleNamespace(context=SimpleNamespace(event=self.event))

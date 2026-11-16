@@ -1,5 +1,5 @@
 /** Child for a targeted abrupt-exit test; no external requests or production state. */
-import {createKernel,installedDsh,sessionIdentity} from '../../scripts/dsh-prototype/kernel.mjs';
+import {createKernel,installedDsh,sessionIdentity} from '../../packages/dsh/kernel.mjs';
 const native=await installedDsh(),{LlmAdapter,createUserMessage}=await native.load('dsh-llm');
 class Fixture extends LlmAdapter{async *stream(){yield{type:'block-start',index:0,blockType:'tool-call'};yield{type:'tool-call-delta',index:0,id:'crash-call',name:'slow_read',argumentsDelta:'{}'};yield{type:'block-end',index:0,block:{type:'tool-call',id:'crash-call',name:'slow_read',arguments:'{}'}};yield{type:'finish',reason:'tool-calls'};}}
 const identity={tenantId:'fixture',botId:'crash-bot',workId:'crash-work',scope:'private:fixture',delegationId:'crash-test'},k=await createKernel({storageRoot:process.argv[2],adapter:new Fixture()}),id=sessionIdentity(identity);

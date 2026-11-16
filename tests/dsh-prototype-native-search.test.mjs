@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';import http from 'node:http';
-import {installedDsh} from '../scripts/dsh-prototype/kernel.mjs';
+import {installedDsh} from '../packages/dsh/kernel.mjs';
 import {nativePublicWeb} from '../scripts/dsh-prototype/native-web.mjs';
 
 async function server(t,handler){const s=http.createServer(handler);await new Promise(r=>s.listen(0,'127.0.0.1',r));t.after(()=>new Promise(r=>s.close(r)));return 'http://127.0.0.1:'+s.address().port+'/v1';}

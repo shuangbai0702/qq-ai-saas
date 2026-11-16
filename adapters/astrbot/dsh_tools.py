@@ -1,4 +1,4 @@
-"""Explicit local-prototype bridge; no production manifest is generated here."""
+"""Trusted local host bridge; identities remain bound to the original Work."""
 import asyncio,hashlib,json
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -10,7 +10,7 @@ def manifest(settings):
     if file.stat().st_size>8192:raise ValueError('dsh_manifest_too_large')
     value=json.loads(file.read_text(encoding='utf8'))
     url=urlsplit(value.get('url',''))
-    if (value.get('version')!=1 or value.get('localPrototype') is not True
+    if (value.get('version')!=1 or value.get('mode') not in ('local','production')
         or any(value.get(k)!=settings.get(k) for k in ('botId','tenantId','generation','revision'))
         or url.scheme!='http' or url.hostname!='127.0.0.1' or not url.port
         or url.username or url.password or url.query or url.fragment or url.path!='/delegate'

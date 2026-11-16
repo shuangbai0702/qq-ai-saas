@@ -1,6 +1,6 @@
 /** Bridge contract experiment. Source is the existing Work-bound manifest, not a second registry. */
 import {createHash} from 'node:crypto';
-import {biliOperations} from '../../packages/contracts/bilibili.js';
+import {biliOperations} from '../contracts/bilibili.js';
 export function bilibiliSource({identity,readManifest,dispatch,allowedScopes=['public.read']}:any){
  const permitted=new Set(allowedScopes);
  const allowed=(row:any,contract:any)=>!!contract&&row.scope===contract.scope&&row.write===contract.write&&permitted.has(contract.scope);

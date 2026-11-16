@@ -2,11 +2,11 @@ import test from 'node:test';import assert from 'node:assert/strict';import {mkd
 import {createApp} from '../apps/control-api/src/app.js';import {issueTestInvite} from './helpers/invitations.js';import {openToolWork,attachToolIpc} from './helpers/tool-work.js';
 import {BilibiliExecutor} from '../apps/node-agent/src/bilibili/executor.js';import {BiliWeb} from '../apps/node-agent/src/bilibili/web-adapter.js';
 import {biliOperations} from '../packages/contracts/bilibili.js';
-import {bilibiliSource} from '../scripts/dsh-prototype/bilibili-source.js';
+import {bilibiliSource} from '../packages/dsh/bilibili-source.js';
 // @ts-ignore explicit local mjs prototype
-import {installedDsh,createKernel,delegateLocal} from '../scripts/dsh-prototype/kernel.mjs';
+import {installedDsh,createKernel,delegateLocal} from '../packages/dsh/kernel.mjs';
 // @ts-ignore installed native adapter; local opt-in only
-import {nativeModel} from '../scripts/dsh-prototype/native-model.mjs';
+import {nativeModel} from '../packages/dsh/native-model.mjs';
 
 // No production roots, credentials, accounts or QQ processes. External reads require explicit opt-in.
 test('DSH Bilibili uses actual catalog, original Work admission, SQLite receipt and executor',{timeout:120000},async t=>{

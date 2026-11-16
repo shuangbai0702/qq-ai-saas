@@ -25,6 +25,9 @@ const sourceHashes={};for(const file of entries)sourceHashes[path.relative(root,
 // release manifest that omits it cannot detect old source with new bundles.
 const pythonSources={};const contracts={};const migrations={};
 const runtimeScripts={};
+// DSH native composition is shared by production and local acceptance.
+await mkdir('dist-server/packages/dsh',{recursive:true});
+for(const file of await readdir('packages/dsh'))if(file.endsWith('.mjs')){const name='packages/dsh/'+file;runtimeScripts[name]=sha(await readFile(name));await copyFile(name,'dist-server/'+name);}
 for(const file of await readdir('scripts'))if(file.endsWith('.py')||file.endsWith('.mjs')||file.startsWith('media-')||file==='media-asr-requirements.txt')runtimeScripts['scripts/'+file]=sha(await readFile('scripts/'+file));
 for(const file of await readdir('adapters/astrbot'))if(file.endsWith('.py'))pythonSources['adapters/astrbot/'+file]=sha(await readFile('adapters/astrbot/'+file));
 for(const file of await readdir('packages/contracts'))if(file.endsWith('.json'))contracts['packages/contracts/'+file]=sha(await readFile('packages/contracts/'+file));

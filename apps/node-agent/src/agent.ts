@@ -1,5 +1,6 @@
 import {renameAtomic} from '../../../packages/shared/fs-atomic.js';
 import {FavoriteMaintenance} from './favorite-maintenance.js';
+import {DshHost} from './dsh-host.js';
 import {BotConfigSchema} from '../../../packages/contracts/index.js';
 import {acquireLease} from '../../../packages/database/lease.js';
 import {observeOffline,evictionDue,offlineGrace} from './offline-policy.js';
@@ -58,6 +59,7 @@ export class NodeAgent {
  autonomy:AutonomyCoordinator;
  bilibili:BilibiliExecutor;
  favorites:FavoriteMaintenance;
+ dsh?:DshHost;private dshPublished=0;
  recovery=new Map<string,{attempts:number;next:number;healthySince:number;unreadySince?:number;recent?:number[];decision?:string}>();
  offlineGrace:{offline:number;fault:number;login:number;startup?:number}={offline:offlineGrace(process.env.FISHBOT_OFFLINE_GRACE_SECONDS,300),fault:offlineGrace(process.env.FISHBOT_PROTOCOL_FAULT_GRACE_SECONDS,300),login:offlineGrace(process.env.FISHBOT_LOGIN_IDLE_GRACE_SECONDS,180),startup:offlineGrace(process.env.FISHBOT_STARTUP_GRACE_SECONDS,120)};
  constructor(public db:Sql,public root:string,public key:Buffer){
@@ -87,13 +89,17 @@ export class NodeAgent {
    await this.db.query("UPDATE commands SET status='pending' WHERE status='processing'");
    await this.reconcileSharedMembers();
    await this.bilibili.recover();
+   if(process.env.FISHBOT_DSH_ENABLED==='1'){
+    const host=new DshHost(this);
+    try{await host.start();this.dsh=host}catch{await host.stop();console.error('DSH unavailable; existing QQ and tools remain active')}
+   }
    this.timer=setInterval(()=>void this.tick().catch(e=>console.error('agent tick:',redact(String(e)))),500);this.timer.unref();await this.tick();this.autonomy.start();}catch(error){if(this.timer)clearInterval(this.timer);await rm(path.join(this.root,'agent.lock'),{force:true});await this.releaseLease?.();this.releaseLease=undefined;throw error}
  }
  shutdown(){return this.shutdownTask??=this.shutdownOnce()}
  private async shutdownOnce(){this.closed=true;if(this.timer)clearInterval(this.timer);let failure:unknown;
   // All owners must get a chance to settle before children and the lease go.
   // A failed maintenance stop must not bypass the remaining shutdown path.
-  for(const owner of [this.favorites,this.bilibili,this.autonomy])try{await owner?.stop()}catch(e){failure??=e}
+  for(const owner of [this.dsh,this.favorites,this.bilibili,this.autonomy])try{await owner?.stop()}catch(e){failure??=e}
   while(this.busy)await new Promise(r=>setTimeout(r,20));await Promise.allSettled([...this.operations.values(),...(this.healthTask?[this.healthTask]:[])]);
   try{for(const bot of await this.db.query('SELECT * FROM bots WHERE deleted_at IS NULL')){await this.aiFor(bot).stop(bot.id).catch(e=>{failure??=e});await this.protocols[bot.protocol].stop(bot.id).catch(e=>{failure??=e})}}catch(e){failure??=e}
   finally{try{
@@ -105,6 +111,7 @@ export class NodeAgent {
  }
  async tick(){if(this.busy||this.closed)return;this.busy=true;try{
    this.bilibili.tick();
+   if(this.dsh&&Date.now()-this.dshPublished>3000){this.dshPublished=Date.now();await this.dsh.publish()}
    this.favorites?.tick();
    const commands=await this.db.query("SELECT c.*,b.runtime_mode FROM commands c JOIN bots b ON b.id=c.bot_id WHERE c.status='pending' ORDER BY c.created_at LIMIT 32");
    if(this.closed)return;

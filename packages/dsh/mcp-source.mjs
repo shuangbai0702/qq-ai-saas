@@ -6,7 +6,7 @@ import path from 'node:path';
 
 export async function mcpSource({root,serverName,url,allowedReadTools}){
  const native=await installedDsh(root),{Context}=await native.load('cordis'),ctx=new Context();
- const packageRoot=root||process.env.FISHBOT_DSH_ROOT||path.join(process.env.APPDATA,'npm/node_modules/@deepseek-ai/dsh');
+ const packageRoot=native.root;
  const require=createRequire(path.join(packageRoot,'package.json')),Ajv=require('ajv');
  // No coercion, defaults, removal, remote refs or silently ignored schema keywords.
  const ajv=new Ajv({strict:true,allErrors:true}),validators=new Map(),allowed=new Set(allowedReadTools);

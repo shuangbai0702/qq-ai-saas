@@ -1,5 +1,5 @@
 /** Explicit public read-only probe using the installed DSH MCP client; no global profile changes. */
-import {installedDsh} from './kernel.mjs';
+import {installedDsh} from '../../packages/dsh/kernel.mjs';
 const native=await installedDsh(),{Context}=await native.load('cordis'),ctx=new Context();
 try{
  const modules=[['dsh-system-prompt',{includeHarnessIdentity:false,includeRuntimeContext:false}],['dsh-tools',{}],['dsh-mcp-client',{serverName:'exa',transport:'streamable-http',url:'https://mcp.exa.ai/mcp',headers:{},toolCallTimeoutMs:20000,failOnStartupError:true,maxInstructionBytes:8192,reconnect:{enabled:false,initialDelayMs:1000,maxDelayMs:2000,maxAttempts:1}}]];
