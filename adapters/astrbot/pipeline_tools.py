@@ -92,6 +92,14 @@ def parent(db,settings,record):
     return scope
 
 
+def validate_parent(db,settings,record):
+    """Read-only validation of the original Work; creates no execution record."""
+    for field,expected in (('bot_id',settings['botId']),('tenant_id',settings['tenantId']),('generation',settings['generation']),('config_revision',settings['revision'])):
+        if record.get(field)!=expected:raise ValueError('tool_identity_'+field)
+    if record.get('authority') not in ('foreground','autonomous'):raise ValueError('tool_authority')
+    return {'scope':parent(db,settings,record)}
+
+
 def admit(pipeline,settings,record):
     db=pipeline.db
     for key_,expected in (('bot_id',settings['botId']),('tenant_id',settings['tenantId']),('generation',settings['generation']),('config_revision',settings['revision'])):
@@ -312,6 +320,7 @@ def retire_batch(db,scope,members):
 
 
 def handle(pipeline,settings,operation,data):
+    if operation=='validate_parent':return validate_parent(pipeline.db,settings,data['record'])
     if operation=='admit':return admit(pipeline,settings,data['record'])
     if operation=='get':return view(row(pipeline.db,data['id'] if data.get('id') else key(settings['botId'],data['workId'],data['stepId'])))
     if operation=='budget_receipt':

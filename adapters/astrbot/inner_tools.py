@@ -17,13 +17,18 @@ def features(settings,event,db,scope,current,*,identity=None,evidence=None,memor
         import companion_state
         result.append(companion_state.inspect_tool(db,cfg,scope,current,event=event))
     result+=execution_memory.tools(settings,event,scope,memory_current or current,identity)
-    result+=bili_tools(settings,event,current,evidence,identity,db=db)
-    result+=image_tools(settings,event,db,current,identity)
+    import dsh_tools
+    delegate=dsh_tools.manifest(settings)
+    if delegate:
+        if identity is None:result+=dsh_tools.tools(settings,event,current,db,delegate)
+    else:
+        result+=bili_tools(settings,event,current,evidence,identity,db=db)
+        result+=image_tools(settings,event,db,current,identity)
     # R5: the one constrained commitment-state tool shares this same
     # identity/Work validation as every other capability.
     import agreement_state
     result+=agreement_state.tools(settings,event,db,scope,current)
-    if manifest(settings) is None:
+    if not delegate and manifest(settings) is None:
         enabled=(cfg.get('behavior') or {}).get('bilibiliSearchEnabled',False)
         result+=research_tools(lambda:current() and (cfg.get('behavior') or {}).get('bilibiliSearchEnabled',False),evidence,enabled=enabled)
     from tool_outcome import structured
