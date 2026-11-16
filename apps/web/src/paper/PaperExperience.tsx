@@ -1,7 +1,6 @@
 import {useEffect,useRef} from 'react';
 import {Moon} from 'lucide-react';
 import {mountPaperExperience} from './runtime.js';
-import './paper.css';
 
 // The existing application keeps ownership of every form, route and action.
 export function PaperExperience(){

@@ -9,7 +9,7 @@ body.paper-app{
  --info:#697f89;--info-light:#f3f6f6;--shadow:0 2px 1px #71716416;
  --shadow-sm:0 1px 2px #71716415;--shadow-md:0 3px 8px #71716416;--shadow-lg:0 8px 24px #71716419;
  --serif:"Segoe UI","Microsoft YaHei",sans-serif;
- margin:0;background:transparent!important;color:var(--ink);isolation:isolate;
+ margin:0;background:#f4f4f0!important;color:var(--ink);isolation:isolate;
  font-family:"Aptos","Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
  font-size:14px;line-height:1.65;min-width:320px;
 }

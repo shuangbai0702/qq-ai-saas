@@ -3,6 +3,7 @@ import {createRoot} from 'react-dom/client';
 import {api,ApiError} from './api';
 import {Auth} from './auth';
 import './style.css';
+import './paper/paper.css';
 const Workspace=lazy(()=>import('./workspace'));
 class ScreenBoundary extends Component<{children:ReactNode},{failed:boolean}>{
  state={failed:false};
