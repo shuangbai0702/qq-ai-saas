@@ -53,29 +53,39 @@ export function parseFinal(agent){
  */
 export async function delegateLocal(kernel,host,input,{resumeSessionId,signal,timeoutMs=30000}={}){
  if(!host?.identity?.tenantId||!host.identity.botId||!host.identity.workId||!host.identity.scope)throw Error('Trusted Work identity required');
- const {validateJsonSchemaValue}=await kernel.native.load('dsh-tools');
- if(validateJsonSchemaValue(delegateSchema.parameters,input).length)throw Error('Invalid delegation input');
+ const {validateJsonSchemaValue,assertSupportedJsonSchema}=await kernel.native.load('dsh-tools');
+ if(validateJsonSchemaValue(delegateSchema.parameters,input).length||!input.goal?.trim())throw Error('Invalid delegation input');
  await host.assertCurrent();
  // Stable identity is selected by the host; a Session ID never grants Work authority.
  const sessionId=sessionIdentity(host.identity);
  if(resumeSessionId&&resumeSessionId!==sessionId)throw Error('Session ownership mismatch');
  if(kernel.owners.has(sessionId))throw Error('Delegation already running');
  const snapshot=structuredClone(await host.discover());
- const setup=async scoped=>{
+ const unavailable=[];
+ const setup=async (scoped,agent)=>{
+  if(resumeSessionId){
+   const original=agent.session.snapshotEvents().find(e=>e.type==='user/message')?.data;
+   const pending=agent.inbox.nextTurn[0];
+   const content=(original||pending)?.content?.filter(b=>b.type==='text').map(b=>b.text).join('');
+   if(content!==JSON.stringify(input))throw Error('Persisted delegation input mismatch; refusing replacement or replay');
+  }
   for(const item of snapshot){
    if(!['web_search','bilibili'].includes(item.capability)||item.effect!=='read'||!item.available||!await host.authorize(item))continue;
-   const definition=structuredClone(item.definition),version=item.version;
+   const definition=structuredClone(item.definition),version=item.version,contract=JSON.stringify(definition);
+   try{if(!host.validateArguments)assertSupportedJsonSchema(definition.parameters);assertSupportedJsonSchema(definition.output.schema);}catch{unavailable.push('工具 '+item.id+' 的 Schema 不受当前内核支持');continue;}
    scoped.tools.register({...definition,output:{schema:definition.output.schema,render:(_args,value)=>[{type:'text',text:'Untrusted external result:\n'+JSON.stringify(value)}]},execute:async(args,exec)=>{
     await host.assertCurrent();
     const current=(await host.discover()).find(x=>x.id===item.id);
-    if(!current||current.version!==version||!current.available||!await host.authorize(current))throw Error('Tool removed, changed, unavailable or permission revoked; start a new task for a new contract');
-    const errors=validateJsonSchemaValue(definition.parameters,args);if(errors.length)throw Error('Tool arguments do not match pinned schema');
+    if(!current||current.capability!==item.capability||current.effect!=='read'||current.version!==version||!current.available||JSON.stringify(current.definition)!==contract||!await host.authorize(current))throw Error('Tool removed, changed, unavailable or permission revoked; start a new task for a new contract');
+    if(host.validateArguments)await host.validateArguments(current,args);
+    else if(validateJsonSchemaValue(definition.parameters,args).length)throw Error('Tool arguments do not match pinned schema');
     // Runtime validates the actual return against the pinned canonical output schema.
     return host.execute(current,args,{...exec,identity:host.identity});
    }});
   }
  };
  const options={agentOptions:{provider:'local-prototype',model:'delegated'},setup};
+ if(kernel.owners.has(sessionId))throw Error('Delegation already running');
  kernel.owners.set(sessionId,host);
  let handle;try{handle=resumeSessionId?await kernel.ctx.agents.resume({...options,resumeSessionId}):await kernel.ctx.agents.create({...options,sessionId});}catch(e){kernel.owners.delete(sessionId);throw e;}
  const {agent}=handle;let timer;
@@ -90,6 +100,7 @@ export async function delegateLocal(kernel,host,input,{resumeSessionId,signal,ti
   await host.assertCurrent();
   const final=parseFinal(agent);
   // Production reliable wake-up is intentionally NOT simulated by an in-memory callback.
+  if(unavailable.length)final.limitations.push(...unavailable);
   return final;
  }finally{clearTimeout(timer);signal?.removeEventListener('abort',cancel);try{await handle.dispose();}finally{kernel.owners.delete(sessionId);}}
 }
