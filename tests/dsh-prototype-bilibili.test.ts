@@ -5,10 +5,12 @@ import {biliOperations} from '../packages/contracts/bilibili.js';
 import {bilibiliSource} from '../scripts/dsh-prototype/bilibili-source.js';
 // @ts-ignore explicit local mjs prototype
 import {installedDsh,createKernel,delegateLocal} from '../scripts/dsh-prototype/kernel.mjs';
+// @ts-ignore installed native adapter; local opt-in only
+import {nativeModel} from '../scripts/dsh-prototype/native-model.mjs';
 
 // No production roots, credentials, accounts or QQ processes. External reads require explicit opt-in.
 test('DSH Bilibili uses actual catalog, original Work admission, SQLite receipt and executor',{timeout:120000},async t=>{
- const real=process.env.FISHBOT_DSH_PUBLIC_READ==='1',root=await mkdtemp(path.join(os.tmpdir(),'fishbot-dsh-bili-')),app=await createApp({root,agent:false});t.after(()=>app.app.close());
+ const real=process.env.FISHBOT_DSH_PUBLIC_READ==='1',realModel=real&&process.env.FISHBOT_DSH_REAL_MODEL==='1',root=await mkdtemp(path.join(os.tmpdir(),'fishbot-dsh-bili-')),app=await createApp({root,agent:false});t.after(()=>app.app.close());
  const auth=await app.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(app.db),email:'dsh-local@example.invalid',password:'local-fixture-password',name:'local fixture'}});assert.equal(auth.statusCode,200,auth.body);
  const cookies={fish_session:auth.cookies[0].value};const created=await app.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'isolated dsh',protocol:'mock',apiKey:'synthetic-key'}});assert.equal(created.statusCode,201,created.body);
  const id=created.json().id;await app.db.query("UPDATE bot_config_revisions SET config=jsonb_set(config,'{behavior,ownerUin}','\"768687099\"') WHERE bot_id=$1",[id]);await app.db.query("UPDATE bots SET desired_state='running',health=$2 WHERE id=$1",[id,JSON.stringify({sampledAt:new Date().toISOString(),protocol:{online:true},ai:{ready:true}})]);
@@ -36,11 +38,17 @@ test('DSH Bilibili uses actual catalog, original Work admission, SQLite receipt 
    yield{type:'block-start',index:0,blockType:'text'};yield{type:'text-delta',index:0,text};yield{type:'block-end',index:0,block:{type:'text',text}};yield{type:'finish',reason:'stop'};
   }
  }}
- const kernel=await createKernel({storageRoot:path.join(root,'dsh-sessions'),adapter:new Fixture()});t.after(()=>kernel.close());
- const host={identity,assertCurrent:async()=>{},authorize:async()=>true,reserveModel:async()=>({settle:async()=>{}}),discover:source.discover,validateArguments:source.validateArguments,execute:source.execute};
- const result=await delegateLocal(kernel,host,{goal:'读取这个公开视频的详情'});assert(receipt,JSON.stringify({result}));assert.equal(receipts.length,reads.length);assert.equal(receipt.schemaVersion,'fishbot.tool-result.v1');assert(['not_applicable','rejected','unknown'].includes(receipt.receipt.status));
+ const usage:any[]=[];let modelRequests=0;
+ const adapter=realModel?await nativeModel({baseURL:'https://nai.lunarbyte.pw/v1',model:'deepseek-v4.1-flash'}):new Fixture();
+ if(realModel)t.after(()=>adapter.close());
+ const kernel=await createKernel({storageRoot:path.join(root,'dsh-sessions'),adapter});t.after(()=>kernel.close());
+ const host={identity,assertCurrent:async()=>{},authorize:async()=>true,reserveModel:async()=>{modelRequests++;if(realModel&&modelRequests>3)throw Error('Local experiment request cap reached');return{settle:async(value:any)=>{usage.push(value);}};},discover:source.discover,validateArguments:source.validateArguments,execute:source.execute};
+ const result=await delegateLocal(kernel,host,{goal:realModel?'读取 Bilibili 公开视频 https://www.bilibili.com/video/BV1GJ411x7h7 的标题、作者和时长，用中文简短回答并附视频链接。只需要基本信息，不需要评论、字幕或媒体分析。':'读取这个公开视频的详情'},{timeoutMs:90000});assert(receipt,JSON.stringify({result}));
+ if(!realModel)assert.equal(receipts.length,reads.length);
+ else{assert(receipts.some(r=>r.operation==='video_info'&&r.execution==='completed'));assert(result.evidence.includes('https://www.bilibili.com/video/BV1GJ411x7h7'));}
+ assert.equal(receipt.schemaVersion,'fishbot.tool-result.v1');assert(['not_applicable','rejected','unknown'].includes(receipt.receipt.status));
  if(!real){assert.equal(receipt.execution,'completed');assert.equal(remoteReads,1);assert.equal((await source.discover()).every((v:any)=>v.effect==='read'),true);}
- console.log(JSON.stringify({kind:'DSH-original-Work-public-read',realNetwork:real,operations:receipts,finalOnly:Object.keys(result),paidModelCalls:0,productionAccess:false}));
+ console.log(JSON.stringify({kind:'DSH-original-Work-public-read',realNetwork:real,operations:receipts,finalOnly:Object.keys(result),paidModelCalls:realModel?modelRequests:0,...realModel?{usage,final:result}: {},productionAccess:false}));
 });
 
 
