@@ -21,10 +21,17 @@ export async function installDshRuntime(agent:NodeAgent,release:string){
  const host=new DshHost(agent);await host.start();
  if(agent.closed){await host.stop();throw new Error('DSH maintenance owner changed')}
  agent.dsh=host;
- const previous=agent.tick.bind(agent);let published=0;
- agent.tick=async()=>{await previous();if(!agent.closed&&Date.now()-published>3000){published=Date.now();await host.publish()}};
- const shutdown=agent.shutdown.bind(agent);agent.shutdown=async()=>{await host.stop();await shutdown()};
+ const previous=agent.tick,shutdown=agent.shutdown;let published=0;
+ (agent as any)[Symbol.for('fishbot.dsh.maintenance')]={release,host,previous,shutdown};
+ agent.tick=async()=>{await previous.call(agent);if(!agent.closed&&Date.now()-published>3000){published=Date.now();await host.publish()}};
+ agent.shutdown=async()=>{try{await host.stop()}finally{await shutdown.call(agent)}};
  return{pid:process.pid,release,enabled:true};
+}
+export async function uninstallDshRuntime(agent:NodeAgent,release:string){
+ const marker=Symbol.for('fishbot.dsh.maintenance'),installed=(agent as any)[marker];
+ if(!installed||installed.release!==release||agent.dsh!==installed.host)throw new Error('DSH rollback owner mismatch');
+ await installed.host.stop();agent.dsh=undefined;agent.tick=installed.previous;agent.shutdown=installed.shutdown;delete (agent as any)[marker];
+ return{pid:process.pid,release,enabled:false};
 }
 
 // Shutdown stays with the canonical Agent, which dynamically owns all three
