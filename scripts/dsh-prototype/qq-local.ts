@@ -37,12 +37,34 @@ await db.query("INSERT INTO bots(id,tenant_id,name,protocol,generation,revision,
 await db.query('INSERT INTO bot_config_revisions(bot_id,revision,config) VALUES($1,1,$2) ON CONFLICT DO NOTHING',[identity.botId,JSON.stringify(config)]);
 await db.query('INSERT INTO instances(bot_id,generation,ai_port,protocol_port,token) VALUES($1,1,24872,24874,$2) ON CONFLICT DO NOTHING',[identity.botId,identity.token]);
 const [bot]=await db.query('SELECT * FROM bots WHERE id=$1',[identity.botId]);
-const ctx:RuntimeContext={...identity,root:path.join(root,'bots',identity.botId),generation:1,revision:1,aiPort:24872,protocolPort:24874,config,apiKey:process.env.FISHBOT_DSH_TEST_API_KEY,expectedUin:status.uin,runtimeMode:'dedicated'};
+const [storedConfig]=await db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[bot.id,bot.revision]);
+Object.assign(config,storedConfig.config);
+const owner=process.env.FISHBOT_DSH_OWNER_UIN;
+if(owner){
+ if(!/^\d{5,20}$/.test(owner))throw Error('Invalid local owner');
+ if(config.behavior.ownerUin&&config.behavior.ownerUin!==owner)throw Error('Existing local owner differs');
+ if(config.behavior.ownerUin!==owner){
+  config.behavior.ownerUin=owner;
+  await db.transaction(async tx=>{
+   const updated=await tx.query('UPDATE bots SET revision=revision+1 WHERE id=$1 AND tenant_id=$2 AND revision=$3 RETURNING revision',[bot.id,bot.tenant_id,bot.revision]);
+   if(updated.length!==1)throw Error('Local configuration CAS conflict');
+   await tx.query('INSERT INTO bot_config_revisions(bot_id,revision,config) VALUES($1,$2,$3)',[bot.id,updated[0].revision,JSON.stringify(config)]);bot.revision=updated[0].revision;
+  });
+ }
+}
+const ctx:RuntimeContext={...identity,root:path.join(root,'bots',identity.botId),generation:bot.generation,revision:bot.revision,aiPort:24872,protocolPort:24874,config,apiKey:process.env.FISHBOT_DSH_TEST_API_KEY,expectedUin:status.uin,runtimeMode:'dedicated'};
 const processHost=new ProcessHost(root,path.resolve('references/astrbot/.venv/Scripts/python.exe'));
 const astrbot=new AstrBotAdapter(processHost,path.resolve('references/astrbot'),path.resolve('references/astrbot/.venv/Scripts/python.exe'));
 const repo=new BilibiliTools(db),rpc=runtimeClient(db),executor=new BilibiliExecutor(db,root,key);
 const settings=await repo.settings(bot.tenant_id,bot.id);
 if(!settings.config.enabled)await repo.configure(bot.tenant_id,bot.id,settings.revision,{enabled:true,allowAnonymous:true,scopes:['public.read']});
+const allowedScopes=(process.env.FISHBOT_DSH_BILIBILI_SCOPES||'public.read').split(',');
+if(process.env.FISHBOT_DSH_BILIBILI_SCOPES){
+ if(!config.behavior.ownerUin)throw Error('Authenticated experiment requires configured owner');
+ await executor.accounts.credential(bot.tenant_id,bot.id);
+ const current=await repo.settings(bot.tenant_id,bot.id);
+ if(JSON.stringify(current.config.scopes)!==JSON.stringify(allowedScopes))await repo.configure(bot.tenant_id,bot.id,current.revision,{...current.config,allowAnonymous:false,scopes:allowedScopes});
+}
 const adapter=await nativeModel({baseURL:config.baseUrl,model:config.model});
 let search:any;
 try{
@@ -75,18 +97,18 @@ const server=http.createServer(async(req,res)=>{
  try{
   let raw='';for await(const chunk of req){raw+=chunk;if(Buffer.byteLength(raw)>65536)throw Error('Request too large');}
   const body=JSON.parse(raw),parent=body.parent;
-  if(!parent||parent.bot_id!==bot.id||parent.tenant_id!==bot.tenant_id||parent.generation!==1||parent.config_revision!==1||parent.authority!=='foreground'||!parent.origin_scope?.startsWith('private:')||typeof body.delegationId!=='string'||!body.delegationId)throw Error('Trusted private Work required');
-  const bound={tenantId:bot.tenant_id,botId:bot.id,workId:parent.work_id,scope:parent.origin_scope,delegationId:body.delegationId,generation:1,revision:1};const taskId=String(sessionIdentity(bound));
+  if(!parent||parent.bot_id!==bot.id||parent.tenant_id!==bot.tenant_id||parent.generation!==bot.generation||parent.config_revision!==bot.revision||parent.authority!=='foreground'||!parent.origin_scope?.startsWith('private:')||typeof body.delegationId!=='string'||!body.delegationId)throw Error('Trusted private Work required');
+  const bound={tenantId:bot.tenant_id,botId:bot.id,workId:parent.work_id,scope:parent.origin_scope,delegationId:body.delegationId,generation:bot.generation,revision:bot.revision};const taskId=String(sessionIdentity(bound));
   if(running.has(taskId))throw Error('Delegation already in progress');running.add(taskId);task=taskId;
-  const assertCurrent=async()=>{abort.signal.throwIfAborted();if(closing)throw Error('Local host closing');await rpc({bot_id:bot.id,tenant_id:bot.tenant_id,generation:1,revision:1},'tool',{operation:'validate_parent',data:{record:parent}});};
+  const assertCurrent=async()=>{abort.signal.throwIfAborted();if(closing)throw Error('Local host closing');await rpc({bot_id:bot.id,tenant_id:bot.tenant_id,generation:bot.generation,revision:bot.revision},'tool',{operation:'validate_parent',data:{record:parent}});};
   await assertCurrent();let requests=0;const traces:any[]=[];
-  const bili=bilibiliSource({identity:bound,async readManifest(){const current=await repo.settings(bot.tenant_id,bot.id);return{version:1,botId:bot.id,generation:1,revision:1,settingsRevision:current.revision,operations:executor.catalog({config:current.config})};},async dispatch(request:any,exec:any){
+  const bili=bilibiliSource({identity:bound,allowedScopes,async readManifest(){const current=await repo.settings(bot.tenant_id,bot.id);return{version:1,botId:bot.id,generation:bot.generation,revision:bot.revision,settingsRevision:current.revision,operations:executor.catalog({config:current.config}).filter(row=>row.scope==='public.read'||parent.sender_id===config.behavior.ownerUin)};},async dispatch(request:any,exec:any){
    await assertCurrent();const job=await repo.admit(bot,{...request,workId:parent.work_id,stepId:body.delegationId+':'+exec.callId,authority:'foreground',senderId:parent.sender_id,origin:{scope:parent.origin_scope,eventId:parent.origin_event,objective:body.input.goal},deadlineAt:Date.now()+90000});
    if(job.state==='queued'){const claimed=await repo.claim('local-dsh-worker',true);if(!claimed||claimed.id!==job.id)throw Error('Original tool claim unavailable');await executor.execute(claimed,exec.signal);}
    const result=await repo.get(bot.tenant_id,bot.id,job.id);if(!result.result)throw Error('Tool receipt not yet available');return result.result;
   }});
   const sourceFor=(item:any)=>item.capability==='bilibili'?bili:search;
-  const host={identity:bound,assertCurrent,authorize:async(item:any)=>item.effect==='read'&&['web_search','bilibili'].includes(item.capability),discover:async()=>[...await search.discover(),...await bili.discover()],
+  const host={identity:bound,assertCurrent,authorize:async(item:any)=>item.effect==='read'&&['web_search','bilibili'].includes(item.capability)||item.effect==='write'&&item.capability==='bilibili'&&parent.sender_id===config.behavior.ownerUin,discover:async()=>[...await search.discover(),...await bili.discover()],
    validateArguments:(item:any,args:any)=>sourceFor(item).validateArguments(item,args),
    async reserveModel(){await assertCurrent();if(requests>=6)throw Error('Local acceptance request cap reached');requests++;return{settle:async(value:any)=>{await evidence({kind:'dsh_model',task,...value});}};},
    async execute(item:any,args:any,exec:any){await assertCurrent();const result=await sourceFor(item).execute(item,args,exec);traces.push({tool:item.definition.name,execution:result.execution,receipt:result.receipt?.status});await evidence({kind:'dsh_tool',task,...traces.at(-1)});return result;},
@@ -100,7 +122,7 @@ const server=http.createServer(async(req,res)=>{
 });
 await new Promise<void>(resolve=>server.listen(24878,'127.0.0.1',resolve));
 await mkdir(path.join(ctx.root,'ai'),{recursive:true});
-await writeFile(path.join(ctx.root,'ai/dsh-bridge.json'),JSON.stringify({version:1,localPrototype:true,botId:bot.id,tenantId:bot.tenant_id,generation:1,revision:1,url:'http://127.0.0.1:24878/delegate',token:bridgeToken}),{mode:0o600});
+await writeFile(path.join(ctx.root,'ai/dsh-bridge.json'),JSON.stringify({version:1,localPrototype:true,botId:bot.id,tenantId:bot.tenant_id,generation:bot.generation,revision:bot.revision,url:'http://127.0.0.1:24878/delegate',token:bridgeToken}),{mode:0o600});
 await astrbot.start(ctx);
 const healthTimer=setInterval(()=>void (async()=>{try{const health=await astrbot.probe(ctx);await db.query('UPDATE bots SET health=$2,observed_state=$3 WHERE id=$1',[bot.id,JSON.stringify({sampledAt:new Date().toISOString(),protocol:{online:true},ai:health}),health.ready?'running':'starting']);}catch(error:any){console.error('Local health:',error.message);}})(),10000);
 await writeFile(path.join(root,'runtime.pid'),String(process.pid));console.log('Local AstrBot and DSH bridge started; waiting for health.');
