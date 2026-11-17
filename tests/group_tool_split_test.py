@@ -1,5 +1,5 @@
 """Real group-tool dispatch with isolated receipts; no QQ or model calls."""
-import asyncio,json,sys,unittest
+import asyncio,hashlib,json,sys,unittest
 from pathlib import Path
 from types import SimpleNamespace as NS
 sys.path.insert(0,str(Path(__file__).resolve().parent))
@@ -9,6 +9,11 @@ from bot_pipeline import Work
 
 
 class GroupToolSplit(continuity.GroupActions):
+    def setUp(self):
+        super().setUp()
+        # Production executes this tool only under a real tool-call identity.
+        token=group_actions.tool_action_id.set('split-test-call')
+        self.addCleanup(group_actions.tool_action_id.reset,token)
     async def dispatch(self,text='第一段\n\n第二段',**kw):
         self.cfg['behavior']['splitMessages']=True
         return json.loads(await group_actions.send(self.event,self.cfg,self.db,'55555',text,'12345678',lambda:self.current,lambda *args:self.recorded.append(args),**kw))
@@ -61,7 +66,7 @@ class GroupToolSplit(continuity.GroupActions):
         self.assertEqual(self.recorded,[('group:55555','第一段','12345678')])
         self.assertFalse(self.extra['_hosted_tool_results'][-1]['complete'])
         # Read the persisted recovery path, not an in-memory result cache.
-        recovered=json.loads(group_actions.prior_receipt(self.db,group_actions.attempt_key(self.event)))
+        recovered=json.loads(group_actions.prior_receipt(self.db,group_actions.attempt_key(self.event)+':action:'+hashlib.sha256(b'split-test-call').hexdigest()))
         self.assertEqual(recovered['message_ids'],['101'])
         self.assertEqual(recovered['remaining_status'],'unknown')
         await self.dispatch();self.assertEqual(len(self.sent),2)
@@ -87,7 +92,7 @@ class GroupToolSplit(continuity.GroupActions):
         task=asyncio.create_task(self.dispatch())
         await asyncio.wait_for(entered.wait(),2);task.cancel()
         with self.assertRaises(asyncio.CancelledError):await task
-        result=json.loads(group_actions.prior_receipt(self.db,group_actions.attempt_key(self.event)))
+        result=json.loads(group_actions.prior_receipt(self.db,group_actions.attempt_key(self.event)+':action:'+hashlib.sha256(b'split-test-call').hexdigest()))
         self.assertEqual(result['message_ids'],['101']);self.assertEqual(result['remaining_status'],'unknown')
         await self.dispatch();self.assertEqual(len(self.sent),2)
 
