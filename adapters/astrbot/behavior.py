@@ -222,7 +222,7 @@ class BehaviorStore:
 
 def is_no_reply_marker(text):return isinstance(text,str) and text.strip()=='[NO_REPLY]'
 
-def clean_text(text,max_chars=500):
+def clean_text(text,max_chars=None):
     text=clean_internal(text)
     if is_no_reply_marker(text):return []
     text=re.sub(r'\[(?:TOOL|INTERNAL|SYSTEM)[^\]]*\]','',text,flags=re.I)
@@ -238,7 +238,7 @@ def clean_text(text,max_chars=500):
             if faces:continue
             faces+=1;out.append((kind,value))
         else:
-            value=value[:max(0,max_chars-count)];count+=len(value)
+            value=value if max_chars is None else value[:max(0,max_chars-count)];count+=len(value)
             if value.strip():out.append((kind,value))
     return out
 
@@ -1195,16 +1195,14 @@ def install_runtime(core,settings):
             # AstrBot's native error reply can contain raw upstream exception
             # text. Keep typed failure telemetry, never forward it to QQ.
             guard_error=self.get_extra('_hosted_context_guard_error')
-            if str(self.get_group_id() or ''):
-                # A passive or proactive group failure stays silent: a platform
-                # fault is never published to a group in the persona's voice.
+            if str(self.get_group_id() or '') and not bot_pipeline.addressed_to_self(self):
                 self.set_extra('_hosted_platform_notice',True)
-                bot_pipeline.stop(self,'model_error','error')
-                return
-            # One short, neutral, true private notice. It is a platform status
-            # message, not a persona turn: marked as such, excluded from every
-            # experience write, and never saved into model conversation history.
-            text='这条消息暂时没有处理成功，需要管理员检查后才能恢复，稍后再试。' if guard_error else '这条消息暂时没有处理成功，稍后可以再试。'
+                bot_pipeline.stop(self,'model_error','error');return
+            from qq_diagnostics import failure_notice
+            work=self.get_extra('_hosted_pipeline')
+            text=failure_notice(guard_error or self.get_extra('_hosted_model_error_type'),
+                stage='context' if guard_error else 'model',reference=getattr(work,'event_id',''),
+                partial=bool(getattr(work,'confirmed',0)))
             self.set_extra('_hosted_platform_notice',True)
             message=copy.copy(message);message.chain=[Plain(text)]
             bot_pipeline.stop(self,'model_error','error')
@@ -1263,7 +1261,7 @@ def install_runtime(core,settings):
             from model_cache import record_diagnostic
             record_diagnostic(s,{'kind':'media_selection','workId':getattr(self.get_extra('_hosted_pipeline'),'event_id',None),
                 'phase':'foreground','mediaStatus':reason,'imageId':image.get('id') if image else None})
-        chain=[];remaining=(s['config'].get('behavior') or {}).get('maxReplyChars',500)
+        chain=[] # Length preference never authorizes discarding a reply suffix.
         # Merge adjacent Plain chunks before parsing: streamed/model SDK chunks
         # can split a control word or image ID across component boundaries.
         components=[]
@@ -1275,9 +1273,8 @@ def install_runtime(core,settings):
         for component in components:
             if isinstance(component,Plain):
                 value=without_image_markers(component.text)
-                for kind,value in clean_text(value,remaining):
+                for kind,value in clean_text(value):
                     if kind=='face' and not (s['config'].get('behavior') or {}).get('qqFaces',True):continue
-                    if kind=='text':remaining-=len(value)
                     chain.append(Plain(value) if kind=='text' else Face(id=value))
             elif not isinstance(component,Face) or (s['config'].get('behavior') or {}).get('qqFaces',True):chain.append(component)
         if self.get_extra('_hosted_meme_allowed') is True and not image:
@@ -1332,6 +1329,12 @@ def install_runtime(core,settings):
             for component in chain:
                 if isinstance(component,Plain):component.text=without_boundaries(component.text)
             text=''.join(x.text for x in chain if isinstance(x,Plain))
+        # QQ transport chunks are lossless and independent of chat pacing.
+        from message_layout import transport_parts
+        if parts!=[None]:parts=[piece for part in parts for piece in transport_parts(part)]
+        elif all(isinstance(x,(Plain,Face,Image,At,Reply)) for x in chain):
+            bounded=transport_parts(text)
+            if len(bounded)>1:parts=bounded
         planned=[];delays=[]
         for index,part in enumerate(parts):
             if voice_bytes and not chain:continue
@@ -1407,7 +1410,9 @@ def install_runtime(core,settings):
                 prepared_sticker=self.get_extra('_hosted_tool_sticker')
                 if isinstance(prepared_sticker,dict) and prepared_sticker.get('id'):self.set_extra('_hosted_tool_sticker',None)
             try:result=await original_send(self,outgoing)
-            except Exception:
+            except Exception as error:
+                record_diagnostic(s,{'kind':'qq_send_error','workId':getattr(work,'event_id',None),'reason':type(error).__name__,
+                    'diagnosticDetail':json.dumps({'planned':len(plan.messages),'segment':index+1,'confirmed':len(confirmed_text),'status':'unknown'})})
                 if image and setting(self) is s:metrics.setdefault(id,{})['lastMemeDecision']={'reason':'send_failed','at':time.time()}
                 raise
             if self.get_extra('_hosted_protocol_blocked',False):return result
@@ -2063,6 +2068,7 @@ def install_runtime(core,settings):
                 metric=metrics[e.get_platform_id()];metric['failures']=metric.get('failures',0)+1
                 metric['lastFailure']={'time':time.time(),'type':type(error).__name__}
                 e.set_extra('_hosted_model_error',True)
+                e.set_extra('_hosted_model_error_type',type(error).__name__)
                 from readonly_journal import ContextCapacityExceeded,ContextPrefixViolation,ContextReconstructionDenied,ContextRecoveryUnavailable
                 from system_contract import SystemContractViolation
                 from model_cache import AppendOnlyWireViolation
@@ -2136,6 +2142,7 @@ def install_runtime(core,settings):
                 metric=metrics[e.get_platform_id()];metric['failures']=metric.get('failures',0)+1
                 metric['lastFailure']={'time':time.time(),'type':type(error).__name__}
                 e.set_extra('_hosted_model_error',True)
+                e.set_extra('_hosted_model_error_type',type(error).__name__)
             raise
         finally:
             finish_attempt('canceled',reason='stream_not_exhausted')

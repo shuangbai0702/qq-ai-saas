@@ -99,7 +99,10 @@ def tools(settings,event,current,db,bridge,social=None):
             except Exception as error:
                 from native_internal import WorkStopped,WorkBudgetExceeded
                 if isinstance(error,(WorkStopped,WorkBudgetExceeded)):raise
-                return '委托未完成，未取得可确认的最终结果。'
+                from model_cache import record_diagnostic
+                from qq_diagnostics import failure_notice
+                record_diagnostic(settings,{'kind':'dsh_delegation_error','workId':getattr(event.get_extra('_hosted_pipeline'),'event_id',''),'reason':type(error).__name__})
+                return failure_notice(type(error).__name__,stage='delegation')
         async def run(self,context,goal,background='',constraints=None,_completion=None):
             if context.context.event is not event or not current():raise asyncio.CancelledError('stale DSH Work')
             if manifest(settings)!=bridge:raise ValueError('dsh_configuration_changed')
@@ -167,7 +170,10 @@ def tools(settings,event,current,db,bridge,social=None):
                             else:raise ValueError('dsh_callback_invalid')
                             ack.update(ok=True,value=value)
                         except asyncio.CancelledError:raise
-                        except Exception:pass # No stack, credentials or runtime state crosses the tool boundary.
+                        except Exception as error:
+                            from model_cache import record_diagnostic
+                            record_diagnostic(settings,{'kind':'dsh_callback_error','workId':record.get('work_id'),'reason':type(error).__name__,'diagnosticDetail':frame.get('operation')})
+                            ack['error']='工具请求未完成；结果以权威回执为准，未确认的外部操作不得重复执行。'
                         if not settling:validate_parent(db,settings,record)
                         async with client.post(bridge['url'].removesuffix('/delegate')+'/tool-result',json=ack,headers={'Authorization':'Bearer '+bridge['token']},allow_redirects=False) as answered:
                             if answered.status!=200:raise ValueError('dsh_callback_rejected')

@@ -175,6 +175,8 @@ def tools(event,cfg,db,root,current):
         return {'handle':handle(row),'meaning':semantic['meaning'] if semantic else '',
                 'avoid':semantic['avoid'] if semantic else '', 'rawText':semantic.get('rawText','') if semantic else '',
                 'selection_disabled':not valid,
+                'semantic_index_id':description_id(row),
+                'semanticStatus':(semantic.get('semanticStatus') or ('manual' if semantic.get('manual') else 'unknown')) if semantic else 'not_indexed',
                 'saved_from_this_conversation':bool(saved and saved[0]==delivery_scope(event)),
                 'saved_at':saved[1] if saved and saved[0]==delivery_scope(event) else None}
     def confirmed(row,existing=False):

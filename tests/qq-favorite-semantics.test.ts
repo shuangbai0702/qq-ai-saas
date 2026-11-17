@@ -28,7 +28,7 @@ test('favorite vision uses bounded real GIF samples, structured output and rejec
  const preview=path.join(root,'preview.jpg'),meta=JSON.parse(execFileSync(python,['adapters/astrbot/favorite_media.py','--preview',file,preview],{encoding:'utf8',windowsHide:true}));
  assert.deepEqual(meta.sampledFrames,[0,1,2]);assert.equal(meta.audio,false);
  assert.ok((await readFile(preview)).length<131072);
- const key=Buffer.alloc(32),bot={id:'fixture',generation:1,qq_uin:'90000'},record={...bot,tenant_id:'tenant',revision:2,runtime_mode:'dedicated',config:{model:'image-fixture',baseUrl:'https://model.example/v1'},ciphertext:encrypt(key,'tenant:fixture','fixture-key')};
+ const key=Buffer.alloc(32),bot={id:'fixture',generation:1,qq_uin:'90000'},record={...bot,tenant_id:'tenant',revision:2,runtime_mode:'dedicated',config:{model:'main-fixture',favoriteModel:'image-fixture',baseUrl:'https://model.example/v1'},ciphertext:encrypt(key,'tenant:fixture','fixture-key')};
  let revision=2,calls=0;
  const db={query:async(sql:string)=>sql.includes('JOIN bot_config_revisions')?[record]:[{...bot,revision}]};
  const caption=createFavoriteCaptioner(db as any,key,root,async(_url,init)=>{

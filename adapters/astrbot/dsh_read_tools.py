@@ -27,8 +27,9 @@ def _material_tool(settings,event,db,social,scope):
         async def call(self,context):
             if social.closed:raise ValueError('dsh_material_unavailable')
             rows=social.catalog(scope,packs=behavior.get('memePacks'),favorite_account=str(event.get_self_id()))
-            fields={'id','meaning','avoid','category','source','source_scope','pack','sticker'}
+            fields={'id','meaning','avoid','category','source','source_scope','pack','sticker','semantic_index_id','semanticStatus'}
             return {'scope':scope,'items':[{key:value for key,value in row.items() if key in fields} for row in rows],
+                    'source_semantics':{'qq_favorite_cache':'与收藏列表共用semantic_index_id指向的唯一索引；两个视图不代表两份收藏。','platform_pack':'名称与类别用途，不是逐图观察；avoid为通用使用政策。'},
                     'review_inbox':{'available':False,'reason':'administrator_review_not_granted'},
                     'meaning':'仅复用当前配置可用素材和当前来源会话已审核表情的既有语义元数据，未查看图片、未调用图片模型；不包含待审核或其他会话收集素材。'}
     return Materials(name='hosted_material_catalog',description='只读盘点当前Work可用素材的既有语义标签、避用场景与来源：启用的本地反应图、平台包、当前QQ收藏缓存、当前会话已审核收集表情。仅元数据，未看图；不访问管理员审核收件箱，不提供审批或发送操作。',

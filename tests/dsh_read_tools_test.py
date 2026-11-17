@@ -55,7 +55,7 @@ class ReadBridge(unittest.IsolatedAsyncioTestCase):
         result=await self.execute('hosted_qq_favorites.list')
         self.assertEqual(self.receipt(),'confirmed')
         item=result['data']['items'][0];self.assertEqual(item['meaning'],'开心');self.assertEqual(item['avoid'],'严肃话题')
-        self.assertEqual(item['rawText'],'原始文本');self.assertFalse(item['selection_disabled']);self.assertTrue(item['saved_from_this_conversation'])
+        self.assertEqual(item['semantic_index_id'],description_id(self.row));self.assertEqual(item['semanticStatus'],'manual');self.assertEqual(item['rawText'],'原始文本');self.assertFalse(item['selection_disabled']);self.assertTrue(item['saved_from_this_conversation'])
         self.assertEqual(result['receipt']['status'],'not_applicable')
     async def test_finished_parent_during_read_cannot_settle_unknown(self):
         self.pending();self.delay=True

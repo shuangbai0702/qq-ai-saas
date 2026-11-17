@@ -60,3 +60,19 @@ def split_messages(text, limit=4):
 
 def without_boundaries(text):
     return split_messages(text, limit=1)[0]
+
+
+def transport_parts(text, max_units=1500):
+    """Lossless UTF-16-bounded QQ transport, including code and whitespace.
+
+    Pacing may prefer four bubbles; a transport boundary cannot drop a fifth.
+    """
+    if max_units<2:raise ValueError('invalid_transport_limit')
+    parts=[];start=0;units=0
+    for i,char in enumerate(text):
+        size=2 if ord(char)>0xffff else 1
+        if units+size>max_units:
+            parts.append(text[start:i]);start=i;units=0
+        units+=size
+    parts.append(text[start:])
+    return parts

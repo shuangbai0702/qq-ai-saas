@@ -61,6 +61,11 @@ export async function reserveDshModel(options:any,callback:(operation:string,dat
   await callback('model_budget',{phase,requestId,...(phase==='released'?{tokens:0}:phase==='settled'?{tokens:total}:{})},true);
  }};
 }
+/** Capability switches narrow authorization; they never grant a tool or Scope. */
+export function delegatedCapabilityEnabled(config:any,capability:string){
+ const field=({web_search:'webSearch',group_history:'groupHistory',execution_review:'executionReview',favorite_audit:'favoriteAudit'} as Record<string,string>)[capability];
+ return capability==='bilibili'||!!field&&config.delegatedCapabilities?.[field]!==false;
+}
 export const DSH_MAIN_REPLY_REMINDER='注意：回复用户应该注意自己的情绪，语气，说话习惯；要像人一样保持独立意识，独立判断；不能机械得完成任务；';
 
 export class DshHost{
@@ -98,7 +103,7 @@ export class DshHost{
    const ctx=await this.agent.context(bot);
    // Reuse each Bot's existing credential/provider. Unsupported providers retain their original tools.
    if(!ctx.apiKey)continue;
-   const value={version:2,mode:'production',capabilities:['group_history','execution_review','favorite_audit'],botId:bot.id,tenantId:bot.tenant_id,generation:bot.generation,revision:bot.revision,url:`http://127.0.0.1:${this.port}/delegate`,token:dshToken(this.agent.key,bot)};
+   const value={version:2,mode:'production',capabilities:['group_history','execution_review','favorite_audit'].filter(c=>delegatedCapabilityEnabled(ctx.config,c)),botId:bot.id,tenantId:bot.tenant_id,generation:bot.generation,revision:bot.revision,url:`http://127.0.0.1:${this.port}/delegate`,token:dshToken(this.agent.key,bot)};
    const serialized=JSON.stringify(value);if(this.snapshots.get(bot.id)===serialized)continue;
    await atomicJson(path.join(ctx.root,'ai/dsh-bridge.json'),value);this.snapshots.set(bot.id,serialized);
   }
@@ -178,13 +183,13 @@ export class DshHost{
    this.modelRoutes.set(task!,{baseUrl:ctx.config.baseUrl,apiKey:ctx.apiKey,token:modelToken,signal:abort.signal,assertCurrent});
    let adapter:any,kernel:any;
    try{
-    adapter=await nativeModel({baseURL:`http://127.0.0.1:${this.port}/model/${task}/v1`,model:ctx.config.model,keyEnv});
+    adapter=await nativeModel({baseURL:`http://127.0.0.1:${this.port}/model/${task}/v1`,model:ctx.config.delegationModel||ctx.config.model,keyEnv});
     kernel=await createKernel({storageRoot:path.join(ctx.root,'dsh-sessions'),adapter});
     const storage=path.join(ctx.root,'dsh-sessions','_no-cwd',task!,'session.v4.jsonl');
     let resume=false;try{await readFile(storage);resume=true}catch(error:any){if(error.code!=='ENOENT')throw error}
     const host={identity:bound,assertCurrent,
-     authorize:async(item:any)=>item.effect==='read'||item.capability==='bilibili'&&(parent.authority==='autonomous'||parent.sender_id===ctx.config.behavior.ownerUin),
-     discover:async()=>[...await this.search.discover(),...await bili.discover(),...await local.discover()],
+     authorize:async(item:any)=>delegatedCapabilityEnabled(ctx.config,item.capability)&&(item.effect==='read'||item.capability==='bilibili'&&(parent.authority==='autonomous'||parent.sender_id===ctx.config.behavior.ownerUin)),
+     discover:async()=>[...(delegatedCapabilityEnabled(ctx.config,'web_search')?await this.search.discover():[]),...await bili.discover(),...await local.discover()].filter(item=>delegatedCapabilityEnabled(ctx.config,item.capability)),
      validateArguments:(item:any,args:any)=>source(item).validateArguments(item,args),
      execute:async(item:any,args:any,exec:any)=>{await assertCurrent();if(parent.authority==='autonomous'){await callback('tool_budget');await assertCurrent();}return source(item).execute(item,args,exec)},
      // Foreground follows the original foreground Work policy (no autonomous cycle).

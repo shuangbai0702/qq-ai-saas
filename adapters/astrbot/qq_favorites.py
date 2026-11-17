@@ -36,6 +36,6 @@ def catalog(root,account):
    if not re.fullmatch(r'qqf_[a-f0-9]{16}',identifier) or file not in (identifier+'.gif',identifier+'.png') or not item.get('enabled') or not item.get('meaning') or not confirmed_meaning(item):continue
    image=folder/'images'/file
    if not image.is_file() or image.is_symlink() or image.stat().st_size>1048576:continue
-   items.append({'id':identifier,'meaning':str(item['meaning'])[:100],'avoid':str(item.get('avoid',''))[:100],'path':str(image)})
+   items.append({'id':identifier,'meaning':str(item['meaning'])[:100],'avoid':str(item.get('avoid',''))[:100],'path':str(image),'semantic_index_id':identifier,'semanticStatus':item.get('semanticStatus') or ('manual' if item.get('manual') else 'unknown')})
   return items
  except (OSError,ValueError,KeyError,TypeError):return []

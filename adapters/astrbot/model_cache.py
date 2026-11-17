@@ -208,14 +208,14 @@ def auxiliary_scope(provider,phase,work_id=None,scope=None):
 
 
 def auxiliary_model(event,provider):
-    """Select only a trusted bot-configured model for the five decision jobs.
+    """Select a trusted model override for the current owned background job.
 
     Context-local ownership prevents a shared provider's foreground, nested or
     concurrent requests from borrowing another job's model selection.
     """
     owner=_auxiliary.get()
     if not owner or owner['provider'] is not provider or owner['phase'] not in (
-        'private_freshness','group_freshness','group_presence','owner_contact','companion_plan'):
+        'private_freshness','group_freshness','group_presence','owner_contact','companion_plan','small_summary','big_merge','sticker_caption'):
         return None
     # An ambient event can belong to another bot. Select the provider-bound
     # lease first, then validate the event's tenant/bot identity against it.
@@ -231,7 +231,8 @@ def auxiliary_model(event,provider):
     if decision_lease is not None and identity(decision_lease)!=expected:return None
     if event is not None and identity(event.get_extra('_hosted_lease'))!=expected:return None
     config=lease.get('config') if isinstance(lease,dict) else None
-    model=config.get('auxiliaryModel') if isinstance(config,dict) else None
+    field='summaryModel' if owner['phase'] in ('small_summary','big_merge') else 'favoriteModel' if owner['phase']=='sticker_caption' else 'auxiliaryModel'
+    model=config.get(field) if isinstance(config,dict) else None
     return model if isinstance(model,str) and model==model.strip() and 1<=len(model)<=150 else None
 
 
@@ -456,7 +457,7 @@ def observe_wire_request(request):
                 **{name.removesuffix('Sha')+'Changed':signatures[name]!=previous[name] if previous is not None else None
                    for name in signatures}},separators=(',',':'))
             fields.update(model=value.get('model'),outputLimit=payload.get('max_completion_tokens',payload.get('max_tokens')) if type(payload.get('max_completion_tokens',payload.get('max_tokens'))) is int else None)
-            if value['phase'] in ('private_freshness','group_freshness','group_presence','owner_contact','companion_plan'):
+            if value['phase'] in ('private_freshness','group_freshness','group_presence','owner_contact','companion_plan','small_summary','big_merge'):
                 fields.update(decision_prefix_fields(key,payload['messages']))
             record_diagnostic(lease,{'kind':'wire_request','attemptId':value['attemptId'],'phase':value['phase'],'workId':value['workId'],**value['origin'],**fields})
     except Exception:
