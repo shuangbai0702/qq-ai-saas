@@ -217,8 +217,8 @@ def summary_item(row,reason=None,db=None):
             'source_scope':row[4],'kind':'conversation_summary_not_verified_facts'}
     if reason:result['recall_reason']=reason
     if db is not None:
-        from summary_material import summary_claims,protected_claim
-        claims=[claim for claim in summary_claims(db,row[0]) if protected_claim(claim)]
+        from summary_material import summary_claims,protected_claim,claim_view
+        claims=[claim_view(claim) for claim in summary_claims(db,row[0]) if protected_claim(claim)]
         if claims:result['protected_claims']=claims
     return result
 

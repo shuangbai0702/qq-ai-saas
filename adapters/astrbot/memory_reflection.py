@@ -237,8 +237,11 @@ def summary_foundation(db,scope,owner=''):
     # Legacy overfull scopes remain conservative while mandatory recovery
     # merges run: never publish a three-small baseline.
     selected=bigs[-1:]+smalls[:2]
-    return [{**summary_item(r[:5],'checkpoint_foundation',db=db),'level':r[5],
+    result=[{**summary_item(r[:5],'checkpoint_foundation',db=db),'level':r[5],
              'source_scopes':[x[0] for x in db.execute('SELECT scope FROM memory_summary_origins WHERE summary_id=? ORDER BY scope',(r[0],))] or [r[4]]} for r in selected]
+    from summary_material import bound_claim_views
+    bound_claim_views(result,budget=10**9)
+    return result
 
 
 
@@ -340,6 +343,8 @@ class Reflection:
               SELECT s.id,r.subject FROM memory_summaries s,json_each(s.sources) e
               JOIN relation_events r ON r.scope=s.scope AND r.event=CAST(e.value AS TEXT)
               WHERE length(r.subject) BETWEEN 5 AND 20 AND r.subject NOT GLOB '*[^0-9]*' ''')
+        from summary_material import govern_claims
+        for (claim_scope,) in db.execute('SELECT DISTINCT scope FROM memory_summaries').fetchall():govern_claims(db,claim_scope)
         # R2 material safety: the retained-summary count quota is not a delete
         # licence. A summary carrying structured claims, a coverage proof or a
         # reconstruction-checkpoint reference (its retirement evidence or
@@ -640,11 +645,6 @@ class Reflection:
         scopes=json.loads(row[1])
         if scope and not core_note_visible(scopes,scope,owner):return {'text':'','source_scopes':[],'subjects':[],'updated':0}
         result={'text':row[0],'source_scopes':scopes,'subjects':json.loads(row[2]),'updated':row[4],'source_verification':row[5]}
-        if scope:
-            claims=self.core_note_claims()
-            if claims:
-                from summary_material import claim_view
-                result['protected_claims']=[claim_view(claim) for claim in claims]
         if scope and core_note_legacy(scopes):result['legacy_unverified']=True
         return result
 
@@ -726,13 +726,7 @@ class Reflection:
         if len(scopes)>128:scopes={'*'}
         if len(people)>256:people={'*'}
         if text:
-            # The note inherits the protected claims of the summaries it was
-            # derived from, by value, inside the same bounded region budget.
-            from summary_material import CORE_CLAIMS_BYTES,fit_claims,inherit_claims,protected_claim
-            rows=self.db.execute('SELECT id,claims FROM memory_summaries WHERE id IN ('+','.join('?' for _ in selected_summaries)+')',selected_summaries).fetchall() if selected_summaries else []
-            kept,_=fit_claims([claim for claim in inherit_claims(rows) if protected_claim(claim)],budget=CORE_CLAIMS_BYTES,max_claims=24)
-            from semantic_batch import semantic_claims
-            kept=semantic_claims(kept)
+            kept=[] # Claim values belong only to existing summary products.
             verification='unverified' if issues else 'references_matched'
             self.db.execute('INSERT OR REPLACE INTO memory_core_notes(slot,text,scopes,people,sources,updated,schema_version,claims,source_verification) VALUES(1,?,?,?,?,?,2,?,?)',(text,json.dumps(sorted(scopes)),json.dumps(sorted(people)),'[]',time.time(),json.dumps(kept,ensure_ascii=False,separators=(',',':')) if kept else None,verification))
         else:self.db.execute('DELETE FROM memory_core_notes WHERE slot=1')
@@ -1187,10 +1181,12 @@ class Reflection:
                                 # with real proof (D package).
                                 if claim.get('kind') in ('agreement','interpretation') and protected_claim(claim) and claim['id'] not in prior_ids:
                                     prior_claims.append(claim);prior_ids.add(claim['id'])
-                        prior_view={'protected_claims':prior_claims};bound_claim_views([prior_view])
+                        prior_view={'protected_claims':[claim_view(c) for c in prior_claims]}
                         prompt['previous_commitments']=prior_view.get('protected_claims',[])
                         prompt['previous_commitments_visibility']={'total':len(prior_claims),'shown':len(prompt['previous_commitments']),'omitted':len(prior_claims)-len(prompt['previous_commitments']),'operation_scope':'only_shown_ids'}
                         offered_ids={claim['id'] for claim in prompt['previous_commitments']}
+                        for product in previous_products:
+                            product['claims']=[c for c in product.get('claims',[]) if c['id'] not in offered_ids]
                         prior_claims=[claim for claim in prior_claims if claim['id'] in offered_ids]
                         prompt['sent_messages']=message_provenance.timeline(self.db,scope,rows[-1][1],rows[-1][5],since=min((r['at'] if r['at'] is not None else r['observed_before'] for r in payload),default=rows[-1][5])) if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dialogue_feedback'").fetchone() else []
                         prompt['sent_messages']=[x for x in prompt['sent_messages'] if x['role']=='self']
@@ -1450,6 +1446,8 @@ class Reflection:
                                 if _manual is not None:_manual['discarded']=recovery_counts
                             metrics['semanticMediaUntracked']=media_release.get('untracked',0)
                             metrics['summariesSaved']=metrics.get('summariesSaved',0)+1
+                        from summary_material import govern_claims
+                        govern_claims(self.db,merge_scope or scope)
                         self.db.execute('DELETE FROM memory_reflection_retry WHERE scope=?',(scope,))
                         operation_audit.persist(self.db,'committed','transaction_committed',checkpoint_id=checkpoint_id if job!='big' else None,summary_id=identifier)
                     audit_committed=True

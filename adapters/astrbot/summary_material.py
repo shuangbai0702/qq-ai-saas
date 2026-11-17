@@ -599,9 +599,8 @@ async def enrich(db,scope,events,provider,is_current,metrics):
 CLAIM_KINDS=('human_statement','bot_statement','confirmed_action','interpretation','correction','agreement')
 CLAIM_TEXT=240
 PROTECTED_CLAIM_TEXT=400
-MAX_CLAIMS=96
-# One bounded per-summary budget; sized so a full 35-turn batch (about 70
-# claims) fits with headroom. Actual growth is re-measured in stage S3.
+MAX_CLAIMS=30
+# One effective Journal family, not thirty claims per summary generation.
 MAX_CLAIMS_BYTES=32*1024
 CORE_CLAIMS_BYTES=4*1024
 # Protection is a recorded semantic judgment, never a vocabulary match.
@@ -632,7 +631,7 @@ def protected_claim(claim):
     material, while every stored v2 claim that deserved protection keeps its
     explicit flag.
     """
-    return bool(claim.get('protected')) or claim.get('kind')=='correction' or claim.get('status') in ('open','retracted')
+    return claim.get('status') not in ('done','resolved','abandoned','superseded','canceled','cancelled','expired') and (bool(claim.get('protected')) or claim.get('kind')=='correction' or claim.get('status') in ('open','retracted'))
 
 
 def claim_ref(scope,event,role,signature=''):
@@ -772,12 +771,14 @@ def derive_claims(scope,payload,materials,corrections,data=None,*,strict=False):
         if status in ('open','proposed','unknown'):claim['protected']=True
         else:claim['text']=claim['text'][:CLAIM_TEXT]
         claims.append(claim)
-    return claims
+    import time
+    now=time.time()
+    return [{**claim,'updatedAt':now,'revision':1} for claim in claims]
 
 
 def claim_view(claim):
     """Compact model view; full provenance and parent chains stay at rest."""
-    view={key:claim[key] for key in ('id','text','kind','speaker','about','occurredAt','status','visibility','stage','due') if key in claim}
+    view={key:claim[key] for key in ('id','text','kind','speaker','about','occurredAt','status','visibility','stage','due','revision','updatedAt') if key in claim}
     view['sourceRefs']=[{key:ref[key] for key in ('scope','event','role') if key in ref} for ref in claim.get('sourceRefs',[]) if isinstance(ref,dict)]
     for ref in view['sourceRefs']:
         if ref.get('scope')=='bot_shared':
@@ -821,7 +822,8 @@ def settle_commitments(db,scope,claims,previous):
                 # saw the old version. Parent chains may differ after a merge.
                 expected=offered[old['id']]
                 if claim_view(old)!=claim_view(expected):continue
-                old.update(status='superseded',protected=False,supersededBy=changes[old['id']]);changed=True
+                import time
+                old.update(status='superseded',protected=False,supersededBy=changes[old['id']],updatedAt=time.time(),revision=int(old.get('revision',0))+1);changed=True
             if changed:db.execute('UPDATE '+table+' SET claims=? WHERE '+key+'=?',(json.dumps(stored,ensure_ascii=False,separators=(',',':')),identifier))
 
 
@@ -847,51 +849,96 @@ def bound_claim_views(items,budget=1200,query=''):
 
 def semantic_claims_product(claims,audit=None):
     """Accept a valid optional product whole; rejection does not veto summary."""
-    reason='invalid_claim' if any(not valid_claim(claim) for claim in claims) else 'capacity' if len(claims)>MAX_CLAIMS or len(model_json(claims).encode())>MAX_CLAIMS_BYTES else None
+    reason='invalid_claim' if any(not valid_claim(claim) for claim in claims) else None
     if audit:
         audit.product('claims','rejected' if reason else 'accepted',reason or 'applied',changed=bool(claims) and reason is None)
-    return [] if reason else claims
+    return [] if reason else fit_claims(claims)[0]
+
+
+def claim_order(claim):
+    """Legacy occurrence is an explicit fallback, never a fabricated revision."""
+    import math
+    def stamp(value):return float(value) if type(value) in (int,float) and math.isfinite(value) else 0
+    return (stamp(claim.get('updatedAt')) or stamp(claim.get('occurredAt')),int(claim.get('revision',0)),str(claim.get('id','')))
 
 
 def fit_claims(claims,budget=None,max_claims=None):
-    """Protected claims are kept first inside one bounded per-summary budget
-    so merges cannot grow without limit; dropped protected ids are reported
-    so their source rounds can be held back instead of released."""
+    """Latest thirty current identities; protection never vetoes compression."""
     budget=MAX_CLAIMS_BYTES if budget is None else budget
-    max_claims=MAX_CLAIMS if max_claims is None else max_claims
-    kept=[];used=2;dropped=set()
-    # Oversized protected evidence cannot become "retained" by silently
-    # clipping the very agreement/correction that justified its protection.
+    maximum=min(MAX_CLAIMS,MAX_CLAIMS if max_claims is None else max_claims)
+    unique={}
     for claim in claims:
-        if isinstance(claim,dict) and protected_claim(claim) and not valid_claim(claim):dropped.add(claim.get('id'))
-    for claim in sorted((item for item in claims if valid_claim(item)),key=lambda item:(not protected_claim(item),-(item.get('occurredAt') or 0))):
-        claim=dict(claim);limit=PROTECTED_CLAIM_TEXT if protected_claim(claim) else CLAIM_TEXT
-        if len(claim['text'])>limit:claim['text']=claim['text'][:limit]
-        size=len(json.dumps(claim,ensure_ascii=False,separators=(',',':')).encode())+(1 if kept else 0)
-        if len(kept)>=max_claims or used+size>budget:
-            if protected_claim(claim):dropped.add(claim['id'])
-            continue
-        kept.append(claim);used+=size
+        if valid_claim(claim) and (claim['id'] not in unique or claim_order(claim)>claim_order(unique[claim['id']])):
+            unique[claim['id']]=claim
+    kept=[];used=2;dropped=set()
+    for claim in sorted(unique.values(),key=claim_order,reverse=True):
+        size=len(model_json(claim).encode())+(1 if kept else 0)
+        if len(kept)>=maximum or used+size>budget:
+            dropped.add(claim['id']);continue
+        kept.append(dict(claim));used+=size
     return kept,dropped
 
 
 def inherit_claims(rows):
-    """Collect merge-source claims by value and record the traceable parent
-    chain (summary id + claim id), never a bare participation note."""
-    merged={}
+    """The actual source product is the single direct parent, not array order.
+
+    Source ids are AUTOINCREMENT within this DB; equal cognitive versions use
+    that product generation only to choose the direct derivation, not recency.
+    """
+    merged={};owners={}
     for identifier,raw in rows:
         try:claims=json.loads(raw) if raw else []
-        except (ValueError,TypeError):claims=[]
-        if not isinstance(claims,list):continue
-        for claim in claims:
+        except (ValueError,TypeError):continue
+        for claim in claims if isinstance(claims,list) else []:
             if not valid_claim(claim):continue
-            parents=[p for p in (claim.get('parents') or []) if isinstance(p,dict) and 'summary' in p]+[{'summary':identifier,'claim':claim['id']}]
             known=merged.get(claim['id'])
-            if known:
-                known['parents']=(known.get('parents') or [])+[p for p in parents if p not in (known.get('parents') or [])]
-                known['parents']=known['parents'][-6:]
-            else:merged[claim['id']]={**claim,'parents':parents[-6:]}
+            if known is None or (claim_order(claim),identifier)>(claim_order(known),owners[claim['id']]):
+                merged[claim['id']]={**claim,'parents':[{'summary':identifier,'claim':claim['id']}]}
+                owners[claim['id']]=identifier
     return list(merged.values())
+
+
+def govern_claims(db,scope):
+    """Normalize the existing product family in the caller's transaction.
+
+    Never touches Journal snapshots or other scopes. Core copies move back to
+    an actual existing source product; unplaceable legacy core evidence waits
+    for a real product, rather than inventing a summary or losing its source.
+    """
+    rows=db.execute('SELECT id,claims FROM memory_summaries WHERE scope=? ORDER BY id',(scope,)).fetchall()
+    if not rows:return
+    values={};owners={}
+    for identifier,raw in rows:
+        try:items=json.loads(raw) if raw else []
+        except (ValueError,TypeError):continue
+        for claim in items if isinstance(items,list) else []:
+            if not valid_claim(claim):continue
+            old=values.get(claim['id'])
+            if old is None or (claim_order(claim),identifier)>(claim_order(old),owners[claim['id']]):
+                values[claim['id']]=dict(claim);owners[claim['id']]=identifier
+    core=db.execute('SELECT slot,claims FROM memory_core_notes WHERE claims IS NOT NULL').fetchall()
+    for _,raw in core:
+        for claim in json.loads(raw or '[]'):
+            if valid_claim(claim) and claim.get('visibility')==scope and (claim['id'] not in values or claim_order(claim)>claim_order(values[claim['id']])):
+                values[claim['id']]=dict(claim);owners[claim['id']]=rows[-1][0]
+    kept,_=fit_claims(list(values.values()));by_owner={identifier:[] for identifier,_ in rows}
+    for claim in kept:
+        identifier=owners[claim['id']]
+        parents=claim.get('parents') or []
+        if len(parents)>1:
+            # Only surviving source generations can prove chronology. An
+            # unavailable legacy chain is not evidence that its tail is newest.
+            known=[p for p in parents if isinstance(p,dict) and type(p.get('summary')) is int and db.execute('SELECT 1 FROM memory_summaries WHERE id=?',(p['summary'],)).fetchone()]
+            parents=[max(known,key=lambda p:p['summary'])] if known else []
+        if parents:claim['parents']=parents
+        else:claim.pop('parents',None)
+        claim.setdefault('updatedAt',None);claim.setdefault('revision',0)
+        by_owner[identifier].append(claim)
+    for identifier,items in by_owner.items():
+        db.execute('UPDATE memory_summaries SET claims=? WHERE id=?',(model_json(items) if items else None,identifier))
+    for slot,raw in core:
+        items=[c for c in json.loads(raw or '[]') if c.get('visibility')!=scope and c.get('id') not in values]
+        db.execute('UPDATE memory_core_notes SET claims=? WHERE slot=?',(model_json(items) if items else None,slot))
 
 
 def uncarried_events(claims,kept_ids):
