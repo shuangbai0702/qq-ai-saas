@@ -542,6 +542,30 @@ def submission_stage():
     value=_attempt.get()
     return value.get('submissionStage') if value else None
 
+def error_site_metadata(error):
+    """Content-free raise site and bounded cause types, never exception text."""
+    frame=None
+    try:
+        import traceback as _traceback
+        frames=_traceback.extract_tb(error.__traceback__)
+        frame=frames[-1] if frames else None
+    except Exception:pass
+    module=str(frame.filename or '').replace('\\','/').rsplit('/',1)[-1] if frame else None
+    detail={'module':module,'line':frame.lineno if frame else None,'symbol':frame.name if frame else None}
+    causes=[];seen={id(error)};current=error
+    for _ in range(4):
+        current=current.__cause__ if current.__cause__ is not None else (None if current.__suppress_context__ else current.__context__)
+        if current is None or id(current) in seen:break
+        seen.add(id(current));item={'type':type(current).__name__[:64]}
+        for name in ('errno','winerror','status_code'):
+            try:value=getattr(current,name,None)
+            except Exception:continue
+            if type(value) is int and -(2**31)<=value<2**31:item[name]=value
+        causes.append(item)
+    if causes:detail['causes']=causes
+    return detail
+
+
 def record_error_site(error):
     """Bounded, content-free raise-site evidence for any request failure.
 
@@ -558,17 +582,9 @@ def record_error_site(error):
     # exception so budget accounting does not label local rejects as unknown.
     try:error._fishbot_submission_stage=value.get('submissionStage')
     except Exception:pass
-    frame=None
-    try:
-        import traceback as _traceback
-        frames=_traceback.extract_tb(error.__traceback__)
-        frame=frames[-1] if frames else None
-    except Exception:frame=None
-    module=str(frame.filename or '').replace('\\','/').rsplit('/',1)[-1] if frame else None
     record_diagnostic(value.get('lease'),{'kind':'request_error','attemptId':value['attemptId'],'phase':value['phase'],
         'workId':value.get('workId'),'reason':type(error).__name__,
-        'diagnosticDetail':json.dumps({'module':module,'line':frame.lineno if frame else None,
-                                       'symbol':frame.name if frame else None},ensure_ascii=False)})
+        'diagnosticDetail':json.dumps(error_site_metadata(error),ensure_ascii=False)})
 
 
 def record_execution_error(lease,error,phase='outer_execute',work_id=None):
@@ -577,17 +593,9 @@ def record_execution_error(lease,error,phase='outer_execute',work_id=None):
     Same content contract as record_error_site: never the exception text,
     arguments or a traceback body. Keeps outer TypeError/failure evidence
     inside the same diagnostic window as its pipeline ledger row."""
-    frame=None
-    try:
-        import traceback as _traceback
-        frames=_traceback.extract_tb(error.__traceback__)
-        frame=frames[-1] if frames else None
-    except Exception:frame=None
-    module=str(frame.filename or '').replace('\\','/').rsplit('/',1)[-1] if frame else None
     record_diagnostic(lease,{'kind':'request_error','phase':phase,'workId':work_id,
         'reason':type(error).__name__,
-        'diagnosticDetail':json.dumps({'module':module,'line':frame.lineno if frame else None,
-                                       'symbol':frame.name if frame else None},ensure_ascii=False)})
+        'diagnosticDetail':json.dumps(error_site_metadata(error),ensure_ascii=False)})
 
 def reset_attempt(token):_attempt.reset(token)
 

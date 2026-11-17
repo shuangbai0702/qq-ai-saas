@@ -22,6 +22,33 @@ class Recovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[2],'complete');self.assertEqual(calls,[('stream',request),('chat',request)])
         self.assertEqual(closed,[True]);self.assertEqual(metrics['summaryNonstreamFallbacks'],1)
 
+    async def test_hosted_empty_stream_uses_existing_nonstream_recovery(self):
+        # behavior.text_stream reports EOF before a final response with this
+        # error; the lower helper never gets to raise its ValueError variant.
+        calls=[]
+        async def stream(**kw):
+            calls.append('stream')
+            raise RuntimeError('incomplete_model_stream')
+            yield
+        async def chat(**kw):calls.append('chat');return valid()
+        result=await summary_model_output(NS(text_chat_stream=stream,text_chat=chat),{},lambda:True,{},800)
+        self.assertEqual(result[2],'complete');self.assertEqual(calls,['stream','chat'])
+
+    async def test_read_deadline_closes_stream_before_fallback(self):
+        from unittest.mock import patch
+        calls=[];closed=[]
+        async def stream(**kw):
+            calls.append('stream')
+            try:
+                await asyncio.Event().wait()
+                yield
+            finally:closed.append(True)
+        async def chat(**kw):
+            self.assertEqual(closed,[True]);calls.append('chat');return valid()
+        with patch('memory_reflection.SUMMARY_REQUEST_TIMEOUT_SECONDS',-4.99):
+            result=await summary_model_output(NS(text_chat_stream=stream,text_chat=chat),{},lambda:True,{},800)
+        self.assertEqual(result[2],'complete');self.assertEqual(calls,['stream','chat'])
+
     async def test_invalid_nonstream_result_does_not_start_third_request(self):
         calls=[]
         async def stream(**kw):

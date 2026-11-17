@@ -108,6 +108,9 @@ async def summary_model_output(provider,request,live,metrics,limit,on_decode=Non
             if callable(getattr(provider,'text_chat',None)) and (
                 isinstance(error,(TransportError,APIConnectionError,OSError,asyncio.TimeoutError))
                 or isinstance(error,ValueError) and str(error)=='incomplete_summary_stream'
+                # The hosted provider detects EOF first and uses this exact
+                # signal. Recover on the same bound nonstream transport too.
+                or isinstance(error,RuntimeError) and str(error)=='incomplete_model_stream'
             ):
                 nonstream=True
                 metrics['summaryNonstreamFallbacks']=metrics.get('summaryNonstreamFallbacks',0)+1
