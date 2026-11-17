@@ -300,3 +300,10 @@ body.paper-app::before,body.paper-app::after{content:none!important}
  .paper-app .paper-ink-chart>svg g>path{stroke:CanvasText}
  .paper-app details.paper-panel{border:1px solid ButtonText!important;backdrop-filter:none}
 }
+
+/* Keep login and unsaved actions within reach on narrow screens. */
+@media(max-width:620px){
+ .paper-app .auth-story{min-height:0;padding-block:14px}
+ .paper-app .auth-story>div,.paper-app .auth-story>small,.paper-app .auth-story>.paper-star{display:none}
+ .paper-app .save-bar.has-draft{position:sticky;top:8px;z-index:8}
+}

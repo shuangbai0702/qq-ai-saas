@@ -7,9 +7,10 @@ import {BilibiliConfigSchema,biliScopes,type BilibiliConfig} from '../../../pack
 const scopeLabels:Record<string,string>={'public.read':'公开视频、搜索与字幕','private.read':'账号推荐、收藏、历史与未读数量','media.analyze':'采样帧分析（无音频）','like.write':'点赞和取消点赞','coin.write':'投币（消耗硬币）','favorite.write':'添加和取消收藏','watch_later.write':'添加和移出稍后再看','folder.manage':'创建、修改和删除收藏夹（含收藏条目）','comment.write':'评论、楼中楼及删除自己的评论','follow.write':'关注和取消关注','dynamic.write':'发布文字动态、删除自己的动态','dm.read':'读取私信（不标记已读）','dm.write':'向指定对象发私信','notification.ack':'读取可能标记已读的通知明细','profile.write':'更新B站签名'};
 const readError=(e:unknown)=>e instanceof ZodError?'页面版本与服务器配置不一致，请先保留未保存的编辑，再刷新页面。':(e as Error).message;
 const states:Record<string,string>={created:'正在申请二维码',waiting_scan:'等待扫码',waiting_confirm:'已扫码，请在手机确认',ready:'已验证登录身份',expired:'二维码已过期',canceled:'已取消',failed:'登录失败，请重试',risk_control:'平台风控，请在B站处理后重试',identity_mismatch:'账号不一致，请先解除旧绑定',queued:'排队中',claimed:'执行中',dispatching:'已开始平台请求',unknown:'结果待确认，禁止重发',finished:'已结束',idle:'正常',requested:'等待检查',checking:'正在检查',refreshing:'正在轮换凭证',confirm_pending:'新凭证已保存，等待确认旧凭证',refresh_unknown:'刷新结果不明，请重新扫码',auth_required:'需要重新扫码'};
-export function BilibiliControls({id,onError,onDirtyChange}:{id:string;onError:(s:string)=>void;onDirtyChange:(v:boolean)=>void}){
+export function BilibiliControls({id,onError,onDirtyChange,searchSection,searchAttempt}:{id:string;searchSection?:string;searchAttempt:number;onError:(s:string)=>void;onDirtyChange:(v:boolean)=>void}){
  const [view,setView]=useState<any>(),[draft,setDraft]=useState<BilibiliConfig>(BilibiliConfigSchema.parse({})),[dirty,setDirty]=useState(false),[busy,setBusy]=useState(false),[modelKey,setModelKey]=useState(''),[message,setMessage]=useState(''),[loadError,setLoadError]=useState('');
  const [section,setSection]=useState('overview');
+ useEffect(()=>{if(searchSection==='model'||searchSection==='permissions')setSection(searchSection)},[searchSection,searchAttempt]);
  const owner=useRef<{signal:AbortSignal;seq:number}|undefined>(undefined),dirtyRef=useRef(false),writing=useRef(false);
  useEffect(()=>{onDirtyChange(dirty);return()=>onDirtyChange(false)},[dirty,onDirtyChange]);
  useEffect(()=>{
