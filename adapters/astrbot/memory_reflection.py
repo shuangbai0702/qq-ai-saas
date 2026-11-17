@@ -49,6 +49,60 @@ def summary_author_witnesses(scope,rows,discarded=()):
 
 
 class SummaryOutputTruncated(ValueError):pass
+class SummaryPersistenceError(RuntimeError):pass
+
+
+class SummaryResponseSlot:
+    """Recover a response in the existing retry row; no new task authority."""
+    def __init__(self,db,scope,attempt,epoch,digest):
+        self.db=db;self.scope=scope;self.attempt=attempt;self.epoch=epoch;self.digest=digest
+
+    def recover(self):
+        from types import SimpleNamespace
+        row=self.db.execute('SELECT result FROM memory_reflection_retry WHERE scope=?',(self.scope,)).fetchone()
+        if not row or not row[0]:return None
+        try:data=json.loads(row[0])
+        except (ValueError,TypeError):return None
+        if data.get('epoch')!=self.epoch or data.get('digest')!=self.digest:return None
+        content=data.get('text');raw=data.get('raw')
+        if not isinstance(content,str) or hashlib.sha256(content.encode()).hexdigest()!=data.get('sha'):return None
+        return SimpleNamespace(completion_text=content,raw_completion=raw,is_chunk=False)
+
+    def dispatch(self):
+        with self.db:
+            payload={'epoch':self.epoch,'digest':self.digest,'attempt':self.attempt,'phase':'dispatched'}
+            if self.db.execute('UPDATE memory_reflection_retry SET result=? WHERE scope=? AND attempts=?',(model_json(payload),self.scope,self.attempt)).rowcount!=1:
+                raise SummaryPersistenceError('summary_request_owner_changed')
+
+    def save(self,response):
+        if getattr(response,'is_chunk',False):raise SummaryPersistenceError('summary_partial_response_not_saved')
+        text=getattr(response,'completion_text',None)
+        if not isinstance(text,str):raise SummaryPersistenceError('summary_response_text_missing')
+        from model_cache import response_shape,usage_evidence
+        raw=getattr(response,'raw_completion',None)
+        # Preserve final/usage evidence, not duplicated reasoning or credentials.
+        usage=raw.get('usage') if isinstance(raw,dict) else getattr(raw,'usage',None)
+        if callable(getattr(usage,'model_dump',None)):usage=usage.model_dump()
+        data={'epoch':self.epoch,'digest':self.digest,'attempt':self.attempt,'phase':'response_saved','text':text,'sha':hashlib.sha256(text.encode()).hexdigest(),
+              'raw':{'choices':[{'finish_reason':response_shape(raw).get('finishReason')}],'usage':usage,'id':usage_evidence(response).get('responseId')}}
+        try:
+            with self.db:
+                current=self.db.execute('SELECT epoch FROM memory_reflection_control WHERE id=1').fetchone()
+                if not current or current[0]!=self.epoch:return
+                saved=self.db.execute('UPDATE memory_reflection_retry SET result=? WHERE scope=? AND attempts=?',(model_json(data),self.scope,self.attempt)).rowcount
+                if saved!=1:raise SummaryPersistenceError('summary_response_owner_changed')
+        except SummaryPersistenceError:raise
+        except Exception as error:raise SummaryPersistenceError('summary_response_persistence_failed') from error
+
+
+def summary_request_digest(request,provider,epoch,job,anchor):
+    """Only the formatter's current clock is excluded; all evidence stays fenced."""
+    value=dict(request)
+    prompt=json.loads(value['prompt']);prompt.pop('current_time',None);value['prompt']=prompt
+    config=getattr(provider,'provider_config',{}) or {}
+    identity={k:config.get(k) for k in ('id','model','api_base','type','temperature','top_p','max_tokens','reasoning_effort','model_config','custom_parameters')}
+    return hashlib.sha256(model_json({'request':value,'provider':identity,'epoch':epoch,'job':job,'anchor':anchor}).encode()).hexdigest()
+
 
 
 def validate_summary_output(response):
@@ -57,7 +111,7 @@ def validate_summary_output(response):
         raise SummaryOutputTruncated('summary_output_truncated_material_retained')
 
 
-async def summary_model_output(provider,request,live,metrics,limit,on_decode=None,on_attempt=None):
+async def summary_model_output(provider,request,live,metrics,limit,on_decode=None,on_attempt=None,on_response=None,recovered=None):
     """Retry only a complete model read and its mandatory output validation.
 
     No product writes or transaction callbacks belong inside this boundary.
@@ -72,20 +126,34 @@ async def summary_model_output(provider,request,live,metrics,limit,on_decode=Non
             # Same bound Provider/transport, identity, budget and diagnostics.
             # Only read-only summarization may retry; no product is committed
             # until the complete response passes the normal validation below.
-            return await provider.text_chat(**request)
+            response=await provider.text_chat(**request)
+            if on_response:on_response(response)
+            return response
         final=None
-        async with aclosing(provider.text_chat_stream(**request)) as responses:
-            async for response in responses:
-                if not live():return None
-                if not getattr(response,'is_chunk',False):final=response
+        try:
+            async with aclosing(provider.text_chat_stream(**request)) as responses:
+                async for response in responses:
+                    if not getattr(response,'is_chunk',False):
+                        if on_response:on_response(response)
+                        final=response
+                    if not live():return None
+        except SummaryPersistenceError:raise
+        except Exception:
+            if final is None:raise
+            # A complete final response remains valid evidence even if closing
+            # its transport fails. Normal finish/JSON checks still follow.
+            metrics['summaryStreamErrorsAfterFinal']=metrics.get('summaryStreamErrorsAfterFinal',0)+1
         if final is None:raise ValueError('incomplete_summary_stream')
         return final
     for attempt in range(2):
         if not live():return None
-        metrics['summaryRequests']=metrics.get('summaryRequests',0)+1
-        if on_attempt:on_attempt()
+        restored=recovered if attempt==0 else None
+        if restored is None:
+            metrics['summaryRequests']=metrics.get('summaryRequests',0)+1
+            if on_attempt:on_attempt()
         try:
-            response=await asyncio.wait_for(read(),SUMMARY_REQUEST_TIMEOUT_SECONDS+5)
+            response=restored if restored is not None else await asyncio.wait_for(read(),SUMMARY_REQUEST_TIMEOUT_SECONDS+5)
+            if restored is not None:metrics['summaryResponsesRecovered']=metrics.get('summaryResponsesRecovered',0)+1
             if not live():return None
             diagnostics={}
             data=decode(response.completion_text,diagnostics)
@@ -99,7 +167,7 @@ async def summary_model_output(provider,request,live,metrics,limit,on_decode=Non
             if not text:raise ValueError('empty_summary')
             if len(text)>limit:raise ValueError('summary_output_capacity_exceeded_material_retained')
             return response,data,text
-        except asyncio.CancelledError:raise
+        except (asyncio.CancelledError,SummaryPersistenceError):raise
         except Exception as error:
             if not live():return None
             if attempt:raise
@@ -278,7 +346,8 @@ class Reflection:
           DELETE FROM memory_summary_people WHERE summary_id=OLD.id;
         END;
         CREATE TABLE IF NOT EXISTS memory_embedding_budget(day INTEGER PRIMARY KEY,count INTEGER);''')
-        db.execute('CREATE TABLE IF NOT EXISTS memory_reflection_retry(scope TEXT PRIMARY KEY,attempts INTEGER,next_at REAL)')
+        db.execute('CREATE TABLE IF NOT EXISTS memory_reflection_retry(scope TEXT PRIMARY KEY,attempts INTEGER,next_at REAL,result TEXT)')
+        if 'result' not in {r[1] for r in db.execute('PRAGMA table_info(memory_reflection_retry)')}:db.execute('ALTER TABLE memory_reflection_retry ADD COLUMN result TEXT')
         # Unresolved summary holds (scope+event): keeps their round eligible for
         # later batches, protects their evidence from quota cleanups, and blocks
         # reconstruction permits while evidence inside the range is uncarried.
@@ -1005,7 +1074,7 @@ class Reflection:
             async def recover_pending():
                 async def execute():
                     if self.closed or not is_current():return False
-                    self.db.execute("INSERT OR REPLACE INTO memory_reflection_retry VALUES('__retirement__',1,?)",(now+60,));self.db.commit()
+                    self.db.execute("INSERT INTO memory_reflection_retry(scope,attempts,next_at) VALUES('__retirement__',1,?) ON CONFLICT(scope) DO UPDATE SET attempts=1,next_at=excluded.next_at",(now+60,));self.db.commit()
                     for (pending_scope,) in self.db.execute("SELECT DISTINCT scope FROM memory_semantic_batches WHERE state IN ('committed','retired')").fetchall():
                         if self.closed or not is_current():return False
                         try:
@@ -1066,7 +1135,7 @@ class Reflection:
         metrics['memoryHealth']={scope:self.health_snapshot(scope,summary_rounds)}
         attempt_row=self.db.execute('SELECT attempts FROM memory_reflection_retry WHERE scope=?',(scope,)).fetchone()
         attempts=(attempt_row[0] if attempt_row else 0)+1
-        self.db.execute('INSERT OR REPLACE INTO memory_reflection_retry VALUES(?,?,?)',(scope,attempts,now+min(1800,60*2**min(5,attempts-1))));self.db.commit()
+        self.db.execute('INSERT INTO memory_reflection_retry(scope,attempts,next_at) VALUES(?,?,?) ON CONFLICT(scope) DO UPDATE SET attempts=excluded.attempts,next_at=excluded.next_at',(scope,attempts,now+min(1800,60*2**min(5,attempts-1))));self.db.commit()
         epoch=self.epoch();core_before=self.core_note()
         merge_dependency=self.context_dependency([r[0] for r in big_rows],merge_scope) if job=='big' else None
         async def run():
@@ -1268,7 +1337,12 @@ class Reflection:
                         operation_audit=Audit(merge_scope or scope,epoch,job,data,{str(r['sender_id']) for r in author_payload},through_round_id=rows[-1][0] if rows else None,**diagnostics)
                         if self._active_summary:self._active_summary['operation_audit']=operation_audit
                     live=lambda:not self.closed and is_current() and self.epoch()==epoch
-                    result=await summary_model_output(provider,dict(prompt=memory_json(prompt),system_prompt=system,contexts=[],func_tool=None,request_max_retries=0,**({'image_urls':summary_images} if summary_images else {})),live,metrics,1500 if job=='big' else 800,decoded,starting)
+                    request=dict(prompt=memory_json(prompt),system_prompt=system,contexts=[],func_tool=None,request_max_retries=0,**({'image_urls':summary_images} if summary_images else {}))
+                    digest=summary_request_digest(request,provider,epoch,job,{'scope':merge_scope or scope,'throughRound':rows[-1][0] if rows else None,'sourceDependency':merge_dependency if job=='big' else previous_dependency,'materialsSha':hashlib.sha256(model_json(materials).encode()).hexdigest(),'discardStamp':discard_stamp,'learningEpoch':learning_epoch})
+                    slot=SummaryResponseSlot(self.db,scope,attempts,epoch,digest)
+                    def request_starting():
+                        slot.dispatch();starting()
+                    result=await summary_model_output(provider,request,live,metrics,1500 if job=='big' else 800,decoded,request_starting,slot.save,slot.recover())
                     if result is None:return {'ok':False,'reason':'stale_configuration'}
                     response,data,text=result
                     from companion_insights import apply
@@ -1402,8 +1476,11 @@ class Reflection:
                             metrics['agreementsPromoted']=metrics.get('agreementsPromoted',0)+agreement_state.promote_from_claims(self.db,scope,claims)
                             claims=semantic_claims(claims)
                             identifier=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated,schema_version,claims) VALUES(?,?,?,?,2,?)',(scope,text,'[]',time.time(),model_json(claims) if claims else None)).lastrowid
-                            count=self.db.execute("SELECT count(*) FROM memory_summaries s LEFT JOIN memory_summary_levels l ON l.id=s.id WHERE s.scope=? AND coalesce(l.kind,'small')<>'big'",(scope,)).fetchone()[0]
-                            pending_merge=count>=3 or scope=='bot_shared' and len(foundation_bigs(self.db,scope))>1
+                            # Determine staging from products surviving THIS
+                            # transaction, not sources already folded into it.
+                            retiring=set(legacy_product_ids)
+                            count=sum(r[0] not in retiring for r in self.db.execute("SELECT s.id FROM memory_summaries s LEFT JOIN memory_summary_levels l ON l.id=s.id WHERE s.scope=? AND coalesce(l.kind,'small')<>'big'",(scope,)))
+                            pending_merge=count>=3 or scope=='bot_shared' and sum(r[0] not in retiring for r in foundation_bigs(self.db,scope))>1
                             self.db.execute('INSERT INTO memory_summary_levels VALUES(?,?)',(identifier,'pending_small' if pending_merge else 'small'))
                             origins={r['source']['source_scope'] for r in author_payload} if scope=='bot_shared' else {scope}
                             origins={x for x in origins if isinstance(x,str) and x} or {scope}
