@@ -99,7 +99,7 @@ def activate_authorized(db,cfg,expected,authorization,release,group_limit=2):
             # No replay/reset of memory, execution effects, permissions or
             # consumed licenses. The original evidence remains queryable.
             encoded=model_json({'journal':dict(zip(('scope','version','state','payload','sha','updated'),row)),
-                                'meaning':'operator-ended old logical session; not a 35-round checkpoint'})
+                                'meaning':'operator-ended old logical session; not a 30-round checkpoint'})
             key=authorization+':'+hashlib.sha256(row[0].encode()).hexdigest()[:16]
             db.execute("INSERT INTO fishbot_operator_session_archives VALUES(?,?,?,?,?,?,'consumed')",(key,row[0],release,encoded,hashlib.sha256(encoded.encode()).hexdigest(),time.time()))
             db.execute('DELETE FROM fishbot_readonly_journals WHERE scope=? AND sha=?',(row[0],row[4]))

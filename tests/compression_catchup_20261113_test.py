@@ -1,4 +1,4 @@
-"""Persisted summary failure recovers 35 at a time without losing later rounds."""
+"""Persisted summary failure recovers all accepted rounds at the idle boundary."""
 import asyncio,copy,json,sys,time,unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -24,7 +24,7 @@ class Catchup(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(journal.commit(Prepared(1,None,copy.deepcopy(native),copy.deepcopy(native),{},count,time.time(),'initial')))
         self.store.model_journals['bot_shared']=journal
 
-    async def test_failed_first_batch_then_continuous_35_round_catchup_keeps_remainder(self):
+    async def test_failed_batch_then_idle_boundary_catchup_keeps_all_accepted_rounds(self):
         self.populate(78);db=self.store.db;r=self.store.reflection
         rows_before=db.execute('SELECT * FROM memory_rounds ORDER BY id').fetchall()
         async def no_retry(provider,error,*args,**kwargs):raise error
@@ -44,32 +44,28 @@ class Catchup(unittest.IsolatedAsyncioTestCase):
             task=r.task;await task;await asyncio.sleep(0)
             if r.task is task:break
         checkpoints=db.execute("SELECT through_round_id,round_count FROM memory_reconstruction_checkpoints WHERE scope='bot_shared' ORDER BY id").fetchall()
-        self.assertEqual(checkpoints,[(rows_before[34][0],35),(rows_before[69][0],35)])
+        self.assertEqual(checkpoints,[(rows_before[-1][0],78)])
         watermark=db.execute("SELECT summary_watermark FROM memory_reflection_progress WHERE scope='bot_shared'").fetchone()[0]
-        self.assertEqual(watermark,rows_before[69][0])
-        self.assertEqual(db.execute("SELECT event FROM memory_rounds WHERE scope='bot_shared' AND id>? ORDER BY id",(watermark,)).fetchall(),[(model_json([fixture.SCOPE,str(i)]),) for i in range(70,78)])
+        self.assertEqual(watermark,rows_before[-1][0])
+        self.assertEqual(db.execute("SELECT event FROM memory_rounds WHERE scope='bot_shared' AND id>? ORDER BY id",(watermark,)).fetchall(),[])
         self.assertFalse(r.retry())
-        self.assertEqual(len(self.requests)-failed_calls,2)
+        self.assertEqual(len(self.requests)-failed_calls,1)
         for index,request in enumerate(self.requests[failed_calls:]):
             prompt=next(json.loads(m['content']) for m in request['messages'] if isinstance(m.get('content'),str) and m['content'].startswith('{') and '"turns"' in m['content'])
-            self.assertEqual([json.loads(row['event'])[1] for row in prompt['turns']],[str(i) for i in range(index*35,index*35+35)])
+            self.assertEqual([json.loads(row['event'])[1] for row in prompt['turns']],[str(i) for i in range(78)])
 
-    async def test_manual_result_reports_remainder_until_authorized_partial_completes(self):
+    async def test_manual_result_reports_all_completed_rounds_at_idle(self):
         import contextvars
         self.populate(43);r=self.store.reflection
         r.binding=(self.cfg,self.provider,lambda:True,self.metrics,contextvars.ContextVar('manual_catchup',default=None))
         self.assertTrue(r.force_compress_once()['started'])
         first=await r.task
         self.assertTrue(first['ok'],first)
-        self.assertEqual(first['remainingCompleteRounds'],8)
-        self.assertFalse(first['allCompletedRoundsSummarized'])
+        self.assertEqual(first['remainingCompleteRounds'],0)
+        self.assertTrue(first['allCompletedRoundsSummarized'])
         self.assertFalse(r.retry())
-        self.assertTrue(r.force_compress_once(allow_partial=True,administrator='fixture-admin',request_id='fixture-partial')['started'])
-        final=await r.task
-        self.assertTrue(final['ok'],final)
-        self.assertEqual(final['remainingCompleteRounds'],0)
-        self.assertTrue(final['allCompletedRoundsSummarized'])
-        self.assertEqual([r[0] for r in self.store.db.execute('SELECT round_count FROM memory_reconstruction_checkpoints ORDER BY id')],[35,8])
+        self.assertFalse(r.force_compress_once(allow_partial=True,administrator='fixture-admin',request_id='fixture-partial')['started'])
+        self.assertEqual([r[0] for r in self.store.db.execute('SELECT round_count FROM memory_reconstruction_checkpoints ORDER BY id')],[43])
 
     async def partial_concurrent(self,change_original=False):
         import contextvars

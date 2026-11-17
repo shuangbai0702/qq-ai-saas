@@ -3,7 +3,7 @@
 The contract is bot-private and stored in the existing behavior SQLite file.
 Baselines are per conversation scope: each scope's committed Journal wire
 carries its own System vector, and one scope adopting a new System at its own
-licensed 35-round reconstruction must never block another scope that still
+licensed 30-round reconstruction must never block another scope that still
 runs the previously committed vector. A trusted config-save audit token may
 authorize one successful transition per scope; failed requests release that
 token reservation for that scope only.

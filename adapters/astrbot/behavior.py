@@ -971,7 +971,7 @@ def install_runtime(core,settings):
             care.track(st,st.social.stickers.backfill_task)
         if not internal and not deferred and not continuation and subject!=str(event.get_self_id()) and (cfg.get('behavior') or {}).get('styleLearning'):
             st.social.observe(scope,subject,incoming,getattr(event.message_obj,'message_id',''))
-            # Persist samples now; learn only after a legal 35-round checkpoint.
+            # Persist samples now; learn only after a legal 30-round checkpoint.
         state=st.observe(scope,subject,incoming if not internal and not deferred else '',getattr(event.message_obj,'message_id',''),auto_capture=not internal and not deferred and (cfg.get('behavior') or {}).get('memoryAutoCapture',False),memory_enabled=(cfg.get('behavior') or {}).get('memory',True),directed=not internal and not deferred and (early_directed or incoming.startswith('/')),project_facts=False)
         if companion_state.enabled(cfg):
             emotion=companion_state.context(st.db,cfg,scope,now,event.get_message_str())['emotion'];state['emotion']=emotion['label']

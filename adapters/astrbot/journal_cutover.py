@@ -45,7 +45,7 @@ def archive_authorized_scope(db,scope,expected_sha,authorization,release):
 
     Explicitly end one logical conversation. Its exact wire and unsummarized
     evidence remain in an immutable archive. New rounds start independently;
-    no summary coverage, 35-round permit or external receipt is manufactured.
+    no summary coverage, 30-round permit or external receipt is manufactured.
     The owning worker MUST be stopped, with a separate SQLite backup.
     """
     if not re.fullmatch(r'(?:private|group):\d{4,20}',str(scope)) or not re.fullmatch(r'[a-f0-9]{64}',str(expected_sha)):

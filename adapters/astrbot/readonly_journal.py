@@ -472,7 +472,7 @@ class ReadonlyJournal:
             cutover=self.db.execute("SELECT state FROM fishbot_readonly_cutover WHERE scope=?",(self.scope_key,)).fetchone()
         if not overflow and cutover and cutover[0]=='available':return
         # A separately authorized operator closure is a NEW logical session,
-        # never a 35-round reconstruction or reuse of an old enrollment.
+        # never a 30-round reconstruction or reuse of an old enrollment.
         if not overflow and 'fishbot_operator_session_archives' in tables and self.db.execute("SELECT 1 FROM fishbot_operator_session_archives WHERE scope=? AND new_session_state='available'",(self.scope_key,)).fetchone():return
         if overflow or self._scope_has_completed_history():self.recovery_error='journal_snapshot_missing'
 
@@ -630,7 +630,7 @@ class ReadonlyJournal:
 
         R1 license binding: when the durable stage succeeds, this candidate's
         reconstruction permit is consumed inside the same transaction. From
-        that moment the 35-round license belongs to this exact candidate — a
+        that moment the 30-round license belongs to this exact candidate — a
         later abort, failure or process death may discard the candidate but
         never returns the license to ``available`` for a different baseline.
         A stage refusal consumes nothing (nothing was submitted).
@@ -956,7 +956,7 @@ class ReadonlyJournal:
         # R1: a web-config save no longer authorizes any journal rebuild —
         # not even a first baseline. A scope with committed history keeps its
         # committed System vector and wire until this scope's own licensed
-        # 35-round reconstruction; a fresh scope builds its first baseline
+        # 30-round reconstruction; a fresh scope builds its first baseline
         # without any license because there is nothing to retire.
         if needs_reconstruction and guarded:
             from system_contract import request_identity
@@ -969,8 +969,8 @@ class ReadonlyJournal:
                     # epoch, native-tail and capacity checks still apply.
                     retirement=old.retirement;retirement_deferred='checkpoint_retirement_deferred'
                 elif reason in ('journal_recovery_unavailable','journal_retired'):
-                    raise ContextRecoveryUnavailable('A committed request journal cannot be restored or was retired; a 35-round summary checkpoint is required before rebuilding it.')
-                else:raise ContextReconstructionDenied('A full request-history reconstruction is not authorized by a successful 35-round summary checkpoint.')
+                    raise ContextRecoveryUnavailable('A committed request journal cannot be restored or was retired; a 30-round summary checkpoint is required before rebuilding it.')
+                else:raise ContextReconstructionDenied('A full request-history reconstruction is not authorized by a successful 30-round summary checkpoint.')
             else:
                 reuse=False
         if reconstruction_permit and reconstruction_permit.get('semanticBatch'):
@@ -1062,7 +1062,7 @@ class ReadonlyJournal:
                 request_id=request_identity()
                 reconstruction_permit=self._reservation(reconstruction_authority,reconstruction_scope,request_id,summary_ids)
             if reconstruction_permit is None and guarded:
-                raise ContextCapacityExceeded('The append-only request journal reached its configured capacity before an authorized 35-round reconstruction checkpoint. Existing history is unchanged; an authenticated administrator may request compression.',usage=usage)
+                raise ContextCapacityExceeded('The append-only request journal reached its configured capacity before an authorized 30-round reconstruction checkpoint. Existing history is unchanged; an authenticated administrator may request compression.',usage=usage)
             if reconstruction_permit and reconstruction_permit.get('semanticBatch'):
                 base=semantic_retire_projection(base,reconstruction_permit)
                 messages=semantic_retire_projection(messages,reconstruction_permit)

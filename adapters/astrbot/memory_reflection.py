@@ -296,7 +296,7 @@ class Reflection:
               JOIN json_each(s.sources) e ON CAST(e.value AS TEXT)=h.event''')
         checkpoint_columns={row[1] for row in db.execute('PRAGMA table_info(memory_reconstruction_checkpoints)')}
         if 'summary_id' not in checkpoint_columns:db.execute('ALTER TABLE memory_reconstruction_checkpoints ADD COLUMN summary_id INTEGER')
-        # Pending-coverage proof: the exact events a real 35-round
+        # Pending-coverage proof: the exact events a real 30-round
         # batch completed but could not yet prove covered. Old code ignores
         # the column; 'pending_coverage' state is never an available license.
         if 'pending_events' not in checkpoint_columns:db.execute('ALTER TABLE memory_reconstruction_checkpoints ADD COLUMN pending_events TEXT')
@@ -418,7 +418,7 @@ class Reflection:
         R1 license safety: a reserved permit is never recycled by request
         abandonment. A dead process cannot prove its licensed candidate never
         reached the provider, so a missing owner leaves the permit reserved
-        (conservatively consumed) instead of re-issuing the same 35-round
+        (conservatively consumed) instead of re-issuing the same 30-round
         license against another baseline. The stage transaction binds the
         permit to its exact candidate, so a live request consumes its permit
         at stage time and later failure paths never refund it.
@@ -427,7 +427,7 @@ class Reflection:
         authenticated operator identity proves who saved configuration, not
         a mandate to retire already-committed model history. The committed
         prefix keeps its System vector until this scope's own licensed
-        35-round reconstruction; ``web_proof``/``logical_scope`` stay in the
+        30-round reconstruction; ``web_proof``/``logical_scope`` stay in the
         signature for call compatibility and are ignored.
         """
         scopes={scope} if isinstance(scope,str) else set(scope) if isinstance(scope,(list,tuple,set)) else set()
@@ -566,7 +566,7 @@ class Reflection:
             self.prune_pending(now)
         # R2 material safety: the retained-round quota may reclaim only rounds
         # a completed summary batch already processed (at or below that
-        # scope's watermark) and not hold-registered. A scope below its 35
+        # scope's watermark) and not hold-registered. A scope below its 30
         # rounds, or with unprocessed material, never loses evidence to the
         # global slot count; excess stays as bounded backpressure instead.
         self._prune_rounds()
@@ -804,7 +804,7 @@ class Reflection:
             if not isinstance(pending,list) or not pending:continue
             held=self.db.execute('SELECT event,reason FROM memory_hold_rounds WHERE scope=? AND (round_id IS NULL OR round_id<=?) ORDER BY event',(scope,through)).fetchall()
             unresolved=[str(event) for event in pending if str(event) not in covered]
-            # A real 35-round checkpoint grants one reconstruction opportunity,
+            # A real 30-round checkpoint grants one reconstruction opportunity,
             # not permission to delete every block. Shared Journal admission
             # separately proves each retired block and retains every other byte.
             from summary_material import coverage
@@ -920,7 +920,7 @@ class Reflection:
                 'openCheckpointIssues':self.db.execute("SELECT count(*) FROM memory_checkpoint_issues WHERE scope=? AND status='open'",(scope,)).fetchone()[0]}
 
     def hold_recovery_ready(self,scope,held,now,metrics):
-        """True when held evidence is recoverable now without new 35 rounds.
+        """True when held evidence is recoverable now without new 30 rounds.
 
         Material completeness is repaired read-only from the committed journal
         wire at most every ten minutes per scope. A material whose contract
@@ -1029,8 +1029,8 @@ class Reflection:
             if _inline:return recover_pending()
             self.task=asyncio.create_task(recover_pending());return True
         self.db.commit()
-        # 35 is the due threshold. After accepted dialogue drains, include all
-        # completed rounds through that idle boundary (possibly 36, 37, ...).
+        # 30 is the due threshold. After accepted dialogue drains, include all
+        # completed rounds through that idle boundary (possibly 31, 32, ...).
         configured=cfg.get('summaryRounds',DEFAULT_SUMMARY_ROUNDS)
         summary_rounds=DEFAULT_SUMMARY_ROUNDS
         if configured!=DEFAULT_SUMMARY_ROUNDS:
@@ -1057,7 +1057,7 @@ class Reflection:
             async def admitted():
                 async with admission():
                     # Re-read authority AFTER draining, not the candidate that
-                    # existed when the 35th round first made compression due.
+                    # existed when the 30th round first made compression due.
                     continuation=self.retry(_inline=True,_manual=_manual)
                     return await continuation if continuation else {'ok':False,'reason':'no_eligible_material'}
             self.task=asyncio.create_task(admitted())
