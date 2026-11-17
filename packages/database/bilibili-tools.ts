@@ -43,7 +43,7 @@ export class BilibiliTools {
    }
    await this.validate(value,s,tx);
    if(call.operation==='analyze'){
-    const [model]=await tx.query('SELECT r.config,(s.ciphertext IS NOT NULL) AS has_key FROM bot_config_revisions r LEFT JOIN secrets s ON s.bot_id=r.bot_id AND s.tenant_id=$3 WHERE r.bot_id=$1 AND r.revision=$2',[bot.id,bot.revision,bot.tenant_id]);
+    const [model]=await tx.query("SELECT r.config,CASE WHEN r.config->>'platformModel'='true' THEN EXISTS(SELECT 1 FROM platform_model_credits c WHERE c.tenant_id=$3 AND c.granted-c.spent-c.reserved>0) ELSE s.ciphertext IS NOT NULL END AS has_key FROM bot_config_revisions r LEFT JOIN secrets s ON s.bot_id=r.bot_id AND s.tenant_id=$3 WHERE r.bot_id=$1 AND r.revision=$2",[bot.id,bot.revision,bot.tenant_id]);
     if(!bilibiliModelConfigured(s,model?.config,model?.has_key)&&!await this.rpc(bot,'get',{workId:call.workId,stepId:call.stepId},tx))throw Object.assign(toolConflict(bilibiliModelRequired),{code:'model_not_configured'});
    }
    // Versions/permissions commit before admission to the existing member Work.

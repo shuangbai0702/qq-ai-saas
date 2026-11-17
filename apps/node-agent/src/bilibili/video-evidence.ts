@@ -5,6 +5,8 @@ import {rangeSource} from '../media/range-source.js';
 import {asrSegments} from '../media/asr.js';
 import {modelImageTargetEdge} from '../../../../packages/shared/model-media.js';
 import {bilibiliModelConfigured,bilibiliModelRequired} from '../../../../packages/shared/bilibili-model.js';
+import {resolvePlatformModel} from '../../../../packages/shared/platform-model.js';
+import {BotConfigSchema} from '../../../../packages/contracts/index.js';
 import {mkdir,readFile,readdir,stat,statfs,access,writeFile,rmdir,rm} from 'node:fs/promises';
 import {decrypt} from '../../../../packages/shared/security.js';
 import {modelHttp} from '../../../../packages/shared/model-http.js';
@@ -69,10 +71,14 @@ export class VideoEvidence {
   if(job.args.audio==='transcribe'&&(!resources.asr?.executable||!path.isAbsolute(resources.asr.executable)||!Array.isArray(resources.asr.args)))throw new BiliError('asr_not_configured','未安装或未配置真实ASR组件；可改用字幕或无音频帧分析');
   const config=settings.config.resources,downloadMiB=Math.min(config.maxDownloadMiB,config.cacheMiB),seconds=Math.min(job.args.seconds,config.maxClipSeconds),start=job.args.start;
   const [botConfig]=await this.db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[job.bot_id,job.config_revision]);
-  const [secret]=await this.db.query('SELECT ciphertext FROM secrets WHERE bot_id=$1 AND tenant_id=$2',[job.bot_id,job.tenant_id]);
+  const managed=botConfig?.config?.platformModel===true;
   const independent=settings.config.model.provider==='openai';
-  if(!bilibiliModelConfigured(settings,botConfig?.config,!!secret?.ciphertext))throw new BiliError('model_not_configured',bilibiliModelRequired);
-  const apiKey=independent?decrypt(this.key,`bilibili:model:${job.tenant_id}:${job.bot_id}`,settings.model_secret):decrypt(this.key,`${job.tenant_id}:${job.bot_id}`,secret.ciphertext),model=independent?settings.config.model.model:botConfig.config.model,baseUrl=independent?settings.config.model.baseUrl:botConfig.config.baseUrl;
+  const [secret]=!independent&&!managed?await this.db.query('SELECT ciphertext FROM secrets WHERE bot_id=$1 AND tenant_id=$2',[job.bot_id,job.tenant_id]):[];
+  if(!bilibiliModelConfigured(settings,botConfig?.config,managed||!!secret?.ciphertext))throw new BiliError('model_not_configured',bilibiliModelRequired);
+  const connection=independent?{config:settings.config.model,apiKey:decrypt(this.key,`bilibili:model:${job.tenant_id}:${job.bot_id}`,settings.model_secret)}:
+   managed?resolvePlatformModel(BotConfigSchema.parse(botConfig.config),this.key,{id:job.bot_id,tenant_id:job.tenant_id,generation:job.generation,revision:job.config_revision}):
+   {config:botConfig.config,apiKey:decrypt(this.key,`${job.tenant_id}:${job.bot_id}`,secret.ciphertext)};
+  const {apiKey,config:{model,baseUrl}}=connection;
   const abort=new AbortController(),signal=AbortSignal.any([parent,abort.signal]);let monitoring=false;
   const monitor=setInterval(()=>{if(monitoring)return;monitoring=true;void mediaAdmission(resources.guardRoot,resources.cgroupRoot||'').then(async()=>{
    if(process.platform==='linux'){const psi=await readFile('/proc/pressure/memory','utf8');if(Number(/^full avg10=([\d.]+)/m.exec(psi)?.[1]||0)>5)throw new Error('pressure')}

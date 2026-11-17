@@ -10,6 +10,7 @@ export type LoginState = typeof LoginStates[number];
 export const terminalLogin = new Set<LoginState>(['online','expired','canceled','failed']);
 export const BotConfigSchema = z.object({
   personaId:z.string().max(100).default('dafeiyu'), systemPrompt:z.string().min(1).max(20000),
+  platformModel:z.boolean().default(false),
   provider:z.enum(['deepseek','openai','custom']).default('deepseek'),
   baseUrl:z.url().max(2000).refine(x=>{const u=new URL(x);return ['https:','http:'].includes(u.protocol)&&!u.username&&!u.password&&!u.search&&!u.hash},'请填写不含账号、查询参数的 HTTP(S) 地址'),
   model:z.string().min(1).max(150), auxiliaryModel:z.string().trim().min(1).max(150).optional(), delegationModel:z.string().trim().min(1).max(150).optional(), summaryModel:z.string().trim().min(1).max(150).optional(), favoriteModel:z.string().trim().min(1).max(150).optional(), trigger:z.enum(['mention','all']).default('mention'),

@@ -14,6 +14,8 @@ import {redact} from '../../../packages/shared/security.js';
 import {FavoriteMaintenance} from './favorite-maintenance.js';
 import {DshHost} from './dsh-host.js';
 import {BilibiliExecutor} from './bilibili/executor.js';
+import {createFavoriteCaptioner} from '../../../packages/shared/qq-favorite-semantics.js';
+import {resolvePlatformModel} from '../../../packages/shared/platform-model.js';
 
 /** Add the native delegation host without replacing QQ owners or the heartbeat. */
 export async function installDshRuntime(agent:NodeAgent,release:string){
@@ -38,6 +40,36 @@ export async function uninstallDshRuntime(agent:NodeAgent,release:string){
 // Shutdown stays with the canonical Agent, which dynamically owns all three
 // maintenance workers in the verified deployment baseline.
 const controlBusy=(agent:NodeAgent)=>!agent.controlIdle();
+
+/** Activate the platform connection on the live Agent while preserving QQ and Worker ownership. */
+export function installPlatformModelRuntime(agent:NodeAgent,release:string){
+ if(!/^[a-f0-9]{64}$/.test(release)||agent.closed)throw new Error('Invalid platform model release');
+ const marker=Symbol.for('fishbot.platform-model.maintenance');
+ const live=agent as any;
+ if(live[marker]?.release===release)return {pid:process.pid,release,unchanged:true};
+ if(live[marker])throw new Error('A platform model release already owns this Agent');
+ const context=agent.context, favorites=live.favorites,caption=favorites?.caption;
+ if(typeof caption!=='function')throw new Error('Favorite annotation owner is unavailable');
+ const newCaption=createFavoriteCaptioner(agent.db,agent.key,agent.root);
+ agent.context=async bot=>{
+  const current=await context.call(agent,bot);
+  const [revision]=await agent.db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[bot.id,bot.revision]);
+  return revision?.config?.platformModel===true?{...current,...resolvePlatformModel(current.config,agent.key,bot)}:current;
+ };
+ favorites.caption=newCaption;
+ live[marker]={release,context,favorites,caption};
+ return {pid:process.pid,release,children:agent.host.children.size};
+}
+
+export function uninstallPlatformModelRuntime(agent:NodeAgent,release:string){
+ const marker=Symbol.for('fishbot.platform-model.maintenance');
+ const installed=(agent as any)[marker];
+ if(!installed||installed.release!==release)throw new Error('Platform model release owner changed');
+ agent.context=installed.context;
+ installed.favorites.caption=installed.caption;
+ delete (agent as any)[marker];
+ return {pid:process.pid,release,children:agent.host.children.size};
+}
 
 /** Refresh these two stateless methods while the existing owners are held.
  * No constructor, timer, database, ChildProcess or heartbeat queue is replaced.
