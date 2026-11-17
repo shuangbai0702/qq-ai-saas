@@ -13,6 +13,15 @@ class GroupToolSplit(continuity.GroupActions):
         self.cfg['behavior']['splitMessages']=True
         return json.loads(await group_actions.send(self.event,self.cfg,self.db,'55555',text,'12345678',lambda:self.current,lambda *args:self.recorded.append(args),**kw))
 
+    async def test_long_transport_split_preserves_full_text_and_receipts(self):
+        text='长回复😀'*800
+        result=await self.dispatch(text)
+        parts=[x['message'][-1]['data']['text'] for x in self.sent]
+        self.assertEqual(''.join(parts),text)
+        self.assertTrue(all(len(x.encode('utf-16-le'))//2<=1500 for x in parts))
+        self.assertEqual(result['confirmed_count'],len(parts))
+        await self.dispatch(text);self.assertEqual(len(self.sent),len(parts))
+
     async def test_paragraphs_split_with_first_mention_and_cumulative_confirmation(self):
         result=await self.dispatch()
         self.assertEqual(result['confirmed_count'],2)
