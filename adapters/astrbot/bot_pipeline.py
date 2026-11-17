@@ -633,13 +633,16 @@ class BotPipeline:
         digest=hashlib.sha256(payload.encode()).hexdigest();binding=json.dumps(identity,sort_keys=True,separators=(',',':'))
         addressed=int(addressed_to_self(event))
         with self.db:
+            from relationships import observe_message
             old=self.db.execute('SELECT payload_sha,identity FROM pipeline_work_inputs WHERE scope=? AND event=?',(scope,identifier)).fetchone()
             if old:
                 try:prior=json.loads(old[1]) if old[1] else {}
                 except (ValueError,TypeError):return False
                 valid=old[0]==digest and all(prior.get(k)==identity.get(k) for k in ('tenantId','botId','generation'))
+                if valid:observe_message(self.db,scope,str(event.get_sender_id()),raw.get('time'))
                 if valid and addressed:self.db.execute('UPDATE pipeline_work_inputs SET addressed_self=1 WHERE scope=? AND event=?',(scope,identifier))
                 return valid
+            observe_message(self.db,scope,str(event.get_sender_id()),raw.get('time'))
             self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,subject,owner,payload,status,created,observed_at,payload_sha,identity,addressed_self) VALUES(?,?,?,NULL,?,'pending',?,?,?,?,?)",(scope,identifier,str(event.get_sender_id()),payload,time.time(),observed,digest,binding,addressed))
         return True
 

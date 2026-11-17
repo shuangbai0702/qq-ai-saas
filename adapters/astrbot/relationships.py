@@ -14,7 +14,9 @@ SCHEMA='relations(scope TEXT,subject TEXT PRIMARY KEY NOT NULL,affinity INTEGER,
 def migrate(db):
     """Atomic one-time merge. Preserve the old table in a rollback artifact only."""
     info=db.execute('PRAGMA table_info(relations)').fetchall()
-    if [r[1] for r in info if r[5]]==['subject']:return None
+    if [r[1] for r in info if r[5]]==['subject']:
+        if 'last_message_at' not in {r[1] for r in info}:db.execute('ALTER TABLE relations ADD COLUMN last_message_at REAL')
+        return None
     db.commit()
     db.execute('BEGIN IMMEDIATE')
     try:
@@ -49,6 +51,7 @@ def migrate(db):
         db.executemany('INSERT INTO relations VALUES(?,?,?,?,?,?,?,?,?)',merged)
         if db.execute('SELECT count(*) FROM relations').fetchone()[0]!=len(people):raise RuntimeError('relationship_migration_incomplete')
         db.execute('DROP TABLE relations_migrating')
+        db.execute('ALTER TABLE relations ADD COLUMN last_message_at REAL')
         db.commit()
         return {'before':len(rows),'after':len(merged),'semantic_ties':ties}
     except BaseException:
@@ -111,3 +114,42 @@ def latest_speakers(db,scope,current=(),limit=6,self_id=''):
         if person not in people:people.append(person)
         if len(people)==limit:break
     return people
+
+
+def observe_message(db,scope,person,at):
+    """Authenticated protocol activity, independent of semantic revision."""
+    import math,re
+    if not re.fullmatch(r'\d{5,20}',str(person)) or type(at) not in (int,float) or not math.isfinite(at) or at<=0:return
+    db.execute("INSERT INTO relations(scope,subject,affinity,emotion,expires,last_seen,last_message_at) VALUES(?,?,0,'平静',0,0,?) ON CONFLICT(subject) DO UPDATE SET last_message_at=max(coalesce(relations.last_message_at,0),excluded.last_message_at)",(scope,str(person),at))
+
+
+def active_people(db,limit=6,scope='bot_shared'):
+    """No last_seen inference: only authenticated timestamps rank people."""
+    import json
+    from context_protocol import source
+    from journal_storage import read_snapshot
+    tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    people={}
+    own={str(r[0]) for r in db.execute('SELECT DISTINCT self_id FROM contacts') if r[0]} if 'contacts' in tables else set()
+    def add(person,at):
+        import math,re
+        person=str(person)
+        if person in own or not re.fullmatch(r'\d{5,20}',person) or type(at) not in (int,float) or not math.isfinite(at) or at<=0:return
+        people[person]=max(people.get(person,0),at)
+    cols={r[1] for r in db.execute('PRAGMA table_info(relations)')}
+    if 'last_message_at' in cols:
+        for person,at,origin in db.execute('SELECT subject,last_message_at,scope FROM relations'):
+            if scope=='bot_shared' or origin==scope:add(person,at)
+    if 'pipeline_work_inputs' in tables:
+        for channel,event,person,raw in db.execute('SELECT scope,event,subject,payload FROM pipeline_work_inputs WHERE payload IS NOT NULL'):
+            if scope!='bot_shared' and channel!=scope:continue
+            try:data=json.loads(raw)
+            except (ValueError,TypeError):continue
+            if str(data.get('message_id'))==str(event) and str(data.get('user_id'))==str(person):add(person,data.get('time'))
+    if 'fishbot_readonly_journals' in tables:
+        for key, in db.execute('SELECT scope FROM fishbot_readonly_journals').fetchall():
+            snap=read_snapshot(db,key)
+            for message in (snap or {}).get('base',[]):
+                origin=source(message)
+                if origin and (scope=='bot_shared' or origin.get('scope')==scope):add(origin.get('sender_id'),origin.get('at'))
+    return sorted(people,key=lambda p:(people[p],p),reverse=True)[:limit]

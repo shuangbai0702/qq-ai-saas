@@ -32,9 +32,8 @@ def read(store,cfg,scope,subject):
     if journal and journal.last and journal.last.retirement==store.reflection.reconstruction_stamp(logical) and 'memory_foundation' in journal.last.state:
         return copy.deepcopy(journal.last.state['memory_foundation'])
     summary_rows=summaries(store.db,logical,str(cfg.get('ownerUin') or ''),journal.last.state if journal and journal.last else None) if cfg.get('memorySummary',True) else []
-    people=[subject]
-    if logical=='bot_shared':
-        people=[r[0] for r in store.db.execute('SELECT DISTINCT subject FROM facts WHERE active=1 ORDER BY subject') if re.fullmatch(r'\d{5,20}',r[0])]
+    from relationships import active_people
+    people=active_people(store.db,scope=logical)
     rows=[(person,row) for person in people for row in fact_rows(store.db,scope,person)]
     rows.sort(key=lambda entry:(-entry[1][6],-entry[1][4],entry[0],entry[1][0]))
     facts=[];used=0
@@ -42,7 +41,8 @@ def read(store,cfg,scope,subject):
         item=fact_item(row,person,'checkpoint_foundation');size=len(model_json(item))
         if used+size>MAX_FACT_CHARS:continue
         facts.append(item);used+=size
-    relations=[{'source_scope':r[0],'subject':r[1],'affinity':r[2],'emotion':r[3],'emotion_expires':r[4],'observed_at':r[5],'trust':r[6],'impression':r[7],'semantic_updated':r[8]} for r in store.db.execute('SELECT scope,subject,affinity,emotion,expires,last_seen,trust,impression,semantic_updated FROM relations ORDER BY last_seen DESC')]
+    from person_memory import relation_view
+    relations=[row for person in people if (row:=relation_view(store.db,person)) is not None]
     styles=[{'source_scope':r[0],'expression':r[1],'situation':r[2],'updated':r[3]} for r in store.db.execute('SELECT scope,expression,situation,updated FROM social_patterns ORDER BY updated DESC LIMIT 24')]
     from conversation_continuity import view as continuity_view
     continuity=continuity_view(store.db,logical) if cfg.get('memorySummary',True) else None

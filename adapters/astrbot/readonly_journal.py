@@ -999,7 +999,9 @@ class ReadonlyJournal:
                 # The stored base must stay byte-consistent with the committed
                 # wire: deferred System/retirement changes are not adopted.
                 base=old.base+list(suffix)
-            wire=copy.deepcopy(old.wire)+suffix
+            from person_memory import additions as person_additions
+            person_packets=person_additions(self.db,old.wire,suffix,enabled='memory_foundation' in state)
+            wire=copy.deepcopy(old.wire)+person_packets+suffix
             # Old cleanup versions could retain a complete foundation only in
             # metadata. Append genuinely missing regions through this same
             # staged writer; never alter the committed prefix or reset rounds.
@@ -1052,6 +1054,13 @@ class ReadonlyJournal:
             from context_foundation import execution_view
             state=execution_view(state)
             wire=reading_baseline(messages,state)
+            if self.db is not None and 'memory_foundation' in state:
+                from person_memory import additions as person_additions
+                from context_protocol import source
+                for index in range(len(wire)-1,-1,-1):
+                    if source(wire[index]):
+                        wire[index:index]=person_additions(self.db,wire,[wire[index]])
+                        break
         usage=history_usage(wire);base_chars=old.base_chars if reuse else usage['textChars']
         # A foreground journal cannot rebuild at a cache-growth threshold.
         # Existing absolute text/wire limits still require a real permit.
