@@ -303,12 +303,38 @@ class AutonomousRuntime:
         control.current=current_work
         from model_request_budget import bind
         control.model_budget=bind(s,identity,current_work)
+        if context is not None:context.hosted_run_control=control
         control.output_tokens=8192 if tools else 4096
         token_limit=autonomy.decision_token_limit.set(control.output_tokens)
         try:
             from model_cache import decision_scope
             provider=self.provider(id)
             with decision_scope(provider,s,cache_namespace or cache_phase,identity.get('id'),cache_phase):
+                completion=(event.get_extra('_hosted_autonomous_action') or {}).get('continuation') if event else None
+                if isinstance(completion,dict) and completion.get('dsh'):
+                    from dsh_tools import resume_autonomous
+                    from astrbot.core.agent.run_context import ContextWrapper
+                    from native_internal import WorkBudgetExceeded
+                    pending=asyncio.create_task(resume_autonomous(s,event,current_work,st.db,ContextWrapper(context=context),completion))
+                    canceled=asyncio.create_task(control.cancel.wait())
+                    try:
+                        # Same inactivity rule as native_internal.run: every
+                        # actual model/tool callback advances this RunControl.
+                        while True:
+                            control.check()
+                            done,_=await asyncio.wait((pending,canceled),timeout=max(0,control.last_progress+control.seconds-time.monotonic()),return_when=asyncio.FIRST_COMPLETED)
+                            if pending in done:text=await pending;break
+                            control.check()
+                            if time.monotonic()-control.last_progress>=control.seconds:raise WorkBudgetExceeded('idle_timeout')
+                    finally:
+                        canceled.cancel()
+                        if not pending.done():pending.cancel()
+                        await asyncio.gather(pending,canceled,return_exceptions=True)
+                    if text is None:
+                        event.set_extra('_hosted_dsh_completion_accepted',True)
+                        return {'status':'completed','text':'','reason':'dsh_media_pending','usage':{'tokens':control.used_tokens,'modelCalls':control.used_models,'toolCalls':control.used_tools,'estimated':control.estimated_usage},'seconds':0,'evidence':[]}
+                    prompt=json.dumps({'kind':'autonomous_tool_continuation','activationId':identity['id'],'result':text,
+                        'meaning':'原委托的最终文字；这是平台续接，不是新用户消息。结合主对话自主决定下一步。'},ensure_ascii=False,separators=(',',':'))
                 result=await run(provider,control,prompt,system,tools=tools,context=context,contexts=contexts)
             self.metrics.setdefault(id,{})['lastAutonomousRun']={'status':result['status'],'usage':result['usage'],'seconds':result['seconds'],'at':time.time()}
             return result
@@ -486,7 +512,7 @@ class AutonomousRuntime:
             context_object=SimpleNamespace(event=event)
             system=s['config'].get('systemPrompt','')
             prompt=json.dumps({'kind':'autonomous_activation' if moment else 'autonomous_tool_continuation','activationId':identity['id'],
-                **({'continuation':action['continuation']} if action.get('continuation') else {}),
+                **({'continuation':action['continuation']} if action.get('continuation') and not action['continuation'].get('dsh') else {}),
                 'meaning':'平台激活，不是用户消息。结合原主对话、人格、目标和真实回执自主行动、修订目标或休息，不必制造任务；最终文字仅记录当前思考，不代表已发QQ。'},ensure_ascii=False,separators=(',',':'))
             result=await self.invoke(id,identity,prompt,system,tools=tools,context=context_object)
         except asyncio.CancelledError:failure='task_canceled'
@@ -528,7 +554,7 @@ class AutonomousRuntime:
         feedback['task']={'kind':kind,'target':target,'objective':action['objective'][:400],'sourceScope':action.get('sourceScope') or (action.get('requestSource') or {}).get('scope'),'outerDecision':action.get('outerDecision')}
         feedback['finishedAt']=int(time.time()*1000)
         if action.get('continuation'):
-            feedback['continuationAccepted']=bool(event.get_extra('_hosted_main_request_staged')) if main_activation else result.get('usage',{}).get('modelCalls',0)>0
+            feedback['continuationAccepted']=bool(event.get_extra('_hosted_main_request_staged') or event.get_extra('_hosted_dsh_completion_accepted')) if main_activation else result.get('usage',{}).get('modelCalls',0)>0
         if moment:
             feedback['autonomousMoment']=True
             feedback['restSeconds']=event.get_extra('_hosted_activity_rest')

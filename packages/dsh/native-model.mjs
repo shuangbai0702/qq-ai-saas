@@ -8,6 +8,6 @@ export async function nativeModel({baseURL,model,keyEnv='FISHBOT_DSH_TEST_API_KE
   const llm=await native.load('dsh-llm');await ctx.plugin(llm.default).await();
   const pi=await native.load('dsh-llm-pi-ai');
   await ctx.plugin(pi,{providers:{'local-wire':{api:'openai-completions',baseURL,apiKeyEnv:keyEnv,models:[{id:model,contextWindow:128000,maxTokens,input:['text'],reasoningEfforts:false}],timeoutMs:45000,streamIdleTimeoutMs:45000}}}).await();
-  return {stream:options=>ctx.llm.stream({...options,provider:'local-wire',model,maxTokens}),close:()=>ctx.fiber.dispose()};
+  return {stream:options=>ctx.llm.stream({...options,provider:'local-wire',model,maxTokens:Math.min(maxTokens,options.maxTokens??maxTokens)}),close:()=>ctx.fiber.dispose()};
  }catch(error){await ctx.fiber.dispose();throw error;}
 }

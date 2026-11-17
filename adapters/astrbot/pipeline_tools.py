@@ -75,9 +75,9 @@ def parent(db,settings,record):
         if not job:raise ValueError('tool_parent_missing')
         c=original['request'].get('completion',{})
         if not (job['operation']=='analyze' and job['authority']==record['authority']=='foreground' and
-                original['status']=='completed' and c.get('state')=='claimed' and
+                original['status'] in ('completed','unknown','canceled') and c.get('state')=='claimed' and
                 c.get('owner')==continuation.get('sourceOwner') and c.get('until',0)>time.time() and
-                original['expires_at']>time.time() and not job.get('cancel_requested') and
+                (not record.get('write') or original['expires_at']>time.time()) and not job.get('cancel_requested') and
                 all(job.get(k)==record.get(k) for k in ('work_id','sender_id','origin_event','generation','config_revision','settings_revision','account_revision','account_uid')) and
                 original['scope']==record.get('origin_scope')):raise ValueError('tool_continuation_stale')
         return original['scope']

@@ -255,7 +255,11 @@ export class AutonomyRepository {
    if(!parent)throw new AutonomyConflict('tool_parent_missing');
    const id=claim.cycleId,owner=job.owner,goalId=parent.decision?.continuation?.goalId;
    const objective=job.continuation?.objective||'理解原工具任务的真实结果，自主决定下一步';
-   const continuation={id:job.id,owner,parentActionId:job.work_id,goalId,result:job.result,scope:job.origin_scope||'self',originEvent:job.origin_event,objective};
+   const delegated=job.continuation?.dsh;
+   if(delegated&&(!/^fishbot-[a-f0-9]{64}$/.test(delegated.sessionId)||typeof delegated.delegationId!=='string'||!delegated.delegationId||delegated.delegationId.length>256))throw new AutonomyConflict('tool_dsh_session_identity_invalid');
+   // Backend routing only: the original Session locates execution history,
+   // while this newly admitted cycle remains the permission/budget owner.
+   const continuation={id:job.id,owner,parentActionId:job.work_id,goalId,result:job.result,scope:job.origin_scope||'self',originEvent:job.origin_event,objective,...(delegated?{dsh:{sessionId:delegated.sessionId,delegationId:delegated.delegationId}}:{})};
    const action={id,kind:'research',target:'',goalId,objective,continuation,continuationOfMoment:parent.decision?.reason==='autonomous_moment',requestSource:{scope:job.origin_scope||'self',senderId:job.sender_id||'0',origin:'model'}};
    const [cycle]=await tx.query("UPDATE autonomy_cycles SET decision=$2,state='planned',usage=$3,work_expires_at=now()+($4*interval '1 second') WHERE id=$1 AND bot_id=$5 AND tenant_id=$6 AND state='thinking' AND finished_at IS NULL RETURNING id",[id,JSON.stringify({reason:parent.decision?.reason==='autonomous_moment'?'autonomous_moment':'tool_continuation',continuation:{id:job.id,owner,parentWorkId:job.work_id,goalId}}),JSON.stringify(usage),claim.config.cycleSeconds,claim.bot_id,claim.tenant_id]);
    if(!cycle)throw new AutonomyConflict();

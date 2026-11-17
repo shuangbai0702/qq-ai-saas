@@ -70,6 +70,16 @@ def _install_tool_catalog(active):
                     tool=plugin_context.get_llm_tool_manager().get_builtin_tool(GetGroupMessageHistoryTool)
                     request.func_tool.add_tool(completion_guard(tool,event))
                 request.func_tool.tools.sort(key=lambda tool:tool.name)
+            # SDK builtins have already been appended by astr_main_agent.
+            # Use the original admission lease, not SDK provider settings, to
+            # verify the DSH owner before constructing the runner's execution
+            # table and provider schemas. The builtin remains callable by the
+            # trusted DSH bridge with its original SDK context.
+            lease=event.get_extra('_hosted_lease')
+            if lease and lease.get('root'):
+                from dsh_tools import manifest
+                if manifest(lease) and request.func_tool:
+                    request.func_tool=ToolSet(tools=[tool for tool in request.func_tool.tools if tool.name!='get_group_message_history'])
         return await original(*bound.args,**bound.kwargs)
     ToolLoopAgentRunner.reset=reset
     # The SDK announces each call before invoking its executor, but does not

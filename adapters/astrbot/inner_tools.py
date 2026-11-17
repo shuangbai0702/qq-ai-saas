@@ -19,11 +19,12 @@ def features(settings,event,db,scope,current,*,identity=None,evidence=None,memor
     result+=execution_memory.tools(settings,event,scope,memory_current or current,identity)
     import dsh_tools
     delegate=dsh_tools.manifest(settings)
-    if delegate and identity is None and not event.get_extra('_hosted_tool_completion'):
-        result+=dsh_tools.tools(settings,event,current,db,delegate)
-        # Media keeps its existing durable asynchronous completion chain until
-        # DSH can consume that same completion ownership. Do not hide capability.
-        result += [t for t in bili_tools(settings,event,current,evidence,identity,db=db) if t.name=='bilibili_analyze']
+    if delegate and (identity is None or event.get_extra('_hosted_main_activation')):
+        from dsh_read_tools import main_favorite_tool
+        from dsh_group_tools import main_context_tool
+        result=[main_context_tool(main_favorite_tool(t)) for t in result if t.name!='hosted_recall_experience']
+        if not event.get_extra('_hosted_tool_completion') and (identity is None or event.get_extra('_hosted_main_activation')):
+            result+=dsh_tools.tools(settings,event,current,db,delegate,social=social)
         result+=image_tools(settings,event,db,current,identity)
     else:
         result+=bili_tools(settings,event,current,evidence,identity,db=db)

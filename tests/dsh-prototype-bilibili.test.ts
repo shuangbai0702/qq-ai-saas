@@ -34,7 +34,7 @@ test('DSH Bilibili uses actual catalog, original Work admission, SQLite receipt 
   if(request){const args=JSON.stringify(request.args),name='bilibili_'+request.operation;
    yield{type:'block-start',index:0,blockType:'tool-call'};yield{type:'tool-call-delta',index:0,id:'public-read-'+calls,name,argumentsDelta:args};yield{type:'block-end',index:0,block:{type:'tool-call',id:'public-read-'+calls,name,arguments:args}};yield{type:'finish',reason:'tool-calls'};
   }else{const done=receipts.filter(r=>r.execution==='completed').map(r=>r.operation),failed=receipts.filter(r=>r.execution!=='completed');
-   const text=JSON.stringify({result:'完成公共读取：'+done.join('、'),evidence:done.length?['https://www.bilibili.com/video/BV1GJ411x7h7']:[],unfinished:failed.map(r=>r.operation),limitations:failed.map(r=>r.error||'unknown')});
+   const text='完成公共读取：'+done.join('、')+(done.length?'。来源：https://www.bilibili.com/video/BV1GJ411x7h7':'')+(failed.length?'。未完成：'+failed.map(r=>r.operation+' ('+(r.error||'unknown')+')').join('、'):'');
    yield{type:'block-start',index:0,blockType:'text'};yield{type:'text-delta',index:0,text};yield{type:'block-end',index:0,block:{type:'text',text}};yield{type:'finish',reason:'stop'};
   }
  }}
@@ -44,11 +44,12 @@ test('DSH Bilibili uses actual catalog, original Work admission, SQLite receipt 
  const kernel=await createKernel({storageRoot:path.join(root,'dsh-sessions'),adapter});t.after(()=>kernel.close());
  const host={identity,assertCurrent:async()=>{},authorize:async()=>true,reserveModel:async()=>{modelRequests++;if(realModel&&modelRequests>3)throw Error('Local experiment request cap reached');return{settle:async(value:any)=>{usage.push(value);}};},discover:source.discover,validateArguments:source.validateArguments,execute:source.execute};
  const result=await delegateLocal(kernel,host,{goal:realModel?'读取 Bilibili 公开视频 https://www.bilibili.com/video/BV1GJ411x7h7 的标题、作者和时长，用中文简短回答并附视频链接。只需要基本信息，不需要评论、字幕或媒体分析。':'读取这个公开视频的详情'},{timeoutMs:90000});assert(receipt,JSON.stringify({result}));
+ assert.equal(typeof result,'string');
  if(!realModel)assert.equal(receipts.length,reads.length);
- else{assert(receipts.some(r=>r.operation==='video_info'&&r.execution==='completed'));assert(result.evidence.includes('https://www.bilibili.com/video/BV1GJ411x7h7'));}
+ else{assert(receipts.some(r=>r.operation==='video_info'&&r.execution==='completed'));assert(result.includes('https://www.bilibili.com/video/BV1GJ411x7h7'));}
  assert.equal(receipt.schemaVersion,'fishbot.tool-result.v1');assert(['not_applicable','rejected','unknown'].includes(receipt.receipt.status));
  if(!real){assert.equal(receipt.execution,'completed');assert.equal(remoteReads,1);assert.equal((await source.discover()).every((v:any)=>v.effect==='read'),true);}
- console.log(JSON.stringify({kind:'DSH-original-Work-public-read',realNetwork:real,operations:receipts,finalOnly:Object.keys(result),paidModelCalls:realModel?modelRequests:0,...realModel?{usage,final:result}: {},productionAccess:false}));
+ console.log(JSON.stringify({kind:'DSH-original-Work-public-read',realNetwork:real,operations:receipts,finalOnly:typeof result,paidModelCalls:realModel?modelRequests:0,...realModel?{usage,final:result}: {},productionAccess:false}));
 });
 
 

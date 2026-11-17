@@ -64,15 +64,12 @@ class GroupReadBridge:
             raise asyncio.CancelledError('stale DSH group read')
         event=self.event
         work=event.get_extra('_hosted_pipeline')
-        if work is None or event.get_extra('_hosted_internal_work') or event.get_extra('_hosted_tool_completion'):
-            raise ValueError('dsh_foreground_work_required')
-        p=self.parent
-        if (p.get('authority')!='foreground' or work.bot_id!=self.settings['botId']
-            or (work.scope,work.subject,work.event_id)!=(p.get('origin_scope'),p.get('sender_id'),p.get('origin_event'))
-            or str(event.get_sender_id())!=str(work.subject)):
-            raise ValueError('dsh_group_work_mismatch')
         from pipeline_tools import validate_parent
-        validate_parent(self.db,self.settings,p)
+        validate_parent(self.db,self.settings,self.parent)
+        if work is not None and (work.scope,work.subject,work.event_id)!=(self.parent.get('origin_scope'),self.parent.get('sender_id'),self.parent.get('origin_event')):
+            raise ValueError('dsh_group_work_mismatch')
+        from dsh_tools import parent_record
+        if parent_record(self.settings,event,self.current,self.db,self.context)!=self.parent:raise ValueError('dsh_group_work_mismatch')
         group=str(event.get_group_id() or '')
         if group and work.scope!='group:'+group:
             raise ValueError('dsh_group_scope_mismatch')
@@ -91,7 +88,8 @@ class GroupReadBridge:
         if group_actions.owner_request(self.event,cfg) or group_actions.service(self.event):
             result.update((t.name,t) for t in group_actions.tools(self.event,cfg,self.db,self.current,lambda *args:None)
                           if t.name=='hosted_qq_group_context')
-        plugin=self.context.context.context
+        plugin=getattr(self.context.context,'context',None)
+        if plugin is None:return result
         history=plugin.get_config(umo=self.event.unified_msg_origin).get('provider_ltm_settings',{})
         if history.get('group_message_history_enable',False):
             from astrbot.core.tools.message_tools import GetGroupMessageHistoryTool

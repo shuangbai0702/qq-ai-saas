@@ -203,7 +203,26 @@ async def resume_completion(core,id,settings,store,all_settings):
             if row[0]=='received':return True
             # Restart before any dispatch: a new computation may safely resume.
             store.db.execute('DELETE FROM pipeline_events WHERE scope=? AND subject=? AND event=? AND attempted=0',(scope,subject,event_id));store.db.commit()
-        prompt='（平台工具结果续接：对方没有发新消息。这是先前真实请求的持久任务结果。原请求尚有未完成步骤时，沿用原工作身份和授权继续执行，再交付真实结果或必要限制；不要重复已完成的工具，也不要扩展成新委托，不把片段当完整视频。）\n'+json.dumps({'originalRequest':item['objective'],'toolResult':item['result']},ensure_ascii=False)
+        if item.get('continuation',{}).get('dsh'):
+            from dsh_completion import resume
+            try:
+                text=await resume(settings,item,lambda:all_settings.get(id) is settings and not getattr(getattr(core,'_hosted_stop_fence',None),'quiescing',False),store.db)
+            except asyncio.CancelledError:raise
+            except Exception:
+                async with client.post(base+'/completion-ack',json={'id':item['id'],'owner':item['owner'],'status':'pending'},allow_redirects=False) as response:
+                    if response.status!=200:raise ValueError('dsh_completion_release_failed')
+                    await response.read()
+                return True
+            if text is None:
+                # Host emits pending only after its next original media request
+                # is reliably admitted. Retire this consumed completion only.
+                async with client.post(base+'/completion-ack',json={'id':item['id'],'owner':item['owner'],'status':'done'},allow_redirects=False) as response:
+                    if response.status!=200:raise ValueError('dsh_completion_ack_failed')
+                    await response.read()
+                return True
+            prompt='（先前请求的委托已完成；这是平台结果续接，对方没有发新消息。）\n'+text
+        else:
+            prompt='（平台工具结果续接：对方没有发新消息。这是先前真实请求的持久任务结果。原请求尚有未完成步骤时，沿用原工作身份和授权继续执行，再交付真实结果或必要限制；不要重复已完成的工具，也不要扩展成新委托，不把片段当完整视频。）\n'+json.dumps({'originalRequest':item['objective'],'toolResult':item['result']},ensure_ascii=False)
         msg=AstrBotMessage();msg.type=MessageType.GROUP_MESSAGE if scope.startswith('group:') else MessageType.FRIEND_MESSAGE
         msg.self_id=self_id;msg.session_id=scope.split(':',1)[1];msg.message_id=event_id
         msg.sender=MessageMember(user_id=subject,nickname='原请求者');msg.message=[Plain(prompt)];msg.message_str=prompt;msg.timestamp=int(time.time());msg.raw_message={'message_type':'group' if scope.startswith('group:') else 'private','user_id':int(subject),'self_id':int(msg.self_id or 0),'message_id':event_id,'sender':{'user_id':int(subject)},'message':[{'type':'text','data':{'text':prompt}}],**({'group_id':int(scope[6:])} if scope.startswith('group:') else {})}

@@ -45,6 +45,9 @@ def project(value,*,write=False,evidence=None):
 def structured(tool):
     """One envelope for JSON and MCP media, with declarative side effects."""
     if getattr(tool,'hosted_receipt_wrapped',False):return tool
+    # A delegated conclusion is already the model-facing final text, not an
+    # external action receipt. Its trusted producer handles errors and unknown.
+    if getattr(tool,'hosted_final_text',False):return tool
     from astrbot.core.agent.tool import FunctionTool
     from mcp.types import CallToolResult,TextContent
     class ReceiptTool(FunctionTool):

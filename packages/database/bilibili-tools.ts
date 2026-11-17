@@ -27,7 +27,7 @@ export class BilibiliTools {
   await this.settings(tenant,bot,tx);const rows=await tx.query('UPDATE bilibili_settings SET config=$4,revision=revision+1,model_secret=CASE WHEN $5 THEN $6 ELSE model_secret END,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND revision=$3 RETURNING revision',[bot,tenant,revision,JSON.stringify(BilibiliConfigSchema.parse(config)),modelSecret!==undefined,modelSecret??null]);
   if(!rows.length)throw toolConflict('B站配置已变化，请刷新');return rows[0];
  })}
- async admit(bot:any,call:BiliCall){
+ async admit(bot:any,call:BiliCall,delegation?:{sessionId:string;delegationId:string}){
   const operation=biliOperations[call.operation],args=operation.args.parse(call.args);
   const semanticArgs=['comment','delete_comment'].includes(call.operation)?Object.fromEntries(Object.entries(args).filter(([key])=>key!=='bvid')):args;
   const hash=digest(canonical({operation:call.operation,args:semanticArgs}));
@@ -37,6 +37,10 @@ export class BilibiliTools {
    const s=await this.settings(bot.tenant_id,bot.id,tx),[account]=await tx.query('SELECT uid,revision,state FROM bilibili_accounts WHERE bot_id=$1 AND tenant_id=$2',[bot.id,bot.tenant_id]);
    if(call.origin&&call.authority==='foreground'&&call.origin.scope.startsWith('private:')&&call.origin.scope!=='private:'+call.senderId)throw toolConflict('恢复目标与真实发送者不符',403);
    const value={tenant_id:fresh.tenant_id,generation:fresh.generation,operation:call.operation,args,args_digest:hash,bot_id:bot.id,settings_revision:s.revision,account_revision:account?.revision,account_uid:account?.uid,authority:call.authority,sender_id:call.senderId,mode_epoch:call.epoch,work_id:call.workId,step_id:call.stepId,config_revision:bot.revision,cancel_requested:false,deadlineAt:call.deadlineAt,deadline_at:new Date(call.deadlineAt),origin_scope:call.origin?.scope??'',origin_event:call.origin?.eventId??'',cycle_id:call.authority==='autonomous'?call.workId:null,write:operation.write,continuation:{objective:call.origin?.objective??'',...(call.continuation?{sourceActionId:call.continuation.actionId,sourceOwner:call.continuation.owner}:{})}};
+   if(delegation){
+    if(call.operation!=='analyze'||!/^fishbot-[a-f0-9]{64}$/.test(delegation.sessionId)||!delegation.delegationId||delegation.delegationId.length>256)throw toolConflict('委托媒体身份无效',400);
+    Object.assign(value.continuation,{dsh:{sessionId:delegation.sessionId,delegationId:delegation.delegationId}});
+   }
    await this.validate(value,s,tx);
    if(call.operation==='analyze'){
     const [model]=await tx.query('SELECT r.config,(s.ciphertext IS NOT NULL) AS has_key FROM bot_config_revisions r LEFT JOIN secrets s ON s.bot_id=r.bot_id AND s.tenant_id=$3 WHERE r.bot_id=$1 AND r.revision=$2',[bot.id,bot.revision,bot.tenant_id]);
@@ -50,8 +54,16 @@ export class BilibiliTools {
  }
  async validateContinuation(job:any,db=this.db){
   const source=job.continuation;if(!source?.sourceActionId)return;
+  // A DSH child media job was admitted under the parent's live completion
+  // lease. Its own original Work record carries that proof; ACK/retirement of
+  // the consumed parent must not invalidate an already queued child Worker.
+  if(job.id&&job.operation==='analyze'&&source.dsh){
+   const admitted=await this.get(job.tenant_id,job.bot_id,job.id,db);
+   if(!admitted||admitted.operation!=='analyze'||admitted.authority!=='foreground'||['bot_id','tenant_id','authority','operation','work_id','sender_id','origin_scope','origin_event','generation','config_revision','settings_revision','account_revision','account_uid','mode_epoch','args_digest'].some(key=>admitted[key]!==job[key])||canonical(admitted.args)!==canonical(job.args)||canonical(admitted.continuation)!==canonical(source))throw toolConflict('已准入媒体任务身份不一致',403);
+   return;
+  }
   const parent=await this.get(job.tenant_id,job.bot_id,source.sourceActionId,db);
-  if(!parent||parent.operation!=='analyze'||parent.authority!=='foreground'||job.authority!=='foreground'||parent.work_id!==job.work_id||parent.sender_id!==job.sender_id||parent.origin_scope!==job.origin_scope||parent.origin_event!==job.origin_event||parent.generation!==job.generation||parent.config_revision!==job.config_revision||parent.settings_revision!==job.settings_revision||parent.account_revision!==job.account_revision||parent.account_uid!==job.account_uid||parent.cancel_requested||parent.state!=='finished'||parent.completion_state!=='claimed'||parent.completion_owner!==source.sourceOwner||+new Date(parent.completion_until)<=Date.now()||+new Date(parent.deadline_at)<=Date.now())throw toolConflict('原任务续接身份、配置或完成租约已失效',403);
+  if(!parent||parent.operation!=='analyze'||parent.authority!=='foreground'||job.authority!=='foreground'||parent.work_id!==job.work_id||parent.sender_id!==job.sender_id||parent.origin_scope!==job.origin_scope||parent.origin_event!==job.origin_event||parent.generation!==job.generation||parent.config_revision!==job.config_revision||parent.settings_revision!==job.settings_revision||parent.account_revision!==job.account_revision||parent.account_uid!==job.account_uid||parent.cancel_requested||!['finished','unknown','canceled'].includes(parent.state)||parent.completion_state!=='claimed'||parent.completion_owner!==source.sourceOwner||+new Date(parent.completion_until)<=Date.now()||biliOperations[job.operation as keyof typeof biliOperations].write&&+new Date(parent.deadline_at)<=Date.now())throw toolConflict('原任务续接身份、配置或完成租约已失效',403);
  }
  async validate(job:any,settings?:any,db=this.db){
   const [bot]=await db.query('SELECT * FROM bots WHERE id=$1 AND tenant_id=$2',[job.bot_id,job.tenant_id]),s=settings??await this.settings(job.tenant_id,job.bot_id,db);

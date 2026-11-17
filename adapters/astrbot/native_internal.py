@@ -117,6 +117,8 @@ class BoundedProvider:
 
 async def run(provider,control,prompt,system,tools=(),handlers=None,context=None,contexts=None):
     """Return actual native feedback; cancellation settles the owned computation."""
+    # Borrow the current budget owner for trusted nested model requests.
+    if context is not None:context.hosted_run_control=control
     from tool_outcome import RECEIPT_GUIDANCE
     system+='\n'+RECEIPT_GUIDANCE
     handlers=handlers or {};allowed={tool.name:tool for tool in tools}

@@ -13,6 +13,7 @@ import {SharedAstrBotAdapter} from '../../../adapters/astrbot/shared.js';
 import {redact} from '../../../packages/shared/security.js';
 import {FavoriteMaintenance} from './favorite-maintenance.js';
 import {DshHost} from './dsh-host.js';
+import {BilibiliExecutor} from './bilibili/executor.js';
 
 /** Add the native delegation host without replacing QQ owners or the heartbeat. */
 export async function installDshRuntime(agent:NodeAgent,release:string){
@@ -143,7 +144,6 @@ export async function installBilibiliRuntime(agent:NodeAgent,release:string,opti
  if(!/^[a-f0-9]{64}$/.test(release)||agent.closed)throw new Error('Invalid Bilibili maintenance release');
  const marker=Symbol.for('fishbot.bilibili.maintenance'),live=agent as any;
  if(live[marker]?.release===release&&live.bilibili?.stopped===(options.start===false))return{unchanged:true,pid:process.pid,release};
- const {BilibiliExecutor}=await import('./bilibili/executor.js');
  const timer=agent.timer,previous=live.bilibili,wasStopped=previous?.stopped;
  if(timer)clearInterval(timer);agent.timer=undefined;
  const children=[...agent.host.children].map(([id,child])=>({id,child,pid:child.pid}));

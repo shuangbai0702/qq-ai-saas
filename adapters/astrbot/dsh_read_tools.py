@@ -12,18 +12,8 @@ def _validate(settings,event,current,db,context):
     if not current():raise asyncio.CancelledError('stale DSH read Work')
     if getattr(getattr(context,'context',None),'event',None) is not event:
         raise ValueError('dsh_read_event_mismatch')
-    work=event.get_extra('_hosted_pipeline')
-    if work is None or event.get_extra('_hosted_internal_work') or event.get_extra('_hosted_tool_completion'):
-        raise ValueError('dsh_foreground_work_required')
-    if work.bot_id!=settings['botId'] or str(event.get_sender_id())!=str(work.subject):
-        raise ValueError('dsh_read_identity_mismatch')
-    record={'bot_id':settings['botId'],'tenant_id':settings['tenantId'],
-            'generation':settings['generation'],'config_revision':settings['revision'],
-            'authority':'foreground','origin_scope':work.scope,'origin_event':work.event_id,'sender_id':work.subject,
-            'work_id':'foreground:'+hashlib.sha256(json.dumps([work.bot_id,work.scope,work.subject,work.event_id],ensure_ascii=False).encode()).hexdigest()}
-    from pipeline_tools import validate_parent
-    validate_parent(db,settings,record)
-    return work.scope
+    from dsh_tools import parent_record
+    return parent_record(settings,event,current,db,context)['origin_scope']
 
 
 def _material_tool(settings,event,db,social,scope):
@@ -54,7 +44,7 @@ def _bindings(settings,event,current,db,context,social=None):
         try:_validate(settings,event,current,db,context);return True
         except ValueError:return False
     result=[]
-    for tool in execution_memory.tools(settings,event,scope,authorized):
+    for tool in execution_memory.tools(settings,event,scope,authorized,event.get_extra('_hosted_internal_work')):
         if tool.name=='hosted_recall_experience' and tool.active:result.append((tool.name,'execution_review',tool,None))
     for tool in qq_favorite_tools.tools(event,settings['config'],db,settings['root'],authorized):
         if tool.name=='hosted_qq_favorites' and tool.active:
