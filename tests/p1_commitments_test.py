@@ -16,7 +16,7 @@ import summary_material as material
 from behavior import BehaviorStore
 
 SCOPE='private:12345678';PERSON='12345678'
-CLEAN_CFG={'memorySummary':True,'summaryRounds':35,'naturalConversation':True}
+CLEAN_CFG={'memorySummary':True,'summaryRounds':30,'naturalConversation':True}
 
 
 def turns(*pairs):
@@ -124,7 +124,7 @@ class BigMergeEvidenceTests(unittest.IsolatedAsyncioTestCase):
         async def fixture(**kw):
             self.calls.append(kw);return NS(completion_text=json.dumps({'summary':'合并背景'},ensure_ascii=False))
         with patch.object(material,'MAX_CLAIMS_BYTES',32*1024):
-            self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=fixture),lambda:True,{},self.var))
+            self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':30,'naturalConversation':False},NS(text_chat=fixture),lambda:True,{},self.var))
             await self.drain()
         self.assertTrue(self.calls,'the merge ran')
         prompt=json.loads(self.calls[0]['prompt'])

@@ -36,7 +36,7 @@ class CheckpointContinuity(unittest.IsolatedAsyncioTestCase):
                 data['conversation_continuity'] = product
             return NS(completion_text=json.dumps(data, ensure_ascii=False))
         self.assertTrue(self.store.reflection.maybe_start(
-            fixture.SCOPE, {'memory': True, 'memorySummary': True, 'summaryRounds': 35, 'naturalConversation': False},
+            fixture.SCOPE, {'memory': True, 'memorySummary': True, 'summaryRounds': 30, 'naturalConversation': False},
             summary_provider(response), current, {}, self.var))
         await self.drain()
         return calls
@@ -60,12 +60,12 @@ class CheckpointContinuity(unittest.IsolatedAsyncioTestCase):
         self.assertIn(first, json.dumps(self.journal.last.wire, ensure_ascii=False), 'the adopted Journal actually carries the optional product')
         captured = fixture.material.snapshots(self.journal.last.wire, fixture.SCOPE)
         self.assertNotIn(first, json.dumps(captured, ensure_ascii=False), 'read-only continuity never becomes real user summary material')
-        calls = await self.summarize(self.product(second), start=35)
+        calls = await self.summarize(self.product(second), start=30)
         cp2 = self.latest_checkpoint()
         self.assertNotEqual(cp1, cp2)
         self.assertEqual(len(calls), 1)
         self.assertNotIn(first, calls[0]['prompt'], 'old continuity is not summary/observed-request material')
-        self.assertEqual(len(json.loads(calls[0]['prompt'])['turns']), 35)
+        self.assertEqual(len(json.loads(calls[0]['prompt'])['turns']), 30)
         self.finish()
         current = json.dumps(continuity.view(self.db, fixture.SCOPE), ensure_ascii=False)
         self.assertIn(second, current)
@@ -73,7 +73,7 @@ class CheckpointContinuity(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.db.execute('SELECT conversation_continuity FROM memory_reconstruction_checkpoints WHERE id=?', (cp1,)).fetchone()[0])
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0], 0)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0], 0)
-        self.assertEqual(self.db.execute('SELECT round_count FROM memory_reconstruction_checkpoints WHERE id=?', (cp2,)).fetchone()[0], 35)
+        self.assertEqual(self.db.execute('SELECT round_count FROM memory_reconstruction_checkpoints WHERE id=?', (cp2,)).fetchone()[0], 30)
 
     async def test_invalid_and_omitted_product_do_not_block_legal_summary_or_keep_stale_product(self):
         for bad in (..., None, {'text': 'wrong container'}, self.product('字' * 501), [{'source_scope': 'private:87654321', 'text': 'foreign'}]):
@@ -86,10 +86,10 @@ class CheckpointContinuity(unittest.IsolatedAsyncioTestCase):
                 self.store.model_journals[fixture.SCOPE] = self.journal
                 await self.summarize(self.product('OLD_CURRENT_CONTINUITY'))
                 self.finish()
-                calls = await self.summarize(bad, start=35)
+                calls = await self.summarize(bad, start=30)
                 self.assertEqual(len(calls), 1)
                 self.assertEqual(self.db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints').fetchone()[0], 2)
-                self.assertEqual(self.db.execute('SELECT summary_watermark FROM memory_reflection_progress WHERE scope=?', (fixture.SCOPE,)).fetchone()[0], 70)
+                self.assertEqual(self.db.execute('SELECT summary_watermark FROM memory_reflection_progress WHERE scope=?', (fixture.SCOPE,)).fetchone()[0], 60)
                 self.finish()
                 self.assertIsNone(continuity.view(self.db, fixture.SCOPE))
                 self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0], 0)
@@ -104,10 +104,10 @@ class CheckpointContinuity(unittest.IsolatedAsyncioTestCase):
         path = Path(self.tmp.name) / 'behavior.sqlite'
         self.store.close(); self.store = BehaviorStore(path); self.db = self.store.db
         self.assertEqual(continuity.view(self.db, fixture.SCOPE), before)
-        self.add(start=35)
+        self.add(start=30)
         with patch('time.time', return_value=time.time() + 100 * 365 * 86400):
             self.assertEqual(continuity.view(self.db, fixture.SCOPE), before)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0], 35, 'reading continuity never creates a business round')
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0], 30, 'reading continuity never creates a business round')
 
     def test_legacy_schema_upgrade_is_additive_and_does_not_backfill_history(self):
         self.add()
@@ -128,13 +128,13 @@ class CheckpointContinuity(unittest.IsolatedAsyncioTestCase):
         async def delayed(**kw):
             entered.set(); await release.wait()
             return NS(completion_text=json.dumps({'summary': '迟到摘要', 'conversation_continuity': self.product('禁止发布的迟到版')}))
-        task = asyncio.create_task(self.summarize(None, start=35, chat=delayed))
+        task = asyncio.create_task(self.summarize(None, start=30, chat=delayed))
         await asyncio.wait_for(entered.wait(), 3)
-        self.db.execute("UPDATE memory_rounds SET answer='并发修改真实回复' WHERE scope=? AND event='35'", (fixture.SCOPE,)); self.db.commit()
+        self.db.execute("UPDATE memory_rounds SET answer='并发修改真实回复' WHERE scope=? AND event='30'", (fixture.SCOPE,)); self.db.commit()
         release.set(); await task
         self.assertEqual(continuity.view(self.db, fixture.SCOPE), before)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints').fetchone()[0], 1)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0], 35)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0], 30)
 
     async def test_model_failure_and_transaction_failure_preserve_previous_product(self):
         await self.summarize(self.product('故障前合法旧版'))
@@ -142,7 +142,7 @@ class CheckpointContinuity(unittest.IsolatedAsyncioTestCase):
         before = continuity.view(self.db, fixture.SCOPE)
         async def failed(**kw):
             raise TimeoutError('offline fixture')
-        calls = await self.summarize(None, start=35, chat=failed)
+        calls = await self.summarize(None, start=30, chat=failed)
         self.assertEqual(len(calls), 2)
         self.assertEqual(continuity.view(self.db, fixture.SCOPE), before)
         self.db.execute('DELETE FROM memory_reflection_retry'); self.db.commit()
@@ -152,13 +152,13 @@ class CheckpointContinuity(unittest.IsolatedAsyncioTestCase):
             original_commit(*args, **kwargs)
             raise RuntimeError('fixture fault after batch write')
         with patch.object(semantic_batch, 'commit', side_effect=fail_after_batch_write):
-            calls = await self.summarize(self.product('不得泄漏的事务内新版'), start=35)
+            calls = await self.summarize(self.product('不得泄漏的事务内新版'), start=30)
         self.assertEqual(len(calls), 1)
         self.assertEqual(continuity.view(self.db, fixture.SCOPE), before)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints').fetchone()[0], 1)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0], 1)
-        self.assertEqual(self.db.execute('SELECT summary_watermark FROM memory_reflection_progress WHERE scope=?', (fixture.SCOPE,)).fetchone()[0], 35)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0], 35)
+        self.assertEqual(self.db.execute('SELECT summary_watermark FROM memory_reflection_progress WHERE scope=?', (fixture.SCOPE,)).fetchone()[0], 30)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0], 30)
 
 
 class ProductContract(unittest.TestCase):

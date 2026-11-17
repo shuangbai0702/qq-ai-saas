@@ -3,7 +3,7 @@
 A: submitted-unknown candidates are retained; provably unsent ones leave no
    trace; a crash after staging resumes on the staged candidate.
 B: this system's own tool round-trips become bounded v2 material;
-   incomplete originals remain explicit and permit legal 35-round checkpoints,
+   incomplete originals remain explicit and permit legal 30-round checkpoints,
    without inventing confirmed replies or purging the next owned input.
 All offline: real SQLite, fake provider, no network, no QQ.
 """
@@ -217,7 +217,7 @@ class SemanticBatchRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.var=contextvars.ContextVar('hr',default=None);self.now=time.time()-100000;self.calls=[]
     def tearDown(self):self.store.close();self.tmp.cleanup()
 
-    def rounds(self,count=35):
+    def rounds(self,count=30):
         for i in range(count):
             msg={'role':'user','content':[{'type':'text','text':material.SOURCE+json.dumps({'scope':SCOPE,'sender_id':'12345678','event_id':str(i)})+'\n普通话题'+str(i)}]}
             if i==0:
@@ -241,10 +241,10 @@ class SemanticBatchRecoveryTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
             if self.store.reflection.task is task:break
 
-    async def test_incomplete_original_is_marked_and_35_round_checkpoint_is_available(self):
+    async def test_incomplete_original_is_marked_and_30_round_checkpoint_is_available(self):
         self.rounds()
         metrics={}
-        self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=self.chat()),lambda:True,metrics,self.var))
+        self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':30,'naturalConversation':False},NS(text_chat=self.chat()),lambda:True,metrics,self.var))
         await self.drain()
         row=self.db.execute('SELECT state,pending_events,summary_id FROM memory_reconstruction_checkpoints WHERE scope=?',(SCOPE,)).fetchone()
         self.assertIsNotNone(row);self.assertEqual(row[0],'available');self.assertIsNone(row[1])
@@ -267,7 +267,7 @@ class SemanticBatchRecoveryTests(unittest.IsolatedAsyncioTestCase):
         item=material.snapshots([msg,{'role':'assistant','content':'仅模型历史的回复'}],SCOPE)[0]
         item['reply']='';item['complete']=True;item['native_reply']='仅模型历史的回复'
         self.db.execute('UPDATE memory_round_material SET material=? WHERE scope=? AND event=?',(json.dumps(item,ensure_ascii=False),SCOPE,'0'));self.db.commit()
-        self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=self.chat()),lambda:True,{},self.var))
+        self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':30,'naturalConversation':False},NS(text_chat=self.chat()),lambda:True,{},self.var))
         await self.drain()
         self.assertEqual(len(self.calls),1)
         prompt=json.loads(self.calls[0]['prompt'])
@@ -284,7 +284,7 @@ class SemanticBatchRecoveryTests(unittest.IsolatedAsyncioTestCase):
             self.calls.append(kw)
             return NS(completion_text=json.dumps({'summary':'本批真实背景摘要','commitments':[{'event':'0','topic':'周末平江路','quote':'普通话题0','who':'user','stage':'accepted'}]},ensure_ascii=False))
         with patch.object(material,'MAX_CLAIMS_BYTES',2):
-            self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=protected),lambda:True,{},self.var))
+            self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':30,'naturalConversation':False},NS(text_chat=protected),lambda:True,{},self.var))
             await self.drain()
         checkpoint,state=self.db.execute('SELECT id,state FROM memory_reconstruction_checkpoints WHERE scope=?',(SCOPE,)).fetchone()
         self.assertEqual(state,'available')

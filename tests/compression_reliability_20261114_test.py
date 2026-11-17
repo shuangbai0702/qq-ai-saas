@@ -105,7 +105,7 @@ class Reliability(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(detail['capacity']['wireChars'],0)
         self.assertEqual(finish_semantic_batches(self.st,{},fixture.SCOPE)['retired'],1)
 
-    async def test_capacity_before_35_is_visible_without_fabricating_rounds(self):
+    async def test_capacity_before_30_is_visible_without_fabricating_rounds(self):
         r=self.st.reflection;db=self.st.db
         # Another scope's committed checkpoint is not authority for this one.
         scope='private:87654321'

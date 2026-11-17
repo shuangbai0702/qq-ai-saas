@@ -137,7 +137,7 @@ class ContinuityBigMerge(unittest.IsolatedAsyncioTestCase):
             initial=journal.prepare(messages([{'role':'system','content':'fixed'},source_message('0')],
                 {'memory_foundation':{'conversation_summaries':[]}}),fixture.r.reconstruction_stamp(SCOPE))
             self.assertTrue(journal.commit(initial));fixture.store.model_journals[SCOPE]=journal
-            for i in range(35):
+            for i in range(30):
                 question,answer=(user,bot) if i==31 else ('普通交流'+str(i),'收到')
                 msg=source_message(str(i));msg['content']=msg['content'].split('\n',1)[0]+'\n'+question
                 fixture.r.record(SCOPE,'12345678',str(i),question,answer,
@@ -175,7 +175,7 @@ class ContinuityBigMerge(unittest.IsolatedAsyncioTestCase):
             initial=journal.prepare(messages(raw,{'memory_foundation':{'conversation_summaries':[],'facts':[]}}),
                 fixture.r.reconstruction_stamp(SCOPE))
             self.assertTrue(journal.commit(initial));fixture.store.model_journals[SCOPE]=journal
-            for start in (0,35):
+            for start in (0,30):
                 await fixture.batch(start)
                 self.assertEqual(finish_semantic_batches(fixture.store,{},SCOPE)['retired'],1)
             journal=fixture.store.model_journals[SCOPE];old_wire=copy.deepcopy(journal.last.wire)

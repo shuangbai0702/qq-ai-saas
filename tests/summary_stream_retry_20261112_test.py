@@ -46,7 +46,7 @@ class StreamingSummary(SemanticSummary):
   await self.run_summary()
   self.assertEqual(len(self.calls),1)
   self.assertIsNone(self.checkpoint())
-  self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
+  self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],30)
 
 del SemanticSummary
 

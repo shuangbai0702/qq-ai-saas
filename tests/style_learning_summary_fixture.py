@@ -20,7 +20,7 @@ class SummaryLearningFixture:
     def tearDown(self):
         self.store.close();self.temporary.cleanup()
 
-    def record(self,start=0,count=35,origins=None):
+    def record(self,start=0,count=30,origins=None):
         history=[{'role':'system','content':'fixture policy'}]
         for i in range(start,start+count):
             origin=origins[i%len(origins)] if origins else self.scope
@@ -34,7 +34,7 @@ class SummaryLearningFixture:
             self.ref.record(self.scope,person,key,text,'确实很有趣',materials=snapshots([message,reply],self.scope))
         journal=ReadonlyJournal(self.db,self.scope);journal.serial=1
         if not journal.commit(Prepared(1,None,history,history,{},1,time.time(),'initial')):
-            raise AssertionError('35 confirmed fixture rounds must commit to the real Journal')
+            raise AssertionError('30 confirmed fixture rounds must commit to the real Journal')
         self.store.model_journals[self.scope]=journal
 
     def result(self,kw):
@@ -49,7 +49,7 @@ class SummaryLearningFixture:
 
     def start(self,model=None):
         started=self.ref.maybe_start(self.scope,self.cfg,summary_provider(model or self.model),lambda:self.state['current'],self.metrics,self.event)
-        if not started:raise AssertionError('35 confirmed Journal rounds with complete material must start the summary')
+        if not started:raise AssertionError('30 confirmed Journal rounds with complete material must start the summary')
         return started
 
     async def finish(self):

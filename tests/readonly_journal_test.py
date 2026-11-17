@@ -44,7 +44,7 @@ class JournalTests(unittest.TestCase):
         result={'role':'tool','tool_call_id':'c','content':'actual receipt'}
         second=self.j.prepare(self.base+[call,result,packet(self.state)],('tenant','bot',1),now=2)
         self.assertEqual(second.wire,first.wire+[call,result]);self.assertEqual(second.turns,1)
-    def test_reconstruction_requires_35_round_permit_but_idle_and_binding_changes_append(self):
+    def test_reconstruction_requires_30_round_permit_but_idle_and_binding_changes_append(self):
         for change in ('identity','native','epoch'):
             first=self.first();base=copy.deepcopy(self.base);stamp=('tenant','bot',1);now=2
             if change=='identity':base[0]['content']='different actual owner'
@@ -83,7 +83,7 @@ class JournalTests(unittest.TestCase):
         self.first();latest=copy.deepcopy(self.state)
         latest['state']['conversation_summaries']=[{'summary':'new compressed background'}]
         incoming=self.base+[packet(latest)]
-        authority=self.Permit();p=self.j.prepare(incoming,('tenant','bot',1),now=2,reconstruction_authority=authority,reconstruction_scope='private:12345',retirement='successful-35-round-checkpoint')
+        authority=self.Permit();p=self.j.prepare(incoming,('tenant','bot',1),now=2,reconstruction_authority=authority,reconstruction_scope='private:12345',retirement='successful-30-round-checkpoint')
         self.assertEqual(p.wire,incoming);self.assertTrue(p.reason)
         self.assertTrue(self.j.commit(p));self.assertEqual(authority.rows[0][1],'consumed')
     def test_recalled_summary_changes_append_without_minting_a_checkpoint(self):
@@ -142,7 +142,7 @@ class JournalTests(unittest.TestCase):
         self.assertEqual(restored['policy'],'changed-policy')
         self.assertEqual(third.wire[:len(second.wire)],second.wire)
 
-    def test_35_turn_policy_compaction_preserves_every_prefix_and_complete_state(self):
+    def test_overdue_policy_compaction_preserves_every_prefix_and_complete_state(self):
         journals=[ReadonlyJournal(),ReadonlyJournal()];base=copy.deepcopy(self.base)
         previous=[[],[]];policy='既有固定能力说明。'*500
         for turn in range(35):

@@ -17,7 +17,7 @@ from memory_reflection import GROUP_ROUND_MESSAGES
 from memory_scope import summary_rows,value_hash
 
 SCOPE='private:12345678';PERSON='12345678'
-CLEAN_CFG={'memorySummary':True,'summaryRounds':35,'naturalConversation':False}
+CLEAN_CFG={'memorySummary':True,'summaryRounds':30,'naturalConversation':False}
 
 
 def message(event,text):
@@ -40,7 +40,7 @@ class P0HoldMergeTests(unittest.IsolatedAsyncioTestCase):
         self.var=contextvars.ContextVar('p0',default=None);self.now=time.time()-100000;self.calls=[]
     def tearDown(self):self.store.close();self.tmp.cleanup()
 
-    def rounds(self,start=0,count=35,special=None):
+    def rounds(self,start=0,count=30,special=None):
         for i in range(start,start+count):
             user,bot=(special or {}).get(i,('普通话题'+str(i),'普通回复'+str(i)))
             self.store.reflection.record(SCOPE,PERSON,str(i),user,bot,self.now+i,materials=material.snapshots([message(str(i),user)],SCOPE))
@@ -86,7 +86,7 @@ class P0HoldMergeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.db.execute("SELECT count(*) FROM memory_reconstruction_checkpoints WHERE state='available'").fetchone()[0],0,'no permit while the hold is open')
         self.assertEqual(metrics.get('summaryReleaseHolds'),1)
         watermark=self.db.execute('SELECT summary_watermark FROM memory_reflection_progress WHERE scope=?',(SCOPE,)).fetchone()[0]
-        self.rounds(start=35)
+        self.rounds(start=30)
         top=self.db.execute('SELECT max(id) FROM memory_rounds').fetchone()[0]
         self.store.reflection.retry();await self.drain()
         prompt=json.loads(self.calls[-1]['prompt'])
@@ -97,7 +97,7 @@ class P0HoldMergeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material WHERE event=?',('0',)).fetchone()[0],0)
         self.assertIn('0',material.coverage(self.db,SCOPE))
         advanced=self.db.execute('SELECT summary_watermark FROM memory_reflection_progress WHERE scope=?',(SCOPE,)).fetchone()[0]
-        self.assertEqual(advanced,top,'35 new rounds are consumed in addition to the held evidence')
+        self.assertEqual(advanced,top,'30 new rounds are consumed in addition to the held evidence')
         self.assertGreater(advanced,watermark)
         self.assertEqual({r[0] for r in self.db.execute('SELECT event FROM memory_rounds')},set())
         permit=self.db.execute('SELECT state,summary_id FROM memory_reconstruction_checkpoints WHERE scope=?',(SCOPE,)).fetchone()
@@ -118,16 +118,16 @@ class P0HoldMergeTests(unittest.IsolatedAsyncioTestCase):
         self.store.reflection.retry();await self.drain()
         self.assertEqual(len(self.calls),1,'a lost round never re-enters a batch or retries the model')
         self.db.execute('DELETE FROM memory_hold_rounds WHERE scope=? AND event=?',(SCOPE,'ghost'));self.db.commit()
-        for i in range(35):self.store.reflection.record(SCOPE,PERSON,'more-%d'%i,'问题%d'%i,'回复%d'%i,self.now+200+i)
+        for i in range(30):self.store.reflection.record(SCOPE,PERSON,'more-%d'%i,'问题%d'%i,'回复%d'%i,self.now+200+i)
         self.store.reflection.retry();await self.drain()
         row=self.db.execute("SELECT state FROM memory_reconstruction_checkpoints WHERE scope=? AND state='available'",(SCOPE,)).fetchone()
         self.assertIsNotNone(row);self.assertEqual(row[0],'available','minting resumes once no hold blocks the range')
 
     async def test_checkpoint_permits_survive_single_scope_merge(self):
-        """3x35 rounds: checkpoints follow their summary onto the merge product
+        """3x30 rounds: checkpoints follow their summary onto the merge product
         with state preserved, none dangles, and a migrated permit is usable."""
         for batch in range(2):
-            self.rounds(start=batch*35)
+            self.rounds(start=batch*30)
             if batch==0:self.assertTrue(self.store.reflection.maybe_start(SCOPE,CLEAN_CFG,summary_provider(self.chat()),lambda:True,{},self.var))
             else:self.store.reflection.retry()
             await self.drain()

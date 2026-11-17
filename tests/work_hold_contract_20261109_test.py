@@ -136,7 +136,7 @@ class PartialCheckpoint(unittest.TestCase):
   sid=self.db.execute("INSERT INTO memory_summaries(scope,text,sources,updated) VALUES('bot_shared','covered summary','[]',?)",(time.time(),)).lastrowid
   self.db.execute("INSERT INTO memory_summary_levels VALUES(?,'small')",(sid,))
   self.db.execute("INSERT INTO memory_hold_rounds VALUES('bot_shared','unresolved',NULL,'uncovered',?)",(time.time(),))
-  self.db.execute("INSERT INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,created,summary_id,pending_events) VALUES('bot_shared',35,35,0,'pending_coverage',?,?,?)",(time.time(),sid,'["unresolved"]'))
+  self.db.execute("INSERT INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,created,summary_id,pending_events) VALUES('bot_shared',30,30,0,'pending_coverage',?,?,?)",(time.time(),sid,'["unresolved"]'))
   return sid
  def test_partial_permit_requires_this_product_v3_not_any_old_coverage(self):
   sid=self.seed();m=message('private:12345678','a');mat=self.proof(m)

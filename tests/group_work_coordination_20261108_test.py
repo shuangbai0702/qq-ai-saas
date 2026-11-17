@@ -112,7 +112,7 @@ class Coordination(unittest.IsolatedAsyncioTestCase):
         # live round/permit is minted or restored by the recovery path.
         db.execute("INSERT INTO memory_summaries(scope,text,sources,updated) VALUES(?,'fixture summary','[]',?)",(scope,time.time()))
         summary=db.execute('SELECT max(id) FROM memory_summaries').fetchone()[0]
-        db.execute("INSERT INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,created,summary_id) VALUES(?,35,35,0,'available',?,?)",(scope,time.time(),summary));db.commit()
+        db.execute("INSERT INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,created,summary_id) VALUES(?,30,30,0,'available',?,?)",(scope,time.time(),summary));db.commit()
         current_stamp=reflection.reconstruction_stamp(scope)
         with patch('system_contract.request_identity',return_value='fixture-staged-request'):
             staged=j.prepare(base+[{'role':'assistant','content':'real answer'},user('aborted')]+packet,2,retirement=current_stamp,**kw)

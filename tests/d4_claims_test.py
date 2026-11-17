@@ -39,7 +39,7 @@ class ClaimTests(unittest.IsolatedAsyncioTestCase):
         self.var=contextvars.ContextVar('d4',default=None);self.now=time.time()-100000
     def tearDown(self):self.store.close();self.tmp.cleanup()
 
-    def rounds(self,start=0,count=35,special=None):
+    def rounds(self,start=0,count=30,special=None):
         for i in range(start,start+count):
             user,bot=(special or {}).get(i,('普通话题'+str(i),'普通回复'+str(i)))
             self.store.reflection.record(SCOPE,PERSON,str(i),user,bot,self.now+i,materials=material.snapshots([message(str(i),user)],SCOPE))
@@ -57,7 +57,7 @@ class ClaimTests(unittest.IsolatedAsyncioTestCase):
         return json.loads(row[1]) if row[1] else []
 
     async def test_guess_denial_correction_survives_summary_merge_and_restart(self):
-        """Bot guess -> user denial -> 35-round summary -> big merge -> restart:
+        """Bot guess -> user denial -> 30-round summary -> big merge -> restart:
         claims still tell who said it, whether it was delivered, when corrected."""
         self.store.memory.remember(SCOPE,PERSON,'称呼','江哥','before',self.now);self.db.commit()
         self.rounds(special={0:('你是不是叫江哥？','我猜你是江哥吧'),1:('我不叫江哥，以后叫我小寒','好的，小寒')})
@@ -69,7 +69,7 @@ class ClaimTests(unittest.IsolatedAsyncioTestCase):
                     'evidence':[{'event':'0','who':'bot','quote':'我猜你是江哥吧'},{'event':'1','who':'user','quote':'我不叫江哥，以后叫我小寒'}],
                     'corrections':[{'event':'1','name':'称呼','oldValue':'江哥','newValue':'小寒','quote':'我不叫江哥，以后叫我小寒'}]}))
             return NS(completion_text=json.dumps({'summary':'普通持续背景'}))
-        cfg={'memory':True,'memoryAutoCapture':True,'memorySummary':True,'summaryRounds':35,'naturalConversation':True}
+        cfg={'memory':True,'memoryAutoCapture':True,'memorySummary':True,'summaryRounds':30,'naturalConversation':True}
         self.assertTrue(self.store.reflection.maybe_start(SCOPE,cfg,NS(text_chat=chat),lambda:True,{},self.var));await self.drain()
         self.assertEqual(self.db.execute('SELECT value FROM facts WHERE scope=? AND name=? AND active=1',(SCOPE,'称呼')).fetchone()[0],'小寒')
         small1=self.db.execute('SELECT id FROM memory_summaries ORDER BY id DESC LIMIT 1').fetchone()[0]
@@ -87,7 +87,7 @@ class ClaimTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(entry['v'],correction['value']);self.assertEqual(str(entry['event']),correction['sourceRefs'][0]['event'],'claim and block reference each other')
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],0)
         small_protected={c['id'] for c in claims if material.protected_claim(c)}
-        for start in (35,70):
+        for start in (30,60):
             self.rounds(start=start);self.store.reflection.retry();await self.drain()
         big=self.db.execute("SELECT s.id,s.claims FROM memory_summaries s JOIN memory_summary_levels l ON l.id=s.id WHERE l.kind='big'").fetchone()
         self.assertIsNotNone(big)
@@ -117,7 +117,7 @@ class ClaimTests(unittest.IsolatedAsyncioTestCase):
         self.rounds()
         metrics={}
         async def chat(**kw):return NS(completion_text=json.dumps({'summary':'普通背景，未确认的模型原文只作观察','evidence':[{'event':'native-only','who':'bot','quote':'模型历史原文，未确认投递'}]}))
-        self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=chat),lambda:True,metrics,self.var)
+        self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':30,'naturalConversation':False},NS(text_chat=chat),lambda:True,metrics,self.var)
         await self.drain()
         identifier=self.db.execute('SELECT id FROM memory_summaries ORDER BY id DESC LIMIT 1').fetchone()[0]
         claims=self.claims_of(identifier)
@@ -149,7 +149,7 @@ class ClaimTests(unittest.IsolatedAsyncioTestCase):
         metrics={}
         async def chat(**kw):return NS(completion_text=json.dumps({'summary':'普通背景','commitments':[{'event':'7','topic':'周末平江路','quote':'我们约定周末一起去平江路','who':'user','stage':'accepted'}]}))
         with patch.object(material,'MAX_CLAIMS_BYTES',2):
-            self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':True},NS(text_chat=chat),lambda:True,metrics,self.var)
+            self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':30,'naturalConversation':True},NS(text_chat=chat),lambda:True,metrics,self.var)
             await self.drain()
         self.assertEqual(metrics.get('summaryReleaseHolds'),1)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],1,'exactly the held round stays')

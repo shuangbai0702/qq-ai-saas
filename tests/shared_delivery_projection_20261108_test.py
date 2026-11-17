@@ -153,8 +153,8 @@ class Delivery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r['confirmed_text'] for r in result['cross_scope_deliveries']],['confirmed group revision'])
         self.assertTrue(any(r.get('delivery')=='model_output_not_send_receipt' for r in result['recent_cross_session_messages']))
         self.assertEqual(bot_pipeline.decision_memory(self.db,{'memory':False},'private:12345678','12345678',time.time()),{})
-    async def test_35_checkpoint_retires_old_drafts_without_uncovered_receipt_turns(self):
-        for n in range(35):
+    async def test_30_checkpoint_retires_old_drafts_without_uncovered_receipt_turns(self):
+        for n in range(30):
             scope=['private:12345678','group:55555'][n%2]
             m=self.append(scope,str(n),'original draft '+str(n))
             actual='freshness replacement '+str(n);self.settle(scope,str(n),text=actual)
@@ -163,7 +163,7 @@ class Delivery(unittest.IsolatedAsyncioTestCase):
             self.store.reflection.record(shared.JOURNAL_SCOPE,'12345678',identifier,m['content'],actual,materials=materials)
         class Summary:
             async def text_chat(self,**kwargs):
-                return NS(completion_text=model_json({'summary':'35 completed real requests and confirmed answers.','evidence':[],'commitments':[]}),
+                return NS(completion_text=model_json({'summary':'30 completed real requests and confirmed answers.','evidence':[],'commitments':[]}),
                           raw_completion={'choices':[{'finish_reason':'stop'}]})
             async def text_chat_stream(self,**kwargs):
                 yield await self.text_chat(**kwargs)
@@ -171,7 +171,7 @@ class Delivery(unittest.IsolatedAsyncioTestCase):
         metrics={}
         self.assertTrue(self.store.reflection.maybe_start(shared.JOURNAL_SCOPE,{'memory':True,'memorySummary':True,'naturalConversation':False},Summary(),lambda:True,metrics,ContextVar('receipt-summary',default=None)))
         await self.store.reflection.task
-        self.assertEqual(self.db.execute('SELECT round_count,state FROM memory_reconstruction_checkpoints').fetchall(),[(35,'available')],metrics)
+        self.assertEqual(self.db.execute('SELECT round_count,state FROM memory_reconstruction_checkpoints').fetchall(),[(30,'available')],metrics)
         self.assertEqual(self.journal.last.wire,committed_wire)
         self.assertEqual(ReadonlyJournal(self.db,shared.JOURNAL_SCOPE).last.wire,committed_wire)
         m=inbound('private:87654321','36')

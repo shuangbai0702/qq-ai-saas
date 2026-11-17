@@ -1,4 +1,4 @@
-"""Legacy tool Hold recovery uses actual evidence and the original 35-round license."""
+"""Legacy tool Hold recovery uses actual evidence and the original 30-round license."""
 import asyncio,contextvars,copy,json,sys,tempfile,time,unittest
 from pathlib import Path
 from types import SimpleNamespace as NS
@@ -21,13 +21,13 @@ class LegacyToolHoldTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
             if self.store.reflection.task is task:return
     async def test_existing_checkpoint_promotes_without_new_rounds_or_tool_replay(self):
-        for i in range(35):
+        for i in range(30):
             messages=block(i) if i==0 else [user(i),{'role':'assistant','content':'已确认回复'}]
             items=material.snapshots(messages,SCOPE)
             if i==0:items[0].update(version=1,complete=False);items[0].pop('tools')
             self.store.reflection.record(SCOPE,'12345678',str(i),'真实请求'+str(i),'已确认回复',time.time()-1000+i,materials=items)
         async def chat(**kw):self.calls.append(json.loads(kw['prompt']));return NS(completion_text='{"summary":"保留本批真实请求和工具结果，未完成工作以任务账本为准。"}')
-        ref=self.store.reflection;metrics={};ref.binding=({'memorySummary':True,'summaryRounds':35,'naturalConversation':False},NS(text_chat=chat),lambda:True,metrics,contextvars.ContextVar('test',default=None))
+        ref=self.store.reflection;metrics={};ref.binding=({'memorySummary':True,'summaryRounds':30,'naturalConversation':False},NS(text_chat=chat),lambda:True,metrics,contextvars.ContextVar('test',default=None))
         self.assertTrue(ref.retry());await self.drain();self.assertEqual(len(self.calls),1)
         watermark=self.db.execute('SELECT summary_watermark FROM memory_reflection_progress WHERE scope=?',(SCOPE,)).fetchone()[0]
         self.assertEqual(self.db.execute('SELECT state FROM memory_reconstruction_checkpoints').fetchone()[0],'pending_coverage')

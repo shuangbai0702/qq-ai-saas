@@ -1,4 +1,4 @@
-"""A legal 35-round batch can explain an unavailable old Hold to the model."""
+"""A legal 30-round batch can explain an unavailable old Hold to the model."""
 import json,sys,unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -15,7 +15,7 @@ class LegacyHold(unittest.IsolatedAsyncioTestCase):
     prepare=fixtures.DiscardTests.prepare
 
     def held(self,incomplete=False):
-        r,db=self.prepare(35)
+        r,db=self.prepare(30)
         key=model_json(['group:55555','lost'])
         db.execute('INSERT INTO memory_hold_rounds VALUES(?,?,NULL,?,?)',('bot_shared',key,'uncovered',50))
         if incomplete:
@@ -33,7 +33,7 @@ class LegacyHold(unittest.IsolatedAsyncioTestCase):
         self.assertIn('ACTUAL_REMAINING_FRAGMENT',wire)
         self.assertIn('incomplete_original' if incomplete else 'full_original',wire)
         self.assertIn('missing部分未提供',wire)
-        self.assertEqual(db.execute('SELECT round_count FROM memory_reconstruction_checkpoints').fetchone(),(35,))
+        self.assertEqual(db.execute('SELECT round_count FROM memory_reconstruction_checkpoints').fetchone(),(30,))
         self.assertIsNotNone(db.execute('SELECT 1 FROM memory_hold_rounds WHERE event=?',(key,)).fetchone(),'Hold retires only after actual Journal replacement')
         self.assertEqual(db.execute('SELECT count(*) FROM memory_summary_coverage').fetchone()[0],0)
 
@@ -45,7 +45,7 @@ class LegacyHold(unittest.IsolatedAsyncioTestCase):
         with patch.object(semantic_collection,'collect',side_effect=sqlite3.OperationalError('fixture database unavailable')):
             self.assertTrue(r.retry());await r.task
         self.assertEqual(self.requests,[])
-        self.assertEqual(db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
+        self.assertEqual(db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],30)
         self.assertIsNotNone(db.execute('SELECT 1 FROM memory_hold_rounds WHERE event=?',(key,)).fetchone())
         self.assertIsNone(db.execute('SELECT 1 FROM memory_reconstruction_checkpoints').fetchone())
 
@@ -56,7 +56,7 @@ class LegacyHold(unittest.IsolatedAsyncioTestCase):
         db.execute('INSERT INTO memory_round_material VALUES(?,?,?,?)',('bot_shared',key,'11111111',model_json(m)));db.commit()
         self.assertTrue(r.retry());await r.task
         self.assertEqual(self.requests,[])
-        self.assertEqual(db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
+        self.assertEqual(db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],30)
         self.assertIsNone(db.execute('SELECT 1 FROM memory_reconstruction_checkpoints').fetchone())
         self.assertIsNotNone(db.execute('SELECT 1 FROM memory_hold_rounds WHERE event=?',(key,)).fetchone())
 
@@ -71,7 +71,7 @@ class LegacyHold(unittest.IsolatedAsyncioTestCase):
         self.provider.text_chat_stream=changed
         self.assertTrue(r.retry());await r.task
         self.assertEqual(len(self.requests),1)
-        self.assertEqual(db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
+        self.assertEqual(db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],30)
         self.assertIsNone(db.execute('SELECT 1 FROM memory_reconstruction_checkpoints').fetchone())
         self.assertIsNotNone(db.execute('SELECT 1 FROM memory_hold_rounds WHERE event=?',(key,)).fetchone())
 
@@ -83,7 +83,7 @@ class LocalLegacyHold(unittest.IsolatedAsyncioTestCase):
     run_summary=local_fixtures.SemanticSummary.run_summary
     checkpoint=local_fixtures.SemanticSummary.checkpoint
 
-    async def test_private_35_with_orphan_hold_reports_unknown_author_without_fabrication(self):
+    async def test_private_30_with_orphan_hold_reports_unknown_author_without_fabrication(self):
         self.record()
         scope=local_fixtures.SCOPE
         self.db.execute('INSERT INTO memory_hold_rounds VALUES(?,?,NULL,?,?)',(scope,'orphan-missing','uncovered',50));self.db.commit()
@@ -93,7 +93,7 @@ class LocalLegacyHold(unittest.IsolatedAsyncioTestCase):
         orphan=next(item for item in prompt['incomplete_material'] if item['event']=='orphan-missing')
         self.assertEqual(orphan['sender_ids'],[]);self.assertEqual(orphan['missing'],'full_original')
         self.assertEqual(orphan['available_text'],[])
-        self.assertEqual(self.checkpoint()[1],35)
+        self.assertEqual(self.checkpoint()[1],30)
         self.assertIsNotNone(self.db.execute('SELECT 1 FROM memory_hold_rounds WHERE event=?',('orphan-missing',)).fetchone())
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summary_coverage').fetchone()[0],0)
 
@@ -106,7 +106,7 @@ class LocalLegacyHold(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.run_summary());self.assertEqual(len(self.calls),1)
         prompt=json.loads(self.calls[0]['prompt']);item=next(x for x in prompt['incomplete_material'] if x['event']=='old-fragment')
         self.assertEqual(item['sender_ids'],['12345678']);self.assertIn('LOCAL_HELD_REAL_FRAGMENT',item['available_text'][0])
-        self.assertEqual(self.checkpoint()[1],35)
+        self.assertEqual(self.checkpoint()[1],30)
 
     async def test_private_held_material_identity_conflict_does_not_become_missing(self):
         self.record();scope=local_fixtures.SCOPE
@@ -115,6 +115,6 @@ class LocalLegacyHold(unittest.IsolatedAsyncioTestCase):
         self.db.execute('INSERT INTO memory_hold_rounds VALUES(?,?,NULL,?,?)',(scope,'held-event','uncovered',50))
         self.db.execute('INSERT INTO memory_round_material VALUES(?,?,?,?)',(scope,'held-event','12345678',model_json(m)));self.db.commit()
         self.assertTrue(await self.run_summary());self.assertEqual(self.calls,[]);self.assertIsNone(self.checkpoint())
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],30)
 
 if __name__=='__main__':unittest.main()

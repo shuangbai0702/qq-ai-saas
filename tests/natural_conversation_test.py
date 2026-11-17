@@ -16,7 +16,7 @@ class NaturalConversation(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.path=Path(self.tmp.name)/'behavior.sqlite'
         self.store=BehaviorStore(self.path);self.db=self.store.db;self.now=time.time()
-        self.cfg={'memory':True,'memoryAutoCapture':True,'memorySummary':True,'summaryRounds':35,'selfDevelopment':True,'naturalConversation':True}
+        self.cfg={'memory':True,'memoryAutoCapture':True,'memorySummary':True,'summaryRounds':30,'selfDevelopment':True,'naturalConversation':True}
     def tearDown(self):self.store.close();self.tmp.cleanup()
     def fact(self,name,value,scope='group:1',subject='11111',event='fact'):
         self.store.memory.remember(scope,subject,name,value,event,self.now)
@@ -126,7 +126,7 @@ class NaturalConversation(unittest.IsolatedAsyncioTestCase):
     async def test_delayed_combined_reflection_cannot_undo_forget(self):
         scope='group:12345';self.fact('居住城市','杭州',scope=scope)
         history=[{'role':'system','content':'fixture policy'}]
-        for i in range(35):
+        for i in range(30):
             event=str(i)
             user={'role':'user','content':SOURCE+model_json({'scope':scope,'sender_id':'11111','event_id':event})+'\n我搬到了苏州'}
             reply={'role':'assistant','content':'我喜欢昆曲的水磨腔。'}

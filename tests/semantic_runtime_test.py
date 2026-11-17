@@ -19,7 +19,7 @@ class RuntimeTests(unittest.TestCase):
         self.st=BehaviorStore(self.root/'behavior.sqlite');db=self.st.db;initialize(db)
         db.execute("INSERT INTO memory_summaries(id,scope,text,sources,updated) VALUES(1,?,'semantic summary','[\"old\"]',?)",(SCOPE,time.time()))
         db.execute("INSERT INTO memory_summary_levels VALUES(1,'small')")
-        db.execute("INSERT INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,created,summary_id) VALUES(?,35,35,0,'available',?,1)",(SCOPE,time.time()))
+        db.execute("INSERT INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,created,summary_id) VALUES(?,30,30,0,'available',?,1)",(SCOPE,time.time()))
         self.members=[event_key(SCOPE,'old')]
         db.execute("INSERT INTO memory_semantic_batches VALUES(1,?,'digest',?,0,'committed',?,NULL)",(SCOPE,model_json(self.members),time.time()))
         db.execute("INSERT INTO memory_pending VALUES(?,'12345678','old','original old','old reply',?)",(SCOPE,time.time()))
@@ -549,7 +549,7 @@ class NativeMessageRetirementTests(unittest.TestCase):
         with closing(sqlite3.connect(self.path)) as db:
             self.assertEqual(json.loads(db.execute('SELECT content FROM platform_message_history').fetchone()[0])['_fishbot_source']['scope'],'group:two')
 
-    def test_real_sdk_database_manager_and_history_tool_exclude_full_35_round_batch(self):
+    def test_real_sdk_database_manager_and_history_tool_exclude_full_30_round_batch(self):
         from astrbot.core.db.sqlite import SQLiteDatabase
         from astrbot.core.platform_message_history_mgr import PlatformMessageHistoryManager
         from astrbot.core.tools.message_tools import GetGroupMessageHistoryTool
@@ -563,18 +563,18 @@ class NativeMessageRetirementTests(unittest.TestCase):
                 manager=NS(db=native)
                 history=PlatformMessageHistoryManager(native)
                 scope='group:one'
-                for index in range(35):
+                for index in range(30):
                     for role in ('user','bot'):
                         content=self.content(str(index),scope,role)
                         content['message'][0]['text']='retired raw '+str(index)
                         await history.insert('tenant','umo',content,max_messages=100)
                 fresh=self.content('new',scope);fresh['message'][0]['text']='new batch retained'
                 await history.insert('tenant','umo',fresh,max_messages=100)
-                members=[event_key('bot_shared',model_json([scope,str(i)])) for i in range(35)]
+                members=[event_key('bot_shared',model_json([scope,str(i)])) for i in range(30)]
                 self.st.db.execute("UPDATE memory_semantic_batches SET scope='bot_shared',members=?,state='retired'",(model_json(members),));self.st.db.commit()
                 install_native_retirement_guard(manager,{'tenant':self.st},{'tenant':{}})
                 result=clean_native_history(manager,'tenant',self.st)
-                self.assertEqual(result['historyRows'],70,result)
+                self.assertEqual(result['historyRows'],60,result)
                 self.assertEqual(result['result'],'clean')
                 # The real manager serializes a chain, while the DB wrapper
                 # derives its identity from the actual SDK event ContextVar.

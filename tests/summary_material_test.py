@@ -100,16 +100,16 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         self.start(chat);await self.drain()
         self.assertTrue(seen)
         self.assertTrue(any(row['event']=='old-held' for row in seen[0]['turns']))
-        self.assertEqual(len(seen[0]['turns']),36)
+        self.assertEqual(len(seen[0]['turns']),31)
         self.assertIsNotNone(self.db.execute('SELECT material FROM memory_round_material WHERE event=?',('old-held',)).fetchone())
         self.assertEqual(self.db.execute('SELECT reason FROM memory_hold_rounds WHERE event=?',('old-held',)).fetchone()[0],'uncovered')
-        self.assertEqual(self.db.execute('SELECT round_count FROM memory_reconstruction_checkpoints').fetchone()[0],35)
+        self.assertEqual(self.db.execute('SELECT round_count FROM memory_reconstruction_checkpoints').fetchone()[0],30)
         self.assert_member('old-held')
         self.finish()
         self.assertIsNone(self.db.execute('SELECT material FROM memory_round_material WHERE event=?',('old-held',)).fetchone())
         self.assertIsNone(self.db.execute('SELECT reason FROM memory_hold_rounds WHERE event=?',('old-held',)).fetchone())
     def add(self,image=False,start=0):
-        for i in range(start,start+35):
+        for i in range(start,start+30):
             msg=message(str(i),image=image)
             self.store.reflection.record(SCOPE,'12345678',str(i),'看这个','已回复',materials=material.snapshots([msg],SCOPE))
     async def drain(self):
@@ -119,7 +119,7 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
             if self.store.reflection.task is task:break
     def start(self,chat):
-        return self.store.reflection.maybe_start(SCOPE,{'memory':True,'memorySummary':True,'summaryRounds':35},summary_provider(chat),lambda:True,{},self.var)
+        return self.store.reflection.maybe_start(SCOPE,{'memory':True,'memorySummary':True,'summaryRounds':30},summary_provider(chat),lambda:True,{},self.var)
     def assert_member(self,event):
         rows=self.db.execute('SELECT members FROM memory_semantic_batches WHERE scope=?',(SCOPE,)).fetchall()
         self.assertTrue(any(event_key(SCOPE,event) in json.loads(raw) for raw, in rows),event)
@@ -141,15 +141,15 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         prompts=[]
         async def chat(**kw):
             prompts.append(json.loads(kw['prompt']));return NS(completion_text=json.dumps({'summary':'长期背景：12345678喜欢红茶'}) if '最多1500' in kw['system_prompt'] else json.dumps({'summary':'引用中其他人喜欢红茶，不是12345678。'}))
-        for start in (0,35,70):
+        for start in (0,30,60):
             self.add(start=start)
             if start==0:self.start(chat)
             else:self.store.reflection.retry()
             await self.drain()
             self.finish()
         batches=self.db.execute('SELECT members,state FROM memory_semantic_batches').fetchall()
-        self.assertEqual(len(batches),3);self.assertTrue(all(len(json.loads(raw))==35 and state=='retired' for raw,state in batches))
-        self.assert_member('0');self.assert_member('104')
+        self.assertEqual(len(batches),3);self.assertTrue(all(len(json.loads(raw))==30 and state=='retired' for raw,state in batches))
+        self.assert_member('0');self.assert_member('89')
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],0)
         self.assertIn('其他人',prompts[0]['observed_requests'][0]['text'])
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1)
@@ -160,17 +160,17 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         invalidate(self.db,SCOPE,'12345678');self.db.commit()
         self.assertEqual(material.coverage(self.db,SCOPE),{})
 
-    async def test_only_exact_successful_35_round_summary_mints_single_use_permit(self):
-        async def summarize(**kw):return NS(completion_text=json.dumps({'summary':'35轮已成功整理的真实摘要'}))
-        for index in range(35):
+    async def test_only_exact_successful_30_round_summary_mints_single_use_permit(self):
+        async def summarize(**kw):return NS(completion_text=json.dumps({'summary':'30轮已成功整理的真实摘要'}))
+        for index in range(30):
             self.store.reflection.record(SCOPE,'12345678',f'checkpoint-{index}',f'真实问题{index}',f'已确认回复{index}',materials=material.snapshots([message(f'checkpoint-{index}')],SCOPE))
-        self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},summary_provider(summarize),lambda:True,{},self.var))
+        self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':30,'naturalConversation':False},summary_provider(summarize),lambda:True,{},self.var))
         await self.drain()
         row=self.db.execute('SELECT round_count,state,summary_id FROM memory_reconstruction_checkpoints WHERE scope=?',(SCOPE,)).fetchone()
-        self.assertEqual(row[:2],(35,'available'));self.assertIsNotNone(row[2])
+        self.assertEqual(row[:2],(30,'available'));self.assertIsNotNone(row[2])
         permit=self.store.reflection.reserve_context_reconstruction(SCOPE,'failed-candidate',[row[2]])
         self.assertIsNotNone(permit);self.assertTrue(self.store.reflection.settle_context_reconstruction(permit,False))
-        self.assertTrue(permit['semanticBatch']);self.assertEqual(len(permit['batchMembers']),35)
+        self.assertTrue(permit['semanticBatch']);self.assertEqual(len(permit['batchMembers']),30)
         retry=self.store.reflection.reserve_context_reconstruction(SCOPE,'successful-candidate',[row[2]])
         self.assertIsNotNone(retry);self.assertTrue(self.store.reflection.settle_context_reconstruction(retry,True))
         self.assertEqual(self.db.execute('SELECT state FROM memory_reconstruction_checkpoints WHERE scope=?',(SCOPE,)).fetchone()[0],'consumed')
@@ -182,11 +182,11 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         entered,release=asyncio.Event(),asyncio.Event()
         async def summarize(**kw):
             entered.set();await release.wait()
-            return NS(completion_text=json.dumps({'summary':'本会话35轮完成的新摘要'}))
-        for index in range(35):self.store.reflection.record(SCOPE,'12345678',f'fence-{index}','真实问题','已确认答复',materials=material.snapshots([message(f'fence-{index}')],SCOPE))
+            return NS(completion_text=json.dumps({'summary':'本会话30轮完成的新摘要'}))
+        for index in range(30):self.store.reflection.record(SCOPE,'12345678',f'fence-{index}','真实问题','已确认答复',materials=material.snapshots([message(f'fence-{index}')],SCOPE))
         before=self.store.reflection.context_dependency([],SCOPE)
         unrelated=self.store.reflection.context_dependency([],'private:87654321')
-        self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},summary_provider(summarize),lambda:True,{},self.var))
+        self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':30,'naturalConversation':False},summary_provider(summarize),lambda:True,{},self.var))
         await asyncio.wait_for(entered.wait(),2)
         self.assertEqual(before,self.store.reflection.context_dependency([],SCOPE))
         release.set();await self.drain()
@@ -199,10 +199,10 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         self.db.commit()
         with_scope=self.store.reflection.context_dependency([identifier],SCOPE)
         without_scope=self.store.reflection.context_dependency([identifier])
-        self.db.execute('INSERT INTO memory_reflection_progress(scope,summary_watermark,insight_watermark) VALUES(?,35,35)',(foreign,));self.db.commit()
+        self.db.execute('INSERT INTO memory_reflection_progress(scope,summary_watermark,insight_watermark) VALUES(?,30,30)',(foreign,));self.db.commit()
         self.assertEqual(with_scope,self.store.reflection.context_dependency([identifier],SCOPE))
         self.assertEqual(without_scope,self.store.reflection.context_dependency([identifier]))
-        self.db.execute('INSERT INTO memory_reflection_progress(scope,summary_watermark,insight_watermark) VALUES(?,35,35)',(SCOPE,));self.db.commit()
+        self.db.execute('INSERT INTO memory_reflection_progress(scope,summary_watermark,insight_watermark) VALUES(?,30,30)',(SCOPE,));self.db.commit()
         self.assertNotEqual(with_scope,self.store.reflection.context_dependency([identifier],SCOPE))
         self.assertEqual(without_scope,self.store.reflection.context_dependency([identifier]))
 
@@ -217,18 +217,18 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.store.reflection.reserve_context_reconstruction('private:12345678','other-scope',[],other_scope))
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_web_context_permits').fetchone()[0],0)
 
-    async def test_30_round_and_failed_summary_never_mint_reconstruction_permit(self):
+    async def test_29_round_and_failed_summary_never_mint_reconstruction_permit(self):
         async def summarize(**kw):return NS(completion_text=json.dumps({'summary':'ordinary summary'}))
-        # The converged contract: a 30-round batch is not even scheduled, and
+        # The converged contract: a 29-round batch is not even scheduled, and
         # it certainly never mints (B package).
-        for index in range(30):self.store.reflection.record(SCOPE,'12345678',f'ordinary-{index}',f'真问题{index}',f'已确认{index}',materials=material.snapshots([message(f'ordinary-{index}')],SCOPE))
+        for index in range(29):self.store.reflection.record(SCOPE,'12345678',f'ordinary-{index}',f'真问题{index}',f'已确认{index}',materials=material.snapshots([message(f'ordinary-{index}')],SCOPE))
         self.assertFalse(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':30,'naturalConversation':False},summary_provider(summarize),lambda:True,{},self.var))
         await self.drain()
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints').fetchone()[0],0)
-        for index in range(35):self.store.reflection.record(SCOPE,'12345678',f'failed-{index}',f'问题{index}',f'回复{index}',materials=material.snapshots([message(f'failed-{index}')],SCOPE))
+        for index in range(30):self.store.reflection.record(SCOPE,'12345678',f'failed-{index}',f'问题{index}',f'回复{index}',materials=material.snapshots([message(f'failed-{index}')],SCOPE))
         calls=[]
         async def fail(**kw):calls.append(kw);raise RuntimeError('offline fixture failure')
-        self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},summary_provider(fail),lambda:True,{},self.var))
+        self.assertTrue(self.store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':30,'naturalConversation':False},summary_provider(fail),lambda:True,{},self.var))
         await self.drain()
         self.assertEqual(len(calls),2)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints').fetchone()[0],0)
@@ -237,7 +237,7 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         async def chat(**kw):raise RuntimeError('vision failed')
         self.start(chat);await self.drain()
         self.assertEqual(material.coverage(self.db,SCOPE),{})
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],30)
     async def test_recovered_private_material_joins_next_ordinary_summary(self):
         self.add(start=100)
         old=material.snapshots([message('old')],SCOPE)[0]
@@ -249,7 +249,7 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('old',{r['event'] for r in prompts[0]['turns']})
         self.assertIn('old',{r['event'] for r in prompts[0]['observed_requests']})
         self.assert_member('old')
-        self.assertEqual(len(json.loads(self.db.execute('SELECT members FROM memory_semantic_batches').fetchone()[0])),36)
+        self.assertEqual(len(json.loads(self.db.execute('SELECT members FROM memory_semantic_batches').fetchone()[0])),31)
         self.finish()
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],0)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],0)
@@ -261,9 +261,9 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         self.start(chat);await self.drain()
         self.assertEqual(len(calls),1);self.assertEqual(images[0],['data:image/png;base64,YQ=='])
         self.assertEqual(len(calls[0]['images']),1)
-        self.assertEqual(len(calls[0]['images'][0]['events']),35)
+        self.assertEqual(len(calls[0]['images'][0]['events']),30)
         self.assert_member('0');self.finish()
-        self.add(image=True,start=35)
+        self.add(image=True,start=30)
         entered=asyncio.Event();release=asyncio.Event()
         async def delayed(**kw):entered.set();await release.wait();return await chat(**kw)
         self.store.reflection.binding=None;self.start(delayed)
@@ -276,7 +276,7 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         await self.drain()
         self.assertEqual(material.coverage(self.db,SCOPE),{})
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_semantic_batches').fetchone()[0],1)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],35)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],30)
     def test_redaction_and_budget_never_create_false_proof(self):
         msg=message();msg['content'][1]['text']='key sk-abcdefghijklmnop'
         self.store.reflection.record(SCOPE,'12345678','1','q','a',materials=material.snapshots([msg],SCOPE))
@@ -295,7 +295,7 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured['confirmed_reply'],long_reply)
         self.assert_member('long');self.finish()
         self.assertIsNone(self.db.execute("SELECT 1 FROM memory_round_material WHERE event='long'").fetchone())
-        self.assertIsNotNone(self.db.execute("SELECT 1 FROM memory_round_material WHERE event='134'").fetchone())
+        self.assertIsNone(self.db.execute("SELECT 1 FROM memory_round_material WHERE event='129'").fetchone())
 
     async def test_stale_before_background_start_never_calls_provider(self):
         self.add();calls=[];current=True
@@ -304,7 +304,7 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         current=False
         await self.drain()
         self.assertEqual(calls,[]);self.assertEqual(material.coverage(self.db,SCOPE),{})
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],30)
 
     async def test_material_contract_rejects_wrong_scope_shape_and_future_version(self):
         self.add();item=json.loads(self.db.execute('SELECT material FROM memory_round_material LIMIT 1').fetchone()[0])
@@ -320,13 +320,13 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         self.start(chat);await self.drain()
         self.assertEqual(len(calls),1);self.assertEqual(material.coverage(self.db,SCOPE),{})
         prompt=json.loads(calls[0]['prompt'])
-        self.assertEqual(len(prompt['turns']),34)
+        self.assertEqual(len(prompt['turns']),29)
         missing=next(row for row in prompt['incomplete_material'] if row['event']==event)
         self.assertEqual(missing['missing'],'incomplete_original')
         self.assertEqual(missing['sender_ids'],['12345678'])
         self.assertEqual(missing['available_text'],['看这个'])
         self.assert_member(event)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],30)
 
     async def test_native_view_and_confirmed_delivery_are_distinct_in_complete_batch(self):
         old=message('native-difference')
@@ -346,6 +346,6 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
         self.assert_member('native-difference');self.finish()
         self.assertNotIn(native[1],self.journal.last.base)
         self.assertIsNone(self.db.execute("SELECT 1 FROM memory_round_material WHERE event='native-difference'").fetchone())
-        self.assertIsNotNone(self.db.execute("SELECT 1 FROM memory_round_material WHERE event='134'").fetchone())
+        self.assertIsNone(self.db.execute("SELECT 1 FROM memory_round_material WHERE event='129'").fetchone())
 
 if __name__=='__main__':unittest.main()

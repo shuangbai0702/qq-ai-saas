@@ -17,7 +17,7 @@ class OperatorSession(unittest.TestCase):
   self.original=self.db.execute('SELECT payload,sha FROM fishbot_readonly_journals WHERE scope=?',(self.key,)).fetchone()
   self.store.reflection.record(self.scope,'12345678','old','real old input','confirmed reply')
   self.db.execute("INSERT INTO memory_hold_rounds VALUES(?,?,1,'uncovered',?)",(self.scope,'old',time.time()))
-  self.db.execute("INSERT INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,created) VALUES(?,35,35,0,'consumed',?)",(self.scope,time.time()))
+  self.db.execute("INSERT INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,created) VALUES(?,30,30,0,'consumed',?)",(self.scope,time.time()))
   self.db.execute("INSERT INTO pipeline_actions VALUES('unknown-operation','fingerprint',0,?,0,'unknown','{}',?)",(self.scope,time.time()));self.db.commit()
  def close_session(self):return archive_authorized_scope(self.db,self.scope,self.original[1],'explicit-user-grant-test','a'*40)
  def test_no_authorization_or_wrong_hash_changes_nothing(self):

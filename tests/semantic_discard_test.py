@@ -48,18 +48,18 @@ class DiscardTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('ACTUAL_REMAINING_FRAGMENT',model_json(self.requests[0]['messages']))
         self.assertEqual(result['discarded']['full_original'],1)
 
-    async def test_normal_35_round_checkpoint_recovers_without_admin_or_extra_call(self):
-        r,db=self.prepare(35);self.assertTrue(r.retry());await r.task
+    async def test_normal_30_round_checkpoint_recovers_without_admin_or_extra_call(self):
+        r,db=self.prepare(30);self.assertTrue(r.retry());await r.task
         self.assertEqual(len(self.requests),1)
         wire=model_json(self.requests[0]['messages'])
         self.assertIn('ACTUAL_REMAINING_FRAGMENT',wire);self.assertIn('full_original',wire)
         self.assertIn('missing部分未提供',wire);self.assertNotIn('管理员已授权',wire)
-        self.assertEqual(db.execute('SELECT round_count FROM memory_reconstruction_checkpoints').fetchone(),(35,))
-        self.assertEqual(db.execute('SELECT administrator,missing_count FROM memory_semantic_discard_audit').fetchone(),('automatic:35_round_checkpoint',1))
+        self.assertEqual(db.execute('SELECT round_count FROM memory_reconstruction_checkpoints').fetchone(),(30,))
+        self.assertEqual(db.execute('SELECT administrator,missing_count FROM memory_semantic_discard_audit').fetchone(),('automatic:30_round_checkpoint',1))
         self.assertIsNotNone(db.execute("SELECT 1 FROM memory_pending WHERE scope='group:55555'").fetchone(),'keep material until Journal replacement')
 
-    async def test_normal_recovery_does_not_bypass_35_round_boundary(self):
-        r,db=self.prepare(34);self.assertFalse(r.retry());self.assertEqual(self.requests,[])
+    async def test_normal_recovery_does_not_bypass_30_round_boundary(self):
+        r,db=self.prepare(29);self.assertFalse(r.retry());self.assertEqual(self.requests,[])
         self.assertIsNone(db.execute('SELECT 1 FROM memory_semantic_batches').fetchone())
 
     async def test_orphan_pool_is_model_input_then_whole_batch_purge_protects_future(self):

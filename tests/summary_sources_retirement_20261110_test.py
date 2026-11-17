@@ -20,19 +20,19 @@ class SummarySources(unittest.IsolatedAsyncioTestCase):
         self.calls.append(json.loads(kw['prompt']))
         return NS(completion_text=json.dumps({'summary':'持续记忆'}) if '最多1500' in kw['system_prompt'] else json.dumps({'summary':'真实经历'}))
     async def batch(self,start):
-        for i in range(start,start+35):
+        for i in range(start,start+30):
             self.r.record(SCOPE,'12345678',str(i),'看这个','已回复',materials=material.snapshots([message(str(i))],SCOPE))
         self.assertTrue(self.r.maybe_start(SCOPE,{'memory':True,'memorySummary':True},summary_provider(self.chat),lambda:True,{},self.var))
         await self.r.task;await asyncio.sleep(0)
     async def test_rollups_keep_coverage_without_accumulating_sources(self):
-        for start in (0,35,70,105,140,175):await self.batch(start)
+        for start in (0,30,60,90,120,150):await self.batch(start)
         self.assertEqual([x['level'] for x in self.r.foundation(SCOPE)],['big'])
         self.assertEqual(self.db.execute('SELECT sources FROM memory_summaries').fetchall(),[('[]',)])
         self.assertNotIn('source_events',self.r.foundation(SCOPE)[0])
         self.assertTrue(all('sources' not in row for call in self.calls for row in call.get('summaries',[])))
         self.assertEqual(len(material.coverage(self.db,SCOPE)),210)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summary_unresolved').fetchone()[0],0)
-        self.assertEqual(self.db.execute('SELECT round_count,state FROM memory_reconstruction_checkpoints').fetchall(),[(35,'available')]*6)
+        self.assertEqual(self.db.execute('SELECT round_count,state FROM memory_reconstruction_checkpoints').fetchall(),[(30,'available')]*6)
         summary_id=self.db.execute('SELECT id FROM memory_summaries').fetchone()[0]
         permit=self.r.reserve_context_reconstruction(SCOPE,'once',[summary_id]);self.assertIsNotNone(permit)
         self.assertTrue(self.r.settle_context_reconstruction(permit,True))
@@ -50,7 +50,7 @@ class SummarySources(unittest.IsolatedAsyncioTestCase):
         self.db.commit();await self.batch(0)
         events={r['event'] for r in self.calls[0]['turns']}
         self.assertEqual(len(events),660);self.assertIn('pending-624',events)
-        self.assertEqual(self.db.execute('SELECT round_count FROM memory_reconstruction_checkpoints').fetchall(),[(35,)])
+        self.assertEqual(self.db.execute('SELECT round_count FROM memory_reconstruction_checkpoints').fetchall(),[(30,)])
         # Unanswered material remains held, identified by its exact digest;
         # ordinary covered business rounds do not enter this repair ledger.
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summary_unresolved').fetchone()[0],625)
@@ -80,7 +80,7 @@ class SummarySources(unittest.IsolatedAsyncioTestCase):
         for i in range(625):
             self.db.execute('INSERT INTO memory_pending VALUES(?,?,?,?,?,?)',(SCOPE,'12345678','pending-'+str(i),'完整待整理正文'+str(i),'',now))
         self.db.commit()
-        for i in range(35):
+        for i in range(30):
             self.r.record(SCOPE,'12345678',str(i),'看这个','已回复',materials=material.snapshots([message(str(i))],SCOPE))
         seen=[]
         async def capacity(**kw):
@@ -91,8 +91,8 @@ class SummarySources(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(seen),660)
         self.assertEqual(next(x['user'] for x in seen if x['event']=='pending-624'),'完整待整理正文624')
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],660)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],35)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],30)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],30)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],0)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints').fetchone()[0],0)
         self.assertIsNotNone(self.db.execute('SELECT next_at FROM memory_reflection_retry WHERE scope=?',(SCOPE,)).fetchone())
@@ -102,7 +102,7 @@ class SummarySources(unittest.IsolatedAsyncioTestCase):
         self.db.execute('INSERT INTO memory_pending VALUES(?,?,?,?,?,?)',(SCOPE,m['subject'],'held',m['text'],'',time.time()))
         self.db.execute('INSERT INTO memory_round_material VALUES(?,?,?,?)',(SCOPE,'held',m['subject'],json.dumps(m)))
         self.db.commit()
-        for start in (0,35,70):await self.batch(start)
+        for start in (0,30,60):await self.batch(start)
         sid=self.db.execute('SELECT id FROM memory_summaries').fetchone()[0]
         self.assertEqual(self.db.execute('SELECT event,summary_id,digest FROM memory_summary_unresolved').fetchall(),[('held',sid,m['digest'])])
         self.assertEqual(self.db.execute('SELECT sources FROM memory_summaries').fetchone()[0],'[]')

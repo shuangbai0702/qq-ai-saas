@@ -130,7 +130,7 @@ class CoreNotePrompt(unittest.IsolatedAsyncioTestCase):
                 try:
                     fixture.r.shared_context=True
                     origin=fixture_module.SCOPE
-                    events=[json.dumps([origin,str(index)],separators=(',',':')) for index in range(35)]
+                    events=[json.dumps([origin,str(index)],separators=(',',':')) for index in range(30)]
                     for event in events:
                         fixture.r.record('bot_shared','12345678',event,'仅存可信碎片','已确认回复')
                     calls=[]
@@ -142,7 +142,7 @@ class CoreNotePrompt(unittest.IsolatedAsyncioTestCase):
                     await fixture.r.task
                     self.assertEqual(len(calls),1)
                     self.assertEqual(json.loads(calls[0]['prompt'])['turns'],[])
-                    self.assertEqual(len(json.loads(calls[0]['prompt'])['incomplete_material']),35)
+                    self.assertEqual(len(json.loads(calls[0]['prompt'])['incomplete_material']),30)
                     note=fixture.r.core_note('group:55555','23456789')
                     self.assertEqual(note['text'],'面对不完整经历保留谨慎理解。')
                     self.assertEqual(note['source_scopes'],[origin]);self.assertEqual(note['subjects'],['12345678'])
@@ -169,7 +169,7 @@ class CoreNotePrompt(unittest.IsolatedAsyncioTestCase):
                 calls.append(kw)
                 return await original(**kw)
             fixture.chat=capture
-            for start in (0,35,70):
+            for start in (0,30,60):
                 await fixture.batch(start)
                 self.assertEqual(finish_semantic_batches(fixture.store,{},fixture_module.SCOPE)['retired'],1)
             small=[kw for kw in calls if '最多1500' not in kw['system_prompt']]
@@ -178,7 +178,7 @@ class CoreNotePrompt(unittest.IsolatedAsyncioTestCase):
             for kw in small:
                 self.assertIn('turns中event字段的完整字符串',kw['system_prompt'])
                 self.assertIn('不能改用source.event_id',kw['system_prompt'])
-                self.assertEqual(len(json.loads(kw['prompt'])['turns']),35)
+                self.assertEqual(len(json.loads(kw['prompt'])['turns']),30)
             self.assertIn('没有可供core_note引用的新聊天event',big[0]['system_prompt'])
             self.assertIn('core_note.events须省略或为空',big[0]['system_prompt'])
             data=json.loads(big[0]['prompt'])

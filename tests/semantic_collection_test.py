@@ -159,7 +159,7 @@ class CollectionTests(unittest.TestCase):
         item=json.loads(self.db.execute("SELECT material FROM memory_round_material WHERE scope='bot_shared'").fetchone()[0])
         self.assertEqual(len(item['images']),1)
 
-    def test_old_scope_under_35_is_full_shared_input_without_new_rounds(self):
+    def test_old_scope_under_30_is_full_shared_input_without_new_rounds(self):
         self.old();before=self.db.execute('SELECT * FROM memory_rounds').fetchall()
         rows=self.collect();self.assertEqual(len(rows),1);self.assertEqual(rows[0]['event'],model_json([self.channel,'old']))
         self.assertEqual(rows[0]['sender_id'],'12345678');self.assertEqual(rows[0]['bot'],'真实已发回复')
@@ -243,7 +243,7 @@ class SharedSummaryIntegration(unittest.IsolatedAsyncioTestCase):
         self.tmp=tempfile.TemporaryDirectory();self.store=BehaviorStore(Path(self.tmp.name)/'shared.sqlite');self.db=self.store.db
         self.reflection=self.store.reflection;self.reflection.shared_context=True;self.metrics={};self.calls=[]
     def tearDown(self):self.store.close();self.tmp.cleanup()
-    def populate(self,count=35):
+    def populate(self,count=30):
         for i in range(count):
             message=event_message({'scope':'private:12345678','sender_id':'12345678','event_id':str(i),'at':100+i},'本批真实正文'+str(i))
             event=model_json(['private:12345678',str(i)])
@@ -257,7 +257,7 @@ class SharedSummaryIntegration(unittest.IsolatedAsyncioTestCase):
                  'speaker':{'role':'human','id':'87654321'},'status':'active','visibility':'group:55555',
                  'sourceRefs':[{'scope':'group:55555','event':'RAW_CLAIM_EVENT_NOT_LONG_TERM','role':'user','digest':'RAW_DIGEST_NOT_LONG_TERM'}]}]
         self.db.execute('UPDATE memory_summaries SET schema_version=2,claims=? WHERE id=?',(model_json(claims),old))
-        self.db.execute("INSERT INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,created,summary_id) VALUES(?,1,35,?,'consumed',50,?)",('group:55555',self.reflection.epoch(),old))
+        self.db.execute("INSERT INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,created,summary_id) VALUES(?,1,30,?,'consumed',50,?)",('group:55555',self.reflection.epoch(),old))
         self.db.commit();return old
     async def run_summary(self,mutate=False):
         from types import SimpleNamespace as NS
@@ -268,9 +268,9 @@ class SharedSummaryIntegration(unittest.IsolatedAsyncioTestCase):
             return NS(completion_text=model_json({'summary':'新的有损共享摘要'}))
         self.reflection.binding=({'memory':True,'memorySummary':True,'naturalConversation':False},summary_provider(chat),lambda:True,self.metrics,contextvars.ContextVar('shared_collection',default=None))
         self.assertTrue(self.reflection.retry());await self.reflection.task
-    async def test_same_call_consumes_legacy_product_relinks_checkpoint_and_keeps_35_rounds(self):
+    async def test_same_call_consumes_legacy_product_relinks_checkpoint_and_keeps_30_rounds(self):
         old=self.populate();await self.run_summary();self.assertEqual(len(self.calls),1)
-        prompt=self.calls[0];self.assertEqual(len(prompt['turns']),35)
+        prompt=self.calls[0];self.assertEqual(len(prompt['turns']),30)
         self.assertEqual(prompt['previous_summaries'][0]['text'],'旧摘要完整正文_人物一起在海边画画')
         self.assertNotIn('raw_old_id',model_json(prompt['previous_summaries']))
         self.assertIn('正文外真实语义：更喜欢水彩画',model_json(prompt['previous_summaries']))
@@ -281,7 +281,7 @@ class SharedSummaryIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.db.execute("SELECT summary_id,state FROM memory_reconstruction_checkpoints WHERE scope='group:55555'").fetchone(),(new,'consumed'))
         self.assertIn(('group:55555',),self.db.execute('SELECT scope FROM memory_summary_origins WHERE summary_id=?',(new,)).fetchall())
         self.assertIn(('87654321',),self.db.execute('SELECT subject FROM memory_summary_people WHERE summary_id=?',(new,)).fetchall())
-        self.assertEqual(self.db.execute("SELECT round_count FROM memory_reconstruction_checkpoints WHERE scope='bot_shared'").fetchone()[0],35)
+        self.assertEqual(self.db.execute("SELECT round_count FROM memory_reconstruction_checkpoints WHERE scope='bot_shared'").fetchone()[0],30)
     async def test_concurrent_product_edit_aborts_replacement(self):
         old=self.populate();await self.run_summary(mutate=True)
         self.assertIsNotNone(self.db.execute('SELECT 1 FROM memory_summaries WHERE id=?',(old,)).fetchone())
@@ -360,7 +360,7 @@ class SharedCollectionProviderWire(unittest.IsolatedAsyncioTestCase):
     summarize=_Fixture.summarize
     async def test_full_shared_collection_reaches_actual_provider_http_once(self):
         db=self.store.db;r=self.store.reflection;r.shared_context=True;r.checkpoint_callback=None
-        for i in range(35):
+        for i in range(30):
             message=event_message({'scope':'private:12345678','sender_id':'12345678','event_id':str(i),'at':100+i},'新批正文'+str(i))
             key=model_json(['private:12345678',str(i)]);items=summary_material.snapshots([message,{'role':'assistant','content':'已发'}],'bot_shared',db=db)
             r.record('bot_shared','12345678',key,'显示文本','已发',now=100+i,materials=items)
@@ -380,7 +380,7 @@ class SharedCollectionProviderWire(unittest.IsolatedAsyncioTestCase):
         images=[p['image_url']['url'] for m in self.requests[0]['messages'] if isinstance(m.get('content'),list) for p in m['content'] if p.get('type')=='image_url']
         self.assertEqual(images,[self.image])
         self.assertIn('ACTUAL_ORPHAN_SAMPLE_NOT_A_COMPLETE_ORIGINAL',wire)
-        self.assertEqual(db.execute('SELECT round_count FROM memory_reconstruction_checkpoints').fetchone()[0],35)
+        self.assertEqual(db.execute('SELECT round_count FROM memory_reconstruction_checkpoints').fetchone()[0],30)
 
 
 if __name__=='__main__':unittest.main()

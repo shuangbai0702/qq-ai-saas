@@ -3,7 +3,7 @@ checkpoints, snapshot-preserving persistence and typed failure evidence.
 
 All cases run offline on real SQLite/BehaviorStore fixtures; no model, QQ or
 network access. These fixtures pin the contract that a committed request
-prefix never changes without a real 35-round license.
+prefix never changes without a real 30-round license.
 """
 import asyncio,contextvars,copy,json,sqlite3,sys,tempfile,time,unittest
 from pathlib import Path
@@ -146,7 +146,7 @@ class PersistenceGuardTests(unittest.TestCase):
         deferred=j.prepare(changed+tail,('t','b',1),now=2,strict=True,guarded=True,
                            reconstruction_authority=authority,reconstruction_scope=SCOPE)
         self.assertEqual(deferred.retirement_deferred,'system_change');self.assertIsNone(deferred.reconstruction_permit)
-        # R1: only a 35-round checkpoint reserve can mint a reconstruction
+        # R1: only a 30-round checkpoint reserve can mint a reconstruction
         # license. A web-config save mints none at all — the journal no longer
         # even forwards a web proof to the authority.
         with self.assertRaises(ContextReconstructionDenied):
@@ -167,13 +167,13 @@ class ReserveFallbackTests(unittest.IsolatedAsyncioTestCase):
         from behavior import BehaviorStore
         store=BehaviorStore(Path(tmp.name)/'behavior.sqlite')
         try:
-            async def summarize(**kw):return NS(completion_text=json.dumps({'summary':'35轮完成后的真实摘要'}))
+            async def summarize(**kw):return NS(completion_text=json.dumps({'summary':'30轮完成后的真实摘要'}))
             var=contextvars.ContextVar('t',default=None)
-            for index in range(35):
+            for index in range(30):
                 event=f'fb-{index}';reply=f'真实回复{index}'
                 rows=material.snapshots([sourced(event,f'真实问题{index}'),{'role':'assistant','content':reply}],SCOPE)
                 store.reflection.record(SCOPE,'12345678',event,f'真实问题{index}',reply,materials=rows)
-            self.assertTrue(store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},summary_provider(summarize),lambda:True,{},var))
+            self.assertTrue(store.reflection.maybe_start(SCOPE,{'memorySummary':True,'summaryRounds':30,'naturalConversation':False},summary_provider(summarize),lambda:True,{},var))
             for _ in range(8):await asyncio.sleep(0)
             if store.reflection.task:await asyncio.wait_for(store.reflection.task,5)
             row=store.db.execute('SELECT id,summary_id FROM memory_reconstruction_checkpoints WHERE scope=?',(SCOPE,)).fetchone()
@@ -193,7 +193,7 @@ class PendingCoverageTests(unittest.IsolatedAsyncioTestCase):
     async def drain(self):
         for _ in range(8):await asyncio.sleep(0)
 
-    async def test_completed_35_rounds_use_real_material_and_honest_missing_source_without_coverage(self):
+    async def test_completed_30_rounds_use_real_material_and_honest_missing_source_without_coverage(self):
         # A shared legal batch includes recoverable fragments and explicit loss;
         # old Hold/Coverage cannot manufacture credit or block it forever.
         scope='bot_shared';calls=[];metrics={}
@@ -203,15 +203,15 @@ class PendingCoverageTests(unittest.IsolatedAsyncioTestCase):
         self.db.commit()
         async def summarize(**kw):
             calls.append(kw)
-            return NS(completion_text=json.dumps({'summary':'35轮真实摘要，已明确此前来源部分缺失'}))
-        for index in range(35):
+            return NS(completion_text=json.dumps({'summary':'30轮真实摘要，已明确此前来源部分缺失'}))
+        for index in range(30):
             event=f'held-{index}';reply=f'已确认回复{index}'
             rows=material.snapshots([sourced(event,f'真实问题{index}'),{'role':'assistant','content':reply}],scope)
             self.store.reflection.record(scope,'12345678',rows[0]['event'],f'真实问题{index}',reply,materials=rows)
-        self.assertTrue(self.store.reflection.maybe_start(scope,{'memorySummary':True,'summaryRounds':35,'naturalConversation':False},summary_provider(summarize),lambda:True,metrics,self.var))
+        self.assertTrue(self.store.reflection.maybe_start(scope,{'memorySummary':True,'summaryRounds':30,'naturalConversation':False},summary_provider(summarize),lambda:True,metrics,self.var))
         await self.store.reflection.task
         row=self.db.execute('SELECT id,state,pending_events,round_count FROM memory_reconstruction_checkpoints WHERE scope=?',(scope,)).fetchone()
-        self.assertIsNotNone(row,(metrics,self.db.execute("SELECT * FROM memory_checkpoint_issues").fetchall()));self.assertEqual(row[1:],('available',None,35))
+        self.assertIsNotNone(row,(metrics,self.db.execute("SELECT * FROM memory_checkpoint_issues").fetchall()));self.assertEqual(row[1:],('available',None,30))
         self.assertEqual(len(calls),1)
         self.assertIn('surviving fragment',calls[0]['prompt'])
         self.assertIn('missing部分未提供',calls[0]['system_prompt'])

@@ -17,13 +17,13 @@ class LocalMaterialRecovery(unittest.IsolatedAsyncioTestCase):
     checkpoint=fixture.SemanticSummary.checkpoint
 
     async def test_missing_original_is_offered_and_retired_only_after_replacement(self):
-        self.record(35)
+        self.record(30)
         self.db.execute('DELETE FROM memory_round_material WHERE scope=? AND event=?',(SCOPE,'0'))
         self.db.commit()
         self.assertTrue(await self.run_summary())
         self.assertIsNotNone(self.checkpoint())
         prompt=json.loads(self.calls[0]['prompt'])
-        self.assertEqual(len(prompt['turns']),34)
+        self.assertEqual(len(prompt['turns']),29)
         missing=prompt['incomplete_material'][0]
         self.assertEqual(missing['event'],'0')
         self.assertEqual(missing['missing'],'full_original')
@@ -36,7 +36,7 @@ class LocalMaterialRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.db.execute('SELECT 1 FROM memory_pending WHERE scope=? AND event=?',(SCOPE,'0')).fetchone())
 
     async def test_raw_fragment_change_during_model_request_prevents_commit(self):
-        self.record(35)
+        self.record(30)
         self.db.execute('DELETE FROM memory_round_material WHERE scope=? AND event=?',(SCOPE,'0'));self.db.commit()
         async def changed(**kw):
             self.db.execute('UPDATE memory_pending SET question=? WHERE scope=? AND event=?',('recovered new fragment',SCOPE,'0'));self.db.commit()
@@ -56,7 +56,7 @@ class LocalMaterialRecovery(unittest.IsolatedAsyncioTestCase):
             semantic_collection.collect_local(self.db,SCOPE,[row])
 
     async def test_unsupported_capture_identity_conflicts_prevent_model_and_commit(self):
-        self.record(35)
+        self.record(30)
         saved=self.db.execute('SELECT material FROM memory_round_material WHERE scope=? AND event=?',(SCOPE,'0')).fetchone()
         original=json.loads(saved[0])
         mutations=[{'scope':'group:55555'},{'event':'different-event'},{'subject':'87654321'},
@@ -71,7 +71,7 @@ class LocalMaterialRecovery(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(await self.run_summary())
                 self.assertEqual(self.calls,[])
                 self.assertIsNone(self.checkpoint())
-                self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds WHERE scope=?',(SCOPE,)).fetchone()[0],35)
+                self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds WHERE scope=?',(SCOPE,)).fetchone()[0],30)
                 self.assertEqual(json.loads(self.db.execute('SELECT material FROM memory_round_material WHERE scope=? AND event=?',(SCOPE,'0')).fetchone()[0]),invalid)
 
     def test_local_stamp_is_scope_bound_and_tracks_late_ownership(self):
@@ -99,13 +99,13 @@ class LocalMaterialRecovery(unittest.IsolatedAsyncioTestCase):
     async def test_all_missing_captures_preserve_author_memory_and_summary_visibility(self):
         from memory_scope import fact_rows,summary_rows
         scope='group:55555';person='12345678'
-        for i in range(35):
+        for i in range(30):
             self.r.record(scope,person,str(i),'我现在喜欢喝咖啡，保留这段文字。','知道了。',now=100+i,materials=[])
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],0)
         async def chat(**kw):
             self.calls.append(kw);prompt=json.loads(kw['prompt'])
             self.assertEqual(prompt['turns'],[]);self.assertEqual(prompt['observed_requests'],[])
-            self.assertEqual(len(prompt['incomplete_material']),35)
+            self.assertEqual(len(prompt['incomplete_material']),30)
             self.assertEqual(prompt['existing_memory']['subjects'],[person])
             return NS(completion_text=json.dumps({'summary':'群中12345678表示目前喜欢咖啡，原始完整capture缺失，仅依现存片段。',
                 'fact_operations':[{'op':'create','scope':scope,'subject':person,'name':'饮品','expected_version':None,'value':'咖啡','kind':'stable','importance':.8},
@@ -122,18 +122,18 @@ class LocalMaterialRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary_rows(self.db,'private:99999999','99999999'),[])
         self.assertEqual(self.db.execute("SELECT subject,decision FROM memory_operation_audit_details WHERE category='facts' ORDER BY position").fetchall(),[(person,'accepted'),('','rejected')])
         self.assertIsNone(self.db.execute('SELECT claims FROM memory_summaries').fetchone()[0])
-        self.assertEqual(self.db.execute('SELECT round_count FROM memory_reconstruction_checkpoints').fetchone()[0],35)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],35)
+        self.assertEqual(self.db.execute('SELECT round_count FROM memory_reconstruction_checkpoints').fetchone()[0],30)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],30)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],30)
 
     async def test_missing_capture_with_conflicting_protocol_author_cannot_commit(self):
         import message_provenance
-        self.record(35)
+        self.record(30)
         self.db.execute('DELETE FROM memory_round_material')
         message_provenance.put(self.db,SCOPE,'0','incoming',{'sender_id':'87654321'})
         self.db.commit();await self.run_summary()
         self.assertEqual(self.calls,[]);self.assertIsNone(self.checkpoint())
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],30)
 
     def test_author_witness_requires_unambiguous_scope_bound_sender(self):
         from memory_reflection import summary_author_witnesses

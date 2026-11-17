@@ -16,18 +16,18 @@ class MandatoryCheckpoint(unittest.IsolatedAsyncioTestCase):
     def bind(self,provider):
         self.r.binding=({'memory':False,'memorySummary':False,'naturalConversation':False,'selfDevelopment':False},provider,lambda:self.live,self.metrics,contextvars.ContextVar('mandatory_checkpoint',default=None))
 
-    async def test_disabled_optional_memory_still_compresses_only_after_35(self):
-        self.record(34);self.bind(summary_provider(self.chat))
+    async def test_disabled_optional_memory_still_compresses_only_after_30(self):
+        self.record(29);self.bind(summary_provider(self.chat))
         self.assertFalse(self.r.retry());self.assertEqual(self.calls,[])
         # Same identity is ignored by the authoritative completed-round table.
-        self.record(35)
+        self.record(30)
         self.assertTrue(self.r.retry());await self.r.task
         self.assertEqual(len(self.calls),1)
-        self.assertEqual(self.checkpoint()[1:],(35,'available',None))
+        self.assertEqual(self.checkpoint()[1:],(30,'available',None))
 
     async def test_missing_provider_records_failure_and_recovers_same_due_batch(self):
         import json
-        self.record(35);self.bind(NS())
+        self.record(30);self.bind(NS())
         before=self.db.execute('SELECT * FROM memory_rounds ORDER BY id').fetchall()
         self.assertTrue(self.r.retry());await self.r.task
         self.assertIsNone(self.checkpoint());self.assertEqual(self.calls,[])
@@ -39,7 +39,7 @@ class MandatoryCheckpoint(unittest.IsolatedAsyncioTestCase):
         self.bind(summary_provider(self.chat))
         self.db.execute('UPDATE memory_reflection_retry SET next_at=0');self.db.commit()
         self.assertTrue(self.r.retry());await self.r.task
-        self.assertEqual(self.checkpoint()[1:],(35,'available',None));self.assertEqual(len(self.calls),1)
+        self.assertEqual(self.checkpoint()[1:],(30,'available',None));self.assertEqual(len(self.calls),1)
 
 import semantic_provider_wire_test as wire
 

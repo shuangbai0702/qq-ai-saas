@@ -38,22 +38,28 @@ class AdminCheckpoint(unittest.IsolatedAsyncioTestCase):
         pending_at=self.db.execute('SELECT at FROM memory_pending').fetchone()[0]
         self.assertEqual(round_at,1000)
         self.assertEqual(pending_at,round_at)
-    async def test_auto_and_unauthorized_calls_cannot_waive_35(self):
-        self.record(0,30);self.assertFalse(self.r.retry())
+    async def test_auto_and_unauthorized_calls_cannot_waive_30(self):
+        self.record(0,29);self.assertFalse(self.r.retry())
         self.assertFalse(self.r.force_compress_once()['started'])
         with self.assertRaises(PermissionError):self.r.force_compress_once(allow_partial=True)
         self.assertEqual(self.calls,[]);self.assertEqual(self.db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints').fetchone()[0],0)
     async def test_admin_partial_mints_actual_count_once_and_consumes_once(self):
-        self.record(0,30);result=await self.force();self.assertTrue(result['ok'],result)
+        self.record(0,29);result=await self.force();self.assertTrue(result['ok'],result)
         cp=self.db.execute('SELECT id,round_count,state FROM memory_reconstruction_checkpoints').fetchone()
-        self.assertEqual(cp[1:],(30,'available'))
+        self.assertEqual(cp[1:],(29,'available'))
         self.assertEqual(self.db.execute('SELECT checkpoint_id,administrator FROM memory_checkpoint_admin_overrides').fetchone(),(cp[0],'admin-1'))
         permit=self.r.reserve_context_reconstruction('bot_shared','provider-request');self.assertIsNotNone(permit)
         self.assertTrue(self.r.settle_context_reconstruction(permit,True))
         self.assertIsNone(self.r.reserve_context_reconstruction('bot_shared','replay'))
         self.assertFalse(self.r.force_compress_once(allow_partial=True,administrator='admin-1',request_id='maintenance-0')['started'])
-        self.record(30,34);self.assertFalse(self.r.retry());self.record(64,1);self.assertTrue(self.r.retry());await self.r.task
-        self.assertEqual(self.db.execute('SELECT round_count FROM memory_reconstruction_checkpoints ORDER BY id').fetchall(),[(30,),(35,)])
+        # A consumed permit first runs existing retirement recovery. This is
+        # not a new summary at 29; the next round makes the new batch eligible.
+        self.record(29,29);self.assertTrue(self.r.retry());await self.r.task
+        self.assertEqual(len(self.calls),1)
+        self.record(58,1);self.assertTrue(self.r.retry());await self.r.task
+        self.assertEqual(len(self.calls),2)
+        self.assertEqual(self.db.execute('SELECT round_count FROM memory_reconstruction_checkpoints ORDER BY id').fetchall(),[(29,),(30,)])
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds WHERE id>29').fetchone()[0],30)
     async def test_unregistered_partial_checkpoint_stays_unusable(self):
         self.record(0,2);await self.force()
         self.db.execute('DELETE FROM memory_checkpoint_admin_overrides');self.db.commit()
@@ -70,11 +76,11 @@ class AdminCheckpoint(unittest.IsolatedAsyncioTestCase):
     async def test_one_manual_batch_does_not_drain_more_rounds(self):
         self.record(0,70);await self.force();await asyncio.sleep(0)
         self.assertEqual(len(self.calls),1)
-        self.assertEqual(self.db.execute('SELECT round_count FROM memory_reconstruction_checkpoints').fetchall(),[(35,)])
+        self.assertEqual(self.db.execute('SELECT round_count FROM memory_reconstruction_checkpoints').fetchall(),[(70,)])
         # No Journal replacement callback is installed in this fixture. The
         # first batch must stay on disk until replacement actually succeeds.
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],70)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds WHERE id>(SELECT summary_watermark FROM memory_reflection_progress WHERE scope=?)',('bot_shared',)).fetchone()[0],35)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds WHERE id>(SELECT summary_watermark FROM memory_reflection_progress WHERE scope=?)',('bot_shared',)).fetchone()[0],0)
     async def test_third_small_rollup_preserves_partial_authorization(self):
         for i in range(3):self.db.execute("INSERT INTO memory_summaries(scope,text,sources,updated) VALUES('private:99999','其他私聊','[]',0)")
         self.db.commit()

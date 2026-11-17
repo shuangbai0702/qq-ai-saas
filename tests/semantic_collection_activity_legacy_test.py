@@ -25,7 +25,7 @@ class ActivityCollection(unittest.TestCase):
         self.assertIn('END_OF_COMPLETE_ORIGINAL',model_json(collected.discarded))
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],0)
         # Membership is granted only by the actual legal checkpoint commit.
-        self.db.execute("INSERT INTO memory_reconstruction_checkpoints(id,scope,through_round_id,round_count,epoch,state,created) VALUES(1,'bot_shared',35,35,0,'available',100)")
+        self.db.execute("INSERT INTO memory_reconstruction_checkpoints(id,scope,through_round_id,round_count,epoch,state,created) VALUES(1,'bot_shared',30,30,0,'available',100)")
         commit(self.db,'bot_shared',1,{},100,discarded=collected.discarded)
         permit={'semanticBatch':True,'scope':'bot_shared','batchMembers':[event_key('bot_shared',model_json(['self',identifier]))]}
         self.assertEqual(semantic_retire_projection(messages,permit),[])
@@ -42,11 +42,11 @@ class ActivityProviderWire(unittest.IsolatedAsyncioTestCase):
     asyncTearDown=wire_fixture.SemanticProviderWire.asyncTearDown
     summarize=wire_fixture.SemanticProviderWire.summarize
 
-    async def test_full_oversized_original_reaches_sdk_request_with_exact_35_anchor(self):
+    async def test_full_oversized_original_reaches_sdk_request_with_exact_30_anchor(self):
         from context_protocol import event_message
         db=self.store.db;self.db=db;reflection=self.store.reflection
         reflection.shared_context=True;reflection.checkpoint_callback=None
-        for i in range(35):
+        for i in range(30):
             event=str(i)
             message=event_message({'scope':'private:12345678','sender_id':'12345678','event_id':event,'at':100+i},'Current dialogue '+event)
             key=model_json(['private:12345678',event])
@@ -58,15 +58,15 @@ class ActivityProviderWire(unittest.IsolatedAsyncioTestCase):
         db.execute("INSERT INTO memory_message_sources VALUES('bot_shared',?,'activation',?)",(model_json(['self',identifier]),model_json({'round_kind':'autonomous_activation','owner_work':identifier,'source_scope':'self'})))
         db.executescript('CREATE TABLE memory_checkpoint_archives(scope,version,payload,sha); CREATE TABLE IF NOT EXISTS fishbot_readonly_journal_blobs(scope,sha,data,PRIMARY KEY(scope,sha));')
         fixture.CollectionTests.archive(self,messages,scope='bot_shared');db.commit()
-        self.assertEqual(db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
+        self.assertEqual(db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],30)
         await self.summarize()
         self.assertEqual(len(self.requests),1,self.metrics)
         prompt=next(json.loads(m['content']) for m in self.requests[0]['messages'] if isinstance(m.get('content'),str) and m['content'].startswith('{') and '"turns"' in m['content'])
-        self.assertEqual(len(prompt['turns']),35)
+        self.assertEqual(len(prompt['turns']),30)
         self.assertEqual(prompt['incomplete_material'][0]['available_observations'][0][0]['content'],text)
         self.assertIn('END_OF_COMPLETE_SERVICE_ORIGINAL',model_json(self.requests[0]['messages']))
         self.assertNotIn(identifier,model_json(prompt['turns']))
-        self.assertEqual(db.execute("SELECT round_count FROM memory_reconstruction_checkpoints WHERE scope='bot_shared'").fetchone()[0],35)
+        self.assertEqual(db.execute("SELECT round_count FROM memory_reconstruction_checkpoints WHERE scope='bot_shared'").fetchone()[0],30)
         members=json.loads(db.execute('SELECT members FROM memory_semantic_batches').fetchone()[0])
         self.assertIn(event_key('bot_shared',model_json(['self',identifier])),members)
 

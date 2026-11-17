@@ -27,10 +27,10 @@ class LicenseSafety(unittest.TestCase):
     def tearDown(self):self.store.close();self.tmp.cleanup()
 
     def seed_checkpoint(self,state='available',request_id=None):
-        summary_id=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated,schema_version) VALUES(?,?,?,?,2)',(self.scope,'真实35轮摘要','[]',time.time())).lastrowid
+        summary_id=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated,schema_version) VALUES(?,?,?,?,2)',(self.scope,'真实30轮摘要','[]',time.time())).lastrowid
         self.db.execute("INSERT INTO memory_summary_levels VALUES(?,'small')",(summary_id,))
         self.db.execute('INSERT INTO memory_summary_origins VALUES(?,?)',(summary_id,self.scope))
-        self.db.execute("INSERT INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,request_id,created,summary_id) VALUES(?,35,35,0,?,?,?,?)",
+        self.db.execute("INSERT INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,request_id,created,summary_id) VALUES(?,30,30,0,?,?,?,?)",
                         (self.scope,state,request_id,time.time(),summary_id))
         self.db.commit();return summary_id
 
@@ -54,7 +54,7 @@ class LicenseSafety(unittest.TestCase):
         candidate=journal.prepare(base,'two',
                                   retirement=self.r.reconstruction_stamp(self.scope),
                                   reconstruction_authority=self.r,reconstruction_scope=self.scope)
-        self.assertIsNotNone(candidate.reconstruction_permit,'a real 35-round checkpoint licenses the rebuild')
+        self.assertIsNotNone(candidate.reconstruction_permit,'a real 30-round checkpoint licenses the rebuild')
         self.assertTrue(journal.stage_candidate(candidate))
         self.assertTrue(candidate.reconstruction_consumed)
         self.assertEqual(self.db.execute("SELECT state FROM memory_reconstruction_checkpoints WHERE id=?",(candidate.reconstruction_permit['id'],)).fetchone()[0],'consumed')
@@ -133,7 +133,7 @@ class MaterialLifecycle(unittest.TestCase):
 
     def test_unsummarized_rounds_survive_the_global_quota(self):
         # The independent replay: 32 scopes x 34 rounds lost 88 rows before
-        # any scope reached 35. Quota pressure now only reclaims rounds a
+        # any scope reached 30. Quota pressure now only reclaims rounds a
         # completed summary already processed.
         for s in range(32):
             person=str(20000000+s)

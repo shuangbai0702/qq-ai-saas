@@ -42,20 +42,20 @@ class ActivationCheckpoint(unittest.IsolatedAsyncioTestCase):
         prepared.main_conversation=True
         self.assertTrue(journal.commit(prepared));self.store.model_journals[fixture.SCOPE]=journal
 
-    async def test_34_35_36_and_two_legal_checkpoints(self):
+    async def test_29_30_31_and_two_legal_checkpoints(self):
         import contextvars
         r=self.store.reflection
         r.binding=(self.cfg,self.provider,lambda:True,self.metrics,contextvars.ContextVar('activation_checkpoint',default=None))
-        self.append(1,34)
+        self.append(1,29)
         self.assertFalse(r.retry());self.assertEqual(self.requests,[])
-        self.append(35,1)
+        self.append(30,1)
         await self.summarize()
         self.assertEqual(len(self.requests),1)
         prompt=next(json.loads(m['content']) for m in self.requests[0]['messages'] if isinstance(m.get('content'),str) and m['content'].startswith('{') and '"turns"' in m['content'])
         self.assertEqual(prompt['turns'],[])
-        self.assertEqual(len(prompt['autonomous_activations']),35)
+        self.assertEqual(len(prompt['autonomous_activations']),30)
         self.assertEqual(self.store.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1,self.metrics)
-        self.assertEqual(self.store.db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints WHERE round_count=35').fetchone()[0],1)
+        self.assertEqual(self.store.db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints WHERE round_count=30').fetchone()[0],1)
         from readonly_journal import ReadonlyJournal
         from activity_context import canonical_main
         from types import SimpleNamespace as NS
@@ -65,12 +65,12 @@ class ActivationCheckpoint(unittest.IsolatedAsyncioTestCase):
         self.store.model_journals.clear()
         with patch('bot_pipeline.delivery_scope',return_value=fixture.SCOPE):
             self.assertTrue(canonical_main(self.store,NS(get_extra=lambda key:None)))
-        self.append(36,1);self.assertFalse(r.retry())
-        self.append(37,34)
+        self.append(31,1);self.assertFalse(r.retry())
+        self.append(37,29)
         await self.summarize()
         self.assertEqual(len(self.requests),2)
         self.assertEqual(self.store.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],2,self.metrics)
-        self.assertEqual(self.store.db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints WHERE round_count=35').fetchone()[0],2)
+        self.assertEqual(self.store.db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints WHERE round_count=30').fetchone()[0],2)
 
 
 if __name__=='__main__':unittest.main()

@@ -250,7 +250,7 @@ class SemanticFactRelationOperations(unittest.TestCase):
 
 
 class SemanticReflectionOperations(unittest.IsolatedAsyncioTestCase):
-    async def test_same_real_35_round_summary_updates_existing_memory_then_purges_without_natural_chat(self):
+    async def test_same_real_30_round_summary_updates_existing_memory_then_purges_without_natural_chat(self):
         await self.run_batch()
 
     async def test_checkpoint_failure_rolls_back_changes_but_keeps_decision_receipt(self):
@@ -283,7 +283,7 @@ class SemanticReflectionOperations(unittest.IsolatedAsyncioTestCase):
                 store.memory.remember('private:'+PERSON,PERSON,'饮料偏好','红茶','old-explicit',1)
                 db.execute("INSERT INTO relations(scope,subject,affinity,emotion,expires,last_seen,trust,impression) VALUES(?,?,17,'平静',0,1,.3,'此前稳定沟通')",('private:'+PERSON,PERSON));db.commit()
                 history=[{'role':'system','content':'immutable tenant authority'}]
-                for i in range(35):
+                for i in range(30):
                     event=f'round-{i}'
                     user={'role':'user','content':SOURCE+model_json({'scope':'private:'+PERSON,'sender_id':PERSON,'event_id':event})+'\n最近更喜欢咖啡，想继续一起认真交流。'}
                     reply={'role':'assistant','content':'一起慢慢交流。'}
@@ -301,7 +301,7 @@ class SemanticReflectionOperations(unittest.IsolatedAsyncioTestCase):
                 calls=[]
                 async def chat(**kw):
                     calls.append(kw);prompt=json.loads(kw['prompt']);existing=prompt['existing_memory']
-                    self.assertEqual(len(prompt['turns']),35)
+                    self.assertEqual(len(prompt['turns']),30)
                     self.assertEqual(existing['writable'],{'facts':True,'relations':True})
                     self.assertEqual(existing['facts'][0]['value'],'红茶')
                     self.assertEqual(existing['relation_history'][0]['affinity'],17)

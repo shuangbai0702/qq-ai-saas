@@ -70,7 +70,7 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(existing['facts'][0]['value'], '旧偏好水彩')
                 self.assertEqual(existing['relations'][0]['impression'], '早期交流仍在互相了解')
                 self.assertEqual(existing['relations'][0]['trust'], .1)
-                self.assertEqual(len(prompt['turns']), 35)
+                self.assertEqual(len(prompt['turns']), 30)
                 self.assertEqual(existing['writable'], {'facts': True, 'relations': True})
                 output.update({
                     'fact_operations': [{'op': 'revise', 'scope': SCOPE, 'subject': '12345678',
@@ -166,7 +166,7 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
         self.native = [self.system]
         self.originals = []
         self.events = []
-        for i in range(35):
+        for i in range(30):
             event = f'ORIGINAL_EVENT_{i:02d}_END'
             # Long, distinct beginnings and endings detect clipping of any round.
             text = f'RAW_TEXT_{i:02d}_BEGIN_' + ('完整原文和视觉交流' * 170) + f'_RAW_TEXT_{i:02d}_END'
@@ -267,7 +267,7 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
         self.store.db.execute('''INSERT INTO relations(scope,subject,affinity,emotion,expires,last_seen,trust,impression)
                                 VALUES(?,?,7,'平静',0,1,.1,'早期交流仍在互相了解')''', (SCOPE, '12345678'))
         # Existing scheduled work and its independent safety ledger must keep
-        # exact persisted bytes across a real 35-round summary and retirement.
+        # exact persisted bytes across a real 30-round summary and retirement.
         db=self.store.db
         db.execute('INSERT INTO initiative_schedule VALUES(?,?,?,?,?)',(SCOPE,100,3600,7200,2000000000))
         db.execute('''INSERT INTO memory_agreements(id,revision,topic,detail,speaker,participants,source_scope,source_event,audiences,status,due,created,updated,handoff_id,task_revision,evidence)
@@ -360,8 +360,8 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(db.execute('SELECT * FROM memory_rounds ORDER BY event').fetchall(), rounds_before)
         self.assertEqual(db.execute('SELECT * FROM fishbot_readonly_journal_blobs').fetchall(), blobs_before)
         self.assertEqual(db.execute('SELECT * FROM memory_pending ORDER BY event').fetchall(), pending_before)
-        self.assertEqual(db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0], 35)
-        self.assertEqual(db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0], 35)
+        self.assertEqual(db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0], 30)
+        self.assertEqual(db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0], 30)
         self.assertEqual(self.metrics['summaryFailures'], 1)
 
 

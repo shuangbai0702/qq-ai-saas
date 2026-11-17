@@ -11,15 +11,15 @@ import semantic_batch,semantic_media,summary_material
 
 class MemoryPolicyTest(unittest.TestCase):
     def test_default_rounds_and_optional_continuity_budget(self):
-        self.assertEqual(DEFAULT_SUMMARY_ROUNDS,35)
+        self.assertEqual(DEFAULT_SUMMARY_ROUNDS,30)
         self.assertEqual(CONTINUITY_MAX_CHARS,500)
 
     def test_checkpoint_sql_uses_default_for_full_and_partial_grants(self):
         db=sqlite3.connect(':memory:')
-        self.assertEqual(summary_material.checkpoint_round_gate(db),f'c.round_count={DEFAULT_SUMMARY_ROUNDS}')
+        self.assertEqual(summary_material.checkpoint_round_gate(db),f'c.round_count>={DEFAULT_SUMMARY_ROUNDS}')
         db.execute('CREATE TABLE memory_checkpoint_admin_overrides(checkpoint_id INTEGER,administrator TEXT,request_id TEXT)')
         gate=summary_material.checkpoint_round_gate(db)
-        self.assertIn(f'c.round_count={DEFAULT_SUMMARY_ROUNDS}',gate)
+        self.assertIn(f'c.round_count>={DEFAULT_SUMMARY_ROUNDS}',gate)
         self.assertIn(f'c.round_count BETWEEN 1 AND {DEFAULT_SUMMARY_ROUNDS-1}',gate)
 
     def test_batch_commit_requires_default_checkpoint_for_automatic_discard(self):

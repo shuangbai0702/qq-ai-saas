@@ -99,13 +99,13 @@ class Unified(unittest.TestCase):
 
 
 class Writers(unittest.IsolatedAsyncioTestCase):
-    async def test_35_completed_rounds_across_channels_mint_one_shared_checkpoint(self):
+    async def test_30_completed_rounds_across_channels_mint_one_shared_checkpoint(self):
         from contextvars import ContextVar
         with tempfile.TemporaryDirectory() as folder:
             store=BehaviorStore(Path(folder)/'bot.sqlite');store.shared_context=True;store.reflection.shared_context=True
             try:
                 db=store.db;j=ReadonlyJournal(db,shared.JOURNAL_SCOPE)
-                for n in range(35):
+                for n in range(30):
                     channel=['private:12345678','group:55555','group:66666'][n%3]
                     m=message(channel,str(n),text='completed real event '+str(n))
                     composed,_=shared.compose(j,request(m),channel,str(n),[m])
@@ -116,14 +116,14 @@ class Writers(unittest.IsolatedAsyncioTestCase):
                     materials=snapshots(j.last.base,shared.JOURNAL_SCOPE)
                     identifier=shared.event_key({'scope':channel,'event_id':str(n)})
                     store.reflection.record(shared.JOURNAL_SCOPE,'12345678',identifier,m['content'],'confirmed answer '+str(n),materials=materials)
-                self.assertEqual(db.execute('SELECT scope,count(*) FROM memory_rounds GROUP BY scope').fetchall(),[(shared.JOURNAL_SCOPE,35)])
+                self.assertEqual(db.execute('SELECT scope,count(*) FROM memory_rounds GROUP BY scope').fetchall(),[(shared.JOURNAL_SCOPE,30)])
                 class Summary:
-                    async def text_chat(self,**kwargs):return NS(completion_text=model_json({'summary':'35 completed events, authors and original sources retained.','evidence':[],'commitments':[]}))
+                    async def text_chat(self,**kwargs):return NS(completion_text=model_json({'summary':'30 completed events, authors and original sources retained.','evidence':[],'commitments':[]}))
                 metrics={};provider=Summary()
                 self.assertTrue(store.reflection.maybe_start(shared.JOURNAL_SCOPE,{'memory':True,'memorySummary':True,'naturalConversation':False},provider,lambda:True,metrics,ContextVar('shared-summary-event',default=None)))
                 await store.reflection.task
                 states=db.execute('SELECT scope,round_count,state FROM memory_reconstruction_checkpoints').fetchall()
-                self.assertEqual(states,[(shared.JOURNAL_SCOPE,35,'available')],metrics)
+                self.assertEqual(states,[(shared.JOURNAL_SCOPE,30,'available')],metrics)
                 next_message=message('private:87654321','36',who='87654321')
                 foundation={'conversation_summaries':store.reflection.foundation(shared.JOURNAL_SCOPE),'facts':[{'subject':'12345678','value':'retained trusted fact'}]}
                 next_request=request(next_message)

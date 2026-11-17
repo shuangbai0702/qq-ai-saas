@@ -29,7 +29,7 @@ class Materials(unittest.TestCase):
   self.db.execute('INSERT INTO memory_summary_unresolved VALUES(?,?,?,?)',('bot_shared',mat['event'],sid,mat['digest']))
   self.db.execute("INSERT INTO memory_summary_levels VALUES(?,'small')",(sid,))
   self.db.execute("INSERT INTO memory_hold_rounds VALUES('bot_shared',?,NULL,'uncovered',?)",(mat['event'],sm.LEGACY_CUTOFF-100))
-  cp=self.db.execute("INSERT INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,created,summary_id,pending_events) VALUES('bot_shared',35,35,0,'pending_coverage',?,?,?)",(time.time(),sid,model_json([mat['event']]))).lastrowid
+  cp=self.db.execute("INSERT INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,created,summary_id,pending_events) VALUES('bot_shared',30,30,0,'pending_coverage',?,?,?)",(time.time(),sid,model_json([mat['event']]))).lastrowid
   return mat,sid,cp
  def test_exact_round_identity_repair_does_not_create_rounds(self):
   import contextvars
@@ -85,7 +85,7 @@ class Materials(unittest.TestCase):
   m=self.old();mat,sid,cp=self.seed(m)
   self.assertEqual(sm.offer_legacy_retirements(self.db,'bot_shared',{mat['event']:mat},[mat['event']],sid,cp),1)
   self.db.execute("UPDATE memory_reconstruction_checkpoints SET state='invalidated' WHERE id=?",(cp,))
-  cp2=self.db.execute("INSERT INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,created,summary_id,pending_events) VALUES('bot_shared',70,35,0,'pending_coverage',?,?,?)",(time.time(),sid,model_json([mat['event']]))).lastrowid
+  cp2=self.db.execute("INSERT INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,created,summary_id,pending_events) VALUES('bot_shared',70,30,0,'pending_coverage',?,?,?)",(time.time(),sid,model_json([mat['event']]))).lastrowid
   self.assertEqual(sm.offer_legacy_retirements(self.db,'bot_shared',{mat['event']:mat},[mat['event']],sid,cp2),1)
   self.assertEqual(self.db.execute('SELECT count(*) FROM memory_retirement_exceptions').fetchone()[0],2)
   self.assertEqual(sm.coverage(self.db,'bot_shared')[mat['event']]['policy_checkpoint'],cp2)
@@ -125,7 +125,7 @@ class Cancellation(unittest.IsolatedAsyncioTestCase):
    path=Path(root)/'b.sqlite';store=BehaviorStore(path);r=store.reflection;entered=asyncio.Event()
    async def chat(**kwargs):
     entered.set();await asyncio.Event().wait()
-   for i in range(35):r.record('bot_shared','12345678',str(i),'真实输入','已确认回复')
+   for i in range(30):r.record('bot_shared','12345678',str(i),'真实输入','已确认回复')
    r.maybe_start('bot_shared',{'memory':True,'memorySummary':True},summary_provider(chat),lambda:True,{},contextvars.ContextVar('close_test',default=None))
    task=r.task
    try:
@@ -136,7 +136,7 @@ class Cancellation(unittest.IsolatedAsyncioTestCase):
     try:
      issue=db.execute("SELECT detail FROM memory_checkpoint_issues WHERE kind='canceled_summary'").fetchone()
      self.assertEqual(json.loads(issue[0])['source'],'reflection_close')
-     self.assertEqual(db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
+     self.assertEqual(db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],30)
      self.assertEqual(db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints').fetchone()[0],0)
     finally:db.close()
    finally:

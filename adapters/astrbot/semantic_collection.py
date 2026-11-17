@@ -1,6 +1,6 @@
 """Collect one bot's exact hot inventory into its existing shared batch.
 
-The caller owns the transaction and the 35 completed-round anchor. Mirrored
+The caller owns the transaction and the 30 completed-round anchor. Mirrored
 pending/material rows are inputs, never new rounds or permission assertions.
 """
 import copy,hashlib,json,math,re

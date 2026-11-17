@@ -24,16 +24,16 @@ class Continuity(unittest.IsolatedAsyncioTestCase):
         native=[{'role':'system','content':'Synthetic continuity fixture'}]
         for event,question in self.db.execute('SELECT event,question FROM memory_pending WHERE scope=?',(self.scope,)):
             native.append({'role':'user','content':SOURCE+model_json({'scope':self.scope,'sender_id':self.person,'event_id':event})+'\n'+question})
-        for i in range(35):
+        for i in range(30):
             event='answered'+str(i);question='真实问题'+str(i);answer='真实回复'+str(i)
             pair=[{'role':'user','content':SOURCE+model_json({'scope':self.scope,'sender_id':self.person,'event_id':event})+'\n'+question},{'role':'assistant','content':answer}]
             self.store.reflection.record(self.scope,self.person,event,question,answer,self.now+i+1,materials=snapshots(pair,self.scope));native.extend(pair)
         journal=ReadonlyJournal(self.db,self.scope);journal.serial=1
-        self.assertTrue(journal.commit(Prepared(1,None,native,native,{},35,self.now+36,'initial')))
+        self.assertTrue(journal.commit(Prepared(1,None,native,native,{},30,self.now+31,'initial')))
         self.store.model_journals[self.scope]=journal
         self.store.reflection.checkpoint_callback=lambda scope:finish_semantic_batches(self.store,{'memorySummary':True},scope)
     async def summarize(self,chat,current=lambda:True):
-        started=self.store.reflection.maybe_start(self.scope,{'memorySummary':True,'summaryRounds':35},summary_provider(chat),current,{},self.event_var)
+        started=self.store.reflection.maybe_start(self.scope,{'memorySummary':True,'summaryRounds':30},summary_provider(chat),current,{},self.event_var)
         if started:await self.store.reflection.task
     def test_unanswered_group_visible_in_private_with_real_source_and_time(self):
         self.pending()
@@ -81,19 +81,19 @@ class Continuity(unittest.IsolatedAsyncioTestCase):
         # also remain until a new valid summary and Journal handoff succeed.
         self.assertTrue({'unanswered','newer'}<={r['source_event'] for r in records})
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],0)
-        self.assertEqual(self.db.execute("SELECT count(*) FROM memory_pending WHERE event LIKE 'answered%' ").fetchone()[0],35)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM memory_pending WHERE event LIKE 'answered%' ").fetchone()[0],30)
         self.assertEqual(next(r for r in records if r['source_event']=='unanswered')['text'],'刚在群里开头了')
         self.assertEqual(self.db.execute('SELECT answer FROM memory_pending WHERE event=?',('unanswered',)).fetchone()[0],'后来真实回复')
     async def test_failure_and_stale_summary_do_not_erase_pending(self):
         self.pending();self.seed()
         async def failed(**kw):raise TimeoutError()
-        await self.summarize(failed);self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],36)
+        await self.summarize(failed);self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],31)
         async def chat(**kw):return NS(completion_text=json.dumps({'summary':'迟到摘要'}))
         await self.summarize(chat,lambda:False)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],36)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],31)
     def test_ambient_messages_do_not_create_more_summary_calls_and_forget_clears(self):
-        for i in range(35):self.pending(str(i))
-        self.store.reflection.maybe_start(self.scope,{'memorySummary':True,'summaryRounds':35},NS(text_chat=None),lambda:True,{},self.event_var)
+        for i in range(30):self.pending(str(i))
+        self.store.reflection.maybe_start(self.scope,{'memorySummary':True,'summaryRounds':30},NS(text_chat=None),lambda:True,{},self.event_var)
         self.assertIsNone(self.store.reflection.task)
         invalidate(self.db,self.private,self.person);self.db.commit()
         self.assertEqual(self.store.reflection.recent(self.private,self.person),[])

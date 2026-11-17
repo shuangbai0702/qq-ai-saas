@@ -11,7 +11,7 @@ from behavior import BehaviorStore
 from memory_reflection import invalidate
 
 SCOPE='private:12345678';PERSON='12345678'
-CFG={'memorySummary':True,'summaryRounds':35,'naturalConversation':False}
+CFG={'memorySummary':True,'summaryRounds':30,'naturalConversation':False}
 
 
 class ReviewTests(unittest.IsolatedAsyncioTestCase):
@@ -19,7 +19,7 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
         self.tmp=tempfile.TemporaryDirectory();self.store=BehaviorStore(Path(self.tmp.name)/'behavior.sqlite');self.db=self.store.db
         self.var=contextvars.ContextVar('review',default=None);self.calls=[];self.now=time.time()-10000
     def tearDown(self):self.store.close();self.tmp.cleanup()
-    def rounds(self,start=0,count=35):
+    def rounds(self,start=0,count=30):
         for i in range(start,start+count):
             text='周六八点东门见' if i<12 else '普通问题'+str(i)
             observed={'role':'user','content':[{'type':'text','text':material.SOURCE+json.dumps({'scope':SCOPE,'sender_id':PERSON,'event_id':str(i)})+'\n'+text}]}
@@ -42,8 +42,8 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
         self.rounds()
         with patch.object(material,'MAX_CLAIMS_BYTES',2):await self.start()
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_hold_rounds').fetchone()[0],12)
-        self.rounds(35,27)
-        self.assertFalse(self.store.reflection.retry(),'8 held + 27 new is not 35 new rounds')
+        self.rounds(30,27)
+        self.assertFalse(self.store.reflection.retry(),'8 held + 27 new is not 30 new rounds')
         await self.drain()
         self.assertEqual(len(self.calls),1)
         # A held batch keeps at most its pending-coverage identity; it never
@@ -58,7 +58,7 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
         for i in range(601):
             self.db.execute('INSERT INTO memory_pending VALUES(?,?,?,?,?,?)',(SCOPE,PERSON,'older-'+str(i),'旧材料','好',self.now-2000+i))
         self.db.commit()
-        self.rounds(35)
+        self.rounds(30)
         with patch.object(material,'MAX_CLAIMS_BYTES',2):
             self.assertTrue(self.store.reflection.retry());await self.drain()
         events={r[0] for r in self.db.execute('SELECT event FROM memory_rounds')}
@@ -77,12 +77,12 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(material,'MAX_CLAIMS_BYTES',2):
             self.store.reflection.maybe_start(SCOPE,cfg,NS(text_chat=chat),lambda:True,metrics,self.var);await self.drain()
         before=self.db.execute('SELECT kind,intensity,updated,expires FROM companion_emotion WHERE scope=?',(SCOPE,)).fetchone();self.assertIsNotNone(before)
-        self.rounds(35);self.assertTrue(self.store.reflection.retry());await self.drain()
+        self.rounds(30);self.assertTrue(self.store.reflection.retry());await self.drain()
         self.assertEqual(before,self.db.execute('SELECT kind,intensity,updated,expires FROM companion_emotion WHERE scope=?',(SCOPE,)).fetchone())
 
     async def test_reserved_checkpoint_survives_merge_without_reissuing_permission(self):
         for i in range(2):
-            self.rounds(i*35)
+            self.rounds(i*30)
             if i==0:await self.start()
             else:self.store.reflection.retry();await self.drain()
         checkpoints=self.db.execute('SELECT id,summary_id FROM memory_reconstruction_checkpoints ORDER BY id').fetchall()
@@ -166,11 +166,11 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
         self.store.reflection.maybe_start(SCOPE,CFG,NS(text_chat=first),lambda:True,{},self.var);await self.drain()
         old=next(c for c in material.summary_claims(self.db,1) if c.get('protected'))
         text='周六东门不去了，这次安排取消'
-        observed={'role':'user','content':[{'type':'text','text':material.SOURCE+json.dumps({'scope':SCOPE,'sender_id':PERSON,'event_id':'35'})+'\n'+text}]}
-        self.store.reflection.record(SCOPE,PERSON,'35',text,'知道了',self.now+35,materials=material.snapshots([observed],SCOPE));self.rounds(36,34)
+        observed={'role':'user','content':[{'type':'text','text':material.SOURCE+json.dumps({'scope':SCOPE,'sender_id':PERSON,'event_id':'30'})+'\n'+text}]}
+        self.store.reflection.record(SCOPE,PERSON,'30',text,'知道了',self.now+30,materials=material.snapshots([observed],SCOPE));self.rounds(36,34)
         async def cancel(**kwargs):
             prompt=json.loads(kwargs['prompt']);self.assertIn(old['id'],{c['id'] for c in prompt['previous_commitments']})
-            return NS(completion_text=json.dumps({'summary':'原定周六东门安排已取消','commitments':[{'event':'35','topic':'东门见面','quote':text,'who':'user','stage':'canceled','supersedes':[old['id']]}]},ensure_ascii=False))
+            return NS(completion_text=json.dumps({'summary':'原定周六东门安排已取消','commitments':[{'event':'30','topic':'东门见面','quote':text,'who':'user','stage':'canceled','supersedes':[old['id']]}]},ensure_ascii=False))
         self.store.reflection.binding=(CFG,NS(text_chat=cancel),lambda:True,{},self.var)
         self.assertTrue(self.store.reflection.retry());await self.drain()
         stored=next(c for c in material.summary_claims(self.db,1) if c['id']==old['id'])

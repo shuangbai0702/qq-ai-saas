@@ -1,7 +1,7 @@
-"""B checkpoint wire fixture, not a model-backed 35-business-round E2E test.
+"""B checkpoint wire fixture, not a model-backed 30-business-round E2E test.
 
 The existing semantic-retirement fake permit isolates licensed baseline rebuild,
-pool retirement and restart behavior. Real 35-round mint/retire coverage lives
+pool retirement and restart behavior. Real 30-round mint/retire coverage lives
 in summary_material_test.py.
 """
 import copy

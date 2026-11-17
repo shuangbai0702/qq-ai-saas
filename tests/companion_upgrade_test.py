@@ -13,7 +13,7 @@ class Upgrades(unittest.IsolatedAsyncioTestCase):
   self.tmp=tempfile.TemporaryDirectory();self.store=BehaviorStore(Path(self.tmp.name)/'behavior.sqlite');self.db=self.store.db;self.now=time.time();self.var=contextvars.ContextVar('event',default=None)
  def tearDown(self):self.store.close();self.tmp.cleanup()
  async def test_one_background_call_persists_summary_facts_and_own_interest(self):
-  # The summary contract converged to exactly 35 completed business rounds
+  # The summary contract converged to exactly 30 completed business rounds
   # (B package); a 30-round batch is never scheduled.
   cfg={'memory':True,'memoryAutoCapture':True,'memorySummary':True,'selfDevelopment':True,'naturalConversation':True}
   from context_protocol import SOURCE,model_json
@@ -21,7 +21,7 @@ class Upgrades(unittest.IsolatedAsyncioTestCase):
   from readonly_journal import Prepared,ReadonlyJournal
   from semantic_runtime import finish_semantic_batches
   history=[{'role':'system','content':'fixture policy'}]
-  for i in range(35):
+  for i in range(30):
    user={'role':'user','content':SOURCE+model_json({'scope':'group:12345','sender_id':'11111','event_id':str(i)})+'\n我搬到了苏州'}
    reply={'role':'assistant','content':'我喜欢昆曲的水磨腔。'}
    history.extend([user,reply])

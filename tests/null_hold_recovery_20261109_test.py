@@ -1,7 +1,7 @@
 """Whole-batch recovery replaces old NULL-Hold/Coverage promotion fixtures.
 
 The old retry branch was disabled before this change. These cases retain its
-safety goals at the actual semantic entry: exact 35-round credit, observed
+safety goals at the actual semantic entry: exact 30-round credit, observed
 inputs without credit, honest missing material, rollback/restart, concurrent
 changes, stale configuration and consumed-permit non-reactivation.
 """
@@ -38,7 +38,7 @@ class SemanticObservedRecovery(unittest.IsolatedAsyncioTestCase):
         self.bind();result=self.r.retry()
         if result:await self.r.task
         return result
-    def seed(self,count=35):
+    def seed(self,count=30):
         at=time.time()-1000
         self.db.execute('INSERT INTO memory_pending VALUES(?,?,?,?,?,?)',(self.scope,'12345678',self.event,'静默输入','',at))
         item=material.snapshots([message('silent'),{'role':'assistant','content':self.native}],self.scope)[0]
@@ -60,20 +60,20 @@ class SemanticObservedRecovery(unittest.IsolatedAsyncioTestCase):
         return item
     async def test_ambiguous_native_is_visible_once_without_round_or_coverage_credit(self):
         self.seed();self.assertTrue(await self.start())
-        cp=self.checkpoint();self.assertEqual(cp[3:],(35,0,'available'))
+        cp=self.checkpoint();self.assertEqual(cp[3:],(30,0,'available'))
         self.assertIn(self.native,json.dumps(self.calls,ensure_ascii=False))
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summary_coverage').fetchone()[0],0)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_hold_rounds').fetchone()[0],0)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],30)
         self.assertIsNotNone(self.db.execute('SELECT 1 FROM memory_round_material WHERE event=?',(self.event,)).fetchone(),'raw stays until Journal retirement')
         before=len(self.calls);self.assertFalse(await self.start());self.assertEqual(len(self.calls),before)
     async def test_proven_output_keeps_original_work_counts_and_idempotence(self):
         self.seed();self.bind_complete();self.assertTrue(await self.start())
-        cp=self.checkpoint();self.assertEqual(cp[3],35);self.assertEqual(cp[-1],'available')
+        cp=self.checkpoint();self.assertEqual(cp[3],30);self.assertEqual(cp[-1],'available')
         wire=json.dumps(self.calls,ensure_ascii=False)
         self.assertIn('other-work',wire);self.assertIn(self.native,wire)
         watermark=self.db.execute('SELECT summary_watermark FROM memory_reflection_progress WHERE scope=?',(self.scope,)).fetchone()[0]
-        self.assertEqual(watermark,35)
+        self.assertEqual(watermark,30)
         self.assertFalse(await self.start());self.assertEqual(len(self.calls),1);self.assertEqual(self.checkpoint(),cp)
     async def test_consumed_checkpoint_never_reactivates(self):
         self.seed();self.bind_complete();await self.start();cp=self.checkpoint()
@@ -84,7 +84,7 @@ class SemanticObservedRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.r.reserve_context_reconstruction(self.scope,'never-reactivate'))
     async def test_unknown_neighbor_output_is_labeled_without_becoming_confirmed_credit(self):
         self.seed();self.bind_complete('unknown');await self.start()
-        self.assertEqual(self.checkpoint()[3],35)
+        self.assertEqual(self.checkpoint()[3],30)
         wire=json.dumps(self.calls,ensure_ascii=False)
         self.assertIn('other-work',wire);self.assertIn('unknown',wire)
         self.assertIsNone(self.db.execute('SELECT 1 FROM memory_rounds WHERE event=?',(self.event,)).fetchone())
@@ -94,8 +94,8 @@ class SemanticObservedRecovery(unittest.IsolatedAsyncioTestCase):
         self.db.execute("CREATE TRIGGER fail_semantic_commit BEFORE INSERT ON memory_semantic_batches BEGIN SELECT RAISE(ABORT,'failure injection'); END");self.db.commit()
         self.assertTrue(await self.start());self.assertIsNone(self.checkpoint())
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],0)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],36)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],30)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],31)
         self.store.close();self.store=BehaviorStore(self.path);self.r=self.store.reflection;self.db=self.store.db;self.r.shared_context=True
         self.assertFalse(await self.start(),'persisted backoff survives restart')
         self.db.execute('DROP TRIGGER fail_semantic_commit');self.db.execute('UPDATE memory_reflection_retry SET next_at=0');self.db.commit()
@@ -108,29 +108,29 @@ class SemanticObservedRecovery(unittest.IsolatedAsyncioTestCase):
         value=json.loads(raw);value['reply']='late conflicting material'
         self.db.execute('UPDATE memory_round_material SET material=? WHERE event=?',(json.dumps(value),self.event));self.db.commit()
         self.barrier.set();await task
-        self.assertIsNone(self.checkpoint());self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],35)
+        self.assertIsNone(self.checkpoint());self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],30)
         self.assertEqual(self.metrics['summaryFailures'],1)
     async def test_manual_configuration_change_is_not_success(self):
         self.seed();self.bind_complete();self.barrier=asyncio.Event();self.started=asyncio.Event();self.bind()
         self.assertTrue(self.r.force_compress_once()['started']);await self.started.wait()
         self.live=False;self.barrier.set();result=await self.r.task
         self.assertFalse(result['ok']);self.assertIsNone(self.checkpoint())
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],36)
-    async def test_missing_original_is_explicit_and_does_not_bypass_35_round_gate(self):
-        self.seed(34)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],31)
+    async def test_missing_original_is_explicit_and_does_not_bypass_30_round_gate(self):
+        self.seed(29)
         self.db.execute("INSERT INTO memory_pending VALUES(?,?,?,?,?,?)",('group:55555','87654321','missing','actual surviving fragment','',time.time()-2000));self.db.commit()
         self.assertFalse(await self.start());self.assertEqual(self.calls,[])
         self.r.binding=None
-        rows=material.snapshots([message('34'),{'role':'assistant','content':'确认实发'}],self.scope)
+        rows=material.snapshots([message('29'),{'role':'assistant','content':'确认实发'}],self.scope)
         self.r.record(self.scope,'12345678',rows[0]['event'],'本轮问题','确认实发',materials=rows)
         self.db.execute('DELETE FROM memory_reflection_retry');self.db.commit();await self.start()
-        self.assertEqual(self.checkpoint()[3],35);self.assertEqual(len(self.calls),1)
+        self.assertEqual(self.checkpoint()[3],30);self.assertEqual(len(self.calls),1)
         self.assertIn('actual surviving fragment',json.dumps(self.calls,ensure_ascii=False))
         self.assertEqual(self.db.execute('SELECT missing_count FROM memory_semantic_discard_audit').fetchone()[0],1)
 
     async def test_later_big_merge_carries_consumed_checkpoint_without_new_credit(self):
-        for start in (0,35,70):
-            for i in range(start,start+35):
+        for start in (0,30,60):
+            for i in range(start,start+30):
                 event=json.dumps([SCOPE,str(i)],separators=(',',':'))
                 self.r.record(self.scope,'12345678',event,'问题','真实回复',materials=material.snapshots([message(str(i))],self.scope))
             await self.start()

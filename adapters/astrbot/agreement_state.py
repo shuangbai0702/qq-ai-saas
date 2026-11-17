@@ -3,7 +3,7 @@
 Summary claims stay the historical evidence layer; this table is the current
 state of agreements that need managing (a 02:25-class "don't reply when the
 owner @s you in the group" instruction must reach the group decision as a
-current, trusted commitment — not as background data and not 35 rounds late).
+current, trusted commitment — not as background data and not 30 rounds late).
 
 Code owns identity, participants, revision CAS, status transitions and the
 audience filter. The model owns meaning: whether something is a commitment,

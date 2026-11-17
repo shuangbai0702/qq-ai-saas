@@ -24,13 +24,13 @@ test('native shared AstrBot learns real OneBot group samples and routes controll
   // Real, confirmed business replies create the legal checkpoint; do not
   // seed a fake permit merely to exercise the new low-frequency learner.
   const settledBusinessRounds=async()=>JSON.parse((await promisify(execFile)(process.env.FISHBOT_PYTHON||'python',['-B','-c',"import sqlite3,sys,json;d=sqlite3.connect(sys.argv[1]);print(json.dumps({'rounds':d.execute(\"SELECT count(*) FROM memory_rounds WHERE scope='bot_shared'\").fetchone()[0],'checkpoint':d.execute(\"SELECT coalesce(max(round_count),0) FROM memory_reconstruction_checkpoints WHERE scope='bot_shared'\").fetchone()[0]}))",path.join(root,'bots',ids[0],'behavior.sqlite')],{windowsHide:true})).stdout);
-  for(let n=0;n<35;n++){
+  for(let n=0;n<30;n++){
    const count=(await actions(0)).length;await mock.call(ctx[0],'/message',{...(n%3?{group:'777777'}:{}),sender:n%2?'12345678':'22345678',mention:true,text:'这波真有节目效果啊 真实业务轮 '+n});
    await wait(async()=>(await actions(0)).length>count,'confirmed business round '+n);
    // Protocol acceptance precedes Work commit. Injecting immediately after
    // send can coalesce the next input into this same unfinished business round.
-   // At round 35, checkpoint creation may already have retired settled rows.
-   await wait(async()=>{const state=await settledBusinessRounds();return state.rounds===n+1||(n===34&&state.checkpoint===35)},'settled business round '+n);
+   // At round 30, checkpoint creation may already have retired settled rows.
+   await wait(async()=>{const state=await settledBusinessRounds();return state.rounds===n+1||(n===29&&state.checkpoint===30)},'settled business round '+n);
   }
   await wait(async()=>{const[b]=await current.db.query('SELECT * FROM bots WHERE id=$1',[ids[0]]);return b.health?.ai?.metrics?.learnedPatterns===1},'checkpoint learning commit');
   const learnerCalls=seen.filter(r=>r.body.messages.some((m:any)=>m.role==='system'&&m.content.includes('从群聊样本中提炼反复出现的表达习惯')));assert.equal(learnerCalls.length,1,'one checkpoint learner call');assert.equal(learnerCalls[0].key,'Bearer social-key-0');
@@ -66,7 +66,7 @@ test('native shared AstrBot learns real OneBot group samples and routes controll
   await wait(async()=>(await current.db.query('SELECT observed_state FROM bots WHERE id=$1',[ids[0]]))[0].observed_state==='stopped','member stopped');
   const stoppedData=await current.app.inject({url:dataUrl,cookies});assert.equal(stoppedData.statusCode,200,stoppedData.body);assert.equal(stoppedData.json().accessMode,'stopped-maintenance');assert.equal(stoppedData.json().patterns[0].disabled,true);
   const siblingData=await current.app.inject({url:'/v1/bots/'+ids[1]+'/behavior-data',cookies});assert.equal(siblingData.statusCode,200,siblingData.body);assert.equal(siblingData.json().accessMode,'runtime-owner');
-  await mkdir('test-results/social-integration',{recursive:true});await writeFile('test-results/social-integration/native.json',JSON.stringify({passed:true,scope:'real AstrBot SDK + real OneBot WebSocket events + fixture model and QQ transport',checks:['12 unmentioned samples trigger zero calls; one learner at 35 confirmed business rounds','two human evidence','same-group two-Bot expression isolation','separate model Keys','real Image segment','cooldown','internal tag filtering','NO_REPLY silence']},null,2));
+  await mkdir('test-results/social-integration',{recursive:true});await writeFile('test-results/social-integration/native.json',JSON.stringify({passed:true,scope:'real AstrBot SDK + real OneBot WebSocket events + fixture model and QQ transport',checks:['12 unmentioned samples trigger zero calls; one learner at 30 confirmed business rounds','two human evidence','same-group two-Bot expression isolation','separate model Keys','real Image segment','cooldown','internal tag filtering','NO_REPLY silence']},null,2));
  }finally{await current.app.close();await new Promise<void>(r=>model.close(()=>r()))}
 });
 
