@@ -3,7 +3,7 @@ import copy,json,re
 from context_protocol import source,model_json
 from context_foundation import FOUNDATION_CURRENT
 from memory_model_view import memory_json,FORMAT
-from decision_history import changes,apply_changes
+from decision_history import apply_changes
 PERSON_CURRENT='[FishBot 人物记忆资料 v1]'
 
 
@@ -56,12 +56,29 @@ def visible(wire):
     return people
 
 
+def field_changes(before,after,path=()):
+    """Append changed fields only; never trade unchanged memory for packaging."""
+    if type(before)!=type(after):return [['set',list(path),after]]
+    if isinstance(before,dict):
+        result=[['remove',list(path)+[key]] for key in before if key not in after]
+        for key,value in after.items():
+            result.extend(field_changes(before[key],value,(*path,key)) if key in before else [['set',list(path)+[key],value]])
+        return result
+    if isinstance(before,list):
+        result=[]
+        for index in range(min(len(before),len(after))):result.extend(field_changes(before[index],after[index],(*path,index)))
+        result.extend(['remove',list(path)+[index]] for index in reversed(range(len(after),len(before))))
+        result.extend(['set',list(path)+[index],after[index]] for index in range(len(before),len(after)))
+        return result
+    return [] if before==after else [['set',list(path),after]]
+
+
 def additions(db,wire,incoming,enabled=True):
     if db is None or not enabled:return []
     people=visible(wire);packets=[]
     for message in incoming:
         origin=source(message)
-        if not origin:continue
+        if not origin or origin.get('kind')=='platform_service_not_user':continue
         person=str(origin.get('sender_id',''));scope=origin.get('scope','')
         if not re.fullmatch(r'\d{5,20}',person) or not re.fullmatch(r'(private|group):\d{4,20}',scope):continue
         current=canonical(profile(db,scope,person));prior=people.get(person)
@@ -70,7 +87,7 @@ def additions(db,wire,incoming,enabled=True):
             if not current['facts'] and not current['relation']:continue
             packet={'subject':person,**current}
         else:
-            delta=changes(prior,current)
+            delta=field_changes(prior,current)
             if not delta:continue
             packet={'subject':person,'changes':delta}
         packets.append({'role':'user','content':PERSON_CURRENT+'\n'+memory_json(packet)})

@@ -17,8 +17,11 @@ class Demand(unittest.TestCase):
  def test_recent_six_real_times_and_media_speaker(self):
   for i in range(8):observe_message(self.db,'group:123456',str(100000+i),100+i)
   observe_message(self.db,'group:123456','100000',1) # old replay cannot bump
+  observe_message(self.db,'self','999999',1000) # service activation is not a speaker
   self.assertEqual(active_people(self.db),[str(i) for i in range(100007,100001,-1)])
   self.assertEqual(self.db.execute('SELECT semantic_updated FROM relations WHERE subject=?',('100007',)).fetchone()[0],0)
+  service=incoming('100007');service['content']=service['content'].replace('"event_id":"1"','"kind":"platform_service_not_user","event_id":"1"')
+  self.assertEqual(additions(self.db,[],[service]),[])
  def test_once_from_committed_wire_and_revision_delta(self):
   p='100007';observe_message(self.db,'group:123456',p,100)
   self.store.memory.remember('group:123456',p,'喜好','围棋','e1',100);self.db.commit()
@@ -32,6 +35,7 @@ class Demand(unittest.TestCase):
   patch=additions(self.db,wire,[incoming(p,'3')]);data=json.loads(patch[0]['content'].split('\n',1)[1])
   self.assertIn('changes',data);self.assertNotIn('facts',data)
   self.assertEqual(visible(wire+patch)[p]['facts'][0]['value'],'象棋')
+  self.assertNotIn('affinity',patch[0]['content'],'unchanged relationship fields must not replay')
   self.assertEqual(additions(self.db,wire+patch,[incoming(p,'4')]),[])
  def test_baseline_visibility_and_identical_text_distinct_people(self):
   for p in ('100001','100002'):observe_message(self.db,'group:123456',p,100)
@@ -41,4 +45,28 @@ class Demand(unittest.TestCase):
   self.assertEqual(additions(self.db,basis,[incoming('100001')]),[])
   self.assertEqual(len(additions(self.db,basis,[incoming('100002')])),1)
   self.assertEqual(len(additions(self.db,[],[incoming('100001'),incoming('100002')])),2)
+ def test_shared_baseline_uses_selected_people_not_current_private_author_only(self):
+  from context_foundation import read
+  self.store.shared_context=True
+  for p in ('100001','100002'):
+   observe_message(self.db,'private:'+p,p,100)
+   self.store.memory.remember('private:'+p,p,'喜好','围棋','e'+p,100)
+  self.db.commit()
+  basis=read(self.store,{'memory':True,'memorySummary':False},'private:100001','100001')
+  self.assertEqual({f['subject'] for f in basis['facts']},{'100001','100002'})
+ def test_committed_prefix_survives_storage_restart_and_scope_switch(self):
+  from readonly_journal import ReadonlyJournal
+  from readonly_journal_test import packet
+  p='100007';observe_message(self.db,'group:123456',p,100)
+  self.store.memory.remember('group:123456',p,'喜好','围棋','e1',100);self.db.commit()
+  journal=ReadonlyJournal(db=self.db,scope_key=model_json('bot_shared'))
+  base=[{'role':'system','content':'unchanged-system'},incoming(p)]
+  prepared=journal.prepare(base+[packet({'state':{},'memory_foundation':{'facts':[]}})],('bot',1),now=1)
+  self.assertTrue(journal.commit(prepared));prefix=copy.deepcopy(prepared.wire)
+  restored=ReadonlyJournal(db=self.db,scope_key=model_json('bot_shared'))
+  following=incoming(p,'2');following['content']=following['content'].replace('group:123456','private:100007')
+  candidate=restored.prepare(base+[following,packet({'state':{},'memory_foundation':{'facts':[]}})],('bot',1),now=2)
+  self.assertEqual(candidate.wire[:len(prefix)],prefix)
+  self.assertTrue(restored.commit(candidate))
+  self.assertEqual(additions(self.db,restored.last.wire,[incoming(p,'3')]),[])
 if __name__=='__main__':unittest.main()

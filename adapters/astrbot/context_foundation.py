@@ -34,7 +34,7 @@ def read(store,cfg,scope,subject):
     summary_rows=summaries(store.db,logical,str(cfg.get('ownerUin') or ''),journal.last.state if journal and journal.last else None) if cfg.get('memorySummary',True) else []
     from relationships import active_people
     people=active_people(store.db,scope=logical)
-    rows=[(person,row) for person in people for row in fact_rows(store.db,scope,person)]
+    rows=[(person,row) for person in people for row in fact_rows(store.db,logical,person)]
     rows.sort(key=lambda entry:(-entry[1][6],-entry[1][4],entry[0],entry[1][0]))
     facts=[];used=0
     for person,row in rows:

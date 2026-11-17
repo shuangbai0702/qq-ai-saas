@@ -1056,7 +1056,6 @@ class ReadonlyJournal:
             wire=reading_baseline(messages,state)
             if self.db is not None and 'memory_foundation' in state:
                 from person_memory import additions as person_additions
-                from context_protocol import source
                 for index in range(len(wire)-1,-1,-1):
                     if source(wire[index]):
                         wire[index:index]=person_additions(self.db,wire,[wire[index]])

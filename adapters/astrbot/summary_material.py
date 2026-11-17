@@ -823,7 +823,8 @@ def settle_commitments(db,scope,claims,previous):
                 expected=offered[old['id']]
                 if claim_view(old)!=claim_view(expected):continue
                 import time
-                old.update(status='superseded',protected=False,supersededBy=changes[old['id']],updatedAt=time.time(),revision=int(old.get('revision',0))+1);changed=True
+                revision=old.get('revision',0)
+                old.update(status='superseded',protected=False,supersededBy=changes[old['id']],updatedAt=max(time.time(),claim_order(old)[0]+.000001),revision=(revision if type(revision) is int and revision>=0 else 0)+1);changed=True
             if changed:db.execute('UPDATE '+table+' SET claims=? WHERE '+key+'=?',(json.dumps(stored,ensure_ascii=False,separators=(',',':')),identifier))
 
 
@@ -859,7 +860,8 @@ def claim_order(claim):
     """Legacy occurrence is an explicit fallback, never a fabricated revision."""
     import math
     def stamp(value):return float(value) if type(value) in (int,float) and math.isfinite(value) else 0
-    return (stamp(claim.get('updatedAt')) or stamp(claim.get('occurredAt')),int(claim.get('revision',0)),str(claim.get('id','')))
+    revision=claim.get('revision',0)
+    return (stamp(claim.get('updatedAt')) or stamp(claim.get('occurredAt')),revision if type(revision) is int and revision>=0 else 0,str(claim.get('id','')))
 
 
 def fit_claims(claims,budget=None,max_claims=None):

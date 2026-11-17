@@ -2,7 +2,7 @@
 import json,sqlite3,sys,unittest
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
-from summary_material import fit_claims,protected_claim,inherit_claims,govern_claims,claim_view,bound_claim_views
+from summary_material import fit_claims,protected_claim,inherit_claims,govern_claims,claim_view,bound_claim_views,settle_commitments
 
 def claim(i,**extra):
  return dict(id=f'{i:016x}',text=f'evidence {i}',kind='correction',speaker={'role':'human','id':'123456'},sourceRefs=[{'scope':'private:123456','event':str(i),'role':'user'}],occurredAt=i,status='applied',visibility='private:123456',protected=True,**extra)
@@ -40,4 +40,13 @@ class Governance(unittest.TestCase):
   bound_claim_views(rows,budget=10**9)
   self.assertEqual(sum(len(r.get('protected_claims',[])) for r in rows),2)
   self.assertNotIn('parents',claim_view(a))
+ def test_revision_is_monotonic_even_when_host_clock_moves_back(self):
+  from unittest.mock import patch
+  db=self.db();old=claim(1,updatedAt=200,revision=2);old.update(kind='agreement',status='open')
+  db.execute('INSERT INTO memory_summaries(scope,claims) VALUES(?,?)',('private:123456',json.dumps([old])))
+  new=claim(2);new.update(kind='agreement',stage='executed',supersedes=[old['id']])
+  with patch('time.time',return_value=50):settle_commitments(db,'private:123456',[new],[old])
+  stored=json.loads(db.execute('SELECT claims FROM memory_summaries').fetchone()[0])[0]
+  self.assertEqual(stored['revision'],3);self.assertGreater(stored['updatedAt'],200)
+  self.assertEqual(stored['status'],'superseded');self.assertFalse(protected_claim(stored))
 if __name__=='__main__':unittest.main()
