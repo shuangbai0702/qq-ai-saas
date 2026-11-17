@@ -175,7 +175,7 @@ def tools(settings,event,current,db,bridge,social=None):
             validate_parent(db,settings,record)
             if final is None:raise ValueError('dsh_final_missing')
             return final
-    return [Delegate(name='dsh_delegate',description='将联网搜索、网页查阅、当前授权群的历史深度查证、真实执行结果核对、收藏语义盘点或B站任务完整委托给DSH。只提供目标、必要背景和约束，不指定工具或执行步骤；只接收最终文字，不查询进度。',parameters={
+    return [Delegate(name='dsh_delegate',description='将联网搜索、网页查阅、当前授权群的历史深度查证、真实执行结果核对、收藏与素材语义盘点、B站查询及获授权操作、多片段媒体分析完整委托给DSH。只提供目标、必要背景和约束，不指定工具或执行步骤；只接收最终文字，不查询进度。',parameters={
         'type':'object','additionalProperties':False,'required':['goal'],'properties':{
         'goal':{'type':'string','maxLength':12000},'background':{'type':'string','maxLength':16000},'constraints':{'type':'array','maxItems':32,'items':{'type':'string','maxLength':2000}}}})]
 

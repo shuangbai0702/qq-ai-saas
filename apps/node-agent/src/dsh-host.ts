@@ -61,6 +61,8 @@ export async function reserveDshModel(options:any,callback:(operation:string,dat
   await callback('model_budget',{phase,requestId,...(phase==='released'?{tokens:0}:phase==='settled'?{tokens:total}:{})},true);
  }};
 }
+export const DSH_MAIN_REPLY_REMINDER='注意：回复用户应该注意自己的情绪，语气，说话习惯；要像人一样保持独立意识，独立判断；不能机械得完成任务；';
+
 export class DshHost{
  private server?:http.Server;private search:any;private closing=false;
  private running=new Map<string,{abort:AbortController;done:Promise<void>}>();
@@ -192,7 +194,7 @@ export class DshHost{
     if(completedMedia&&!resume)throw Error('original_session_missing');
     if(completedMedia&&await pendingDshMediaContinuation(repo,bot,parent,task!,body.delegationId,completedMedia.id)){await assertCurrent();res.end(JSON.stringify({type:'pending'})+'\n');return;}
     const result=await delegateLocal(kernel,host,body.input,{signal:abort.signal,timeoutMs:completedMedia?90000:120000,...(resume?{resumeSessionId:task}:{}),...(completedMedia?{completion:{id:completedMedia.id,text:JSON.stringify(completedMedia.result)}}:{})});
-    await assertCurrent();res.end(JSON.stringify(result?.kind==='fishbot_dsh_wait'?{type:'pending'}:{type:'final',text:result})+'\n');
+    await assertCurrent();res.end(JSON.stringify(result?.kind==='fishbot_dsh_wait'?{type:'pending'}:{type:'final',text:result+'\n\n'+DSH_MAIN_REPLY_REMINDER})+'\n');
    }finally{this.modelRoutes.delete(task!);try{await kernel?.close()}finally{try{await adapter?.close()}finally{delete process.env[keyEnv]}}}
   }catch{if(!res.headersSent){res.writeHead(409,{'Content-Type':'application/json'});res.end(JSON.stringify({error:'dsh_delegation_failed'}))}else res.end(JSON.stringify({type:'error',error:'dsh_delegation_failed'})+'\n')}
   finally{if(task&&release){for(const entry of this.callbacks.values())if(entry.task===task)entry.reject(Error('delegation_closed'));this.running.delete(task);release()}}
