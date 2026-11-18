@@ -1909,7 +1909,7 @@ def install_runtime(core,settings):
                         from activation_rounds import record as record_activation
                         from activity_context import event_key as activation_event
                         record_activation(owned.db,key,activation_event(work,key),work.event_id,source_scope=work.scope,subject=str(image_event.get_self_id()),at=work.source_at)
-                if main_activation or canonical_main:prepared.main_conversation=True
+                if main_activation:prepared.main_conversation=True
                 if not journal.stage_candidate(prepared,on_stage=stage_activation):
                     from model_cache import record_diagnostic
                     record_diagnostic(image_event.get_extra('_hosted_lease'),{'kind':'context','phase':'inner_execution' if internal else 'foreground',
