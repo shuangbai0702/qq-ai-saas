@@ -2,6 +2,7 @@ import {lockOwnedBot,revokeLoginSessions} from './bot-access.js';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {registerAdminOperations} from './admin-operations.js';
+import {registerConsoleStatistics} from './console-statistics.js';
 import {runtimeStatus} from '../../../packages/shared/runtime-status.js';
 import {createRequestBudget} from './request-budget.js';
 import {createMemoryMonitor,collectMemory,collectProcesses,readHostSnapshot} from './memory-monitor.js';
@@ -182,6 +183,7 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
    }finally{await file.close()}
    const ctx=await agent.context(bot);return{lines:redact(text,[ctx.apiKey,ctx.token,process.env.EULER_SIGNER_TOKEN||'']).split('\n').slice(-160)}}catch{return{lines:[]}}});
  registerAdminOperations(app,db);
+ registerConsoleStatistics(app,db,root);
  app.get('/v1/admin/overview',async req=>{if(!req.user!.is_admin)fail('需要管理员权限',403);const bots=await db.query('SELECT id,name,protocol,desired_state,observed_state,health,last_error FROM bots WHERE deleted_at IS NULL');return{total:bots.length,online:bots.filter(b=>b.protocol!=='mock'&&runtimeStatus(b).online).length,bots,server:{platform:os.platform(),totalMemory:os.totalmem(),freeMemory:os.freemem(),apiRss:process.memoryUsage().rss,uptime:os.uptime(),database:databaseUrl?'PostgreSQL':'PGlite（嵌入API进程，内存不可单独分摊）'}}});
  app.get('/v1/admin/memory',async req=>{if(!req.user!.is_admin)fail('需要管理员权限',403);return{intervalSeconds:30,capacity:240,staleAfterSeconds:90,resetOnRestart:true,...memory.status(),samples:memory.snapshot()}});
  try{await access(path.resolve('apps/web/dist'));await app.register(serveStatic,{root:path.resolve('apps/web/dist')});app.setNotFoundHandler((req,reply)=>req.url.startsWith('/v1/')?reply.code(404).send({error:'接口不存在'}):reply.sendFile('index.html'))}catch{}
