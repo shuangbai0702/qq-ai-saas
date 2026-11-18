@@ -1,4 +1,4 @@
-export const wallpaperColourDefault = 45;
+export const wallpaperColourDefault = 0;
 
 export const spectrumLooks = {
   selection:'tab',

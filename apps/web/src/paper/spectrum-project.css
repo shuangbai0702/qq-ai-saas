@@ -12,7 +12,7 @@ body.paper-app.paper-spectrum .app-header {
 
 body.paper-app.paper-spectrum :is(.panel,.roster,.companion-note,.stat,.quota-summary,.edit-dialog,.auth-story,.auth-form > div):not(details) {
   border: 1px solid var(--project-line) !important;
-  border-radius: 12px !important;
+  border-radius: 0 !important;
   box-shadow: 0 10px 28px #394a630e,inset 0 1px #fff8 !important;
 }
 body.paper-app.paper-spectrum :is(.panel,.roster,.companion-note,.stat,.quota-summary,.auth-story,.auth-form > div):not(.paper-surface) {
@@ -142,7 +142,7 @@ body.paper-app.paper-spectrum .logs {
   gap:8px;
   padding:6px;
   border:1px solid #aac0bd9c;
-  border-radius:9px;
+  border-radius:0;
   background:linear-gradient(105deg,#e7f1edbd,#f0edf1c4);
 }
 .paper-spectrum .wizard-steps::before,
@@ -229,7 +229,7 @@ body.paper-app.paper-spectrum input[type=file]::file-selector-button {
 .paper-spectrum .companion-note a,.paper-spectrum .add-row {color:#34656e}
 body.paper-app.paper-spectrum .memory-card {
   border:1px solid #91a9a848!important;
-  border-radius:7px!important;
+  border-radius:0!important;
   background:linear-gradient(#8dbab0,#b7a9c9) left 0 center / 2px 72% no-repeat,
     linear-gradient(125deg,#e7f1ec9e,#f2eef37d)!important;
   box-shadow:none!important;

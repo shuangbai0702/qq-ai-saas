@@ -21,6 +21,7 @@
 body.paper-app :is(.spectrum :is(.dk-list,.dk-inspector,.dk-sample),
     .paper-spectrum :is(.app-header,.panel,.roster,.companion-note,.stat,.quota-summary,.config-nav,.save-bar,.edit-dialog,.auth-story,.auth-form > div):not(details)) {
   isolation:isolate;
+  border-radius:0!important;
   background:none!important;
   backdrop-filter:none!important;
   -webkit-backdrop-filter:none!important;
@@ -48,4 +49,12 @@ body.paper-app :is(.spectrum :is(.dk-list,.dk-inspector,.dk-sample),
   border-radius:inherit;
   background:var(--surface-tint),var(--surface-paper);
   opacity:calc(100% - var(--panel-transparency));
+}
+
+/* All console surfaces share square corners, including nested and floating stock. */
+body.paper-app :is(
+  .spectrum :is(.dk-list,.dk-inspector,.dk-sample,.dk-row,.preview-roster,.preview-bot-line,.sample-card,.sample-toast,.sample-details),
+  .paper-spectrum :is(.paper-panel,.panel,.roster,.companion-note,.stat,.quota-summary,.config-nav,.save-bar,.edit-dialog,.auth-story,.auth-form > div,.bot-row,.wizard-steps,.notice,.alert,[role=dialog],[role=alertdialog])
+) {
+  border-radius:0!important;
 }
