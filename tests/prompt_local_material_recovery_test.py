@@ -6,6 +6,7 @@ sys.path[:0]=[str(Path(__file__).resolve().parents[1]/'adapters/astrbot'),str(Pa
 import semantic_batch_summary_test as fixture
 from summary_material_test import SCOPE
 import semantic_batch,semantic_collection
+from summary_stream_fixture import summary_provider
 
 
 class LocalMaterialRecovery(unittest.IsolatedAsyncioTestCase):
@@ -113,7 +114,7 @@ class LocalMaterialRecovery(unittest.IsolatedAsyncioTestCase):
                 # Witnesses cannot turn a fragment into the legacy quote writer's source.
                 'facts':[{'event':'0','name':'旧式伪字段','value':'咖啡','quote':'我现在喜欢喝咖啡'}],
                 'evidence':[{'event':'0','who':'user','quote':'我现在喜欢喝咖啡'}]}))
-        self.r.binding=({'memory':True,'memorySummary':True,'naturalConversation':True,'memoryAutoCapture':True},NS(text_chat=chat),lambda:True,self.metrics,contextvars.ContextVar('all_missing',default=None))
+        self.r.binding=({'memory':True,'memorySummary':True,'naturalConversation':True,'memoryAutoCapture':True},summary_provider(chat),lambda:True,self.metrics,contextvars.ContextVar('all_missing',default=None))
         self.assertTrue(self.r.retry());await self.r.task
         self.assertIsNotNone(self.checkpoint());self.assertEqual(len(self.calls),1)
         self.assertEqual([(row[0],row[1]) for row in fact_rows(self.db,scope,person)],[('饮品','咖啡')])

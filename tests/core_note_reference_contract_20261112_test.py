@@ -1,5 +1,5 @@
 """Reference failures are observable without vetoing valid cognition updates."""
-import json,sqlite3,sys,unittest
+import json,sqlite3,sys,time,unittest
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/'references/astrbot'),str(ROOT/'adapters/astrbot'),str(ROOT/'tests')]
@@ -8,7 +8,10 @@ from memory_operation_audit import Audit
 import summary_checkpoint_foundation_test as fixture_module
 from readonly_journal import ReadonlyJournal
 from context_foundation_20261109_test import messages
+from context_protocol import event_message,model_json
 from semantic_runtime import finish_semantic_batches
+from shared_context import JOURNAL_SCOPE
+from summary_material import snapshots
 import tempfile
 
 
@@ -158,27 +161,40 @@ class CoreNotePrompt(unittest.IsolatedAsyncioTestCase):
     async def test_real_small_and_big_requests_explain_distinct_evidence_contracts(self):
         fixture=fixture_module.CheckpointFoundation();fixture.setUp()
         try:
-            journal=ReadonlyJournal(fixture.db,fixture_module.SCOPE)
-            initial=journal.prepare(messages([{'role':'system','content':'fixed'},fixture_module.message('initial')],
-                {'memory_foundation':{'conversation_summaries':[]}}),fixture.r.reconstruction_stamp(fixture_module.SCOPE))
-            self.assertTrue(journal.commit(initial))
-            fixture.store.model_journals[fixture_module.SCOPE]=journal
+            origin=fixture_module.SCOPE
+            journal=ReadonlyJournal(fixture.db,JOURNAL_SCOPE)
+            fixture.store.model_journals[JOURNAL_SCOPE]=journal
             calls=[]
-            original=fixture.chat
+            fixture.r.checkpoint_callback=lambda scope:finish_semantic_batches(fixture.store,{},scope)
             async def capture(**kw):
                 calls.append(kw)
-                return await original(**kw)
-            fixture.chat=capture
+                return await fixture.chat(**kw)
             for start in (0,30,60):
-                await fixture.batch(start)
-                self.assertEqual(finish_semantic_batches(fixture.store,{},fixture_module.SCOPE)['retired'],1)
+                batch=[]
+                for index in range(start,start+30):
+                    event=str(index);at=time.time()
+                    message=event_message({'scope':origin,'sender_id':'12345678','event_id':event,'at':at},'看这个')
+                    fixture.r.record(JOURNAL_SCOPE,'12345678',model_json([origin,event]),'看这个','已回复',at,
+                                     materials=snapshots([message],JOURNAL_SCOPE,db=fixture.db))
+                    batch.append(message)
+                base=journal.last.base if journal.last else [{'role':'system','content':'fixed'}]
+                state=journal.last.state if journal.last else {'memory_foundation':{'conversation_summaries':[]}}
+                candidate=journal.prepare(messages([*base,*batch],state),'core-note-fixture',
+                                          retirement=fixture.r.reconstruction_stamp(JOURNAL_SCOPE))
+                self.assertTrue(journal.commit(candidate))
+                self.assertTrue(fixture.r.maybe_start(JOURNAL_SCOPE,{'memory':True,'memorySummary':True},summary_provider(capture),lambda:True,{},fixture.var))
+                await fixture.r.task
+                self.assertEqual(fixture.db.execute('SELECT scope,state,count(*) FROM memory_semantic_batches GROUP BY scope,state').fetchall(),
+                                 [(JOURNAL_SCOPE,'retired',start//30+1)])
             small=[kw for kw in calls if '最多1500' not in kw['system_prompt']]
             big=[kw for kw in calls if '最多1500' in kw['system_prompt']]
             self.assertEqual(len(small),3);self.assertEqual(len(big),1)
             for kw in small:
                 self.assertIn('turns中event字段的完整字符串',kw['system_prompt'])
                 self.assertIn('不能改用source.event_id',kw['system_prompt'])
-                self.assertEqual(len(json.loads(kw['prompt'])['turns']),30)
+                turns=json.loads(kw['prompt'])['turns']
+                self.assertEqual(len(turns),30)
+                self.assertTrue(all(turn['event']==model_json([origin,str(turn['source']['event_id'])]) and turn['source']['source_scope']==origin for turn in turns))
             self.assertIn('没有可供core_note引用的新聊天event',big[0]['system_prompt'])
             self.assertIn('core_note.events须省略或为空',big[0]['system_prompt'])
             data=json.loads(big[0]['prompt'])

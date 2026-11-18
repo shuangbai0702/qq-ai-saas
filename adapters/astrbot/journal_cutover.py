@@ -6,10 +6,87 @@ untouched; the first successful journal commit consumes each enrollment.
 """
 import json
 import hashlib
+import math
 import re
 import time
 
 OWNER_EARLY_MIGRATION = 'owner_authorized_early_migration'
+
+
+def source_timeline(db,expected):
+    """Read the exact granted wire and verify every legacy QQ input's time.
+
+    Distinct channels can share an event ID. A tied QQ clock across channels
+    establishes simultaneity at the recorded precision, not a relative order.
+    """
+    from context_protocol import model_json,source
+    from journal_storage import read_snapshot_payload
+    from message_provenance import get
+
+    def timestamp(value):
+        return type(value) in (int,float) and math.isfinite(value) and value>0
+
+    rows={json.loads(row[0]): row for row in db.execute(
+        "SELECT scope,version,payload,sha FROM fishbot_readonly_journals WHERE state='ready'")}
+    if {scope:row[3] for scope,row in rows.items() if scope!='bot_shared'}!=expected:
+        raise ValueError('owner_migration_scope_inventory_changed')
+    timeline=[];seen=set()
+    tables={row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    for scope in sorted(expected):
+        key,version,payload,sha=rows[scope]
+        snapshot=read_snapshot_payload(db,key,version,payload,sha)
+        previous=None
+        for position,message in enumerate(snapshot['wire']):
+            origin=source(message)
+            if origin is None:continue
+            event=str(origin['event_id']);identity=model_json([scope,event]);person=str(origin['sender_id'])
+            if origin['scope']!=scope or identity in seen:
+                raise ValueError('owner_migration_source_identity_conflict')
+            observed={origin['at']} if timestamp(origin.get('at')) else set()
+            if 'memory_message_sources' in tables:
+                incoming=get(db,scope,event)
+                if incoming.get('time_source')=='protocol' and timestamp(incoming.get('at')):
+                    if str(incoming.get('sender_id'))!=person:raise ValueError('owner_migration_provenance_sender_conflict')
+                    observed.add(incoming['at'])
+            if 'pipeline_work_inputs' in tables:
+                row=db.execute('SELECT payload FROM pipeline_work_inputs WHERE scope=? AND event=?',(scope,event)).fetchone()
+                if row and row[0]:
+                    raw=json.loads(row[0]);target=raw.get('group_id') if scope.startswith('group:') else raw.get('user_id')
+                    if (str(raw.get('message_id'))!=event or str(raw.get('user_id'))!=person or str(target)!=scope.split(':')[1]):
+                        raise ValueError('owner_migration_protocol_identity_conflict')
+                    if timestamp(raw.get('time')):observed.add(raw['time'])
+            if len(observed)!=1:raise ValueError('owner_migration_protocol_time_missing_or_conflicting')
+            at=observed.pop()
+            if previous is not None and previous>at:raise ValueError('owner_migration_wire_time_conflict')
+            previous=at;seen.add(identity)
+            timeline.append({'event':identity,'sender_id':person,'scope':scope,'at':at,'wire_position':position})
+    return sorted(timeline,key=lambda row:(row['at'],row['scope'],row['wire_position']))
+
+
+def collect_owner_history(db,expected):
+    """Stage exactly the granted history in an isolated restore's transaction."""
+    from semantic_collection import collect
+
+    timeline=source_timeline(db,expected)
+    expected_events={row['event'] for row in timeline}
+    if not expected_events:return []
+    if not db.in_transaction:raise ValueError('owner_migration_requires_staging_transaction')
+    db.execute('SAVEPOINT owner_history')
+    try:
+        collected=collect(db,'bot_shared',time.time(),[],source_events=expected_events)
+        by_event={row['event']:row for row in collected}
+        if set(by_event)!=expected_events:raise ValueError('owner_migration_submitted_history_not_covered')
+        result=[]
+        for witness in timeline:
+            row=by_event[witness['event']]
+            if row['sender_id']!=witness['sender_id']:raise ValueError('owner_migration_material_sender_conflict')
+            row.pop('observed_before',None)
+            row['at']=witness['at']
+            result.append(row)
+        db.execute('RELEASE owner_history')
+        return result
+    except BaseException:
+        db.execute('ROLLBACK TO owner_history');db.execute('RELEASE owner_history');raise
 
 
 def _operator_archives(db):
@@ -18,6 +95,91 @@ def _operator_archives(db):
       sha TEXT NOT NULL,created REAL NOT NULL,new_session_state TEXT NOT NULL CHECK(new_session_state IN ('available','consumed')))''')
     db.execute('''CREATE TRIGGER IF NOT EXISTS operator_session_archive_immutable BEFORE UPDATE OF authorization,scope,release,archive,sha,created ON fishbot_operator_session_archives BEGIN SELECT RAISE(ABORT,'operator archive is immutable'); END''')
     db.execute('''CREATE TRIGGER IF NOT EXISTS operator_session_archive_no_delete BEFORE DELETE ON fishbot_operator_session_archives BEGIN SELECT RAISE(ABORT,'operator archive is immutable'); END''')
+
+
+def _owner_receipts(db):
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fishbot_journal_owner_migrations'").fetchone():return
+    for identifier,raw,sha in db.execute('SELECT authorization,receipt,sha FROM fishbot_journal_owner_migrations'):
+        if hashlib.sha256(raw.encode()).hexdigest()!=sha:raise ValueError('owner_migration_receipt_integrity')
+        receipt=json.loads(raw)
+        if receipt['grant']['id']!=identifier or receipt['grant']['type']!=OWNER_EARLY_MIGRATION:
+            raise ValueError('owner_migration_receipt_identity')
+        yield receipt
+
+
+def retired_source_receipt(db,scope,sha):
+    return any(receipt['grant']['sources'].get(scope)==sha and
+               any(s['scope']==scope and s['state']=='retired' for s in receipt['sources'])
+               for receipt in _owner_receipts(db))
+
+
+def reserved_destination_receipt(db,sha):
+    for receipt in _owner_receipts(db):
+        if receipt.get('newBaseline') is not True or receipt['destinationSha']!=sha:continue
+        row=db.execute('SELECT authorization FROM fishbot_shared_context WHERE id=1 AND state=?',('active',)).fetchone()
+        return bool(row and row[0]==receipt['grant']['id'])
+    return False
+
+
+def _record_receipt(db,receipt):
+    db.execute('''CREATE TABLE IF NOT EXISTS fishbot_journal_owner_migrations(
+      authorization TEXT PRIMARY KEY,receipt TEXT NOT NULL,sha TEXT NOT NULL,completed REAL NOT NULL)''')
+    for operation in ('UPDATE','DELETE'):
+        db.execute('CREATE TRIGGER IF NOT EXISTS journal_owner_migration_no_'+operation.lower()+'''
+          BEFORE '''+operation+''' ON fishbot_journal_owner_migrations
+          BEGIN SELECT RAISE(ABORT,'migration receipt is immutable'); END''')
+    encoded=json.dumps(receipt,ensure_ascii=False,separators=(',',':'))
+    db.execute('INSERT INTO fishbot_journal_owner_migrations VALUES(?,?,?,?)',
+               (receipt['grant']['id'],encoded,hashlib.sha256(encoded.encode()).hexdigest(),time.time()))
+
+
+def owner_members(db):
+    members=set()
+    for receipt in _owner_receipts(db):
+        members.update(receipt.get('members',()))
+    return members
+
+
+def _verify_grant(db,bot_id,grant,backup_sha):
+    from uuid import UUID
+    if set(grant)!={'type','id','bot','destination','sources','reason','release'}:
+        raise ValueError('owner_migration_grant_shape')
+    if (grant['type']!=OWNER_EARLY_MIGRATION or grant['bot']!=bot_id
+        or grant['destination']!='bot_shared' or not re.fullmatch(r'[0-9a-f-]{36}',bot_id)
+        or not re.fullmatch(r'[0-9a-f-]{36}',str(grant['id']))
+        or not re.fullmatch(r'[0-9a-f]{40}',str(grant['release']))
+        or not re.fullmatch(r'[0-9a-f]{64}',str(backup_sha))
+        or not isinstance(grant['reason'],str) or not grant['reason'].strip()
+        or str(UUID(bot_id))!=bot_id or str(UUID(grant['id']))!=grant['id']):
+        raise PermissionError('owner_migration_grant_invalid')
+    expected=grant['sources']
+    if (not isinstance(expected,dict) or not expected or any(
+            not re.fullmatch(r'(?:private:\d{5,20}|group:\d{4,20})',scope)
+            or not re.fullmatch(r'[0-9a-f]{64}',str(sha)) for scope,sha in expected.items())):
+        raise PermissionError('owner_migration_scope_inventory_invalid')
+    if db.in_transaction:raise ValueError('operator_requires_owned_transaction')
+    return expected
+
+
+def _verify_source_fence(db,tables):
+    if 'pipeline_scope_work' in tables and db.execute('SELECT 1 FROM pipeline_scope_work LIMIT 1').fetchone():
+        raise ValueError('owner_migration_work_still_active')
+    if 'pipeline_work_inputs' in tables and db.execute("SELECT 1 FROM pipeline_work_inputs WHERE status='owned' LIMIT 1").fetchone():
+        raise ValueError('owner_migration_input_still_owned')
+
+
+def _verify_repeat(db,grant,backup_sha):
+    for saved in _owner_receipts(db):
+        if saved['grant']['id']!=grant['id']:continue
+        if (saved['grant']!=grant or saved['backupSha']!=backup_sha
+            or db.execute("SELECT scope FROM fishbot_readonly_journals WHERE state='ready'").fetchall()!=[('"bot_shared"',)]):
+            raise ValueError('owner_migration_receipt_conflict')
+        if saved.get('retirementStateVersion')==1:
+            for scope,sha in grant['sources'].items():
+                row=db.execute('SELECT state,payload,sha FROM fishbot_readonly_journals WHERE scope=?',(json.dumps(scope),)).fetchone()
+                if row!=('retired',None,sha):raise ValueError('owner_migration_retirement_state_changed')
+        return saved
+    return None
 
 
 def retire_empty_legacy_journals(db, bot_id, grant, backup_sha):
@@ -31,25 +193,7 @@ def retire_empty_legacy_journals(db, bot_id, grant, backup_sha):
     from readonly_journal import ReadonlyJournal, system_head
     from shared_context import JOURNAL_SCOPE, active
 
-    if set(grant) != {'type','id','bot','destination','sources','reason','release'}:
-        raise ValueError('owner_migration_grant_shape')
-    if (grant['type'] != OWNER_EARLY_MIGRATION or grant['bot'] != bot_id
-        or grant['destination'] != JOURNAL_SCOPE or not re.fullmatch(r'[0-9a-f-]{36}', bot_id)
-        or not re.fullmatch(r'[0-9a-f-]{36}', str(grant['id']))
-        or not re.fullmatch(r'[0-9a-f]{40}', str(grant['release']))
-        or not re.fullmatch(r'[0-9a-f]{64}', str(backup_sha))
-        or not isinstance(grant['reason'], str) or not grant['reason'].strip()):
-        raise PermissionError('owner_migration_grant_invalid')
-    expected = grant['sources']
-    if (not isinstance(expected, dict) or not expected or any(
-            not re.fullmatch(r'(?:private|group):\d{4,20}', scope)
-            or not re.fullmatch(r'[0-9a-f]{64}', str(sha)) for scope, sha in expected.items())):
-        raise PermissionError('owner_migration_scope_inventory_invalid')
-    if db.in_transaction:
-        raise ValueError('operator_requires_owned_transaction')
-    from uuid import UUID
-    if str(UUID(bot_id)) != bot_id or str(UUID(grant['id'])) != grant['id']:
-        raise PermissionError('owner_migration_grant_invalid')
+    expected=_verify_grant(db,bot_id,grant,backup_sha)
     destination = ReadonlyJournal(db, JOURNAL_SCOPE)
     if not active(db) or destination.recovery_error or destination.retired_reason or destination.last is None:
         raise ValueError('owner_migration_requires_verified_shared_destination')
@@ -62,18 +206,8 @@ def retire_empty_legacy_journals(db, bot_id, grant, backup_sha):
             raise ValueError('owner_migration_destination_changed')
         _, version, _, payload, destination_sha, _ = rows[JOURNAL_SCOPE]
         read_snapshot_payload(db, destination_key, version, payload, destination_sha)
-        db.execute('''CREATE TABLE IF NOT EXISTS fishbot_journal_owner_migrations(
-          authorization TEXT PRIMARY KEY,receipt TEXT NOT NULL,sha TEXT NOT NULL,completed REAL NOT NULL)''')
-        db.execute('''CREATE TRIGGER IF NOT EXISTS journal_owner_migration_no_update BEFORE UPDATE ON fishbot_journal_owner_migrations
-                      BEGIN SELECT RAISE(ABORT,'migration receipt is immutable'); END''')
-        db.execute('''CREATE TRIGGER IF NOT EXISTS journal_owner_migration_no_delete BEFORE DELETE ON fishbot_journal_owner_migrations
-                      BEGIN SELECT RAISE(ABORT,'migration receipt is immutable'); END''')
-        prior = db.execute('SELECT receipt,sha FROM fishbot_journal_owner_migrations WHERE authorization=?', (grant['id'],)).fetchone()
-        if prior:
-            saved = json.loads(prior[0])
-            if (hashlib.sha256(prior[0].encode()).hexdigest() != prior[1]
-                or saved.get('grant') != grant or saved.get('backupSha') != backup_sha or set(rows) != {JOURNAL_SCOPE}):
-                raise ValueError('owner_migration_receipt_conflict')
+        saved=_verify_repeat(db,grant,backup_sha)
+        if saved:
             db.commit()
             return saved
         if {scope: row[4] for scope, row in rows.items() if scope != JOURNAL_SCOPE} != expected:
@@ -103,14 +237,116 @@ def retire_empty_legacy_journals(db, bot_id, grant, backup_sha):
             sources.append({'scope':scope,'sha':sha,'version':version,'updated':updated,
                             'baseMessages':len(snapshot['base']),'wireMessages':len(snapshot['wire']),
                             'coverage':'system_only','state':'retired'})
-            if db.execute('DELETE FROM fishbot_readonly_journals WHERE scope=? AND sha=?', (key, sha)).rowcount != 1:
-                raise ValueError('owner_migration_source_changed')
+            ReadonlyJournal.retire_owner_source(db,scope,sha,grant)
             if 'fishbot_readonly_cutover' in tables:
                 db.execute("UPDATE fishbot_readonly_cutover SET state='consumed' WHERE scope=? AND state='available'", (key,))
-        receipt = {'grant':grant,'backupSha':backup_sha,'destinationSha':destination_sha,'sources':sources}
-        encoded = json.dumps(receipt,ensure_ascii=False,separators=(',',':'))
-        db.execute('INSERT INTO fishbot_journal_owner_migrations VALUES(?,?,?,?)',
-                   (grant['id'],encoded,hashlib.sha256(encoded.encode()).hexdigest(),time.time()))
+        receipt = {'grant':grant,'backupSha':backup_sha,'destinationSha':destination_sha,'sources':sources,'retirementStateVersion':1}
+        _record_receipt(db,receipt)
+        db.commit()
+        return receipt
+    except BaseException:
+        db.rollback()
+        raise
+
+
+def normalize_owner_source_claims(db):
+    """Apply the existing startup normalization if every stored Claim survives."""
+    from summary_material import govern_claims,valid_claim
+    if not db.in_transaction:raise ValueError('owner_migration_claim_normalization_requires_transaction')
+
+    def identities():
+        claims={}
+        for scope,raw in db.execute('SELECT scope,claims FROM memory_summaries WHERE claims IS NOT NULL'):
+            for claim in json.loads(raw):
+                if not valid_claim(claim):
+                    raise ValueError('owner_migration_invalid_legacy_claim')
+                key=(scope,claim['id'])
+                # Startup normalizes revision/parent metadata and ordering.
+                evidence={k:v for k,v in claim.items() if k!='parents'}
+                evidence.setdefault('updatedAt',None)
+                evidence.setdefault('revision',0)
+                if key in claims and claims[key]!=evidence:
+                    raise ValueError('owner_migration_conflicting_legacy_claim')
+                claims[key]=evidence
+        return claims
+
+    expected=identities()
+    for scope, in db.execute('SELECT DISTINCT scope FROM memory_summaries').fetchall():
+        govern_claims(db,scope)
+    if identities()!=expected:
+        raise ValueError('owner_migration_claim_normalization_lost_evidence')
+
+
+def retire_owner_journals(db,bot_id,grant,backup_sha,cfg,product,*,normalize_legacy_claims=False):
+    """Atomically publish the validated product and retire every granted source."""
+    from context_protocol import model_json
+    import journal_storage
+    from readonly_journal import ReadonlyJournal
+    from shared_context import JOURNAL_SCOPE,active,group_whitelist,initialize,_record_activation,reserve_journal
+    from semantic_batch import event_key
+    from memory_reflection import publish_owner_migration_summary
+
+    expected=_verify_grant(db,bot_id,grant,backup_sha)
+    limit=4 if len((cfg.get('behavior') or cfg).get('groupParticipationGroups') or ())>2 else 2
+    group_whitelist(cfg,limit)
+    db.execute('PRAGMA secure_delete=ON')
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        saved=_verify_repeat(db,grant,backup_sha)
+        if saved:
+            db.commit();return saved
+        initialize(db)
+        all_rows={json.loads(key):(state,sha) for key,state,sha in db.execute(
+                  'SELECT scope,state,sha FROM fishbot_readonly_journals')}
+        if (active(db) or JOURNAL_SCOPE in all_rows
+            or {key:sha for key,(state,sha) in all_rows.items() if state=='ready'}!=expected):
+            raise ValueError('owner_migration_scope_inventory_changed')
+        if db.execute('SELECT overflow FROM fishbot_readonly_journal_meta WHERE id=1').fetchone()!=(0,):
+            raise ValueError('owner_migration_incomplete_journal_inventory')
+        tables={row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        _verify_source_fence(db,tables)
+        if normalize_legacy_claims:
+            normalize_owner_source_claims(db)
+        payload=collect_owner_history(db,expected)
+        if not payload:raise ValueError('owner_migration_history_missing')
+        members={event_key(JOURNAL_SCOPE,event['event']) for event in payload}
+        sources=[]
+        for scope,sha in sorted(expected.items()):
+            key=model_json(scope);snapshot=journal_storage.read_snapshot(db,key)
+            scope_events=[row for row in payload if row['source']['source_scope']==scope]
+            sources.append({'scope':scope,'sha':sha,'state':'retired',
+                            'baseMessages':len(snapshot['base']),'wireMessages':len(snapshot['wire']),
+                            'eventCount':len(scope_events)})
+        summary=publish_owner_migration_summary(db,payload,product)
+        # Shared staging was necessary for validation. No staged raw material is
+        # published into the new Journal or the ordinary shared 30-round batch.
+        db.executemany("DELETE FROM memory_round_material WHERE scope='bot_shared' AND event=?",((row['event'],) for row in payload))
+        db.executemany("DELETE FROM memory_pending WHERE scope='bot_shared' AND event=?",((row['event'],) for row in payload))
+        db.executemany("DELETE FROM memory_message_sources WHERE scope='bot_shared' AND event=? AND direction='model'",((row['event'],) for row in payload))
+        for source in sources:
+            scope=source['scope'];key=model_json(scope)
+            ReadonlyJournal.retire_owner_source(db,scope,source['sha'],grant)
+            if 'fishbot_readonly_cutover' in tables:
+                db.execute("UPDATE fishbot_readonly_cutover SET state='consumed' WHERE scope=? AND state='available'",(key,))
+            journal_storage.prune_unreferenced_blobs(db,key)
+        if 'memory_reconstruction_checkpoints' in tables:
+            db.executemany("""UPDATE memory_reconstruction_checkpoints SET state='invalidated',request_id=NULL
+                WHERE scope=? AND state IN ('available','reserved','pending_coverage','pending_merge')""",((scope,) for scope in expected))
+        # Durably filter legacy copies before the new baseline can be used.
+        # Recovery ledgers and unknown transport payloads are left unchanged.
+        journal_storage.retire_member_copies(db,JOURNAL_SCOPE,members)
+        _record_activation(db,grant['id'],limit)
+        destination_sha=reserve_journal(db)
+        receipt={'grant':grant,'backupSha':backup_sha,'destinationSha':destination_sha,'sources':sources,
+                 'newBaseline':True,'retirementStateVersion':1,'members':sorted(members),'summary':summary,
+                 'historyCount':len(payload),'timelineSha':hashlib.sha256(model_json(
+                     [[r['event'],r['at']] for r in payload]).encode()).hexdigest()}
+        if normalize_legacy_claims:receipt['normalizedLegacyClaims']=True
+        _record_receipt(db,receipt)
+        if (not reserved_destination_receipt(db,destination_sha) or
+           not all(retired_source_receipt(db,s['scope'],s['sha']) for s in sources) or
+           db.execute("SELECT scope FROM fishbot_readonly_journals WHERE state='ready'").fetchall()!=[(model_json(JOURNAL_SCOPE),)]):
+            raise ValueError('owner_migration_postcondition_failed')
         db.commit()
         return receipt
     except BaseException:

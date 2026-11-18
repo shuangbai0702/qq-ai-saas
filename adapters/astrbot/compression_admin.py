@@ -15,10 +15,12 @@ def refresh_completion(store,job):
     checkpoint=(value.get('checkpoint') or {}).get('id',value.get('checkpointId'))
     db=getattr(store,'db',None)
     if db is None or type(checkpoint) is not int:return
+    scope=job.get('scope','bot_shared')
     row=db.execute('''SELECT c.state,b.state FROM memory_reconstruction_checkpoints c
-      JOIN memory_semantic_batches b ON b.checkpoint_id=c.id WHERE c.id=? AND c.scope='bot_shared' ''',(checkpoint,)).fetchone()
+      JOIN memory_semantic_batches b ON b.checkpoint_id=c.id
+      JOIN memory_semantic_purges p ON p.checkpoint_id=c.id WHERE c.id=? AND c.scope=?''',(checkpoint,scope)).fetchone()
     if row!=('consumed','retired'):return
-    if db.execute("SELECT 1 FROM memory_checkpoint_issues WHERE scope='bot_shared' AND checkpoint_id=? AND status='open' AND kind IN ('semantic_retirement','native_legacy_cleanup','native_history_cleanup')",(checkpoint,)).fetchone():return
+    if db.execute("SELECT 1 FROM memory_checkpoint_issues WHERE scope=? AND checkpoint_id=? AND status='open' AND kind IN ('semantic_retirement','native_legacy_cleanup','native_history_cleanup')",(scope,checkpoint)).fetchone():return
     tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if 'semantic_media_owned' in tables and db.execute("SELECT 1 FROM semantic_media_owned WHERE state='pending' LIMIT 1").fetchone():return
     if 'semantic_media_protocol_issues' in tables and db.execute('SELECT 1 FROM semantic_media_protocol_issues LIMIT 1').fetchone():return
@@ -31,15 +33,18 @@ def manage(store,data,care):
     request_id=data.get('requestId')
     if set(data)-allowed or not (allowed-{'discardUnavailable'})<=set(data) or not isinstance(request_id,str) or not re.fullmatch(r'[a-fA-F0-9-]{36}',request_id):
         return {'error':'维护请求无效','status':400}
+    scope='bot_shared'
     jobs=getattr(store,'_compression_jobs',None)
     if jobs is None:jobs={};store._compression_jobs=jobs
     if request_id in jobs:
+        if not status_only and jobs[request_id].get('scope','bot_shared')!=scope:
+            return {'error':'维护请求已绑定其他会话','status':409}
         refresh_completion(store,jobs[request_id]);return dict(jobs[request_id])
     if status_only:return {'error':'维护请求不存在或运行实例已更换','status':404}
     administrator=data.get('administrator')
     if not isinstance(administrator,str) or not administrator.strip() or type(data.get('allowPartial')) is not bool or type(data.get('discardUnavailable',False)) is not bool:
         return {'error':'管理员维护凭据无效','status':400}
-    if not store.shared_context:return {'error':'当前账号不属于统一主Journal','status':409}
+    if bool(store.shared_context)!=(scope=='bot_shared'):return {'error':'压缩范围与当前账号的主Journal模式不符','status':409}
     # A diagnostic cache must never veto an authorized compression. Committed
     # request IDs remain idempotent in the existing checkpoint override table.
     finished=[key for key,value in jobs.items() if value.get('state') not in ('running','queued')]
@@ -51,13 +56,13 @@ def manage(store,data,care):
     try:
         # create_task inside force_compress_once inherits this request budget;
         # the API caller and unrelated foreground tasks keep their own context.
-        result=reflection.force_compress_once('bot_shared',allow_partial=data['allowPartial'],administrator=administrator,request_id=request_id,discard_unavailable=data.get('discardUnavailable',False))
+        result=reflection.force_compress_once(scope,allow_partial=data['allowPartial'],administrator=administrator,request_id=request_id,discard_unavailable=data.get('discardUnavailable',False))
     except Exception as error:
         failure=type(error).__name__
         result={'started':False,'reason':failure}
     finally:
         decision_token_limit.reset(limit_token)
-    job={'ok':True,'requestId':request_id,'state':'running' if result.get('started') else 'not_started','startedAt':time.time(),**result}
+    job={'ok':True,'requestId':request_id,'scope':scope,'state':'running' if result.get('started') else 'not_started','startedAt':time.time(),**result}
     jobs[request_id]=job
     if failure:
         job.update(state='failed',finishedAt=time.time())

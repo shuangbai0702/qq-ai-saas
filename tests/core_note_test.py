@@ -6,8 +6,11 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/'references/astrbot'),str(ROOT/'adapters/astrbot')]
 from behavior import BehaviorStore
 from bot_pipeline import conversation_context
+from context_protocol import model_json
 from memory_reflection import invalidate
 from data_admin import run
+from shared_context import JOURNAL_SCOPE
+from summary_stream_fixture import summary_provider
 
 class CoreNoteTests(unittest.IsolatedAsyncioTestCase):
  def setUp(self):
@@ -24,9 +27,10 @@ class CoreNoteTests(unittest.IsolatedAsyncioTestCase):
   for i in range(DEFAULT_SUMMARY_ROUNDS):
    # A source-bound optional note requires the actual offered material;
    # metadata-only rows now intentionally use the missing-original path.
-   message=event_message({'scope':self.scope,'sender_id':'12345678','event_id':str(i)},'请叫我小林')
-   self.ref.record(self.scope,'12345678',str(i),'请叫我小林','好的',time.time(),
-       materials=snapshots([message,{'role':'assistant','content':'好的'}],self.scope))
+   at=time.time();event=model_json([self.scope,str(i)])
+   message=event_message({'scope':self.scope,'sender_id':'12345678','event_id':str(i),'at':at},'请叫我小林')
+   self.ref.record(JOURNAL_SCOPE,'12345678',event,'请叫我小林','好的',at,
+       materials=snapshots([message,{'role':'assistant','content':'好的'}],JOURNAL_SCOPE))
  async def drain(self):
   for _ in range(12):
    task=self.ref.task
@@ -71,24 +75,28 @@ class CoreNoteTests(unittest.IsolatedAsyncioTestCase):
  async def test_same_summary_request_updates_region_without_other_insights(self):
   self.rounds();calls=[];metrics={};cfg={'memory':True,'memorySummary':True,'summaryRounds':30,'naturalConversation':False,'_persona':'固定角色不变'}
   async def chat(**kw):
-   calls.append(kw);self.assertIn('core_note',json.loads(kw['prompt']))
-   return NS(completion_text=json.dumps({'summary':'真实小摘要','core_note':{'text':'12345678希望称呼小林','events':['0']}}))
-  self.ref.maybe_start(self.scope,cfg,NS(text_chat=chat),lambda:True,metrics,self.var);await self.drain()
+   calls.append(kw)
+   return NS(completion_text=json.dumps({'summary':'真实小摘要','core_note':{'text':'12345678希望称呼小林','events':[model_json([self.scope,'0'])]}}))
+  self.assertTrue(self.ref.maybe_start(JOURNAL_SCOPE,cfg,summary_provider(chat),lambda:True,metrics,self.var));await self.drain()
   self.assertEqual(len(calls),1);self.assertEqual(metrics['coreNoteUpdates'],1);self.assertEqual(self.ref.core_note()['text'],'12345678希望称呼小林');self.assertEqual(cfg['_persona'],'固定角色不变')
+  prompt=json.loads(calls[0]['prompt'])
+  self.assertIn('core_note',prompt);self.assertEqual(prompt['source_scope'],JOURNAL_SCOPE)
+  self.assertEqual(self.ref.core_note()['source_scopes'],[self.scope]);self.assertEqual(self.ref.core_note()['source_verification'],'references_matched')
  async def test_big_compression_can_update_same_region(self):
-  # Same-scope smalls form a legal merge group; cross-scope smalls are never
-  # merged together, so the fixture keeps one audience.
+  # The canonical Journal owns the summary products and each product keeps
+  # the original audience as source provenance.
   ids=[]
   for index in range(3):
-   ident=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated) VALUES(?,?,?,?)',(self.scope,'长期背景','["event"]',time.time()+index)).lastrowid;ids.append(ident);self.db.execute("INSERT INTO memory_summary_levels VALUES(?,'small')",(ident,));self.db.execute('INSERT INTO memory_summary_origins VALUES(?,?)',(ident,self.scope))
+   ident=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated) VALUES(?,?,?,?)',(JOURNAL_SCOPE,'长期背景','["event"]',time.time()+index)).lastrowid;ids.append(ident);self.db.execute("INSERT INTO memory_summary_levels VALUES(?,'small')",(ident,));self.db.execute('INSERT INTO memory_summary_origins VALUES(?,?)',(ident,self.scope))
   self.db.commit();calls=[]
   async def chat(**kw):calls.append(kw);return NS(completion_text=json.dumps({'summary':'合并后的大摘要','core_note':{'text':'一段核心背景','summaries':ids}}))
-  self.ref.maybe_start(self.scope,{'memory':True,'memorySummary':True},NS(text_chat=chat),lambda:True,{},self.var);await self.drain()
+  self.assertTrue(self.ref.maybe_start(JOURNAL_SCOPE,{'memory':True,'memorySummary':True},summary_provider(chat),lambda:True,{},self.var));await self.drain()
   self.assertEqual(len(calls),1);self.assertEqual(self.ref.core_note()['text'],'一段核心背景');self.assertEqual(self.db.execute("SELECT count(*) FROM memory_summary_levels WHERE kind='big'").fetchone()[0],1)
+  self.assertEqual(self.ref.core_note()['source_scopes'],[self.scope]);self.assertEqual(self.ref.core_note()['source_verification'],'references_matched')
  async def test_failed_or_late_reflection_cannot_update_region(self):
   self.patch('原背景');self.rounds();entered=asyncio.Event();release=asyncio.Event()
-  async def chat(**kw):entered.set();await release.wait();return NS(completion_text=json.dumps({'summary':'旧摘要','core_note':{'text':'迟到内容','events':['0']}}))
-  self.ref.maybe_start(self.scope,{'memory':True,'memorySummary':True},NS(text_chat=chat),lambda:True,{},self.var);await asyncio.wait_for(entered.wait(),5)
+  async def chat(**kw):entered.set();await release.wait();return NS(completion_text=json.dumps({'summary':'旧摘要','core_note':{'text':'迟到内容','events':[model_json([self.scope,'0'])]}}))
+  self.assertTrue(self.ref.maybe_start(JOURNAL_SCOPE,{'memory':True,'memorySummary':True},summary_provider(chat),lambda:True,{},self.var));await asyncio.wait_for(entered.wait(),5)
   with self.db:invalidate(self.db,self.scope,'12345678')
   release.set();await self.drain();self.assertEqual(self.ref.core_note()['text'],'');self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],0)
  def test_forget_summary_also_clears_derived_text(self):

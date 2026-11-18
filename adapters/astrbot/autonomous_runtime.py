@@ -456,13 +456,13 @@ class AutonomousRuntime:
         main_activation=moment or bool(action.get('continuation'))
         if not main_activation or action.get('kind')!='research' or action.get('target'):
             raise PreflightRejected('independent_execution_retired')
-        main_scope=None
         if main_activation:
             if st.active or getattr(st,'waiting',0) or id in self.running or self.provider(id) is None:
                 return {'status':'blocked','reason':'foreground_work_busy' if st.active or getattr(st,'waiting',0) or id in self.running else 'model_unavailable','summary':'主模型未空闲或不可用，本次未激活','effects':[],'evidence':[],'unfinished':[],'usage':dict(ZERO_USAGE),'continuationAccepted':False}
             from activity_context import scope_for
-            try:main_scope=scope_for(st,self.policies.get(id,{}).get('config',{}))
-            except ValueError as error:return {'status':'blocked','reason':str(error),'summary':'未能确定现有主会话，本次未激活','effects':[],'evidence':[],'unfinished':[],'usage':dict(ZERO_USAGE),'continuationAccepted':False}
+            from readonly_journal import ContextRecoveryUnavailable
+            try:main_scope=scope_for(st)
+            except ContextRecoveryUnavailable as error:return {'status':'blocked','reason':str(error),'summary':'未能确定现有主会话，本次未激活','effects':[],'evidence':[],'unfinished':[],'usage':dict(ZERO_USAGE),'continuationAccepted':False}
         continuation=bool(action.get('continuation') or (action.get('requestSource') or {}).get('parentActionId'))
         model_origin=(action.get('requestSource') or {}).get('origin')=='model'
         if moment and action.get('activationTrigger','activity')=='activity' and not self.policies.get(id,{}).get('config',{}).get('activityEnabled',True):raise PreflightRejected('activity_disabled')
@@ -481,7 +481,7 @@ class AutonomousRuntime:
         if previous:
             st.pipeline.bind_internal(None,s,identity,'self',action['objective'])
             return previous['result'] or {'status':'unknown','summary':'已有动作尚未完整结算；禁止重新执行','effects':previous['effects'],'evidence':[],'unfinished':[action['objective']],'usage':{'modelCalls':0,'toolCalls':0,'tokens':0}}
-        scope=main_scope if main_scope!='bot_shared' else 'self';self_id=str(s.get('expectedUin') or '')
+        scope='self';self_id=str(s.get('expectedUin') or '')
         if not self_id:
             # Older valid QQ sessions may have no persisted expectedUin. Bind
             # self work to this member's real protocol, never a model argument
@@ -496,7 +496,6 @@ class AutonomousRuntime:
         event=self.make_event(id,identity,scope if scope!='self' else 'private:0',action['objective'],self_id)
         if main_activation:
             event.set_extra('_hosted_main_activation',True)
-            event.set_extra('_hosted_main_journal_scope',main_scope)
         bound=st.pipeline.bind_internal(event,s,identity,scope,action['objective'])
         if isinstance(bound,dict):
             result=st.pipeline.internal_result(identity['id']);return result['result'] or {'status':'unknown' if result['effects'] else 'canceled','summary':'同一动作已有执行记录，禁止重新执行','effects':result['effects'],'evidence':[],'unfinished':[action['objective']]}

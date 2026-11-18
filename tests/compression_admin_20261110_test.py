@@ -42,7 +42,7 @@ class CompressionAdmin(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status['state'],'pending_cleanup');self.assertEqual(status['result']['checkpointId'],7)
 
     async def test_strict_command_and_known_runtime_only(self):
-        for data in ({**self.data,'is_admin':True},{**self.data,'allowPartial':'true'},{**self.data,'administrator':''}):
+        for data in ({**self.data,'legacyScope':'private:12345678'},{**self.data,'is_admin':True},{**self.data,'allowPartial':'true'},{**self.data,'administrator':''}):
             self.assertEqual(manage(self.store,data,self.care)['status'],400)
         self.store.shared_context=False
         self.assertEqual(manage(self.store,self.data,self.care)['status'],409)

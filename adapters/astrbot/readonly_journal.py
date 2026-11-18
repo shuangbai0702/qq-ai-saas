@@ -454,6 +454,10 @@ class ReadonlyJournal:
         row=self.db.execute('SELECT version,state,payload,sha FROM fishbot_readonly_journals WHERE scope=?',(self.scope_key,)).fetchone()
         if row:
             version,state,payload,sha=row
+            if state=='retired' and payload is None:
+                from journal_cutover import retired_source_receipt
+                if retired_source_receipt(self.db,json.loads(self.scope_key),sha):
+                    self.retired_reason='owner_authorized_early_migration';return
             if version not in (1,journal_storage.VERSION) or state not in ('ready','retired') or not isinstance(payload,str) or not isinstance(sha,str) or hashlib.sha256(payload.encode()).hexdigest()!=sha or len(payload.encode())>MAX_PERSISTED_JOURNAL_BYTES:
                 self.recovery_error='journal_snapshot_integrity'
                 return
@@ -482,12 +486,15 @@ class ReadonlyJournal:
             try:reading_pool(value['wire'])
             except (TypeError,ValueError,KeyError,IndexError):
                 self.recovery_error='journal_reading_definition_invalid';return
-            # Account creation reserves its sole main Journal before there is
-            # a System contract or provider submission to preserve.
-            if (json.loads(self.scope_key)=='bot_shared' and state=='ready' and value['turns']==0
-                and value['base']==[] and value['wire']==[] and value['state']=={}
-                and authority is None and value['retirement'] is None
-                and not self._scope_has_completed_history()):return
+            if value['turns']==0 and not value['base'] and not value['wire']:
+                from shared_context import JOURNAL_SCOPE,active
+                from journal_cutover import reserved_destination_receipt
+                if (json.loads(self.scope_key)!=JOURNAL_SCOPE or state!='ready' or not active(self.db)
+                    or value['state'] or value['usage'] or value['detail']
+                    or value['base_chars']!=0 or group_turn is not None or authority is not None
+                    or value['retirement'] is not None or self._scope_has_completed_history() and not reserved_destination_receipt(self.db,sha)):
+                    self.recovery_error='journal_empty_reservation_invalid'
+                return
             self.last=Prepared(0,None,value['base'],value['wire'],value['state'],value['turns'],value['at'],'restored',group_turn,value['base_chars'],value['detail'],value['usage'],authority,value['retirement'])
             self.last.main_conversation=value.get('main_conversation',False)
             self.last.pending_system_checkpoint=value.get('pending_system_checkpoint')
@@ -759,15 +766,14 @@ class ReadonlyJournal:
         # SDK native windows can rehydrate a retired batch after restart.
         # Content-free membership tombstones fence that resurrection before
         # native-prefix comparison; no Coverage or timestamp inference.
-        if self.db is not None and self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_semantic_batches'").fetchone():
+        if self.db is not None:
+            from semantic_batch import retired_members
             # Internal Work journals use an ephemeral tuple as their owner key;
             # it is not a conversation scope or a SQLite parameter. They still
             # apply the bot's shared tombstones to real sourced chat blocks.
             scope=reconstruction_scope if isinstance(reconstruction_scope,str) else json.loads(self.scope_key) if self.scope_key is not None else None
-            by_scope={}
-            for batch_scope,raw in self.db.execute("SELECT scope,members FROM memory_semantic_batches WHERE scope IN (?,'bot_shared') AND state='retired'",(scope,)):
-                by_scope.setdefault(batch_scope,set()).update(json.loads(raw))
-            for batch_scope,members in by_scope.items():
+            for batch_scope,members in retired_members(self.db).items():
+                if batch_scope not in (scope,'bot_shared'):continue
                 retired={'semanticBatch':True,'scope':batch_scope,'batchMembers':sorted(members)}
                 messages=semantic_retire_projection(messages,retired)
                 if isinstance(unprojected,list):unprojected=semantic_retire_projection(unprojected,retired)
@@ -1137,6 +1143,20 @@ class ReadonlyJournal:
         candidate=Prepared(self.serial,stamp,base,wire,copy.deepcopy(state),turns,now,reason,group_turn,base_chars,detail,usage,stored_authority,retirement,reconstruction_permit,reconstruction_authority,None,retirement_deferred,False)
         candidate.main_conversation=bool(old and old.main_conversation)
         return candidate
+
+    @staticmethod
+    def retire_owner_source(db,scope,sha,grant):
+        """Transition an exactly authorized source inside the switch transaction."""
+        from journal_cutover import OWNER_EARLY_MIGRATION
+        if (not db.in_transaction or grant['type']!=OWNER_EARLY_MIGRATION
+            or grant['destination']!='bot_shared' or scope=='bot_shared' or grant['sources'].get(scope)!=sha):
+            raise PermissionError('journal_owner_retirement_invalid')
+        key=ReadonlyJournal._scope_key(scope)
+        row=db.execute('SELECT version,payload,sha FROM fishbot_readonly_journals WHERE scope=? AND state=?',(key,'ready')).fetchone()
+        if not row or row[2]!=sha:raise ContextPrefixViolation('journal_owner_retirement_source_changed')
+        journal_storage.read_snapshot_payload(db,key,*row,scope_error='journal_owner_retirement_scope_changed')
+        changed=db.execute("UPDATE fishbot_readonly_journals SET state='retired',payload=NULL,updated=? WHERE scope=? AND state='ready' AND sha=?",(time.time(),key,sha)).rowcount
+        if changed!=1:raise ContextPrefixViolation('journal_owner_retirement_source_changed')
 
     def retire_semantic_batch(self,permit,authority,state,retirement=None,event_authority=None):
         """Immediately rebuild a settled Journal from a committed summary.

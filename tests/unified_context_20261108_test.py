@@ -80,6 +80,87 @@ class Unified(unittest.TestCase):
         original=[a,{'role':'assistant','content':'one'},b,{'role':'assistant','content':'two'}]
         projected=project_history(original,coverage(self.db,shared.JOURNAL_SCOPE),shared.JOURNAL_SCOPE,material[1]['event'])
         self.assertEqual(projected,original[2:])
+    def test_empty_runtime_uses_one_journal_and_leaves_old_snapshots_untouched(self):
+        path=Path(self.tmp.name)/'new.sqlite'
+        new=BehaviorStore(path,runtime_config=self.cfg)
+        try:
+            self.assertTrue(new.shared_context)
+            self.assertIsNone(new.db.execute("SELECT 1 FROM sqlite_master WHERE name='fishbot_operator_session_archives'").fetchone())
+            journal=ReadonlyJournal(new.db,shared.JOURNAL_SCOPE)
+            for scope in ('private:12345678','private:67890','group:55555'):
+                self.prepare(journal,message(scope))
+            self.assertEqual(new.db.execute('SELECT scope FROM fishbot_readonly_journals').fetchall(),[(model_json(shared.JOURNAL_SCOPE),)])
+        finally:
+            new.close()
+        reopened=BehaviorStore(path,runtime_config=self.cfg)
+        try:
+            self.assertTrue(reopened.shared_context)
+        finally:
+            reopened.close()
+        scope='private:12345678'
+        old=ReadonlyJournal(self.db,scope)
+        self.assertTrue(old.commit(old.prepare(request(message(scope)),('bot',),strict=True)))
+        before=self.db.execute('SELECT scope,sha FROM fishbot_readonly_journals').fetchall()
+        from readonly_journal import ContextRecoveryUnavailable
+        with self.assertRaisesRegex(ContextRecoveryUnavailable,'owner_migration_required'):
+            shared.activate_empty(self.db,self.cfg)
+        self.assertFalse(shared.active(self.db))
+        with self.assertRaisesRegex(ContextRecoveryUnavailable,'owner_migration_required'):
+            shared.main_journal_scope(self.db)
+        self.assertEqual(self.db.execute('SELECT scope,sha FROM fishbot_readonly_journals').fetchall(),before)
+
+    def test_reserved_shared_journal_survives_restart_and_fences_a_missing_marker(self):
+        import sqlite3
+        db=sqlite3.connect(':memory:')
+        self.addCleanup(db.close)
+        self.assertTrue(shared.activate_empty(db,self.cfg))
+        snapshot=db.execute('SELECT scope,state,sha FROM fishbot_readonly_journals').fetchall()
+        self.assertEqual([(key,state) for key,state,sha in snapshot],[('"bot_shared"','ready')])
+        self.assertTrue(shared.activate_empty(db,self.cfg))
+        self.assertEqual(db.execute('SELECT scope,state,sha FROM fishbot_readonly_journals').fetchall(),snapshot)
+        loaded=ReadonlyJournal(db,'bot_shared')
+        self.assertIsNone(loaded.last)
+        self.assertIsNone(loaded.recovery_error)
+        db.execute('DELETE FROM fishbot_shared_context')
+        db.commit()
+        with self.assertRaisesRegex(ValueError,'marker_missing'):
+            shared.activate_empty(db,self.cfg)
+        self.assertEqual(db.execute('SELECT scope,state,sha FROM fishbot_readonly_journals').fetchall(),snapshot)
+
+    def test_runtime_selection_rejects_ready_nonshared_journals_but_allows_tombstones(self):
+        from readonly_journal import ContextRecoveryUnavailable
+        db=sqlite3.connect(':memory:')
+        self.addCleanup(db.close)
+        shared.activate_empty(db,self.cfg)
+        self.assertEqual(shared.main_journal_scope(db),'bot_shared')
+        key=model_json('private:12345678')
+        db.execute("INSERT INTO fishbot_readonly_journals SELECT ?,version,'unavailable',payload,sha,updated FROM fishbot_readonly_journals",(key,))
+        db.commit()
+        self.assertEqual(shared.main_journal_scope(db),'bot_shared')
+        promote="UPDATE fishbot_readonly_journals SET state='ready' WHERE scope=?"
+        with self.assertRaisesRegex(sqlite3.IntegrityError,'noncanonical_active_journal'):
+            db.execute(promote,(key,))
+        with self.assertRaisesRegex(sqlite3.IntegrityError,'noncanonical_active_journal'):
+            db.execute("INSERT INTO fishbot_readonly_journals SELECT ?,version,state,payload,sha,updated FROM fishbot_readonly_journals WHERE scope=?", (model_json('group:12345'),model_json('bot_shared')))
+        # Model startup against the same mixed inventory made before the guard.
+        db.execute('DROP TRIGGER shared_journal_ready_update')
+        db.execute(promote,(key,))
+        db.commit()
+        before=list(db.iterdump())
+        for check in (lambda:shared.main_journal_scope(db),lambda:shared.activate_empty(db,self.cfg)):
+            with self.assertRaisesRegex(ContextRecoveryUnavailable,'nonshared_journals'):check()
+        self.assertEqual(list(db.iterdump()),before)
+
+    def test_legacy_memory_without_a_journal_never_creates_a_new_main_baseline(self):
+        from readonly_journal import ContextRecoveryUnavailable
+        self.db.execute("INSERT INTO memory_summaries(scope,text,sources,updated) VALUES('private:12345678','old summary','[]',1)")
+        self.db.commit()
+        with self.assertRaisesRegex(ContextRecoveryUnavailable,'owner_migration_required'):
+            shared.activate_empty(self.db,self.cfg)
+        self.assertFalse(shared.active(self.db))
+        self.assertEqual(self.db.execute('SELECT count(*) FROM fishbot_readonly_journals').fetchone()[0],0)
+        self.assertEqual(self.db.execute('SELECT text FROM memory_summaries').fetchall(),[('old summary',)])
+
     def test_atomic_authorized_cutover_keeps_exact_old_journals_no_license(self):
         expected={};old={}
         for scope in ['private:12345678','group:55555']:
@@ -118,7 +199,9 @@ class Writers(unittest.IsolatedAsyncioTestCase):
                     store.reflection.record(shared.JOURNAL_SCOPE,'12345678',identifier,m['content'],'confirmed answer '+str(n),materials=materials)
                 self.assertEqual(db.execute('SELECT scope,count(*) FROM memory_rounds GROUP BY scope').fetchall(),[(shared.JOURNAL_SCOPE,30)])
                 class Summary:
-                    async def text_chat(self,**kwargs):return NS(completion_text=model_json({'summary':'30 completed events, authors and original sources retained.','evidence':[],'commitments':[]}))
+                    async def text_chat_stream(self,**kwargs):
+                        yield NS(completion_text=model_json({'summary':'30 completed events, authors and original sources retained.','evidence':[],'commitments':[]}),
+                                 raw_completion={'choices':[{'finish_reason':'stop'}]})
                 metrics={};provider=Summary()
                 self.assertTrue(store.reflection.maybe_start(shared.JOURNAL_SCOPE,{'memory':True,'memorySummary':True,'naturalConversation':False},provider,lambda:True,metrics,ContextVar('shared-summary-event',default=None)))
                 await store.reflection.task

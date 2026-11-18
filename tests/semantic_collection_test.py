@@ -35,6 +35,28 @@ class CollectionTests(unittest.TestCase):
         self.db.execute('INSERT INTO memory_checkpoint_archives VALUES(?,?,?,?)',(key,2,payload,hashlib.sha256(payload.encode()).hexdigest()))
         return payload
     def collect(self,payload=None):return semantic_collection.collect(self.db,'bot_shared',100,payload or [])
+    def test_owner_staging_keeps_unsubmitted_inputs_outside_the_batch(self):
+        from journal_cutover import collect_owner_history
+        from readonly_journal import ReadonlyJournal
+        message=self.old('submitted')
+        key=model_json(self.channel)
+        payload,blobs=journal_storage.encode({'scope':key,'wire':[message],'base':[message],'state':{},'at':80})
+        sha=hashlib.sha256(payload.encode()).hexdigest()
+        self.db.commit()
+        ReadonlyJournal(self.db,None)
+        self.db.execute("INSERT INTO fishbot_readonly_journals VALUES(?,?,'ready',?,?,80)",(key,journal_storage.VERSION,payload,sha))
+        for identifier,raw in blobs.items():
+            self.db.execute('INSERT INTO fishbot_readonly_journal_blobs VALUES(?,?,?)',(key,identifier,raw))
+        self.db.execute("INSERT INTO social_samples(scope,event,subject,text,created) VALUES(?,?,?,?,?)",
+                        (self.channel,'unsubmitted','12345678','protected waiting input',49))
+        self.db.commit();self.db.execute('BEGIN')
+        staged=collect_owner_history(self.db,{self.channel:sha})
+        self.assertEqual([(row['event'],row['at']) for row in staged],[(model_json([self.channel,'submitted']),50)])
+        self.assertEqual(self.db.execute("SELECT event FROM memory_round_material WHERE scope='bot_shared'").fetchall(),[(model_json([self.channel,'submitted']),)])
+        self.assertEqual(self.db.execute('SELECT event FROM social_samples').fetchall(),[('unsubmitted',)])
+        self.db.rollback()
+        self.assertEqual(self.db.execute("SELECT count(*) FROM memory_round_material WHERE scope='bot_shared'").fetchone(),(0,))
+
     def test_credential_redacted_store_and_original_journal_collect_same_material(self):
         secret='sk-abcdefghijklmnop'
         reply='reply Bearer fixture_token'

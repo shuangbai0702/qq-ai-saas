@@ -47,12 +47,17 @@ def retire_archived_members(db,checkpoint_id,*,verify_active=True):
     Runs inside the caller's retirement transaction. Archive authorization,
     System bytes, uncompressed events and other scoped copies stay intact.
     """
-    from context_protocol import model_json
-    from semantic_batch import event_key
-    from readonly_journal import semantic_retire_projection
     row=db.execute("SELECT scope,members FROM memory_semantic_batches WHERE checkpoint_id=? AND state='retired'",(checkpoint_id,)).fetchone()
     if not row:return 0
     scope,members=row[0],set(json.loads(row[1]))
+    return retire_member_copies(db,scope,members,checkpoint_id=checkpoint_id,verify_active=verify_active)
+
+
+def retire_member_copies(db,scope,members,*,checkpoint_id=None,verify_active=True):
+    """Apply exact retirement membership to disposable recovery copies."""
+    from context_protocol import model_json
+    from semantic_batch import event_key
+    from readonly_journal import semantic_retire_projection
     permit={'semanticBatch':True,'scope':scope,'batchMembers':list(members)}
     tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     touched=set();changed=0
@@ -148,7 +153,7 @@ def retire_archived_members(db,checkpoint_id,*,verify_active=True):
             columns={r[1] for r in db.execute('PRAGMA table_info(fishbot_operator_session_archives)')}
             created='created' if 'created' in columns else 'NULL'
             grant=None
-            if scope=='bot_shared' and 'memory_semantic_discard_audit' in tables:
+            if checkpoint_id is not None and scope=='bot_shared' and 'memory_semantic_discard_audit' in tables:
                 grant=db.execute('SELECT b.cutoff FROM memory_semantic_batches b JOIN memory_semantic_discard_audit a ON a.checkpoint_id=b.checkpoint_id WHERE b.checkpoint_id=? AND length(a.administrator)>0 AND length(a.request_id)>0',(checkpoint_id,)).fetchone()
             for identifier,key,encoded,sha,captured in db.execute('SELECT authorization,scope,archive,sha,'+created+' FROM fishbot_operator_session_archives').fetchall():
                 if hashlib.sha256(encoded.encode()).hexdigest()!=sha:raise ValueError('operator_archive_integrity')

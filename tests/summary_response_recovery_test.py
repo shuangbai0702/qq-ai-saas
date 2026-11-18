@@ -31,6 +31,7 @@ class Recovery(unittest.IsolatedAsyncioTestCase):
   # Reopen the real SQLite connection and original Reflection before retrying.
   from behavior import BehaviorStore
   self.store.close();self.store=BehaviorStore(Path(self.tmp.name)/'behavior.sqlite');self.r=self.store.reflection;self.db=self.store.db
+  self.r.shared_context=False  # Reopen the same deliberately local reflection fixture.
   self.r.binding=None;self.db.execute('DROP TRIGGER reject_summary');self.db.execute('UPDATE memory_reflection_retry SET next_at=0');self.db.commit()
   await self.run_summary()
   self.assertIsNotNone(self.checkpoint());self.assertEqual(len(self.calls),1)

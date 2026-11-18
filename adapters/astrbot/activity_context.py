@@ -1,31 +1,11 @@
 """Resolve an existing main conversation; never synthesize a parallel one."""
 
 
-def canonical_main(store,event):
-    """A service block in this submitted scope makes the Journal authoritative.
-
-    Native SDK conversation windows do not contain internally activated turns.
-    Read the existing prefix itself, including after a process restart; no new
-    routing flag or parallel history is persisted.
-    """
-    if event.get_extra('_hosted_main_activation'):return True
-    if event.get_extra('_hosted_internal_work'):return False
-    from bot_pipeline import delivery_scope
-    from readonly_journal import ReadonlyJournal
-    from context_protocol import source
-    scope=delivery_scope(event)
-    journal=store.model_journals.get(scope)
-    if journal is None:
-        journal=ReadonlyJournal(store.db,scope)
-        if journal.last:store.model_journals[scope]=journal
-    return bool(journal.last and (journal.last.main_conversation or any((o:=source(m)) and o.get('kind')=='platform_service_not_user'
-                and o['scope']==scope for m in journal.last.base)))
-
-
-def scope_for(store, config):
-    if not store.shared_context:raise ValueError('shared_main_context_required')
-    from shared_context import JOURNAL_SCOPE
-    return JOURNAL_SCOPE
+def scope_for(store):
+    from readonly_journal import ContextRecoveryUnavailable
+    from shared_context import main_journal_scope
+    if not store.shared_context:raise ContextRecoveryUnavailable('shared_main_context_required')
+    return main_journal_scope(store.db)
 
 
 def event_key(work, logical):

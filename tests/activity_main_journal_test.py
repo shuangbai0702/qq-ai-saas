@@ -48,7 +48,7 @@ class Activity(unittest.IsolatedAsyncioTestCase):
         self.brain.close()
         self.runtime['release']('qq')
         await self.provider.client.close()
-    async def activate(self,identifier=None,continuation=False,action_patch=None):
+    def activation_request(self,identifier=None,continuation=False,action_patch=None):
         identifier=identifier or str(uuid.uuid4());cycle=str(uuid.uuid4())
         policy={'tenantId':'tenant','botId':'bot','generation':1,'revision':1,'epoch':1,'until':time.time()*1000+14000,'cycleId':cycle,'actionId':identifier,'config':{'mode':'active','rollout':'live','activityEnabled':True,'maxSleepSeconds':86400}}
         self.brain.install('qq',policy)
@@ -57,7 +57,10 @@ class Activity(unittest.IsolatedAsyncioTestCase):
         action={'kind':'research','target':'','objective':'Choose autonomously','autonomousMoment':not continuation,'continuationOfMoment':continuation,'goalSnapshot':{'goals':[{'id':'goal-one','title':'EXACT_CURRENT_GOAL','source':{'scope':'self'}}],'actions':[],'effects':[]}}
         if continuation:action['continuation']={'id':'effect-complete','parentActionId':'original','result':{'status':'completed','evidence':['actual result']}}
         if action_patch:action.update(action_patch)
-        return await self.brain.execute('qq',{'work':work,'action':action})
+        return {'work':work,'action':action}
+
+    async def activate(self,identifier=None,continuation=False,action_patch=None):
+        return await self.brain.execute('qq',self.activation_request(identifier,continuation,action_patch))
     async def test_scheduler_snapshot_never_builds_a_second_cognitive_context(self):
         self.brain.install('qq',{'tenantId':'tenant','botId':'bot','generation':1,'revision':1,'epoch':1,'until':time.time()*1000+14000,'config':{'mode':'active','rollout':'live','minSleepSeconds':300}})
         feedback={'at':123,'phase':'foreground_result','result':{'status':'unknown','protocolAttempts':1,'protocolConfirmed':0}}
@@ -95,6 +98,16 @@ class Activity(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.requests,[])
         self.assertEqual(self.st.db.execute('SELECT count(*) FROM pipeline_events').fetchone()[0],before)
         self.assertEqual(self.st.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],0)
+    async def test_missing_shared_marker_never_submits_or_falls_back_to_a_channel(self):
+        self.st.db.execute('DELETE FROM fishbot_shared_context')
+        self.st.db.commit()
+        before=self.st.db.execute('SELECT scope,state,payload,sha FROM fishbot_readonly_journals').fetchall()
+        result=await self.activate()
+        self.assertEqual(result['status'],'blocked',result)
+        self.assertEqual(self.requests,[])
+        self.assertEqual(self.st.db.execute('SELECT scope,state,payload,sha FROM fishbot_readonly_journals').fetchall(),before)
+        self.assertEqual(self.st.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],0)
+
     async def test_same_main_wire_silent_count_tools_restart_and_busy(self):
         self.tool_step=True
         with patch('execution_memory.context',side_effect=AssertionError('automatic execution replay is forbidden')) as replay:
@@ -154,10 +167,11 @@ class Activity(unittest.IsolatedAsyncioTestCase):
 
     async def test_concurrent_activation_skips_while_real_provider_in_flight(self):
         entered=asyncio.Event();release=asyncio.Event();self.request_gate=(entered,release)
-        first=asyncio.create_task(self.activate())
+        request=self.activation_request()
+        first=asyncio.create_task(self.brain.execute('qq',request))
         try:
             await asyncio.wait_for(entered.wait(),5)
-            second=await self.brain.execute('qq',{'work':{},'action':{'autonomousMoment':True}})
+            second=await self.brain.execute('qq',request)
             self.assertEqual(second['reason'],'foreground_work_busy')
             self.assertEqual(second['usage']['modelCalls'],0)
         finally:release.set()
@@ -200,12 +214,15 @@ class Activity(unittest.IsolatedAsyncioTestCase):
         import shared_context
         shared_context.observe(self.st.db,event,self.settings['qq']['config'])
         work=self.st.pipeline.bind(event,self.settings['qq'])
+        event.set_extra('_hosted_main_journal_scope',scope)  # A delivery key cannot replace the main Journal.
         token=current_message_event.set(event)
         try:
             await self.provider.text_chat(system_prompt='Synthetic stable persona',contexts=copy.deepcopy(original[1:]),
                 prompt=SOURCE+model_json({'scope':scope,'sender_id':'12345678','event_id':work.event_id})+'\nContinue our conversation')
         finally:current_message_event.reset(token)
         self.assertEqual(self.requests[-1]['messages'][:len(saved)],saved)
+        self.assertEqual(event.get_extra('_hosted_journal_scope'),'bot_shared')
+        self.assertEqual(set(self.st.model_journals),{'bot_shared'})
         human_policy=json.loads(self.st.model_journals[main].last.authority['content'].split('\n',1)[1])['policy']
         self.assertEqual(human_policy,service_policy)
         self.assertIn('仅当本轮身份为自主服务任务时',human_policy)
