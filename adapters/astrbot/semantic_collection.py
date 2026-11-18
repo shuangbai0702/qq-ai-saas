@@ -208,7 +208,7 @@ def unavailable_stamp(db,discarded,scope='bot_shared'):
     return hashlib.sha256(model_json(values).encode()).hexdigest()
 
 
-def collect(db,scope,cutoff,payload,recapture=None,*,discard_unavailable=False):
+def collect(db,scope,cutoff,payload,recapture=None,*,discard_unavailable=False,source_events=None):
     """Return complete canonical inputs through cutoff; never commit or mint rounds.
 
     Every candidate needs real material. Unknown chronology/ownership or
@@ -222,14 +222,14 @@ def collect(db,scope,cutoff,payload,recapture=None,*,discard_unavailable=False):
     if not db.in_transaction:db.execute('BEGIN')
     db.execute('SAVEPOINT semantic_collection')
     try:
-        result=_collect(db,cutoff,payload,recapture,discard_unavailable)
+        result=_collect(db,cutoff,payload,recapture,discard_unavailable,source_events)
         db.execute('RELEASE semantic_collection')
         return result
     except BaseException:
         db.execute('ROLLBACK TO semantic_collection');db.execute('RELEASE semantic_collection');raise
 
 
-def _collect(db,cutoff,payload,recapture,discard_unavailable=False):
+def _collect(db,cutoff,payload,recapture,discard_unavailable=False,source_events=None):
     tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     retired=set()
     if 'memory_semantic_batches' in tables:
@@ -241,6 +241,7 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False):
         return channel,str(identifier)
     def eligible(pair):
         channel,event=pair;key=model_json([channel,event])
+        if source_events is not None and key not in source_events:return False
         if (channel,event_key(channel,event)) in retired or ('bot_shared',event_key('bot_shared',key)) in retired:return False
         for logical,identifier in ((channel,event),('bot_shared',key)):
             if 'pipeline_scope_work' in tables and db.execute('SELECT 1 FROM pipeline_scope_work WHERE scope=? AND event=?',(logical,identifier)).fetchone():return False
@@ -249,7 +250,8 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False):
     scopes={'bot_shared'}
     for table in ('memory_rounds','memory_pending','memory_hold_rounds','memory_round_material'):
         if table in tables:scopes.update(r[0] for r in db.execute('SELECT DISTINCT scope FROM '+table) if _channel(r[0]))
-    for scope in sorted(scopes):discard_failed_service_inputs(db,scope)
+    if source_events is None:
+        for scope in sorted(scopes):discard_failed_service_inputs(db,scope)
     candidates={};materials={};anchors={};provided={};snippets={};raw_observations={};completed_anchors=set()
     def register(pair,person=None,at=None):
         if not pair or not eligible(pair):return
@@ -292,6 +294,9 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False):
             if table=='dialogue_feedback' and row.get('reply'):
                 anchors.setdefault(pair,set()).add(row['reply'])
     def capture(item,logical,upper_bound=None):
+        if source_events is not None and isinstance(item,dict) and 'event' in item:
+            selected=identity(logical,item['event'])
+            if not selected or not eligible(selected):return
         if not valid_material(item,logical):raise ValueError('semantic_collection_material_invalid')
         pair=identity(logical,item['event'])
         if not pair or not eligible(pair):return
@@ -350,6 +355,7 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False):
             if _time(o.get('at')):upper=o['at']
             if _time(upper):bounds[model_json([o['scope'],str(o['event_id'])])]=upper
         for item in snapshots(messages,'bot_shared',db=db):
+            if source_events is not None and item['event'] not in source_events:continue
             if valid_material(item,'bot_shared'):
                 capture(item,'bot_shared',bounds.get(item['event']))
                 if item.get('complete') or not discard_unavailable:continue

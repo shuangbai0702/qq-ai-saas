@@ -63,6 +63,32 @@ def source_timeline(db,expected):
     return sorted(timeline,key=lambda row:(row['at'],row['scope'],row['wire_position']))
 
 
+def collect_owner_history(db,expected):
+    """Stage exactly the granted history in an isolated restore's transaction."""
+    from semantic_collection import collect
+
+    timeline=source_timeline(db,expected)
+    expected_events={row['event'] for row in timeline}
+    if not expected_events:return []
+    if not db.in_transaction:raise ValueError('owner_migration_requires_staging_transaction')
+    db.execute('SAVEPOINT owner_history')
+    try:
+        collected=collect(db,'bot_shared',time.time(),[],source_events=expected_events)
+        by_event={row['event']:row for row in collected}
+        if set(by_event)!=expected_events:raise ValueError('owner_migration_submitted_history_not_covered')
+        result=[]
+        for witness in timeline:
+            row=by_event[witness['event']]
+            if row['sender_id']!=witness['sender_id']:raise ValueError('owner_migration_material_sender_conflict')
+            row.pop('observed_before',None)
+            row['at']=witness['at']
+            result.append(row)
+        db.execute('RELEASE owner_history')
+        return result
+    except BaseException:
+        db.execute('ROLLBACK TO owner_history');db.execute('RELEASE owner_history');raise
+
+
 def _operator_archives(db):
     db.execute('''CREATE TABLE IF NOT EXISTS fishbot_operator_session_archives(
       authorization TEXT PRIMARY KEY,scope TEXT NOT NULL,release TEXT NOT NULL,archive TEXT NOT NULL,
