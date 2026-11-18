@@ -64,6 +64,29 @@ def initialize(db):
       message TEXT NOT NULL,created REAL NOT NULL,UNIQUE(scope,event));''')
 
 
+def _record_activation(db,authorization,group_limit):
+    db.execute('''CREATE TABLE IF NOT EXISTS fishbot_shared_context(
+      id INTEGER PRIMARY KEY CHECK(id=1),state TEXT NOT NULL,authorization TEXT NOT NULL,created REAL NOT NULL,
+      group_limit INTEGER NOT NULL CHECK(group_limit IN (2,4)))''')
+    db.execute("INSERT INTO fishbot_shared_context VALUES(1,'active',?,?,?)",(authorization,time.time(),group_limit))
+
+
+def activate_empty(db,cfg):
+    # Start an unused runtime with one Journal before it can submit history.
+    if active(db):return
+    evidence=('fishbot_readonly_journals','fishbot_readonly_journal_blobs','fishbot_readonly_cutover',
+              'fishbot_operator_session_archives','memory_reconstruction_checkpoints','memory_rounds')
+    limit=4 if len((cfg.get('behavior') or cfg).get('groupParticipationGroups') or ())>2 else 2
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        tables={name for name, in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if not active(db) and not any(
+                table in tables and db.execute('SELECT 1 FROM '+table+' LIMIT 1').fetchone() for table in evidence):
+            _record_activation(db,'runtime default: empty history',limit)
+        db.commit()
+    except BaseException:
+        db.rollback();raise
+
 def activate_authorized(db,cfg,expected,authorization,release,group_limit=2):
     """Offline one-time operator cutover, only with the worker held and backup.
 
@@ -103,10 +126,7 @@ def activate_authorized(db,cfg,expected,authorization,release,group_limit=2):
             key=authorization+':'+hashlib.sha256(row[0].encode()).hexdigest()[:16]
             db.execute("INSERT INTO fishbot_operator_session_archives VALUES(?,?,?,?,?,?,'consumed')",(key,row[0],release,encoded,hashlib.sha256(encoded.encode()).hexdigest(),time.time()))
             db.execute('DELETE FROM fishbot_readonly_journals WHERE scope=? AND sha=?',(row[0],row[4]))
-        db.execute('''CREATE TABLE IF NOT EXISTS fishbot_shared_context(
-          id INTEGER PRIMARY KEY CHECK(id=1),state TEXT NOT NULL,authorization TEXT NOT NULL,created REAL NOT NULL,
-          group_limit INTEGER NOT NULL CHECK(group_limit IN (2,4)))''')
-        db.execute("INSERT INTO fishbot_shared_context VALUES(1,'active',?,?,?)",(authorization,time.time(),group_limit))
+        _record_activation(db,authorization,group_limit)
         db.commit()
     except BaseException:
         db.rollback();raise

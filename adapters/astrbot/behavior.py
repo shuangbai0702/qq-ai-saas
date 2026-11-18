@@ -33,12 +33,13 @@ def emotional_phrase(text,pattern):
     return False
 
 class BehaviorStore:
-    def __init__(self,path):
+    def __init__(self,path,*,runtime_config=None):
         self.root=Path(path).parent
         self.model_journals={}
         Path(path).parent.mkdir(parents=True,exist_ok=True)
         self.db=sqlite3.connect(path)
         import shared_context
+        if runtime_config is not None:shared_context.activate_empty(self.db,runtime_config)
         self.shared_context=shared_context.active(self.db)
         self.shared_group_limit=self.db.execute('SELECT group_limit FROM fishbot_shared_context WHERE id=1').fetchone()[0] if self.shared_context else 2
         self.model_writer=shared_context.Writer()
@@ -562,7 +563,7 @@ def install_runtime(core,settings):
         return capture
     def store(id,s):
         if id not in stores:
-            stores[id]=BehaviorStore(Path(s['root'])/'behavior.sqlite')
+            stores[id]=BehaviorStore(Path(s['root'])/'behavior.sqlite',runtime_config=s['config'])
         provider=provider_for(id)
         stores[id].reflection.binding=({**(s['config'].get('behavior') or {}),'_persona':s['config'].get('systemPrompt','')},provider,lambda:settings.get(id) is s and id not in core.event_bus.stopped_platforms,metrics.setdefault(id,{}),current_message_event)
         stores[id].reflection.recapture=journal_recapture(stores[id])

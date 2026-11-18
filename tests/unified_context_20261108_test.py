@@ -80,6 +80,31 @@ class Unified(unittest.TestCase):
         original=[a,{'role':'assistant','content':'one'},b,{'role':'assistant','content':'two'}]
         projected=project_history(original,coverage(self.db,shared.JOURNAL_SCOPE),shared.JOURNAL_SCOPE,material[1]['event'])
         self.assertEqual(projected,original[2:])
+    def test_empty_runtime_uses_one_journal_and_leaves_old_snapshots_untouched(self):
+        path=Path(self.tmp.name)/'new.sqlite'
+        new=BehaviorStore(path,runtime_config=self.cfg)
+        try:
+            self.assertTrue(new.shared_context)
+            self.assertIsNone(new.db.execute("SELECT 1 FROM sqlite_master WHERE name='fishbot_operator_session_archives'").fetchone())
+            journal=ReadonlyJournal(new.db,shared.JOURNAL_SCOPE)
+            for scope in ('private:12345678','private:67890','group:55555'):
+                self.prepare(journal,message(scope))
+            self.assertEqual(new.db.execute('SELECT scope FROM fishbot_readonly_journals').fetchall(),[(model_json(shared.JOURNAL_SCOPE),)])
+        finally:
+            new.close()
+        reopened=BehaviorStore(path,runtime_config=self.cfg)
+        try:
+            self.assertTrue(reopened.shared_context)
+        finally:
+            reopened.close()
+        scope='private:12345678'
+        old=ReadonlyJournal(self.db,scope)
+        self.assertTrue(old.commit(old.prepare(request(message(scope)),('bot',),strict=True)))
+        before=self.db.execute('SELECT scope,sha FROM fishbot_readonly_journals').fetchall()
+        shared.activate_empty(self.db,self.cfg)
+        self.assertFalse(shared.active(self.db))
+        self.assertEqual(self.db.execute('SELECT scope,sha FROM fishbot_readonly_journals').fetchall(),before)
+
     def test_atomic_authorized_cutover_keeps_exact_old_journals_no_license(self):
         expected={};old={}
         for scope in ['private:12345678','group:55555']:
