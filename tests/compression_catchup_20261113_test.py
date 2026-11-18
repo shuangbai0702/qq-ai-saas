@@ -1,6 +1,7 @@
 """Persisted summary failure recovers all accepted rounds at the idle boundary."""
 import asyncio,copy,json,sys,time,unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 sys.path[:0]=[str(Path(__file__).resolve().parent),str(Path(__file__).resolve().parents[1]/'adapters/astrbot')]
 import semantic_provider_wire_test as fixture
@@ -11,6 +12,50 @@ class Catchup(unittest.IsolatedAsyncioTestCase):
     asyncSetUp=fixture.SemanticProviderWire.asyncSetUp
     asyncTearDown=fixture.SemanticProviderWire.asyncTearDown
     summarize=fixture.SemanticProviderWire.summarize
+
+    async def test_admin_legacy_scope_only_compresses_at_its_own_due_checkpoint(self):
+        import contextvars
+        from compression_admin import manage
+        from readonly_journal import Prepared,ReadonlyJournal
+        db=self.store.db;r=self.store.reflection
+        scope=fixture.SCOPE
+        other='group:24680'
+        r.binding=(self.cfg,self.provider,lambda:True,self.metrics,contextvars.ContextVar('legacy_catchup',default=None))
+        care=SimpleNamespace(track=lambda store,task:None)
+        req={'action':'admin_force_compress','legacyScope':scope,'allowPartial':False,
+             'administrator':'fixture-admin','requestId':'11111111-1111-4111-8111-111111111111'}
+        journal=ReadonlyJournal(db,scope);other_journal=ReadonlyJournal(db,other)
+        def prepare(instance,scope,count):
+            native=[{'role':'system','content':'Stable persona'}]
+            for i in range(count):
+                messages=[event_message({'scope':scope,'sender_id':'12345678','event_id':str(i),'at':100+i},f'Completed dialogue {i}'),
+                          {'role':'assistant','content':f'Confirmed reply {i}'}]
+                native.extend(messages)
+                r.record(scope,'12345678',str(i),f'Completed dialogue {i}',f'Confirmed reply {i}',now=100+i,materials=snapshots(messages,scope,db=db))
+            instance.serial+=1
+            self.assertTrue(instance.commit(Prepared(instance.serial,None,copy.deepcopy(native),native,{},count,time.time(),'initial')))
+            self.store.model_journals[scope]=instance
+        prepare(journal,scope,29);prepare(other_journal,other,1)
+        before=db.execute('SELECT scope,sha FROM fishbot_readonly_journals ORDER BY scope').fetchall()
+        self.assertEqual(manage(self.store,{**req,'allowPartial':True},care)['status'],400)
+        self.assertEqual(manage(self.store,{**req,'discardUnavailable':True},care)['status'],400)
+        status=manage(self.store,req,care)
+        self.assertEqual((status['reason'],status['completedRounds'],status['requiredRounds']),('checkpoint_not_due',29,30))
+        self.assertEqual(db.execute('SELECT scope,sha FROM fishbot_readonly_journals ORDER BY scope').fetchall(),before)
+        self.assertEqual(self.requests,[])
+        prepare(journal,scope,30)
+        other_prefix=copy.deepcopy(other_journal.last.wire)
+        req={**req,'requestId':'22222222-2222-4222-8222-222222222222'}
+        self.assertEqual(manage(self.store,req,care)['state'],'running')
+        self.assertEqual(manage(self.store,{**req,'legacyScope':other},care)['status'],409)
+        result=await r.task
+        self.assertTrue(result['ok'],result)
+        state=manage(self.store,{'action':'admin_force_compress_status','requestId':req['requestId']},care)
+        self.assertEqual(state['state'],'completed')
+        self.assertEqual(len(self.requests),1)
+        self.assertEqual(db.execute('SELECT scope,round_count,state FROM memory_reconstruction_checkpoints').fetchall(),[(scope,30,'consumed')])
+        self.assertEqual(ReadonlyJournal(db,other).last.wire,other_prefix)
+        self.assertEqual(r.force_compress_once(scope,administrator='fixture-admin',request_id=req['requestId'])['reason'],'request_already_committed')
     def populate(self,count):
         db=self.store.db;r=self.store.reflection;r.shared_context=True
         native=[{'role':'system','content':'Stable persona'}]

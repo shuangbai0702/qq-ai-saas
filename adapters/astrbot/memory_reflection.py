@@ -3,7 +3,7 @@ Inspired by LivingMemory's ten-round reflection and source/revision fencing.
 Summaries are conversation evidence, never verified profile facts or instructions.
 """
 from model_cache import auxiliary_scope,adopted,discarded as record_discarded,SUMMARY_REQUEST_TIMEOUT_SECONDS
-import asyncio,json,time,hashlib,inspect
+import asyncio,json,time,hashlib,inspect,re
 from pathlib import Path
 import message_provenance
 from context_protocol import model_json
@@ -1023,13 +1023,24 @@ class Reflection:
 
         The API authenticates the administrator. A partial checkpoint records
         that authorization separately; Coverage and audience fences still apply.
+        An independent legacy Journal can only request its own due checkpoint.
         """
-        if scope!='bot_shared':return {'started':False,'reason':'unsupported_scope'}
-        if (allow_partial or discard_unavailable) and (not isinstance(administrator,str) or not administrator.strip() or not isinstance(request_id,str) or not request_id.strip()):
+        legacy_due=scope!='bot_shared'
+        if legacy_due and (not isinstance(scope,str) or not re.fullmatch(r'(?:private|group):\d{4,20}',scope)
+                           or getattr(self,'shared_context',False) or allow_partial or discard_unavailable):
+            return {'started':False,'reason':'unsupported_scope'}
+        if (legacy_due or allow_partial or discard_unavailable) and (not isinstance(administrator,str) or not administrator.strip() or not isinstance(request_id,str) or not request_id.strip()):
             raise PermissionError('administrator_authorization_required')
         if request_id and self.db.execute('SELECT checkpoint_id FROM memory_checkpoint_admin_overrides WHERE request_id=?',(request_id,)).fetchone():
             return {'started':False,'reason':'request_already_committed'}
-        manual={'scope':scope,'allow_partial':allow_partial,'administrator':administrator,'request_id':request_id,'summary_done':False,'discard_unavailable':bool(discard_unavailable)}
+        if legacy_due:
+            if not self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fishbot_readonly_journals'").fetchone() or not self.db.execute(
+                    "SELECT 1 FROM fishbot_readonly_journals WHERE scope=? AND state='ready'",(model_json(scope),)).fetchone():
+                return {'started':False,'reason':'legacy_journal_unavailable'}
+            health=self.health_snapshot(scope)
+            if health['newCompleteRounds']<DEFAULT_SUMMARY_ROUNDS:
+                return {'started':False,'reason':'checkpoint_not_due','completedRounds':health['newCompleteRounds'],'requiredRounds':DEFAULT_SUMMARY_ROUNDS}
+        manual={'scope':scope,'allow_partial':allow_partial,'administrator':administrator,'request_id':request_id,'summary_done':False,'discard_unavailable':bool(discard_unavailable),'legacy_due':legacy_due}
         if self.task and not self.task.done():
             previous=self.task
             async def queued():
@@ -1106,7 +1117,7 @@ class Reflection:
         # Mandatory rollup runs before the next ordinary reflection, one
         # audience-safe group at a time instead of across every scope.
         retry=self.db.execute("SELECT next_at FROM memory_reflection_retry WHERE scope='self'").fetchone()
-        if not retry or retry[0]<=now or _manual is not None:
+        if (_manual is None or not _manual['legacy_due']) and (not retry or retry[0]<=now or _manual is not None):
             big_rows,merge_scope=self.merge_group(_manual['scope'] if _manual is not None else 'bot_shared' if getattr(self,'shared_context',False) else None)
             if big_rows:scope='self';job='big'
         if not scope:
@@ -1511,7 +1522,7 @@ class Reflection:
                             from conversation_continuity import accept as accept_continuity
                             continuity=accept_continuity(data,scope,author_payload,operation_audit)
                             self.db.execute('UPDATE memory_reconstruction_checkpoints SET conversation_continuity=? WHERE id=?',(continuity,checkpoint_id))
-                            if _manual is not None and _manual['allow_partial']:
+                            if _manual is not None and (_manual['allow_partial'] or _manual['legacy_due']):
                                 self.db.execute('INSERT INTO memory_checkpoint_admin_overrides VALUES(?,?,?,?)',(checkpoint_id,_manual['administrator'],_manual['request_id'],time.time()))
                             if discarded:
                                 from semantic_collection import unavailable_stamp
