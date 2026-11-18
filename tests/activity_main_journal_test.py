@@ -48,7 +48,7 @@ class Activity(unittest.IsolatedAsyncioTestCase):
         self.brain.close()
         self.runtime['release']('qq')
         await self.provider.client.close()
-    async def activate(self,identifier=None,continuation=False,action_patch=None):
+    def activation_request(self,identifier=None,continuation=False,action_patch=None):
         identifier=identifier or str(uuid.uuid4());cycle=str(uuid.uuid4())
         policy={'tenantId':'tenant','botId':'bot','generation':1,'revision':1,'epoch':1,'until':time.time()*1000+14000,'cycleId':cycle,'actionId':identifier,'config':{'mode':'active','rollout':'live','activityEnabled':True,'maxSleepSeconds':86400}}
         self.brain.install('qq',policy)
@@ -57,7 +57,10 @@ class Activity(unittest.IsolatedAsyncioTestCase):
         action={'kind':'research','target':'','objective':'Choose autonomously','autonomousMoment':not continuation,'continuationOfMoment':continuation,'goalSnapshot':{'goals':[{'id':'goal-one','title':'EXACT_CURRENT_GOAL','source':{'scope':'self'}}],'actions':[],'effects':[]}}
         if continuation:action['continuation']={'id':'effect-complete','parentActionId':'original','result':{'status':'completed','evidence':['actual result']}}
         if action_patch:action.update(action_patch)
-        return await self.brain.execute('qq',{'work':work,'action':action})
+        return {'work':work,'action':action}
+
+    async def activate(self,identifier=None,continuation=False,action_patch=None):
+        return await self.brain.execute('qq',self.activation_request(identifier,continuation,action_patch))
     async def test_scheduler_snapshot_never_builds_a_second_cognitive_context(self):
         self.brain.install('qq',{'tenantId':'tenant','botId':'bot','generation':1,'revision':1,'epoch':1,'until':time.time()*1000+14000,'config':{'mode':'active','rollout':'live','minSleepSeconds':300}})
         feedback={'at':123,'phase':'foreground_result','result':{'status':'unknown','protocolAttempts':1,'protocolConfirmed':0}}
@@ -154,10 +157,11 @@ class Activity(unittest.IsolatedAsyncioTestCase):
 
     async def test_concurrent_activation_skips_while_real_provider_in_flight(self):
         entered=asyncio.Event();release=asyncio.Event();self.request_gate=(entered,release)
-        first=asyncio.create_task(self.activate())
+        request=self.activation_request()
+        first=asyncio.create_task(self.brain.execute('qq',request))
         try:
             await asyncio.wait_for(entered.wait(),5)
-            second=await self.brain.execute('qq',{'work':{},'action':{'autonomousMoment':True}})
+            second=await self.brain.execute('qq',request)
             self.assertEqual(second['reason'],'foreground_work_busy')
             self.assertEqual(second['usage']['modelCalls'],0)
         finally:release.set()
