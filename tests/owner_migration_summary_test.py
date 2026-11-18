@@ -150,10 +150,36 @@ class OwnerSummaryTests(unittest.IsolatedAsyncioTestCase):
         product=await prepare_owner_migration_summary(self.db,self.payload,self.provider,{})
         before='\n'.join(self.db.iterdump())
         self.db.execute('BEGIN IMMEDIATE')
-        with self.assertRaisesRegex(ValueError,'protected_claims_uncarried:'+str(identifier)):
+        with self.assertRaisesRegex(ValueError,'prior_claims_exceed_source_capacity'):
             publish_owner_migration_summary(self.db,self.payload,product)
         self.db.rollback()
         self.assertEqual('\n'.join(self.db.iterdump()),before)
+
+    async def test_overflow_preserves_prior_products_and_one_visible_shared_summary(self):
+        from memory_reflection import Reflection
+        source_rows=[]
+        for channel,author in (('private:12345678','12345678'),('group:22222','22222')):
+            claims=[{'id':channel+'-'+str(index),'text':'旧认知'+str(index),'kind':'human_statement',
+                'speaker':{'role':'human','id':author},'protected':True,
+                'sourceRefs':[{'scope':channel,'event':'semantic:old'+str(index),'role':'user'}],
+                'visibility':channel,'occurredAt':index+1,'status':'active'} for index in range(20)]
+            raw=model_json(claims)
+            key=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated,schema_version,claims) VALUES(?,?,?,?,2,?)',
+                (channel,'旧摘要','[]',50,raw)).lastrowid
+            self.db.execute("INSERT INTO memory_summary_levels VALUES(?,'small')",(key,))
+            source_rows.append(key)
+        self.db.commit()
+        product=await prepare_owner_migration_summary(self.db,self.payload,self.provider,{})
+        self.db.execute('BEGIN IMMEDIATE')
+        receipt=publish_owner_migration_summary(self.db,self.payload,product)
+        self.db.commit()
+        self.assertEqual(receipt['retainedSummaryIds'],source_rows)
+        self.assertEqual(receipt['retainedClaimsCount'],40)
+        self.assertEqual(receipt['droppedClaimIds'],[])
+        restarted=Reflection(self.db)
+        self.addCleanup(restarted.close)
+        self.assertEqual([item['id'] for item in summary_foundation(self.db,'bot_shared')],[receipt['summaryId']])
+        self.assertEqual(self.db.execute('SELECT sum(json_array_length(claims)) FROM memory_summaries').fetchone(),(41,))
 
     async def test_two_scope_cutover_failure_rollback_retry_and_restart(self):
         import hashlib,sqlite3

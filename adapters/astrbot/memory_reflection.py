@@ -339,13 +339,13 @@ def publish_owner_migration_summary(db,payload,product):
     """Publish one merged existing-store product inside the cutover transaction."""
     if not db.in_transaction:raise ValueError('owner_migration_publish_transaction_required')
     verify_owner_migration_summary(db,payload,product)
-    from summary_material import inherit_claims,fit_claims,batch_corrections,derive_claims,semantic_claims_product,settle_commitments,uncarried_sources
+    from summary_material import inherit_claims,fit_claims,batch_corrections,derive_claims,semantic_claims_product,settle_commitments
     from semantic_batch import semantic_claims
     import agreement_state
     products=product['priorProducts'];old_ids=[item['id'] for item in products]
     prior=inherit_claims([(identifier,db.execute('SELECT claims FROM memory_summaries WHERE id=?',(identifier,)).fetchone()[0]) for identifier in old_ids])
     materials=_owner_migration_basis(db,payload)[1]
-    turns,safe_materials,omitted=_owner_migration_model_materials(db,payload,materials)
+    turns,safe_materials,_=_owner_migration_model_materials(db,payload,materials)
     fresh=semantic_claims_product(derive_claims('bot_shared',turns,safe_materials,
         batch_corrections(db,'bot_shared',[row['event'] for row in payload]),product['data'],strict=True))
     for claim in fresh:claim['updatedAt']=product['preparedAt']
@@ -354,10 +354,25 @@ def publish_owner_migration_summary(db,payload,product):
     promoted=agreement_state.promote_from_claims(db,'bot_shared',fresh,now=product['preparedAt'])
     source_claims=[(old,db.execute('SELECT claims FROM memory_summaries WHERE id=?',(old,)).fetchone()[0]) for old in old_ids]
     prior=inherit_claims(source_claims)
-    claims,dropped=fit_claims(prior+semantic_claims(fresh))
-    uncarried=uncarried_sources(source_claims,claims)
-    if uncarried:
-        raise ValueError('owner_migration_protected_claims_uncarried:'+','.join(map(str,uncarried)))
+    fresh=semantic_claims(fresh)
+    claims,dropped=fit_claims(prior+fresh)
+    retained_ids=[]
+    if dropped:
+        # Keep the prior products in their original, bounded memory families.
+        # These are existing semantic products, with no surviving Journal wire.
+        # The shared foundation reads only its own big summary on first use.
+        prior_scopes={item['scope'] for item in products}
+        for source_scope in prior_scopes:
+            scoped=inherit_claims([(identifier,raw) for identifier,raw in source_claims
+                                  if next(p['scope'] for p in products if p['id']==identifier)==source_scope])
+            if source_scope=='bot_shared' or fit_claims(scoped)[1]:
+                raise ValueError('owner_migration_prior_claims_exceed_source_capacity')
+        if {claim['id'] for claim in fresh}&{claim['id'] for claim in prior}:
+            raise ValueError('owner_migration_overflow_claim_revision_conflict')
+        retained_ids,old_ids=old_ids,[]
+        claims,dropped=fit_claims(fresh)
+        if dropped:
+            raise ValueError('owner_migration_fresh_claims_exceed_capacity')
     identifier=db.execute('INSERT INTO memory_summaries(scope,text,sources,updated,schema_version,claims) VALUES(?,?,?,?,2,?)',
         ('bot_shared',product['summary'],'[]',product['preparedAt'],model_json(claims) if claims else None)).lastrowid
     db.execute("INSERT INTO memory_summary_levels VALUES(?,'big')",(identifier,))
@@ -373,7 +388,8 @@ def publish_owner_migration_summary(db,payload,product):
             if table in tables:db.execute('UPDATE '+table+' SET summary_id=? WHERE summary_id IN ('+marks+')',(identifier,*old_ids))
         db.execute('DELETE FROM memory_vectors WHERE summary_id IN ('+marks+')',old_ids)
         db.execute('DELETE FROM memory_summaries WHERE id IN ('+marks+')',old_ids)
-    return {'summaryId':identifier,'consumedSummaryIds':old_ids,'claimsCount':len(claims),
+    return {'summaryId':identifier,'consumedSummaryIds':old_ids,'retainedSummaryIds':retained_ids,
+            'retainedClaimsCount':len(prior) if retained_ids else 0,'claimsCount':len(claims),
             'droppedClaimIds':sorted(dropped),'agreementsPromoted':promoted,
             'omittedUnknowns':product['omittedUnknowns'],
             'continuity':product['continuity'],'sourceScopes':sorted(origins),'subjects':sorted(people)}
