@@ -85,7 +85,36 @@ export class WallpaperPaint {
     this.fullRedraw = true;
     this.invalidate();
   }
-  add(from, to, time, pressure = .35) {
+  startGesture(x, y, time, animate = true) {
+    if (!this.alive || !this.ready) return;
+    const patterns = [
+      [[-.5,-.4],[.5,-.4],[-.5,.4],[.5,.4]],
+      [[-.5,.3],[-.25,-.35],[0,.3],[.25,-.35],[.5,.3]],
+      Array.from({length:17},(_,i)=>{const a=i/16*Math.PI*1.65;return [Math.cos(a)*.48,Math.sin(a)*.42];}),
+      [[-.45,.3],[-.25,-.2],[.05,-.35],[.4,-.15],[.25,.2],[-.1,.35]],
+    ];
+    const shape=patterns[Math.floor(Math.random()*patterns.length)],size=150+Math.random()*60;
+    const angle=(Math.random()-.5)*.65,mirror=Math.random()<.5?-1:1;
+    const points=shape.map(([px,py])=>({
+      x:clamp(x+(px*Math.cos(angle)-py*Math.sin(angle))*size*mirror,22,this.w-22),
+      y:clamp(y+(px*Math.sin(angle)+py*Math.cos(angle))*size,22,this.h-22),
+    }));
+    const path=[points[0]];
+    for(let i=1;i<points.length;i++){
+      const from=points[i-1],to=points[i],count=Math.ceil(Math.hypot(to.x-from.x,to.y-from.y)/5);
+      for(let j=1;j<=count;j++)path.push({x:from.x+(to.x-from.x)*j/count,y:from.y+(to.y-from.y)*j/count});
+    }
+    this.gesture={path,index:0,time,duration:animate?.7:0};
+    this.invalidate();
+  }
+  step(time) {
+    const gesture=this.gesture;
+    if(!this.alive||!gesture)return;
+    const end=Math.floor(clamp(gesture.duration?(time-gesture.time)/gesture.duration:1,0,1)*(gesture.path.length-1));
+    while(gesture.index<end){const i=gesture.index++;this.add(gesture.path[i],gesture.path[i+1],time,.5,20);}
+    if(end===gesture.path.length-1)this.gesture=null;
+  }
+  add(from, to, time, pressure = .35, radius = 48+clamp(pressure,0,1)*7) {
     if (!this.alive || !this.ready) return;
     const distance = Math.hypot(to.x - from.x, to.y - from.y);
     if (distance < .1 || distance > 260) return;
@@ -93,7 +122,6 @@ export class WallpaperPaint {
     const index=Math.floor(time/INTERVAL);
     let mark=this.marks.at(-1);
     if (!mark || mark.index!==index) { mark={index,time,tiles:new Map()}; this.marks.push(mark); }
-    const radius=48+clamp(pressure,0,1)*7;
     const angle=Math.atan2(to.y-from.y,to.x-from.x);
     const connected=this.lastPoint && Math.hypot(from.x-this.lastPoint.x,from.y-this.lastPoint.y)<3 && time-this.lastPoint.time<.22;
     if (!connected) { this.carry=0; this.stamp(mark,from.x,from.y,radius,angle); }
@@ -126,6 +154,7 @@ export class WallpaperPaint {
     });
   }
   clear() {
+    this.gesture=null;
     for(const mark of this.marks){for(const tile of mark.tiles.values())tile.canvas.width=tile.canvas.height=0;mark.tiles.clear();}
     this.marks.length=0;this.lastPoint=null;this.carry=0;this.dirty=true;
   }

@@ -37,7 +37,7 @@ export function Referrals(){
  async function copy(){
   const page=owner.current;
   try{await navigator.clipboard.writeText(link);if(!page?.signal.aborted)setNote('邀请链接已复制')}
-  catch{if(!page?.signal.aborted)setNote('可以选中下方链接手动复制。')}
+  catch{if(!page?.signal.aborted)setNote('复制失败，请手动选中邀请链接复制。')}
  }
  return <section className="panel"><h1>邀请奖励</h1>
   <p>好友通过你的邀请链接完成注册后，你获赠 <strong>3,000 万 Token</strong>，好友获赠 <strong>2,000 万 Token</strong>。</p>
@@ -49,7 +49,7 @@ export function Referrals(){
   {data.enabled&&!data.canInvite&&<p className="notice">仅使用管理员直接发放的激活码注册的账号可邀请好友。你仍可使用已有的平台模型额度。</p>}
   {data.enabled&&data.canInvite&&<>
    <label className="field"><span>用于邀请的激活码</span><input value={activation} disabled={busy} onChange={e=>{setActivation(e.target.value);setLink('');setNote('')}} maxLength={100} autoComplete="off" placeholder="填入管理员提供的可用激活码"/></label>
-   <p className="muted">好友打开邀请链接后可直接注册，请把链接发给你要邀请的人。</p>
+   <p className="muted">好友打开完整邀请链接后可直接注册。每成功注册一人消耗此激活码一次；次数用完、过期或撤销后，链接将失效。</p>
    {link?<><label className="field"><span>我的邀请链接</span><input value={link} readOnly onFocus={e=>e.currentTarget.select()}/></label><button type="button" className="primary" onClick={()=>void copy()}>复制邀请链接</button></>:<button type="button" className="primary" disabled={busy||!inviteCode} onClick={()=>void generate()}>{busy?'正在生成…':'生成邀请链接'}</button>}
   </>}
   <p><a href="#/bots">前往我的机器人</a></p></>}

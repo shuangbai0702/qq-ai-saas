@@ -18,7 +18,7 @@ export const memoryPolicyLabel=(policy?:any)=>{
 };
 export function botStatus(bot:any){
  if(bot.desired_state==='deleting')return 'deleting';
- if(bot.desired_state==='offline')return 'offline';
+ if(bot.desired_state==='offline')return bot.observed_state==='offline'?'offline':bot.observed_state==='failed'?'failed':'stopping';
  if(bot.desired_state==='stopped')return ['stopped','created','offline'].includes(bot.observed_state)?'stopped':'stopping';
  const r=runtimeStatus(bot);if(r.online)return 'online';
  if(bot.observed_state==='failed')return 'failed';

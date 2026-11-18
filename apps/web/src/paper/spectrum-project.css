@@ -5,6 +5,16 @@ body.paper-app.paper-spectrum {
 }
 .paper-spectrum .header-inner,
 .paper-spectrum .content { max-width: 1140px; }
+/* A standalone main action uses the same footprint as the robot start/stop action. */
+body.paper-app.paper-spectrum :is(.panel,.qr-info,.empty,.page-title) > .primary,
+body.paper-app.paper-spectrum .button-row > .primary:only-child {
+  min-height:44px;
+  min-width:130px;
+  max-width:100%;
+  justify-content:center;
+  white-space:normal;
+  text-align:center;
+}
 body.paper-app.paper-spectrum .app-header {
   border-bottom: 1px solid var(--project-line) !important;
   box-shadow: none !important;
@@ -45,17 +55,7 @@ body.paper-app.paper-spectrum button.persona[aria-pressed=true] {
   text-underline-offset:4px;
 }
 body.paper-app.paper-spectrum :is(.main-nav a.active,button.persona)::before {display:none!important}
-body.paper-app.paper-spectrum :is(.tabs,.config-nav) a:is(.active,[aria-current=page])::before {
-  content: '' !important;
-  display: block;
-  position: absolute;
-  inset:7px auto 7px 2px;
-  width:5px;
-  background:linear-gradient(#71b7b4,#d6c88c 48%,#bd9fc8);
-  clip-path:polygon(7% 0,100% 5%,78% 100%,43% 82%,0 94%);
-  opacity:var(--selection-fill);
-  pointer-events: none;
-}
+body.paper-app.paper-spectrum :is(.tabs,.config-nav) a::before {display:none!important}
 .paper-spectrum :is(.main-nav,.tabs,.config-nav) a.active::after {display:none!important}
 body.paper-app.paper-spectrum .tabs {padding-inline:0;background:transparent}
 body.paper-app.paper-spectrum .tabs>a {
@@ -67,7 +67,6 @@ body.paper-app.paper-spectrum .tabs>a.active {
   background:color-mix(in srgb,#f2f7f1 calc(42% + var(--selection-fill) * .45),transparent)!important;
   text-decoration:underline solid #6ea39a;
 }
-body.paper-app.paper-spectrum .tabs>a.active::before {inset:9px auto 9px 6px;opacity:.85}
 
 body.paper-app.paper-spectrum .field > small,
 body.paper-app.paper-spectrum .muted { color: #576b72; }
@@ -135,6 +134,11 @@ body.paper-app.paper-spectrum .logs {
   .paper-spectrum .preview-toolbar { width: calc(100% - 24px); }
   body.paper-app.paper-spectrum .search { width: 100%; }
 }
+@media(max-width:640px) {
+  /* Anchor the stock to this bar when the mobile layout releases its sticky position. */
+  body.paper-app.paper-spectrum .save-bar:not(.has-draft) {position:relative}
+}
+.paper-spectrum[data-advanced-look] {--advanced-radius:0px}
 .paper-spectrum .auth-story h1 em { color: #43776f; }
 .paper-spectrum .back {color:#3c5963}
 .paper-spectrum .wizard-steps {
@@ -260,7 +264,7 @@ body.paper-app.paper-spectrum[data-notice-look=stitch] :is(.notice,.alert,.succe
   --notice-accent:#5d9e99;
   --notice-wash:color-mix(in srgb,var(--notice-accent) 11%,#fffefa);
   border:1px dashed var(--notice-accent)!important;
-  border-radius:5px;
+  border-radius:0;
   background:color-mix(in srgb,color-mix(in srgb,var(--notice-wash) 64%,transparent) var(--notice-fill),transparent)!important;
   box-shadow:none!important;
 }

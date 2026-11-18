@@ -193,11 +193,12 @@ class PaperRuntime{
    for(const p of stamp.points){if(p.threshold>coverage)continue;ctx.fillStyle=`rgba(207,38,41,${(.45+p.seed*.35).toFixed(3)})`;ctx.beginPath();ctx.arc(p.x+(p.seed-.5)*.25,p.y+(hash(p.x)-.5)*.25,.5+p.seed*.26,0,Math.PI*2);ctx.fill();}
   }
   settling=this.details.step(dt,this.pointer,this.time,this.running)||settling;
-  this.drawing.draw(this.time);this.feedback.draw(this.time);this.force=false;
-  if(this.running&&(settling||this.drawing.marks.length||this.feedback.marks.size||[...this.surfaces.values()].some(s=>s.active)))this.request();
+  this.drawing.step(this.time);this.drawing.draw(this.time);this.feedback.draw(this.time);this.force=false;
+  if(this.running&&(settling||this.drawing.gesture||this.drawing.marks.length||this.feedback.marks.size||[...this.surfaces.values()].some(s=>s.active)))this.request();
  }
  bind(){
   this.on(document,'pointermove',event=>{
+   if(this.touchTap&&Math.hypot(event.clientX-this.touchTap.x,event.clientY-this.touchTap.y)>12)this.touchTap=null;
    if(this.measureNeeded)this.measure();this.pointer={x:event.clientX,y:event.clientY,inside:true,quiet:this.details.isQuiet(event.target)};const surface=this.resolve(event.target),time=this.now();
    if(this.lastContact){this.drawing.add(this.lastContact.point,this.pointer,time,this.pointerDown?.65:.3);
     if(!this.pointer.quiet&&surface?.kind==='panel'&&this.lastContact.surface===surface&&!event.target.closest('button,a,input,textarea,select,label'))surface.mark(this.lastContact.point,this.pointer,time,.25);
@@ -205,14 +206,22 @@ class PaperRuntime{
    this.lastContact={surface,point:{...this.pointer}};this.force=true;this.request();
   },{passive:true});
   this.on(document,'pointerdown',event=>{
+   if(event.pointerType==='touch'&&event.isPrimary)this.touchTap={x:event.clientX,y:event.clientY,id:event.pointerId,time:performance.now()};
    if(event.button!==0)return;this.pointerDown=true;this.pointer={x:event.clientX,y:event.clientY,inside:true,quiet:this.details.isQuiet(event.target)};const surface=this.resolve(event.target);if(!surface)return;
    if(surface.target?.disabled)return;
    const paper=surface.surface||surface;paper.pressed=true;(surface.target||surface.node).classList.add('paper-pressed');
    if(surface.kind==='range'){surface.active=true;surface.refresh();this.print(surface,event);}
    this.force=true;this.request();
   },{passive:true});
-  this.on(window,'pointerup',()=>this.release());this.on(window,'pointercancel',()=>this.release());
-  this.on(window,'blur',()=>{this.pointer.inside=false;this.lastContact=null;this.release();});
+  this.on(window,'pointerup',event=>{
+   const tap=this.touchTap;this.touchTap=null;
+   if(tap&&event.pointerId===tap.id&&performance.now()-tap.time<600){
+    this.drawing.startGesture(tap.x,tap.y,this.now(),this.running);this.request();
+   }
+   this.release();
+  });
+  this.on(window,'pointercancel',()=>{this.touchTap=null;this.release();});
+  this.on(window,'blur',()=>{this.touchTap=null;this.drawing.gesture=null;this.pointer.inside=false;this.lastContact=null;this.release();});
   this.on(document,'pointerout',event=>{if(!event.relatedTarget){this.pointer.inside=false;this.lastContact=null;this.release();}});
   this.on(document,'focusin',event=>{const paper=this.resolve(event.target);if(paper&&!(paper.kind==='panel'&&this.details.isQuiet(event.target)))(paper.surface||paper).focused=true;this.request();});
   this.on(document,'focusout',()=>{for(const surface of this.surfaces.values())(surface.surface||surface).focused=false;this.request();});
@@ -227,15 +236,15 @@ class PaperRuntime{
   this.on(document,'input',event=>{if(event.target instanceof HTMLInputElement&&event.target.type==='range'){const surface=this.surfaces.get(event.target);surface?.refresh();this.print(surface);}});
   this.on(this.motion,'click',()=>{this.clock(!this.running);this.syncMotion();this.request();});
   this.on(this.reduced,'change',event=>{this.clock(!event.matches);this.syncMotion();this.request();});
-  this.on(window,'scroll',()=>{this.lastContact=null;this.measureNeeded=true;this.request();},{passive:true,capture:true});
+  this.on(window,'scroll',()=>{this.touchTap=null;this.drawing.gesture=null;this.lastContact=null;this.measureNeeded=true;this.request();},{passive:true,capture:true});
   this.on(window,'resize',()=>{this.lastContact=null;this.feedback.resize();this.resize();this.drawing.resize(innerWidth,innerHeight);this.measureNeeded=true;this.request();},{passive:true});
-  this.on(document,'visibilitychange',()=>{this.clock();if(document.hidden){this.release();cancelAnimationFrame(this.frame);this.frame=0;}else{this.measureNeeded=true;this.request();}});
+  this.on(document,'visibilitychange',()=>{this.clock();if(document.hidden){this.touchTap=null;this.drawing.gesture=null;this.release();cancelAnimationFrame(this.frame);this.frame=0;}else{this.measureNeeded=true;this.request();}});
   this.on(this.renderer.canvas,'webglcontextlost',event=>{event.preventDefault();this.renderer.releaseGL();this.renderer.renderer='canvas2d';document.body.dataset.paperRenderer='canvas2d';this.backgroundDrawn=false;for(const surface of this.surfaces.values())(surface.surface||surface).drawn=false;this.request();});
-  this.on(window,'pagehide',event=>{if(event.persisted){this.suspendPage(true);this.release();cancelAnimationFrame(this.frame);this.frame=0;}else this.destroy();});
+  this.on(window,'pagehide',event=>{if(event.persisted){this.touchTap=null;this.drawing.gesture=null;this.suspendPage(true);this.release();cancelAnimationFrame(this.frame);this.frame=0;}else this.destroy();});
   this.on(window,'pageshow',event=>{if(event.persisted){this.suspendPage(false);this.measureNeeded=true;this.request();}});
  }
  destroy(){
-  if(!this.alive)return;this.alive=false;this.life.abort();cancelAnimationFrame(this.frame);this.frame=0;this.mo?.disconnect();this.ro?.disconnect();this.io?.disconnect();
+  if(!this.alive)return;this.alive=false;this.touchTap=null;this.life.abort();cancelAnimationFrame(this.frame);this.frame=0;this.mo?.disconnect();this.ro?.disconnect();this.io?.disconnect();
   this.details?.destroy();
   for(const [target,surface]of this.surfaces)this.remove(target,surface);this.feedback?.destroy();this.drawing?.destroy();this.renderer?.destroy();this.ground.width=this.ground.height=0;
   for(const stamp of this.stamps.values()){stamp.canvas.width=stamp.canvas.height=0;stamp.canvas.remove();}this.stamps.clear();this.pending.clear();
