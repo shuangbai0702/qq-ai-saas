@@ -10,11 +10,7 @@ from readonly_journal import ReadonlyJournal,semantic_retire_projection
 
 
 def _retired_members(db):
-    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_semantic_batches'").fetchone():return {}
-    result={}
-    for scope,raw in db.execute("SELECT scope,members FROM memory_semantic_batches WHERE state='retired'"):
-        result.setdefault(scope,set()).update(json.loads(raw))
-    return result
+    return semantic_batch.retired_members(db)
 
 
 def _retired_row(row,default_scope,members,event_field=None):
@@ -190,9 +186,8 @@ def clean_native_history(manager,platform_id,st,cid=None,*,reset_legacy=False):
     """Update the pinned SDK's actual SQLite rows under one short write lock."""
     path=getattr(getattr(manager,'db',None),'db_path',None)
     if not path or not Path(path).is_file():return {'result':'unavailable','reason':'native_sqlite_not_configured'}
-    permits=[]
-    for scope,members in st.db.execute("SELECT scope,members FROM memory_semantic_batches WHERE state='retired'"):
-        permits.append({'scope':scope,'semanticBatch':True,'batchMembers':json.loads(members)})
+    permits=[{'scope':scope,'semanticBatch':True,'batchMembers':sorted(members)}
+             for scope,members in _retired_members(st.db).items()]
     if not permits:return {'result':'clean','conversations':0}
     grant=None
     tables={r[0] for r in st.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}

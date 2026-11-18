@@ -189,6 +189,191 @@ def scrub(value):
     from credential_redaction import redact
     return redact(value)[:800]
 
+
+def _owner_migration_basis(db,payload):
+    """Read the bot-local preparation basis without creating business rounds."""
+    from semantic_collection import previous_summaries
+    from semantic_batch import load
+    discarded=list(getattr(payload,'discarded',[]))
+    materials,images,image_bindings=load(db,'bot_shared',payload,allow_empty=bool(discarded))
+    products=previous_summaries(db)
+    tables={row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    # This offline operation has no concurrent model owner. Fence precisely the
+    # semantic state offered with the selected material, including agreements.
+    basis={}
+    for table in ('memory_reflection_control','memory_core_notes','memory_blocks',
+                  'memory_agreements','memory_summary_origins','memory_summary_people',
+                  'memory_summaries','memory_summary_levels','memory_message_sources','dialogue_feedback'):
+        if table in tables:basis[table]=db.execute('SELECT * FROM '+table+' ORDER BY rowid').fetchall()
+    dependency=hashlib.sha256(model_json(basis).encode()).hexdigest()
+    material_digest=hashlib.sha256(model_json({'payload':list(payload),'discarded':discarded,'materials':materials}).encode()).hexdigest()
+    return products,materials,images,image_bindings,dependency,material_digest
+
+
+def _owner_migration_model_materials(db,payload,materials):
+    """Omit unowned native text while preserving its raw archived evidence."""
+    import copy
+    from semantic_batch import origin
+    safe=copy.deepcopy(materials);turns=copy.deepcopy(list(payload))
+    omitted={'nativeOutputs':0,'toolRounds':0,'unverifiedReplies':0}
+    for event,item in safe.items():
+        channel,identifier=origin('bot_shared',event)
+        outputs=item.get('native_outputs',[])
+        owned=[output for output in outputs if output.get('owner') and
+            (output['owner']['source_scope'],str(output['owner']['event_id']),str(output['owner']['sender_id']))==
+            (channel,identifier,item['subject'])]
+        omitted['nativeOutputs']+=len(outputs)-len(owned)
+        if item.get('version',1)<3 and item.get('native_reply'):
+            omitted['nativeOutputs']+=1
+        if item.get('version',1)>=3:item['native_outputs']=owned
+        if item.get('tools') and (item.get('version',1)<3 or len(owned)!=len(outputs) or not outputs):
+            omitted['toolRounds']+=len(item['tools']);item.pop('tools',None)
+            if item.get('version')==2:item['version']=1
+        item['native_reply']=None
+        reply=item.get('reply','')
+        witness=db.execute('SELECT 1 FROM dialogue_feedback WHERE scope=? AND subject=? AND event=? AND reply=?',
+            (channel,item['subject'],identifier,reply)).fetchone() if reply else None
+        receipt=message_provenance.get(db,channel,identifier,'outgoing') if reply else {}
+        confirmed=receipt.get('receipt')=='confirmed' and receipt.get('complete') is True and bool(receipt.get('message_ids'))
+        if reply and not (witness and confirmed):
+            omitted['unverifiedReplies']+=1;item['reply']=''
+    for row in turns:row['bot']=safe[row['event']].get('reply','')
+    return turns,safe,omitted
+
+
+def _owner_migration_claims(db,payload,materials,data,prepared_at):
+    from summary_material import batch_corrections,derive_claims,semantic_claims_product
+    from semantic_batch import semantic_claims
+    turns,safe,_=_owner_migration_model_materials(db,payload,materials)
+    corrections=batch_corrections(db,'bot_shared',[row['event'] for row in payload])
+    claims=derive_claims('bot_shared',turns,safe,corrections,data,strict=True)
+    # Derivation normally stamps the current commit time. Preparation and its
+    # transactional verification must compare the same cognitive revision.
+    for claim in claims:claim['updatedAt']=prepared_at
+    return semantic_claims(semantic_claims_product(claims))
+
+
+async def prepare_owner_migration_summary(db,payload,provider,cfg,*,live=lambda:True,metrics=None):
+    """Prepare one validated semantic product on a staged SQLite restore.
+
+    No summary, checkpoint, round or retirement is written. The caller owns
+    the authorization and must verify this product in its apply transaction.
+    Existing semantic products are consumed only by the caller's publish step.
+    """
+    from context_protocol import source
+    from summary_material import model_view
+    from conversation_continuity import SYSTEM as CONTINUITY_SYSTEM,source_scopes,accept
+    from memory_model_view import memory_json
+    from output_clean import memory_projection
+    from datetime import datetime
+    products,materials,images,bindings,dependency,material_digest=_owner_migration_basis(db,payload)
+    turns,safe_materials,omitted=_owner_migration_model_materials(db,payload,materials)
+    discarded=list(getattr(payload,'discarded',[]))
+    authors=summary_author_witnesses('bot_shared',payload,discarded)
+    for row in payload:
+        origin=source({'role':'user','content':materials[row['event']]['text']})
+        if not origin or model_json([origin['scope'],str(origin['event_id'])])!=row['event']:
+            raise ValueError('owner_migration_summary_source_conflict')
+    now=time.time();clock=datetime.fromtimestamp(now).astimezone()
+    prompt={'source_scope':'bot_shared','turns':turns,
+            'observed_requests':model_view(safe_materials,turns),'images':bindings,
+            'previous_summaries':products,'continuity_sources':source_scopes('bot_shared',authors),
+            'current_time':{'unix_seconds':now,'iso8601':clock.isoformat(),'timezone':str(clock.tzinfo)}}
+    import agreement_state
+    prompt['existing_agreements']=agreement_state.context_view(db,'bot_shared',owner=str(cfg.get('ownerUin') or ''))
+    if discarded:
+        # Incomplete physical blocks may contain unbound assistant/tool output.
+        # Their raw originals remain in the archived digest, never model memory.
+        prompt['incomplete_material']=[{key:item[key] for key in
+            ('event','source_scope','sender_ids','missing','available_text') if key in item} for item in discarded]
+        for item in discarded:
+            omitted['unverifiedReplies']+=len(item.get('available_reply',[]))
+            for block in item.get('available_observations',[]):
+                omitted['nativeOutputs']+=sum(isinstance(row,dict) and row.get('role') in ('assistant','tool') for row in block)
+                omitted['toolRounds']+=sum(isinstance(row,dict) and bool(row.get('tool_calls')) for row in block)
+    system=SYSTEM.replace('600','1500')
+    system+=' 本次为所有者授权的一次性Journal迁移提炼。保持真实来源、时间、人物归属、工具和发送状态。未知回执保持未知；缺失材料只能依据现存片段，不补造缺失正文。previous_summaries是已有持久化认知，本次成功发布后由唯一共享摘要替代。请在同一summary融合仍有价值的历史认知、人物关系、Claims、约定和未完事项与本批新材料，必要认知必须自足，不依赖旧摘要继续可见。结构化旧Claims由程序按原来源继承，约定真实状态沿用原账本。'
+    system+=' 同一个JSON可含evidence数组，每项event逐字复制turns.event，who为user或bot，quote为该说话人必要原话。可含commitments数组，每项event、topic、quote、who及stage，stage为proposed、accepted、unknown、executed或canceled，状态须有原文支持。observed_requests中的native_outputs及input_settlement区分真实模型原稿与发送回执。目标和执行责任由原工具账本维护，本次仅提炼必要认知。'
+    system+=' '+CONTINUITY_SYSTEM+' '+summary_product_limits()
+    request=dict(prompt=memory_json(memory_projection(prompt)),system_prompt=system,contexts=[],func_tool=None,request_max_retries=0,**({'image_urls':images} if images else {}))
+    epoch=db.execute('SELECT epoch FROM memory_reflection_control WHERE id=1').fetchone()[0]
+    request_digest=summary_request_digest(request,provider,epoch,'owner_migration',{'dependency':dependency,'materials':material_digest})
+    metrics={} if metrics is None else metrics
+    with auxiliary_scope(provider,'small_summary',scope='bot_shared'):
+        result=await summary_model_output(provider,request,live,metrics,1500)
+    if result is None:raise RuntimeError('owner_migration_summary_stale')
+    response,data,text=result
+    product={'summary':text,'data':data,'claims':_owner_migration_claims(db,payload,materials,data,now),
+             'priorProducts':products,'dependency':dependency,'materialsDigest':material_digest,
+             'requestDigest':request_digest,'epoch':epoch,'preparedAt':now,
+             'omittedUnknowns':omitted,
+             'continuity':accept(data,'bot_shared',authors),
+             'sourceScopes':source_scopes('bot_shared',authors),'subjects':sorted({row['sender_id'] for row in authors})}
+    product['productDigest']=hashlib.sha256(model_json(product).encode()).hexdigest()
+    verify_owner_migration_summary(db,payload,product)
+    return product
+
+
+def verify_owner_migration_summary(db,payload,product):
+    """Recheck prepared evidence and claims under the caller's apply lock."""
+    if not isinstance(product,dict):raise ValueError('owner_migration_summary_product')
+    unsigned={key:value for key,value in product.items() if key!='productDigest'}
+    if hashlib.sha256(model_json(unsigned).encode()).hexdigest()!=product.get('productDigest'):
+        raise ValueError('owner_migration_summary_product_changed')
+    products,materials,_,_,dependency,material_digest=_owner_migration_basis(db,payload)
+    if dependency!=product['dependency'] or material_digest!=product['materialsDigest'] or products!=product['priorProducts']:
+        raise ValueError('owner_migration_summary_basis_changed')
+    from output_clean import clean
+    if not isinstance(product.get('data'),dict) or clean(product['data'].get('summary','')).strip()!=product.get('summary') or not 0<len(product['summary'])<=1500:
+        raise ValueError('owner_migration_summary_invalid')
+    claims=_owner_migration_claims(db,payload,materials,product['data'],product['preparedAt'])
+    if claims!=product['claims']:raise ValueError('owner_migration_summary_claims_changed')
+    from conversation_continuity import accept
+    authors=summary_author_witnesses('bot_shared',payload,list(getattr(payload,'discarded',[])))
+    if accept(product['data'],'bot_shared',authors)!=product['continuity']:
+        raise ValueError('owner_migration_summary_continuity_changed')
+    return True
+
+
+def publish_owner_migration_summary(db,payload,product):
+    """Publish one merged existing-store product inside the cutover transaction."""
+    if not db.in_transaction:raise ValueError('owner_migration_publish_transaction_required')
+    verify_owner_migration_summary(db,payload,product)
+    from summary_material import inherit_claims,fit_claims,batch_corrections,derive_claims,semantic_claims_product,settle_commitments
+    from semantic_batch import semantic_claims
+    import agreement_state
+    products=product['priorProducts'];old_ids=[item['id'] for item in products]
+    prior=inherit_claims([(identifier,db.execute('SELECT claims FROM memory_summaries WHERE id=?',(identifier,)).fetchone()[0]) for identifier in old_ids])
+    materials=_owner_migration_basis(db,payload)[1]
+    turns,safe_materials,omitted=_owner_migration_model_materials(db,payload,materials)
+    fresh=semantic_claims_product(derive_claims('bot_shared',turns,safe_materials,
+        batch_corrections(db,'bot_shared',[row['event'] for row in payload]),product['data'],strict=True))
+    for claim in fresh:claim['updatedAt']=product['preparedAt']
+    # Existing settlement checks require the original evidence references.
+    settle_commitments(db,'bot_shared',fresh,prior)
+    promoted=agreement_state.promote_from_claims(db,'bot_shared',fresh,now=product['preparedAt'])
+    prior=inherit_claims([(old,db.execute('SELECT claims FROM memory_summaries WHERE id=?',(old,)).fetchone()[0]) for old in old_ids])
+    claims,dropped=fit_claims(prior+semantic_claims(fresh))
+    identifier=db.execute('INSERT INTO memory_summaries(scope,text,sources,updated,schema_version,claims) VALUES(?,?,?,?,2,?)',
+        ('bot_shared',product['summary'],'[]',product['preparedAt'],model_json(claims) if claims else None)).lastrowid
+    db.execute("INSERT INTO memory_summary_levels VALUES(?,'big')",(identifier,))
+    origins=set(product['sourceScopes'])|{scope for item in products for scope in item['source_scopes']}
+    people=set(product['subjects'])|{person for item in products for person in item['subjects']}
+    db.executemany('INSERT INTO memory_summary_origins VALUES(?,?)',[(identifier,scope) for scope in sorted(origins)])
+    db.executemany('INSERT INTO memory_summary_people VALUES(?,?)',[(identifier,person) for person in sorted(people)])
+    if old_ids:
+        marks=','.join('?' for _ in old_ids)
+        tables={row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        db.execute('INSERT OR IGNORE INTO memory_summary_unresolved SELECT scope,event,?,digest FROM memory_summary_unresolved WHERE summary_id IN ('+marks+')',(identifier,*old_ids))
+        for table in ('memory_summary_coverage','memory_retirement_exceptions','memory_media_retirement_choices','memory_reconstruction_checkpoints'):
+            if table in tables:db.execute('UPDATE '+table+' SET summary_id=? WHERE summary_id IN ('+marks+')',(identifier,*old_ids))
+        db.execute('DELETE FROM memory_vectors WHERE summary_id IN ('+marks+')',old_ids)
+        db.execute('DELETE FROM memory_summaries WHERE id IN ('+marks+')',old_ids)
+    return {'summaryId':identifier,'consumedSummaryIds':old_ids,'claimsCount':len(claims),
+            'droppedClaimIds':sorted(dropped),'agreementsPromoted':promoted,
+            'omittedUnknowns':omitted,
+            'continuity':product['continuity'],'sourceScopes':sorted(origins),'subjects':sorted(people)}
+
 async def _embedding_request(provider,base_url,model,texts):
     if not base_url:
         return await provider.client.with_options(max_retries=0,timeout=5).embeddings.create(model=model,input=texts)

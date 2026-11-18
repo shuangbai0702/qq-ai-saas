@@ -71,6 +71,21 @@ def _record_activation(db,authorization,group_limit):
     db.execute("INSERT INTO fishbot_shared_context VALUES(1,'active',?,?,?)",(authorization,time.time(),group_limit))
 
 
+def reserve_journal(db):
+    """Persist one unsubmitted shared baseline in the caller's transaction."""
+    import journal_storage
+    if not db.in_transaction:raise ValueError('shared_context_reservation_requires_transaction')
+    key=model_json(JOURNAL_SCOPE);now=time.time()
+    value={'scope':key,'base':[],'wire':[],'state':{},'turns':0,'at':now,
+           'group_turn':None,'base_chars':0,'detail':'','usage':{},'authority':None,'retirement':None}
+    payload,blobs=journal_storage.encode(value)
+    if blobs:raise ValueError('shared_context_empty_journal_has_media')
+    sha=hashlib.sha256(payload.encode()).hexdigest()
+    db.execute("INSERT INTO fishbot_readonly_journals VALUES(?,?,'ready',?,?,?)",
+               (key,journal_storage.VERSION,payload,sha,now))
+    return sha
+
+
 def activate_empty(db,cfg,*,group_limit=None):
     # Start an unused runtime with one Journal before it can submit history.
     if active(db):return True
@@ -81,7 +96,6 @@ def activate_empty(db,cfg,*,group_limit=None):
     limit=group_limit if group_limit is not None else (4 if len((cfg.get('behavior') or cfg).get('groupParticipationGroups') or ())>2 else 2)
     group_whitelist(cfg,limit)
     from readonly_journal import ReadonlyJournal
-    import journal_storage
     ReadonlyJournal(db,None)
     initialize(db)
     db.execute('BEGIN IMMEDIATE')
@@ -92,13 +106,7 @@ def activate_empty(db,cfg,*,group_limit=None):
             raise ValueError('shared_context_marker_missing_for_shared_journal')
         if not active(db) and not any(
                 table in tables and db.execute('SELECT 1 FROM '+table+' LIMIT 1').fetchone() for table in evidence):
-            key=model_json(JOURNAL_SCOPE);now=time.time()
-            value={'scope':key,'base':[],'wire':[],'state':{},'turns':0,'at':now,
-                   'group_turn':None,'base_chars':0,'detail':'','usage':{},'authority':None,'retirement':None}
-            payload,blobs=journal_storage.encode(value)
-            if blobs:raise ValueError('shared_context_empty_journal_has_media')
-            db.execute("INSERT INTO fishbot_readonly_journals VALUES(?,?,'ready',?,?,?)",
-                       (key,journal_storage.VERSION,payload,hashlib.sha256(payload.encode()).hexdigest(),now))
+            reserve_journal(db)
             _record_activation(db,'new_bot_initialization',limit)
         db.commit()
         return active(db)

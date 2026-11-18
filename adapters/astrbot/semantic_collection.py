@@ -5,7 +5,7 @@ pending/material rows are inputs, never new rounds or permission assertions.
 """
 import copy,hashlib,json,math,re
 from context_protocol import model_json,source
-from semantic_batch import event_key,origin,discard_failed_service_inputs
+from semantic_batch import event_key,origin,discard_failed_service_inputs,retired_members
 from summary_material import snapshots,valid_material,remember,material_storage_view
 
 # Disposable observations can outlive their old pending row. They are still
@@ -231,10 +231,7 @@ def collect(db,scope,cutoff,payload,recapture=None,*,discard_unavailable=False,s
 
 def _collect(db,cutoff,payload,recapture,discard_unavailable=False,source_events=None):
     tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    retired=set()
-    if 'memory_semantic_batches' in tables:
-        for scope,raw in db.execute("SELECT scope,members FROM memory_semantic_batches WHERE state='retired'"):
-            retired.update((scope,x) for x in json.loads(raw))
+    retired=retired_members(db)
     def identity(scope,event):
         channel,identifier=origin(scope,str(event))
         if not _channel(channel):return None
@@ -242,7 +239,7 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False,source_events
     def eligible(pair):
         channel,event=pair;key=model_json([channel,event])
         if source_events is not None and key not in source_events:return False
-        if (channel,event_key(channel,event)) in retired or ('bot_shared',event_key('bot_shared',key)) in retired:return False
+        if event_key(channel,event) in retired.get(channel,()) or event_key('bot_shared',key) in retired.get('bot_shared',()):return False
         for logical,identifier in ((channel,event),('bot_shared',key)):
             if 'pipeline_scope_work' in tables and db.execute('SELECT 1 FROM pipeline_scope_work WHERE scope=? AND event=?',(logical,identifier)).fetchone():return False
             if 'pipeline_work_inputs' in tables and db.execute("SELECT 1 FROM pipeline_work_inputs WHERE scope=? AND event=? AND status='owned'",(logical,identifier)).fetchone():return False

@@ -69,9 +69,10 @@ class OwnerJournalMigrationTest(unittest.TestCase):
         self.snapshot('group:22222')
         receipt = self.migrate()
         self.assertEqual(receipt, self.migrate())
-        self.assertEqual(self.db.execute('SELECT scope,sha FROM fishbot_readonly_journals').fetchall(),
+        self.assertEqual(self.db.execute("SELECT scope,sha FROM fishbot_readonly_journals WHERE state='ready'").fetchall(),
                          [('"bot_shared"',self.destination)])
         self.assertEqual([source['state'] for source in receipt['sources']], ['retired','retired'])
+        self.assertEqual(ReadonlyJournal(self.db,'group:22222').retired_reason,OWNER_EARLY_MIGRATION)
         with self.assertRaises(sqlite3.IntegrityError):
             self.db.execute('DELETE FROM fishbot_journal_owner_migrations')
 

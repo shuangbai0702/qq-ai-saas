@@ -11,6 +11,18 @@ from memory_policy import DEFAULT_SUMMARY_ROUNDS
 from context_protocol import scoped_event_hash as event_key
 
 
+def retired_members(db):
+    """Exact identities retired by ordinary checkpoints or an owner switch."""
+    from journal_cutover import owner_members
+    result={}
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_semantic_batches'").fetchone():
+        for scope,raw in db.execute("SELECT scope,members FROM memory_semantic_batches WHERE state='retired'"):
+            result.setdefault(scope,set()).update(json.loads(raw))
+    owners=owner_members(db)
+    if owners:result.setdefault('bot_shared',set()).update(owners)
+    return result
+
+
 def initialize(db):
     db.execute('PRAGMA secure_delete=ON')
     db.execute('''CREATE TABLE IF NOT EXISTS memory_semantic_batches(
