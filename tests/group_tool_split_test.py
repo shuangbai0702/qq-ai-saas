@@ -121,4 +121,66 @@ class GroupToolSplit(continuity.GroupActions):
         self.assertEqual(work.confirmed_reply_parts,['第一段','第二段'])
 
 
+class PrivateConversationSend(continuity.GroupActions):
+    def setUp(self):
+        super().setUp()
+        self.target='76543210'
+        self.friends=[{'user_id':int(self.target)}]
+        self.work=Work('bot','private:12345678','12345678','90000000','real-request','message',0,{})
+        self.extra['_hosted_pipeline']=self.work
+        token=group_actions.tool_action_id.set('private-send-call')
+        self.addCleanup(group_actions.tool_action_id.reset,token)
+
+        async def friends():return self.friends
+        async def send(**kwargs):
+            self.sent.append(kwargs)
+            return {'message_id':201}
+        self.event.bot.get_friend_list=friends
+        self.event.bot.send_private_msg=send
+
+    async def call_private(self,**changes):
+        tool=group_actions.tools(self.event,self.cfg,self.db,lambda:self.current,lambda *args:self.recorded.append(args))[-1]
+        context=NS(context=NS(event=self.event))
+        return json.loads(await tool.call(context,**{'private_user_id':self.target,'text':'吃饭啦',**changes}))
+
+    async def test_private_send_from_group_uses_verified_friend_and_same_receipt_chain(self):
+        self.event.get_group_id=lambda:'55555'
+        self.work.scope='group:55555'
+        result=await self.call_private()
+        self.assertEqual(result['receipt']['status'],'confirmed')
+        self.assertEqual(result['scope'],'private:'+self.target)
+        self.assertEqual(self.sent,[{'user_id':int(self.target),'message':[{'type':'text','data':{'text':'吃饭啦'}}]}])
+        self.assertEqual(self.work.confirmed,0)
+        self.assertEqual(self.recorded,[('private:'+self.target,'吃饭啦','')])
+        self.assertEqual((await self.call_private())['code'],'already_attempted')
+        self.assertEqual(len(self.sent),1)
+        self.assertFalse(group_actions.owns_reply(self.db,self.event,self.work.scope))
+
+    async def test_ambiguous_unknown_and_mismatched_sources_never_dispatch(self):
+        self.assertEqual((await self.call_private(group_id='55555'))['code'],'tool_preflight_rejected')
+        self.friends=[]
+        self.assertEqual((await self.call_private())['receipt']['status'],'rejected')
+        self.friends=[{'user_id':int(self.target)}]
+        self.work.scope='private:88888'
+        self.assertEqual((await self.call_private())['receipt']['status'],'rejected')
+        self.work.scope='private:12345678'
+        self.event.get_sender_id=lambda:'88888'
+        self.assertEqual((await self.call_private())['receipt']['status'],'rejected')
+        self.assertEqual(self.sent,[])
+
+    async def test_private_unknown_never_replays_and_keeps_sources_separate(self):
+        async def timeout(**kwargs):
+            self.sent.append(kwargs)
+            raise TimeoutError()
+        self.event.bot.send_private_msg=timeout
+        result=await self.call_private()
+        self.assertEqual(result['receipt']['status'],'unknown')
+        retry=await self.call_private()
+        self.assertEqual(retry['receipt']['status'],'unknown')
+        self.assertEqual(retry['code'],'already_attempted')
+        self.assertEqual(len(self.sent),1)
+        self.assertEqual(self.recorded,[])
+        self.assertFalse(group_actions.owns_reply(self.db,self.event,self.work.scope))
+
+
 if __name__=='__main__':unittest.main()
