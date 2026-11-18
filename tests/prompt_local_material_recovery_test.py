@@ -79,14 +79,14 @@ class LocalMaterialRecovery(unittest.IsolatedAsyncioTestCase):
         db=sqlite3.connect(':memory:')
         try:
             db.execute('CREATE TABLE fishbot_readonly_journals(scope TEXT,sha TEXT)')
-            db.execute('CREATE TABLE pipeline_work_inputs(scope TEXT,event TEXT,status TEXT)')
+            db.execute('CREATE TABLE pipeline_work_inputs(scope TEXT,event TEXT,status TEXT,payload TEXT)')
             db.execute('INSERT INTO fishbot_readonly_journals VALUES(?,?)',(json.dumps(SCOPE),'current'))
             db.execute('INSERT INTO fishbot_readonly_journals VALUES(?,?)',(json.dumps('private:87654321'),'unrelated'))
             discarded=[{'event':'0'}]
             before=semantic_collection.unavailable_stamp(db,discarded,scope=SCOPE)
             db.execute('UPDATE fishbot_readonly_journals SET sha=? WHERE scope=?',('changed',json.dumps('private:87654321')))
             self.assertEqual(semantic_collection.unavailable_stamp(db,discarded,scope=SCOPE),before)
-            db.execute('INSERT INTO pipeline_work_inputs VALUES(?,?,?)',(SCOPE,'0','owned'))
+            db.execute('INSERT INTO pipeline_work_inputs(scope,event,status) VALUES(?,?,?)',(SCOPE,'0','owned'))
             self.assertNotEqual(semantic_collection.unavailable_stamp(db,discarded,scope=SCOPE),before)
             with self.assertRaisesRegex(ValueError,'input_still_owned'):
                 semantic_collection.collect_local(db,SCOPE,[{'event':'0'}])

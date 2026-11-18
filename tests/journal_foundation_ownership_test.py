@@ -1,5 +1,5 @@
 """A damaged legacy wire recovers its checkpoint-owned basis by append only."""
-import copy,hashlib,sqlite3,sys,unittest
+import copy,hashlib,json,sqlite3,sys,unittest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -75,6 +75,27 @@ class JournalFoundationOwnership(unittest.TestCase):
         candidate=self.j.prepare(self.incoming(newer),'binding',now=2)
         self.assert_prefix_and_basis(candidate,prefix)
         self.assertNotIn('new database fact awaiting checkpoint',model_json(candidate.wire))
+
+    def test_core_note_has_one_physical_region_and_waits_for_checkpoint(self):
+        from context_transport import foreground_system,request_context_view
+        from memory_scope import retained_context_visible
+        scope='private:12345678'
+        journal=ReadonlyJournal(self.db,scope)
+        note={'text':'only visible note','source_scopes':['*']}
+        state={'memory_foundation':{'core_note':note},'persona_core_note':note}
+        def messages(snapshot,tail):
+            platform,contexts=request_context_view('Persona',tail,None,'','',model_json(snapshot),platform_system=foreground_system({}))
+            return [{'role':'system','content':platform},*contexts]
+        new=journal.prepare(messages(state,self.base[1:]),'binding',now=1)
+        self.assertEqual(model_json(new.wire).count(note['text']),1)
+        self.assertEqual(json.loads(self.regions(new.wire)[0]['content'].split('\n',1)[1])['region'],'core_note')
+        self.assertTrue(retained_context_visible(self.db,new.wire,scope,owner='12345678'))
+        self.assertFalse(retained_context_visible(self.db,new.wire,'group:23456',owner='12345678'))
+        self.assertTrue(journal.commit(new))
+        changed={'memory_foundation':{'core_note':{'text':'awaiting checkpoint'}},'persona_core_note':{'text':'awaiting checkpoint'}}
+        follow=journal.prepare(messages(changed,self.base[1:]+[{'role':'user','content':'next'}]),'binding',now=2)
+        self.assertEqual(follow.wire[:len(new.wire)],new.wire)
+        self.assertNotIn('awaiting checkpoint',model_json(follow.wire))
 
     def test_failed_persistence_and_restart_retry_do_not_lose_repair(self):
         prefix=self.damage_legacy_wire()

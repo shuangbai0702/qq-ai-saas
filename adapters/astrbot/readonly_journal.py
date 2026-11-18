@@ -70,8 +70,9 @@ def same_native_prefix(before,after):
     return len(before)==len(after) and all(same_native_message(a,b) for a,b in zip(before,after))
 
 def system_head(messages):
+    from context_protocol import is_persona_reference
     head=0
-    while head<len(messages) and isinstance(messages[head],dict) and messages[head].get('role') in ('system','developer'):head+=1
+    while head<len(messages) and isinstance(messages[head],dict) and (messages[head].get('role') in ('system','developer') or head>0 and is_persona_reference(messages[head])):head+=1
     return head
 
 def semantic_retire_projection(messages,permit):
@@ -89,6 +90,26 @@ def semantic_retire_projection(messages,permit):
         if not dropping or isinstance(message,dict) and message.get('role') in ('system','developer'):
             result.append(copy.deepcopy(message))
     return result
+
+def semantic_checkpoint_view(base,messages,permit,old,suffix,packet_indexes):
+    if old is None or suffix is None:
+        return semantic_retire_projection(base,permit),semantic_retire_projection(messages,permit)
+    # The existing append checks prove the entire native tail, including
+    # assistant/tool messages that carry no QQ event header of their own.
+    # Only the owning checkpoint may retire exact blocks from both views.
+    systems=base[:system_head(base)]
+    history=old.base[system_head(old.base):]+list(suffix)
+    base=systems+semantic_retire_projection(history,permit)
+    if not packet_indexes:return base,base
+    packets=[messages[i] for i in sorted(packet_indexes)]
+    following=semantic_retire_projection(messages[max(packet_indexes)+1:],permit)
+    # Match the provider's original placement when anchored on the same
+    # native suffix. Otherwise append whole packets after the native tail,
+    # where they cannot separate a retained tool call from its result.
+    index=len(base)
+    if following and same_native_prefix(base[-len(following):],following):
+        index-=len(following)
+    return base,base[:index]+packets+base[index:]
 
 def tail_extension(old_base,new_messages):
     """Extend the committed non-System tail exactly; System bytes defer.
@@ -206,6 +227,8 @@ class Prepared:
     # Local routing provenance, never a Provider field or another transcript.
     # Survives legal retirement of the service block that established it.
     main_conversation:bool=False
+    # A local retirement has not submitted its replacement to any Provider.
+    pending_system_checkpoint:object=None
 
 def confirmed_group_extension(old,base,state,turn,db=None):
     """Bridge only the SDK's explicit per-round group history replacement.
@@ -439,7 +462,7 @@ class ReadonlyJournal:
                 value=journal_storage.read_snapshot_payload(self.db,self.scope_key,version,payload,sha)
             except (TypeError,ValueError,KeyError,IndexError):self.recovery_error='journal_snapshot_invalid';return
             required={'scope','base','wire','state','turns','at','group_turn','base_chars','detail','usage','authority','retirement'}
-            if not isinstance(value,dict) or set(value)-{'main_conversation'}!=required or type(value.get('main_conversation',False)) is not bool or value['scope']!=self.scope_key or not isinstance(value['base'],list) or not isinstance(value['wire'],list) or not isinstance(value['state'],dict) or type(value['turns']) is not int or not isinstance(value['at'],(int,float)):
+            if not isinstance(value,dict) or set(value)-{'main_conversation','pending_system_checkpoint'}!=required or type(value.get('main_conversation',False)) is not bool or ('pending_system_checkpoint' in value and (type(value['pending_system_checkpoint']) is not int or value['pending_system_checkpoint']<1)) or value['scope']!=self.scope_key or not isinstance(value['base'],list) or not isinstance(value['wire'],list) or not isinstance(value['state'],dict) or type(value['turns']) is not int or not isinstance(value['at'],(int,float)):
                 self.recovery_error='journal_snapshot_invalid';return
             group_turn=value['group_turn']
             if group_turn is not None:
@@ -459,8 +482,15 @@ class ReadonlyJournal:
             try:reading_pool(value['wire'])
             except (TypeError,ValueError,KeyError,IndexError):
                 self.recovery_error='journal_reading_definition_invalid';return
+            # Account creation reserves its sole main Journal before there is
+            # a System contract or provider submission to preserve.
+            if (json.loads(self.scope_key)=='bot_shared' and state=='ready' and value['turns']==0
+                and value['base']==[] and value['wire']==[] and value['state']=={}
+                and authority is None and value['retirement'] is None
+                and not self._scope_has_completed_history()):return
             self.last=Prepared(0,None,value['base'],value['wire'],value['state'],value['turns'],value['at'],'restored',group_turn,value['base_chars'],value['detail'],value['usage'],authority,value['retirement'])
             self.last.main_conversation=value.get('main_conversation',False)
+            self.last.pending_system_checkpoint=value.get('pending_system_checkpoint')
             return
         overflow=self.db.execute('SELECT overflow FROM fishbot_readonly_journal_meta WHERE id=1').fetchone()[0]
         # An operator-enrolled legacy scope can establish exactly one new
@@ -492,6 +522,7 @@ class ReadonlyJournal:
                'group_turn':prepared.group_turn,'base_chars':prepared.base_chars,'detail':prepared.detail,'usage':prepared.usage,
                'authority':prepared.authority,'retirement':prepared.retirement}
         if prepared.main_conversation:value['main_conversation']=True
+        if prepared.pending_system_checkpoint is not None:value['pending_system_checkpoint']=prepared.pending_system_checkpoint
         return journal_storage.encode(value)
 
     def _snapshot(self,prepared):return self._snapshot_parts(prepared)[0]
@@ -713,12 +744,12 @@ class ReadonlyJournal:
         if old is None or self.db is None or not scope:return False
         head=system_head(old.base)
         tables={r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        return bool(head and head==len(old.base) and
+        return bool(head and type(old.pending_system_checkpoint) is int and
             {'memory_semantic_batches','memory_reconstruction_checkpoints'}<=tables and
             self.db.execute("""SELECT 1 FROM memory_semantic_batches b
               JOIN memory_reconstruction_checkpoints c ON c.id=b.checkpoint_id
               WHERE b.scope=? AND b.state='retired' AND c.state='consumed'
-                AND c.created<=? AND b.completed>=? LIMIT 1""",(scope,old.at,old.at)).fetchone())
+                AND c.id=? LIMIT 1""",(scope,old.pending_system_checkpoint)).fetchone())
 
     def prepare(self,messages,stamp,now=None,group_turn=None,reconstruction_authority=None,reconstruction_scope=None,
                 retirement=None,strict=False,compact_policy=False,guarded=True,retained_validator=None,
@@ -790,7 +821,7 @@ class ReadonlyJournal:
             new_head=system_head(base)
             boundary=self.checkpoint_system_boundary(reconstruction_scope)
             if boundary and old.base!=base[:new_head]:
-                old=replace(old,base=copy.deepcopy(base[:new_head]),
+                old=replace(old,base=copy.deepcopy(base[:new_head])+copy.deepcopy(old.base[system_head(old.base):]),
                     wire=copy.deepcopy(base[:new_head])+copy.deepcopy(old.wire[system_head(old.wire):]))
         summary_changed=bool(old and summaries(old.state)!=summaries(state))
         retirement_changed=bool(old and old.retirement!=retirement)
@@ -973,10 +1004,20 @@ class ReadonlyJournal:
                 else:raise ContextReconstructionDenied('A full request-history reconstruction is not authorized by a successful 30-round summary checkpoint.')
             else:
                 reuse=False
-        if reconstruction_permit and reconstruction_permit.get('semanticBatch'):
-            base=semantic_retire_projection(base,reconstruction_permit)
-            messages=semantic_retire_projection(messages,reconstruction_permit)
+        semantic_prepared=bool(reconstruction_permit and reconstruction_permit.get('semanticBatch'))
+        if semantic_prepared:
+            base,messages=semantic_checkpoint_view(base,messages,reconstruction_permit,old,suffix,excluded)
         if reuse:
+            if authority is not None and old.authority is not None and 'memory_foundation' in state:
+                previous_data=json.loads(old.authority['content'].split('\n',1)[1])
+                legacy_note=previous_data.get('authority',{}).get('persona_core_note')
+                if legacy_note is not None and 'foundation_core_note' not in old.state:
+                    # A legacy epoch still owns its committed note. Retire the
+                    # old projection only when a lawful basis takes over.
+                    current_data=json.loads(authority['content'].split('\n',1)[1])
+                    current_data['authority']['persona_core_note']=legacy_note
+                    authority={**authority,'content':EVENT_CONTEXT_CURRENT+'\n'+model_json(current_data)}
+            stored_authority=copy.deepcopy(authority)
             from context_foundation import freeze,execution_view
             state=execution_view(freeze(state,old.state))
             operations=changes(old.state,state)
@@ -993,7 +1034,9 @@ class ReadonlyJournal:
                     has_basis=True;break
             if state and not has_basis:
                 reset=copy.deepcopy(state)
-                reset.pop('memory_foundation',None) # Already visible as fixed regions.
+                # These are already visible as fixed regions.
+                reset.pop('memory_foundation',None)
+                reset.pop('foundation_core_note',None)
                 operations=[['set',[],reset]]
             if retirement_deferred:
                 # The stored base must stay byte-consistent with the committed
@@ -1051,8 +1094,8 @@ class ReadonlyJournal:
                     if packet!={'readonlyChanges':operations}:define_reading()
                 wire.append({'role':'user','content':READONLY_CURRENT+'\n'+memory_json(packet)})
         else:
-            from context_foundation import execution_view
-            state=execution_view(state)
+            from context_foundation import checkpoint_state,execution_view
+            state=execution_view(checkpoint_state(state))
             wire=reading_baseline(messages,state)
             if self.db is not None and 'memory_foundation' in state:
                 from person_memory import additions as person_additions
@@ -1071,9 +1114,10 @@ class ReadonlyJournal:
                 reconstruction_permit=self._reservation(reconstruction_authority,reconstruction_scope,request_id,summary_ids)
             if reconstruction_permit is None and guarded:
                 raise ContextCapacityExceeded('The append-only request journal reached its configured capacity before an authorized 30-round reconstruction checkpoint. Existing history is unchanged; an authenticated administrator may request compression.',usage=usage)
-            if reconstruction_permit and reconstruction_permit.get('semanticBatch'):
-                base=semantic_retire_projection(base,reconstruction_permit)
-                messages=semantic_retire_projection(messages,reconstruction_permit)
+            if not semantic_prepared and reconstruction_permit and reconstruction_permit.get('semanticBatch'):
+                base,messages=semantic_checkpoint_view(base,messages,reconstruction_permit,old,suffix,excluded)
+            from context_foundation import checkpoint_state
+            state=checkpoint_state(state)
             wire=reading_baseline(messages,state);reason='history_size_boundary';reuse=False
             usage=history_usage(wire);base_chars=usage['textChars'];detail=history_boundary(usage['textChars'],base_chars,usage['wireChars'],growth_limit=False)
             if detail:
@@ -1087,7 +1131,9 @@ class ReadonlyJournal:
         # Persist the complete current event contract for future comparisons;
         # wire may contain a shorter authority-only delta when its policy is
         # byte-identical to the latest committed policy.
-        stored_authority=copy.deepcopy(event_packet) if event_packets else authority
+        if not reuse:
+            from context_foundation import checkpoint_authority
+            stored_authority=checkpoint_authority(event_packet if event_packets else authority,state)
         candidate=Prepared(self.serial,stamp,base,wire,copy.deepcopy(state),turns,now,reason,group_turn,base_chars,detail,usage,stored_authority,retirement,reconstruction_permit,reconstruction_authority,None,retirement_deferred,False)
         candidate.main_conversation=bool(old and old.main_conversation)
         return candidate
@@ -1103,16 +1149,16 @@ class ReadonlyJournal:
         if self.last is None or self._staged is not None or self.recovery_error or self.retired_reason:return False
         if self.db is None or getattr(authority,'db',None) is not self.db:return False
         if permit.get('scope')!=json.loads(self.scope_key):raise ContextPrefixViolation('semantic_batch_scope_changed')
-        from context_foundation import execution_view
+        from context_foundation import checkpoint_authority,checkpoint_state,execution_view
         base=semantic_retire_projection(self.last.base,permit)
-        state=execution_view(copy.deepcopy(state))
+        state=execution_view(checkpoint_state(copy.deepcopy(state)))
         messages=base+([copy.deepcopy(event_authority)] if event_authority is not None else [])
         messages.append({'role':'user','content':READONLY_CURRENT+'\n'+model_json(state)})
         wire=reading_baseline(messages,state);usage=history_usage(wire)
         if history_boundary(usage['textChars'],usage['textChars'],usage['wireChars'],growth_limit=False):
             raise ContextCapacityExceeded('The complete lawful reconstruction candidate exceeds Journal capacity; the existing Journal and checkpoint remain unchanged.',usage=usage)
         self.serial+=1
-        stored_authority=copy.deepcopy(event_authority)
+        stored_authority=checkpoint_authority(copy.deepcopy(event_authority),state)
         if stored_authority is None and self.last.authority is not None:
             # Keep only the transport contract's presence. The retired event's
             # sender/ID packet must not survive, and the next real event may
@@ -1123,6 +1169,7 @@ class ReadonlyJournal:
         candidate=Prepared(self.serial,self.last.stamp,base,wire,state,1,time.time(),'semantic_batch_retirement',
             None,usage['textChars'],'',usage,stored_authority,retirement,permit,authority)
         candidate.main_conversation=self.last.main_conversation
+        candidate.pending_system_checkpoint=permit['id']
         from semantic_batch import purge
         if not self.stage_candidate(candidate,on_stage=lambda:purge(self.db,permit['id'])):return False
         return self._accept_staged(candidate)

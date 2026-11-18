@@ -342,6 +342,9 @@ test('media renew and completion both honor cancellation, offline state and chan
  await f.repo.cancel(f.bot,job.id);await assert.rejects(()=>f.repo.renew(claimed),/tool_lease_stale/);
  await f.repo.finish(claimed,{schemaVersion:'fishbot.tool-result.v1',actionId:job.id,execution:'canceled',receipt:{status:'rejected'},usage:{modelRequests:0,costStatus:'unknown'},versions:{adapter:'test'}});
  await f.db.query("UPDATE bots SET desired_state='offline' WHERE id=$1",[f.id]);assert.equal(await f.repo.completion({...f.bot,desired_state:'offline'}),null);
+ assert.equal((await f.repo.get(f.bot.tenant_id,f.id,job.id)).completion_state,'pending');
+ await f.db.query("UPDATE bots SET desired_state='running' WHERE id=$1",[f.id]);
+ assert.equal((await f.repo.completion(f.bot)).id,job.id);
 });
 
 
@@ -558,6 +561,11 @@ test('collection discovery, separate pagination and contents use bounded read-on
  const stale=await f.repo.admit(f.bot,await f.call('collections',{uid:'456'},{stepId:'queued-before-disable'}));
  const s=await f.repo.settings(f.bot.tenant_id,f.id);await f.repo.configure(f.bot.tenant_id,f.id,s.revision,{...s.config,collectionsEnabled:false});
  await assert.rejects(()=>f.repo.validate(stale));await assert.rejects(async()=>f.repo.admit(f.bot,await f.call('collections',{uid:'456'},{stepId:'disabled'})),/未授权/);
+ const callsBeforeRevoked=requests.length;
+ const revoked=await f.repo.claim('collections');
+ assert.equal(revoked.id,stale.id);
+ await executor.execute(revoked,new AbortController().signal);
+ assert.equal(requests.length,callsBeforeRevoked,'revoked queued work must not reach Bilibili');
  const fresh=await f.repo.settings(f.bot.tenant_id,f.id);assert.ok(!executor.catalog({config:fresh.config}).some(o=>o.operation==='collections'||o.operation==='collection_videos'));
  assert.ok(executor.catalog({config:fresh.config}).some(o=>o.operation==='video_info'));
  const without=await run('video_info',{bvid:'BV1xx411c7mD'},'video-without-collection');assert.equal(without.data.collection,null);

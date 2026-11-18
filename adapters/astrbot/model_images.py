@@ -126,11 +126,17 @@ def limit_data_url(value,details=None,legacy=False):
 
 
 async def _limited(value,details=None,legacy=False):
+    args=(value,details,True) if legacy else (value,) if details is None else (value,details)
+    return await _run_codec(limit_data_url,*args)
+
+
+async def _run_codec(function,*args):
+    """Share the existing single codec slot, including cancelled waiters."""
     global _loop,_semaphore
     loop=asyncio.get_running_loop()
     if _loop is not loop:_loop=loop;_semaphore=asyncio.Semaphore(1)
     async with _semaphore:
-        task=asyncio.create_task(asyncio.to_thread(limit_data_url,value,details,True) if legacy else asyncio.to_thread(limit_data_url,value) if details is None else asyncio.to_thread(limit_data_url,value,details))
+        task=asyncio.create_task(asyncio.to_thread(function,*args))
         try:return await asyncio.shield(task)
         except asyncio.CancelledError:
             # Cancelling a waiter cannot stop a codec thread. Keep its one

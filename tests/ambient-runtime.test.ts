@@ -10,7 +10,7 @@ test('real shared AstrBot sees unmentioned group atmosphere without extra infere
  const current=await createApp({root:await mkdtemp(path.resolve('.local/ambient-runtime-'))});
  try{
   const registered=await current.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(current.db),email:'ambient@test.invalid',password:'ambient-test-123',name:'群聊上下文'}});const cookies={fish_session:registered.cookies[0].value};
-  const config={...defaultConfig,baseUrl:`http://127.0.0.1:${(server.address() as any).port}/v1`,model:'ambient-fixture',groups:['777777','888888'],behavior:{...defaultConfig.behavior,followupSeconds:0,randomReplyProbability:0,burstDebounceMs:0,socialAwareness:true,styleLearning:false}};
+   const config={...defaultConfig,baseUrl:`http://127.0.0.1:${(server.address() as any).port}/v1`,model:'ambient-fixture',groups:['777777','888888'],behavior:{...defaultConfig.behavior,groupParticipationEnabled:true,groupParticipationGroups:['777777'],followupSeconds:0,randomReplyProbability:0,burstDebounceMs:0,socialAwareness:true,styleLearning:false}};
   const r=await current.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'群聊氛围',runtimeMode:'shared',protocol:'mock',config,apiKey:'synthetic-ambient-key'}});assert.equal(r.statusCode,201,r.body);const id=r.json().id;
   await current.app.inject({method:'POST',url:`/v1/bots/${id}/actions`,cookies,payload:{action:'start',idempotencyKey:'ambient-start'}});
   await until(async()=>{const[b]=await current.db.query('SELECT * FROM bots WHERE id=$1',[id]);return !!b.health?.protocol?.ready},'protocol ready');

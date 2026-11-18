@@ -172,9 +172,12 @@ async def summary_model_output(provider,request,live,metrics,limit,on_decode=Non
             if not live():return None
             if attempt:raise
             from httpx import TransportError
-            from openai import APIConnectionError
+            from openai import APIConnectionError,APIError,InternalServerError
             if callable(getattr(provider,'text_chat',None)) and (
-                isinstance(error,(TransportError,APIConnectionError,OSError,asyncio.TimeoutError))
+                isinstance(error,(TransportError,APIConnectionError,InternalServerError,OSError,asyncio.TimeoutError))
+                # OpenAI's SSE iterator raises the base APIError for in-band
+                # error events. HTTP client errors use APIStatusError subclasses.
+                or type(error) is APIError
                 or isinstance(error,ValueError) and str(error)=='incomplete_summary_stream'
                 # The hosted provider detects EOF first and uses this exact
                 # signal. Recover on the same bound nonstream transport too.
@@ -1225,6 +1228,9 @@ class Reflection:
                             previous_products=previous_summaries(self.db)
                             previous_dependency=self.context_dependency([p['id'] for p in previous_products],scope)
                             legacy_product_ids=[p['id'] for p in previous_products if p['scope']!='bot_shared']
+                        offered={item['event'] for item in (*payload,*discarded)}
+                        if any(row[2] not in offered for row in rows):
+                            raise ValueError('semantic_completed_round_not_available_for_checkpoint')
                         from activation_rounds import split_material
                         dialogue_payload,activity_material=split_material(self.db,scope,payload)
                         input_authors,_=split_material(self.db,scope,input_authors)

@@ -10,22 +10,36 @@ import {decrypt} from '../../../packages/shared/security.js';
 import {platformModelId,platformModelPath,platformUpstream,verifyPlatformModelCredential} from '../../../packages/shared/platform-model.js';
 
 export const platformSecretPurpose='fishbot:platform-model:v1';
+const primaryUpstream={baseUrl:'https://crab-ai.net/v1',model:'gpt-6.1-sol'};
+const platformCredentials=z.object({primary:z.string().min(1),fallback:z.string().min(1)});
+type PlatformSecrets=z.infer<typeof platformCredentials>;
+const quotaRejectionCodes=new Set(['insufficient_quota','insufficient_user_quota','insufficient_token_quota','quota_exhausted']);
 const contract=z.object({model:z.literal(platformModelId),messages:z.array(z.record(z.string(),z.unknown())).min(1),stream:z.boolean().optional(),max_tokens:z.number().int().min(1).max(65536).optional(),max_completion_tokens:z.number().int().min(1).max(65536).optional(),tools:z.array(z.unknown()).optional(),tool_choice:z.unknown().optional(),parallel_tool_calls:z.boolean().optional(),temperature:z.number().optional(),top_p:z.number().optional(),stop:z.union([z.string(),z.array(z.string())]).optional(),response_format:z.record(z.string(),z.unknown()).optional(),prompt_cache_key:z.string().max(256).optional()});
 const preDispatchRejections=new Set([401,403,404,413,429]);
 const invalid=(message:string,statusCode=400)=>Object.assign(new Error(message),{statusCode});
+const maxFrameChars=2*1024*1024;
+const maxResponseBytes=4*1024*1024;
 
-export async function loadPlatformModelSecret(root:string,key:Buffer){
- try{return decrypt(key,platformSecretPurpose,(await readFile(path.join(root,'platform-model-secret'),'utf8')).trim())}
- catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return '';throw error}
+export async function loadPlatformModelSecret(root:string,key:Buffer):Promise<PlatformSecrets|''>{
+ try{
+  const value=decrypt(key,platformSecretPurpose,(await readFile(path.join(root,'platform-model-secret'),'utf8')).trim());
+  if(!value)return '';
+  return value.startsWith('{')?platformCredentials.parse(JSON.parse(value)):{primary:'',fallback:value};
+ }catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return '';throw error}
+}
+
+async function authorizedBot(db:Sql,key:Buffer,auth:string,lock=false){
+ const id=auth.match(/^Bearer (fish-platform\.([0-9a-f-]{36})\.[A-Za-z0-9_-]{43})$/i);
+ if(!id||!z.uuid().safeParse(id[2]).success)throw invalid('平台模型认证无效',401);
+ const [bot]=await db.query(`SELECT b.id,b.tenant_id,b.generation,b.revision,r.config FROM bots b
+  JOIN bot_config_revisions r ON r.bot_id=b.id AND r.revision=b.revision WHERE b.id=$1 AND b.deleted_at IS NULL${lock?' FOR SHARE OF b':''}`,[id[2]]);
+ if(!bot||bot.config?.platformModel!==true||!verifyPlatformModelCredential(key,bot,id[1]))throw invalid('平台模型认证已失效',401);
+ return bot;
 }
 
 async function reserve(db:Sql,key:Buffer,auth:string,tokens:number){
- const id=auth.match(/^Bearer (fish-platform\.([0-9a-f-]{36})\.[A-Za-z0-9_-]{43})$/i);
- if(!id)throw invalid('平台模型认证无效',401);
  return db.transaction(async tx=>{
-  const [bot]=await tx.query(`SELECT b.id,b.tenant_id,b.generation,b.revision,r.config FROM bots b
-   JOIN bot_config_revisions r ON r.bot_id=b.id AND r.revision=b.revision WHERE b.id=$1 AND b.deleted_at IS NULL FOR SHARE OF b`,[id[2]]);
-  if(!bot||bot.config?.platformModel!==true||!verifyPlatformModelCredential(key,bot,id[1]))throw invalid('平台模型认证已失效',401);
+  const bot=await authorizedBot(tx,key,auth,true);
   const [budget]=await tx.query(`UPDATE platform_model_credits SET reserved=reserved+$2
    WHERE tenant_id=$1 AND granted-spent-reserved >= $2 RETURNING tenant_id`,[bot.tenant_id,tokens]);
   if(!budget)throw invalid('平台模型余额不足以处理本次请求',402);
@@ -56,6 +70,37 @@ function publicFrame(data:any){
  return {id,object,created,model:platformModelId,choices,usage};
 }
 
+async function readCompletion(response:Response,byteLimit=maxResponseBytes){
+ const reader=response.body?.getReader();
+ if(!reader)throw invalid('平台模型没有返回数据',502);
+ const decoder=new TextDecoder();
+ const parts:string[]=[];
+ let received=0;
+ try{
+  while(true){
+   const chunk=await reader.read();
+   if(chunk.done)break;
+   received+=chunk.value.byteLength;
+   if(received>byteLimit)throw invalid('平台模型响应过大',502);
+   parts.push(decoder.decode(chunk.value,{stream:true}));
+  }
+  parts.push(decoder.decode());
+  return JSON.parse(parts.join(''));
+ }finally{
+  await reader.cancel().catch(()=>{});
+  reader.releaseLock();
+ }
+}
+
+async function quotaRejected(response:Response){
+ if(response.status===402)return true;
+ if(response.status!==403&&response.status!==429)return false;
+ try{
+  const data=await readCompletion(response,16*1024);
+  return !data?.usage&&!data?.choices&&[data?.error?.code,data?.error?.type].some(code=>quotaRejectionCodes.has(code));
+ }catch{return false}
+}
+
 async function streamModel(upstream:Response,reply:FastifyReply,signal:AbortSignal,adopt:(frame:unknown)=>Promise<void>){
  if(!upstream.body)throw invalid('平台模型没有返回数据',502);
  reply.hijack();
@@ -78,6 +123,7 @@ async function streamModel(upstream:Response,reply:FastifyReply,signal:AbortSign
    buffer+=decoder.decode(chunk.value,{stream:true});
    let split:number;
    while((split=buffer.indexOf('\n'))>=0){
+    if(split>maxFrameChars)throw new Error('platform_stream_frame_too_large');
     const line=buffer.slice(0,split);buffer=buffer.slice(split+1);
     if(!line.startsWith('data:'))continue;
     const payload=line.slice(5).trim();
@@ -86,28 +132,37 @@ async function streamModel(upstream:Response,reply:FastifyReply,signal:AbortSign
     await adopt(frame);
     await output('data: '+JSON.stringify(publicFrame(frame))+'\n\n');
    }
-   if(buffer.length>2*1024*1024)throw new Error('platform_stream_frame_too_large');
+   if(buffer.length>maxFrameChars)throw new Error('platform_stream_frame_too_large');
   }
  }finally{
   await reader.cancel().catch(()=>{});
+  reader.releaseLock();
   if(!out.destroyed&&!out.writableEnded)out.end();
  }
 }
 
-export function registerPlatformModel(app:FastifyInstance,db:Sql,key:Buffer,secret:string,transport=modelHttp){
+export function registerPlatformModel(app:FastifyInstance,db:Sql,key:Buffer,secret:PlatformSecrets|'',transport=modelHttp){
  const error=(reply:FastifyReply,status:number,message:string)=>reply.code(status).send({error:{message,type:'platform_model_error'}});
  app.post(platformModelPath+'/chat/completions',{bodyLimit:16*1024*1024,config:{rateLimit:{max:180,timeWindow:'1 minute'}},onRequest:async(req,reply)=>{
   if(!secret)return error(reply,503,'平台模型暂不可用');
-  if(!/^Bearer fish-platform\.[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}$/i.test(req.headers.authorization||''))return error(reply,401,'平台模型认证无效');
+  try{await authorizedBot(db,key,req.headers.authorization||'')}catch(cause){
+   const failure=cause as Error & {statusCode?:number};
+   if(failure.statusCode!==401)throw cause;
+   return error(reply,401,failure.message);
+  }
  }},async(req:FastifyRequest,reply:FastifyReply)=>{
   const parsed=contract.safeParse(req.body);
   if(!parsed.success)return error(reply,400,'平台模型请求格式无效');
   const {max_tokens,max_completion_tokens,...request}=parsed.data;
   const outputLimit=max_completion_tokens??max_tokens??32768;
-  const body=JSON.stringify({...request,model:platformUpstream.model,max_tokens:outputLimit,...(request.stream?{stream_options:{include_usage:true}}:{})});
+  if(!secret)return error(reply,503,'平台模型暂不可用');
+  const bodyFor=(model:string)=>JSON.stringify({...request,model,max_tokens:outputLimit,...(request.stream?{stream_options:{include_usage:true}}:{})});
+  const firstProvider=secret.primary?primaryUpstream:platformUpstream;
+  const initialBody=bodyFor(firstProvider.model);
+  const fallbackModelExtra=Math.max(0,Buffer.byteLength(platformUpstream.model)-Buffer.byteLength(firstProvider.model));
   const media=request.messages.some(message=>Array.isArray(message.content)&&message.content.some(part=>part?.type==='image_url'||part?.type==='input_audio'));
   // UTF-8 byte count bounds byte-tokenized text. Media uses a full-context hold.
-  const hold=(media?1_048_576:Buffer.byteLength(body)+4096)+outputLimit;
+  const hold=(media?1_048_576:Buffer.byteLength(initialBody)+fallbackModelExtra+4096)+outputLimit;
   let id:string;
   try{id=await reserve(db,key,req.headers.authorization||'',hold)}catch(e){const failure=e as Error & {statusCode?:number};if(!failure.statusCode)throw e;return error(reply,failure.statusCode,failure.message)}
   let adopted=false;
@@ -121,16 +176,27 @@ export function registerPlatformModel(app:FastifyInstance,db:Sql,key:Buffer,secr
   // An HTTP client leaving does not revoke the provider call. Keep reading for its usage receipt.
   const signal=AbortSignal.timeout(110000);
   try{
-   const upstream=await transport(platformUpstream.baseUrl+'/chat/completions',{method:'POST',headers:{Authorization:'Bearer '+secret,'Content-Type':'application/json'},body,signal});
+   const send=(baseUrl:string,credential:string,body:string)=>transport(baseUrl+'/chat/completions',{
+    method:'POST',headers:{Authorization:'Bearer '+credential,'Content-Type':'application/json'},body,signal,
+   });
+   let upstream=await send(firstProvider.baseUrl,secret.primary||secret.fallback,initialBody);
+   let rejectedForQuota=await quotaRejected(upstream);
+   if(rejectedForQuota&&secret.primary&&secret.fallback){
+    await upstream.body?.cancel().catch(()=>{});
+    app.log.info({reservation:id},'platform-model primary quota rejected; using fallback');
+    upstream=await send(platformUpstream.baseUrl,secret.fallback,bodyFor(platformUpstream.model));
+    rejectedForQuota=await quotaRejected(upstream);
+   }
    if(!upstream.ok){
     await upstream.body?.cancel().catch(()=>{});
-    if(preDispatchRejections.has(upstream.status))await settle(db,id,0);
+    if(rejectedForQuota||preDispatchRejections.has(upstream.status))await settle(db,id,0);
+    if(rejectedForQuota)return error(reply,503,'平台模型供应商额度暂不可用');
     return error(reply,upstream.status===429?429:502,'平台模型服务暂时无法完成请求');
    }
    if(request.stream){
     await streamModel(upstream,reply,signal,async frame=>{if(Array.isArray((frame as any)?.choices)&&!(frame as any).choices.length)await adopt(frame)});
    }else{
-    const result=await upstream.json();
+    const result=await readCompletion(upstream);
     await adopt(result);
     if(!adopted)return error(reply,502,'平台模型未返回可核对的用量，本次额度暂时保留');
     return publicFrame(result);

@@ -9,6 +9,114 @@ import hashlib
 import re
 import time
 
+OWNER_EARLY_MIGRATION = 'owner_authorized_early_migration'
+
+
+def _operator_archives(db):
+    db.execute('''CREATE TABLE IF NOT EXISTS fishbot_operator_session_archives(
+      authorization TEXT PRIMARY KEY,scope TEXT NOT NULL,release TEXT NOT NULL,archive TEXT NOT NULL,
+      sha TEXT NOT NULL,created REAL NOT NULL,new_session_state TEXT NOT NULL CHECK(new_session_state IN ('available','consumed')))''')
+    db.execute('''CREATE TRIGGER IF NOT EXISTS operator_session_archive_immutable BEFORE UPDATE OF authorization,scope,release,archive,sha,created ON fishbot_operator_session_archives BEGIN SELECT RAISE(ABORT,'operator archive is immutable'); END''')
+    db.execute('''CREATE TRIGGER IF NOT EXISTS operator_session_archive_no_delete BEFORE DELETE ON fishbot_operator_session_archives BEGIN SELECT RAISE(ABORT,'operator archive is immutable'); END''')
+
+
+def retire_empty_legacy_journals(db, bot_id, grant, backup_sha):
+    """Retire System-only extra Journals under an exact offline operator grant.
+
+    The owning worker must be fenced. The offline, independently verified
+    SQLite archive owns the original bytes. The runtime holds only its receipt,
+    so regular compression cannot discover the archived input as new history.
+    """
+    from journal_storage import read_snapshot_payload
+    from readonly_journal import ReadonlyJournal, system_head
+    from shared_context import JOURNAL_SCOPE, active
+
+    if set(grant) != {'type','id','bot','destination','sources','reason','release'}:
+        raise ValueError('owner_migration_grant_shape')
+    if (grant['type'] != OWNER_EARLY_MIGRATION or grant['bot'] != bot_id
+        or grant['destination'] != JOURNAL_SCOPE or not re.fullmatch(r'[0-9a-f-]{36}', bot_id)
+        or not re.fullmatch(r'[0-9a-f-]{36}', str(grant['id']))
+        or not re.fullmatch(r'[0-9a-f]{40}', str(grant['release']))
+        or not re.fullmatch(r'[0-9a-f]{64}', str(backup_sha))
+        or not isinstance(grant['reason'], str) or not grant['reason'].strip()):
+        raise PermissionError('owner_migration_grant_invalid')
+    expected = grant['sources']
+    if (not isinstance(expected, dict) or not expected or any(
+            not re.fullmatch(r'(?:private|group):\d{4,20}', scope)
+            or not re.fullmatch(r'[0-9a-f]{64}', str(sha)) for scope, sha in expected.items())):
+        raise PermissionError('owner_migration_scope_inventory_invalid')
+    if db.in_transaction:
+        raise ValueError('operator_requires_owned_transaction')
+    from uuid import UUID
+    if str(UUID(bot_id)) != bot_id or str(UUID(grant['id'])) != grant['id']:
+        raise PermissionError('owner_migration_grant_invalid')
+    destination = ReadonlyJournal(db, JOURNAL_SCOPE)
+    if not active(db) or destination.recovery_error or destination.retired_reason or destination.last is None:
+        raise ValueError('owner_migration_requires_verified_shared_destination')
+    destination_key = destination.scope_key
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        rows = {json.loads(row[0]): row for row in db.execute(
+            'SELECT scope,version,state,payload,sha,updated FROM fishbot_readonly_journals')}
+        if not active(db) or JOURNAL_SCOPE not in rows or rows[JOURNAL_SCOPE][2] != 'ready':
+            raise ValueError('owner_migration_destination_changed')
+        _, version, _, payload, destination_sha, _ = rows[JOURNAL_SCOPE]
+        read_snapshot_payload(db, destination_key, version, payload, destination_sha)
+        db.execute('''CREATE TABLE IF NOT EXISTS fishbot_journal_owner_migrations(
+          authorization TEXT PRIMARY KEY,receipt TEXT NOT NULL,sha TEXT NOT NULL,completed REAL NOT NULL)''')
+        db.execute('''CREATE TRIGGER IF NOT EXISTS journal_owner_migration_no_update BEFORE UPDATE ON fishbot_journal_owner_migrations
+                      BEGIN SELECT RAISE(ABORT,'migration receipt is immutable'); END''')
+        db.execute('''CREATE TRIGGER IF NOT EXISTS journal_owner_migration_no_delete BEFORE DELETE ON fishbot_journal_owner_migrations
+                      BEGIN SELECT RAISE(ABORT,'migration receipt is immutable'); END''')
+        prior = db.execute('SELECT receipt,sha FROM fishbot_journal_owner_migrations WHERE authorization=?', (grant['id'],)).fetchone()
+        if prior:
+            saved = json.loads(prior[0])
+            if (hashlib.sha256(prior[0].encode()).hexdigest() != prior[1]
+                or saved.get('grant') != grant or saved.get('backupSha') != backup_sha or set(rows) != {JOURNAL_SCOPE}):
+                raise ValueError('owner_migration_receipt_conflict')
+            db.commit()
+            return saved
+        if {scope: row[4] for scope, row in rows.items() if scope != JOURNAL_SCOPE} != expected:
+            raise ValueError('owner_migration_scope_inventory_changed')
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if 'pipeline_scope_work' in tables and db.execute('SELECT 1 FROM pipeline_scope_work LIMIT 1').fetchone():
+            raise ValueError('owner_migration_work_still_active')
+        sources = []
+        for scope, sha in sorted(expected.items()):
+            key, version, state, payload, _, updated = rows[scope]
+            if state != 'ready':
+                raise ValueError('owner_migration_source_not_ready')
+            snapshot = read_snapshot_payload(db, key, version, payload, sha)
+            for field in ('base','wire'):
+                messages = snapshot[field]
+                if not isinstance(messages, list) or system_head(messages) != len(messages):
+                    raise ValueError('owner_migration_source_requires_history_coverage')
+            # A System-only visible snapshot cannot prove that old round,
+            # pending or checkpoint material was already summarized elsewhere.
+            for table in ('memory_rounds','memory_pending','memory_hold_rounds','memory_round_material',
+                          'memory_summaries','memory_reconstruction_checkpoints','memory_message_sources'):
+                if table in tables and db.execute('SELECT 1 FROM '+table+' WHERE scope=? LIMIT 1',(scope,)).fetchone():
+                    raise ValueError('owner_migration_source_requires_history_coverage:'+table)
+            if 'pipeline_work_inputs' in tables and db.execute(
+                    "SELECT 1 FROM pipeline_work_inputs WHERE scope=? AND status='owned' LIMIT 1", (scope,)).fetchone():
+                raise ValueError('owner_migration_source_input_still_owned')
+            sources.append({'scope':scope,'sha':sha,'version':version,'updated':updated,
+                            'baseMessages':len(snapshot['base']),'wireMessages':len(snapshot['wire']),
+                            'coverage':'system_only','state':'retired'})
+            if db.execute('DELETE FROM fishbot_readonly_journals WHERE scope=? AND sha=?', (key, sha)).rowcount != 1:
+                raise ValueError('owner_migration_source_changed')
+            if 'fishbot_readonly_cutover' in tables:
+                db.execute("UPDATE fishbot_readonly_cutover SET state='consumed' WHERE scope=? AND state='available'", (key,))
+        receipt = {'grant':grant,'backupSha':backup_sha,'destinationSha':destination_sha,'sources':sources}
+        encoded = json.dumps(receipt,ensure_ascii=False,separators=(',',':'))
+        db.execute('INSERT INTO fishbot_journal_owner_migrations VALUES(?,?,?,?)',
+                   (grant['id'],encoded,hashlib.sha256(encoded.encode()).hexdigest(),time.time()))
+        db.commit()
+        return receipt
+    except BaseException:
+        db.rollback()
+        raise
+
 
 def enroll_legacy_scopes(db, release):
     if not isinstance(release, str) or not re.fullmatch(r'[a-f0-9]{40}', release):
@@ -66,11 +174,7 @@ def archive_authorized_scope(db,scope,expected_sha,authorization,release):
             cursor=db.execute('SELECT * FROM '+name+' WHERE scope=?',(scope,))
             archive['evidence'][name]={'columns':[c[0] for c in cursor.description],'rows':cursor.fetchall()}
         encoded=json.dumps(archive,ensure_ascii=False,separators=(',',':'))
-        db.execute('''CREATE TABLE IF NOT EXISTS fishbot_operator_session_archives(
-          authorization TEXT PRIMARY KEY,scope TEXT NOT NULL,release TEXT NOT NULL,archive TEXT NOT NULL,
-          sha TEXT NOT NULL,created REAL NOT NULL,new_session_state TEXT NOT NULL CHECK(new_session_state IN ('available','consumed')))''')
-        db.execute('''CREATE TRIGGER IF NOT EXISTS operator_session_archive_immutable BEFORE UPDATE OF authorization,scope,release,archive,sha,created ON fishbot_operator_session_archives BEGIN SELECT RAISE(ABORT,'operator archive is immutable'); END''')
-        db.execute('''CREATE TRIGGER IF NOT EXISTS operator_session_archive_no_delete BEFORE DELETE ON fishbot_operator_session_archives BEGIN SELECT RAISE(ABORT,'operator archive is immutable'); END''')
+        _operator_archives(db)
         db.execute("INSERT INTO fishbot_operator_session_archives VALUES(?,?,?,?,?,?,'available')",(authorization,key,release,encoded,hashlib.sha256(encoded.encode()).hexdigest(),time.time()))
         # These belong to the explicitly closed conversation, not the new
         # Journal. Archive first; preserve all task/dispatch/unknown evidence.

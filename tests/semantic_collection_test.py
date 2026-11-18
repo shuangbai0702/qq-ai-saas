@@ -293,6 +293,37 @@ class SharedSummaryIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.calls[0]['turns']),37)
         self.assertEqual(self.db.execute("SELECT round_count FROM memory_reconstruction_checkpoints WHERE scope='bot_shared'").fetchone(),(37,),str(self.db.execute('SELECT kind,detail FROM memory_checkpoint_issues').fetchall()))
 
+    async def test_checkpoint_retires_ambient_input_and_leaves_outstanding_ingress_usable(self):
+        import time
+        from readonly_journal import Prepared,ReadonlyJournal
+        from semantic_runtime import finish_semantic_batches
+        self.populate();scope='bot_shared';channel='group:55555';subject='12345678'
+        cases=(('ambient','deferred',0),('mention','deferred',1),('presence','deferred',0),
+               ('capacity','waiting_compression',0),('pending','pending',0))
+        messages=[{'role':'system','content':'actual system'}]
+        for event,status,addressed in cases:
+            msg=event_message({'scope':channel,'sender_id':subject,'event_id':event,'at':90},'raw '+event)
+            messages.append(msg)
+            summary_material.remember(self.db,scope,summary_material.snapshots([msg],scope))
+            self.db.execute('INSERT INTO pipeline_work_inputs(scope,event,subject,owner,status,payload,identity,addressed_self) VALUES(?,?,?,?,?,?,?,?)',
+                            (channel,event,subject,event,status,'raw '+event,'{}',addressed))
+        self.db.execute('INSERT INTO autonomy_group_inbox VALUES(?,?,?,?,0)',(channel,'presence','raw presence',90))
+        self.db.execute("INSERT INTO pipeline_events(scope,subject,event,status,reason) VALUES(?,?,?,'blocked',?)",
+                        (channel,subject,'capacity','context_capacity_waiting:'+model_json([scope,0])))
+        self.db.commit()
+        journal=ReadonlyJournal(self.db,scope);journal.serial=1
+        self.assertTrue(journal.commit(Prepared(1,None,copy.deepcopy(messages),copy.deepcopy(messages),{},1,time.time(),'original')))
+        self.store.model_journals[scope]=journal
+        await self.run_summary()
+        prompt=model_json(self.calls[0]);self.assertIn('raw ambient',prompt)
+        for event,_,_ in cases[1:]:self.assertNotIn('raw '+event,prompt)
+        result=finish_semantic_batches(self.store,{},scope)
+        self.assertEqual((result['retired'],result['pending']),(1,0),result)
+        self.assertEqual(dict((event,(status,payload)) for event,status,payload in self.db.execute('SELECT event,status,payload FROM pipeline_work_inputs')),
+                         {'ambient':('settled_retired_observation',None),'mention':('deferred','raw mention'),
+                          'presence':('deferred','raw presence'),'capacity':('pending','raw capacity'),'pending':('pending','raw pending')})
+        self.assertEqual(ReadonlyJournal(self.db,scope).last.base,messages[:1]+messages[2:])
+
     async def test_compression_waits_for_accepted_dialogue_then_blocks_new_execution(self):
         import asyncio
         st=self.store;self.populate();st.active=1

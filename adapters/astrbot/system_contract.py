@@ -34,8 +34,11 @@ def system_vector_sha(messages):
     if not isinstance(messages, list):
         raise SystemContractViolation('system_vector_missing')
     vector = []
+    from context_protocol import is_persona_reference
+    from readonly_journal import system_head
+    head=system_head(messages)
     for index, message in enumerate(messages):
-        if isinstance(message, dict) and message.get('role') == 'system':
+        if isinstance(message, dict) and (message.get('role') == 'system' or index<head and is_persona_reference(message)):
             vector.append([index, message])
     encoded = json.dumps(vector, ensure_ascii=False, separators=(',', ':'), sort_keys=False)
     return hashlib.sha256(encoded.encode('utf-8')).hexdigest()

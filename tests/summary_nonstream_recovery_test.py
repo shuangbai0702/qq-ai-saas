@@ -34,6 +34,27 @@ class Recovery(unittest.IsolatedAsyncioTestCase):
         result=await summary_model_output(NS(text_chat_stream=stream,text_chat=chat),{},lambda:True,{},800)
         self.assertEqual(result[2],'complete');self.assertEqual(calls,['stream','chat'])
 
+    async def test_upstream_stream_errors_try_same_bound_nonstream_request(self):
+        import httpx
+        from openai import APIError,InternalServerError
+        http_request=httpx.Request('POST','https://summary.example/v1/chat/completions')
+        errors=(APIError('stream failed',http_request,body={'type':'server_error'}),
+                InternalServerError('stream failed',response=httpx.Response(502,request=http_request),body=None))
+        request={'prompt':'complete original batch','request_max_retries':0}
+        for error in errors:
+            with self.subTest(error=type(error).__name__):
+                calls=[];metrics={}
+                async def stream(**kw):
+                    try:raise error
+                    finally:calls.append(('closed',kw))
+                    yield
+                async def chat(**kw):
+                    calls.append(('chat',kw));return valid()
+                result=await summary_model_output(NS(text_chat_stream=stream,text_chat=chat),request,lambda:True,metrics,800)
+                self.assertEqual(result[2],'complete')
+                self.assertEqual(calls,[('closed',request),('chat',request)])
+                self.assertEqual(metrics['summaryRequests'],2)
+
     async def test_read_deadline_closes_stream_before_fallback(self):
         from unittest.mock import patch
         calls=[];closed=[]

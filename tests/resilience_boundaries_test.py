@@ -38,6 +38,31 @@ class Boundaries(unittest.TestCase):
             self.assertEqual(dict(db.execute('SELECT scope,status FROM pipeline_work_inputs')),{'private:0':'settled_proven',**{'private:'+str(i):'blocked_recovery' for i in range(1,5)}})
             self.assertEqual(db.execute('SELECT count(*) FROM pipeline_work_inputs').fetchone()[0],5)
 
+    def test_startup_repairs_only_verified_retired_ambient_observations(self):
+        from memory_reflection import Reflection
+        with sqlite3.connect(':memory:') as db:
+            reflection=Reflection(db);BotPipeline(db)
+            scope='group:12345';subject='123456';logical='bot_shared'
+            observations=('admission','joined','unrelated','directed','unknown','unpurged')
+            for event in observations:
+                db.execute("INSERT INTO pipeline_work_inputs(scope,event,subject,status,identity,addressed_self) VALUES(?,?,?,'blocked_recovery','{}',?)",
+                           (scope,event,subject,int(event=='directed')))
+            for event,status,reason,exit_reason,attempted in (('admission','blocked','waiting_input_blocked','admission_blocked',0),('unknown','unknown','send_unknown','',1)):
+                db.execute("INSERT INTO pipeline_events(scope,subject,event,stage,status,reason,exit_reason,attempted,confirmed) VALUES(?,?,?,'admission',?,?,?,?,0)",
+                           (scope,subject,event,status,reason,exit_reason,attempted))
+            for checkpoint,keys in ((1,('admission','joined','directed','unknown')),(2,('unpurged',))):
+                members=[scoped_event_hash(logical,model_json([scope,event])) for event in keys]
+                db.execute("INSERT INTO memory_reconstruction_checkpoints(id,scope,through_round_id,round_count,epoch,state,created) VALUES(?,?,?,30,0,'consumed',1)",
+                           (checkpoint,logical,30*checkpoint))
+                db.execute("INSERT INTO memory_semantic_batches VALUES(?,?,'digest',?,1,'retired',1,1)",(checkpoint,logical,model_json(members)))
+            db.execute('INSERT INTO memory_semantic_purges VALUES(1,1)')
+            reflection.checkpoint_issue(logical,0,'input_recovery:'+scope,{'scope':scope});db.commit()
+            for _ in range(2):BotPipeline(db)
+            self.assertEqual(dict(db.execute('SELECT event,status FROM pipeline_work_inputs')),
+                             {event:'settled_retired_observation' if event in ('admission','joined') else 'blocked_recovery' for event in observations})
+            detail=json.loads(db.execute('SELECT detail FROM memory_checkpoint_issues').fetchone()[0])
+            self.assertEqual(detail['blocked'],{'blocked_recovery':4})
+
     def test_capture_retention_never_removes_unrecognized_or_recent_material(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);folder=root/'model-request-captures';now=time.time()

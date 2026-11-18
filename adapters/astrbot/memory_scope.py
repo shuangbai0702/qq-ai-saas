@@ -66,11 +66,13 @@ def retained_context_visible(db,messages,scope,owner=''):
     """
     from context_protocol import READONLY_CURRENT
     from context_transport import EVENT_CONTEXT_CURRENT
+    from context_foundation import FOUNDATION_CURRENT
     def visit(value):
         if isinstance(value,list):return all(visit(x) for x in value)
         if not isinstance(value,dict):return True
-        note=value.get('persona_core_note')
-        if isinstance(note,dict) and note.get('text') and not core_note_visible(note.get('source_scopes'),scope,owner):return False
+        for key in ('persona_core_note','core_note'):
+            note=value.get(key)
+            if isinstance(note,dict) and note.get('text') and not core_note_visible(note.get('source_scopes'),scope,owner):return False
         origin=value.get('source_scope')
         memory_record=(value.get('kind')=='recent_uncompressed_message' or isinstance(value.get('summary'),str)
                        or {'name','value','source_event'}<=set(value))
@@ -80,9 +82,12 @@ def retained_context_visible(db,messages,scope,owner=''):
         return all(visit(x) for x in value.values())
     for message in messages:
         content=message.get('content') if isinstance(message,dict) and message.get('role')=='user' else None
-        if not isinstance(content,str) or not any(content.startswith(marker+'\n') for marker in (READONLY_CURRENT,EVENT_CONTEXT_CURRENT)):continue
+        if not isinstance(content,str) or not any(content.startswith(marker+'\n') for marker in (READONLY_CURRENT,EVENT_CONTEXT_CURRENT,FOUNDATION_CURRENT)):continue
         try:value=json.loads(content.split('\n',1)[1])
         except (TypeError,ValueError):return False
+        if content.startswith(FOUNDATION_CURRENT+'\n'):
+            if not isinstance(value,dict) or not visit({'core_note':value.get('core_note')}):return False
+            continue
         if not visit(value):return False
         for op in value.get('readonlyChanges',[]) if isinstance(value,dict) else []:
             if isinstance(op,list) and len(op)==3 and op[0]=='set' and op[1] and op[1][-1]=='persona_core_note' and not visit({'persona_core_note':op[2]}):return False

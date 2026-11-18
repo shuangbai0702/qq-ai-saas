@@ -190,7 +190,8 @@ def conversation_context(store,cfg,scope,subject,query,now,state=None):
         from memory_reflection import CORE_NOTE_POLICY
         # The canonical shared Journal already contains the real channel
         # messages. Do not reinject person-selected copies or SDK round views.
-        return filter_retired_context(store,scope,{'persona_core_note':{'guidance':CORE_NOTE_POLICY,**store.reflection.core_note('bot_shared',subject,owner=str(cfg.get('ownerUin') or ''))},
+        core={'guidance':CORE_NOTE_POLICY,**store.reflection.core_note('bot_shared',subject,owner=str(cfg.get('ownerUin') or ''))} if enabled else {'text':''}
+        return filter_retired_context(store,scope,{'persona_core_note':core,
                 # Execution history is already in the continuous Journal or
                 # available through explicit recall. Work authorization remains
                 # bound to the current event, without another history projection.
@@ -522,6 +523,8 @@ class BotPipeline:
         db.commit()
         db.execute('CREATE TABLE IF NOT EXISTS pipeline_handoffs(id TEXT PRIMARY KEY,epoch INTEGER NOT NULL,data TEXT NOT NULL,state TEXT NOT NULL,receipt TEXT,at REAL NOT NULL)');db.commit()
         self.retire_transport_notifications()
+        from input_reconciliation import recover_retired_observations
+        recover_retired_observations(db)
         self.resume_deferred_mentions()
         self.reconcile_waiting()
 

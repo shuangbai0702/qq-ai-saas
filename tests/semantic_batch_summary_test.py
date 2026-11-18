@@ -14,6 +14,7 @@ from summary_stream_fixture import summary_provider
 class SemanticSummary(unittest.IsolatedAsyncioTestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.store=BehaviorStore(Path(self.tmp.name)/'behavior.sqlite');self.r=self.store.reflection;self.db=self.store.db;self.calls=[];self.mode='ok';self.live=True;self.metrics={}
+  self.r.shared_context=False  # This fixture deliberately records private local rounds.
  def tearDown(self):self.store.close();self.tmp.cleanup()
  def record(self,count=30,image=False):
   for i in range(count):
@@ -79,8 +80,6 @@ class SemanticSummary(unittest.IsolatedAsyncioTestCase):
   changed=self.r.update_core_note({'core_note':{'text':'新的提炼事实','events':['new'],'summaries':[]}},prior,[{'event':'new','sender_id':'12345678'}],[],SCOPE)
   self.assertEqual(changed,1);self.assertEqual(self.db.execute('SELECT sources FROM memory_core_notes').fetchone()[0],'[]')
  async def test_merge_waits_for_committed_batch_journal_retirement(self):
-  # Exercise the nonshared product family used by this legacy-retirement fixture.
-  self.r.shared_context=False
   self.record();await self.run_summary();self.r.binding=None
   checkpoint=self.checkpoint()[0]
   summary=self.db.execute('SELECT summary_id FROM memory_reconstruction_checkpoints WHERE id=?',(checkpoint,)).fetchone()[0]

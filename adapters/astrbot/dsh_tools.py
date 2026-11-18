@@ -89,12 +89,14 @@ async def budget_scope(control):
 
 def tools(settings,event,current,db,bridge,social=None):
     from astrbot.core.agent.tool import FunctionTool
+    vision_enabled='image_analysis' in bridge.get('capabilities',[])
+    web_enabled=(settings.get('config',{}).get('delegatedCapabilities') or {}).get('webSearch',True)
     class Delegate(FunctionTool):
         hosted_effect=False
         @property
         def hosted_final_text(self):return True
-        async def call(self,context,goal,background='',constraints=None):
-            try:return await self.run(context,goal,background,constraints)
+        async def call(self,context,goal,background='',constraints=None,image=None):
+            try:return await self.run(context,goal,background,constraints,image=image)
             except asyncio.CancelledError:raise
             except Exception as error:
                 from native_internal import WorkStopped,WorkBudgetExceeded
@@ -103,7 +105,7 @@ def tools(settings,event,current,db,bridge,social=None):
                 from qq_diagnostics import failure_notice
                 record_diagnostic(settings,{'kind':'dsh_delegation_error','workId':getattr(event.get_extra('_hosted_pipeline'),'event_id',''),'reason':type(error).__name__})
                 return failure_notice(type(error).__name__,stage='delegation')
-        async def run(self,context,goal,background='',constraints=None,_completion=None):
+        async def run(self,context,goal,background='',constraints=None,_completion=None,*,image=None):
             if context.context.event is not event or not current():raise asyncio.CancelledError('stale DSH Work')
             if manifest(settings)!=bridge:raise ValueError('dsh_configuration_changed')
             if _completion is None and (not isinstance(goal,str) or not goal.strip() or len(goal)>12000):raise ValueError('invalid_delegation_goal')
@@ -116,8 +118,26 @@ def tools(settings,event,current,db,bridge,social=None):
             from group_actions import tool_action_id
             call_id=_completion['dsh']['delegationId'] if _completion is not None else tool_action_id.get()
             if not isinstance(call_id,str) or not call_id:raise ValueError('dsh_tool_call_identity_required')
-            from pipeline_tools import validate_parent
-            validate_parent(db,settings,record)
+            def assert_current():
+                if parent_record(settings,event,current,db,context)!=record:raise ValueError('dsh_parent_changed')
+                if manifest(settings)!=bridge:raise ValueError('dsh_configuration_changed')
+            if image is not None:
+                if not vision_enabled or record['authority']!='foreground' or _completion is not None:
+                    raise ValueError('dsh_image_not_authorized')
+                if not isinstance(image,dict) or not set(image)<= {'event_id','positions'}:
+                    raise ValueError('invalid_dsh_image_selection')
+                event_id=image.get('event_id',record['origin_event'])
+                positions=image.get('positions',[])
+                if not isinstance(event_id,str) or not 0<len(event_id)<=512 or not isinstance(positions,list) or len(positions)>32 or any(type(i) is not int or not 1<=i<=32 for i in positions) or len(set(positions))!=len(positions):
+                    raise ValueError('invalid_dsh_image_selection')
+                from semantic_media import delegation_originals
+                scope=record['origin_scope']
+                journal_scope=event.get_extra('_hosted_journal_scope') or scope
+                if journal_scope not in (scope,'bot_shared'):raise ValueError('invalid_dsh_image_scope')
+                images=await delegation_originals(db,journal_scope,scope,event_id,positions)
+                assert_current()
+                if images is None:return '没有可用于这次分析的原图。原图可能已清理、不可读取，或超出可分析的格式或大小。'
+                positions=positions or list(range(1,len(images)+1))
             from dsh_group_tools import GroupReadBridge
             import dsh_read_tools
             group=GroupReadBridge(settings,event,current,db,context,record)
@@ -129,6 +149,7 @@ def tools(settings,event,current,db,bridge,social=None):
                         'version':hashlib.sha256(json.dumps(definition,sort_keys=True).encode()).hexdigest(),'definition':definition})
                 return rows+dsh_read_tools.catalog(settings,event,current,db,context,social)
             payload={'protocol':2,'parent':record,'delegationId':call_id,'input':{'goal':goal,'background':background,'constraints':constraints}}
+            if image is not None:payload['imageAnalysis']=True
             if _completion is not None:
                 if record['authority']!='autonomous':raise ValueError('dsh_autonomous_completion_required')
                 payload.pop('input')
@@ -141,9 +162,11 @@ def tools(settings,event,current,db,bridge,social=None):
                         if len(line)>131072:raise ValueError('dsh_result_too_large')
                         frame=json.loads(line)
                         settling=frame.get('type')=='tool' and frame.get('operation')=='model_budget' and frame.get('phase') in ('settled','unknown','released')
-                        if not settling:
-                            if parent_record(settings,event,current,db,context)!=record:raise ValueError('dsh_parent_changed')
-                        if not settling and manifest(settings)!=bridge:raise ValueError('dsh_configuration_changed')
+                        if not settling:assert_current()
+                        if image is not None:
+                            expected='tool' if images is not None else 'final'
+                            if frame.get('type')!=expected or expected=='tool' and frame.get('operation')!='vision_images':
+                                raise ValueError('dsh_vision_frame_invalid')
                         if frame.get('type')=='pending':
                             if final is not None:raise ValueError('dsh_final_contract_invalid')
                             final=None if _completion is not None else '委托仍在处理，完成后会返回结果。'
@@ -162,6 +185,8 @@ def tools(settings,event,current,db,bridge,social=None):
                                 if control.used_tools>=control.tool_calls:raise WorkBudgetExceeded('tool_call_budget')
                                 control.used_tools+=1;control.progress();value={}
                             elif frame['operation']=='discover':value=catalog()
+                            elif frame['operation']=='vision_images' and image is not None:
+                                value={'eventId':event_id,'positions':positions,'images':images}
                             elif frame['operation']=='execute':
                                 item=next((row for row in catalog() if row['id']==frame.get('tool')),None)
                                 if item is None:raise ValueError('dsh_tool_unavailable')
@@ -174,16 +199,27 @@ def tools(settings,event,current,db,bridge,social=None):
                             from model_cache import record_diagnostic
                             record_diagnostic(settings,{'kind':'dsh_callback_error','workId':record.get('work_id'),'reason':type(error).__name__,'diagnosticDetail':frame.get('operation')})
                             ack['error']='工具请求未完成；结果以权威回执为准，未确认的外部操作不得重复执行。'
-                        if not settling:validate_parent(db,settings,record)
-                        async with client.post(bridge['url'].removesuffix('/delegate')+'/tool-result',json=ack,headers={'Authorization':'Bearer '+bridge['token']},allow_redirects=False) as answered:
+                        if not settling:assert_current()
+                        headers={'Authorization':'Bearer '+bridge['token']}
+                        if frame['operation']=='vision_images':headers['X-FishBot-Vision-Callback']=frame['id']
+                        async with client.post(bridge['url'].removesuffix('/delegate')+'/tool-result',json=ack,headers=headers,allow_redirects=False) as answered:
                             if answered.status!=200:raise ValueError('dsh_callback_rejected')
-            if not current():raise asyncio.CancelledError('stale DSH result')
-            validate_parent(db,settings,record)
+                        if frame['operation']=='vision_images':
+                            images=value=None
+                            ack.clear()
+            assert_current()
             if final is None:raise ValueError('dsh_final_missing')
             return final
-    return [Delegate(name='dsh_delegate',description='将联网搜索、网页查阅、当前授权群的历史深度查证、真实执行结果核对、收藏与素材语义盘点、B站查询及获授权操作、多片段媒体分析完整委托给DSH。只提供目标、必要背景和约束，不指定工具或执行步骤；只接收最终文字，不查询进度。',parameters={
-        'type':'object','additionalProperties':False,'required':['goal'],'properties':{
-        'goal':{'type':'string','maxLength':12000},'background':{'type':'string','maxLength':16000},'constraints':{'type':'array','maxItems':32,'items':{'type':'string','maxLength':2000}}}})]
+    description='将'+('联网搜索、网页查阅、' if web_enabled else '')+'当前授权群的历史深度查证、真实执行结果核对、收藏与素材语义盘点、B站查询及获授权操作、多片段媒体分析完整委托给DSH。只提供目标、必要背景和约束，不指定工具或执行步骤；只接收最终文字，不查询进度。'
+    properties={
+        'goal':{'type':'string','maxLength':12000},'background':{'type':'string','maxLength':16000},'constraints':{'type':'array','maxItems':32,'items':{'type':'string','maxLength':2000}}}
+    if vision_enabled and not event.get_extra('_hosted_internal_work'):
+        description+='需要辨认图片或查看细节时可按需提供 image，仅使用当前会话仍有效的图片。'
+        properties['image']={'type':'object','additionalProperties':False,'properties':{
+            'event_id':{'type':'string','maxLength':512,'description':'可信 QQ 消息的事件 ID，省略表示当前消息。'},
+            'positions':{'type':'array','maxItems':32,'items':{'type':'integer','minimum':1,'maximum':32},'description':'消息图片从 1 开始编号，省略表示分析此消息可用的全部图片。'}}}
+    return [Delegate(name='dsh_delegate',description=description,parameters={
+        'type':'object','additionalProperties':False,'required':['goal'],'properties':properties})]
 
 
 async def resume_autonomous(settings,event,current,db,context,completion):

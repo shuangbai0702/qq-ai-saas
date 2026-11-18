@@ -39,7 +39,8 @@ class BehaviorStore:
         Path(path).parent.mkdir(parents=True,exist_ok=True)
         self.db=sqlite3.connect(path)
         import shared_context
-        self.shared_context=shared_context.active(self.db)
+        shared_context.bootstrap(self.db)
+        self.shared_context=True
         self.shared_group_limit=self.db.execute('SELECT group_limit FROM fishbot_shared_context WHERE id=1').fetchone()[0] if self.shared_context else 2
         self.model_writer=shared_context.Writer()
         if self.shared_context:shared_context.initialize(self.db)
@@ -270,12 +271,15 @@ def sanitize_new_response(response,event=None):
     # A tool-call response is an execution step, not a public reply bubble.
     # Calls/arguments/IDs remain unchanged, and the terminal answer owns speech.
     if getattr(response,'tools_call_name',None):
-        cleaned=''
         if hasattr(response,'result_chain'):response.result_chain=None
-    response.completion_text=cleaned
-    if cleaned!=value and getattr(response,'result_chain',None) is not None:
-        response.result_chain=copy.copy(response.result_chain)
-        response.result_chain.chain=[Plain(cleaned)] if cleaned else []
+        response.completion_text=''
+    elif cleaned!=value:
+        chain=getattr(response,'result_chain',None)
+        if chain is None:response.completion_text=cleaned
+        else:
+            # The SDK completion_text setter mutates the original chain.
+            response.result_chain=chain.derive()
+            if cleaned:response.result_chain.message(cleaned)
     # Typed reasoning/signatures remain private protocol fields where providers
     # require them for tool continuation. The runner's public channel excludes
     # reasoning chains; never relabel private fields as ordinary answer text.
@@ -981,8 +985,6 @@ def install_runtime(core,settings):
         # An @ to somebody else is addressing evidence for the model, not proof
         # that the topic cannot concern this bot. Side-comment policy is applied
         # after that judgment; unrelated directed chats never become follow-up.
-        if (cfg.get('behavior') or {}).get('memory',True) and (cfg.get('behavior') or {}).get('memorySummary'):
-            state['conversation_summaries']=st.reflection.recall(scope,incoming,subject=subject)
         batch=[];b=cfg.get('behavior') or {}
         hot_group=bool(group and not internal and not deferred and st.participation.in_conversation(scope,incoming or '[媒体]',b,now=now))
         # A fixed window belongs to its first ingress Work. New arrivals join
@@ -1134,7 +1136,11 @@ def install_runtime(core,settings):
             state=shared['state']
             assembly.contribute('memory',{key:shared[key] for key in ('memory_foundation','state','recent_messages','recent_cross_session_messages','conversation_timeline','group_round_history','active_agreements')})
             assembly.contribute('social',{'social':social_context})
-            assembly.contribute('conversation',{'recent_image':recent_image,'ambient_group_messages':shared['ambient_group_messages'],'recent_burst':[{'sender_id':x['sender_id'],'source_event':str(getattr(x['event'].message_obj,'message_id','')),'text':x['text'],'at':float(getattr(x['event'].message_obj,'timestamp',0) or now),**x['source']} for x in batch]})
+            assembly.contribute('conversation',{'recent_image':recent_image,'ambient_group_messages':shared['ambient_group_messages']})
+            if batch and not st.shared_context:
+                # Shared Work inputs already reach the model with their original
+                # authors and protocol metadata through the canonical Journal.
+                assembly.contribute('conversation',{'recent_burst':[{'sender_id':x['sender_id'],'source_event':str(getattr(x['event'].message_obj,'message_id','')),'text':x['text'],'at':float(getattr(x['event'].message_obj,'timestamp',0) or now),**x['source']} for x in batch]})
             assembly.contribute('delivery',{'contact_target':event.get_extra('_hosted_contact_subject'),'previous_proactive_output':event.get_extra('_hosted_previous_output',''),'topic_origin':event.get_extra('_hosted_topic_origin')})
             event.set_extra('_hosted_generation',generation)
             event.set_extra('_hosted_memory_epoch',st.reflection.epoch())
@@ -1524,10 +1530,13 @@ def install_runtime(core,settings):
         if event and event.get_extra('_hosted_lease') is not None and not delivery_current(event):raise asyncio.CancelledError('stale bot configuration')
         if event and setting(event):
             from context_protocol import persona_prompt
+            from model_cache import is_foreground_event
+            foreground=is_foreground_event(event)
             # Keep the same base system bytes for every event. Whether a visual
             # capability is configured is supplied in the current platform
             # event data and the actual tool list, both rechecked by the backend.
-            bound.arguments['system_prompt']=persona_prompt(bound.arguments.get('system_prompt'),images=True,chat=not event.get_extra('_hosted_internal_work') or event.get_extra('_hosted_main_activation'))
+            if not foreground:
+                bound.arguments['system_prompt']=persona_prompt(bound.arguments.get('system_prompt'),images=True,chat=not event.get_extra('_hosted_internal_work') or event.get_extra('_hosted_main_activation'))
             # Never clean or reinterpret an already submitted assistant prefix.
             # New provider responses are sanitized before SDK admission.
             if isinstance(bound.arguments.get('contexts'),list):
@@ -1585,10 +1594,9 @@ def install_runtime(core,settings):
             current_rules+='\n'+qq_actions.signature_hint(event,setting(event)['config'])
             if event.get_extra('_hosted_admin_debug'):
                 current_rules+='\n[管理员调试]这是平台调试事件，不是当前QQ联系人的发言；sender=0无主人权限，最终文字只返回管理员，不发送QQ，不登记业务轮。\n'
-            from context_transport import request_context_view
+            from context_transport import request_context_view,foreground_system
             context=request_context(event)
-            from model_cache import is_foreground_event
-            if is_foreground_event(event) and (owner:=stores.get(event.get_platform_id())):
+            if foreground and (owner:=stores.get(event.get_platform_id())):
                 from readonly_journal import visible_summary_ids
                 try:ids=visible_summary_ids(json.loads(context))
                 except (TypeError,ValueError):ids=[]
@@ -1599,7 +1607,8 @@ def install_runtime(core,settings):
                     import agreement_state
                     event.set_extra('_hosted_agreement_fence',(scope,agreement_state.agreements_stamp(owner.db,scope)))
                 event.set_extra('_hosted_context_fence',(owner,owner.reflection.epoch(),ids,scope,owner.reflection.context_dependency(ids,scope)))
-            bound.arguments['system_prompt'],bound.arguments['contexts']=request_context_view(bound.arguments.get('system_prompt'),bound.arguments.get('contexts'),bound.arguments.get('prompt'),protocol,current_rules,context,bound.arguments.get('tool_calls_result'),incremental_policy=True)
+            platform=foreground_system(setting(event)['config'].get('delegatedCapabilities') or {}) if foreground else None
+            bound.arguments['system_prompt'],bound.arguments['contexts']=request_context_view(bound.arguments.get('system_prompt'),bound.arguments.get('contexts'),bound.arguments.get('prompt'),protocol,current_rules,context,bound.arguments.get('tool_calls_result'),incremental_policy=True,platform_system=platform)
             metrics[event.get_platform_id()]['requests']+=1
         bound.arguments['request_max_retries']=0
         return bound

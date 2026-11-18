@@ -17,6 +17,7 @@ import {registerAutonomousGoals} from './autonomous-goals.js';
 import {registerExecutionMemory} from './execution-memory.js';
 import {bilibiliModelConfigured} from '../../../packages/shared/bilibili-model.js';
 import {runtimeStatus} from '../../../packages/shared/runtime-status.js';
+import {modelCredentialDestination} from '../../../packages/shared/model-http.js';
 
 export function registerBilibili(app:FastifyInstance,db:Sql,key:Buffer,owned:(req:any,id:string)=>Promise<any>,root:string){
  const repo=new BilibiliTools(db),broker=new BiliAccounts(db,key,new BiliWeb());
@@ -37,6 +38,12 @@ export function registerBilibili(app:FastifyInstance,db:Sql,key:Buffer,owned:(re
  app.put<{Params:{id:string}}>('/v1/bots/:id/bilibili',async req=>{
   const b=await owned(req,req.params.id),v=z.object({expectedRevision:z.number().int().positive(),config:BilibiliConfigSchema,modelKey:z.string().min(1).max(2000).regex(/^[^\r\n]+$/).optional(),clearModelKey:z.boolean().optional()}).strict().parse(req.body);
   const secret=v.clearModelKey?null:v.modelKey?encrypt(key,broker.scope(b.tenant_id,b.id,'model'),v.modelKey):undefined;
+  if(secret===undefined&&v.config.model.provider==='openai'){
+   const saved=await repo.settings(b.tenant_id,b.id);
+   if(saved.revision===v.expectedRevision&&saved.model_secret&&modelCredentialDestination(saved.config.model.baseUrl)!==modelCredentialDestination(v.config.model.baseUrl)){
+    throw Object.assign(new Error('图片模型服务地址已更改，请输入对应的 API Key，或清除已保存的 Key'),{statusCode:400});
+   }
+  }
   return repo.configure(b.tenant_id,b.id,v.expectedRevision,v.config,secret);
  });
  app.post<{Params:{id:string}}>('/v1/bots/:id/bilibili/login',async req=>{

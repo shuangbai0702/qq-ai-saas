@@ -87,7 +87,7 @@ export default {
       headers.delete('if-none-match');
       headers.delete('if-modified-since');
     }
-    ['host', 'cf-connecting-ip', 'cf-ipcountry', 'cf-ray', 'cf-visitor', 'x-forwarded-host'].forEach((h) => headers.delete(h));
+    ['host', 'cf-connecting-ip', 'cf-ipcountry', 'cf-ray', 'cf-visitor', 'forwarded', 'x-forwarded-for', 'x-forwarded-host'].forEach((h) => headers.delete(h));
     headers.set('x-forwarded-proto', 'https');
 
     const init = { method: request.method, headers, redirect: 'manual' };
@@ -97,13 +97,12 @@ export default {
     try {
       resp = await fetch(target, init);
     } catch (e) {
-      return new Response('上游连接失败: ' + e.message, { status: 502, headers: { 'content-type': 'text/plain; charset=utf-8' } });
+      return new Response('服务暂时无法连接', { status: 502, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
     }
 
     const out = new Headers(resp.headers);
     out.delete('content-encoding');
     out.delete('content-length');
-    out.delete('content-security-policy');
     out.delete('x-robots-tag');
     out.set('x-upstream-host', new URL(origin).host);
     if (key && cacheableAsset(resp, u.pathname)) {

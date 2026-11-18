@@ -22,11 +22,11 @@ export class ProcessHost {
       const child=execFile(this.python,[path.resolve('scripts/runtime_memory.py'),...(process.env.FISHBOT_MEMORY_POLICY==='off'?['--disabled']:[])],{windowsHide:true,timeout:12000,maxBuffer:1024*1024},(error,stdout)=>{
         try{if(error)throw error;const rows=JSON.parse(stdout);this.memoryStatus=new Map(rows.map((v:any)=>[`${v.id}:${v.kind}`,v]))}catch{this.memoryStatus=new Map(records.map(v=>[`${v.id}:${v.kind}`,{strategy:'system-managed',decision:'skipped',reason:'maintenance-unavailable'}]))}
         resolve();
-      });child.stdin!.end(JSON.stringify(records));
+      });child.stdin?.on('error',()=>{});child.stdin?.end(JSON.stringify(records));
     }).finally(()=>{this.memorySweep=undefined});
     return this.memorySweep;
   }
-  private helper(args:string[],input?:string){return new Promise<string>((resolve,reject)=>{const child=execFile(this.python,[path.resolve('scripts/process_control.py'),...args],{windowsHide:true,timeout:15000,maxBuffer:1024*1024},(error,stdout)=>error?reject(error):resolve(stdout));if(input)child.stdin!.end(input)})}
+  private helper(args:string[],input?:string){return new Promise<string>((resolve,reject)=>{const child=execFile(this.python,[path.resolve('scripts/process_control.py'),...args],{windowsHide:true,timeout:15000,maxBuffer:1024*1024},(error,stdout)=>error?reject(error):resolve(stdout));if(input){child.stdin?.on('error',reject);child.stdin?.end(input)}})}
   // One short-lived interpreter for an entire health sweep, not one per probe.
   // The cache never spans a command, start/stop, or another health sweep.
   async beginInspection(){const records=[];for(const id of await readdir(path.join(this.root,'bots')).catch(()=>[])){for(const kind of ['ai','protocol']){const rec=await this.record(id,kind);if(rec)records.push({id,kind,pid:rec.pid,created:rec.created,root:path.join(this.root,'bots',id)})}}const values=JSON.parse(await this.helper(['batch'],JSON.stringify(records)));await this.maintainMemory(records);this.inspection=new Map(values.map((v:any)=>[`${v.id}:${v.kind}`,v.valid?{...v,memoryPolicy:this.memoryStatus.get(`${v.id}:${v.kind}`)}:null]))}

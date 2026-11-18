@@ -15,7 +15,7 @@ def batch_state(db,checkpoint,state='retired'):
                (checkpoint,'bot_shared','digest','[]',0,state,0))
 
 
-class OwnedOriginals(unittest.TestCase):
+class OwnedOriginals(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.folder=tempfile.TemporaryDirectory();self.root=Path(self.folder.name).resolve()
         self.db=sqlite3.connect(self.root/'behavior.sqlite');media.initialize(self.db);self.db.commit()
@@ -29,12 +29,53 @@ class OwnedOriginals(unittest.TestCase):
         media.register_owned(self.db,[media.owned_record(file,self.root,[self.image])],
                              [{'scope':scope,'event':event,'images':[self.image]}]);self.db.commit()
 
+    async def test_delegation_resolves_only_committed_same_scope_live_original(self):
+        from PIL import Image
+        from context_protocol import READONLY_CURRENT,event_message,model_json
+        from readonly_journal import ReadonlyJournal
+        scope='group:12345';event='event-A'
+        Image.new('RGB',(320,180),'blue').save(self.file)
+        material={'type':'image_url','image_url':{'url':self.image}}
+        message=event_message({'scope':scope,'event_id':event,'sender_id':'12345'},
+                              [{'type':'text','text':'image fixture'},material])
+        journal=ReadonlyJournal(self.db,'bot_shared')
+        candidate=journal.prepare([{'role':'system','content':'fixture'},message,
+                                   {'role':'user','content':READONLY_CURRENT+'\n{}'}],('fixture',))
+        self.assertTrue(journal.commit(candidate))
+        self.bind(event=model_json([scope,event]))
+        # A hash reuse retains a file for cleanup, but cannot grant read access.
+        self.assertIsNone(await media.delegation_originals(self.db,'bot_shared',scope,event,[1]))
+        self.db.execute('UPDATE semantic_media_refs SET direct_source=1 WHERE event=?',
+                        (media.event_key('bot_shared',model_json([scope,event])),))
+        self.db.commit()
+        result=await media.delegation_originals(self.db,'bot_shared',scope,event,[1])
+        self.assertEqual((result[0]['width'],result[0]['height']),(320,180))
+        self.assertEqual(base64.b64decode(result[0]['data']),self.file.read_bytes())
+        self.assertIsNone(await media.delegation_originals(self.db,'bot_shared','group:54321',event,[1]))
+        self.assertIsNone(await media.delegation_originals(self.db,'bot_shared',scope,event,[2]))
+        self.release(event=model_json([scope,event]))
+        self.assertIsNone(await media.delegation_originals(self.db,'bot_shared',scope,event,[1]))
+
     def release(self,scope='bot_shared',event='event-A',checkpoint=1,state='retired'):
         self.db.execute('BEGIN IMMEDIATE')
         result=media.retire_batch(self.db,[self.image],checkpoint,[media.event_key(scope,event)])
         if not self.db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_semantic_batches'").fetchone() or not self.db.execute('SELECT 1 FROM memory_semantic_batches WHERE checkpoint_id=?',(checkpoint,)).fetchone():
             batch_state(self.db,checkpoint,state)
         self.db.commit();return result
+
+    def test_delegation_decodes_and_enforces_aggregate_pixels(self):
+        from PIL import Image
+        rows=[]
+        for number in range(2):
+            file=self.root/('bounded%d.png'%number)
+            Image.new('RGB',(8,8),'blue').save(file)
+            record=media.owned_record(file,self.root,[])
+            rows.append([(record['path'],record['root'],record['identity'])])
+        with patch.dict('model_images.POLICY',{'maxSourcePixels':100}):
+            self.assertIsNone(media._read_delegation_images(rows))
+        self.file.write_bytes(b'not a decodable image')
+        record=media.owned_record(self.file,self.root,[])
+        self.assertIsNone(media._read_delegation_images([[(record['path'],record['root'],record['identity'])]]))
 
     def test_committed_summary_retains_original_until_journal_retirement(self):
         self.bind();self.release(state='committed')
@@ -236,6 +277,15 @@ class CaptureAdmission(unittest.IsolatedAsyncioTestCase):
 
 
 class ProtocolOwnership(unittest.IsolatedAsyncioTestCase):
+    async def test_protocol_attestation_does_not_follow_hash_reuse_to_another_event(self):
+        await self.bind()
+        owner=media.event_key('bot_shared',self.materials[0]['event'])
+        self.assertTrue(media._delegation_paths(self.db,owner,[media.image_key(self.image)])[0])
+        other='["group:2","other-event"]'
+        media.register_owned(self.db,[],[{'scope':'bot_shared','event':other,'images':[self.image]}])
+        self.db.commit()
+        self.assertEqual(media._delegation_paths(self.db,media.event_key('bot_shared',other),[media.image_key(self.image)]),[[]])
+
     def setUp(self):
         from types import SimpleNamespace as NS
         from PIL import Image

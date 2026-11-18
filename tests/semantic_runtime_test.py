@@ -74,15 +74,27 @@ class RuntimeTests(unittest.TestCase):
                 self.assertEqual(calls,['first','second','third'])
     def test_checkpoint_system_adoption_requires_config_permit_and_no_new_submitted_turn(self):
         from context_protocol import READONLY_CURRENT
+        from context_transport import foreground_system
         j=self.st.model_journals[SCOPE]
-        j.last.base=j.last.base[:-1];j.last.wire=j.last.wire[:-1]
+        retained=copy.deepcopy(j.last.base[-1])
+        note='verified core note from the original memory table'
+        with self.st.db:
+            self.st.db.execute('INSERT INTO memory_core_notes(slot,text,scopes,people,sources,updated) VALUES(1,?,?,?,?,?)',
+                               (note,model_json([SCOPE]),'[]','[]',time.time()))
+        self.assertNotIn(note,model_json(j.last.wire))
         self.assertEqual(finish_semantic_batches(self.st,{},SCOPE)['retired'],1)
         # Restore from real SQLite: the proof must survive Worker restart.
         j=ReadonlyJournal(self.st.db,SCOPE);before=copy.deepcopy(j.last.wire)
-        new_system={'role':'system','content':'tenant System with new authorized quote rule'}
+        self.assertIn(retained,j.last.base)
+        self.assertTrue(j.checkpoint_system_boundary(SCOPE))
+        self.assertEqual(model_json(before).count(note),1)
+        self.assertEqual(j.last.state['foundation_core_note']['text'],note)
+        new_system={'role':'system','content':foreground_system({'webSearch':False})}
+        from context_protocol import persona_reference
+        persona=persona_reference('tenant Persona with new authorized quote rule')
         from context_transport import READONLY_FIELDS
         readonly={k:v for k,v in j.last.state.items() if k in READONLY_FIELDS}
-        candidate=[new_system,message('next'),{'role':'user','content':READONLY_CURRENT+'\n'+model_json(readonly)}]
+        candidate=[new_system,persona,retained,message('next'),{'role':'user','content':READONLY_CURRENT+'\n'+model_json(readonly)}]
         held=j.prepare(candidate,('new-config',),reconstruction_authority=self.st.reflection,
             reconstruction_scope=SCOPE,retirement=j.last.retirement)
         self.assertEqual(held.wire[0],before[0])
@@ -97,13 +109,16 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(composed[0],new_system)
         updated=j.prepare(composed,('new-config',),reconstruction_authority=self.st.reflection,
             reconstruction_scope=SCOPE,retirement=j.last.retirement,system_transition_authorized=True)
-        self.assertEqual(updated.wire[0],new_system);self.assertEqual(j.last.wire,before)
+        self.assertEqual(updated.wire[:2],[new_system,persona]);self.assertEqual(j.last.wire,before)
+        self.assertEqual(updated.wire.count(retained),1)
+        self.assertEqual(updated.base.count(retained),1)
         self.assertTrue(j.commit(updated))
+        self.assertFalse(ReadonlyJournal(self.st.db,SCOPE).checkpoint_system_boundary(SCOPE))
         # A later authorized save cannot rewrite this newly submitted prefix.
         later=copy.deepcopy(candidate);later[0]['content']='another change'
         frozen=j.prepare(later,('later',),reconstruction_authority=self.st.reflection,
             reconstruction_scope=SCOPE,retirement=j.last.retirement,system_transition_authorized=True)
-        self.assertEqual(frozen.wire[0],new_system)
+        self.assertEqual(frozen.wire[:2],[new_system,persona])
     def test_callback_retires_without_next_message_without_copying_settled_execution(self):
         result=finish_semantic_batches(self.st,{},SCOPE)
         self.assertEqual(result['retired'],1,result)
@@ -117,6 +132,48 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn('original new',model_json(journal.last.wire))
         self.assertEqual(self.st.db.execute('SELECT count(*) FROM memory_pending WHERE event=?',('old',)).fetchone()[0],0)
         self.assertEqual(self.st.db.execute('SELECT state FROM memory_semantic_batches').fetchone()[0],'retired')
+    def test_foreground_checkpoint_keeps_journal_blocks_missing_from_sdk_window(self):
+        import hashlib
+        from context_transport import EVENT_CONTEXT_CURRENT
+        from readonly_journal import semantic_retire_projection
+        journal=self.st.model_journals[SCOPE]
+        prior=journal.last
+        retained=[{'role':'user','content':'previously submitted unsourced input'},
+                  {'role':'assistant','content':'previously submitted unsourced reply'}]
+        event={'role':'user','content':EVENT_CONTEXT_CURRENT+'\n'+model_json({
+            'authority':{},'policy':{},'currentGuidance':'','meaning':'current event'})}
+        prior.base[1:1]=retained
+        prior.wire=copy.deepcopy(prior.base)
+        prior.authority=event
+        prior.retirement=hashlib.sha256(model_json([0,SCOPE,0]).encode()).hexdigest()
+        self.assertTrue(journal.commit(prior))
+        journal=ReadonlyJournal(self.st.db,SCOPE)
+        old_wire=copy.deepcopy(journal.last.wire)
+        latest=message('latest')
+        call={'role':'assistant','content':None,'tool_calls':[{'id':'receipt'}]}
+        receipt={'role':'tool','content':'existing actual receipt','tool_call_id':'receipt'}
+        sdk_window=copy.deepcopy(self.base)+[call,receipt,event,latest]
+        damaged=copy.deepcopy(sdk_window)
+        damaged[3]['content']+=' altered'
+        from readonly_journal import ContextPrefixViolation
+        with self.assertRaisesRegex(ContextPrefixViolation,'semantic_checkpoint_retained_material_missing'):
+            journal.prepare(damaged,'same',strict=True,reconstruction_scope=SCOPE,
+                reconstruction_authority=self.st.reflection,
+                retirement=self.st.reflection.reconstruction_stamp(SCOPE))
+        self.assertEqual(journal.last.wire,old_wire)
+        self.assertEqual(self.st.db.execute('SELECT state FROM memory_reconstruction_checkpoints').fetchone()[0],'available')
+        candidate=journal.prepare(sdk_window,'same',strict=True,reconstruction_scope=SCOPE,
+            reconstruction_authority=self.st.reflection,
+            retirement=self.st.reflection.reconstruction_stamp(SCOPE))
+        self.assertEqual(journal.last.wire,old_wire)
+        expected=semantic_retire_projection(journal.last.base,candidate.reconstruction_permit)+[call,receipt,latest]
+        self.assertEqual(candidate.base,expected)
+        self.assertEqual(candidate.wire,candidate.base[:-1]+[event,latest])
+        self.assertTrue(journal.stage_candidate(candidate))
+        self.assertTrue(journal.commit(candidate))
+        self.assertEqual(ReadonlyJournal(self.st.db,SCOPE).last.base,expected)
+        self.assertEqual(self.st.db.execute('SELECT state FROM memory_reconstruction_checkpoints').fetchone()[0],'consumed')
+
     def test_retirement_publishes_full_readonly_basis_before_future_deltas(self):
         from context_protocol import READONLY_CURRENT
         from decision_history import apply_changes

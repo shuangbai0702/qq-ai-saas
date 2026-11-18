@@ -157,7 +157,8 @@ def finish_semantic_batches(st,cfg,scope):
                 if row and row[0]=='reserved':st.reflection.settle_context_reconstruction(permit,False)
             from readonly_journal import ContextCapacityExceeded
             reason=({'result':'reconstruction_capacity_exceeded','capacity':error.capacity,'automatic_recovery':'local_retry_without_model','history_unchanged':True}
-                    if isinstance(error,ContextCapacityExceeded) else str(error) if str(error)=='semantic_active_journal_reconstruction_required' else 'error:'+type(error).__name__)
+                    if isinstance(error,ContextCapacityExceeded)
+                    else str(error) if str(error) in ('semantic_active_journal_reconstruction_required','semantic_batch_input_responsibility_pending') else 'error:'+type(error).__name__)
             _issue(st,scope,checkpoint,reason);result['pending']+=1
     import semantic_media
     _prune_hot_memory(st)

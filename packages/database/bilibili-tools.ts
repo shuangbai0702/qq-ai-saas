@@ -36,7 +36,7 @@ export class BilibiliTools {
    const [fresh]=await tx.query('SELECT * FROM bots WHERE id=$1 AND tenant_id=$2 FOR UPDATE',[bot.id,bot.tenant_id]);
    const s=await this.settings(bot.tenant_id,bot.id,tx),[account]=await tx.query('SELECT uid,revision,state FROM bilibili_accounts WHERE bot_id=$1 AND tenant_id=$2',[bot.id,bot.tenant_id]);
    if(call.origin&&call.authority==='foreground'&&call.origin.scope.startsWith('private:')&&call.origin.scope!=='private:'+call.senderId)throw toolConflict('恢复目标与真实发送者不符',403);
-   const value={tenant_id:fresh.tenant_id,generation:fresh.generation,operation:call.operation,args,args_digest:hash,bot_id:bot.id,settings_revision:s.revision,account_revision:account?.revision,account_uid:account?.uid,authority:call.authority,sender_id:call.senderId,mode_epoch:call.epoch,work_id:call.workId,step_id:call.stepId,config_revision:bot.revision,cancel_requested:false,deadlineAt:call.deadlineAt,deadline_at:new Date(call.deadlineAt),origin_scope:call.origin?.scope??'',origin_event:call.origin?.eventId??'',cycle_id:call.authority==='autonomous'?call.workId:null,write:operation.write,continuation:{objective:call.origin?.objective??'',...(call.continuation?{sourceActionId:call.continuation.actionId,sourceOwner:call.continuation.owner}:{})}};
+   const value={tenant_id:fresh.tenant_id,generation:fresh.generation,operation:call.operation,args,args_digest:hash,bot_id:bot.id,settings_revision:s.revision,account_revision:account?.revision??null,account_uid:account?.uid??null,authority:call.authority,sender_id:call.senderId,mode_epoch:call.epoch,work_id:call.workId,step_id:call.stepId,config_revision:bot.revision,cancel_requested:false,deadlineAt:call.deadlineAt,deadline_at:new Date(call.deadlineAt),origin_scope:call.origin?.scope??'',origin_event:call.origin?.eventId??'',cycle_id:call.authority==='autonomous'?call.workId:null,write:operation.write,continuation:{objective:call.origin?.objective??'',...(call.continuation?{sourceActionId:call.continuation.actionId,sourceOwner:call.continuation.owner}:{})}};
    if(delegation){
     if(call.operation!=='analyze'||!/^fishbot-[a-f0-9]{64}$/.test(delegation.sessionId)||!delegation.delegationId||delegation.delegationId.length>256)throw toolConflict('委托媒体身份无效',400);
     Object.assign(value.continuation,{dsh:{sessionId:delegation.sessionId,delegationId:delegation.delegationId}});
@@ -148,7 +148,13 @@ export class BilibiliTools {
  }
  async completion(bot:any,authority:'foreground'|'autonomous'='foreground',epoch?:number,consumerWorkId?:string){
   const s=await this.settings(bot.tenant_id,bot.id??bot.bot_id);if(!s.config.enabled)return null;
-  const job=await this.rpc(bot,'completion',{authority,epoch,consumerWorkId,settingsRevision:s.revision});
+  const job=await this.db.transaction(async tx=>{
+   const [current]=await tx.query('SELECT id,tenant_id,generation,revision,desired_state,deleted_at,health FROM bots WHERE id=$1 AND tenant_id=$2 FOR SHARE',[bot.id??bot.bot_id,bot.tenant_id]);
+   if(!runtimeStatus(current).online||current.generation!==bot.generation||current.revision!==bot.revision)return null;
+   const [settings]=await tx.query('SELECT revision FROM bilibili_settings WHERE bot_id=$1 AND tenant_id=$2',[current.id,current.tenant_id]);
+   if(settings?.revision!==s.revision)return null;
+   return this.rpc(current,'completion',{authority,epoch,consumerWorkId,settingsRevision:s.revision},tx);
+  });
   return job?{...job,workId:job.work_id,scope:job.origin_scope,senderId:job.sender_id,eventId:job.origin_event,objective:job.continuation?.objective??'',revision:job.config_revision}:null;
  }
  async ownedReceipt(job:any,operation:string,objectId:string,aid?:string){return(await this.rpc(job,'receipt',{operation,objectId,aid,accountUid:job.account_uid})).confirmed===true}

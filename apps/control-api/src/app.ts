@@ -14,11 +14,12 @@ import {registerQQFavorites} from './qq-favorites.js';
 import {createFavoriteCaptioner} from '../../../packages/shared/qq-favorite-semantics.js';
 import {registerInvitations} from './invitations.js';
 import {registerModelCatalog} from './model-catalog.js';
-import {creditBalance,grantReferral,referralInput,registerReferrals} from './referrals.js';
+import {creditBalance,grantReferral,referralInput,referralInvitationId,registerReferrals} from './referrals.js';
 import {loadPlatformModelSecret,registerPlatformModel} from './platform-model.js';
+import {modelCredentialDestination} from '../../../packages/shared/model-http.js';
 import {platformModelPath} from '../../../packages/shared/platform-model.js';
 import Fastify from 'fastify';import cookie from '@fastify/cookie';import rateLimit from '@fastify/rate-limit';import serveStatic from '@fastify/static';import {z} from 'zod';
-import {randomBytes,randomUUID} from 'node:crypto';import path from 'node:path';import os from 'node:os';import {mkdir,readFile,access} from 'node:fs/promises';import QRCode from 'qrcode';
+import {randomBytes,randomUUID} from 'node:crypto';import path from 'node:path';import os from 'node:os';import {mkdir,access,open} from 'node:fs/promises';import QRCode from 'qrcode';
 import {openDatabase,configuredDatabaseUrl,type Sql} from '../../../packages/database/index.js';import {hashPassword,verifyPassword,digest,loadKey,encrypt,redact} from '../../../packages/shared/security.js';import {defaultConfig,BotConfigSchema,ProtocolSchema,personas,terminalLogin} from '../../../packages/contracts/index.js';import {NodeAgent} from '../../node-agent/src/agent.js';import {MockProtocolAdapter} from '../../../adapters/mock/index.js';
 declare module 'fastify'{interface FastifyRequest{user?:{id:string;email:string;name:string;is_admin:boolean;tenant_id:string}}}
 const modelKeyInput=z.string().trim().max(4096).regex(/^[^\s\x00-\x1f\x7f]*$/,'Key 不能包含空格或控制字符').optional();
@@ -29,12 +30,13 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
  const app=Fastify({logger:options.logger??false,bodyLimit:65536});await app.register(cookie);await app.register(rateLimit,{max:180,timeWindow:'1 minute'});
  app.addHook('onSend',async(req,reply,payload)=>{reply.header('X-Content-Type-Options','nosniff').header('Referrer-Policy','same-origin').header('X-Frame-Options','DENY').header('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");if(req.url.startsWith('/v1/'))reply.header('Cache-Control','no-store');return payload});
  app.addHook('preClose',async()=>{for(const stream of streams)stream.end();streams.clear()});
- app.setErrorHandler((error:any,request,reply)=>{const code=error instanceof z.ZodError?400:error.statusCode||500;reply.code(code).send({error:code===500?'服务器处理失败，请查看管理员日志':redact(error instanceof z.ZodError?error.issues.map(x=>x.message).join('；'):error.message)});if(code===500)app.log.error({message:redact(error.message),code:error.code},'request failed')});
+ app.setErrorHandler((error:any,request,reply)=>{const status=error instanceof z.ZodError?400:error.statusCode;const code=Number.isInteger(status)&&status>=400&&status<600?status:500;reply.code(code).send({error:code>=500?'服务器处理失败，请查看管理员日志':redact(error instanceof z.ZodError?error.issues.map(x=>x.message).join('；'):error.message)});if(code>=500)app.log.error({message:redact(error.message),code:error.code},'request failed')});
  app.addHook('onRequest',async(req,reply)=>{
-   if(!req.url.startsWith('/v1/'))return;
+   const route=req.routeOptions.url;
+   if(!route?.startsWith('/v1/')&&!req.url.startsWith('/v1/'))return;
    const origin=req.headers.origin;const allowed=new Set([process.env.APP_ORIGIN||'http://127.0.0.1:5173',`http://127.0.0.1:${process.env.PORT||8787}`]);
    if(!['GET','HEAD','OPTIONS'].includes(req.method)){if((Number(req.headers['content-length'])>0||req.headers['transfer-encoding'])&&!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type']||''))throw Object.assign(new Error('仅支持 JSON 请求体'),{statusCode:415});let source=origin;const referer=req.headers.referer;if(!source&&referer)try{source=new URL(referer).origin}catch{source='invalid'}if((source&&!allowed.has(source))||req.headers['sec-fetch-site']==='cross-site')throw Object.assign(new Error('请求来源无效'),{statusCode:403})}
-   if(['/v1/auth/register','/v1/auth/login','/v1/health',platformModelPath+'/chat/completions'].includes(req.url.split('?')[0]))return;
+   if(['/v1/auth/register','/v1/auth/login','/v1/health',platformModelPath+'/chat/completions'].includes(route??''))return;
    const token=req.cookies.fish_session;if(!token)throw Object.assign(new Error('请先登录'),{statusCode:401});
    const [user]=await db.query('SELECT u.id,u.email,u.name,u.is_admin,m.tenant_id FROM sessions s JOIN users u ON u.id=s.user_id JOIN memberships m ON m.user_id=u.id WHERE s.id=$1 AND s.expires_at>now()',[digest(token)]);if(!user)throw Object.assign(new Error('登录已失效'),{statusCode:401});req.user=user;
  });
@@ -53,17 +55,33 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
   if(!operation)return;const keys=[`${operation}:user:${req.user.id}`,`${operation}:tenant:${req.user.tenant_id}`];let id=route==='/v1/model-catalog'?(req.body as any)?.botId:(req.params as any)?.id;if(route.startsWith('/v1/login-sessions/:id')){if(!z.uuid().safeParse(id).success)fail('登录会话不存在',404);const [login]=await db.query('SELECT bot_id FROM login_sessions WHERE id=$1',[id]);if(!login)fail('登录会话不存在',404);id=login.bot_id}if((route.startsWith('/v1/bots/:id')||route.startsWith('/v1/login-sessions/:id')||route==='/v1/model-catalog')&&id){await owned(req,id);keys.push(`${operation}:bot:${id}`)}const release=budget.acquire(keys,max,concurrency);requestReleases.set(req,release);
  });
  async function session(reply:any,userId:string){const token=randomBytes(32).toString('base64url');await db.query('INSERT INTO sessions(id,user_id,expires_at) VALUES($1,$2,$3)',[digest(token),userId,new Date(Date.now()+7*86400000)]);reply.setCookie('fish_session',token,{path:'/',httpOnly:true,sameSite:'lax',secure:process.env.COOKIE_SECURE==='true',maxAge:7*86400});}
- let platformSecret:string;
- try{platformSecret=await loadPlatformModelSecret(root,key)}catch(error){await db.close();throw error}
+ let platformSecret:Awaited<ReturnType<typeof loadPlatformModelSecret>>='';
+ try{platformSecret=await loadPlatformModelSecret(root,key)}catch{
+  app.log.error('platform-model credential unreadable; platform model and referral rewards disabled');
+ }
  registerPlatformModel(app,db,key,platformSecret,options.platformModelTransport);
- registerReferrals(app,db,!!platformSecret);
+ registerReferrals(app,db,!!platformSecret,key);
  async function requirePlatformCredit(config:z.infer<typeof BotConfigSchema>,tenantId:string,tx:Sql){
   if(config.platformModel&&(!platformSecret||!(await creditBalance(tx,tenantId)).granted))fail('当前工作区暂无平台模型额度，请前往邀请奖励页',403);
  }
  app.get('/v1/health',async()=>{await db.query('SELECT 1');return{ok:true,publicOrigin:process.env.APP_ORIGIN||'',database:databaseUrl?'postgresql':'pglite-postgresql',agent:options.agent!==false}});
  app.post('/v1/auth/register',{config:{rateLimit:{max:10,timeWindow:'1 minute'}}},async(req,reply)=>{
    const value=z.object({email:z.email().max(254),password:z.string().min(8).max(128),name:z.string().min(1).max(60),inviteCode:z.string({error:'请输入激活码'}).trim().min(1,'请输入激活码').max(100),referralCode:referralInput}).parse(req.body);const id=randomUUID(),tenant=randomUUID();const hash=await hashPassword(value.password);if(value.referralCode&&!platformSecret)fail('邀请活动暂不可用',503);
-   try{await db.transaction(async tx=>{const [invite]=await tx.query('UPDATE invitations SET used_count=used_count+1 WHERE code_hash=$1 AND revoked_at IS NULL AND expires_at>now() AND used_count<max_uses RETURNING id,bot_limit',[digest(value.inviteCode)]);if(!invite)fail('激活码无效、已过期或已用完');await tx.query('INSERT INTO users(id,email,password_hash,name,is_admin) VALUES($1,$2,$3,$4,$5)',[id,value.email.toLowerCase(),hash,value.name,false]);await tx.query('INSERT INTO tenants(id,name,bot_limit) VALUES($1,$2,$3)',[tenant,`${value.name}的工作区`,invite.bot_limit]);await tx.query('INSERT INTO memberships(user_id,tenant_id) VALUES($1,$2)',[id,tenant]);await tx.query('INSERT INTO invitation_redemptions(invitation_id,user_id) VALUES($1,$2)',[invite.id,id]);if(value.referralCode)await grantReferral(tx,value.referralCode,id,tenant);})}catch(e:any){if(e.code==='23505')fail('此邮箱已注册',409);throw e}await session(reply,id);return{user:{id,name:value.name,email:value.email}};
+   const lookup=value.referralCode?'id':'code_hash';
+   const activation=value.referralCode?referralInvitationId(key,value.referralCode,value.inviteCode):digest(value.inviteCode);
+   try{
+    await db.transaction(async tx=>{
+     const [invite]=await tx.query(`UPDATE invitations SET used_count=used_count+1
+      WHERE ${lookup}=$1 AND revoked_at IS NULL AND expires_at>now() AND used_count<max_uses RETURNING id,bot_limit`,[activation]);
+     if(!invite)fail('激活码无效、已过期或已用完');
+     await tx.query('INSERT INTO users(id,email,password_hash,name,is_admin) VALUES($1,$2,$3,$4,$5)',[id,value.email.toLowerCase(),hash,value.name,false]);
+     await tx.query('INSERT INTO tenants(id,name,bot_limit) VALUES($1,$2,$3)',[tenant,`${value.name}的工作区`,invite.bot_limit]);
+     await tx.query('INSERT INTO memberships(user_id,tenant_id) VALUES($1,$2)',[id,tenant]);
+     await tx.query('INSERT INTO invitation_redemptions(invitation_id,user_id) VALUES($1,$2)',[invite.id,id]);
+     if(value.referralCode)await grantReferral(tx,value.referralCode,id,tenant);
+    });
+   }catch(e:any){if(e.code==='23505')fail('此邮箱已注册',409);throw e}
+   await session(reply,id);return{user:{id,name:value.name,email:value.email}};
  });
  app.post('/v1/auth/login',{config:{rateLimit:{max:15,timeWindow:'1 minute'}}},async(req,reply)=>{const v=z.object({email:z.email(),password:z.string().max(128)}).parse(req.body);const [user]=await db.query('SELECT * FROM users WHERE email=$1',[v.email.toLowerCase()]);if(!user||!await verifyPassword(v.password,user.password_hash))fail('邮箱或密码不正确',401);await session(reply,user.id);return{user:{id:user.id,name:user.name,email:user.email}}});
  app.post('/v1/auth/logout',async(req,reply)=>{await db.query('DELETE FROM sessions WHERE id=$1',[digest(req.cookies.fish_session!)]);reply.clearCookie('fish_session',{path:'/'});return{ok:true}});
@@ -82,6 +100,12 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
  app.get<{Params:{id:string}}>('/v1/bots/:id',async req=>{const bot=await owned(req,req.params.id);const [revision]=await db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[bot.id,bot.revision]);const secret=(await db.query('SELECT id FROM secrets WHERE bot_id=$1 AND tenant_id=$2',[bot.id,req.user!.tenant_id])).length>0;return{bot,config:revision.config,hasKey:revision.config.platformModel?!!platformSecret:secret,hasPersonalKey:secret,capabilities:agent.protocols[bot.protocol].getCapabilities(),commands:await db.query('SELECT id,kind,status,error,created_at FROM commands WHERE bot_id=$1 ORDER BY created_at DESC LIMIT 10',[bot.id])}});
  app.put<{Params:{id:string}}>('/v1/bots/:id/config',async req=>{const v=z.object({expectedRevision:z.number().int(),config:BotConfigSchema,name:z.string().trim().min(1).max(80),expectedUin:z.string().regex(/^\d{5,20}$|^$/).default(''),apiKey:modelKeyInput,clearKey:z.boolean().optional()}).parse(req.body);let revision=0;
    await db.transaction(async tx=>{const bot=await owned(req,req.params.id,tx);await tx.query('SELECT id FROM bots WHERE id=$1 FOR UPDATE',[bot.id]);const [current]=await tx.query('SELECT revision,desired_state,deleted_at,expected_uin FROM bots WHERE id=$1',[bot.id]);await requirePlatformCredit(v.config,req.user!.tenant_id,tx);if(current.deleted_at||current.desired_state==='deleting')fail('机器人正在删除',409);if(current.revision!==v.expectedRevision)fail('配置已被其他操作修改，请刷新后重试',409);if(v.expectedUin!==(current.expected_uin||''))fail('不能通过配置修改QQ账号。已绑定账号不可更换；如需换号，请删除机器人后重新创建。',409);revision=current.revision+1;
+     if(!v.apiKey&&!v.clearKey){
+      const [saved]=await tx.query('SELECT r.config FROM bot_config_revisions r JOIN secrets s ON s.bot_id=r.bot_id AND s.tenant_id=$3 WHERE r.bot_id=$1 AND r.revision=$2',[bot.id,current.revision,bot.tenant_id]);
+      const destination=(config:z.infer<typeof BotConfigSchema>)=>[modelCredentialDestination(config.baseUrl),modelCredentialDestination(config.behavior?.embeddingBaseUrl||'')];
+      const next=destination(v.config);
+      if(saved&&destination(saved.config).some((value,index)=>value!==next[index]))fail('模型服务地址已更改，请输入对应的 API Key，或清除已保存的 Key');
+     }
      await tx.query('INSERT INTO bot_config_revisions(bot_id,revision,config) VALUES($1,$2,$3)',[bot.id,revision,JSON.stringify(v.config)]);await tx.query('UPDATE bots SET name=$2,revision=$3,expected_uin=$4 WHERE id=$1',[bot.id,v.name,revision,v.expectedUin]);
      if(v.clearKey)await tx.query('DELETE FROM secrets WHERE bot_id=$1 AND tenant_id=$2',[bot.id,req.user!.tenant_id]);else if(v.apiKey)await tx.query('INSERT INTO secrets(id,tenant_id,bot_id,ciphertext) VALUES($1,$2,$3,$4) ON CONFLICT(bot_id) DO UPDATE SET ciphertext=$4,updated_at=now()',[randomUUID(),req.user!.tenant_id,bot.id,encrypt(key,`${req.user!.tenant_id}:${bot.id}`,v.apiKey)]);
      if(bot.desired_state==='running')await tx.query('INSERT INTO commands(id,bot_id,idempotency_key,generation,kind) VALUES($1,$2,$3,$4,$5)',[randomUUID(),bot.id,`config-${revision}`,bot.generation,'apply']);
@@ -141,7 +165,15 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
  app.get<{Params:{id:string}}>('/v1/login-sessions/:id/qr',async(req,reply)=>{const s=await loginOwned(req);if(!s.qr||terminalLogin.has(s.state)||new Date(s.expires_at).getTime()<Date.now())fail('二维码已失效',410);let bytes:Buffer;if(s.qr.startsWith('data:image/png;base64,')){bytes=Buffer.from(s.qr.slice(22),'base64');if(bytes.length>1024*1024)fail('二维码过大')}else bytes=await QRCode.toBuffer(s.qr,{width:320});reply.header('Cache-Control','no-store').type('image/png');return bytes});
  app.get<{Params:{id:string}}>('/v1/login-sessions/:id/events',async(req,reply)=>{await loginOwned(req);const owner=req.user!.id;if((streamOwners.get(owner)||0)>=4)fail('实时连接过多，请关闭其他页面后重试',429);streamOwners.set(owner,(streamOwners.get(owner)||0)+1);reply.hijack();streams.add(reply.raw);reply.raw.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-store','Connection':'keep-alive','X-Accel-Buffering':'no'});let closed=false,busy=false,last=-1;const send=async()=>{if(closed||busy)return;busy=true;try{const [valid]=await db.query('SELECT id FROM sessions WHERE id=$1 AND expires_at>now()',[digest(req.cookies.fish_session!)]);if(!valid){reply.raw.end();return}const s=await loginOwned(req);if(closed)return;if(s.sequence!==last){last=s.sequence;if(!reply.raw.write(`id: ${s.sequence}\ndata: ${JSON.stringify(publicLogin(s))}\n\n`))reply.raw.end()}else if(!reply.raw.write(': heartbeat\n\n'))reply.raw.end();if(terminalLogin.has(s.state))reply.raw.end()}catch{reply.raw.end()}finally{busy=false}};const timer=setInterval(()=>void send(),1000);reply.raw.on('close',()=>{closed=true;streams.delete(reply.raw);const remaining=(streamOwners.get(owner)||1)-1;if(remaining)streamOwners.set(owner,remaining);else streamOwners.delete(owner);clearInterval(timer)});await send()});
  app.post<{Params:{id:string}}>('/v1/bots/:id/mock-transition',async req=>{const bot=await owned(req,req.params.id);if(bot.protocol!=='mock')fail('仅模拟协议可使用测试状态');const v=z.object({state:z.enum(['waiting_scan','waiting_confirm','online','expired','failed']),uin:z.string().regex(/^\d{5,20}$/).optional()}).parse(req.body);const adapter=agent.protocols.mock as MockProtocolAdapter;return adapter.call(await agent.context(bot),'/transition',v)});
- app.get<{Params:{id:string}}>('/v1/bots/:id/logs',async req=>{const bot=await owned(req,req.params.id);try{const text=await readFile(path.join(root,'bots',bot.id,'runtime.log'),'utf8');const ctx=await agent.context(bot);return{lines:redact(text.slice(-48000),[ctx.apiKey,ctx.token,process.env.EULER_SIGNER_TOKEN||'']).split('\n').slice(-160)}}catch{return{lines:[]}}});
+ app.get<{Params:{id:string}}>('/v1/bots/:id/logs',async req=>{const bot=await owned(req,req.params.id);try{const file=await open(path.join(root,'bots',bot.id,'runtime.log'));
+   let text:string;
+   try{
+    const {size}=await file.stat(),start=Math.max(0,size-48000),buffer=Buffer.alloc(size-start);
+    const {bytesRead}=await file.read(buffer,0,buffer.length,start);
+    text=buffer.toString('utf8',0,bytesRead);
+    if(start){const end=text.indexOf('\n');text=end<0?'':text.slice(end+1);}
+   }finally{await file.close()}
+   const ctx=await agent.context(bot);return{lines:redact(text,[ctx.apiKey,ctx.token,process.env.EULER_SIGNER_TOKEN||'']).split('\n').slice(-160)}}catch{return{lines:[]}}});
  registerAdminOperations(app,db);
  app.get('/v1/admin/overview',async req=>{if(!req.user!.is_admin)fail('需要管理员权限',403);const bots=await db.query('SELECT id,name,protocol,desired_state,observed_state,health,last_error FROM bots WHERE deleted_at IS NULL');return{total:bots.length,online:bots.filter(b=>b.protocol!=='mock'&&runtimeStatus(b).online).length,bots,server:{platform:os.platform(),totalMemory:os.totalmem(),freeMemory:os.freemem(),apiRss:process.memoryUsage().rss,uptime:os.uptime(),database:databaseUrl?'PostgreSQL':'PGlite（嵌入API进程，内存不可单独分摊）'}}});
  app.get('/v1/admin/memory',async req=>{if(!req.user!.is_admin)fail('需要管理员权限',403);return{intervalSeconds:30,capacity:240,staleAfterSeconds:90,resetOnRestart:true,...memory.status(),samples:memory.snapshot()}});

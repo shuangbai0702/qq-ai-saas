@@ -313,6 +313,8 @@ class SocialContract(unittest.IsolatedAsyncioTestCase):
             result=json.loads(await tool.call(self.context,operation='save'))
         self.assertEqual(result['status'],'blocked');self.assertFalse(result['submitted']);self.assertEqual(self.sent,[])
     async def test_prepared_favorite_goes_to_authorized_group_once_without_private_attachment(self):
+        token=group_actions.tool_action_id.set('fixture-'+self._testMethodName)
+        self.addCleanup(group_actions.tool_action_id.reset,token)
         self.event.get_group_id=lambda:'';self.event.get_message_str=lambda:'把这张发群里'
         async def groups():return [{'group_id':55555}]
         async def member(**kw):return {'user_id':kw['user_id']}
@@ -336,6 +338,8 @@ class SocialContract(unittest.IsolatedAsyncioTestCase):
         await group_actions.send(self.event,cfg,self.st.db,'55555','重复', '',lambda:True,lambda *args:None)
         self.assertEqual(len(self.sent),2)
     async def test_consecutive_owned_events_can_send_images_without_a_cooldown(self):
+        token=group_actions.tool_action_id.set('fixture-'+self._testMethodName)
+        self.addCleanup(group_actions.tool_action_id.reset,token)
         self.event.get_group_id=lambda:''
         async def groups():return [{'group_id':55555}]
         async def member(**kw):return {'user_id':kw['user_id']}
@@ -365,6 +369,61 @@ class SocialContract(unittest.IsolatedAsyncioTestCase):
         collected=next(i for i in self.st.social.catalog('group:55555') if i['id']==row[0]);self.assertEqual(collected['source'],'collected');self.assertEqual(collected['source_scope'],'group:55555')
         self.assertFalse(any(i['source']=='collected' for i in self.st.social.catalog('group:66666')))
         self.st.db.execute("UPDATE sticker_inbox SET status='rejected' WHERE id=?",(row[0],));self.st.db.commit();self.assertEqual(self.st.db.execute('SELECT count(*) FROM sticker_originals').fetchone()[0],0)
+    async def test_explicit_other_sender_media_uses_verified_original(self):
+        self.extra['_hosted_lease']=self.lease
+        self.event.get_sender_id=lambda:'87654321'
+        quote_reply.observe(self.st.db,self.event,self.lease,'group:55555')
+        source=quote_reply.media_catalog(self.st.db,self.event,self.lease)[0]
+        self.event.get_sender_id=lambda:'12345678'
+        self.event.message_obj=NS(message_id=43,raw_message={'message':[]})
+        self.event.bot.get_msg=AsyncMock(return_value={'message_id':42,'group_id':55555,'sender':{'user_id':87654321},'message':[{'type':'image','data':{'url':'https://qpic.cn/fixture.gif'}}]})
+        tool=qq_favorite_tools.tools(self.event,{'behavior':{}},self.st.db,self.tmp.name,lambda:True)[0]
+        with patch.object(qq_favorite_tools,'download',return_value=self.raw):
+            result=json.loads(await tool.call(self.context,operation='save',source_id=source['handle']))
+        self.assertEqual(result['status'],'confirmed');self.assertEqual(len(self.sent),1)
+        self.event.bot.get_msg.assert_awaited_once_with(message_id=42)
+
+    async def test_media_source_rechecks_account_scope_generation_and_protocol_identity(self):
+        quote_reply.observe(self.st.db,self.event,self.lease,'group:55555')
+        handle=quote_reply.media_catalog(self.st.db,self.event,self.lease)[0]['handle']
+        valid={'message_id':42,'group_id':55555,'sender':{'user_id':12345678},'message':[{'type':'image','data':{'url':'https://qpic.cn/fixture.gif'}}]}
+        self.event.bot.get_msg=AsyncMock(return_value=valid)
+        for change in ({'message_id':99},{'group_id':66666},{'sender':{'user_id':87654321}},{'message':[]}):
+            self.event.bot.get_msg.return_value={**valid,**change}
+            with self.assertRaisesRegex(ValueError,'media_source_'):
+                await quote_reply.resolve_media(self.st.db,self.event,self.lease,handle,lambda:True)
+            self.assertIsNone(self.extra.get('_hosted_media_handle'))
+        self.event.bot.get_msg.reset_mock()
+        self.event.get_self_id=lambda:'900002'
+        with self.assertRaisesRegex(ValueError,'media_source_expired'):
+            await quote_reply.resolve_media(self.st.db,self.event,self.lease,handle,lambda:True)
+        self.event.get_self_id=lambda:'900001';self.event.get_group_id=lambda:'66666'
+        with self.assertRaisesRegex(ValueError,'media_source_expired'):
+            await quote_reply.resolve_media(self.st.db,self.event,self.lease,handle,lambda:True)
+        self.event.get_group_id=lambda:'55555';self.lease['generation']=8
+        with self.assertRaisesRegex(ValueError,'media_source_expired'):
+            await quote_reply.resolve_media(self.st.db,self.event,self.lease,handle,lambda:True)
+        self.event.bot.get_msg.assert_not_awaited();self.assertEqual(self.sent,[])
+
+    async def test_media_response_after_binding_change_or_expiry_cannot_publish(self):
+        quote_reply.observe(self.st.db,self.event,self.lease,'group:55555')
+        handle=quote_reply.media_catalog(self.st.db,self.event,self.lease)[0]['handle']
+        for invalidation in ('binding','expiry'):
+            entered=asyncio.Event();finish=asyncio.Event();current=True
+            async def get_msg(**_):
+                entered.set();await finish.wait()
+                return {'message_id':42,'group_id':55555,'sender':{'user_id':12345678},'message':[{'type':'image','data':{'url':'https://qpic.cn/fixture.gif'}}]}
+            self.event.bot.get_msg=get_msg
+            task=asyncio.create_task(quote_reply.resolve_media(self.st.db,self.event,self.lease,handle,lambda:current))
+            await entered.wait()
+            if invalidation=='binding':current=False
+            else:
+                self.st.db.execute('UPDATE pipeline_quote_sources SET at=?',(time.time()-901,));self.st.db.commit()
+            finish.set()
+            with self.assertRaisesRegex(ValueError,'media_source_expired'):await task
+            self.assertIsNone(self.extra.get('_hosted_media_handle'))
+        self.assertEqual(self.sent,[])
+
     async def test_quote_ids_are_scope_account_and_generation_bound(self):
         quote_reply.observe(self.st.db,self.event,self.lease,'group:55555');first=quote_reply.catalog(self.st.db,self.event,self.lease)[0]['handle']
         tool=quote_reply.tools(self.event,{'behavior':{}},self.st.db,self.lease,lambda:True)[0]

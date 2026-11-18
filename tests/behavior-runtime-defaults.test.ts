@@ -41,7 +41,7 @@ test('owner contact UI remains enabled independently of proactive and explains d
  assert.match(html,/主人联系由自己的开关控制/);assert.match(html,/保留用户已授权的持久提醒/);
  assert.doesNotMatch(html,/暂不执行/);assert.doesNotMatch(html,/定时主动联系总开关/);
  const taskUi=await readFile(new URL('../apps/web/src/proactive-controls.tsx',import.meta.url),'utf8');
- assert.match(taskUi,/不会周期性调用模型规划/);assert.match(taskUi,/用户已经授权的提醒仍按原任务执行/);
+  assert.match(taskUi,/不额外启动规划模型/);assert.match(taskUi,/不会额外启动周期性规划模型/);assert.match(taskUi,/用户已经授权的提醒仍按原任务执行/);
  assert.doesNotMatch(taskUi,/自主层接管主人联系|主动层可根据真实兴趣形成目标/);
 });
 

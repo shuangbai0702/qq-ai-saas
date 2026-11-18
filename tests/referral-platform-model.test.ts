@@ -12,19 +12,31 @@ import {defaultConfig} from '../packages/contracts/index.js';
 test('referral registration, scoped credentials, concurrency, usage and unknown',async()=>{
  const root=await mkdtemp(path.join(os.tmpdir(),'fish-referral-'));
  const secret='fixture-upstream-credential';
+ const primary='fixture-primary-credential';
  const key=await loadKey(root);
- await writeFile(path.join(root,'platform-model-secret'),encrypt(key,platformSecretPurpose,secret));
- let requests=0,release!:()=>void,started!:()=>void;
+ await writeFile(path.join(root,'platform-model-secret'),encrypt(key,platformSecretPurpose,JSON.stringify({primary,fallback:secret})));
+ const routes:string[]=[];
+ let requests=0,oversizedCancelled=false,release!:()=>void,started!:()=>void;
  const barrier=new Promise<void>(resolve=>{release=resolve});
  const firstRequest=new Promise<void>(resolve=>{started=resolve});
- const receipt={prompt_tokens:10,completion_tokens:5,total_tokens:15};
- const {app,db,agent}=await createApp({root,databaseUrl:'',agent:false,platformModelTransport:async(_,init)=>{
-  assert.equal(new Headers(init?.headers).get('Authorization'),'Bearer '+secret);
+ const receipt={prompt_tokens:10,completion_tokens:5,total_tokens:15,prompt_tokens_details:{cached_tokens:8}};
+ const {app,db,agent}=await createApp({root,databaseUrl:'',agent:false,platformModelTransport:async(url,init)=>{
+  const isPrimary=new URL(String(url)).hostname==='crab-ai.net';
+  assert.equal(new Headers(init?.headers).get('Authorization'),'Bearer '+(isPrimary?primary:secret));
   requests++;
   if(requests===1){started();await barrier;}
   const body=JSON.parse(init!.body as string);
-  assert.notEqual(body.model,'platform');
+  assert.equal(body.model,isPrimary?'gpt-6.1-sol':'gpt-5.6-luna');
+  routes.push(body.model);
+  if(body.messages[0].content==='quota'&&isPrimary)return Response.json({error:{code:'insufficient_user_quota'}},{status:403});
+  if(body.messages[0].content==='quota_both')return new Response(null,{status:402});
+  if(body.messages[0].content==='unknown_after_quota'&&isPrimary)return Response.json({error:{type:'insufficient_quota'}},{status:429});
+  if(body.messages[0].content==='unknown_after_quota')throw new Error('fallback connection was lost');
   if(body.messages[0].content==='unknown')throw new Error('connection was lost');
+  if(body.messages[0].content==='oversized')return new Response(new ReadableStream({
+   pull(controller){controller.enqueue(new Uint8Array(1024*1024));},
+   cancel(){oversizedCancelled=true;},
+  }));
   if(body.messages[0].content==='rejected')return new Response(null,{status:429});
   if(body.stream){assert.deepEqual(body.stream_options,{include_usage:true});return new Response('data: '+JSON.stringify({model:body.model,choices:[],usage:receipt})+'\n\ndata: [DONE]\n\n');}
   return Response.json({model:body.model,choices:[],usage:receipt});
@@ -33,17 +45,32 @@ test('referral registration, scoped credentials, concurrency, usage and unknown'
  try{
   const activation='fixture-invitation';
   await db.query("INSERT INTO invitations(id,code_hash,code_prefix,max_uses,expires_at,bot_limit) VALUES($1,$2,'fixture',5,now()+interval '1 day',1)",[randomUUID(),digest(activation)]);
-  async function register(name:string,referralCode?:string){return request('/v1/auth/register',{name,email:name+'@example.com',password:'test-password',inviteCode:activation,referralCode})}
+  async function register(name:string,referralCode?:string,inviteCode=activation){return request('/v1/auth/register',{name,email:name+'@example.com',password:'test-password',inviteCode,referralCode})}
   const owner=await register('inviter');assert.equal(owner.statusCode,200);
   const cookie=(response:typeof owner)=>String(response.headers['set-cookie']).split(';')[0];
   const inviter=cookie(owner);
-  const invitation=await request('/v1/referrals',{},inviter);assert.equal(invitation.statusCode,200);
-  const {code}=invitation.json();
-  assert.equal((await request('/v1/referrals',{},inviter)).json().code,code);
-  assert.equal((await register('will-rollback','T'.repeat(24))).statusCode,400);
-  const invited=await register('invitee',code);assert.equal(invited.statusCode,200);
-  assert.equal((await register('invitee',code)).statusCode,409);
+  assert.equal((await request('/v1/referrals',undefined,inviter)).json().canInvite,true);
+  const invitation=await request('/v1/referrals',{inviteCode:activation},inviter);assert.equal(invitation.statusCode,200);
+  const {code,activation:linkActivation}=invitation.json();
+  assert.notEqual(linkActivation,activation);
+  assert.equal((await request('/v1/referrals',{inviteCode:activation},inviter)).json().code,code);
+  assert.equal((await register('unbound','T'.repeat(24),linkActivation)).statusCode,400);
+  assert.equal((await register('stripped',undefined,linkActivation)).statusCode,400);
+  assert.equal((await register('legacy',code)).statusCode,400);
+  const invited=await register('invitee',code,linkActivation);assert.equal(invited.statusCode,200);
+  assert.equal((await register('invitee',code,linkActivation)).statusCode,409);
   const invitee=cookie(invited);
+  const [inviteeMembership]=await db.query('SELECT tenant_id FROM memberships WHERE user_id=$1',[invited.json().user.id]);
+  const oldReferral='R'.repeat(24);
+  await db.query('INSERT INTO referral_codes(user_id,tenant_id,code) VALUES($1,$2,$3)',[invited.json().user.id,inviteeMembership.tenant_id,oldReferral]);
+  const restricted=(await request('/v1/referrals',undefined,invitee)).json();
+  assert.equal(restricted.canInvite,false);
+  assert.equal(restricted.code,null);
+  assert.equal((await request('/v1/referrals',{inviteCode:activation},invitee)).statusCode,403);
+  const [originalInvite]=await db.query('SELECT id FROM invitations WHERE code_hash=$1',[digest(activation)]);
+  const denied=await register('next-generation',oldReferral,encrypt(key,`referral-activation:${oldReferral}`,originalInvite.id));
+  assert.equal(denied.statusCode,403);
+  assert.equal((await db.query('SELECT id FROM users WHERE email=$1',['next-generation@example.com'])).length,0);
   assert.equal((await request('/v1/referrals',undefined,inviter)).json().invited,1);
   assert.equal((await request('/v1/platform-model/balance',undefined,inviter)).json().available,30_000_000);
   assert.equal((await request('/v1/platform-model/balance',undefined,invitee)).json().available,20_000_000);
@@ -62,14 +89,43 @@ test('referral registration, scoped credentials, concurrency, usage and unknown'
   const first=call();await firstRequest;
   try{assert.equal((await call()).statusCode,402);assert.equal(requests,1);}finally{release()}
   const done=await first;assert.equal(done.statusCode,200);assert.equal(done.json().model,'platform');
+  assert.equal(done.json().usage.prompt_tokens_details.cached_tokens,8);
   assert.equal((await request('/v1/platform-model/balance',undefined,invitee)).json().available,4485);
   const stream=await call('stream',true);assert.equal(stream.statusCode,200);assert.match(stream.body,/\[DONE\]/);assert.match(stream.body,/"model":"platform"/);
   assert.equal((await request('/v1/platform-model/balance',undefined,invitee)).json().available,4470);
   assert.equal((await call('rejected')).statusCode,429);
+  assert.equal(routes.at(-1),'gpt-6.1-sol');
   assert.equal((await request('/v1/platform-model/balance',undefined,invitee)).json().available,4470);
   assert.equal((await call('unknown')).statusCode,502);
   assert.equal(Number((await db.query('SELECT count(*) AS count FROM platform_model_reservations'))[0].count),1);
+  await db.query('UPDATE platform_model_credits SET granted=granted+50000 WHERE tenant_id=$1',[bot.tenant_id]);
+  const balance=async()=> (await request('/v1/platform-model/balance',undefined,invitee)).json().available;
+  const beforeFallback=await balance();
+  const quota=await call('quota',true);
+  assert.equal(quota.statusCode,200);assert.match(quota.body,/\[DONE\]/);assert.match(quota.body,/"model":"platform"/);
+  assert.deepEqual(routes.slice(-2),['gpt-6.1-sol','gpt-5.6-luna']);
+  assert.equal(await balance(),beforeFallback-15);
+  assert.equal((await call('quota_both')).statusCode,503);
+  assert.deepEqual(routes.slice(-2),['gpt-6.1-sol','gpt-5.6-luna']);
+  assert.equal(await balance(),beforeFallback-15);
+  assert.equal((await call('unknown_after_quota')).statusCode,502);
+  assert.deepEqual(routes.slice(-2),['gpt-6.1-sol','gpt-5.6-luna']);
+  assert.equal((await call('oversized')).statusCode,502);
+  assert.equal(oversizedCancelled,true);
+  assert.equal(Number((await db.query('SELECT count(*) AS count FROM platform_model_reservations'))[0].count),3);
+  assert.equal((await request('/v1/health')).statusCode,200);
   await db.query('UPDATE bots SET generation=generation+1 WHERE id=$1',[bot.id]);
   assert.equal((await call()).statusCode,401);
  }finally{release();await app.close();await rm(root,{recursive:true,force:true});}
+});
+
+test('an unreadable platform credential leaves normal platform services available',async()=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'fish-platform-secret-'));
+ await writeFile(path.join(root,'platform-model-secret'),'invalid encrypted fixture');
+ let instance:Awaited<ReturnType<typeof createApp>>|undefined;
+ try{
+  instance=await createApp({root,databaseUrl:'',agent:false});
+  assert.equal((await instance.app.inject('/v1/health')).statusCode,200);
+  assert.equal((await instance.app.inject({method:'POST',url:'/v1/platform-model/chat/completions',payload:{}})).statusCode,503);
+ }finally{try{await instance?.app.close()}finally{await rm(root,{recursive:true,force:true})}}
 });

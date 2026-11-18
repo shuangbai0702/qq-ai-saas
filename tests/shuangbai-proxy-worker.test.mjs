@@ -109,3 +109,12 @@ test('configured named origin skips dynamic DNS and preserves API forwarding', a
   assert.equal(response.headers.get('x-upstream-host'),'origin-mobile.shuangbai.online');
   assert.equal(h.entries.size,0);
 });
+
+test('proxy preserves the origin security policy and discards untrusted forwarding headers', async () => {
+  const policy = "default-src 'self'; frame-ancestors 'none'";
+  const h = harness(() => new Response('ok', {headers: {'Content-Security-Policy': policy}}));
+  const response = await h.fetch('https://shuangbai.online/', {headers: {'x-forwarded-for': '203.0.113.1', forwarded: 'for=203.0.113.1'}});
+  assert.equal(response.headers.get('content-security-policy'), policy);
+  assert.equal(h.calls[1].init.headers.has('forwarded'), false);
+  assert.equal(h.calls[1].init.headers.has('x-forwarded-for'), false);
+});

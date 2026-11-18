@@ -64,6 +64,46 @@ def initialize(db):
       message TEXT NOT NULL,created REAL NOT NULL,UNIQUE(scope,event));''')
 
 
+def bootstrap(db):
+    """Create the sole empty main Journal before any Bot conversation starts.
+
+    Existing scoped history requires the explicit operator migration. A missing
+    activation marker must never select the old per-channel runtime path.
+    """
+    if db.in_transaction:raise ValueError('shared_context_bootstrap_requires_idle_database')
+    initialize(db)
+    from readonly_journal import ReadonlyJournal
+    import journal_storage
+    ReadonlyJournal(db,None)
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        rows=db.execute("SELECT scope FROM fishbot_readonly_journals WHERE state='ready'").fetchall()
+        if any(json.loads(row[0])!=JOURNAL_SCOPE for row in rows):
+            raise ValueError('shared_context_owner_migration_required')
+        if active(db):
+            db.commit();return False
+        tables={row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if rows or any(name in tables and db.execute('SELECT 1 FROM '+name+' LIMIT 1').fetchone()
+                       for name in ('memory_rounds','memory_pending','memory_summaries','memory_summary_origins')):
+            raise ValueError('shared_context_owner_migration_required')
+        if db.execute('SELECT 1 FROM fishbot_readonly_journals LIMIT 1').fetchone():
+            raise ValueError('shared_context_existing_journal_requires_recovery')
+        key=model_json(JOURNAL_SCOPE);now=time.time()
+        value={'scope':key,'base':[],'wire':[],'state':{},'turns':0,'at':now,
+               'group_turn':None,'base_chars':0,'detail':'','usage':{},'authority':None,'retirement':None}
+        payload,blobs=journal_storage.encode(value)
+        if blobs:raise ValueError('shared_context_empty_journal_has_media')
+        db.execute("INSERT INTO fishbot_readonly_journals VALUES(?,?,'ready',?,?,?)",
+                   (key,journal_storage.VERSION,payload,hashlib.sha256(payload.encode()).hexdigest(),now))
+        db.execute('''CREATE TABLE IF NOT EXISTS fishbot_shared_context(
+          id INTEGER PRIMARY KEY CHECK(id=1),state TEXT NOT NULL,authorization TEXT NOT NULL,created REAL NOT NULL,
+          group_limit INTEGER NOT NULL CHECK(group_limit IN (2,4)))''')
+        db.execute("INSERT INTO fishbot_shared_context VALUES(1,'active','new_bot_initialization',?,2)",(now,))
+        db.commit();return True
+    except BaseException:
+        db.rollback();raise
+
+
 def activate_authorized(db,cfg,expected,authorization,release,group_limit=2):
     """Offline one-time operator cutover, only with the worker held and backup.
 

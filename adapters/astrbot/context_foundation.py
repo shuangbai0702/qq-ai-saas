@@ -1,5 +1,6 @@
 """Checkpoint-owned foundation views; never an alternative message history."""
 import copy
+import json
 import re
 from context_protocol import model_json
 from memory_model_view import memory_json
@@ -55,6 +56,8 @@ def freeze(state,previous):
     """Only NEW dynamic packets change; old wire and baseline remain untouched."""
     result=copy.deepcopy(state)
     if 'memory_foundation' not in result:return result
+    if 'foundation_core_note' in previous:
+        result['foundation_core_note']=copy.deepcopy(previous['foundation_core_note'])
     if 'memory_foundation' in previous:result['memory_foundation']=copy.deepcopy(previous['memory_foundation'])
     else:
         # A legacy baseline waits for its next real checkpoint to adopt layout.
@@ -63,6 +66,25 @@ def freeze(state,previous):
             if key in previous.get('state',{}):result.setdefault('state',{})[key]=copy.deepcopy(previous['state'][key])
         if 'persona_core_note' in previous:result['persona_core_note']=copy.deepcopy(previous['persona_core_note'])
     return result
+
+
+def checkpoint_state(state):
+    """Give Core Note one wire owner when constructing a lawful new basis."""
+    if not isinstance(state.get('memory_foundation'),dict):return state
+    result=copy.deepcopy(state)
+    note=result['memory_foundation'].pop('core_note',result.get('foundation_core_note',{}))
+    result['foundation_core_note']=note
+    result.pop('persona_core_note',None)
+    return result
+
+
+def checkpoint_authority(message,state):
+    if message is None or 'foundation_core_note' not in state:return message
+    from context_transport import EVENT_CONTEXT_CURRENT
+    data=json.loads(message['content'].split('\n',1)[1])
+    if 'persona_core_note' not in data.get('authority',{}):return message
+    data['authority'].pop('persona_core_note')
+    return {**message,'content':EVENT_CONTEXT_CURRENT+'\n'+model_json(data)}
 
 
 def execution_view(state):
@@ -91,12 +113,14 @@ def arrange(messages,state):
     for message in result:
         content=message.get('content')
         if message.get('role')=='user' and isinstance(content,str) and content.startswith(EVENT_CONTEXT_CURRENT+'\n'):
-            import json
-            message['content']=EVENT_CONTEXT_CURRENT+'\n'+memory_json(json.loads(content.split('\n',1)[1]))
+            normalized=checkpoint_authority(message,state)['content']
+            message['content']=EVENT_CONTEXT_CURRENT+'\n'+memory_json(json.loads(normalized.split('\n',1)[1]))
         if message.get('role')=='user' and isinstance(content,str) and content.startswith(READONLY_CURRENT+'\n'):
-            import json
             data=json.loads(content.split('\n',1)[1])
             if isinstance(foundation,dict):data.pop('memory_foundation',None)
+            if 'foundation_core_note' in state:
+                data.pop('persona_core_note',None)
+                data.pop('foundation_core_note',None)
             if isinstance(foundation,dict) and 'execution_experience' in state and 'execution_experience' in data:data['execution_experience']=copy.deepcopy(state['execution_experience'])
             message['content']=READONLY_CURRENT+'\n'+memory_json(data)
     if not isinstance(foundation,dict):return result
@@ -105,6 +129,10 @@ def arrange(messages,state):
     small=[row for row in summaries if row.get('level')!='big']
     if len(big)>1 or len(small)>2:raise ValueError('foundation_summary_shape')
     regions=[]
+    note=state.get('foundation_core_note')
+    if isinstance(note,dict) and note.get('text'):
+        from memory_reflection import CORE_NOTE_POLICY
+        regions.append({'region':'core_note','core_note':note,'guidance':CORE_NOTE_POLICY})
     for name,rows in (('big_summary',big),('small_summaries',small)):
         if rows:regions.append({'region':name,'conversation_summaries':rows})
     continuity=foundation.get('conversation_continuity')

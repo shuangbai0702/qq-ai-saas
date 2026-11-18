@@ -7,6 +7,7 @@ import copy,hashlib,json,math,re
 from context_protocol import model_json,source
 from semantic_batch import event_key,origin,discard_failed_service_inputs
 from summary_material import snapshots,valid_material,remember,material_storage_view
+from input_reconciliation import ambient_retirement_candidates,unresolved_retirement_inputs
 
 # Disposable observations can outlive their old pending row. They are still
 # real batch input, rather than a second memory authority or a new round.
@@ -121,6 +122,7 @@ def collect_local(db,scope,payload):
     """
     if not _channel(scope):raise ValueError('semantic_collection_local_scope')
     tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    unresolved=unresolved_retirement_inputs(db,tables,ambient_retirement_candidates(db,tables))
     output=Collected()
     payload=list(payload);present={str(row['event']) for row in payload}
     # A legacy Hold has a trusted scope/event even when its original and
@@ -131,7 +133,7 @@ def collect_local(db,scope,payload):
           LEFT JOIN memory_round_material m ON m.scope=h.scope AND m.event=h.event
           WHERE h.scope=? ORDER BY h.created,h.event''',(scope,)):
             event=str(event)
-            if event in present:continue
+            if event in present or (scope,event) in unresolved:continue
             if 'pipeline_scope_work' in tables and db.execute('SELECT 1 FROM pipeline_scope_work WHERE scope=? AND event=?',(scope,event)).fetchone():
                 raise ValueError('semantic_batch_work_still_active')
             if 'pipeline_work_inputs' in tables and db.execute("SELECT 1 FROM pipeline_work_inputs WHERE scope=? AND event=? AND status='owned'",(scope,event)).fetchone():
@@ -159,6 +161,7 @@ def collect_local(db,scope,payload):
                 'available_observations':[],'images':[]})
     for row in payload:
         event=str(row['event'])
+        if (scope,event) in unresolved:continue
         if 'pipeline_scope_work' in tables and db.execute('SELECT 1 FROM pipeline_scope_work WHERE scope=? AND event=?',(scope,event)).fetchone():
             raise ValueError('semantic_batch_work_still_active')
         if 'pipeline_work_inputs' in tables and db.execute("SELECT 1 FROM pipeline_work_inputs WHERE scope=? AND event=? AND status='owned'",(scope,event)).fetchone():
@@ -231,6 +234,7 @@ def collect(db,scope,cutoff,payload,recapture=None,*,discard_unavailable=False):
 
 def _collect(db,cutoff,payload,recapture,discard_unavailable=False):
     tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    unresolved=unresolved_retirement_inputs(db,tables,ambient_retirement_candidates(db,tables))
     retired=set()
     if 'memory_semantic_batches' in tables:
         for scope,raw in db.execute("SELECT scope,members FROM memory_semantic_batches WHERE state='retired'"):
@@ -243,6 +247,7 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False):
         channel,event=pair;key=model_json([channel,event])
         if (channel,event_key(channel,event)) in retired or ('bot_shared',event_key('bot_shared',key)) in retired:return False
         for logical,identifier in ((channel,event),('bot_shared',key)):
+            if (logical,identifier) in unresolved:return False
             if 'pipeline_scope_work' in tables and db.execute('SELECT 1 FROM pipeline_scope_work WHERE scope=? AND event=?',(logical,identifier)).fetchone():return False
             if 'pipeline_work_inputs' in tables and db.execute("SELECT 1 FROM pipeline_work_inputs WHERE scope=? AND event=? AND status='owned'",(logical,identifier)).fetchone():return False
         return True

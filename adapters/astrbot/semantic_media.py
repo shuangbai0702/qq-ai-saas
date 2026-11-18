@@ -6,7 +6,8 @@ Call retire_batch inside the successful summary transaction, then drain after
 the replacement Journal retires the batch. A pending record survives a crash
 between retirement and unlink.
 """
-import asyncio,base64,hashlib,io,json,re,stat,time
+import asyncio,base64,hashlib,io,json,os,re,stat,time
+from collections import Counter
 from pathlib import Path
 
 
@@ -26,7 +27,8 @@ def initialize(db):
            image TEXT NOT NULL,path TEXT NOT NULL,PRIMARY KEY(image,path))''',
         '''CREATE TABLE IF NOT EXISTS semantic_media_refs(
            event TEXT NOT NULL,image TEXT NOT NULL,path TEXT NOT NULL,
-           released INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(event,image,path))''',
+           released INTEGER NOT NULL DEFAULT 0,direct_source INTEGER NOT NULL DEFAULT 0,
+           PRIMARY KEY(event,image,path))''',
         'CREATE INDEX IF NOT EXISTS semantic_media_refs_path ON semantic_media_refs(path,released)',
         '''CREATE TABLE IF NOT EXISTS semantic_media_retired_events(
            event TEXT PRIMARY KEY,checkpoint_id INTEGER NOT NULL)''',
@@ -37,18 +39,117 @@ def initialize(db):
            event TEXT NOT NULL,file TEXT NOT NULL,reason TEXT NOT NULL,updated REAL NOT NULL,
            PRIMARY KEY(event,file))'''):
         db.execute(sql)
+    if not any(row[1]=='direct_source' for row in db.execute('PRAGMA table_info(semantic_media_refs)')):
+        db.execute('ALTER TABLE semantic_media_refs ADD COLUMN direct_source INTEGER NOT NULL DEFAULT 0')
 
 
-def _identity(file):
-    info=file.lstat()
+def _identity(file,*,info=None,raw=None):
+    info=file.lstat() if info is None else info
     if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1:raise ValueError('original_not_owned_regular_file')
     # Hash also catches a same-path replacement on platforms with weak inode IDs.
     return json.dumps([info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,
-                       hashlib.sha256(file.read_bytes()).hexdigest()],separators=(',',':'))
+                       hashlib.sha256(file.read_bytes() if raw is None else raw).hexdigest()],separators=(',',':'))
 
 
 def _contained(file,root):
     return file!=root and file.is_relative_to(root) and root.resolve()==root and file.resolve()==file and not file.is_symlink()
+
+
+def _delegation_selection(db,journal_key,scope,event_id,positions):
+    from context_protocol import image_notice,source
+    from journal_storage import read_snapshot
+    snapshot=read_snapshot(db,journal_key)
+    messages=[m for m in (snapshot or {}).get('base',[]) if (origin:=source(m)) and origin['scope']==scope and str(origin['event_id'])==event_id]
+    if len(messages)!=1:return None
+    content=messages[0].get('content')
+    if not isinstance(content,list):return None
+    images=[p['image_url']['url'] for p in content if isinstance(p,dict) and p.get('type')=='image_url'
+            and isinstance(p.get('image_url'),dict) and isinstance(p['image_url'].get('url'),str)]
+    positions=positions or list(range(1,len(images)+1))
+    if not positions or len(positions)>32 or min(positions)<1 or max(positions)>len(images):return None
+    image_hashes=[image_key(value) for value in images]
+    counts=Counter(image_hashes)
+    quoted=set()
+    for part in content:
+        value=image_notice(part.get('text')) if isinstance(part,dict) and part.get('type')=='text' else None
+        match=re.fullmatch(r'\[Image ([0-9]+) in quoted message(?:; animation converted to a 3x3 frame montage)?\]',value) if isinstance(value,str) else None
+        if match:quoted.add(match[1])
+    if any(str(i) in quoted or counts[image_hashes[i-1]]!=1 for i in positions):return None
+    return [image_hashes[i-1] for i in positions]
+
+
+def _delegation_paths(db,owner,images):
+    if db.execute('SELECT 1 FROM semantic_media_retired_events WHERE event=?',(owner,)).fetchone():return None
+    return [db.execute('''SELECT o.path,o.root,o.identity FROM semantic_media_refs r
+            JOIN semantic_media_owned o ON o.path=r.path
+            WHERE r.event=? AND r.image=? AND r.released=0 AND r.direct_source=1 AND o.state='live'
+            ORDER BY o.path''',(owner,image)).fetchall() for image in images]
+
+
+def _read_delegation_images(paths):
+    from model_images import POLICY
+    from PIL import Image
+    output=[]
+    bytes_left=4*1024*1024
+    pixels_left=POLICY['maxSourcePixels']
+    formats=('PNG','JPEG','WEBP','GIF')
+    for candidates in paths:
+        # Ambiguity is determined from every directly bound original, even if
+        # one candidate is unreadable, oversized or an unsupported format.
+        identities=[(Path(name),Path(root),identity,json.loads(identity)) for name,root,identity in candidates]
+        if len({parsed[-1] for _,_,_,parsed in identities})!=1:return None
+        for path,root,identity,parsed in identities:
+            try:
+                if not _contained(path,root) or not stat.S_ISREG(path.lstat().st_mode):continue
+                flags=os.O_RDONLY|getattr(os,'O_NOFOLLOW',0)|getattr(os,'O_NONBLOCK',0)|getattr(os,'O_BINARY',0)
+                with os.fdopen(os.open(path,flags),'rb') as file:
+                    info=os.fstat(file.fileno())
+                    if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or not 0<info.st_size<=bytes_left:continue
+                    if [info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns]!=parsed[:4]:continue
+                    raw=file.read(info.st_size+1)
+                    if len(raw)!=info.st_size or _identity(path,info=os.fstat(file.fileno()),raw=raw)!=identity:continue
+                with Image.open(io.BytesIO(raw),formats=formats) as image:
+                    width,height=image.size
+                    pixels=width*height
+                    if not 0<pixels<=pixels_left or getattr(image,'is_animated',False):return None
+                    # verify() does not decode JPEG/GIF pixels and can accept
+                    # truncated inputs. Decode within the checked pixel budget.
+                    image.load()
+                    mime=Image.MIME[image.format]
+            except (OSError,ValueError,SyntaxError,Image.DecompressionBombError):continue
+            bytes_left-=len(raw)
+            pixels_left-=pixels
+            output.append({'mimeType':mime,'width':width,'height':height,'data':base64.b64encode(raw).decode('ascii')})
+            break
+        else:return None
+    return output
+
+
+async def delegation_originals(db,journal_scope,scope,event_id,positions):
+    """Resolve a visible same-scope event and offload only proven, live files."""
+    from context_protocol import model_json
+    from model_images import _run_codec
+    if journal_scope not in (scope,'bot_shared'):return None
+    tables={row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if not {'fishbot_readonly_journals','semantic_media_owned','semantic_media_refs','semantic_media_retired_events'}<=tables:return None
+    if not any(row[1]=='direct_source' for row in db.execute('PRAGMA table_info(semantic_media_refs)')):return None
+    identifier=model_json([scope,event_id]) if journal_scope=='bot_shared' else event_id
+    owner=event_key(journal_scope,identifier)
+    journal_key=model_json(journal_scope)
+    def head():
+        return db.execute("SELECT sha FROM fishbot_readonly_journals WHERE scope=? AND state='ready'",(journal_key,)).fetchone()
+    revision=head()
+    if revision is None:return None
+    selected=_delegation_selection(db,journal_key,scope,event_id,positions)
+    if not selected:return None
+    paths=_delegation_paths(db,owner,selected)
+    if not paths or not all(paths):return None
+    output=await _run_codec(_read_delegation_images,paths)
+    if output is None or _delegation_paths(db,owner,selected)!=paths:return None
+    latest=head()
+    if latest is None:return None
+    if latest!=revision and _delegation_selection(db,journal_key,scope,event_id,positions)!=selected:return None
+    return output
 
 
 def owned_record(file,root,images,*,nested=False):
@@ -165,6 +266,12 @@ def register_event(db,event,materials):
             db.execute('DELETE FROM semantic_media_protocol_issues WHERE event=? AND file=?',(owner,record['protocol_file']))
         originals.append(record)
     register_owned(db,originals,materials)
+    for record in originals:
+        # Only OneBot get_image on this event's top-level segments can attest
+        # to attachment origin. SDK resolver temp copies can include quotes.
+        if record.get('protocol_file'):
+            db.executemany('UPDATE semantic_media_refs SET direct_source=1 WHERE event=? AND image=? AND path=? AND released=0',
+                           ((owner,image,record['path']) for image in images.intersection(record['images'])))
     for issue in issues:
         db.execute('INSERT INTO semantic_media_protocol_issues VALUES(?,?,?,?) ON CONFLICT(event,file) DO UPDATE SET reason=excluded.reason,updated=excluded.updated',
                    (owner,issue['file'],issue['reason'],time.time()))
@@ -208,7 +315,7 @@ def register_owned(db,originals,materials):
         for value in material.get('images',[]):
             image=image_key(value)
             for (file,) in db.execute("SELECT i.path FROM semantic_media_images i JOIN semantic_media_owned o ON o.path=i.path WHERE i.image=? AND o.state<>'deleted'",(image,)).fetchall():
-                db.execute('INSERT OR IGNORE INTO semantic_media_refs VALUES(?,?,?,0)',(event,image,file))
+                db.execute('INSERT OR IGNORE INTO semantic_media_refs(event,image,path) VALUES(?,?,?)',(event,image,file))
                 db.execute("UPDATE semantic_media_owned SET state='live',error='',updated=? WHERE path=? AND state='pending'",(time.time(),file))
 
 
@@ -236,7 +343,7 @@ def retire_batch(db,material_images,checkpoint_id,event_hashes,*,scope=None):
     for event in events:
         # Capture can resize a registered original into a new model image hash.
         # Whole-event retirement releases every acquired original reference.
-        db.execute('UPDATE semantic_media_refs SET released=1 WHERE event=?',(event,))
+        db.execute('UPDATE semantic_media_refs SET released=1,direct_source=0 WHERE event=?',(event,))
         db.execute('INSERT OR IGNORE INTO semantic_media_retired_events VALUES(?,?)',(event,checkpoint_id))
     db.execute('INSERT INTO semantic_media_batches VALUES(?,?,?,?,?)',
                (checkpoint_id,*payload,json.dumps(untracked),time.time()))

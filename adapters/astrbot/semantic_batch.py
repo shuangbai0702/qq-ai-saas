@@ -144,14 +144,19 @@ def semantic_claims(claims):
 def commit(db,scope,checkpoint_id,materials,cutoff,*,discarded=(),administrator=None,request_id=None):
     """Called in the successful memory transaction; failures roll back all rows."""
     initialize(db);verify(db,scope,materials)
+    tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    from input_reconciliation import ambient_retirement_candidates,unresolved_retirement_inputs
+    unresolved=unresolved_retirement_inputs(db,tables,ambient_retirement_candidates(db,tables))
+    events=set(materials)|{item['event'] for item in discarded}
+    if any((scope,event) in unresolved or origin(scope,event) in unresolved for event in events):
+        raise ValueError('semantic_batch_input_responsibility_pending')
     if discarded and (not administrator or not request_id):
         # Ordinary recovery is licensed only by this real complete checkpoint.
         # A partial checkpoint still requires its explicit administrator permit.
-        tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         checkpoint=db.execute('SELECT scope,round_count FROM memory_reconstruction_checkpoints WHERE id=?',(checkpoint_id,)).fetchone() if 'memory_reconstruction_checkpoints' in tables else None
         if not checkpoint or checkpoint[0]!=scope or checkpoint[1]<DEFAULT_SUMMARY_ROUNDS:raise PermissionError('administrator_authorization_required')
         administrator=f'automatic:{DEFAULT_SUMMARY_ROUNDS}_round_checkpoint';request_id='checkpoint:'+str(checkpoint_id)
-    members=sorted({event_key(scope,event) for event in materials}|{event_key(scope,item['event']) for item in discarded})
+    members=sorted(event_key(scope,event) for event in events)
     signature=hashlib.sha256(model_json({'scope':scope,'members':members,'materials':[materials[e]['digest'] for e in sorted(materials)]}).encode()).hexdigest()
     db.execute('INSERT INTO memory_semantic_batches VALUES(?,?,?,?,?,?,?,NULL)',(checkpoint_id,scope,signature,model_json(members),cutoff,'committed',time.time()))
     if discarded:
@@ -189,6 +194,9 @@ def _purge(db,checkpoint_id,*,preview=False):
     if not row:return False
     scope,members=row[0],set(json.loads(row[1]))
     tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    from input_reconciliation import ambient_retirement_candidates,unresolved_retirement_inputs
+    ambient=ambient_retirement_candidates(db,tables)
+    unresolved=unresolved_retirement_inputs(db,tables,ambient)
     contact_columns={r[1] for r in db.execute('PRAGMA table_info(contacts)')} if 'contacts' in tables else set()
     events=set()
     targets=('memory_pending','memory_round_material','memory_pending_rounds','memory_hold_rounds','memory_summary_coverage','memory_summary_unresolved','memory_media_retirement_choices','memory_rounds','memory_message_sources')
@@ -224,6 +232,7 @@ def _purge(db,checkpoint_id,*,preview=False):
     for event in events:
         identities={(scope,event),origin(scope,event)}
         for channel,identifier in identities:
+            if (channel,identifier) in unresolved:raise ValueError('semantic_batch_input_responsibility_pending')
             if 'pipeline_scope_work' in tables and db.execute('SELECT 1 FROM pipeline_scope_work WHERE scope=? AND event=?',(channel,identifier)).fetchone():
                 raise ValueError('semantic_batch_work_still_active')
             if 'pipeline_work_inputs' in tables and db.execute("SELECT 1 FROM pipeline_work_inputs WHERE scope=? AND event=? AND status='owned'",(channel,identifier)).fetchone():
@@ -289,6 +298,8 @@ def _purge(db,checkpoint_id,*,preview=False):
         if 'pipeline_work_inputs' in tables:
             # Minimal identity/status/receipt fencing remains a system ledger;
             # it is not model memory and no longer contains the raw request.
+            if (channel,identifier) in ambient:
+                db.execute("UPDATE pipeline_work_inputs SET status='settled_retired_observation' WHERE scope=? AND event=? AND status='deferred'",(channel,identifier))
             db.execute("UPDATE pipeline_work_inputs SET payload=NULL WHERE scope=? AND event=? AND status<>'owned'",(channel,identifier))
         for table,(column,indexed) in semantic_sources.items():
             matching=indexed.pop((channel,identifier),[])

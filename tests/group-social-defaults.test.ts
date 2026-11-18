@@ -4,7 +4,6 @@ import {renderToStaticMarkup} from 'react-dom/server';
 import {SocialControls} from '../apps/web/src/social-controls.js';
 import assert from 'node:assert/strict';
 import {BotConfigSchema,defaultConfig} from '../packages/contracts/index.js';
-import {platformMemePolicy} from '../packages/contracts/fish-persona.js';
 import {applyFishSocialPreset} from '../packages/contracts/fish-social-preset.js';
 test('group social limits and platform images agree in schema, new bot and preset defaults',()=>{
  const schema=BotConfigSchema.parse({...defaultConfig,behavior:{}});
@@ -23,7 +22,7 @@ test('group social limits and platform images agree in schema, new bot and prese
 });
 
 
-test('default persona favors a relevant image when the platform offers candidates',()=>{assert.ok(defaultConfig.systemPrompt.includes(platformMemePolicy));assert.ok(!defaultConfig.systemPrompt.includes('日常纯文本为主'));});
+test('default persona keeps image preferences while platform owns the image protocol',()=>{assert.ok(defaultConfig.systemPrompt.includes('图片与本轮语境贴切时自然搭配'));assert.ok(!defaultConfig.systemPrompt.includes('[MEME:'));});
 
 
 test('legacy daily limits and probability are removed when loading or saving configuration',()=>{
