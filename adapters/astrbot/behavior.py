@@ -981,8 +981,6 @@ def install_runtime(core,settings):
         # An @ to somebody else is addressing evidence for the model, not proof
         # that the topic cannot concern this bot. Side-comment policy is applied
         # after that judgment; unrelated directed chats never become follow-up.
-        if (cfg.get('behavior') or {}).get('memory',True) and (cfg.get('behavior') or {}).get('memorySummary'):
-            state['conversation_summaries']=st.reflection.recall(scope,incoming,subject=subject)
         batch=[];b=cfg.get('behavior') or {}
         hot_group=bool(group and not internal and not deferred and st.participation.in_conversation(scope,incoming or '[媒体]',b,now=now))
         # A fixed window belongs to its first ingress Work. New arrivals join
