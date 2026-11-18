@@ -41,7 +41,47 @@ test('mobile bootstrap and isolated decoration recover from real failure paths',
   await scenario('animation construction failure cleans up and preserves login',{desktop:true,init:"Object.defineProperty(window,'ResizeObserver',{value:class{constructor(){throw Error('deliberate decoration failure')}}})"},async(p)=>{await p.getByRole('heading',{name:'登录账号',exact:true}).waitFor();await p.waitForTimeout(2500);assert.equal(await p.locator('body.paper-app').count(),1,JSON.stringify(await p.evaluate(()=>({text:document.body.innerText,html:document.body.className}))) );assert(await p.getByRole('heading',{name:'登录账号',exact:true}).isVisible());assert.equal(await p.locator('[data-paper-owned]').count(),0)});
   await scenario('API 503 offers explicit retry instead of showing logged-out form',{me:503},async p=>{await p.getByRole('button',{name:'重试连接'}).waitFor();assert.equal(await p.getByRole('heading',{name:'登录账号',exact:true}).count(),0);await p.route('**/v1/auth/me',(route:any)=>route.fulfill({status:401,json:{error:'unauthorized'}}));await p.getByRole('button',{name:'重试连接'}).click();await p.getByRole('heading',{name:'登录账号',exact:true}).waitFor()});
   await scenario('blocked entry leaves readable static loading and recovery',{blocked:/\/assets\/index-.*\.js/},async p=>{await p.getByRole('link',{name:'重新加载',exact:true}).waitFor();assert((await p.locator('#root').innerText()).includes('正在加载'))});
-  await scenario('authenticated workspace keeps normal navigation and logout',{me:200,init:()=>localStorage.setItem('fishbot:announcement:isolated-user:2026-11-17-server-recovery','read')},async(p,_r,errors)=>{await p.getByRole('heading',{name:/我的机器人/}).waitFor();await p.getByRole('link',{name:'公告',exact:true}).click();await p.getByRole('heading',{name:'公告',exact:true}).waitFor();await p.getByRole('button',{name:'退出登录',exact:true}).click();await p.getByRole('heading',{name:'登录账号',exact:true}).waitFor();assert.deepEqual(errors,[])});
+  await scenario('authenticated workspace shows the combined announcement after its previous version was read',{me:200,init:()=>localStorage.setItem('fishbot:announcement:isolated-user:2026-11-18-referral-activation','read')},async(p,_r,errors)=>{
+   const announcement=p.getByRole('dialog',{name:'QQ 连接中断说明与邀请奖励'});
+   await announcement.getByText(/服务器出现波动/).waitFor();
+   await announcement.getByRole('heading',{name:'邀请好友，领取平台模型额度'}).waitFor();
+   await announcement.getByRole('button',{name:'知道了'}).click();
+   await p.getByRole('link',{name:'公告',exact:true}).click();
+   const article=p.locator('article').filter({has:p.getByRole('heading',{name:'QQ 连接中断说明与邀请奖励'})});
+   await article.getByText(/服务器出现波动/).waitFor();
+   await article.getByRole('heading',{name:'邀请好友，领取平台模型额度'}).waitFor();
+   assert.equal(await p.getByRole('heading',{name:'邀请好友，领取平台模型额度'}).count(),1);
+   await p.getByRole('button',{name:'退出登录',exact:true}).click();
+   await p.getByRole('heading',{name:'登录账号',exact:true}).waitFor();
+   assert.deepEqual(errors,[]);
+  });
+  await scenario('registration through a friend invitation shows the same announcement once',{},async(p,_r,errors)=>{
+   const code='test-referral-code123456';
+   await p.goto(base+'/#/invite/'+code+'?activation=test-invite');
+   await p.getByRole('heading',{name:'注册账号',exact:true}).waitFor();
+   let registered=false;
+   const user={id:'invited-user',name:'受邀用户',is_admin:false};
+   await p.route('**/v1/auth/register',async(route:any)=>{
+    const {referralCode,inviteCode}=route.request().postDataJSON();
+    registered=referralCode===code&&inviteCode==='test-invite';
+    await route.fulfill({status:registered?200:400,json:registered?{user}:{error:'邀请码未提交'}});
+   });
+   await p.route('**/v1/auth/me',(route:any)=>route.fulfill({status:registered?200:401,json:registered?{user}:{error:'unauthorized'}}));
+   await p.route('**/v1/referrals',(route:any)=>route.fulfill({json:{enabled:true,canInvite:false,available:20000000,invited:0}}));
+   await p.getByLabel('你的称呼').fill(user.name);
+   await p.getByLabel('邮箱地址').fill('invited@example.test');
+   await p.getByLabel('密码',{exact:true}).fill('browser-test-pass');
+   await p.getByRole('button',{name:'创建账号'}).click();
+   const announcement=p.getByRole('dialog',{name:'QQ 连接中断说明与邀请奖励'});
+   await announcement.getByText(/重新登录 QQ/).waitFor();
+   await announcement.getByRole('heading',{name:'邀请好友，领取平台模型额度'}).waitFor();
+   await announcement.getByRole('link',{name:'前往邀请奖励'}).click();
+   await p.getByRole('heading',{name:'邀请奖励',exact:true}).waitFor();
+   await p.reload();
+   await p.getByRole('heading',{name:'邀请奖励',exact:true}).waitFor();
+   assert.equal(await announcement.count(),0);
+   assert.deepEqual(errors,[]);
+  });
   await scenario('blocked workspace chunk offers reload without blank root',{me:200,blocked:/\/assets\/workspace-.*\.js/},async p=>{await p.getByRole('button',{name:'重新加载',exact:true}).waitFor();assert((await p.locator('#root').innerText()).includes('页面资源加载失败'))});
  }finally{await browser.close();await new Promise<void>(resolve=>server.close(()=>resolve()))}
 });

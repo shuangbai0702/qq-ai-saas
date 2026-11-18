@@ -17,6 +17,19 @@ import {BilibiliExecutor} from './bilibili/executor.js';
 import {createFavoriteCaptioner} from '../../../packages/shared/qq-favorite-semantics.js';
 import {resolvePlatformModel} from '../../../packages/shared/platform-model.js';
 
+/** Install lifecycle methods without replacing the live Agent or QQ owners. */
+export function installProtocolLifecycleRuntime(agent:NodeAgent,release:string){
+ if(!/^[a-f0-9]{64}$/.test(release)||agent.closed||controlBusy(agent)||(agent as any).shutdownTask)throw new Error('Invalid protocol lifecycle boundary');
+ const agentPrototype=Object.getPrototypeOf(agent),hostPrototype=Object.getPrototypeOf(agent.host);
+ const methods=[{target:agentPrototype,source:NodeAgent.prototype,name:'shutdownOnce'},
+  ...['helper','start','stop'].map(name=>({target:hostPrototype,source:ProcessHost.prototype,name}))];
+ const updates=methods.map(method=>({...method,descriptor:Object.getOwnPropertyDescriptor(method.source,method.name)}));
+ if(updates.some(method=>typeof method.descriptor?.value!=='function'||
+  (Object.getOwnPropertyDescriptor(method.target,method.name)?.configurable===false)||!Object.isExtensible(method.target)))throw new Error('Protocol lifecycle method contract changed');
+ for(const method of updates)Object.defineProperty(method.target,method.name,method.descriptor!);
+ return{pid:process.pid,release,preservedChildren:[...agent.host.children].map(([id,child])=>({id,pid:child.pid}))};
+}
+
 /** Add the native delegation host without replacing QQ owners or the heartbeat. */
 export async function installDshRuntime(agent:NodeAgent,release:string){
  if(!/^[a-f0-9]{64}$/.test(release)||agent.closed||controlBusy(agent))throw new Error('Invalid DSH maintenance boundary');

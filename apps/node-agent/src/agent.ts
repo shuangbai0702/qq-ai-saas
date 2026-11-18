@@ -117,11 +117,13 @@ export class NodeAgent {
   // A failed maintenance stop must not bypass the remaining shutdown path.
   for(const owner of [this.dsh,this.favorites,this.bilibili,this.autonomy])try{await owner?.stop()}catch(e){failure??=e}
   while(this.busy)await new Promise(r=>setTimeout(r,20));await Promise.allSettled([...this.operations.values(),...(this.healthTask?[this.healthTask]:[])]);
-  try{for(const bot of await this.db.query('SELECT * FROM bots WHERE deleted_at IS NULL')){await this.aiFor(bot).stop(bot.id).catch(e=>{failure??=e});await this.protocols[bot.protocol].stop(bot.id).catch(e=>{failure??=e})}}catch(e){failure??=e}
+  // Agent replacement ends AI work, not the independently owned QQ session.
+  // Explicit Bot stop/delete/login commands still use ProtocolAdapter.stop.
+  try{for(const bot of await this.db.query('SELECT * FROM bots WHERE deleted_at IS NULL')){await this.aiFor(bot).stop(bot.id).catch(e=>{failure??=e})}}catch(e){failure??=e}
   finally{try{
-   // Database failure must not leave a shared group or QQ child alive. These
+   // Database failure must not leave a shared AI group alive. These
    // on-disk records are verified by ProcessHost against PID creation and cwd.
-   const dirs=await readdir(path.join(this.root,'bots')).catch(e=>{if(e.code==='ENOENT')return[];throw e});for(const id of dirs)for(const kind of ['ai','protocol'])try{await this.host.stop(id,kind)}catch(e){failure??=e};
+   const dirs=await readdir(path.join(this.root,'bots')).catch(e=>{if(e.code==='ENOENT')return[];throw e});for(const id of dirs)try{await this.host.stop(id,'ai')}catch(e){failure??=e};
   }catch(e){failure??=e}finally{if(!failure){await rm(path.join(this.root,'agent.lock'),{force:true});await this.releaseLease?.();this.releaseLease=undefined}}}
   if(failure)throw failure;
  }

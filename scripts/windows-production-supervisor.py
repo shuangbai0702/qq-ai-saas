@@ -198,6 +198,23 @@ def healthy(url):
         return False
 
 
+def revoke_protocols(config):
+    """Execution-authority revocation is explicit; service restarts are not."""
+    root = (Path(config['dataRoot']).resolve() / 'bots')
+    if not root.exists():
+        return
+    helper = Path(config['sourceRoot']).resolve() / 'scripts/protocol_process.py'
+    for bot in root.iterdir():
+        # The protocol owner retains the only process record and serializes
+        # stop with a pending launch. Never follow a directory outside bots.
+        if not bot.is_dir() or bot.resolve().parent != root:
+            continue
+        subprocess.run([config['python'], '-B', str(helper), 'stop', str(bot)],
+                       check=True, timeout=25, stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       creationflags=0x08000000)
+
+
 def postgres_ready(service,pg,pgdata,env):
     """A failed readiness observation must not tear down healthy service trees."""
     if service.process is None:return False
@@ -223,6 +240,11 @@ def run(config, preflight=False):
     if not env.get('DATABASE_URL','').startswith(('postgres://','postgresql://')) and not env.get('PGHOST'):
         raise ValueError('Independent production services require PostgreSQL')
     env.update(DATA_ROOT=str(data),EXTERNAL_AGENT='true',FISHBOT_MEMORY_POLICY='off',NODE_ENV='production')
+    if not preflight:
+        # This is host launch configuration from the same private config, not
+        # another process ledger. Each independent QQ owner checks the original
+        # authority file even while the Agent or supervisor is restarting.
+        atomic(data/'protocol-authority.json',dict(file=config.get('executionAuthority',''),authorityId=config.get('authorityId','')))
     state.mkdir(parents=True,exist_ok=True)
     import msvcrt
     with (state/'supervisor.lock').open('a+b') as lock:
@@ -247,6 +269,7 @@ def run(config, preflight=False):
                     dns_sync=service('dns-sync',[python,'-B',str(source/'scripts/tunnel-txt-sync.py'),'--config',str(Path(config['dnsSyncConfig']).resolve())])
             atomic(state/'supervisor.json',dict(pid=os.getpid(),created=psutil.Process().create_time(),preflight=preflight))
             last_health,api_ready=0,False
+            revoked=False
             while True:
                 now=time.monotonic()
                 stop=state/'supervisor.stop'
@@ -263,6 +286,10 @@ def run(config, preflight=False):
                     dns_sync.stop();dns_sync.next=now+10
                 if agent.process and not permitted:
                     agent.stop();agent.next=now+10
+                if not permitted and not preflight and not revoked:
+                    revoke_protocols(config);revoked=True
+                elif permitted:
+                    revoked=False
                 if postgres.process is None and now>=postgres.next:postgres.start()
                 pg_ready=postgres_ready(postgres,pg,pgdata,env)
                 if pg_ready and api.process is None and now>=api.next:api.start()

@@ -2,6 +2,34 @@
 import sys,json,os,math,time
 from pathlib import Path
 import psutil
+
+def windows_long_path(value):
+    from ctypes import create_unicode_buffer, windll
+
+    expand = windll.kernel32.GetLongPathNameW
+    buffer = create_unicode_buffer(260)
+    size = expand(value, buffer, len(buffer))
+    if size >= len(buffer):
+        buffer = create_unicode_buffer(size)
+        size = expand(value, buffer, len(buffer))
+    return os.path.normcase(buffer.value) if 0 < size < len(buffer) else value
+
+def owns_path(root, arguments):
+    paths = [os.path.normcase(os.path.abspath(arg)) for arg in arguments]
+    if any(value == root or value.startswith(root + os.sep) for value in paths):
+        return True
+    if os.name != 'nt':
+        return False
+    # Service accounts can supply an 8.3 spelling for a path that the
+    # protocol launcher expanded. Compare only spellings of that directory.
+    root = windows_long_path(root)
+    drive = os.path.splitdrive(root)[0]
+    candidates = (
+        windows_long_path(value) for arg, value in zip(arguments, paths)
+        if os.path.isabs(arg) and os.path.splitdrive(value)[0] == drive
+    )
+    return any(value == root or value.startswith(root + os.sep) for value in candidates)
+
 def loop_activity(root,processes,now=None):
     """Existing RuntimeCare telemetry proves recent loop activity, not task progress."""
     now=time.time() if now is None else now
@@ -20,12 +48,18 @@ def loop_activity(root,processes,now=None):
         except (OSError,ValueError,KeyError,TypeError,OverflowError,psutil.Error):pass
     return None
 
-def inspect(pid,root,created=None):
+def owned_process(pid,root,created=None):
     try:
         p=psutil.Process(pid);root=os.path.normcase(os.path.abspath(root))
-        valid=any((value:=os.path.normcase(os.path.abspath(arg)))==root or value.startswith(root+os.sep) for arg in p.cmdline())
-        if created is not None:valid=valid and abs(p.create_time()-float(created))<.01
-        if not valid:return {'valid':False}
+        if created is not None and not abs(p.create_time()-float(created))<.01:return None
+        if owns_path(root,p.cmdline()):return p
+    except psutil.NoSuchProcess:pass
+    return None
+
+def inspect(pid,root,created=None):
+    try:
+        p=owned_process(pid,root,created)
+        if p is None:return {'valid':False}
         children=p.children(recursive=True);rss=0;count=0
         for child in [p,*children]:
             try:rss+=child.memory_info().rss;count+=1
@@ -33,33 +67,30 @@ def inspect(pid,root,created=None):
         return {'valid':True,'pid':pid,'rssBytes':rss,'processCount':count,'created':p.create_time(),'loopActivity':loop_activity(root,[p,*children])}
     except psutil.NoSuchProcess:return {'valid':False}
 
-mode=sys.argv[1]
-if mode=='batch':
-    rows=json.load(sys.stdin)
-    print(json.dumps([{**inspect(int(r['pid']),r['root'],r.get('created')),'id':r['id'],'kind':r['kind']} for r in rows]));sys.exit(0)
-pid,root=int(sys.argv[2]),os.path.normcase(os.path.abspath(sys.argv[3]))
-if mode=='inspect':
-    print(json.dumps(inspect(pid,root,sys.argv[4] if len(sys.argv)>4 and sys.argv[4]!='unknown' else None)));sys.exit(0)
-try:
-    p=psutil.Process(pid)
-    valid=any((value:=os.path.normcase(os.path.abspath(arg)))==root or value.startswith(root+os.sep) for arg in p.cmdline())
-    if len(sys.argv)>4 and sys.argv[4]!='unknown':valid=valid and abs(p.create_time()-float(sys.argv[4]))<0.01
-    if not valid:
-        if mode=='inspect': print(json.dumps({'valid':False}))
-        sys.exit(0 if mode=='inspect' else 2)
-    children=p.children(recursive=True)
+def stop_tree(process):
+    try: children=process.children(recursive=True)
+    except psutil.NoSuchProcess: return True
+    for child in reversed([process,*children]):
+        try: child.terminate()
+        except psutil.NoSuchProcess: pass
+    _,alive=psutil.wait_procs([process,*children],timeout=5)
+    for child in alive:
+        try: child.kill()
+        except psutil.NoSuchProcess: pass
+    _,alive=psutil.wait_procs(alive,timeout=3)
+    return not alive
+
+def main():
+    mode=sys.argv[1]
+    if mode=='batch':
+        rows=json.load(sys.stdin)
+        print(json.dumps([{**inspect(int(r['pid']),r['root'],r.get('created')),'id':r['id'],'kind':r['kind']} for r in rows]));return 0
+    pid,root=int(sys.argv[2]),sys.argv[3]
+    created=sys.argv[4] if len(sys.argv)>4 and sys.argv[4]!='unknown' else None
     if mode=='inspect':
-        rss=sum(x.memory_info().rss for x in [p,*children] if x.is_running())
-        print(json.dumps({'valid':True,'pid':pid,'rssBytes':rss,'processCount':len(children)+1,'created':p.create_time()}))
-    else:
-        for x in reversed([p,*children]):
-            try:x.terminate()
-            except psutil.NoSuchProcess:pass
-        _,alive=psutil.wait_procs([p,*children],timeout=5)
-        for x in alive:
-            try:x.kill()
-            except psutil.NoSuchProcess:pass
-        _,alive=psutil.wait_procs(alive,timeout=3)
-        if alive:sys.exit(3)
-except psutil.NoSuchProcess:
-    if mode=='inspect':print(json.dumps({'valid':False}))
+        print(json.dumps(inspect(pid,root,created)));return 0
+    process=owned_process(pid,root,created)
+    if process is None:return 2 if psutil.pid_exists(pid) else 0
+    return 0 if stop_tree(process) else 3
+
+if __name__=='__main__':sys.exit(main())

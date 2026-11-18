@@ -3,6 +3,7 @@ import {redact} from '../../../packages/shared/security.js';
 import {StringDecoder} from 'node:string_decoder';
 import {AsyncLocalStorage} from 'node:async_hooks';
 const stopIntents=new WeakMap<ChildProcess,string>();
+const protocolHelperTimeout=25000;
 export class ProcessHost {
   children=new Map<string,ChildProcess>(); logWrites=new Map<string,Promise<void>>();
   constructor(public root:string,public python:string){}
@@ -26,7 +27,7 @@ export class ProcessHost {
     }).finally(()=>{this.memorySweep=undefined});
     return this.memorySweep;
   }
-  private helper(args:string[],input?:string){return new Promise<string>((resolve,reject)=>{const child=execFile(this.python,[path.resolve('scripts/process_control.py'),...args],{windowsHide:true,timeout:15000,maxBuffer:1024*1024},(error,stdout)=>error?reject(error):resolve(stdout));if(input){child.stdin?.on('error',reject);child.stdin?.end(input)}})}
+  private helper(args:string[],input?:string,script='process_control.py',timeout=15000){return new Promise<string>((resolve,reject)=>{const child=execFile(this.python,['-B',path.resolve('scripts',script),...args],{windowsHide:true,timeout,maxBuffer:1024*1024},(error,stdout)=>error?reject(error):resolve(stdout));if(input){child.stdin?.on('error',reject);child.stdin?.end(input)}})}
   // One short-lived interpreter for an entire health sweep, not one per probe.
   // The cache never spans a command, start/stop, or another health sweep.
   async beginInspection(){const records=[];for(const id of await readdir(path.join(this.root,'bots')).catch(()=>[])){for(const kind of ['ai','protocol']){const rec=await this.record(id,kind);if(rec)records.push({id,kind,pid:rec.pid,created:rec.created,root:path.join(this.root,'bots',id)})}}const values=JSON.parse(await this.helper(['batch'],JSON.stringify(records)));await this.maintainMemory(records);this.inspection=new Map(values.map((v:any)=>[`${v.id}:${v.kind}`,v.valid?{...v,memoryPolicy:this.memoryStatus.get(`${v.id}:${v.kind}`)}:null]))}
@@ -37,12 +38,22 @@ export class ProcessHost {
   async start(id:string,kind:string,executable:string,args:string[],cwd:string,env:NodeJS.ProcessEnv,keys:string[]=[]){
     this.endInspection();
     if(await this.inspect(id,kind))return;
-    await mkdir(path.join(this.root,'bots',id),{recursive:true});
+    const botRoot=path.join(this.root,'bots',id);
+    await mkdir(botRoot,{recursive:true});
     // Each child owns only its current credentials. Never retain old rotated
     // keys in a host-wide map after the child is gone.
     const childKeys=[...keys];
     const safeEnv:NodeJS.ProcessEnv={};
     for(const [k,v] of Object.entries(env))if(/^(PATH|PATHEXT|SYSTEMROOT|WINDIR|COMSPEC|HOME|USERPROFILE|LOCALAPPDATA|APPDATA|PROGRAMDATA|TEMP|TMP|TMPDIR|LANG|LC_.*|SSL_CERT_FILE|SSL_CERT_DIR|LD_LIBRARY_PATH|PYTHON.*|ASTRBOT_ROOT|FISHBOT_MODEL_KEY|FISHBOT_ASTRBOT_SLIM|FISHBOT_MODEL_ALLOWED_PRIVATE_ORIGINS|NAPCAT_PLATFORM_MANIFEST|NODE_EXTRA_CA_CERTS)$/i.test(k))safeEnv[k]=v;
+    if(kind==='protocol'){
+      let cgroup;
+      if(process.platform==='linux'&&process.env.FISHBOT_CGROUP_ROOT){
+        if(!/^[a-zA-Z0-9-]+$/.test(id))throw new Error('Invalid cgroup ID');
+        cgroup={id,root:path.resolve(process.env.FISHBOT_CGROUP_ROOT),memory:process.env.BOT_MEMORY_MAX_BYTES||'1073741824',cpu:process.env.BOT_CPU_MAX||'100000 100000'};
+      }
+      await this.helper(['start',botRoot],JSON.stringify({executable,args,cwd,env:safeEnv,keys:childKeys,cgroup}),'protocol_process.py',protocolHelperTimeout);
+      return;
+    }
     const child=spawn(executable,args,{cwd,env:safeEnv,windowsHide:true,stdio:['ignore','pipe','pipe']});
     await new Promise<void>((resolve,reject)=>{child.once('spawn',resolve);child.once('error',reject)});
     if(process.platform==='linux'&&process.env.FISHBOT_CGROUP_ROOT){
@@ -62,12 +73,21 @@ export class ProcessHost {
   }
   async stop(id:string,kind:string,intent='managed-stop',expected?:{pid:number;created?:number}){
     this.endInspection();
-    const rec=await this.record(id,kind);if(!rec)return;
+    const botRoot=path.join(this.root,'bots',id);
+    const rec=await this.record(id,kind);
+    if(!rec){
+      if(kind==='protocol')await this.helper(['stop',botRoot],undefined,'protocol_process.py',protocolHelperTimeout);
+      return;
+    }
     if(expected&&(rec.pid!==expected.pid||rec.created!==expected.created))throw Object.assign(new Error('Process ownership changed before stop'),{superseded:true});
     const child=this.children.get(`${id}:${kind}`);if(child&&child.pid===rec.pid)stopIntents.set(child,intent);
     // Also records maintenance stop calls outside the command ledger, and
     // adopted processes whose close event belongs to a previous Agent.
-    await appendFile(path.join(this.root,'bots',id,'runtime.log'),`[${kind}] stop requested at=${new Date().toISOString()} pid=${rec.pid} intent=${redact(intent)}\n`).catch(()=>console.error('Process stop audit unavailable:',id,kind,rec.pid));
+    await appendFile(path.join(botRoot,'runtime.log'),`[${kind}] stop requested at=${new Date().toISOString()} pid=${rec.pid} intent=${redact(intent)}\n`).catch(()=>console.error('Process stop audit unavailable:',id,kind,rec.pid));
+    if(kind==='protocol'){
+      await this.helper(['stop',botRoot,String(rec.pid),String(rec.created??'unknown')],undefined,'protocol_process.py',protocolHelperTimeout);
+      return;
+    }
     await this.helper(['stop',String(rec.pid),path.join(this.root,'bots',id),String(rec.created??'unknown')]);
     await rm(this.file(id,kind),{force:true});this.children.delete(`${id}:${kind}`);
   }

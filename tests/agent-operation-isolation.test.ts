@@ -86,7 +86,7 @@ test('shutdown settles every owner but retains its lease after an unconfirmed ma
   const first=agent.shutdown(),result=assert.rejects(first,error=>error===failure);await started;
   assert.equal(agent.closed,true);assert.equal(agent.shutdown(),first,'all callers await the same shutdown');
   assert.deepEqual(calls,['favorites']);release();await result;
-  assert.deepEqual(calls,['favorites','bilibili','autonomy','ai','protocol','fallback:ai','fallback:protocol']);
+  assert.deepEqual(calls,['favorites','bilibili','autonomy','ai','fallback:ai'],'Agent exit never stops the independent protocol, including failure cleanup');
   assert.equal((await stat(path.join(root,'agent.lock'))).isFile(),true);assert.equal(typeof agent.releaseLease,'function');
  }finally{release();await rm(root,{recursive:true,force:true})}
 });
@@ -148,14 +148,14 @@ test('shutdown keeps its lease when the fallback process inventory cannot be ins
 });
 
 
-test('a synchronous fallback stop failure does not skip other process owners or release the lease',async()=>{
+test('a synchronous fallback stop failure does not skip other AI owners or stop QQ',async()=>{
  const root=await mkdtemp(path.join(os.tmpdir(),'fishbot-shutdown-fallback-'));
  const agent:any=new NodeAgent({query:async()=>[]} as any,root,Buffer.alloc(32));let released=0;const stopped:string[]=[];
  agent.favorites.stop=async()=>{};agent.bilibili.stop=async()=>{};agent.autonomy.stop=async()=>{};
- agent.releaseLease=async()=>{released++};await mkdir(path.join(root,'bots','fixture'),{recursive:true});await writeFile(path.join(root,'agent.lock'),'fixture');
- agent.host.stop=(id:string,kind:string)=>{stopped.push(kind);if(kind==='ai')throw Error('synchronous stop failure');return Promise.resolve()};
+ agent.releaseLease=async()=>{released++};for(const id of ['first','second'])await mkdir(path.join(root,'bots',id),{recursive:true});await writeFile(path.join(root,'agent.lock'),'fixture');
+ agent.host.stop=(id:string,kind:string)=>{stopped.push(id+':'+kind);if(id==='first')throw Error('synchronous stop failure');return Promise.resolve()};
  try{
   await assert.rejects(agent.shutdown(),/synchronous stop failure/);
-  assert.deepEqual(stopped,['ai','protocol']);assert.equal(released,0);assert.equal((await stat(path.join(root,'agent.lock'))).isFile(),true);
+  assert.deepEqual(stopped.sort(),['first:ai','second:ai']);assert.equal(released,0);assert.equal((await stat(path.join(root,'agent.lock'))).isFile(),true);
  }finally{await rm(root,{recursive:true,force:true})}
 });
