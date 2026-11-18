@@ -261,13 +261,13 @@ def retire_owner_journals(db,bot_id,grant,backup_sha,cfg,product):
     expected=_verify_grant(db,bot_id,grant,backup_sha)
     limit=4 if len((cfg.get('behavior') or cfg).get('groupParticipationGroups') or ())>2 else 2
     group_whitelist(cfg,limit)
-    initialize(db)
     db.execute('PRAGMA secure_delete=ON')
     db.execute('BEGIN IMMEDIATE')
     try:
         saved=_verify_repeat(db,grant,backup_sha)
         if saved:
             db.commit();return saved
+        initialize(db)
         all_rows={json.loads(key):(state,sha) for key,state,sha in db.execute(
                   'SELECT scope,state,sha FROM fishbot_readonly_journals')}
         if (active(db) or JOURNAL_SCOPE in all_rows

@@ -103,6 +103,10 @@ class Unified(unittest.TestCase):
         before=self.db.execute('SELECT scope,sha FROM fishbot_readonly_journals').fetchall()
         shared.activate_empty(self.db,self.cfg)
         self.assertFalse(shared.active(self.db))
+        from readonly_journal import ContextRecoveryUnavailable
+        shared.require_legacy_journal(self.db,scope)
+        with self.assertRaisesRegex(ContextRecoveryUnavailable,'owner_migration_required'):
+            shared.require_legacy_journal(self.db,'group:55555')
         self.assertEqual(self.db.execute('SELECT scope,sha FROM fishbot_readonly_journals').fetchall(),before)
 
     def test_reserved_shared_journal_survives_restart_and_fences_a_missing_marker(self):
@@ -161,7 +165,9 @@ class Writers(unittest.IsolatedAsyncioTestCase):
                     store.reflection.record(shared.JOURNAL_SCOPE,'12345678',identifier,m['content'],'confirmed answer '+str(n),materials=materials)
                 self.assertEqual(db.execute('SELECT scope,count(*) FROM memory_rounds GROUP BY scope').fetchall(),[(shared.JOURNAL_SCOPE,30)])
                 class Summary:
-                    async def text_chat(self,**kwargs):return NS(completion_text=model_json({'summary':'30 completed events, authors and original sources retained.','evidence':[],'commitments':[]}))
+                    async def text_chat_stream(self,**kwargs):
+                        yield NS(completion_text=model_json({'summary':'30 completed events, authors and original sources retained.','evidence':[],'commitments':[]}),
+                                 raw_completion={'choices':[{'finish_reason':'stop'}]})
                 metrics={};provider=Summary()
                 self.assertTrue(store.reflection.maybe_start(shared.JOURNAL_SCOPE,{'memory':True,'memorySummary':True,'naturalConversation':False},provider,lambda:True,metrics,ContextVar('shared-summary-event',default=None)))
                 await store.reflection.task

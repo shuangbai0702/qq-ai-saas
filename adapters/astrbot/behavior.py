@@ -1770,6 +1770,9 @@ def install_runtime(core,settings):
         if (foreground or internal) and isinstance(projected,list):
             from readonly_journal import ReadonlyJournal,visible_summary_ids
             key=image_event.get_extra('_hosted_main_journal_scope') if main_activation else ('autonomous',work.event_id) if internal else shared_context.JOURNAL_SCOPE if owned.shared_context and shared_mode else work.scope
+            if isinstance(key,str) and key.startswith(('private:','group:')):
+                import shared_context
+                shared_context.require_legacy_journal(owned.db,key)
             journal=owned.model_journals.pop(key,None)
             if journal is None:journal=ReadonlyJournal(owned.db,key if isinstance(key,str) else None)
             owned.model_journals[key]=journal

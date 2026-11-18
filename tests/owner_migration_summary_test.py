@@ -98,6 +98,17 @@ class OwnerSummaryTests(unittest.IsolatedAsyncioTestCase):
                 capture_output=True,text=True,timeout=20)
             self.assertEqual(result.returncode,0,result.stderr)
 
+    async def test_incomplete_physical_blocks_are_not_replayed_to_model(self):
+        from semantic_collection import Collected
+        payload=Collected(self.payload,[{'event':model_json(['group:11111','missing']),
+            'source_scope':'group:11111','sender_ids':['11111'],'missing':'incomplete_original',
+            'available_text':['可靠的用户输入'],'available_reply':['UNBOUND_REPLY'],
+            'available_observations':[[{'role':'assistant','content':'UNBOUND_NATIVE',
+                'tool_calls':[{'name':'UNBOUND_TOOL'}]},{'role':'tool','content':'UNBOUND_RESULT'}]],'images':[]}])
+        product=await prepare_owner_migration_summary(self.db,payload,self.provider,{})
+        self.assertNotIn('UNBOUND_',model_json(self.requests[0]))
+        self.assertEqual(product['omittedUnknowns'],{'nativeOutputs':3,'toolRounds':1,'unverifiedReplies':1})
+
     async def test_publish_merges_old_products_into_one_visible_foundation_and_rolls_back(self):
         old_ids=[]
         for index in range(4):
@@ -126,6 +137,23 @@ class OwnerSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.db.rollback()
         self.assertEqual('\n'.join(self.db.iterdump()),before)
         self.assertTrue(verify_owner_migration_summary(self.db,self.payload,product))
+
+    async def test_publish_rejects_loss_of_protected_source_claims(self):
+        claims=[{'id':'protected'+str(index),'text':'仍需处理的认知'+str(index),'kind':'human_statement',
+            'speaker':{'role':'human','id':'12345678'},'protected':True,
+            'sourceRefs':[{'scope':'private:12345678','event':'semantic:old'+str(index),'role':'user'}],
+            'visibility':'private:12345678','occurredAt':index+1,'status':'active'} for index in range(31)]
+        identifier=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated,schema_version,claims) VALUES(?,?,?,?,2,?)',
+            ('private:12345678','受保护认知','[]',50,model_json(claims))).lastrowid
+        self.db.execute("INSERT INTO memory_summary_levels VALUES(?,'small')",(identifier,))
+        self.db.commit()
+        product=await prepare_owner_migration_summary(self.db,self.payload,self.provider,{})
+        before='\n'.join(self.db.iterdump())
+        self.db.execute('BEGIN IMMEDIATE')
+        with self.assertRaisesRegex(ValueError,'protected_claims_uncarried:'+str(identifier)):
+            publish_owner_migration_summary(self.db,self.payload,product)
+        self.db.rollback()
+        self.assertEqual('\n'.join(self.db.iterdump()),before)
 
     async def test_two_scope_cutover_failure_rollback_retry_and_restart(self):
         import hashlib,sqlite3

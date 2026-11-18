@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
 import journal_storage
+import semantic_batch
 from context_protocol import SOURCE,READONLY_CURRENT,model_json
 from readonly_journal import ReadonlyJournal,Prepared,semantic_retire_projection,ContextPrefixViolation
 
@@ -16,7 +17,6 @@ def message(event,scope='group:12345',image=None):
 
 class SemanticJournalTests(unittest.TestCase):
     def setUp(self):
-        self.module=patch.dict(sys.modules,{'semantic_batch':SimpleNamespace(event_key=event_key)});self.module.start()
         self.db=sqlite3.connect(':memory:');self.j=ReadonlyJournal(self.db,'bot_shared')
         self.system={'role':'system','content':'tenant authority'}
         self.image='data:image/png;base64,'+'A'*9000
@@ -26,8 +26,12 @@ class SemanticJournalTests(unittest.TestCase):
         self.p=Prepared(1,None,copy.deepcopy(self.base),copy.deepcopy(self.base),{'old':'stale original'},1,1,'initial')
         self.j.serial=1;self.assertTrue(self.j._persist(self.p));self.j.last=self.p
         self.permit={'kind':'summary_checkpoint','id':1,'scope':'bot_shared','epoch':0,'requestId':'request','semanticBatch':True,'batchDigest':'b'*64,'batchMembers':[event_key('bot_shared',model_json(['group:12345','old']))],'batchCutoff':0}
+        semantic_batch.initialize(self.db)
+        self.db.execute('INSERT INTO memory_semantic_batches VALUES(?,?,?,?,?,?,?,NULL)',
+                        (1,'bot_shared',self.permit['batchDigest'],model_json(self.permit['batchMembers']),0,'committed',1))
+        self.db.commit()
         self.authority=SimpleNamespace(db=self.db,settle_context_reconstruction=lambda *a,**kw:True,checkpoint_issue=lambda *a,**kw:None)
-    def tearDown(self):self.db.close();self.module.stop()
+    def tearDown(self):self.db.close()
     def test_projection_uses_members_not_cutoff_and_keeps_other_scope(self):
         other=message('old',scope='group:67890')
         projected=semantic_retire_projection(self.base+[other],self.permit)
@@ -64,8 +68,6 @@ class SemanticJournalTests(unittest.TestCase):
         self.assertIsNone(candidate.reconstruction_permit)
         self.assertIn('current identity',model_json(candidate.wire))
     def test_retired_members_fence_stale_sdk_history_and_record_completion(self):
-        self.db.execute('CREATE TABLE memory_semantic_batches(checkpoint_id PRIMARY KEY,scope,digest,members,state,completed)')
-        self.db.execute('INSERT INTO memory_semantic_batches VALUES(?,?,?,?,?,NULL)',(1,'bot_shared',self.permit['batchDigest'],model_json(self.permit['batchMembers']),'committed'));self.db.commit()
         self.assertTrue(self.j.retire_semantic_batch(self.permit,self.authority,{}))
         state,completed=self.db.execute('SELECT state,completed FROM memory_semantic_batches').fetchone()
         self.assertEqual(state,'retired');self.assertGreater(completed,0)
@@ -82,10 +84,16 @@ class SemanticJournalTests(unittest.TestCase):
             self.assertTrue(self.j.retire_semantic_batch(self.permit,self.authority,{}))
         self.assertEqual(self.db.execute('SELECT count(*) FROM fishbot_readonly_journal_blobs').fetchone()[0],0)
     def test_gc_preserves_archive_and_other_scope_references(self):
-        payload=self.db.execute('SELECT payload FROM fishbot_readonly_journals').fetchone()[0]
+        # References belong to an unretired event. Another active Journal
+        # containing this retiring event would correctly reject the batch.
+        retained=copy.deepcopy(self.p)
+        retained.base=[self.system,message('retained',scope='group:67890',image=self.image)]
+        retained.wire=copy.deepcopy(retained.base)
+        retained.state={}
+        payload=self.j._snapshot(retained)
         self.db.execute('CREATE TABLE memory_checkpoint_archives(scope,version,payload)')
         self.db.execute('INSERT INTO memory_checkpoint_archives VALUES(?,?,?)',(self.j.scope_key,2,payload));self.db.commit()
-        other=ReadonlyJournal(self.db,'other');self.assertTrue(other._persist(self.p))
+        other=ReadonlyJournal(self.db,'other');self.assertTrue(other._persist(retained))
         self.assertTrue(self.j.retire_semantic_batch(self.permit,self.authority,{}))
         self.assertEqual(self.db.execute('SELECT count(*) FROM fishbot_readonly_journal_blobs').fetchone()[0],2)
 

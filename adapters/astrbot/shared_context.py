@@ -59,9 +59,18 @@ def initialize(db):
     # An ingress staging queue, NOT a second submitted-message history. Rows
     # leave after Journal adoption, or after its adopted group window proves
     # they were superseded before submission. Business evidence stays separate.
-    db.executescript('''CREATE TABLE IF NOT EXISTS fishbot_shared_inputs(
+    db.execute('''CREATE TABLE IF NOT EXISTS fishbot_shared_inputs(
       id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,event TEXT NOT NULL,
       message TEXT NOT NULL,created REAL NOT NULL,UNIQUE(scope,event));''')
+
+
+def require_legacy_journal(db,scope):
+    """Allow an existing legacy Journal to finish until its authorized cutover."""
+    from readonly_journal import ContextRecoveryUnavailable
+    exists=db.execute("SELECT 1 FROM fishbot_readonly_journals WHERE scope=? AND state='ready'",
+                      (model_json(scope),)).fetchone()
+    if not exists:
+        raise ContextRecoveryUnavailable('owner_migration_required_for_legacy_journal')
 
 
 def _record_activation(db,authorization,group_limit):
@@ -97,9 +106,9 @@ def activate_empty(db,cfg,*,group_limit=None):
     group_whitelist(cfg,limit)
     from readonly_journal import ReadonlyJournal
     ReadonlyJournal(db,None)
-    initialize(db)
     db.execute('BEGIN IMMEDIATE')
     try:
+        initialize(db)
         tables={name for name, in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if not active(db) and db.execute('SELECT 1 FROM fishbot_readonly_journals WHERE scope=?',
                                          (model_json(JOURNAL_SCOPE),)).fetchone():

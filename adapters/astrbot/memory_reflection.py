@@ -339,7 +339,7 @@ def publish_owner_migration_summary(db,payload,product):
     """Publish one merged existing-store product inside the cutover transaction."""
     if not db.in_transaction:raise ValueError('owner_migration_publish_transaction_required')
     verify_owner_migration_summary(db,payload,product)
-    from summary_material import inherit_claims,fit_claims,batch_corrections,derive_claims,semantic_claims_product,settle_commitments
+    from summary_material import inherit_claims,fit_claims,batch_corrections,derive_claims,semantic_claims_product,settle_commitments,uncarried_sources
     from semantic_batch import semantic_claims
     import agreement_state
     products=product['priorProducts'];old_ids=[item['id'] for item in products]
@@ -352,8 +352,12 @@ def publish_owner_migration_summary(db,payload,product):
     # Existing settlement checks require the original evidence references.
     settle_commitments(db,'bot_shared',fresh,prior)
     promoted=agreement_state.promote_from_claims(db,'bot_shared',fresh,now=product['preparedAt'])
-    prior=inherit_claims([(old,db.execute('SELECT claims FROM memory_summaries WHERE id=?',(old,)).fetchone()[0]) for old in old_ids])
+    source_claims=[(old,db.execute('SELECT claims FROM memory_summaries WHERE id=?',(old,)).fetchone()[0]) for old in old_ids]
+    prior=inherit_claims(source_claims)
     claims,dropped=fit_claims(prior+semantic_claims(fresh))
+    uncarried=uncarried_sources(source_claims,claims)
+    if uncarried:
+        raise ValueError('owner_migration_protected_claims_uncarried:'+','.join(map(str,uncarried)))
     identifier=db.execute('INSERT INTO memory_summaries(scope,text,sources,updated,schema_version,claims) VALUES(?,?,?,?,2,?)',
         ('bot_shared',product['summary'],'[]',product['preparedAt'],model_json(claims) if claims else None)).lastrowid
     db.execute("INSERT INTO memory_summary_levels VALUES(?,'big')",(identifier,))
@@ -371,7 +375,7 @@ def publish_owner_migration_summary(db,payload,product):
         db.execute('DELETE FROM memory_summaries WHERE id IN ('+marks+')',old_ids)
     return {'summaryId':identifier,'consumedSummaryIds':old_ids,'claimsCount':len(claims),
             'droppedClaimIds':sorted(dropped),'agreementsPromoted':promoted,
-            'omittedUnknowns':omitted,
+            'omittedUnknowns':product['omittedUnknowns'],
             'continuity':product['continuity'],'sourceScopes':sorted(origins),'subjects':sorted(people)}
 
 async def _embedding_request(provider,base_url,model,texts):
