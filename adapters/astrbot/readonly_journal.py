@@ -90,6 +90,19 @@ def semantic_retire_projection(messages,permit):
             result.append(copy.deepcopy(message))
     return result
 
+def semantic_checkpoint_view(base,messages,permit,old,suffix,packet_indexes):
+    if old is not None and suffix and source(suffix[0]):
+        # The SDK proves the new input tail; it cannot retire missing Journal
+        # blocks. Rebuild at the sourced input boundary, never inside a tool
+        # call and result pair.
+        head=base[:system_head(base)]
+        retained=semantic_retire_projection(old.base[system_head(old.base):],permit)
+        prefix=head+retained
+        packets=[messages[i] for i in sorted(packet_indexes)]
+        tail=semantic_retire_projection(suffix,permit)
+        return prefix+tail,prefix+packets+tail
+    return semantic_retire_projection(base,permit),semantic_retire_projection(messages,permit)
+
 def tail_extension(old_base,new_messages):
     """Extend the committed non-System tail exactly; System bytes defer.
 
@@ -973,9 +986,9 @@ class ReadonlyJournal:
                 else:raise ContextReconstructionDenied('A full request-history reconstruction is not authorized by a successful 30-round summary checkpoint.')
             else:
                 reuse=False
-        if reconstruction_permit and reconstruction_permit.get('semanticBatch'):
-            base=semantic_retire_projection(base,reconstruction_permit)
-            messages=semantic_retire_projection(messages,reconstruction_permit)
+        semantic_prepared=bool(reconstruction_permit and reconstruction_permit.get('semanticBatch'))
+        if semantic_prepared:
+            base,messages=semantic_checkpoint_view(base,messages,reconstruction_permit,old,suffix,excluded)
         if reuse:
             from context_foundation import freeze,execution_view
             state=execution_view(freeze(state,old.state))
@@ -1071,9 +1084,8 @@ class ReadonlyJournal:
                 reconstruction_permit=self._reservation(reconstruction_authority,reconstruction_scope,request_id,summary_ids)
             if reconstruction_permit is None and guarded:
                 raise ContextCapacityExceeded('The append-only request journal reached its configured capacity before an authorized 30-round reconstruction checkpoint. Existing history is unchanged; an authenticated administrator may request compression.',usage=usage)
-            if reconstruction_permit and reconstruction_permit.get('semanticBatch'):
-                base=semantic_retire_projection(base,reconstruction_permit)
-                messages=semantic_retire_projection(messages,reconstruction_permit)
+            if not semantic_prepared and reconstruction_permit and reconstruction_permit.get('semanticBatch'):
+                base,messages=semantic_checkpoint_view(base,messages,reconstruction_permit,old,suffix,excluded)
             wire=reading_baseline(messages,state);reason='history_size_boundary';reuse=False
             usage=history_usage(wire);base_chars=usage['textChars'];detail=history_boundary(usage['textChars'],base_chars,usage['wireChars'],growth_limit=False)
             if detail:

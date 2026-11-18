@@ -117,6 +117,46 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn('original new',model_json(journal.last.wire))
         self.assertEqual(self.st.db.execute('SELECT count(*) FROM memory_pending WHERE event=?',('old',)).fetchone()[0],0)
         self.assertEqual(self.st.db.execute('SELECT state FROM memory_semantic_batches').fetchone()[0],'retired')
+    def test_foreground_checkpoint_keeps_journal_blocks_missing_from_sdk_window(self):
+        import hashlib
+        from context_transport import EVENT_CONTEXT_CURRENT
+        from readonly_journal import semantic_retire_projection
+        journal=self.st.model_journals[SCOPE]
+        prior=journal.last
+        retained=[{'role':'user','content':'previously submitted unsourced input'},
+                  {'role':'assistant','content':'previously submitted unsourced reply'}]
+        event={'role':'user','content':EVENT_CONTEXT_CURRENT+'\n'+model_json({
+            'authority':{},'policy':{},'currentGuidance':'','meaning':'current event'})}
+        prior.base[1:1]=retained
+        prior.wire=copy.deepcopy(prior.base)
+        prior.authority=event
+        prior.retirement=hashlib.sha256(model_json([0,SCOPE,0]).encode()).hexdigest()
+        self.assertTrue(journal.commit(prior))
+        journal=ReadonlyJournal(self.st.db,SCOPE)
+        old_wire=copy.deepcopy(journal.last.wire)
+        latest=message('latest')
+        sdk_window=copy.deepcopy(self.base)+[event,latest]
+        damaged=copy.deepcopy(sdk_window)
+        damaged[3]['content']+=' altered'
+        from readonly_journal import ContextPrefixViolation
+        with self.assertRaisesRegex(ContextPrefixViolation,'semantic_checkpoint_retained_material_missing'):
+            journal.prepare(damaged,'same',strict=True,reconstruction_scope=SCOPE,
+                reconstruction_authority=self.st.reflection,
+                retirement=self.st.reflection.reconstruction_stamp(SCOPE))
+        self.assertEqual(journal.last.wire,old_wire)
+        self.assertEqual(self.st.db.execute('SELECT state FROM memory_reconstruction_checkpoints').fetchone()[0],'available')
+        candidate=journal.prepare(sdk_window,'same',strict=True,reconstruction_scope=SCOPE,
+            reconstruction_authority=self.st.reflection,
+            retirement=self.st.reflection.reconstruction_stamp(SCOPE))
+        self.assertEqual(journal.last.wire,old_wire)
+        expected=semantic_retire_projection(journal.last.base,candidate.reconstruction_permit)+[latest]
+        self.assertEqual(candidate.base,expected)
+        self.assertEqual(candidate.wire,candidate.base[:-1]+[event,latest])
+        self.assertTrue(journal.stage_candidate(candidate))
+        self.assertTrue(journal.commit(candidate))
+        self.assertEqual(ReadonlyJournal(self.st.db,SCOPE).last.base,expected)
+        self.assertEqual(self.st.db.execute('SELECT state FROM memory_reconstruction_checkpoints').fetchone()[0],'consumed')
+
     def test_retirement_publishes_full_readonly_basis_before_future_deltas(self):
         from context_protocol import READONLY_CURRENT
         from decision_history import apply_changes
