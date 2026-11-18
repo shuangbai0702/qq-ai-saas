@@ -2,7 +2,9 @@
 
 
 def scope_for(store):
+    from readonly_journal import ContextRecoveryUnavailable
     from shared_context import main_journal_scope
+    if not store.shared_context:raise ContextRecoveryUnavailable('shared_main_context_required')
     return main_journal_scope(store.db)
 
 

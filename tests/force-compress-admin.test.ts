@@ -19,7 +19,9 @@ test('compression requires server administrator role and forwards only server ac
  assert.equal((await app.inject({method:'POST',url,payload:{...payload,is_admin:true}})).statusCode,403);
  assert.equal((await app.inject({method:'POST',url,headers:{'x-test-role':'admin'},payload:{...payload,administrator:'forged'}})).statusCode,400);
  assert.equal((await app.inject({method:'POST',url:`/v1/bots/${id}/behavior-data`,payload:{action:'admin_force_compress',...payload,administrator:'forged'}})).statusCode,400);
+ assert.equal((await app.inject({method:'POST',url,headers:{'x-test-role':'admin'},payload:{requestId,legacyScope:'private:12345678'}})).statusCode,400);
  assert.equal(posts.length,0);
+ assert.equal(audits.length,0);
  assert.equal((await app.inject({method:'POST',url,headers:{'x-test-role':'admin'},payload})).statusCode,200);
  assert.equal(posts[0].body.administrator,'real-session-admin');assert.equal(posts[0].body.allowPartial,true);
  assert.equal(audits.length,1);assert.equal(audits[0].args[0],'target-tenant');assert.equal(audits[0].args[1],id);
