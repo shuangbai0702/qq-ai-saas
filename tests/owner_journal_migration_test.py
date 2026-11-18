@@ -7,7 +7,8 @@ import unittest
 from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'adapters' / 'astrbot'))
-from journal_cutover import OWNER_EARLY_MIGRATION, retire_empty_legacy_journals
+from context_protocol import event_message, model_json
+from journal_cutover import OWNER_EARLY_MIGRATION, retire_empty_legacy_journals, source_timeline
 import journal_storage
 from readonly_journal import ReadonlyJournal
 from shared_context import initialize
@@ -30,7 +31,7 @@ class OwnerJournalMigrationTest(unittest.TestCase):
         key = json.dumps(scope)
         messages = [{'role':'system','content':'committed'}]
         if content:
-            messages.append({'role':'user','content':content})
+            messages.append(content if isinstance(content,dict) else {'role':'user','content':content})
         value = {'scope':key,'base':messages,'wire':messages,'state':{},'turns':1,'at':1,
                  'group_turn':None,'base_chars':0,'detail':'','usage':{},'authority':None,'retirement':None}
         payload, blobs = journal_storage.encode(value)
@@ -45,6 +46,23 @@ class OwnerJournalMigrationTest(unittest.TestCase):
 
     def migrate(self, bot=None):
         return retire_empty_legacy_journals(self.db, bot or self.bot, self.grant, 'b'*64)
+
+    def test_timeline_binds_protocol_clocks_and_preserves_same_id_in_two_scopes(self):
+        private='private:11111';group='group:22222'
+        for scope in (private,group):
+            self.snapshot(scope,event_message({'scope':scope,'event_id':'54','sender_id':'11111'},'observed'))
+        self.db.execute('CREATE TABLE pipeline_work_inputs(scope,event,payload)')
+        self.db.executemany('INSERT INTO pipeline_work_inputs VALUES(?,?,?)',[
+            (private,'54',model_json({'time':20,'user_id':11111,'message_id':54})),
+            (group,'54',model_json({'time':10,'user_id':11111,'message_id':54,'group_id':22222}))])
+        self.db.commit()
+        before=list(self.db.iterdump())
+        timeline=source_timeline(self.db,self.grant['sources'])
+        self.assertEqual([(r['event'],r['at']) for r in timeline],[(model_json([group,'54']),10),(model_json([private,'54']),20)])
+        self.assertEqual(list(self.db.iterdump()),before)
+        self.db.execute('UPDATE pipeline_work_inputs SET payload=NULL WHERE scope=?',(private,))
+        with self.assertRaisesRegex(ValueError,'protocol_time_missing'):
+            source_timeline(self.db,self.grant['sources'])
 
     def test_retires_all_scopes_and_retry_returns_same_receipt(self):
         self.snapshot('private:11111')

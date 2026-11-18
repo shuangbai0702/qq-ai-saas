@@ -6,10 +6,61 @@ untouched; the first successful journal commit consumes each enrollment.
 """
 import json
 import hashlib
+import math
 import re
 import time
 
 OWNER_EARLY_MIGRATION = 'owner_authorized_early_migration'
+
+
+def source_timeline(db,expected):
+    """Read the exact granted wire and verify every legacy QQ input's time.
+
+    Distinct channels can share an event ID. A tied QQ clock across channels
+    establishes simultaneity at the recorded precision, not a relative order.
+    """
+    from context_protocol import model_json,source
+    from journal_storage import read_snapshot_payload
+    from message_provenance import get
+
+    def timestamp(value):
+        return type(value) in (int,float) and math.isfinite(value) and value>0
+
+    rows={json.loads(row[0]): row for row in db.execute(
+        "SELECT scope,version,payload,sha FROM fishbot_readonly_journals WHERE state='ready'")}
+    if {scope:row[3] for scope,row in rows.items() if scope!='bot_shared'}!=expected:
+        raise ValueError('owner_migration_scope_inventory_changed')
+    timeline=[];seen=set()
+    tables={row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    for scope in sorted(expected):
+        key,version,payload,sha=rows[scope]
+        snapshot=read_snapshot_payload(db,key,version,payload,sha)
+        previous=None
+        for position,message in enumerate(snapshot['wire']):
+            origin=source(message)
+            if origin is None:continue
+            event=str(origin['event_id']);identity=model_json([scope,event]);person=str(origin['sender_id'])
+            if origin['scope']!=scope or identity in seen:
+                raise ValueError('owner_migration_source_identity_conflict')
+            observed={origin['at']} if timestamp(origin.get('at')) else set()
+            if 'memory_message_sources' in tables:
+                incoming=get(db,scope,event)
+                if incoming.get('time_source')=='protocol' and timestamp(incoming.get('at')):
+                    if str(incoming.get('sender_id'))!=person:raise ValueError('owner_migration_provenance_sender_conflict')
+                    observed.add(incoming['at'])
+            if 'pipeline_work_inputs' in tables:
+                row=db.execute('SELECT payload FROM pipeline_work_inputs WHERE scope=? AND event=?',(scope,event)).fetchone()
+                if row and row[0]:
+                    raw=json.loads(row[0]);target=raw.get('group_id') if scope.startswith('group:') else raw.get('user_id')
+                    if (str(raw.get('message_id'))!=event or str(raw.get('user_id'))!=person or str(target)!=scope.split(':')[1]):
+                        raise ValueError('owner_migration_protocol_identity_conflict')
+                    if timestamp(raw.get('time')):observed.add(raw['time'])
+            if len(observed)!=1:raise ValueError('owner_migration_protocol_time_missing_or_conflicting')
+            at=observed.pop()
+            if previous is not None and previous>at:raise ValueError('owner_migration_wire_time_conflict')
+            previous=at;seen.add(identity)
+            timeline.append({'event':identity,'sender_id':person,'scope':scope,'at':at,'wire_position':position})
+    return sorted(timeline,key=lambda row:(row['at'],row['scope'],row['wire_position']))
 
 
 def _operator_archives(db):
