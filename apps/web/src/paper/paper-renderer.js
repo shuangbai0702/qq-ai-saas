@@ -134,10 +134,10 @@ export const colors = {
 const rgb = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255);
 
 export class PaperRenderer {
-  constructor() {
+  constructor({webgl=true}={}) {
     this.alive = true; this.canvas = document.createElement('canvas'); this.textures = []; this.shaders = [];
     this.maps = makeMaps(); this.renderer = 'canvas2d';
-    try {
+    if(webgl)try {
       const gl = this.canvas.getContext('webgl2', { alpha: false, antialias: false, preserveDrawingBuffer: true, depth: false, stencil: false });
       if (!gl) throw new Error('WebGL2 unavailable'); this.gl = gl;
       const compile = (type, source) => { const shader = gl.createShader(type); this.shaders.push(shader); gl.shaderSource(shader, source); gl.compileShader(shader); if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader)); return shader; };

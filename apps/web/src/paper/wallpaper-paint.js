@@ -99,20 +99,33 @@ export class WallpaperPaint {
       x:clamp(x+(px*Math.cos(angle)-py*Math.sin(angle))*size*mirror,22,this.w-22),
       y:clamp(y+(px*Math.sin(angle)+py*Math.cos(angle))*size,22,this.h-22),
     }));
-    const path=[points[0]];
+    const path=[{...points[0],at:0,radius:15}],phase=Math.random()*Math.PI*2;
+    let elapsed=0;
     for(let i=1;i<points.length;i++){
-      const from=points[i-1],to=points[i],count=Math.ceil(Math.hypot(to.x-from.x,to.y-from.y)/5);
-      for(let j=1;j<=count;j++)path.push({x:from.x+(to.x-from.x)*j/count,y:from.y+(to.y-from.y)*j/count});
+      const from=points[i-1],to=points[i],distance=Math.hypot(to.x-from.x,to.y-from.y),count=Math.ceil(distance/4);
+      const duration=distance*(.7+Math.random()*.7),bend=(Math.random()-.5)*7;
+      for(let j=1;j<=count;j++){
+        const t=j/count,wobble=Math.sin(t*Math.PI)*bend;
+        path.push({x:from.x+(to.x-from.x)*t-(to.y-from.y)/distance*wobble,
+          y:from.y+(to.y-from.y)*t+(to.x-from.x)/distance*wobble,
+          at:elapsed+duration*(t+.08*Math.sin(t*Math.PI*2)),
+          radius:17+Math.sin(t*Math.PI)*7+Math.sin(t*5+phase+i)*3});
+      }
+      elapsed+=duration+Math.random()*distance*.13;
     }
-    this.gesture={path,index:0,time,duration:animate?.7:0};
+    const total=path.at(-1).at||1;
+    for(const point of path)point.at/=total;
+    this.gesture={path,index:0,time,duration:animate?.17+Math.random()*.13:0};
     this.invalidate();
   }
   step(time) {
     const gesture=this.gesture;
     if(!this.alive||!gesture)return;
-    const end=Math.floor(clamp(gesture.duration?(time-gesture.time)/gesture.duration:1,0,1)*(gesture.path.length-1));
-    while(gesture.index<end){const i=gesture.index++;this.add(gesture.path[i],gesture.path[i+1],time,.5,20);}
-    if(end===gesture.path.length-1)this.gesture=null;
+    const progress=clamp(gesture.duration?(time-gesture.time)/gesture.duration:1,0,1);
+    while(gesture.index<gesture.path.length-1&&gesture.path[gesture.index+1].at<=progress){
+      const i=gesture.index++;this.add(gesture.path[i],gesture.path[i+1],time,.5,gesture.path[i+1].radius);
+    }
+    if(progress===1)this.gesture=null;
   }
   add(from, to, time, pressure = .35, radius = 48+clamp(pressure,0,1)*7) {
     if (!this.alive || !this.ready) return;

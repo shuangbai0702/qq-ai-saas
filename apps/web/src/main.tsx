@@ -40,9 +40,7 @@ async function start(){
  }
  applySpectrumTheme(document.body);
  createRoot(document.getElementById('root')!).render(<ScreenBoundary><App/></ScreenBoundary>);
- // Decoration is optional: small/touch screens keep the static design and avoid GPU work.
- if(!matchMedia('(max-width: 760px), (pointer: coarse), (prefers-reduced-motion: reduce)').matches){
-  setTimeout(()=>{void import('./paper/start').then(({startPaper})=>startPaper()).catch(()=>{/* Business UI stays available. */})},2000);
- }
+ // Touch uses the same painter with a lightweight renderer; reduced motion is handled by its clock.
+ setTimeout(()=>{void import('./paper/start').then(({startPaper})=>startPaper()).catch(()=>{/* Business UI stays available. */})},2000);
 }
 void start();

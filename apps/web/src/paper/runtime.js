@@ -63,7 +63,8 @@ class PaperRuntime{
  constructor({ground,drawing,motion}){
   this.alive=true;this.life=new AbortController();this.frame=0;this.time=0;this.last=0;this.accumulated=0;this.anchor=performance.now();this.reduced=matchMedia('(prefers-reduced-motion: reduce)');this.running=!this.reduced.matches;this.suspended=!this.running||document.hidden;
   this.pointer={x:-1000,y:-1000,inside:false};this.lastContact=null;this.pointerDown=false;this.surfaces=new Map();this.stamps=new Map();this.pending=new Set([document.body]);this.measureNeeded=true;this.force=true;
-  this.ground=ground;this.motion=motion;try{this.renderer=new PaperRenderer();this.feedback=new PigmentFeedback();
+  this.lightweight=matchMedia('(max-width: 760px), (pointer: coarse)').matches;
+  this.ground=ground;this.motion=motion;try{this.renderer=new PaperRenderer({webgl:!this.lightweight});this.feedback=new PigmentFeedback();
   this.drawing=new WallpaperPaint(drawing,()=>{if(this.alive){this.force=true;this.request();}});this.resize();
   this.ro=new ResizeObserver(entries=>{if(!this.alive)return;for(const {target}of entries){const surface=this.surfaces.get(target);surface?.resize?.();}this.measureNeeded=this.force=true;this.request();});
   this.io=new IntersectionObserver(entries=>{if(!this.alive)return;for(const entry of entries){const surface=this.surfaces.get(entry.target);if(surface){surface.visible=entry.isIntersecting;if(entry.isIntersecting){this.measureNeeded=true;const paper=surface.surface||surface;paper.drawn=false;}}}this.request();},{rootMargin:'100px'});
@@ -100,6 +101,7 @@ class PaperRuntime{
  resize(){prepare(this.ground,innerWidth,innerHeight);this.renderer.resize();this.backgroundDrawn=false;}
  decorate(target){
   if((own(target)&&target!==this.motion)||this.surfaces.has(target)||!target.isConnected||target.matches('.skip-link'))return;
+  if(this.lightweight&&target.matches(PANEL))return;
   let surface;
   if(target.matches(INPUT))surface=new NativeControl(target,this.renderer);
   else{
