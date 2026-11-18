@@ -1,0 +1,42 @@
+.paper-spectrum {
+  --panel-tint:20%;
+  --panel-transparency:13%;
+  --panel-hue:180;
+  --edge-transparency:65%;
+  --component-search:40%;
+  --component-input:38%;
+  --component-select:39%;
+  --component-primary:76%;
+  --component-secondary:31%;
+  --component-badge:100%;
+  --component-backdrop:100%;
+  --hover-primary:studio-sweep;
+  --hover-small:studio-sweep;
+  --hover-nav:studio-sweep;
+  --hover-row:studio-sweep;
+  --hover-search:studio-sweep;
+  --hover-field:studio-sweep;
+  --hover-select:studio-sweep;
+  --hover-switch:studio-sweep;
+  --hover-steps:studio-lift;
+  --hover-advanced:studio-tint;
+  --hover-quick:studio-sweep;
+  --hover-link:studio-sweep;
+}
+
+:is(.spectrum,.paper-spectrum) {
+  --ink-wash:linear-gradient(102deg,#66b6b2 2%,#a1ceaa 23%,#e3cf91 43%,#e7ac99 61%,#c4a6ca 78%,#95b3d1 98%);
+  --input-fill:calc(100% - var(--component-input,0%));
+  --search-fill:calc(100% - var(--component-search,0%));
+  --select-fill:calc(100% - var(--component-select,0%));
+  --selection-fill:calc(100% - var(--component-selection,0%));
+  --primary-fill:calc(100% - var(--component-primary,0%));
+  --secondary-fill:calc(100% - var(--component-secondary,0%));
+  --badge-fill:calc(100% - var(--component-badge,0%));
+  --row-fill:calc(100% - var(--component-row,0%));
+  --notice-fill:calc(100% - var(--component-notice,0%));
+  --frame-fill:calc(100% - var(--component-frame,0%));
+  --backdrop-fill:calc(100% - var(--component-backdrop,0%));
+  --wick-line:var(--ink-wash) left bottom / 100% 1.5px no-repeat;
+  --trim-fill:color-mix(in srgb,#f8faf7 var(--select-fill),transparent);
+}

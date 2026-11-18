@@ -4,6 +4,12 @@ import {api,ApiError} from './api';
 import {Auth} from './auth';
 import './style.css';
 import './paper/paper.css';
+import './paper/spectrum-project.css';
+import './paper/spectrum-material.css';
+import './paper/spectrum-tokens.css';
+import './paper/spectrum-components.css';
+import './paper/spectrum-motion.css';
+import {applySpectrumTheme} from './paper/spectrum-theme';
 const Workspace=lazy(()=>import('./workspace'));
 class ScreenBoundary extends Component<{children:ReactNode},{failed:boolean}>{
  state={failed:false};
@@ -32,6 +38,7 @@ async function start(){
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),8000);
   try{const response=await fetch('/v1/health',{signal:controller.signal});const info=await response.json();const target=new URL(info.publicOrigin);if(target.protocol==='https:'&&target.origin!==location.origin){target.pathname=location.pathname;target.search=location.search;target.hash=location.hash;location.replace(target.href);return}}catch{/* The UI offers its own connection retry. */}finally{clearTimeout(timer)}
  }
+ applySpectrumTheme(document.body);
  createRoot(document.getElementById('root')!).render(<ScreenBoundary><App/></ScreenBoundary>);
  // Decoration is optional: small/touch screens keep the static design and avoid GPU work.
  if(!matchMedia('(max-width: 760px), (pointer: coarse), (prefers-reduced-motion: reduce)').matches){

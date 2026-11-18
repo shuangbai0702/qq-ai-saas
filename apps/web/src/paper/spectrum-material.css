@@ -1,0 +1,51 @@
+/* The roster uses the left console stock. Other panels use the inspector stock. */
+:is(.spectrum .dk-list,.paper-spectrum .roster) {
+  --surface-edge:linear-gradient(96deg,#69b6b3 4%,#a1c8a1 42%,#dbc27f 74%,#dfa494);
+  --surface-edge-fade:linear-gradient(90deg,#0000 0%,#000 8% 69%,#0000 100%);
+  --surface-tint:linear-gradient(115deg,
+    hsl(from #8ac4bf calc(h + var(--panel-hue)) s l / var(--panel-tint)),
+    hsl(from #a6bdcf calc(h + var(--panel-hue)) s l / var(--panel-tint)) 64%,
+    hsl(from #d4aabd calc(h + var(--panel-hue)) s l / var(--panel-tint)));
+  --surface-paper:linear-gradient(105deg,#fafbfbed,#f7f9faba);
+}
+:is(.spectrum :is(.dk-inspector,.dk-sample),
+    .paper-spectrum :is(.app-header,.panel,.companion-note,.stat,.quota-summary,.config-nav,.save-bar,.edit-dialog,.auth-story,.auth-form > div):not(.roster,details)) {
+  --surface-edge:linear-gradient(96deg,#dda493,#cf9ebe 49%,#8caac9 94%);
+  --surface-edge-fade:linear-gradient(90deg,#0000 0%,#000 18% 91%,#0003);
+  --surface-tint:linear-gradient(138deg,
+    hsl(from #d4aabd calc(h + var(--panel-hue)) s l / var(--panel-tint)),
+    hsl(from #b9aacc calc(h + var(--panel-hue)) s l / var(--panel-tint)) 54%,
+    hsl(from #9ab7cf calc(h + var(--panel-hue)) s l / var(--panel-tint)));
+  --surface-paper:linear-gradient(135deg,#e9efefef,#f9f8fbed 65%);
+}
+body.paper-app :is(.spectrum :is(.dk-list,.dk-inspector,.dk-sample),
+    .paper-spectrum :is(.app-header,.panel,.roster,.companion-note,.stat,.quota-summary,.config-nav,.save-bar,.edit-dialog,.auth-story,.auth-form > div):not(details)) {
+  isolation:isolate;
+  background:none!important;
+  backdrop-filter:none!important;
+  -webkit-backdrop-filter:none!important;
+}
+body.paper-app :is(.spectrum :is(.dk-list,.dk-inspector,.dk-sample),
+    .paper-spectrum :is(.app-header,.panel,.roster,.companion-note,.stat,.quota-summary,.config-nav,.save-bar,.edit-dialog,.auth-story,.auth-form > div):not(details))::before {
+  content:""!important;
+  position:absolute;
+  pointer-events:none;
+  inset:0 0 auto;
+  height:12px;
+  border-radius:inherit;
+  background:var(--surface-edge);
+  opacity:calc(100% - var(--edge-transparency));
+  mask-image:var(--surface-edge-fade),linear-gradient(#000b 0%,#0008 19%,#0003 53%,transparent 100%);
+  mask-composite:intersect;
+}
+body.paper-app :is(.spectrum :is(.dk-list,.dk-inspector,.dk-sample),
+    .paper-spectrum :is(.app-header,.panel,.roster,.companion-note,.stat,.quota-summary,.config-nav,.save-bar,.edit-dialog,.auth-story,.auth-form > div):not(details))::after {
+  content:""!important;
+  position:absolute;
+  inset:0;
+  z-index:-1;
+  pointer-events:none;
+  border-radius:inherit;
+  background:var(--surface-tint),var(--surface-paper);
+  opacity:calc(100% - var(--panel-transparency));
+}

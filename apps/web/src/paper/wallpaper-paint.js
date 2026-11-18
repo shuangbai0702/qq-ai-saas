@@ -21,6 +21,7 @@ function roundTip(seed) {
 export class WallpaperPaint {
   constructor(canvas, invalidate, source = '/paper/deepseek-desk.png') {
     this.canvas = canvas; this.invalidate = invalidate; this.alive = true; this.ready = false;
+    this.baseColour = undefined;
     // Sparse raster tiles are grouped by time, never evicted by stroke count.
     // Repeated input in a time slice shares tiles, including when paused.
     this.marks = []; this.dirty = true; this.tip=roundTip(1); this.carry=0; this.lastPoint=null;
@@ -58,6 +59,7 @@ export class WallpaperPaint {
     const scale = Math.max(this.w / image.naturalWidth, (this.h + offset) / image.naturalHeight);
     const w = image.naturalWidth * scale, h = image.naturalHeight * scale;
     const x = (this.w - w) * (this.w < 700 ? .74 : .5), y = -offset;
+    this.sourceFrame = [x,y,w,h];
     ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, this.w, this.h); ctx.drawImage(image, x, y, w, h);
     const original = ctx.getImageData(0, 0, this.colour.width, this.colour.height);
     const drawing = base.createImageData(original.width, original.height), data = original.data, out = drawing.data;
@@ -75,6 +77,13 @@ export class WallpaperPaint {
     }
     base.putImageData(drawing, 0, 0); ctx.putImageData(original, 0, 0);
     this.dirty = true;this.fullRedraw=true;
+  }
+  setBaseColour(amount) {
+    if (!this.alive || amount === this.baseColour) return;
+    this.baseColour = amount;
+    this.dirty = true;
+    this.fullRedraw = true;
+    this.invalidate();
   }
   add(from, to, time, pressure = .35) {
     if (!this.alive || !this.ready) return;
@@ -161,6 +170,12 @@ export class WallpaperPaint {
     reveal.drawImage(this.mask, 0, 0, this.w, this.h); reveal.globalCompositeOperation = 'source-over';
     ctx.clearRect(0, 0, this.w, this.h); ctx.drawImage(this.base, 0, 0, this.w, this.h);
     ctx.globalAlpha = .9; ctx.drawImage(this.reveal, 0, 0, this.w, this.h); ctx.globalAlpha = 1;
+    // Blend the original over the combined sketch and brush so the revealed
+    // pigment keeps its texture and gradually merges into the full-colour image.
+    if (this.baseColour) {
+      ctx.globalAlpha = this.baseColour;
+      ctx.drawImage(this.image, ...this.sourceFrame);
+    }
     for(const context of [mask,reveal,ctx])context.restore();
     this.paintedBounds=bounds;this.fullRedraw=false;this.dirty = false;
   }

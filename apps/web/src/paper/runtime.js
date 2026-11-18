@@ -242,4 +242,10 @@ class PaperRuntime{
   delete document.body.dataset.paper;delete document.body.dataset.paperMotion;delete document.body.dataset.paperRenderer;
  }
 }
-export function mountPaperExperience(elements){const runtime=new PaperRuntime(elements);return()=>runtime.destroy();}
+export function mountPaperExperience(elements){
+ const runtime=new PaperRuntime(elements);
+ return {
+  setWallpaperColour:amount=>runtime.drawing.setBaseColour(amount),
+  destroy:()=>runtime.destroy(),
+ };
+}
