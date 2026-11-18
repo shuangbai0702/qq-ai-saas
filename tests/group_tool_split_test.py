@@ -1,5 +1,5 @@
 """Real group-tool dispatch with isolated receipts; no QQ or model calls."""
-import asyncio,hashlib,json,sys,unittest
+import asyncio,hashlib,json,sys,time,unittest
 from pathlib import Path
 from types import SimpleNamespace as NS
 sys.path.insert(0,str(Path(__file__).resolve().parent))
@@ -155,6 +155,21 @@ class PrivateConversationSend(continuity.GroupActions):
         self.assertEqual((await self.call_private())['code'],'already_attempted')
         self.assertEqual(len(self.sent),1)
         self.assertFalse(group_actions.owns_reply(self.db,self.event,self.work.scope))
+
+    async def test_owner_private_send_uses_same_split_tool_during_outreach_cooldown(self):
+        from initiative import initialize, paused
+        initialize(self.db)
+        scope='private:'+self.target
+        self.db.execute('INSERT INTO initiative_pauses VALUES(?,?)',(scope,time.time()+3600))
+        self.db.commit()
+        self.cfg['behavior']['splitMessages']=True
+        result=await self.call_private(text='第一段\n\n第二段')
+        self.assertEqual(result['receipt']['status'],'confirmed')
+        self.assertEqual(result['message_ids'],['201','201'])
+        self.assertEqual([part['message'][0]['data']['text'] for part in self.sent],['第一段','第二段'])
+        self.assertTrue(paused(self.db,scope,time.time()))
+        self.assertEqual((await self.call_private(text='第一段\n\n第二段'))['code'],'already_attempted')
+        self.assertEqual(len(self.sent),2)
 
     async def test_ambiguous_unknown_and_mismatched_sources_never_dispatch(self):
         self.assertEqual((await self.call_private(group_id='55555'))['code'],'tool_preflight_rejected')

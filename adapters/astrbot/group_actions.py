@@ -186,10 +186,6 @@ async def send(event,cfg,db,group,text,mention,current,on_sent,include_prepared_
             # the new facts to the existing Agent instead of silently editing
             # the owner's approved cross-session text or sending twice.
             return json.dumps({'status':'not_sent','reason':'conversation_changed','decision':decision['action'],'alternative':decision.get('text',''),'meaning':'目标会话有更新，本次未发送；请结合新情况决定。'},ensure_ascii=False)
-    if private_user:
-        from initiative import paused
-        if paused(db,scope,time.time()):
-            return rejected('qq_send_preflight','未发送：收件人会话处于暂停联系状态。')
     if prepared:
         gate=social.image_status(scope,cfg.get('behavior') or {},request=text)
         if gate['reason']!='available':return json.dumps({'status':'blocked',**gate,'meaning':'图片尚未发送，保留已选图。'},ensure_ascii=False)
@@ -236,8 +232,6 @@ async def send(event,cfg,db,group,text,mention,current,on_sent,include_prepared_
                 decision=await review(scope,'\n\n'.join(parts[index:]),'\n\n'.join(confirmed_parts))
                 if not current() or decision['action']!='keep':
                     persist();return finish(meaning='发送前会话或配置已变化，已确认前缀保留；剩余内容未发送，不得重发整批。')
-            if private_user and paused(db,scope,time.time()):
-                persist();return finish(meaning='收件人会话已暂停联系，本次剩余消息未发送。')
             wire=([{'type':'at','data':{'qq':mention}}] if mention and index==0 else [])+([{'type':'text','data':{'text':part}}] if part else [])
             has_image=bool(prepared and index==len(parts)-1)
             if has_image:
