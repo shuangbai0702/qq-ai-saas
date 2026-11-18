@@ -91,17 +91,24 @@ def semantic_retire_projection(messages,permit):
     return result
 
 def semantic_checkpoint_view(base,messages,permit,old,suffix,packet_indexes):
-    if old is not None and suffix and source(suffix[0]):
-        # The SDK proves the new input tail; it cannot retire missing Journal
-        # blocks. Rebuild at the sourced input boundary, never inside a tool
-        # call and result pair.
-        head=base[:system_head(base)]
-        retained=semantic_retire_projection(old.base[system_head(old.base):],permit)
-        prefix=head+retained
-        packets=[messages[i] for i in sorted(packet_indexes)]
-        tail=semantic_retire_projection(suffix,permit)
-        return prefix+tail,prefix+packets+tail
-    return semantic_retire_projection(base,permit),semantic_retire_projection(messages,permit)
+    if old is None or suffix is None:
+        return semantic_retire_projection(base,permit),semantic_retire_projection(messages,permit)
+    # The existing append checks prove the entire native tail, including
+    # assistant/tool messages that carry no QQ event header of their own.
+    # Only the owning checkpoint may retire exact blocks from both views.
+    systems=base[:system_head(base)]
+    history=old.base[system_head(old.base):]+list(suffix)
+    base=systems+semantic_retire_projection(history,permit)
+    if not packet_indexes:return base,base
+    packets=[messages[i] for i in sorted(packet_indexes)]
+    following=semantic_retire_projection(messages[max(packet_indexes)+1:],permit)
+    # Match the provider's original placement when anchored on the same
+    # native suffix. Otherwise append whole packets after the native tail,
+    # where they cannot separate a retained tool call from its result.
+    index=len(base)
+    if following and same_native_prefix(base[-len(following):],following):
+        index-=len(following)
+    return base,base[:index]+packets+base[index:]
 
 def tail_extension(old_base,new_messages):
     """Extend the committed non-System tail exactly; System bytes defer.

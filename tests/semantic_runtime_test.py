@@ -135,7 +135,9 @@ class RuntimeTests(unittest.TestCase):
         journal=ReadonlyJournal(self.st.db,SCOPE)
         old_wire=copy.deepcopy(journal.last.wire)
         latest=message('latest')
-        sdk_window=copy.deepcopy(self.base)+[event,latest]
+        call={'role':'assistant','content':None,'tool_calls':[{'id':'receipt'}]}
+        receipt={'role':'tool','content':'existing actual receipt','tool_call_id':'receipt'}
+        sdk_window=copy.deepcopy(self.base)+[call,receipt,event,latest]
         damaged=copy.deepcopy(sdk_window)
         damaged[3]['content']+=' altered'
         from readonly_journal import ContextPrefixViolation
@@ -149,7 +151,7 @@ class RuntimeTests(unittest.TestCase):
             reconstruction_authority=self.st.reflection,
             retirement=self.st.reflection.reconstruction_stamp(SCOPE))
         self.assertEqual(journal.last.wire,old_wire)
-        expected=semantic_retire_projection(journal.last.base,candidate.reconstruction_permit)+[latest]
+        expected=semantic_retire_projection(journal.last.base,candidate.reconstruction_permit)+[call,receipt,latest]
         self.assertEqual(candidate.base,expected)
         self.assertEqual(candidate.wire,candidate.base[:-1]+[event,latest])
         self.assertTrue(journal.stage_candidate(candidate))
