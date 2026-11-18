@@ -64,13 +64,25 @@ def initialize(db):
       message TEXT NOT NULL,created REAL NOT NULL,UNIQUE(scope,event));''')
 
 
-def require_legacy_journal(db,scope):
-    """Allow an existing legacy Journal to finish until its authorized cutover."""
+def main_journal_scope(db):
+    """Runtime routing has one legal key; migration is an offline operation."""
     from readonly_journal import ContextRecoveryUnavailable
-    exists=db.execute("SELECT 1 FROM fishbot_readonly_journals WHERE scope=? AND state='ready'",
-                      (model_json(scope),)).fetchone()
-    if not exists:
-        raise ContextRecoveryUnavailable('owner_migration_required_for_legacy_journal')
+    if not active(db):
+        raise ContextRecoveryUnavailable('owner_migration_required_for_shared_journal')
+    if db.execute("SELECT 1 FROM fishbot_readonly_journals WHERE scope<>? AND state='ready' LIMIT 1",
+                  (model_json(JOURNAL_SCOPE),)).fetchone():
+        raise ContextRecoveryUnavailable('owner_migration_required_for_nonshared_journals')
+    return JOURNAL_SCOPE
+
+
+def _enforce_journal_identity(db):
+    # Persist the rule so restarting an older writer cannot recreate a Scope
+    # Journal after activation. Retired and unavailable evidence is legal.
+    for operation in ('INSERT','UPDATE'):
+        db.execute(f'''CREATE TRIGGER IF NOT EXISTS shared_journal_ready_{operation.lower()}
+          BEFORE {operation} ON fishbot_readonly_journals
+          WHEN NEW.state='ready' AND NEW.scope<> '"{JOURNAL_SCOPE}"'
+          BEGIN SELECT RAISE(ABORT,'noncanonical_active_journal'); END''')
 
 
 def _record_activation(db,authorization,group_limit):
@@ -78,6 +90,7 @@ def _record_activation(db,authorization,group_limit):
       id INTEGER PRIMARY KEY CHECK(id=1),state TEXT NOT NULL,authorization TEXT NOT NULL,created REAL NOT NULL,
       group_limit INTEGER NOT NULL CHECK(group_limit IN (2,4)))''')
     db.execute("INSERT INTO fishbot_shared_context VALUES(1,'active',?,?,?)",(authorization,time.time(),group_limit))
+    _enforce_journal_identity(db)
 
 
 def reserve_journal(db):
@@ -97,7 +110,10 @@ def reserve_journal(db):
 
 def activate_empty(db,cfg,*,group_limit=None):
     # Start an unused runtime with one Journal before it can submit history.
-    if active(db):return True
+    if active(db):
+        main_journal_scope(db)
+        _enforce_journal_identity(db)
+        return True
     if db.in_transaction:raise ValueError('shared_context_bootstrap_requires_idle_database')
     evidence=('fishbot_readonly_journals','fishbot_readonly_journal_blobs','fishbot_readonly_cutover',
               'fishbot_operator_session_archives','memory_reconstruction_checkpoints','memory_rounds',
@@ -117,8 +133,11 @@ def activate_empty(db,cfg,*,group_limit=None):
                 table in tables and db.execute('SELECT 1 FROM '+table+' LIMIT 1').fetchone() for table in evidence):
             reserve_journal(db)
             _record_activation(db,'new_bot_initialization',limit)
+        if not active(db):
+            from readonly_journal import ContextRecoveryUnavailable
+            raise ContextRecoveryUnavailable('owner_migration_required_for_shared_journal')
         db.commit()
-        return active(db)
+        return True
     except BaseException:
         db.rollback();raise
 
@@ -134,6 +153,8 @@ def activate_authorized(db,cfg,expected,authorization,release,group_limit=2):
     if not isinstance(authorization,str) or not 8<=len(authorization)<=100 or not re.fullmatch(r'[a-f0-9]{40}',release):
         raise ValueError('shared_context_explicit_authorization_required')
     if db.in_transaction:raise ValueError('shared_context_operator_requires_idle_database')
+    from readonly_journal import ReadonlyJournal
+    ReadonlyJournal(db,None)
     initialize(db)
     db.execute('BEGIN IMMEDIATE')
     try:

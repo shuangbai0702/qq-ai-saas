@@ -98,6 +98,16 @@ class Activity(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.requests,[])
         self.assertEqual(self.st.db.execute('SELECT count(*) FROM pipeline_events').fetchone()[0],before)
         self.assertEqual(self.st.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],0)
+    async def test_missing_shared_marker_never_submits_or_falls_back_to_a_channel(self):
+        self.st.db.execute('DELETE FROM fishbot_shared_context')
+        self.st.db.commit()
+        before=self.st.db.execute('SELECT scope,state,payload,sha FROM fishbot_readonly_journals').fetchall()
+        result=await self.activate()
+        self.assertEqual(result['status'],'blocked',result)
+        self.assertEqual(self.requests,[])
+        self.assertEqual(self.st.db.execute('SELECT scope,state,payload,sha FROM fishbot_readonly_journals').fetchall(),before)
+        self.assertEqual(self.st.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],0)
+
     async def test_same_main_wire_silent_count_tools_restart_and_busy(self):
         self.tool_step=True
         with patch('execution_memory.context',side_effect=AssertionError('automatic execution replay is forbidden')) as replay:
@@ -204,12 +214,15 @@ class Activity(unittest.IsolatedAsyncioTestCase):
         import shared_context
         shared_context.observe(self.st.db,event,self.settings['qq']['config'])
         work=self.st.pipeline.bind(event,self.settings['qq'])
+        event.set_extra('_hosted_main_journal_scope',scope)  # A delivery key cannot replace the main Journal.
         token=current_message_event.set(event)
         try:
             await self.provider.text_chat(system_prompt='Synthetic stable persona',contexts=copy.deepcopy(original[1:]),
                 prompt=SOURCE+model_json({'scope':scope,'sender_id':'12345678','event_id':work.event_id})+'\nContinue our conversation')
         finally:current_message_event.reset(token)
         self.assertEqual(self.requests[-1]['messages'][:len(saved)],saved)
+        self.assertEqual(event.get_extra('_hosted_journal_scope'),'bot_shared')
+        self.assertEqual(set(self.st.model_journals),{'bot_shared'})
         human_policy=json.loads(self.st.model_journals[main].last.authority['content'].split('\n',1)[1])['policy']
         self.assertEqual(human_policy,service_policy)
         self.assertIn('仅当本轮身份为自主服务任务时',human_policy)

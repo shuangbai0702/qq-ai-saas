@@ -29,14 +29,11 @@ def refresh_completion(store,job):
 
 def manage(store,data,care):
     status_only=data.get('action')=='admin_force_compress_status'
-    allowed={'action','requestId'} if status_only else {'action','requestId','administrator','allowPartial','discardUnavailable','legacyScope'}
+    allowed={'action','requestId'} if status_only else {'action','requestId','administrator','allowPartial','discardUnavailable'}
     request_id=data.get('requestId')
-    if set(data)-allowed or not (allowed-{'discardUnavailable','legacyScope'})<=set(data) or not isinstance(request_id,str) or not re.fullmatch(r'[a-fA-F0-9-]{36}',request_id):
+    if set(data)-allowed or not (allowed-{'discardUnavailable'})<=set(data) or not isinstance(request_id,str) or not re.fullmatch(r'[a-fA-F0-9-]{36}',request_id):
         return {'error':'维护请求无效','status':400}
-    scope=data.get('legacyScope','bot_shared')
-    if 'legacyScope' in data and (not isinstance(scope,str) or not re.fullmatch(r'(?:private|group):\d{4,20}',scope)
-                                  or data.get('allowPartial') or data.get('discardUnavailable')):
-        return {'error':'旧会话仅可压缩已到期的检查点','status':400}
+    scope='bot_shared'
     jobs=getattr(store,'_compression_jobs',None)
     if jobs is None:jobs={};store._compression_jobs=jobs
     if request_id in jobs:

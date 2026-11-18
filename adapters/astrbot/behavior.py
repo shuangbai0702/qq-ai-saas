@@ -441,7 +441,8 @@ def install_runtime(core,settings):
             event.set_extra('_hosted_output_retries',count)
             record_diagnostic(s,{'kind':'output_guard','workId':getattr(work,'event_id',None),'status':'blocked','reason':reason,'retry':count})
             if st is None or work is None or provider is None or not delivery_current(event):break
-            journal=st.model_journals.get(event.get_extra('_hosted_main_journal_scope') or ('bot_shared' if st.shared_context else work.scope))
+            from shared_context import JOURNAL_SCOPE
+            journal=st.model_journals.get(JOURNAL_SCOPE)
             if journal is None or journal.last is None:break
             if event.get_extra('_hosted_model_tools_pending',False) or pending_tools(journal.last.base):
                 # The native tool loop returns this rejection to its original
@@ -1762,17 +1763,14 @@ def install_runtime(core,settings):
         internal_identity=image_event.get_extra('_hosted_internal_work') if image_event else None
         main_activation=bool(image_event and image_event.get_extra('_hosted_main_activation'))
         internal=bool(not main_activation and owned and work and work.source=='autonomous' and isinstance(internal_identity,dict) and internal_identity.get('id')==work.event_id)
-        canonical_main=bool(image_event and image_event.get_extra('_hosted_canonical_main'))
-        shared_mode=bool(foreground and owned and (owned.shared_context or main_activation or canonical_main))
+        shared_mode=bool(foreground and owned)
         if shared_mode:
             import shared_context
-            image_event.set_extra('_hosted_journal_scope',image_event.get_extra('_hosted_main_journal_scope') or (shared_context.JOURNAL_SCOPE if owned.shared_context else work.scope))
+            image_event.set_extra('_hosted_journal_scope',shared_context.main_journal_scope(owned.db))
         if (foreground or internal) and isinstance(projected,list):
             from readonly_journal import ReadonlyJournal,visible_summary_ids
-            key=image_event.get_extra('_hosted_main_journal_scope') if main_activation else ('autonomous',work.event_id) if internal else shared_context.JOURNAL_SCOPE if owned.shared_context and shared_mode else work.scope
-            if isinstance(key,str) and key.startswith(('private:','group:')):
-                import shared_context
-                shared_context.require_legacy_journal(owned.db,key)
+            import shared_context
+            key=shared_context.main_journal_scope(owned.db) if foreground or main_activation else ('autonomous',work.event_id)
             journal=owned.model_journals.pop(key,None)
             if journal is None:journal=ReadonlyJournal(owned.db,key if isinstance(key,str) else None)
             owned.model_journals[key]=journal
@@ -1975,9 +1973,10 @@ def install_runtime(core,settings):
     chat=ProviderOpenAIOfficial.text_chat;stream=ProviderOpenAIOfficial.text_chat_stream
     async def writer_enter(st,event,foreground):
         if st is None or not event:return None
-        from activity_context import canonical_main
-        if not st.shared_context and canonical_main(st,event):event.set_extra('_hosted_canonical_main',True)
-        if not (st.shared_context or event.get_extra('_hosted_main_activation') or event.get_extra('_hosted_canonical_main')) or not (foreground or event.get_extra('_hosted_internal_work')):return None
+        if foreground:
+            from shared_context import main_journal_scope
+            main_journal_scope(st.db)
+        if not (foreground or (st.shared_context and event.get_extra('_hosted_internal_work'))):return None
         await st.model_writer.acquire()
         event.set_extra('_hosted_model_writer',st)
         if not current(event) or not delivery_current(event):
@@ -1993,10 +1992,10 @@ def install_runtime(core,settings):
         event.set_extra('_hosted_model_tools_pending',bool(getattr(response,'tools_call_name',None)))
         if not st:return
         main_activation=event.get_extra('_hosted_main_activation')
-        if not st.shared_context and not main_activation and not event.get_extra('_hosted_canonical_main'):return
+        if not st.shared_context:return
         if event.get_extra('_hosted_internal_work') and not main_activation:return
-        from shared_context import JOURNAL_SCOPE,settle_inputs
-        logical=event.get_extra('_hosted_main_journal_scope') if main_activation else JOURNAL_SCOPE if st.shared_context else event.get_extra('_hosted_pipeline').scope
+        from shared_context import main_journal_scope,settle_inputs,event_key
+        logical=main_journal_scope(st.db)
         journal=st.model_journals.get(logical)
         if journal and journal.last:
             work=event.get_extra('_hosted_pipeline')
@@ -2006,8 +2005,7 @@ def install_runtime(core,settings):
                 journal.append_completion({'role':'assistant','content':response.completion_text or ''},model_origin=(work.scope,work.event_id,work.subject))
             if not main_activation:st.pipeline.seen_inputs(work,journal.last.base)
             from summary_material import snapshots,remember
-            from shared_context import event_key
-            current_id=event_key({'scope':work.scope,'event_id':work.event_id}) if logical==JOURNAL_SCOPE else str(work.event_id)
+            current_id=event_key({'scope':work.scope,'event_id':work.event_id})
             materials=snapshots(journal.last.base,logical,db=st.db)
             for item in materials:
                 actual=st.db.execute('SELECT answer FROM memory_rounds WHERE scope=? AND event=?',(logical,item['event'])).fetchone()

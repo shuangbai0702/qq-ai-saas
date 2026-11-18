@@ -249,7 +249,35 @@ def retire_empty_legacy_journals(db, bot_id, grant, backup_sha):
         raise
 
 
-def retire_owner_journals(db,bot_id,grant,backup_sha,cfg,product):
+def normalize_owner_source_claims(db):
+    """Apply the existing startup normalization if every stored Claim survives."""
+    from summary_material import govern_claims,valid_claim
+    if not db.in_transaction:raise ValueError('owner_migration_claim_normalization_requires_transaction')
+
+    def identities():
+        claims={}
+        for scope,raw in db.execute('SELECT scope,claims FROM memory_summaries WHERE claims IS NOT NULL'):
+            for claim in json.loads(raw):
+                if not valid_claim(claim):
+                    raise ValueError('owner_migration_invalid_legacy_claim')
+                key=(scope,claim['id'])
+                # Startup normalizes revision/parent metadata and ordering.
+                evidence={k:v for k,v in claim.items() if k!='parents'}
+                evidence.setdefault('updatedAt',None)
+                evidence.setdefault('revision',0)
+                if key in claims and claims[key]!=evidence:
+                    raise ValueError('owner_migration_conflicting_legacy_claim')
+                claims[key]=evidence
+        return claims
+
+    expected=identities()
+    for scope, in db.execute('SELECT DISTINCT scope FROM memory_summaries').fetchall():
+        govern_claims(db,scope)
+    if identities()!=expected:
+        raise ValueError('owner_migration_claim_normalization_lost_evidence')
+
+
+def retire_owner_journals(db,bot_id,grant,backup_sha,cfg,product,*,normalize_legacy_claims=False):
     """Atomically publish the validated product and retire every granted source."""
     from context_protocol import model_json
     import journal_storage
@@ -277,6 +305,8 @@ def retire_owner_journals(db,bot_id,grant,backup_sha,cfg,product):
             raise ValueError('owner_migration_incomplete_journal_inventory')
         tables={row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         _verify_source_fence(db,tables)
+        if normalize_legacy_claims:
+            normalize_owner_source_claims(db)
         payload=collect_owner_history(db,expected)
         if not payload:raise ValueError('owner_migration_history_missing')
         members={event_key(JOURNAL_SCOPE,event['event']) for event in payload}
@@ -311,6 +341,7 @@ def retire_owner_journals(db,bot_id,grant,backup_sha,cfg,product):
                  'newBaseline':True,'retirementStateVersion':1,'members':sorted(members),'summary':summary,
                  'historyCount':len(payload),'timelineSha':hashlib.sha256(model_json(
                      [[r['event'],r['at']] for r in payload]).encode()).hexdigest()}
+        if normalize_legacy_claims:receipt['normalizedLegacyClaims']=True
         _record_receipt(db,receipt)
         if (not reserved_destination_receipt(db,destination_sha) or
            not all(retired_source_receipt(db,s['scope'],s['sha']) for s in sources) or

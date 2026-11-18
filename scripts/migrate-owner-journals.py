@@ -15,6 +15,7 @@ def main():
     parser.add_argument('--archive',type=Path,required=True)
     parser.add_argument('--product',type=Path,required=True)
     parser.add_argument('--config',type=Path,required=True)
+    parser.add_argument('--normalize-legacy-claims',action='store_true')
     args=parser.parse_args()
     grant=json.loads(args.grant.read_text(encoding='utf-8-sig'))
     bot=str(UUID(grant['bot']))
@@ -44,7 +45,8 @@ def main():
     if config['bot']!=bot or product['bot']!=bot or product['backupSha']!=backup_sha:
         raise ValueError('owner_migration_product_bot_changed')
     with closing(sqlite3.connect(database.as_uri()+'?mode=rw',uri=True,timeout=10)) as live:
-        receipt=retire_owner_journals(live,bot,grant,backup_sha,config['config'],product['product'])
+        receipt=retire_owner_journals(live,bot,grant,backup_sha,config['config'],product['product'],
+                                      normalize_legacy_claims=args.normalize_legacy_claims)
         if live.execute('PRAGMA integrity_check').fetchall()!=[('ok',)]:raise ValueError('owner_migration_post_commit_integrity')
         print(json.dumps(receipt,ensure_ascii=True))
 

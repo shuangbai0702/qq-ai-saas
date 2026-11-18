@@ -101,12 +101,12 @@ class Unified(unittest.TestCase):
         old=ReadonlyJournal(self.db,scope)
         self.assertTrue(old.commit(old.prepare(request(message(scope)),('bot',),strict=True)))
         before=self.db.execute('SELECT scope,sha FROM fishbot_readonly_journals').fetchall()
-        shared.activate_empty(self.db,self.cfg)
-        self.assertFalse(shared.active(self.db))
         from readonly_journal import ContextRecoveryUnavailable
-        shared.require_legacy_journal(self.db,scope)
         with self.assertRaisesRegex(ContextRecoveryUnavailable,'owner_migration_required'):
-            shared.require_legacy_journal(self.db,'group:55555')
+            shared.activate_empty(self.db,self.cfg)
+        self.assertFalse(shared.active(self.db))
+        with self.assertRaisesRegex(ContextRecoveryUnavailable,'owner_migration_required'):
+            shared.main_journal_scope(self.db)
         self.assertEqual(self.db.execute('SELECT scope,sha FROM fishbot_readonly_journals').fetchall(),before)
 
     def test_reserved_shared_journal_survives_restart_and_fences_a_missing_marker(self):
@@ -126,6 +126,40 @@ class Unified(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'marker_missing'):
             shared.activate_empty(db,self.cfg)
         self.assertEqual(db.execute('SELECT scope,state,sha FROM fishbot_readonly_journals').fetchall(),snapshot)
+
+    def test_runtime_selection_rejects_ready_nonshared_journals_but_allows_tombstones(self):
+        from readonly_journal import ContextRecoveryUnavailable
+        db=sqlite3.connect(':memory:')
+        self.addCleanup(db.close)
+        shared.activate_empty(db,self.cfg)
+        self.assertEqual(shared.main_journal_scope(db),'bot_shared')
+        key=model_json('private:12345678')
+        db.execute("INSERT INTO fishbot_readonly_journals SELECT ?,version,'unavailable',payload,sha,updated FROM fishbot_readonly_journals",(key,))
+        db.commit()
+        self.assertEqual(shared.main_journal_scope(db),'bot_shared')
+        promote="UPDATE fishbot_readonly_journals SET state='ready' WHERE scope=?"
+        with self.assertRaisesRegex(sqlite3.IntegrityError,'noncanonical_active_journal'):
+            db.execute(promote,(key,))
+        with self.assertRaisesRegex(sqlite3.IntegrityError,'noncanonical_active_journal'):
+            db.execute("INSERT INTO fishbot_readonly_journals SELECT ?,version,state,payload,sha,updated FROM fishbot_readonly_journals WHERE scope=?", (model_json('group:12345'),model_json('bot_shared')))
+        # Model startup against the same mixed inventory made before the guard.
+        db.execute('DROP TRIGGER shared_journal_ready_update')
+        db.execute(promote,(key,))
+        db.commit()
+        before=list(db.iterdump())
+        for check in (lambda:shared.main_journal_scope(db),lambda:shared.activate_empty(db,self.cfg)):
+            with self.assertRaisesRegex(ContextRecoveryUnavailable,'nonshared_journals'):check()
+        self.assertEqual(list(db.iterdump()),before)
+
+    def test_legacy_memory_without_a_journal_never_creates_a_new_main_baseline(self):
+        from readonly_journal import ContextRecoveryUnavailable
+        self.db.execute("INSERT INTO memory_summaries(scope,text,sources,updated) VALUES('private:12345678','old summary','[]',1)")
+        self.db.commit()
+        with self.assertRaisesRegex(ContextRecoveryUnavailable,'owner_migration_required'):
+            shared.activate_empty(self.db,self.cfg)
+        self.assertFalse(shared.active(self.db))
+        self.assertEqual(self.db.execute('SELECT count(*) FROM fishbot_readonly_journals').fetchone()[0],0)
+        self.assertEqual(self.db.execute('SELECT text FROM memory_summaries').fetchall(),[('old summary',)])
 
     def test_atomic_authorized_cutover_keeps_exact_old_journals_no_license(self):
         expected={};old={}

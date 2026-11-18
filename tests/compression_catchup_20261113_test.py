@@ -13,7 +13,7 @@ class Catchup(unittest.IsolatedAsyncioTestCase):
     asyncTearDown=fixture.SemanticProviderWire.asyncTearDown
     summarize=fixture.SemanticProviderWire.summarize
 
-    async def test_admin_legacy_scope_only_compresses_at_its_own_due_checkpoint(self):
+    async def test_offline_legacy_scope_only_compresses_at_its_own_due_checkpoint(self):
         import contextvars
         from compression_admin import manage
         from readonly_journal import Prepared,ReadonlyJournal
@@ -39,19 +39,18 @@ class Catchup(unittest.IsolatedAsyncioTestCase):
         before=db.execute('SELECT scope,sha FROM fishbot_readonly_journals ORDER BY scope').fetchall()
         self.assertEqual(manage(self.store,{**req,'allowPartial':True},care)['status'],400)
         self.assertEqual(manage(self.store,{**req,'discardUnavailable':True},care)['status'],400)
-        status=manage(self.store,req,care)
+        self.assertEqual(manage(self.store,req,care)['status'],400)
+        status=r.force_compress_once(scope,administrator='fixture-admin',request_id=req['requestId'])
         self.assertEqual((status['reason'],status['completedRounds'],status['requiredRounds']),('checkpoint_not_due',29,30))
         self.assertEqual(db.execute('SELECT scope,sha FROM fishbot_readonly_journals ORDER BY scope').fetchall(),before)
         self.assertEqual(self.requests,[])
         prepare(journal,scope,30)
         other_prefix=copy.deepcopy(other_journal.last.wire)
         req={**req,'requestId':'22222222-2222-4222-8222-222222222222'}
-        self.assertEqual(manage(self.store,req,care)['state'],'running')
-        self.assertEqual(manage(self.store,{**req,'legacyScope':other},care)['status'],409)
+        self.assertTrue(r.force_compress_once(scope,administrator='fixture-admin',request_id=req['requestId'])['started'])
+        self.assertEqual(manage(self.store,{**req,'legacyScope':other},care)['status'],400)
         result=await r.task
         self.assertTrue(result['ok'],result)
-        state=manage(self.store,{'action':'admin_force_compress_status','requestId':req['requestId']},care)
-        self.assertEqual(state['state'],'completed')
         self.assertEqual(len(self.requests),1)
         self.assertEqual(db.execute('SELECT scope,round_count,state FROM memory_reconstruction_checkpoints').fetchall(),[(scope,30,'consumed')])
         self.assertEqual(ReadonlyJournal(db,other).last.wire,other_prefix)
