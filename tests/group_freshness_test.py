@@ -5,10 +5,13 @@ from pathlib import Path
 root=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(root/'references/astrbot'),str(root/'adapters/astrbot')]
 from group_freshness import GroupFreshness,history_override,review_system,guard_dispatch,PreDispatchRejected
+from group_actions import tool_action_id
 from types import SimpleNamespace as NS
 
 class Freshness(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        token=tool_action_id.set('freshness-test-call')
+        self.addCleanup(tool_action_id.reset,token)
         self.f=GroupFreshness();self.start=time.monotonic()
         self.f.observe('group:12345','1','11111','原问题',{'mentions':['99999']})
         self.cursor=self.f.cursor('group:12345');self.calls=[]
@@ -55,7 +58,7 @@ class Freshness(unittest.IsolatedAsyncioTestCase):
         try:
             with patch.object(group_actions,'group_access',access):
                 task=asyncio.create_task(group_actions.send(event,{'behavior':{'ownerUin':'11111'}},db,'12345','真实目标群文本','',lambda:True,lambda *args:None,review=review))
-                await entered.wait();self.f.observe('group:12345','3','33333','复核后新消息');release.set()
+                await asyncio.wait_for(entered.wait(),2);self.f.observe('group:12345','3','33333','复核后新消息');release.set()
                 result=json.loads(await task)
             self.assertEqual(result['status'],'not_sent');self.assertEqual(sent,[])
             self.assertEqual(db.execute('SELECT state FROM group_message_attempts').fetchone()[0],'not_sent')
@@ -84,7 +87,7 @@ class Freshness(unittest.IsolatedAsyncioTestCase):
         try:
             with patch.object(group_actions,'group_access',access):
                 task=asyncio.create_task(group_actions.send(event,{'behavior':{'ownerUin':'11111','splitMessages':True}},db,'12345','第一条\n\n第二条','',lambda:True,lambda *args:None,review=review))
-                await entered.wait();self.f.observe('group:12345','new','33333','刚到的新消息');release.set()
+                await asyncio.wait_for(entered.wait(),2);self.f.observe('group:12345','new','33333','刚到的新消息');release.set()
                 result=json.loads(await task)
             pipeline.finish(work,{})
             self.assertEqual(result['status'],'partial')
@@ -112,7 +115,7 @@ class Freshness(unittest.IsolatedAsyncioTestCase):
         try:
             with patch.object(group_actions,'group_access',access):
                 task=asyncio.create_task(group_actions.send(event,{'behavior':{'ownerUin':'11111'}},db,'12345','单条文本','',lambda:True,lambda *args:None,review=review))
-                await entered.wait();self.f.observe('group:12345','single-new','33333','新消息');release.set()
+                await asyncio.wait_for(entered.wait(),2);self.f.observe('group:12345','single-new','33333','新消息');release.set()
                 result=json.loads(await task)
             pipeline.finish(work,{})
             pipeline.release_work(work)
