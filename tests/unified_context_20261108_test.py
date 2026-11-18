@@ -105,6 +105,24 @@ class Unified(unittest.TestCase):
         self.assertFalse(shared.active(self.db))
         self.assertEqual(self.db.execute('SELECT scope,sha FROM fishbot_readonly_journals').fetchall(),before)
 
+    def test_reserved_shared_journal_survives_restart_and_fences_a_missing_marker(self):
+        import sqlite3
+        db=sqlite3.connect(':memory:')
+        self.addCleanup(db.close)
+        self.assertTrue(shared.activate_empty(db,self.cfg))
+        snapshot=db.execute('SELECT scope,state,sha FROM fishbot_readonly_journals').fetchall()
+        self.assertEqual([(key,state) for key,state,sha in snapshot],[('"bot_shared"','ready')])
+        self.assertTrue(shared.activate_empty(db,self.cfg))
+        self.assertEqual(db.execute('SELECT scope,state,sha FROM fishbot_readonly_journals').fetchall(),snapshot)
+        loaded=ReadonlyJournal(db,'bot_shared')
+        self.assertIsNone(loaded.last)
+        self.assertIsNone(loaded.recovery_error)
+        db.execute('DELETE FROM fishbot_shared_context')
+        db.commit()
+        with self.assertRaisesRegex(ValueError,'marker_missing'):
+            shared.activate_empty(db,self.cfg)
+        self.assertEqual(db.execute('SELECT scope,state,sha FROM fishbot_readonly_journals').fetchall(),snapshot)
+
     def test_atomic_authorized_cutover_keeps_exact_old_journals_no_license(self):
         expected={};old={}
         for scope in ['private:12345678','group:55555']:

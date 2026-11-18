@@ -71,19 +71,37 @@ def _record_activation(db,authorization,group_limit):
     db.execute("INSERT INTO fishbot_shared_context VALUES(1,'active',?,?,?)",(authorization,time.time(),group_limit))
 
 
-def activate_empty(db,cfg):
+def activate_empty(db,cfg,*,group_limit=None):
     # Start an unused runtime with one Journal before it can submit history.
-    if active(db):return
+    if active(db):return True
+    if db.in_transaction:raise ValueError('shared_context_bootstrap_requires_idle_database')
     evidence=('fishbot_readonly_journals','fishbot_readonly_journal_blobs','fishbot_readonly_cutover',
-              'fishbot_operator_session_archives','memory_reconstruction_checkpoints','memory_rounds')
-    limit=4 if len((cfg.get('behavior') or cfg).get('groupParticipationGroups') or ())>2 else 2
+              'fishbot_operator_session_archives','memory_reconstruction_checkpoints','memory_rounds',
+              'memory_pending','memory_summaries','memory_summary_origins')
+    limit=group_limit if group_limit is not None else (4 if len((cfg.get('behavior') or cfg).get('groupParticipationGroups') or ())>2 else 2)
+    group_whitelist(cfg,limit)
+    from readonly_journal import ReadonlyJournal
+    import journal_storage
+    ReadonlyJournal(db,None)
+    initialize(db)
     db.execute('BEGIN IMMEDIATE')
     try:
         tables={name for name, in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if not active(db) and db.execute('SELECT 1 FROM fishbot_readonly_journals WHERE scope=?',
+                                         (model_json(JOURNAL_SCOPE),)).fetchone():
+            raise ValueError('shared_context_marker_missing_for_shared_journal')
         if not active(db) and not any(
                 table in tables and db.execute('SELECT 1 FROM '+table+' LIMIT 1').fetchone() for table in evidence):
-            _record_activation(db,'runtime default: empty history',limit)
+            key=model_json(JOURNAL_SCOPE);now=time.time()
+            value={'scope':key,'base':[],'wire':[],'state':{},'turns':0,'at':now,
+                   'group_turn':None,'base_chars':0,'detail':'','usage':{},'authority':None,'retirement':None}
+            payload,blobs=journal_storage.encode(value)
+            if blobs:raise ValueError('shared_context_empty_journal_has_media')
+            db.execute("INSERT INTO fishbot_readonly_journals VALUES(?,?,'ready',?,?,?)",
+                       (key,journal_storage.VERSION,payload,hashlib.sha256(payload.encode()).hexdigest(),now))
+            _record_activation(db,'new_bot_initialization',limit)
         db.commit()
+        return active(db)
     except BaseException:
         db.rollback();raise
 

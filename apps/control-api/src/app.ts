@@ -1,4 +1,6 @@
 import {lockOwnedBot,revokeLoginSessions} from './bot-access.js';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
 import {registerAdminOperations} from './admin-operations.js';
 import {runtimeStatus} from '../../../packages/shared/runtime-status.js';
 import {createRequestBudget} from './request-budget.js';
@@ -19,6 +21,7 @@ import {randomBytes,randomUUID} from 'node:crypto';import path from 'node:path';
 import {openDatabase,configuredDatabaseUrl,type Sql} from '../../../packages/database/index.js';import {hashPassword,verifyPassword,digest,loadKey,encrypt,redact} from '../../../packages/shared/security.js';import {defaultConfig,BotConfigSchema,ProtocolSchema,personas,terminalLogin} from '../../../packages/contracts/index.js';import {NodeAgent} from '../../node-agent/src/agent.js';import {MockProtocolAdapter} from '../../../adapters/mock/index.js';
 declare module 'fastify'{interface FastifyRequest{user?:{id:string;email:string;name:string;is_admin:boolean;tenant_id:string}}}
 const modelKeyInput=z.string().trim().max(4096).regex(/^[^\s\x00-\x1f\x7f]*$/,'Key 不能包含空格或控制字符').optional();
+const provisionJournal=promisify(execFile);
 export async function createApp(options:{root?:string;databaseUrl?:string;agent?:boolean;logger?:boolean}={}){
  const root=path.resolve(options.root||process.env.DATA_ROOT||'.local');await mkdir(root,{recursive:true});
  const databaseUrl=options.databaseUrl??await configuredDatabaseUrl();const db=await openDatabase(root,databaseUrl);let key:Buffer;try{key=await loadKey(root,{createIfMissing:!(await db.query('SELECT 1 FROM secrets UNION ALL SELECT 1 FROM bilibili_accounts UNION ALL SELECT 1 FROM bilibili_settings WHERE model_secret IS NOT NULL UNION ALL SELECT 1 FROM bilibili_logins WHERE secret<>\'\' LIMIT 1')).length})}catch(error){await db.close();throw error}const agent=new NodeAgent(db,root,key);
@@ -67,7 +70,11 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
    await tx.query('LOCK TABLE instances IN SHARE ROW EXCLUSIVE MODE');
    const used=new Set((await tx.query('SELECT ai_port FROM instances')).map(row=>row.ai_port));const offset=Math.floor(Math.random()*4000);let port=0;for(let slot=0;slot<4000;slot++){const candidate=20000+((slot+offset)%4000)*4;if(!used.has(candidate)){port=candidate;break}}if(!port)fail('节点端口池已满，请联系管理员',503);
    await tx.query('INSERT INTO instances(bot_id,generation,ai_port,protocol_port,token) VALUES($1,0,$2,$3,$4)',[id,port,port+2,randomBytes(32).toString('hex')]);
-   if(v.apiKey)await tx.query('INSERT INTO secrets(id,tenant_id,bot_id,ciphertext) VALUES($1,$2,$3,$4)',[randomUUID(),req.user!.tenant_id,id,encrypt(key,`${req.user!.tenant_id}:${id}`,v.apiKey)]);});await audit(req,'bot.created',id);reply.code(201);return{id};
+   if(v.apiKey)await tx.query('INSERT INTO secrets(id,tenant_id,bot_id,ciphertext) VALUES($1,$2,$3,$4)',[randomUUID(),req.user!.tenant_id,id,encrypt(key,`${req.user!.tenant_id}:${id}`,v.apiKey)]);
+   const python=path.resolve(process.env.ASTRBOT_PYTHON||`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`);
+   const groupLimit=v.config.behavior.groupParticipationGroups.length>2?'4':'2';
+   await provisionJournal(python,['-B',path.resolve('scripts/initialize-shared-journal.py'),path.join(root,'bots',id),groupLimit],{timeout:10000,windowsHide:true});
+   });await audit(req,'bot.created',id);reply.code(201);return{id};
  });
  app.get<{Params:{id:string}}>('/v1/bots/:id',async req=>{const bot=await owned(req,req.params.id);const [revision]=await db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[bot.id,bot.revision]);const secret=(await db.query('SELECT id FROM secrets WHERE bot_id=$1 AND tenant_id=$2',[bot.id,req.user!.tenant_id])).length>0;return{bot,config:revision.config,hasKey:secret,capabilities:agent.protocols[bot.protocol].getCapabilities(),commands:await db.query('SELECT id,kind,status,error,created_at FROM commands WHERE bot_id=$1 ORDER BY created_at DESC LIMIT 10',[bot.id])}});
  app.put<{Params:{id:string}}>('/v1/bots/:id/config',async req=>{const v=z.object({expectedRevision:z.number().int(),config:BotConfigSchema,name:z.string().trim().min(1).max(80),expectedUin:z.string().regex(/^\d{5,20}$|^$/).default(''),apiKey:modelKeyInput,clearKey:z.boolean().optional()}).parse(req.body);let revision=0;

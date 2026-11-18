@@ -479,6 +479,14 @@ class ReadonlyJournal:
             try:reading_pool(value['wire'])
             except (TypeError,ValueError,KeyError,IndexError):
                 self.recovery_error='journal_reading_definition_invalid';return
+            if value['turns']==0 and not value['base'] and not value['wire']:
+                from shared_context import JOURNAL_SCOPE,active
+                if (json.loads(self.scope_key)!=JOURNAL_SCOPE or state!='ready' or not active(self.db)
+                    or value['state'] or value['usage'] or value['detail']
+                    or value['base_chars']!=0 or group_turn is not None or authority is not None
+                    or value['retirement'] is not None or self._scope_has_completed_history()):
+                    self.recovery_error='journal_empty_reservation_invalid'
+                return
             self.last=Prepared(0,None,value['base'],value['wire'],value['state'],value['turns'],value['at'],'restored',group_turn,value['base_chars'],value['detail'],value['usage'],authority,value['retirement'])
             self.last.main_conversation=value.get('main_conversation',False)
             return
