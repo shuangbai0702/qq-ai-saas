@@ -630,7 +630,22 @@ def install_runtime(core,settings):
                 break
     care.favorite_reconciler=reconcile_favorites
     from aiocqhttp import CQHttp
-    action_original=CQHttp.call_action
+    protocol_action_original=CQHttp.call_action
+    async def action_original(self,action,**params):
+        # All foreground and delegated message sends share this response boundary.
+        # A rejected QQ write is not a model outage; no extra model input/request.
+        event=current_message_event.get()
+        lease=setting(event) if event and getattr(event,'bot',None) is self else None
+        try:return await protocol_action_original(self,action,**params)
+        except Exception as error:
+            if action in ('send_private_msg','send_group_msg','send_private_forward_msg','send_group_forward_msg') and lease is not None and setting(event) is lease and current(event):
+                failure=bot_pipeline.protocol_send_failure(error)
+                event.set_extra('_hosted_send_failure',failure)
+                metrics.setdefault(event.get_platform_id(),{})['lastDelivery']={**failure,'at':time.time()}
+                from model_cache import record_diagnostic
+                record_diagnostic(lease,{'kind':'qq_delivery_result','status':failure['status'],'reason':failure['reason'],
+                    'workId':getattr(event.get_extra('_hosted_pipeline'),'event_id',None)})
+            raise
     def note_message_receipt(event,result,action,params):
         receipt=bot_pipeline.message_receipt(result)
         if receipt is None:raise RuntimeError('missing_protocol_receipt')
@@ -641,6 +656,9 @@ def install_runtime(core,settings):
         by_scope=dict(event.get_extra('_hosted_protocol_receipts_by_scope') or {})
         by_scope[destination]=(by_scope.get(destination,[])+[receipt])[-4:]
         event.set_extra('_hosted_protocol_receipts_by_scope',dict(list(by_scope.items())[-4:]))
+        if current(event):
+            event.set_extra('_hosted_send_failure',None)
+            metrics.setdefault(event.get_platform_id(),{})['lastDelivery']={'status':'confirmed','at':time.time()}
         st=stores.get(event.get_platform_id())
         if st is not None and setting(event) is event.get_extra('_hosted_lease'):
             before=st.freshness.cursor(destination)
@@ -1427,8 +1445,8 @@ def install_runtime(core,settings):
                 if isinstance(prepared_sticker,dict) and prepared_sticker.get('id'):self.set_extra('_hosted_tool_sticker',None)
             try:result=await original_send(self,outgoing)
             except Exception as error:
-                record_diagnostic(s,{'kind':'qq_send_error','workId':getattr(work,'event_id',None),'reason':type(error).__name__,
-                    'diagnosticDetail':json.dumps({'planned':len(plan.messages),'segment':index+1,'confirmed':len(confirmed_text),'status':'unknown'})})
+                record_diagnostic(s,{'kind':'qq_send_error','workId':getattr(work,'event_id',None),'reason':(self.get_extra('_hosted_send_failure') or {}).get('reason',type(error).__name__),
+                    'diagnosticDetail':json.dumps({'planned':len(plan.messages),'segment':index+1,'confirmed':len(confirmed_text),'status':(self.get_extra('_hosted_send_failure') or {}).get('status','unknown')})})
                 if image and setting(self) is s:metrics.setdefault(id,{})['lastMemeDecision']={'reason':'send_failed','at':time.time()}
                 raise
             if self.get_extra('_hosted_protocol_blocked',False):return result
@@ -2296,7 +2314,7 @@ def install_runtime(core,settings):
             from model_cache import record_execution_error
             work=event.get_extra('_hosted_pipeline')
             record_execution_error(lease,error,work_id=getattr(work,'event_id',None))
-            bot_pipeline.stop(event,type(error).__name__,'error');raise
+            bot_pipeline.stop(event,(event.get_extra('_hosted_send_failure') or {}).get('reason',type(error).__name__),'error');raise
         finally:
             if ingress_owned:
                 admitted.ingress-=1
@@ -2360,7 +2378,7 @@ def install_runtime(core,settings):
             # retain typed, content-free evidence at the real failure boundary.
             from model_cache import record_execution_error
             record_execution_error(setting(event),error,work_id=getattr(event.get_extra('_hosted_pipeline'),'event_id',None))
-            bot_pipeline.stop(event,type(error).__name__,'error')
+            bot_pipeline.stop(event,(event.get_extra('_hosted_send_failure') or {}).get('reason',type(error).__name__),'error')
             raise
     PipelineScheduler.execute=guarded_execute;AiocqhttpMessageEvent.send=observed_send
     timer=initiative.start(core,settings,store,metrics)

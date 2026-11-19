@@ -71,6 +71,22 @@ def addressed_to_self(event):
     return raw_mentions_self(raw,self_id)
 
 
+def protocol_send_failure(error):
+    """Content-free classification of a real OneBot response, never user text.
+
+    Generic API failures/timeouts still have unknown delivery. Only the native
+    QQ write-ban response proves rejection; this never upgrades old receipts.
+    """
+    result=getattr(error,'result',None)
+    failure={'status':'unknown','reason':'qq_send_unconfirmed'}
+    if not isinstance(result,dict) or result.get('status')!='failed' or type(result.get('retcode')) is not int or result['retcode']==0:return failure
+    failure['retcode']=result['retcode']
+    message=' '.join(str(result.get(k) or '')[:4096] for k in ('message','wording','data')).lower()
+    if 'ban state forbit write req' in message:
+        failure.update(status='rejected',reason='qq_write_restricted')
+    return failure
+
+
 def message_receipt(result):
     """An unwrapped OneBot response must prove a message was accepted."""
     if not isinstance(result,dict) or result.get('retcode',0)!=0 or result.get('status') in ('failed','error'):return None
