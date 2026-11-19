@@ -1,3 +1,5 @@
+import {creditBalance} from './platform-credits.js';
+export {creditBalance} from './platform-credits.js';
 import {randomBytes} from 'node:crypto';
 import type {FastifyInstance} from 'fastify';
 import {z} from 'zod';
@@ -33,12 +35,6 @@ export async function grantReferral(tx:Sql, code:string, inviteeId:string, invit
  if(!reward)return;
  await tx.query(`INSERT INTO platform_model_credits(tenant_id,granted) VALUES($1,$2),($3,$4)
    ON CONFLICT (tenant_id) DO UPDATE SET granted=platform_model_credits.granted+EXCLUDED.granted`,[inviter.tenant_id,inviterTokens,inviteeTenant,inviteeTokens]);
-}
-
-export async function creditBalance(db:Sql,tenantId:string){
- const [row]=await db.query('SELECT granted,spent,reserved FROM platform_model_credits WHERE tenant_id=$1',[tenantId]);
- const granted=Number(row?.granted??0),spent=Number(row?.spent??0),reserved=Number(row?.reserved??0);
- return {granted,spent,reserved,available:Math.max(0,granted-spent-reserved)};
 }
 
 export function registerReferrals(app:FastifyInstance,db:Sql,enabled:()=>Promise<boolean>,key:Buffer){

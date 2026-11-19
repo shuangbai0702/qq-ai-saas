@@ -1,3 +1,4 @@
+import {registerActivities} from './activities.js';
 import {lockOwnedBot,revokeLoginSessions} from './bot-access.js';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
@@ -70,8 +71,9 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
  platformModels.register(app);
  registerPlatformModel(app,db,key,platformModels,options.platformModelTransport);
  registerReferrals(app,db,platformModels.available,key);
+ registerActivities(app,db,platformModels.available);
  async function requirePlatformCredit(config:z.infer<typeof BotConfigSchema>,tenantId:string,tx:Sql){
-  if(config.platformModel&&(!await platformModels.available(tx)||!(await creditBalance(tx,tenantId)).granted))fail('当前工作区暂无平台模型额度，请前往邀请奖励页',403);
+  if(config.platformModel&&(!await platformModels.available(tx)||!(await creditBalance(tx,tenantId)).granted))fail('当前工作区暂无平台模型额度，请前往活动专区领取或查看邀请奖励',403);
  }
  app.get('/v1/health',async()=>{await db.query('SELECT 1');return{ok:true,publicOrigin:process.env.APP_ORIGIN||'',database:databaseUrl?'postgresql':'pglite-postgresql',agent:options.agent!==false}});
  app.post('/v1/auth/register',{config:{rateLimit:{max:10,timeWindow:'1 minute'}}},async(req,reply)=>{

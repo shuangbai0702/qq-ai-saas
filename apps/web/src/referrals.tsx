@@ -2,7 +2,7 @@ import {useState} from 'react';
 import {api} from './api';
 import {useLifetime,useLiveResource} from './hooks';
 
-type Balance={enabled:boolean;available:number;granted:number;spent:number;reserved:number};
+export type Balance={enabled:boolean;available:number;granted:number;spent:number;reserved:number;expired?:number;campaign?:{id:string|null;claimedAt:string|null;expiresAt:string|null;granted:number;spent:number;reserved:number;available:number}};
 type ReferralDetails=Balance&{canInvite:boolean;invited:number;inviterTokens:number;inviteeTokens:number};
 
 export function usePlatformBalance(){return useLiveResource<Balance>('/platform-model/balance',15000)}

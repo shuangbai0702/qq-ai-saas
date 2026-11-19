@@ -106,7 +106,7 @@ test('referral registration, scoped credentials, concurrency, usage and unknown'
   const stream=await call('stream',true);assert.equal(stream.statusCode,200);assert.match(stream.body,/\[DONE\]/);assert.match(stream.body,/"model":"platform"/);
   assert.equal((await request('/v1/platform-model/balance',undefined,invitee)).json().available,4470);
   assert.equal((await call('rejected')).statusCode,429);
-  assert.equal(routes.at(-1),'gpt-6.1-sol');
+  assert.deepEqual(routes.slice(-2),['gpt-6.1-sol','gpt-5.6-luna']); // Explicit rate rejection now tries each configured priority.
   assert.equal((await request('/v1/platform-model/balance',undefined,invitee)).json().available,4470);
   assert.equal((await call('unknown')).statusCode,502);
   assert.equal(Number((await db.query('SELECT count(*) AS count FROM platform_model_reservations'))[0].count),1);

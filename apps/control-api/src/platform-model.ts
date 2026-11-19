@@ -1,4 +1,4 @@
-import {randomUUID} from 'node:crypto';
+import {reserveCredits,settleCredits as settle} from './platform-credits.js';
 import {readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {once} from 'node:events';
@@ -15,7 +15,6 @@ const platformCredentials=z.object({primary:z.string().min(1),fallback:z.string(
 type PlatformSecrets=z.infer<typeof platformCredentials>;
 const quotaRejectionCodes=new Set(['insufficient_quota','insufficient_user_quota','insufficient_token_quota','quota_exhausted']);
 const contract=z.object({model:z.literal(platformModelId),messages:z.array(z.record(z.string(),z.unknown())).min(1),stream:z.boolean().optional(),max_tokens:z.number().int().min(1).max(65536).optional(),max_completion_tokens:z.number().int().min(1).max(65536).optional(),tools:z.array(z.unknown()).optional(),tool_choice:z.unknown().optional(),parallel_tool_calls:z.boolean().optional(),temperature:z.number().optional(),top_p:z.number().optional(),stop:z.union([z.string(),z.array(z.string())]).optional(),response_format:z.record(z.string(),z.unknown()).optional(),prompt_cache_key:z.string().max(256).optional()});
-const preDispatchRejections=new Set([401,403,404,413,429]);
 const invalid=(message:string,statusCode=400)=>Object.assign(new Error(message),{statusCode});
 const maxFrameChars=2*1024*1024;
 const maxResponseBytes=4*1024*1024;
@@ -40,20 +39,7 @@ async function authorizedBot(db:Sql,key:Buffer,auth:string,lock=false){
 async function reserve(db:Sql,key:Buffer,auth:string,tokens:number){
  return db.transaction(async tx=>{
   const bot=await authorizedBot(tx,key,auth,true);
-  const [budget]=await tx.query(`UPDATE platform_model_credits SET reserved=reserved+$2
-   WHERE tenant_id=$1 AND granted-spent-reserved >= $2 RETURNING tenant_id`,[bot.tenant_id,tokens]);
-  if(!budget)throw invalid('平台模型余额不足以处理本次请求',402);
-  const reservation=randomUUID();
-  await tx.query('INSERT INTO platform_model_reservations(id,tenant_id,bot_id,tokens) VALUES($1,$2,$3,$4)',[reservation,bot.tenant_id,bot.id,tokens]);
-  return reservation;
- });
-}
-
-async function settle(db:Sql,id:string,used:number){
- // The row is only removed in the same commit that applies authoritative usage.
- await db.transaction(async tx=>{
-  const [row]=await tx.query('DELETE FROM platform_model_reservations WHERE id=$1 RETURNING tenant_id,tokens',[id]);
-  if(row)await tx.query('UPDATE platform_model_credits SET reserved=reserved-$2,spent=spent+$3 WHERE tenant_id=$1',[row.tenant_id,row.tokens,used]);
+  return reserveCredits(tx,bot.tenant_id,bot.id,tokens);
  });
 }
 
@@ -107,13 +93,18 @@ async function readCompletion(response:Response,byteLimit=maxResponseBytes){
  }
 }
 
-async function quotaRejected(response:Response){
- if(response.status===402)return true;
- if(response.status!==403&&response.status!==429)return false;
- try{
-  const data=await readCompletion(response,16*1024);
-  return !data?.usage&&!data?.choices&&[data?.error?.code,data?.error?.type].some(code=>quotaRejectionCodes.has(code));
- }catch{return false}
+async function rejection(response:Response){
+ if(response.ok)return {quota:false,retry:false};
+ if(!response.body)return {quota:response.status===402,retry:[401,402,403,404,413,429,503].includes(response.status)};
+ let data:any;
+ try{data=await readCompletion(response,16*1024)}catch(error){
+  // Empty/HTML rejection bodies do not provide a completion. An oversized or
+  // interrupted response remains unknown and is never automatically replayed.
+  if(!(error instanceof SyntaxError))return {quota:false,retry:false};
+ }
+ if(data?.usage||data?.choices)return {quota:false,retry:false};
+ const quota=response.status===402||[data?.error?.code,data?.error?.type].some(code=>quotaRejectionCodes.has(code));
+ return {quota,retry:quota||[401,403,404,413,429,503].includes(response.status)};
 }
 
 async function streamModel(upstream:Response,reply:FastifyReply,signal:AbortSignal,adopt:(frame:unknown)=>Promise<void>){
@@ -187,12 +178,12 @@ export function registerPlatformModel(app:FastifyInstance,db:Sql,key:Buffer,mode
    if(failure.statusCode!==402)return error(reply,failure.statusCode,failure.message);
    try{personal=await personalConnection(db,key,req.headers.authorization||'')}catch(cause){const f=cause as Error & {statusCode?:number};if(!f.statusCode)throw cause;return error(reply,f.statusCode,f.message)}
   }
-  let adopted=false;
+  let settled=false;
   const adopt=async(frame:unknown)=>{
    const used=usage(frame);
-   if(!id||used===undefined||adopted)return;
+   if(!id||used===undefined||settled)return;
    await settle(db,id,used);
-   adopted=true;
+   settled=true;
    await models.observe(provider,'available',200).catch(()=>{});
    if(used>hold)app.log.error({reservation:id,used,hold},'platform-model provider exceeded reservation');
   };
@@ -203,20 +194,21 @@ export function registerPlatformModel(app:FastifyInstance,db:Sql,key:Buffer,mode
     method:'POST',headers:{Authorization:'Bearer '+credential,'Content-Type':'application/json'},body,signal,
    });
    let upstream=await send(personal?.baseUrl??provider.base_url,personal?.credential??models.credential(provider),personal?bodyFor(personal.model,personal.reasoningEffort):initialBody);
-   let rejectedForQuota=!personal&&await quotaRejected(upstream);
-   for(let next=1;rejectedForQuota&&next<providers.length;next++){
+   let rejected=personal?{quota:false,retry:false}:await rejection(upstream);
+   const retryable=()=>!personal&&rejected.retry;
+   for(let next=1;retryable()&&next<providers.length;next++){
     await upstream.body?.cancel().catch(()=>{});
-    await models.observe(provider,'limited',upstream.status).catch(()=>{});
-    app.log.info({reservation:id,providerId:provider.id},'platform-model quota rejected; using next priority');
+    await models.observe(provider,rejected.quota||upstream.status===429?'limited':'failed',upstream.status).catch(()=>{});
+    app.log.info({reservation:id,providerId:provider.id},'platform-model rejected; using next priority');
     provider=providers[next];
     upstream=await send(provider.base_url,models.credential(provider),bodyFor(provider.model));
-    rejectedForQuota=await quotaRejected(upstream);
+    rejected=await rejection(upstream);
    }
    if(!upstream.ok){
-    if(!personal)await models.observe(provider,rejectedForQuota?'limited':'failed',upstream.status).catch(()=>{});
+    if(!personal)await models.observe(provider,rejected.quota?'limited':'failed',upstream.status).catch(()=>{});
     await upstream.body?.cancel().catch(()=>{});
-    if(id&&(rejectedForQuota||preDispatchRejections.has(upstream.status)))await settle(db,id,0);
-    if(rejectedForQuota)return error(reply,503,'平台模型供应商额度暂不可用');
+    if(id&&rejected.retry){await settle(db,id,0);settled=true;}
+    if(rejected.quota)return error(reply,503,'平台模型供应商额度暂不可用');
     return error(reply,upstream.status===429?429:502,personal?'自备模型服务暂时无法完成请求':'平台模型服务暂时无法完成请求');
    }
    if(request.stream){
@@ -230,14 +222,14 @@ export function registerPlatformModel(app:FastifyInstance,db:Sql,key:Buffer,mode
     const result=await readCompletion(upstream);
     await adopt(result);
     if(personal&&!Array.isArray(result?.choices))return error(reply,502,'自备模型未返回兼容的响应');
-    if(!personal&&!adopted){await models.observe(provider,'unconfirmed',upstream.status).catch(()=>{});return error(reply,502,'平台模型未返回可核对的用量，本次额度暂时保留')}
+    if(!personal&&!settled){await models.observe(provider,'unconfirmed',upstream.status).catch(()=>{});return error(reply,502,'平台模型未返回可核对的用量，本次额度暂时保留')}
     return publicFrame(result);
    }
   }catch{
    if(!personal)await models.observe(provider,'unconfirmed').catch(()=>{});
    if(!reply.sent&&!reply.raw.destroyed)return error(reply,502,personal?'自备模型未完成请求，请检查个人接口配置或稍后重试':'平台模型未完成请求，本次用量暂无法确认');
   }finally{
-   if(id&&!adopted)app.log.info({reservation:id},'platform-model usage was not settled from a completion receipt');
+   if(id&&!settled)app.log.info({reservation:id},'platform-model usage was not settled from a completion receipt');
   }
  });
 }
