@@ -990,6 +990,17 @@ class BotPipeline:
                 self.db.execute('UPDATE pipeline_handoffs SET receipt=? WHERE id=?',(json.dumps(receipt),goal_id))
             return data
 
+    def reserved_tool_reply(self,identity,tool_action,scope,current_lease):
+        """Validate the exact durable tool reservation at native dispatch."""
+        if not isinstance(identity,dict) or not tool_action:return False
+        for goal_id,data,receipt in self.db.execute("SELECT id,data,receipt FROM pipeline_handoffs WHERE state='accepted'"):
+            value=json.loads(receipt or '{}')
+            if value.get('replyActionId')!=identity.get('id') or value.get('replyToolActionId')!=tool_action:continue
+            source={**json.loads(data),'handoffId':goal_id}
+            return bool(source.get('scope')==scope and self.request_reply(identity,goal_id,source,
+                identity['id'],current_lease=current_lease,tool_action=tool_action))
+        return False
+
     def bind_internal(self,event,lease,identity,scope,objective):
         """Bind an authenticated service Work without fabricating a QQ sender."""
         stable={k:identity[k] for k in ('id','tenantId','botId','epoch','generation','revision','cycleId')}

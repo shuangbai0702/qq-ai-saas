@@ -717,18 +717,26 @@ def install_runtime(core,settings):
             if not (selected and str(params.get('message_id'))==selected[0] or media and str(params.get('message_id'))==media['message_id']):raise ValueError('internal quote read denied')
             return await action_original(self,action,**params)
         allowed_reads={'get_login_info','get_status','get_group_info','get_group_member_info','get_group_list','get_group_member_list','fetch_custom_face_detail'}
+        if event.get_extra('_hosted_main_activation'):allowed_reads.add('get_friend_list')
         if action in allowed_reads:
             allowed=group_actions.read_groups(event,s['config'])
             if action in ('get_group_info','get_group_member_info','get_group_member_list') and str(params.get('group_id')) not in allowed:raise asyncio.CancelledError('internal group read denied')
             result=await action_original(self,action,**params)
             return [row for row in result if str(row.get('group_id')) in allowed] if action=='get_group_list' and isinstance(result,list) else result
         work=event.get_extra('_hosted_pipeline')
+        st=stores.get(id)
+        def scheduled_private():
+            if send_kind!='send_private_msg' or not work or not st or not event.get_extra('_hosted_main_activation'):return False
+            call=group_actions.tool_action_id.get()
+            if not isinstance(call,str) or not call:return False
+            key=group_actions.attempt_key(event)+':action:'+hashlib.sha256(call.encode()).hexdigest()
+            return st.pipeline.reserved_tool_reply(identity,key,'private:'+str(params.get('user_id')),s)
         # Capability authorization belongs to the inner tools and current
         # feature settings, not the outer planner's task label.
         granted=qq_actions.allowed(event,s['config']);permitted=set()
         for feature,method in [('signature','set_self_longnick'),('avatar','set_qq_avatar'),('publish','send_qzone_msg')]:
             if feature in granted:permitted.add(method)
-        if work and work.scope.startswith('private:'):permitted.add('send_private_msg')
+        if work and work.scope.startswith('private:') or scheduled_private():permitted.add('send_private_msg')
         if (s['config'].get('behavior') or {}).get('groupParticipationEnabled',True):permitted.add('send_group_msg')
         if (s['config'].get('behavior') or {}).get('qqFavoriteSaveEnabled',True):permitted.add('add_custom_face')
         if send_kind not in permitted or not brain.effect_current(event) or not work:raise asyncio.CancelledError('internal effect denied')
@@ -738,7 +746,7 @@ def install_runtime(core,settings):
         if send_kind in ('send_private_msg','send_group_msg'):
             actual=('group:'+str(params.get('group_id'))) if send_kind=='send_group_msg' else ('private:'+str(params.get('user_id')))
             if actual!=target:
-                if send_kind!='send_group_msg' or str(params.get('group_id')) not in group_actions.read_groups(event,s['config']):raise asyncio.CancelledError('internal destination mismatch')
+                if not scheduled_private() and (send_kind!='send_group_msg' or str(params.get('group_id')) not in group_actions.read_groups(event,s['config'])):raise asyncio.CancelledError('internal destination mismatch')
                 target=actual
         effects=st.pipeline.internal_result(work.event_id)['effects']
         logical=work.event_id+':message:'+target if send_kind in ('send_private_msg','send_group_msg') else work.event_id+':'+str(len(effects))
@@ -751,6 +759,8 @@ def install_runtime(core,settings):
         try:
             if not brain.effect_current(event) or stores.get(id) is not st:
                 raise asyncio.CancelledError('internal effect revoked after reservation')
+            if send_kind=='send_private_msg' and work.scope!=target and not scheduled_private():
+                raise asyncio.CancelledError('scheduled reply revoked after reservation')
             if send_kind in ('send_private_msg','send_group_msg'):
                 group_freshness.guard_dispatch(event,st,lambda:delivery_current(event),send_kind,params)
             sequence=st.pipeline.internal_effect(work,action,target)

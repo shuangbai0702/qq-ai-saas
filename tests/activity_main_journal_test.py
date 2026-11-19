@@ -2,7 +2,7 @@
 import asyncio,copy,json,os,sys,tempfile,time,unittest,uuid
 from pathlib import Path
 from types import SimpleNamespace as NS
-from unittest.mock import patch
+from unittest.mock import patch,AsyncMock
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/'references/astrbot'),str(ROOT/'adapters/astrbot')]
 TEMP=tempfile.TemporaryDirectory();os.environ['ASTRBOT_ROOT']=TEMP.name
@@ -39,6 +39,15 @@ class Activity(unittest.IsolatedAsyncioTestCase):
             self.provider=ProviderOpenAIOfficial({'id':'activity-fixture','type':'openai_chat_completion','model':'fixture','key':['fixture'],'api_base':'https://fixture.invalid/v1'}, {})
         self.settings={'qq':{'tenantId':'tenant','botId':'bot','generation':1,'revision':1,'expectedUin':'90000000','root':str(Path(TEMP.name)/uuid.uuid4().hex),'config':{'systemPrompt':'Synthetic stable persona','proactive':True,'behavior':{'memory':True,'enabled':True,'memeEnabled':False,'groupParticipationGroups':[],'naturalConversation':False,'memorySummary':False}}}}
         self.core=NS(event_bus=NS(stopped_platforms=set()),provider_manager=NS(inst_map={'platform-model':self.provider}),platform_manager=NS(get_insts=lambda:[NS(meta=lambda:PlatformMetadata('aiocqhttp','fixture','qq'),bot=NS())]))
+        from aiocqhttp import CQHttp
+        self.native_calls=[]
+        async def native(bot,action,**params):
+            self.native_calls.append((action,params))
+            if action=='get_login_info':return {'user_id':90000000}
+            if action=='get_friend_list':return [{'user_id':12345678}]
+            if action=='send_private_msg':return {'message_id':123}
+            raise AssertionError(action)
+        self.native_patch=patch.object(CQHttp,'call_action',native);self.native_patch.start()
         self.runtime=install_runtime(self.core,self.settings);self.runtime['manage']('qq',{'action':'list'})
         self.brain=self.core._hosted_autonomous;self.st=self.runtime['stores']['qq']
         import shared_context
@@ -47,6 +56,7 @@ class Activity(unittest.IsolatedAsyncioTestCase):
         self.budget_binding.stop()
         self.brain.close()
         self.runtime['release']('qq')
+        self.native_patch.stop()
         await self.provider.client.close()
     def activation_request(self,identifier=None,continuation=False,action_patch=None):
         identifier=identifier or str(uuid.uuid4());cycle=str(uuid.uuid4())
@@ -61,6 +71,29 @@ class Activity(unittest.IsolatedAsyncioTestCase):
 
     async def activate(self,identifier=None,continuation=False,action_patch=None):
         return await self.brain.execute('qq',self.activation_request(identifier,continuation,action_patch))
+    async def test_scheduled_private_reply_passes_native_guard_only_with_exact_reservation(self):
+        import group_actions
+        from aiocqhttp import CQHttp
+        from astrbot.core.platform.astr_message_event import current_message_event
+        data=self.activation_request();identity=data['work'];s=self.settings['qq'];db=self.st.db
+        event=self.brain.make_event('qq',identity,'private:0','test reminder','90000000');event.bot=CQHttp()
+        event.set_extra('_hosted_main_activation',True);event.set_extra('_hosted_autonomous_action',data['action'])
+        self.st.pipeline.bind_internal(event,s,identity,'self','test reminder')
+        request={**{k:s[k] for k in ('tenantId','botId','generation','revision')},'id':'goal',
+            'eventId':'original','scope':'private:12345678','senderId':'12345678','kind':'message','at':int(time.time()*1000)-2000,'delaySeconds':1}
+        db.execute("INSERT INTO pipeline_handoffs VALUES(?,1,?,'accepted',?,?)",('goal',json.dumps(request),json.dumps({'goalId':'goal'}),time.time()));db.commit()
+        token=current_message_event.set(event);call=group_actions.tool_action_id.set('exact-call')
+        try:
+            with self.assertRaises(asyncio.CancelledError):await event.bot.call_action('send_private_msg',user_id=12345678,message='unauthorized')
+            with patch('autonomous_goals.manifest',return_value={'fixture':True}),patch('bridge_http.post',AsyncMock(return_value=(200,{'goals':[{'id':'goal','status':'active','source':{**request,'handoffId':'goal'}}]}))),patch('external_action_budget.update',AsyncMock()),patch('external_action_budget.settle',AsyncMock()):
+                result=json.loads(await group_actions.send(event,s['config'],db,'','reminder','',lambda:True,lambda *a:None,private_user='12345678',request_id='goal',pipeline=self.st.pipeline))
+            self.assertEqual(result['receipt']['status'],'confirmed',result)
+            with self.assertRaises(asyncio.CancelledError):await event.bot.call_action('send_private_msg',user_id=88888888,message='wrong recipient')
+            group_actions.tool_action_id.set('different-call')
+            with self.assertRaises(asyncio.CancelledError):await event.bot.call_action('send_private_msg',user_id=12345678,message='another call')
+            self.assertEqual([a for a,p in self.native_calls].count('send_private_msg'),1)
+            self.assertEqual(self.st.pipeline.internal_result(identity['id'])['effects'][0]['status'],'confirmed')
+        finally:group_actions.tool_action_id.reset(call);current_message_event.reset(token)
     async def test_old_self_system_baseline_cannot_block_shared_main_activation(self):
         from model_cache import observe_wire_request
         async def guard(request):observe_wire_request(request)
