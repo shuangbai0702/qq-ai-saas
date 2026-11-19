@@ -93,7 +93,7 @@ def origin_healthy(config):
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
         with opener.open(req, timeout=3) as response:
             value = json.loads(response.read(8193))
-            return response.status == 200 and value.get('ok') is True and value.get('publicOrigin') == 'https://'+config['httpHost'] and (config.get('mode') != 'local-api-trial' or value.get('agent') is False)
+            return response.status == 200 and value.get('ok') is True and value.get('publicOrigin') == 'https://'+config['httpHost']
     except (OSError, ValueError, AttributeError, KeyError):
         return False
 

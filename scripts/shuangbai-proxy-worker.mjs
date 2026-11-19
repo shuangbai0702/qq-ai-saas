@@ -1,15 +1,4 @@
-
-// ============================================================
-//  shuangbai 反向代理 Worker
-//  上游地址不写死：从 DuckDNS 的 TXT 记录动态读取（DoH）
-//  服务器那边 cf-txt-sync.timer 每分钟把当前隧道地址写进去
-// ============================================================
-
-const DOH_URL = 'https://cloudflare-dns.com/dns-query?name=shuangbai.duckdns.org&type=TXT';
-const CACHE_MS = 30000;
-
-let cached = { url: null, at: 0 };
-
+// Public website proxy. The named origin and signing secret are required.
 async function signClient(headers, request, secret) {
   const ip = request.headers.get('cf-connecting-ip');
   if (!secret || !ip) return;
@@ -42,38 +31,34 @@ function cacheableAsset(response, pathname) {
     (pathname.endsWith('.css') ? type === 'text/css' : ['application/javascript', 'text/javascript'].includes(type));
 }
 
-function parseTxt(json) {
-  const answers = (json && json.Answer) || [];
-  const joined = answers.map((a) => a.data).join(' ');
-  const m = joined.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i);
-  return m ? m[0] : null;
+function secureResponse(response) {
+  const headers = new Headers(response.headers);
+  headers.set('strict-transport-security', 'max-age=31536000');
+  headers.delete('x-upstream-host');
+  headers.delete('x-fishbot-static');
+  return new Response(response.body, {status: response.status, statusText: response.statusText, headers});
 }
 
-async function resolveUpstream() {
-  const now = Date.now();
-  if (cached.url && now - cached.at < CACHE_MS) return cached.url;
-  try {
-    const r = await fetch(DOH_URL, {
-      headers: { accept: 'application/dns-json' },
-      cf: { cacheTtl: 15, cacheEverything: true },
-    });
-    const j = await r.json();
-    const url = parseTxt(j);
-    if (url) {
-      cached = { url, at: now };
-      return url;
-    }
-  } catch (e) {
-    /* fall through to stale cache */
-  }
-  return cached.url;
+function publicPathname(url) {
+  let pathname = new URL(url).pathname;
+  for (let depth = 0; depth < 4 && /%[a-f0-9]{2}/i.test(pathname); depth++) pathname = decodeURIComponent(pathname);
+  if (/%[a-f0-9]{2}/i.test(pathname)) throw new Error('Excessive path encoding');
+  pathname = pathname.replace(/\\/g, '/').replace(/\/+/g, '/');
+  return new URL('https://edge.invalid' + pathname).pathname;
 }
 
 export default {
   async fetch(request, env, ctx) {
     // Runtime IPC has its own bearer authentication and is never a web API.
-    if (/^\/internal(?:\/|$)/i.test(new URL(request.url).pathname)) {
-      return new Response('Not found', {status: 404, headers: {'cache-control': 'no-store'}});
+    let pathname;
+    try { pathname = publicPathname(request.url); }
+    catch { return secureResponse(new Response('Invalid path', {status: 400, headers: {'cache-control': 'no-store'}})); }
+    if (/^\/internal(?:[\/;]|$)/i.test(pathname)) {
+      return secureResponse(new Response('Not found', {status: 404, headers: {'cache-control': 'no-store'}}));
+    }
+    const origin = env.UPSTREAM_ORIGIN;
+    if (!origin || !env.FISHBOT_PROXY_SECRET) {
+      return secureResponse(new Response('服务暂时不可用', {status: 503, headers: {'cache-control': 'no-store'}}));
     }
     const key = assetCacheKey(request);
     const edgeCache = key ? caches.default : null;
@@ -83,16 +68,10 @@ export default {
         if (hit) {
           const headers = new Headers(hit.headers);
           headers.set('x-fishbot-asset-cache', 'HIT');
-          return new Response(request.method === 'HEAD' ? null : hit.body, { status: hit.status, headers });
+          return secureResponse(new Response(request.method === 'HEAD' ? null : hit.body, { status: hit.status, headers }));
         }
       } catch { /* Cache failures must not make the website unavailable. */ }
     }
-    // A named tunnel has a stable origin and needs no DuckDNS lookup or URL synchronization.
-    const origin = env.UPSTREAM_ORIGIN || await resolveUpstream();
-    if (!origin) {
-      return new Response('上游地址暂时取不到（DuckDNS TXT 未同步）', { status: 503, headers: { 'content-type': 'text/plain; charset=utf-8' } });
-    }
-
     const u = new URL(request.url);
     const target = origin.replace(/\/+$/, '') + u.pathname + u.search;
 
@@ -115,21 +94,21 @@ export default {
     try {
       resp = await fetch(target, init);
     } catch (e) {
-      return new Response('服务暂时无法连接', { status: 502, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
+      return secureResponse(new Response('服务暂时无法连接', { status: 502, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } }));
     }
 
     const out = new Headers(resp.headers);
     out.delete('content-encoding');
     out.delete('content-length');
     out.delete('x-robots-tag');
-    out.set('x-upstream-host', new URL(origin).host);
+    out.delete('x-upstream-host');
     if (key && cacheableAsset(resp, u.pathname)) {
       out.set('cache-control', 'public, max-age=31536000, s-maxage=604800, immutable');
       out.set('x-fishbot-asset-cache', 'MISS');
       const response = new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers: out });
       if (request.method === 'GET') ctx.waitUntil(edgeCache.put(key, response.clone()).catch(() => {}));
-      return response;
+      return secureResponse(response);
     }
-    return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers: out });
+    return secureResponse(new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers: out }));
   },
 };

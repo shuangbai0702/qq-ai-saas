@@ -1,5 +1,5 @@
 import {registerActivities} from './activities.js';
-import {proxyClientIp} from './proxy-client.js';
+import {edgeIngressHost,proxyClientIp} from './proxy-client.js';
 import {lockOwnedBot,revokeLoginSessions} from './bot-access.js';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
@@ -37,11 +37,17 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
  const databaseUrl=options.databaseUrl??await configuredDatabaseUrl();const db=await openDatabase(root,databaseUrl);let key:Buffer;try{key=await loadKey(root,{createIfMissing:!(await db.query('SELECT 1 FROM secrets UNION ALL SELECT 1 FROM bilibili_accounts UNION ALL SELECT 1 FROM bilibili_settings WHERE model_secret IS NOT NULL UNION ALL SELECT 1 FROM bilibili_logins WHERE secret<>\'\' LIMIT 1')).length})}catch(error){await db.close();throw error}const agent=new NodeAgent(db,root,key);
  const streams=new Set<import('node:http').ServerResponse>();const streamOwners=new Map<string,number>();
  const proxySecret=process.env.FISHBOT_PROXY_SECRET||await readFile(path.join(root,'proxy-client.key'),'utf8').then(s=>s.trim()).catch(error=>{if(error.code==='ENOENT')return undefined;throw error});
- const app=Fastify({logger:options.logger??false,bodyLimit:65536});await app.register(cookie);await app.register(rateLimit,{max:180,timeWindow:'1 minute',keyGenerator:req=>{
+ const app=Fastify({logger:options.logger??false,bodyLimit:65536});await app.register(cookie);
+ app.addHook('onRequest',async(req,reply)=>{
+  if(req.headers.host?.toLowerCase()!==edgeIngressHost)return;
+  if(req.routeOptions.url?.startsWith('/internal/'))return reply.code(404).send({error:'接口不存在'});
+  if(!proxyClientIp(req.headers,proxySecret))return reply.code(403).send({error:'请求入口无效'});
+ });
+ await app.register(rateLimit,{max:180,timeWindow:'1 minute',keyGenerator:req=>{
   const client=proxyClientIp(req.headers,proxySecret);
   return (req.routeOptions.url==='/v1/health'?'health:':'request:')+(client||req.ip);
  }});
- app.addHook('onSend',async(req,reply,payload)=>{reply.header('X-Content-Type-Options','nosniff').header('Referrer-Policy','same-origin').header('X-Frame-Options','DENY').header('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");if(req.url.startsWith('/v1/'))reply.header('Cache-Control','no-store');return payload});
+ app.addHook('onSend',async(req,reply,payload)=>{reply.header('Strict-Transport-Security','max-age=31536000').header('X-Content-Type-Options','nosniff').header('Referrer-Policy','same-origin').header('X-Frame-Options','DENY').header('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");if(req.url.startsWith('/v1/'))reply.header('Cache-Control','no-store');return payload});
  app.addHook('preClose',async()=>{for(const stream of streams)stream.end();streams.clear()});
  app.setErrorHandler((error:any,request,reply)=>{const status=error instanceof z.ZodError?400:error.statusCode;const code=Number.isInteger(status)&&status>=400&&status<600?status:500;reply.code(code).send({error:code>=500?'服务器处理失败，请查看管理员日志':redact(error instanceof z.ZodError?error.issues.map(x=>x.message).join('；'):error.message)});if(code>=500)app.log.error({message:redact(error.message),code:error.code},'request failed')});
  // Route onRequest rate limits run before authentication, including rejected
@@ -89,7 +95,7 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
  async function requirePlatformCredit(config:z.infer<typeof BotConfigSchema>,tenantId:string,tx:Sql){
   if(config.platformModel&&(!await platformModels.available(tx)||!(await creditBalance(tx,tenantId)).granted))fail('当前工作区暂无平台模型额度，请前往活动专区领取或查看邀请奖励',403);
  }
- app.get('/v1/health',async()=>{await db.query('SELECT 1');return{ok:true,publicOrigin:process.env.APP_ORIGIN||'',database:databaseUrl?'postgresql':'pglite-postgresql',agent:options.agent!==false}});
+ app.get('/v1/health',async()=>{await db.query('SELECT 1');return{ok:true,publicOrigin:process.env.APP_ORIGIN||''}});
  app.post('/v1/auth/register',{config:{rateLimit:{max:10,timeWindow:'1 minute'}}},async(req,reply)=>{
    const value=z.object({email:z.email().max(254),password:z.string().min(8).max(128),name:z.string().min(1).max(60),inviteCode:z.string({error:'请输入激活码'}).trim().min(1,'请输入激活码').max(100),referralCode:referralInput}).parse(req.body);const id=randomUUID(),tenant=randomUUID();const hash=await hashPassword(value.password);if(value.referralCode&&!await platformModels.available())fail('邀请活动暂不可用',503);
    const lookup=value.referralCode?'id':'code_hash';

@@ -1,5 +1,5 @@
 /*
-  X-Fishbot-Static: edge-20261115
+  Strict-Transport-Security: max-age=31536000
   X-Content-Type-Options: nosniff
   Referrer-Policy: same-origin
   X-Frame-Options: DENY

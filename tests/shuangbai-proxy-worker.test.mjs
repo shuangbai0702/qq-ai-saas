@@ -7,16 +7,14 @@ import {webcrypto,createHmac} from 'node:crypto';
 const source = await readFile(new URL('../scripts/shuangbai-proxy-worker.mjs', import.meta.url), 'utf8');
 const asset = 'https://shuangbai.online/assets/index-D-3wsGOD.js';
 
-function harness(origin = () => new Response('console.log(1)', {headers: {'content-type': 'application/javascript'}}), brokenCache = false, upstreamOrigin = undefined, secret = undefined) {
+function harness(origin = () => new Response('console.log(1)', {headers: {'content-type': 'application/javascript'}}), brokenCache = false, upstreamOrigin = 'https://origin.example.test', secret = 'synthetic-edge-secret') {
   const entries = new Map(), calls = [], pending = [];
   const context = vm.createContext({Request, Response, Headers, URL, Date, TextEncoder, Uint8Array, crypto: webcrypto, caches: {default: {
     async match(key) {if (brokenCache) throw Error('cache unavailable'); return entries.get(key.url)?.clone();},
     async put(key, response) {if (brokenCache) throw Error('cache unavailable'); entries.set(key.url, response.clone());},
   }}, fetch: async (url, init) => {
     calls.push({url, init});
-    return url.startsWith('https://cloudflare-dns.com/')
-      ? Response.json({Answer: [{data: '"https://example-test.trycloudflare.com"'}]})
-      : origin(url, init);
+    return origin(url, init);
   }});
   vm.runInContext(source.replace('export default {', 'globalThis.worker = {'), context);
   return {entries, calls, async fetch(url = asset, init) {
@@ -37,26 +35,27 @@ test('edge signs the actual client, discards forged identity and blocks web acce
   assert.equal(response.headers.get('content-security-policy'),"default-src 'self'");
   assert.equal((await h.fetch('https://shuangbai.online/internal/v1/bots/test')).status,404);
   assert.equal(h.calls.length,1);
-  const unsigned=harness();await unsigned.fetch('https://shuangbai.online/v1/health',{headers:{'x-fishbot-client-ip':'forged','x-fishbot-client-signature':'forged'}});
-  assert.equal(unsigned.calls.at(-1).init.headers.has('x-fishbot-client-ip'),false);
+  const unsigned=harness(undefined,false,'https://origin.example.test',null);
+  assert.equal((await unsigned.fetch('https://shuangbai.online/v1/health')).status,503);
+  assert.equal(unsigned.calls.length,0);
 });
 
-test('hashed assets are shared at the edge; a hit bypasses DNS and origin, including HEAD', async () => {
+test('hashed assets are shared at the edge; a hit bypasses origin, including HEAD', async () => {
   const h = harness();
   const first = await h.fetch(asset, {headers: {cookie: 'fish_session=private', 'if-none-match': 'old'}});
   assert.equal(first.headers.get('x-fishbot-asset-cache'), 'MISS');
   assert.match(first.headers.get('cache-control'), /max-age=31536000.*immutable/);
-  assert.equal(h.calls[1].init.headers.has('cookie'), false);
-  assert.equal(h.calls[1].init.headers.has('if-none-match'), false);
+  assert.equal(h.calls[0].init.headers.has('cookie'), false);
+  assert.equal(h.calls[0].init.headers.has('if-none-match'), false);
   assert.equal(await first.text(), 'console.log(1)');
   const second = await h.fetch();
   assert.equal(second.headers.get('x-fishbot-asset-cache'), 'HIT');
   assert.equal(await second.text(), 'console.log(1)');
-  assert.equal(h.calls.length, 2);
+  assert.equal(h.calls.length, 1);
   const head = await h.fetch(asset, {method: 'HEAD'});
   assert.equal(head.headers.get('x-fishbot-asset-cache'), 'HIT');
   assert.equal(await head.text(), '');
-  assert.equal(h.calls.length, 2);
+  assert.equal(h.calls.length, 1);
 });
 
 test('API authentication, method, body, origin and no-store stay intact', async () => {
@@ -65,10 +64,10 @@ test('API authentication, method, body, origin and no-store stay intact', async 
   assert.equal(r.status, 401);
   assert.equal(r.headers.get('cache-control'), 'no-store');
   assert.equal(h.entries.size, 0);
-  assert.equal(h.calls[1].init.method, 'POST');
-  assert.equal(h.calls[1].init.headers.get('origin'), 'https://shuangbai.online');
-  assert.equal(h.calls[1].init.headers.get('cookie'), 'fish_session=private');
-  assert.equal(await new Response(h.calls[1].init.body).text(), '{}');
+  assert.equal(h.calls[0].init.method, 'POST');
+  assert.equal(h.calls[0].init.headers.get('origin'), 'https://shuangbai.online');
+  assert.equal(h.calls[0].init.headers.get('cookie'), 'fish_session=private');
+  assert.equal(await new Response(h.calls[0].init.body).text(), '{}');
 });
 
 test('HTML, query variants, nonhashed files, range and authorization bypass the shared cache', async () => {
@@ -113,16 +112,16 @@ test('CSS is cached only with the correct media type', async () => {
 test('cache outages fall back to the existing origin path', async () => {
   const h = harness(undefined, true);
   assert.equal(await (await h.fetch()).text(), 'console.log(1)');
-  assert.equal(h.calls.length, 2);
+  assert.equal(h.calls.length, 1);
 });
 
-test('configured named origin skips dynamic DNS and preserves API forwarding', async () => {
+test('configured named origin preserves API forwarding without publishing origin identity', async () => {
   const h=harness(() => Response.json({ok:true}), false, 'https://origin-mobile.shuangbai.online');
   const response=await h.fetch('https://shuangbai.online/v1/health');
   assert.equal(response.status,200);
   assert.equal(h.calls.length,1);
   assert.equal(h.calls[0].url,'https://origin-mobile.shuangbai.online/v1/health');
-  assert.equal(response.headers.get('x-upstream-host'),'origin-mobile.shuangbai.online');
+  assert.equal(response.headers.has('x-upstream-host'),false);
   assert.equal(h.entries.size,0);
 });
 
@@ -131,6 +130,36 @@ test('proxy preserves the origin security policy and discards untrusted forwardi
   const h = harness(() => new Response('ok', {headers: {'Content-Security-Policy': policy}}));
   const response = await h.fetch('https://shuangbai.online/', {headers: {'x-forwarded-for': '203.0.113.1', forwarded: 'for=203.0.113.1'}});
   assert.equal(response.headers.get('content-security-policy'), policy);
-  assert.equal(h.calls[1].init.headers.has('forwarded'), false);
-  assert.equal(h.calls[1].init.headers.has('x-forwarded-for'), false);
+  assert.equal(h.calls[0].init.headers.has('forwarded'), false);
+  assert.equal(h.calls[0].init.headers.has('x-forwarded-for'), false);
+});
+
+
+test('encoded and alternate IPC paths are blocked before origin; invalid encodings fail closed', async () => {
+  const h=harness();
+  for (const path of ['/%69nternal/v1/test','//internal/v1/test','/internal%2Fv1/test','/%2Finternal/v1/test','/internal;/v1/test','/internal%5Cv1/test','/%2569nternal/v1/test','/foo/%252e%252e/internal/v1/test']) {
+    const r=await h.fetch('https://shuangbai.online'+path);
+    assert.equal(r.status,404,path);
+    assert.equal(r.headers.get('strict-transport-security'),'max-age=31536000');
+  }
+  assert.equal((await h.fetch('https://shuangbai.online/%ff')).status,400);
+  assert.equal(h.calls.length,0);
+});
+
+test('HSTS and origin privacy cover cache hits, upstream errors and missing configuration', async () => {
+  const h=harness(()=>new Response('ok',{headers:{'content-type':'application/javascript','x-upstream-host':'private.example.test','x-fishbot-static':'old-version'}}));
+  for(let n=0;n<2;n++) {
+    const r=await h.fetch();
+    assert.equal(r.headers.get('strict-transport-security'),'max-age=31536000');
+    assert.equal(r.headers.has('x-upstream-host'),false);
+    assert.equal(r.headers.has('x-fishbot-static'),false);
+  }
+  const broken=harness(()=>{throw Error('private address and credentials must not leak');});
+  const response=await broken.fetch('https://shuangbai.online/v1/health');
+  assert.equal(response.status,502);
+  assert.equal(response.headers.get('strict-transport-security'),'max-age=31536000');
+  assert.equal((await response.text()).includes('credentials'),false);
+  const missing=harness(undefined,false,null);
+  assert.equal((await missing.fetch()).status,503);
+  assert.equal(missing.calls.length,0);
 });

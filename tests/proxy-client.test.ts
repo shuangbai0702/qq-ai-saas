@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {createHmac} from 'node:crypto';
 import {mkdtemp} from 'node:fs/promises';
 import path from 'node:path';
-import {proxyClientIp} from '../apps/control-api/src/proxy-client.js';
+import {edgeIngressHost,proxyClientIp} from '../apps/control-api/src/proxy-client.js';
 import {createApp} from '../apps/control-api/src/app.js';
 
 const secret='synthetic-edge-secret';
@@ -26,6 +26,18 @@ test('one edge client cannot exhaust another client login quota',async t=>{
  try{({app}=await createApp({root:await mkdtemp(path.resolve('.local/proxy-client-')),agent:false}))}
  finally{if(previous===undefined)delete process.env.FISHBOT_PROXY_SECRET;else process.env.FISHBOT_PROXY_SECRET=previous}
  t.after(()=>app.close());
+ // The Tunnel overwrites Host for every public request. Ordinary loopback
+ // runtime calls keep their separate bearer authentication contract.
+ const ingress={host:edgeIngressHost};
+ assert.equal((await app.inject({url:'/v1/health',headers:ingress})).statusCode,403);
+ assert.equal((await app.inject({url:'/v1/health',headers:{...ingress,'x-forwarded-for':'203.0.113.9','x-fishbot-client-ip':'203.0.113.9'}})).statusCode,403);
+ const publicHealth=await app.inject({url:'/v1/health',headers:{...ingress,...signed('203.0.113.9')}});
+ assert.equal(publicHealth.statusCode,200);
+ assert.deepEqual(Object.keys(publicHealth.json()).sort(),['ok','publicOrigin']);
+ assert.equal(publicHealth.headers['strict-transport-security'],'max-age=31536000');
+ const ipc='/internal/v1/bots/00000000-0000-4000-8000-000000000001/tools/review';
+ assert.equal((await app.inject({url:ipc,headers:{...ingress,...signed('203.0.113.9')}})).statusCode,404);
+ assert.equal((await app.inject({url:ipc})).statusCode,401);
  const login=(ip:string)=>app.inject({method:'POST',url:'/v1/auth/login',headers:signed(ip),payload:{email:'unknown@example.test',password:'synthetic-only'}});
  for(let n=0;n<15;n++)assert.equal((await login('203.0.113.1')).statusCode,401);
  assert.equal((await login('203.0.113.1')).statusCode,429);
