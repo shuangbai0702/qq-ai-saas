@@ -3,7 +3,7 @@
 Add hosted capabilities here. Catalogs inspect these very same tool objects;
 declarations follow bot configuration, calls retain live Work validation.
 """
-def features(settings,event,db,scope,current,*,identity=None,evidence=None,memory_current=None,effect_current=None,on_sent=None,social=None,review=None):
+def features(settings,event,db,scope,current,*,identity=None,evidence=None,memory_current=None,effect_current=None,on_sent=None,social=None,review=None,pipeline=None):
     import qq_actions,group_actions,quote_reply,qq_favorite_tools,execution_memory
     from bilibili_tools import tools as bili_tools,manifest
     from research_tools import tools as research_tools
@@ -11,7 +11,7 @@ def features(settings,event,db,scope,current,*,identity=None,evidence=None,memor
     cfg=settings['config']
     effect_current=effect_current or current
     result=qq_actions.tools(event,cfg,db,effect_current,settings)
-    result+=group_actions.tools(event,cfg,db,current,on_sent or (lambda *args:None),social=social,review=review,effect_current=effect_current)
+    result+=group_actions.tools(event,cfg,db,current,on_sent or (lambda *args:None),social=social,review=review,effect_current=effect_current,pipeline=pipeline)
     result+=quote_reply.tools(event,cfg,db,settings,effect_current)+qq_favorite_tools.tools(event,cfg,db,settings['root'],effect_current)
     if identity is None:
         import companion_state

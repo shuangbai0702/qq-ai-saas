@@ -942,7 +942,7 @@ class BotPipeline:
             self.db.execute("UPDATE pipeline_handoffs SET state=?,receipt=? WHERE id=? AND epoch=? AND state='pending'",(receipt['status'],json.dumps(receipt,ensure_ascii=False),id,epoch))
         return {'ok':True}
 
-    def request_reply(self,identity,goal_id,source,action_id=None,reserve=False,current_lease=None):
+    def request_reply(self,identity,goal_id,source,action_id=None,reserve=False,current_lease=None,tool_action=None):
         """A reply belongs to one accepted real request, not proactive contact.
 
         The original Work supplied identity; neither model text nor a contact
@@ -950,11 +950,15 @@ class BotPipeline:
         An uncertain or confirmed action can never be replaced by another ID.
         """
         if not isinstance(source,dict) or source.get('handoffId')!=goal_id:return None
-        with self.db:
+        from contextlib import nullcontext
+        # A tool caller may atomically reserve the original reply and its
+        # protocol intent. Do not commit that caller's transaction halfway.
+        with (nullcontext() if self.db.in_transaction else self.db):
             row=self.db.execute("SELECT epoch,data,receipt FROM pipeline_handoffs WHERE id=? AND state='accepted'",(goal_id,)).fetchone()
             if not row:return None
             data=json.loads(row[1]);receipt=json.loads(row[2] or '{}')
             if data.get('origin')=='model' or source.get('origin')=='model':return None
+            if tool_action and (data.get('kind')!='message' or data.get('scope')!='private:'+str(data.get('senderId'))):return None
             if data.get('agreement'):
                 import agreement_state
                 if not agreement_state.task_current(self.db,data['agreement']):return None
@@ -978,9 +982,11 @@ class BotPipeline:
             if previous and previous!=action_id:
                 result=self.internal_result(previous)
                 if not result or result['effects'] or result['status'] not in ('blocked','canceled'):return None
+            elif receipt.get('replyToolActionId') and receipt['replyToolActionId']!=tool_action:return None
             if reserve:
                 if not action_id:raise ValueError('reply_action_required')
                 receipt['replyActionId']=action_id
+                if tool_action:receipt['replyToolActionId']=tool_action
                 self.db.execute('UPDATE pipeline_handoffs SET receipt=? WHERE id=?',(json.dumps(receipt),goal_id))
             return data
 

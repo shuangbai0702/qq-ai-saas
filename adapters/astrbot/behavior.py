@@ -589,6 +589,11 @@ def install_runtime(core,settings):
         return stores[id]
     def internal_context(id,event,scope,objective):
         s=settings[id];st=store(id,s);b=s['config'].get('behavior') or {};now=time.time()
+        if event.get_extra('_hosted_main_activation'):
+            from shared_context import main_journal_scope
+            # Bind before begin_attempt captures the System/cache namespace.
+            # Work.scope remains the real activation source (self).
+            event.set_extra('_hosted_journal_scope',main_journal_scope(st.db))
         event.set_extra('_hosted_memory_epoch',st.reflection.epoch())
         subject=scope[8:] if scope.startswith('private:') else '0' if scope=='self' else ''
         identity={'bot_id':s['botId'],'scope':scope,'sender_id':'0','owner':False,'owner_id':str(b.get('ownerUin') or '') or None,'principal':'autonomous-service','group_id':scope[6:] if scope.startswith('group:') else None}

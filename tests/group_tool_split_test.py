@@ -5,6 +5,7 @@ from types import SimpleNamespace as NS
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 import conversation_continuity_test as continuity
 import group_actions
+from unittest.mock import patch,AsyncMock
 from bot_pipeline import Work
 
 
@@ -197,5 +198,85 @@ class PrivateConversationSend(continuity.GroupActions):
         self.assertEqual(self.recorded,[])
         self.assertFalse(group_actions.owns_reply(self.db,self.event,self.work.scope))
 
+
+class ScheduledPrivateReply(PrivateConversationSend):
+    def setUp(self):
+        super().setUp()
+        self.lease={'tenantId':'tenant','botId':'bot','generation':1,'revision':2,'root':self.tmp.name}
+        self.service_identity={**self.lease,'id':'activation','epoch':1,'principal':'autonomous-service'}
+        self.work=Work('bot','self','service:bot','90000000','activation','autonomous',time.time(),self.lease)
+        self.extra.update(_hosted_pipeline=self.work,_hosted_lease=self.lease,_hosted_internal_work=self.service_identity,
+                          _hosted_main_activation=True,_hosted_initiative=True)
+        self.event.get_sender_id=lambda:'0'
+        self.request={**self.lease,'epoch':1,'id':'goal','eventId':'original-input','scope':'private:'+self.target,
+                      'senderId':self.target,'kind':'message','at':int(time.time()*1000)-20000,'delaySeconds':1}
+        self.source={**self.request,'handoffId':'goal'}
+        self.db.execute("INSERT INTO pipeline_handoffs VALUES(?,1,?,'accepted',?,?)",('goal',json.dumps(self.request),json.dumps({'goalId':'goal'}),time.time()))
+        self.db.commit()
+
+    async def call_private(self,**changes):
+        tool=group_actions.tools(self.event,self.cfg,self.db,lambda:self.current,lambda *a:self.recorded.append(a),pipeline=self.store.pipeline)[-1]
+        bridge=AsyncMock(return_value=(200,{'goals':[{'id':'goal','status':'active','source':self.source}]}))
+        with patch('autonomous_goals.manifest',return_value={'fixture':True}),patch('bridge_http.post',bridge):
+            return json.loads(await tool.call(NS(context=NS(event=self.event)),**{'private_user_id':self.target,'text':'到点提醒','request_id':'goal',**changes}))
+
+    async def test_due_request_uses_original_permission_not_outreach_cooldown(self):
+        from initiative import initialize
+        initialize(self.db);self.db.execute('INSERT INTO initiative_pauses VALUES(?,?)',('private:'+self.target,time.time()+3600));self.db.commit()
+        result=await self.call_private()
+        self.assertEqual(result['receipt']['status'],'confirmed',result)
+        self.assertEqual((await self.call_private())['code'],'already_attempted')
+        token=group_actions.tool_action_id.set('different-call')
+        try:self.assertEqual((await self.call_private())['receipt']['status'],'rejected')
+        finally:group_actions.tool_action_id.reset(token)
+        self.assertEqual(len(self.sent),1)
+
+    async def test_wrong_target_future_canceled_and_foreign_bot_never_send(self):
+        for change in ({'scope':'private:88888888'},{'at':int(time.time()*1000)+60000},{'botId':'foreign'}):
+            data={**self.request,**change};self.source={**data,'handoffId':'goal'}
+            self.db.execute('UPDATE pipeline_handoffs SET data=? WHERE id=?',(json.dumps(data),'goal'));self.db.commit()
+            self.assertEqual((await self.call_private())['receipt']['status'],'rejected')
+        self.db.execute("UPDATE pipeline_handoffs SET state='canceled',data=? WHERE id='goal'",(json.dumps(self.request),));self.db.commit();self.source={**self.request,'handoffId':'goal'}
+        self.assertEqual((await self.call_private())['receipt']['status'],'rejected')
+        self.assertEqual(self.sent,[])
+
+    async def test_unknown_is_not_replayed_by_another_activation(self):
+        async def timeout(**kw):self.sent.append(kw);raise TimeoutError()
+        self.event.bot.send_private_msg=timeout
+        self.assertEqual((await self.call_private())['receipt']['status'],'unknown')
+        self.work.event_id='another-activation';self.service_identity['id']='another-activation'
+        token=group_actions.tool_action_id.set('another-call')
+        try:self.assertEqual((await self.call_private())['receipt']['status'],'rejected')
+        finally:group_actions.tool_action_id.reset(token)
+        self.assertEqual(len(self.sent),1)
+
+    async def test_reply_permit_and_send_intent_rollback_together(self):
+        self.db.execute("CREATE TEMP TRIGGER fail_reply BEFORE UPDATE ON pipeline_handoffs BEGIN SELECT RAISE(ABORT,'fixture failure'); END")
+        self.db.commit()
+        with self.assertRaisesRegex(__import__('sqlite3').IntegrityError,'fixture failure'):await self.call_private()
+        self.assertEqual(self.db.execute('SELECT count(*) FROM group_message_attempts').fetchone()[0],0)
+        receipt=json.loads(self.db.execute("SELECT receipt FROM pipeline_handoffs WHERE id='goal'").fetchone()[0])
+        self.assertNotIn('replyActionId',receipt)
+        self.assertEqual(self.sent,[])
+
+    async def test_terminal_goal_or_stale_bridge_result_never_sends(self):
+        import autonomous_goals
+        bridge=AsyncMock(return_value=(200,{'goals':[{'id':'goal','status':'completed','source':self.source}]}))
+        with patch.object(autonomous_goals,'manifest',return_value={}),patch('bridge_http.post',bridge):
+            # An unavailable bridge grants no permission either.
+            self.assertIsNone(await autonomous_goals.scheduled_source(self.lease,self.event,'goal',lambda:True))
+        with patch.object(autonomous_goals,'manifest',return_value={'fixture':True}),patch('bridge_http.post',bridge):
+            self.assertIsNone(await autonomous_goals.scheduled_source(self.lease,self.event,'goal',lambda:True))
+            bridge.return_value=(200,{'goals':[{'id':'goal','status':'active','source':self.source}]})
+            self.assertIsNone(await autonomous_goals.scheduled_source(self.lease,self.event,'goal',lambda:False))
+
+    # The inherited cases exercise foreground authority, not this service fixture.
+    # Load only the three service-specific regressions below.
+
+def load_tests(loader,tests,pattern):
+    suite=unittest.TestSuite()
+    for cls in (GroupToolSplit,PrivateConversationSend):suite.addTests(loader.loadTestsFromTestCase(cls))
+    suite.addTests(ScheduledPrivateReply(name) for name in ScheduledPrivateReply.__dict__ if name.startswith('test_'))
+    return suite
 
 if __name__=='__main__':unittest.main()

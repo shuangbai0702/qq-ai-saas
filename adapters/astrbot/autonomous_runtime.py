@@ -393,7 +393,7 @@ class AutonomousRuntime:
         def current_task():
             import agreement_state
             return self.valid(id,identity) and st.pipeline.handoff_current((event.get_extra('_hosted_autonomous_action') or {}).get('goalId')) and agreement_state.task_current(st.db,binding)
-        result+=inner_tools.features(s,event,st.db,scope,current_task,identity=identity,evidence=Evidence(),memory_current=lambda:current_task() and st.reflection.epoch()==epoch,effect_current=lambda:current_task() and self.effect_current(event))
+        result+=inner_tools.features(s,event,st.db,scope,current_task,identity=identity,evidence=Evidence(),memory_current=lambda:current_task() and st.reflection.epoch()==epoch,effect_current=lambda:current_task() and self.effect_current(event),pipeline=st.pipeline)
         import autonomous_goals
         result+=autonomous_goals.tools(s,event,st.db,current_task)
         if ((event.get_extra('_hosted_autonomous_action') or {}).get('requestSource') or {}).get('origin')=='model':

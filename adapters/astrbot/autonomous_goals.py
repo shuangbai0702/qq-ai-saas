@@ -3,6 +3,25 @@ import asyncio,json
 import aiohttp
 from bilibili_tools import manifest
 
+async def scheduled_source(settings,event,request_id,current):
+    """Read the existing authoritative Goal, without adding model context."""
+    from bot_pipeline import Work
+    work=event.get_extra('_hosted_pipeline');identity=event.get_extra('_hosted_internal_work')
+    if (not isinstance(work,Work) or not isinstance(identity,dict)
+            or not event.get_extra('_hosted_main_activation') or event.get_extra('_hosted_tool_completion')
+            or work.source!='autonomous' or work.subject!='service:'+str(settings.get('botId'))
+            or work.event_id!=identity.get('id') or work.bot_id!=settings.get('botId')
+            or any(identity.get(k)!=settings.get(k) for k in ('tenantId','botId','generation','revision'))):return None
+    bridge=manifest(settings)
+    if not bridge:return None
+    from bridge_http import post
+    try:
+        status,value=await post(bridge,'autonomous-goals/read',{'trusted':{'scope':'self','senderId':'0','work':{'id':identity['id'],'epoch':identity['epoch']}}})
+        if not current() or status>=400:return None
+        goal=next((g for g in value.get('goals',[]) if g.get('id')==request_id and g.get('status')=='active'),None)
+        return goal.get('source') if goal else None
+    except (aiohttp.ClientError,asyncio.TimeoutError,ValueError):return None
+
 def tools(settings,event,db,current):
     if event is None or not manifest(settings):return []
     from astrbot.core.agent.tool import FunctionTool

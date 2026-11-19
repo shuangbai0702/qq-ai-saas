@@ -11,6 +11,27 @@ class HashedProfileOwnership(unittest.IsolatedAsyncioTestCase):
     tearDown=fixtures.ProtocolOwnership.tearDown
     bind=fixtures.ProtocolOwnership.bind
     release=fixtures.ProtocolOwnership.release
+    async def test_received_emoji_is_owned_in_both_account_layouts(self):
+        for prefix in ('123456/nt_qq','nt_qq_2ab4af4826637e5f804272a1bd90bb29'):
+            file=self.root/'qq/profile'/prefix/'nt_data/Emoji/emoji-recv/2026-11/Ori/image.png'
+            file.parent.mkdir(parents=True);file.write_bytes(self.bytes)
+            self.event.bot.get_image.return_value={'file':str(file)}
+            self.extras['_hosted_pipeline'].event_id=prefix
+            self.materials[0]['event']='[\"group:1\",'+__import__('json').dumps(prefix)+']'
+            self.extras['_hosted_media_protocol_checked']=False
+            await self.bind()
+            self.assertEqual(self.release(2 if prefix.startswith('nt_') else 1)['deleted'],1)
+            self.assertFalse(file.exists())
+
+    async def test_emoji_does_not_authorize_other_accounts_or_sibling_caches(self):
+        for tail in ('999999/nt_qq/nt_data/Emoji/emoji-recv/image.png',
+                     '123456/nt_qq/nt_data/Emoji/emoji-send/image.png'):
+            file=self.root/'qq/profile'/tail;file.parent.mkdir(parents=True);file.write_bytes(self.bytes)
+            self.event.bot.get_image.return_value={'file':str(file)}
+            self.extras['_hosted_media_protocol_checked']=False
+            await self.bind()
+            self.assertEqual(self.db.execute('SELECT count(*) FROM semantic_media_owned').fetchone()[0],0)
+            self.assertTrue(file.exists())
     async def test_hashed_profile_exact_image_reply_is_owned_and_released(self):
         file=self.root/'qq/profile/nt_qq_2ab4af4826637e5f804272a1bd90bb29/nt_data/Pic/2026-11/Ori/image.png'
         file.parent.mkdir(parents=True);file.write_bytes(self.bytes)

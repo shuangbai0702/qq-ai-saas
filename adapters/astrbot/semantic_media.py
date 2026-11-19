@@ -182,7 +182,8 @@ async def collect_protocol_originals(event,live,db=None,*,shared=False):
     bot_root=Path(lease['root']).absolute()
     if bot_root.resolve()!=bot_root:raise ValueError('protocol_bot_root_changed')
     profile=bot_root/'qq'/'profile'
-    roots=[profile/account/'nt_qq'/'nt_data'/'Pic',profile/'NapCat'/'temp']
+    account_data=profile/account/'nt_qq'/'nt_data'
+    roots=[account_data/'Pic',account_data/'Emoji'/'emoji-recv',profile/'NapCat'/'temp']
     originals=list(event.get_extra('_hosted_media_originals') or []);issues=[];seen=set()
     from model_images import POLICY,_limited
     from PIL import Image
@@ -210,6 +211,8 @@ async def collect_protocol_originals(event,live,db=None,*,shared=False):
                 parts=path.relative_to(profile).parts
                 if len(parts)>3 and re.fullmatch(r'nt_qq_[0-9a-f]{32}',parts[0]) and parts[1:3]==('nt_data','Pic'):
                     candidates.append(profile/parts[0]/'nt_data'/'Pic')
+                elif len(parts)>4 and re.fullmatch(r'nt_qq_[0-9a-f]{32}',parts[0]) and parts[1:4]==('nt_data','Emoji','emoji-recv'):
+                    candidates.append(profile/parts[0]/'nt_data'/'Emoji'/'emoji-recv')
             root=next((r for r in candidates if _contained(path,r)),None)
             if root is None:raise ValueError('protocol_image_outside_bot_cache')
             info=path.lstat()

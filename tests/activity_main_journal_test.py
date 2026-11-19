@@ -61,6 +61,22 @@ class Activity(unittest.IsolatedAsyncioTestCase):
 
     async def activate(self,identifier=None,continuation=False,action_patch=None):
         return await self.brain.execute('qq',self.activation_request(identifier,continuation,action_patch))
+    async def test_old_self_system_baseline_cannot_block_shared_main_activation(self):
+        from model_cache import observe_wire_request
+        async def guard(request):observe_wire_request(request)
+        self.provider.client._client.event_hooks['request'].append(guard)
+        self.st.db.execute('INSERT INTO fishbot_system_scope_contract VALUES(?,?,?)',('self','old-self-baseline',time.time()))
+        self.st.db.commit()
+        result=await self.activate()
+        self.assertEqual(result['status'],'completed',result)
+        self.assertEqual(len(self.requests),1)
+        saved=copy.deepcopy(self.st.model_journals['bot_shared'].last.wire)
+        self.st.model_journals.clear()
+        result=await self.activate()
+        self.assertEqual(result['status'],'completed',result)
+        self.assertEqual(self.requests[-1]['messages'][:len(saved)],saved)
+        self.assertEqual(self.st.db.execute("SELECT system_sha FROM fishbot_system_scope_contract WHERE scope='self'").fetchone()[0],'old-self-baseline')
+        self.assertIsNotNone(self.st.db.execute("SELECT system_sha FROM fishbot_system_scope_contract WHERE scope='bot_shared'").fetchone())
     async def test_scheduler_snapshot_never_builds_a_second_cognitive_context(self):
         self.brain.install('qq',{'tenantId':'tenant','botId':'bot','generation':1,'revision':1,'epoch':1,'until':time.time()*1000+14000,'config':{'mode':'active','rollout':'live','minSleepSeconds':300}})
         feedback={'at':123,'phase':'foreground_result','result':{'status':'unknown','protocolAttempts':1,'protocolConfirmed':0}}
