@@ -55,7 +55,13 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
    const token=req.cookies.fish_session;if(!token)throw Object.assign(new Error('请先登录'),{statusCode:401});
    const [user]=await db.query('SELECT u.id,u.email,u.name,u.is_admin,m.tenant_id FROM sessions s JOIN users u ON u.id=s.user_id JOIN memberships m ON m.user_id=u.id WHERE s.id=$1 AND s.expires_at>now()',[digest(token)]);if(!user)throw Object.assign(new Error('登录已失效'),{statusCode:401});req.user=user;
  };
- app.addHook('preParsing',async(req,reply,payload)=>{await authenticate(req,reply);return payload});
+ const missingRouteLimit=app.rateLimit();
+ app.addHook('preParsing',async(req,reply,payload)=>{
+  // Not-found handlers have no onRoute limiter; share the same global bucket.
+  if(req.is404)await missingRouteLimit.call(app,req,reply);
+  if(!reply.sent)await authenticate(req,reply);
+  return payload;
+ });
  const fail=(message:string,statusCode=400)=>{throw Object.assign(new Error(message),{statusCode})};
  async function owned(req:any,id:string,tx:Sql=db){if(!z.uuid().safeParse(id).success)fail('资源不存在',404);const [bot]=await tx.query('SELECT b.*,q.qq_uin FROM bots b LEFT JOIN qq_bindings q ON q.bot_id=b.id WHERE b.id=$1 AND b.tenant_id=$2 AND b.deleted_at IS NULL',[id,req.user.tenant_id]);if(!bot)fail('机器人不存在',404);return bot}
  async function audit(req:any,event:string,botId?:string){await db.query('INSERT INTO audit_events(tenant_id,event,bot_id) VALUES($1,$2,$3)',[req.user.tenant_id,event,botId||null])}

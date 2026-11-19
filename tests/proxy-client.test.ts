@@ -36,4 +36,7 @@ test('one edge client cannot exhaust another client login quota',async t=>{
  for(let n=0;n<180;n++)assert.equal((await app.inject({url:'/v1/auth/me',headers})).statusCode,401);
  assert.equal((await app.inject({url:'/v1/auth/me',headers})).statusCode,429);
  assert.equal((await app.inject({url:'/v1/auth/me',headers:signed('203.0.113.4')})).statusCode,401);
+ const unknown=signed('203.0.113.5');
+ for(let n=0;n<180;n++)assert.equal((await app.inject({url:'/v1/no-such-route',headers:unknown})).statusCode,401);
+ assert.equal((await app.inject({url:'/v1/no-such-route',headers:unknown})).statusCode,429);
 });
