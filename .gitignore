@@ -32,3 +32,12 @@ __pycache__/
 # Private production evidence and preserved editor backup
 /docs/offline-resource-eviction-20261031/
 /apps/web/src/style.css.backup
+
+# Internal operational reports remain local; only public contracts are tracked.
+/docs/**
+!/docs/
+!/docs/personas/
+!/docs/capability-contract-20261108.md
+!/docs/context-pipeline-contract-20261105.md
+!/docs/personas/naiwa-system-prompt.txt
+!/docs/public-origin-contract.md
