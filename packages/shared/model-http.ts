@@ -1,4 +1,5 @@
 import {lookup} from 'node:dns/promises';import {BlockList,isIP} from 'node:net';import http from 'node:http';import https from 'node:https';import {Readable} from 'node:stream';
+import {normalizeModelBaseUrl} from './model-url.js';
 
 const denied=new BlockList();
 for(const [ip,bits] of [['0.0.0.0',8],['10.0.0.0',8],['100.64.0.0',10],['127.0.0.0',8],['169.254.0.0',16],['172.16.0.0',12],['192.0.0.0',24],['192.0.2.0',24],['192.88.99.0',24],['192.168.0.0',16],['198.18.0.0',15],['198.51.100.0',24],['203.0.113.0',24],['224.0.0.0',4],['240.0.0.0',4]] as const)denied.addSubnet(ip,bits,'ipv4');
@@ -7,11 +8,21 @@ export function publicModelIp(ip:string){const family=isIP(ip);return family===4
 export function modelUrl(value:string,allowQuery=false){const url=new URL(value);if(!['http:','https:'].includes(url.protocol)||url.username||url.password||(!allowQuery&&url.search)||url.hash)throw Object.assign(new Error('请使用不含账号、查询参数的 HTTP(S) Base URL'),{statusCode:400});return url}
 export function modelCredentialDestination(value:string){
  if(!value)return '';
- const url=modelUrl(value);
+ const url=modelUrl(normalizeModelBaseUrl(value));
  return url.origin+url.pathname.replace(/\/+$/,'');
+}
+export function modelRequestHeaders(url:URL,input?:HeadersInit){
+ const headers=new Headers(input);
+ // Loomy's gateway requires its token header as well as OpenAI Bearer auth.
+ // Apply only to this exact HTTPS origin, never to user-supplied lookalikes.
+ if(url.origin==='https://loomyad.xunfei.cn'&&url.pathname.startsWith('/api/v1/')){
+  const bearer=headers.get('Authorization')?.match(/^Bearer\s+(.+)$/i);if(bearer)headers.set('token',bearer[1]);
+ }
+ return headers;
 }
 export async function modelHttp(input:string|URL,init:RequestInit={},policy?:{allowQuery:boolean;publicOnly:boolean}){
  const url=modelUrl(String(input),policy?.allowQuery),host=url.hostname.replace(/^\[|\]$/g,'');
+ const headers=modelRequestHeaders(url,init.headers);
  // Only an operator may explicitly trust a private model service. No request or
  // Bot config can grant this exception. Tests opt in for their exact fixture port.
  const trusted=!policy?.publicOnly&&(process.env.FISHBOT_MODEL_ALLOWED_PRIVATE_ORIGINS||'').split(',').map(x=>x.trim()).includes(url.origin);
@@ -19,7 +30,7 @@ export async function modelHttp(input:string|URL,init:RequestInit={},policy?:{al
  if(!answers.length||(!trusted&&answers.some(a=>!publicModelIp(a.address))))throw Object.assign(new Error('模型地址不能访问本机、内网或保留地址'),{statusCode:400});
  init.signal?.throwIfAborted();const address=answers[0];
  return new Promise<Response>((resolve,reject)=>{
-  const request=(url.protocol==='https:'?https:http).request(url,{method:init.method||'GET',headers:Object.fromEntries(new Headers(init.headers)),agent:false,
+  const request=(url.protocol==='https:'?https:http).request(url,{method:init.method||'GET',headers:Object.fromEntries(headers),agent:false,
    // Pin the checked answer for this connection; TLS still verifies the original
    // hostname. A second DNS resolution cannot rebind a public host to the LAN.
    lookup:((_name:any,options:any,callback:any)=>options.all?callback(null,answers):callback(null,address.address,address.family)) as any},response=>{

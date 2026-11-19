@@ -1,4 +1,4 @@
-import {useRef,useState} from 'react';
+import {useEffect,useRef,useState} from 'react';
 import {AdminNav} from './admin-nav';
 import {api} from './api';
 import {useLifetime,useLiveResource} from './hooks';
@@ -47,6 +47,7 @@ function ModelEditor({model,onCancel,onSaved}:{model:Model|'new';onCancel:()=>vo
  const owner=useLifetime(),pending=useRef(false);
  async function save(){
   const page=owner.current;if(!page||page.signal.aborted||pending.current)return;
+  request.current?.abort();edited.current=false;
   pending.current=true;setBusy(true);setFailure('');
   try{
    await api('/admin/platform-models'+(existing?'/'+encodeURIComponent(existing.id):''),{name,baseUrl,model:modelName,priority,enabled,...(key?{apiKey:key}:{}),...(existing?{expectedRevision:existing.revision}:{})},existing?'PUT':'POST',page.signal);
@@ -54,16 +55,30 @@ function ModelEditor({model,onCancel,onSaved}:{model:Model|'new';onCancel:()=>vo
   }catch(e){if(!page.signal.aborted)setFailure((e as Error).message)}
   finally{pending.current=false;if(!page.signal.aborted)setBusy(false)}
  }
+ const [catalog,setCatalog]=useState<any>(),[finding,setFinding]=useState(false);const edited=useRef(false),request=useRef<AbortController|null>(null),latest=useRef({baseUrl,key,modelName});latest.current={baseUrl,key,modelName};
+ useEffect(()=>()=>request.current?.abort(),[]);
+ useEffect(()=>{
+  request.current?.abort();setFinding(false);setCatalog((current:any)=>current?.baseUrl===baseUrl?current:undefined);
+  if(!edited.current||!baseUrl.trim()||(!key.trim()&&!existing))return;
+  const controller=new AbortController();request.current=controller;
+  const timer=setTimeout(async()=>{
+   if(controller.signal.aborted)return;edited.current=false;setFinding(true);
+   try{const result=await api('/admin/platform-models/discover',{baseUrl,...(key?{apiKey:key}:{}),...(existing?{providerId:existing.id}:{})},'POST',controller.signal);
+    if(!controller.signal.aborted&&latest.current.baseUrl===baseUrl&&latest.current.key===key){setCatalog(result);if(result.ok){if(result.baseUrl!==baseUrl)setBaseUrl(result.baseUrl);if(!latest.current.modelName&&result.models?.length)setModelName(result.models[0].id)}}
+   }catch(e){if(!controller.signal.aborted)setCatalog({message:(e as Error).message})}finally{if(!controller.signal.aborted)setFinding(false)}
+  },700);
+  return()=>{clearTimeout(timer);controller.abort()};
+ },[baseUrl,key]);
  return <section className="panel" aria-label="平台模型编辑"><h2>{existing?'编辑模型':'添加模型'}</h2><form onSubmit={e=>{e.preventDefault();void save()}}>
   <div className="form-grid">
    <label className="field"><span>显示名称</span><input required maxLength={100} disabled={busy} value={name} onChange={e=>setName(e.target.value)}/></label>
-   <label className="field"><span>模型 ID</span><input required maxLength={200} disabled={busy} value={modelName} onChange={e=>setModelName(e.target.value)} placeholder="填写服务商实际模型 ID"/></label>
-   <label className="field"><span>接口 Base URL</span><input required type="url" maxLength={2000} disabled={busy} value={baseUrl} onChange={e=>setBaseUrl(e.target.value)} placeholder="https://example.com/v1"/></label>
-   <label className="field"><span>API Key{existing?'（留空保留）':''}</span><input required={!existing} type="password" autoComplete="new-password" maxLength={4096} disabled={busy} value={key} onChange={e=>setKey(e.target.value)}/><small>不回显已保存 Key。更换接口地址时需重新填写。</small></label>
+   <label className="field"><span>模型 ID</span><input required list="platform-discovered-models" maxLength={200} disabled={busy} value={modelName} onChange={e=>setModelName(e.target.value)} placeholder="填写服务商实际模型 ID"/><datalist id="platform-discovered-models">{catalog?.models?.map((m:any)=><option key={m.id} value={m.id}/>)}</datalist></label>
+   <label className="field"><span>接口 Base URL</span><input required type="text" inputMode="url" maxLength={6000} spellCheck={false} disabled={busy} value={baseUrl} onChange={e=>{edited.current=true;setBaseUrl(e.target.value)}} placeholder="直接粘贴服务商地址"/><small>自动整理地址、并行探测接口，成功后回填。</small></label>
+   <label className="field"><span>API Key{existing?'（留空保留）':''}</span><input required={!existing} type="password" autoComplete="new-password" maxLength={4096} disabled={busy} value={key} onChange={e=>{edited.current=true;setKey(e.target.value)}}/><small>不回显已保存 Key。更换接口地址时需重新填写。</small></label>
    <label className="field"><span>优先级（越小越优先）</span><input type="number" min={0} max={10000} required disabled={busy} value={priority} onChange={e=>setPriority(Number(e.target.value))}/></label>
    <label className="field"><span>是否参与平台请求</span><select disabled={busy} value={enabled?'true':'false'} onChange={e=>setEnabled(e.target.value==='true')}><option value="true">启用</option><option value="false">停用</option></select></label>
   </div>
-  {failure&&<p className="alert" role="alert">{failure}</p>}
-  <div className="button-row"><button className="primary" disabled={busy||!Number.isInteger(priority)}>{busy?'保存中…':'保存模型'}</button><button type="button" className="secondary" disabled={busy} onClick={onCancel}>取消</button></div>
+  {finding&&<p role="status">正在自动识别模型接口…</p>}{catalog?.message&&<p role="status">{catalog.message}</p>}{failure&&<p className="alert" role="alert">{failure}</p>}
+  <div className="button-row"><button className="primary" disabled={busy||finding||!Number.isInteger(priority)}>{busy?'保存中…':'保存模型'}</button><button type="button" className="secondary" disabled={busy} onClick={onCancel}>取消</button></div>
  </form></section>;
 }

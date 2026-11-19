@@ -38,7 +38,15 @@ test('referral registration, scoped credentials, concurrency, usage and unknown'
    cancel(){oversizedCancelled=true;},
   }));
   if(body.messages[0].content==='rejected')return new Response(null,{status:429});
-  if(body.stream){assert.deepEqual(body.stream_options,{include_usage:true});return new Response('data: '+JSON.stringify({model:body.model,choices:[],usage:receipt})+'\n\ndata: [DONE]\n\n');}
+  if(body.stream){
+   assert.deepEqual(body.stream_options,{include_usage:true});
+   if(body.messages[0].content==='inline_usage'||body.messages[0].content==='interrupted_usage'){
+    const frame=(usage:any,finish_reason:string|null)=>'data: '+JSON.stringify({model:body.model,choices:[{delta:{content:'OK'},finish_reason}],usage})+'\n\n';
+    const partial=frame({prompt_tokens:1,completion_tokens:1,total_tokens:2},null);
+    return new Response(partial+(body.messages[0].content==='interrupted_usage'?'':frame(receipt,'stop')+frame(receipt,'stop')+'data: [DONE]\n\n'));
+   }
+   return new Response('data: '+JSON.stringify({model:body.model,choices:[],usage:receipt})+'\n\ndata: [DONE]\n\n');
+  }
   return Response.json({model:body.model,choices:[],usage:receipt});
  }});
  const request=(url:string,payload?:any,cookie?:string)=>app.inject({method:payload===undefined?'GET':'POST',url,headers:cookie?{cookie}:{},payload});
@@ -113,6 +121,12 @@ test('referral registration, scoped credentials, concurrency, usage and unknown'
   assert.equal((await call('oversized')).statusCode,502);
   assert.equal(oversizedCancelled,true);
   assert.equal(Number((await db.query('SELECT count(*) AS count FROM platform_model_reservations'))[0].count),3);
+  const ledger=async()=> (await db.query('SELECT spent,reserved FROM platform_model_credits WHERE tenant_id=$1',[bot.tenant_id]))[0];
+  const beforeInline=await ledger();
+  assert.equal((await call('inline_usage',true)).statusCode,200);
+  const afterInline=await ledger();assert.equal(Number(afterInline.spent),Number(beforeInline.spent)+15);assert.equal(Number(afterInline.reserved),Number(beforeInline.reserved));
+  assert.equal((await call('interrupted_usage',true)).statusCode,200);
+  const afterInterrupted=await ledger();assert.equal(Number(afterInterrupted.spent),Number(afterInline.spent));assert.ok(Number(afterInterrupted.reserved)>Number(afterInline.reserved));
   assert.equal((await request('/v1/health')).statusCode,200);
   await db.query('UPDATE bots SET generation=generation+1 WHERE id=$1',[bot.id]);
   assert.equal((await call()).statusCode,401);

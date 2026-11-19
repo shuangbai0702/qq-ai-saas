@@ -127,13 +127,14 @@ async function streamModel(upstream:Response,reply:FastifyReply,signal:AbortSign
     const line=buffer.slice(0,split);buffer=buffer.slice(split+1);
     if(!line.startsWith('data:'))continue;
     const payload=line.slice(5).trim();
-    if(payload==='[DONE]'){await output('data: [DONE]\n\n');return;}
+    if(payload==='[DONE]'){await output('data: [DONE]\n\n');return true;}
     const frame=JSON.parse(payload);
     await adopt(frame);
     await output('data: '+JSON.stringify(publicFrame(frame))+'\n\n');
    }
    if(buffer.length>maxFrameChars)throw new Error('platform_stream_frame_too_large');
   }
+  return false;
  }finally{
   await reader.cancel().catch(()=>{});
   reader.releaseLock();
@@ -200,7 +201,12 @@ export function registerPlatformModel(app:FastifyInstance,db:Sql,key:Buffer,mode
     return error(reply,upstream.status===429?429:502,'平台模型服务暂时无法完成请求');
    }
    if(request.stream){
-    await streamModel(upstream,reply,signal,async frame=>{if(Array.isArray((frame as any)?.choices)&&!(frame as any).choices.length)await adopt(frame)});
+    // Some providers attach cumulative usage to content/finish frames. Keep
+    // the latest receipt until completion; never settle an intermediate total.
+    let receipt:any;
+    const completed=await streamModel(upstream,reply,signal,async frame=>{if(usage(frame)!==undefined)receipt=frame});
+    const terminal=Array.isArray(receipt?.choices)&&(!receipt.choices.length||receipt.choices.some((c:any)=>typeof c.finish_reason==='string'&&c.finish_reason.length));
+    if(receipt&&(completed||terminal))await adopt(receipt);
    }else{
     const result=await readCompletion(upstream);
     await adopt(result);

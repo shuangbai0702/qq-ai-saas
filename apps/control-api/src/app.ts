@@ -13,6 +13,7 @@ import {AutonomyRepository} from '../../../packages/database/autonomous.js';
 import {registerBilibili} from './bilibili.js';
 import {getBotQuota} from './bot-quota.js';
 import {probeModel} from '../../../packages/shared/model-probe.js';
+import {resolveModelBaseUrl} from '../../../packages/shared/model-catalog.js';
 import {registerSocialMedia} from './social-media.js';
 import {registerQQFavorites} from './qq-favorites.js';
 import {createFavoriteCaptioner} from '../../../packages/shared/qq-favorite-semantics.js';
@@ -98,6 +99,7 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
  registerModelCatalog(app,agent,owned);
  app.get('/v1/bots',async req=>({items:await db.query("SELECT b.*,q.qq_uin,r.config->>'personaId' AS persona_id,CASE WHEN r.config->>'platformModel'='true' THEN 'platform' ELSE r.config->>'model' END AS model_id,(r.config->>'platformModel'='true' OR EXISTS(SELECT 1 FROM secrets s WHERE s.bot_id=b.id)) IS TRUE AS has_key FROM bots b LEFT JOIN qq_bindings q ON q.bot_id=b.id LEFT JOIN bot_config_revisions r ON r.bot_id=b.id AND r.revision=b.revision WHERE b.tenant_id=$1 AND b.deleted_at IS NULL ORDER BY b.created_at DESC",[req.user!.tenant_id]),quota:await getBotQuota(db,req.user!.tenant_id)}));
  app.post('/v1/bots',{config:{rateLimit:{max:10,timeWindow:'1 minute'}}},async(req,reply)=>{const v=z.object({name:z.string().trim().min(1).max(80),protocol:ProtocolSchema.default('napcat'),runtimeMode:z.enum(['dedicated','shared']).default('shared'),expectedUin:z.string().regex(/^\d{5,20}$|^$/).default(''),config:BotConfigSchema.default(defaultConfig),apiKey:modelKeyInput}).parse(req.body);const id=randomUUID();
+   if(!v.config.platformModel&&v.apiKey)v.config.baseUrl=await resolveModelBaseUrl((req.body as any)?.config?.baseUrl??v.config.baseUrl,v.apiKey);
    await db.transaction(async tx=>{await requirePlatformCredit(v.config,req.user!.tenant_id,tx);const quota=await getBotQuota(tx,req.user!.tenant_id,true);if(!quota.canCreate)fail('机器人名额已用完（'+quota.used+'/'+quota.limit+'）。请先删除现有机器人，删除完成后再创建；停止运行不会释放名额。',409);
    await tx.query('INSERT INTO bots(id,tenant_id,name,protocol,expected_uin,runtime_mode) VALUES($1,$2,$3,$4,$5,$6)',[id,req.user!.tenant_id,v.name,v.protocol,v.expectedUin,v.runtimeMode]);await tx.query('INSERT INTO bot_config_revisions(bot_id,revision,config) VALUES($1,1,$2)',[id,JSON.stringify(v.config)]);
    if(v.config.proactive)await new AutonomyRepository(db).enableProactive(req.user!.tenant_id,id,tx);
@@ -112,6 +114,8 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
  });
  app.get<{Params:{id:string}}>('/v1/bots/:id',async req=>{const bot=await owned(req,req.params.id);const [revision]=await db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[bot.id,bot.revision]);const secret=(await db.query('SELECT id FROM secrets WHERE bot_id=$1 AND tenant_id=$2',[bot.id,req.user!.tenant_id])).length>0;return{bot,config:revision.config,hasKey:revision.config.platformModel?await platformModels.available():secret,hasPersonalKey:secret,capabilities:agent.protocols[bot.protocol].getCapabilities(),commands:await db.query('SELECT id,kind,status,error,created_at FROM commands WHERE bot_id=$1 ORDER BY created_at DESC LIMIT 10',[bot.id])}});
  app.put<{Params:{id:string}}>('/v1/bots/:id/config',async req=>{const v=z.object({expectedRevision:z.number().int(),config:BotConfigSchema,name:z.string().trim().min(1).max(80),expectedUin:z.string().regex(/^\d{5,20}$|^$/).default(''),apiKey:modelKeyInput,clearKey:z.boolean().optional()}).parse(req.body);let revision=0;
+   await owned(req,req.params.id);
+   if(!v.config.platformModel&&v.apiKey)v.config.baseUrl=await resolveModelBaseUrl((req.body as any).config.baseUrl,v.apiKey);
    await db.transaction(async tx=>{const bot=await owned(req,req.params.id,tx);await tx.query('SELECT id FROM bots WHERE id=$1 FOR UPDATE',[bot.id]);const [current]=await tx.query('SELECT revision,desired_state,deleted_at,expected_uin FROM bots WHERE id=$1',[bot.id]);await requirePlatformCredit(v.config,req.user!.tenant_id,tx);if(current.deleted_at||current.desired_state==='deleting')fail('机器人正在删除',409);if(current.revision!==v.expectedRevision)fail('配置已被其他操作修改，请刷新后重试',409);if(v.expectedUin!==(current.expected_uin||''))fail('不能通过配置修改QQ账号。已绑定账号不可更换；如需换号，请删除机器人后重新创建。',409);revision=current.revision+1;
      if(!v.apiKey&&!v.clearKey){
       const [saved]=await tx.query('SELECT r.config FROM bot_config_revisions r JOIN secrets s ON s.bot_id=r.bot_id AND s.tenant_id=$3 WHERE r.bot_id=$1 AND r.revision=$2',[bot.id,current.revision,bot.tenant_id]);

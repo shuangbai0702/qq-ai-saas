@@ -5,6 +5,8 @@ export {applyFishSocialPreset,fishSocialPreset} from './fish-social-preset.js';
 import {fishPrompt,quoteReplyPolicy} from './fish-persona.js';
 export {fishPrompt} from './fish-persona.js';
 import { z } from 'zod';
+import {normalizeModelBaseUrl} from '../shared/model-url.js';
+export const ModelBaseUrlSchema=z.string().max(6000).transform((value,ctx)=>{try{return normalizeModelBaseUrl(value)}catch(error){ctx.addIssue({code:'custom',message:(error as Error).message});return z.NEVER}}).pipe(z.url().max(2000));
 export const LoginStates = ['created','starting','qr_ready','waiting_scan','waiting_confirm','verification_required','authenticating','online','expired','canceled','failed'] as const;
 export type LoginState = typeof LoginStates[number];
 export const terminalLogin = new Set<LoginState>(['online','expired','canceled','failed']);
@@ -12,7 +14,7 @@ export const BotConfigSchema = z.object({
   personaId:z.string().max(100).default('dafeiyu'), systemPrompt:z.string().min(1).max(20000),
   platformModel:z.boolean().default(false),
   provider:z.enum(['deepseek','openai','custom']).default('deepseek'),
-  baseUrl:z.url().max(2000).refine(x=>{const u=new URL(x);return ['https:','http:'].includes(u.protocol)&&!u.username&&!u.password&&!u.search&&!u.hash},'请填写不含账号、查询参数的 HTTP(S) 地址'),
+  baseUrl:ModelBaseUrlSchema,
   model:z.string().min(1).max(150), auxiliaryModel:z.string().trim().min(1).max(150).optional(), delegationModel:z.string().trim().min(1).max(150).optional(), summaryModel:z.string().trim().min(1).max(150).optional(), favoriteModel:z.string().trim().min(1).max(150).optional(), trigger:z.enum(['mention','all']).default('mention'),
   delegatedCapabilities:z.object({webSearch:z.boolean().default(true),groupHistory:z.boolean().default(true),executionReview:z.boolean().default(true),favoriteAudit:z.boolean().default(true)}).default({webSearch:true,groupHistory:true,executionReview:true,favoriteAudit:true}),
   reasoningEffort:z.enum(['none','minimal','low','medium','high','xhigh','max']).optional(),
