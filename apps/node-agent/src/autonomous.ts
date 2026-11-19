@@ -56,7 +56,7 @@ export class AutonomyCoordinator {
  private policyCursor=0;
  private policySerial=0;
  private events=new Map<string,number>();private sampled=new Map<string,{at:number;revision:number}>();
- constructor(public db:Sql,private call:RuntimeCall){this.repo=new AutonomyRepository(db);this.tools=new BilibiliTools(db,call)}
+ constructor(public db:Sql,private call:RuntimeCall){this.repo=new AutonomyRepository(db,call);this.tools=new BilibiliTools(db,call)}
  start(){if(this.timer||this.closed)return;this.timer=setInterval(()=>void this.tick().catch(()=>{}),5000);this.timer.unref();this.heartbeatTimer=setInterval(()=>void this.heartbeat(),4000);this.heartbeatTimer.unref();void this.tick().catch(()=>{})}
  async heartbeat(){
   if(this.closed||this.heartbeatTask||!this.active)return;
@@ -230,8 +230,11 @@ export class AutonomyCoordinator {
      this.charge(usage,continuation.id,'execute',result);usage.externalActions=await externalCount(this.db,c.cycleId);await this.repo.feedback(c,continuation.id,result);
      reason='tool_continuation_'+result.status;break;
     }
+    if(fresh.dshBusy){reason='dsh_work_busy';sleep=15;break}
+    if(fresh.proactiveEnabled===false){reason='autonomy_disabled';sleep=300;break}
     const trigger=c.wakes.find((w:any)=>(w.reason==='activity'&&config.activityEnabled)||w.reason==='handoff-due'||w.reason==='operator-wake');
     if(trigger&&usage.modelCalls===0){
+      c.activationWake=trigger;
       const action=await this.repo.planActivity(c,usage);
       if(!await this.repo.markExecuting(c,action.id,deadline)){await this.repo.cancelPlanned(c,action.id,'自主时刻身份变化');reason='action_invalidated';break}
       active.actionId=action.id;
@@ -259,8 +262,11 @@ export class AutonomyCoordinator {
        faultContext??={class:'contract',reason:usageReason,phase:'activity_execute',configRevision:c.revision,epoch:c.epoch,generation:c.generation,at:Date.now()};
        feedback={...feedback,usage:{tokens:work.budget.tokens,modelCalls:work.budget.modelCalls,toolCalls:work.budget.toolCalls,estimated:true,estimateReason:usageReason}};
       }
-      feedback=await this.repo.withExternalEffects(c,action.id,feedback);
-      this.charge(usage,action.id,'execute',feedback);usage.externalActions=await externalCount(this.db,c.cycleId);await this.repo.feedback(c,action.id,feedback);
+      // The returned model usage is authoritative even if receipt enrichment fails.
+      this.charge(usage,action.id,'execute',feedback);
+      try{feedback=await this.repo.withExternalEffects(c,action.id,feedback)}
+      catch(error){feedback={...feedback,status:'unknown',stopReason:'effect_reconciliation_pending'};faultContext??={...classifyFault(error),phase:'effect_reconciliation',at:Date.now()}}
+      usage.externalActions=await externalCount(this.db,c.cycleId);await this.repo.feedback(c,action.id,feedback);
       reason=faultContext?.reason||(feedback.status==='completed'?'activity_completed':feedback.status==='canceled'?'activity_canceled':'activity_'+feedback.status);
       sleep=feedback.stopReason==='not_started'||feedback.continuationAccepted===false?30:Number.isSafeInteger(feedback.restSeconds)?Math.max(300,Math.min(config.maxSleepSeconds,feedback.restSeconds)):config.activityIntervalMinutes*60;
     }
@@ -280,9 +286,10 @@ export class AutonomyCoordinator {
   }finally{
    // Unfinished due goals retain their task wake. Timed activity owns exactly
    // one separate wake, never a backlog or a fast retry/model polling loop.
-   if(reason==='foreground_work_busy'||reason==='action_invalidated'||feedback?.continuationAccepted===false||feedback?.stopReason==='not_started'||faultContext&&!active.actionId)for(const wake of c.wakes.filter((w:any)=>['handoff-due','operator-wake'].includes(w.reason)))await this.repo.wake(c.tenant_id,c.bot_id,c.epoch,wake.reason,Math.max(15,sleep),wake.scope).catch(()=>{});
-   if(c.wakes.some((w:any)=>w.reason==='activity'))await this.repo.scheduleActivity(c,Math.max(300,sleep||config.activityIntervalMinutes*60),true).catch(()=>{});
+   if(c.activationWake&&active.actionId&&feedback?.continuationAccepted!==false&&feedback?.stopReason!=='not_started')c.consumeWake=c.activationWake.dedupe_key;
+   c.retrySeconds=Math.max(15,sleep||15);
    await this.repo.finish(c,usage,reason,faultContext);
+   if(c.activationWake?.reason==='activity'&&c.consumeWake)await this.repo.scheduleActivity(c,Math.max(300,sleep||config.activityIntervalMinutes*60),true).catch(()=>{});
    // Withdraw the short effect permit before releasing the global slot. A
    // failed withdrawal still expires after at most fourteen seconds.
    const [latest]=await this.db.query('SELECT s.*,b.generation,b.revision FROM autonomy_settings s JOIN bots b ON b.id=s.bot_id WHERE s.bot_id=$1 AND s.tenant_id=$2',[c.bot_id,c.tenant_id]);

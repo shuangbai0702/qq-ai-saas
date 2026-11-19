@@ -80,7 +80,7 @@ class AutonomousRuntime:
         if p['lease'] is not s:return 'member_replaced'
         if id in self.core.event_bus.stopped_platforms:return 'platform_stopped'
         if p['config']['mode']!='active':return 'mode_changed'
-        if identity.get('_model_origin') and not identity.get('_continuation') and not s['config'].get('proactive'):return 'autonomy_disabled'
+        if (identity.get('_model_origin') or identity.get('_autonomous_moment')) and not identity.get('_continuation') and not s['config'].get('proactive'):return 'autonomy_disabled'
         if not self.permit_current(p):return 'permit_expired'
         if self.interrupted.get(id)==identity.get('cycleId'):return 'cycle_interrupted'
         for key in ('tenantId','botId','epoch','generation','revision','cycleId'):
@@ -266,11 +266,13 @@ class AutonomousRuntime:
         """Scheduler metadata only; main cognition stays in the main Journal."""
         s=self.settings[id];st=self.store(id,s)
         import agreement_state
+        from pipeline_tools import dsh_busy
         return {'pendingHandoffs':st.pipeline.pending_handoffs(self.policies[id]['epoch']),
                 'agreementStates':agreement_state.task_states(st.db),'canceledHandoffs':st.pipeline.canceled_handoffs(),
                 'foregroundFeedback':self.feedbacks.get(id),'event':self.events.get(id),
                 'feedbackVersion':self.feedbacks.get(id,{}).get('at',0),
                 'foregroundBusy':st.active>(1 if id in self.running else 0) or bool(getattr(st,'waiting',0)),
+                'dshBusy':dsh_busy(st.db),'proactiveEnabled':s['config'].get('proactive',False),
                 'nextEventCheckSeconds':self.policies[id]['config'].get('minSleepSeconds',600)}
 
     def can_reflect(self,id):
@@ -453,6 +455,9 @@ class AutonomousRuntime:
         await st.wait_compression()
         if self.settings.get(id) is not s or not self.valid(id,identity):raise PreflightRejected('stale_internal_work')
         moment=action.get('autonomousMoment') is True
+        from pipeline_tools import dsh_busy
+        if moment and not action.get('continuation') and dsh_busy(st.db):
+            return {'status':'blocked','reason':'dsh_work_busy','summary':'原委托及回执尚未完成，激活继续排队','effects':[],'evidence':[],'unfinished':[],'usage':dict(ZERO_USAGE),'continuationAccepted':False,'stopReason':'not_started'}
         main_activation=moment or bool(action.get('continuation'))
         if not main_activation or action.get('kind')!='research' or action.get('target'):
             raise PreflightRejected('independent_execution_retired')
@@ -466,9 +471,9 @@ class AutonomousRuntime:
         continuation=bool(action.get('continuation') or (action.get('requestSource') or {}).get('parentActionId'))
         model_origin=(action.get('requestSource') or {}).get('origin')=='model'
         if moment and action.get('activationTrigger','activity')=='activity' and not self.policies.get(id,{}).get('config',{}).get('activityEnabled',True):raise PreflightRejected('activity_disabled')
-        if model_origin and not continuation and not s['config'].get('proactive'):
+        if (moment or model_origin) and not continuation and not s['config'].get('proactive'):
             return {'status':'blocked','summary':'自主模式已关闭，未发起自主研究模型调用','effects':[],'evidence':[],'unfinished':[action['objective']],'usage':dict(ZERO_USAGE),'continuationAccepted':False,'stopReason':'not_started'}
-        identity={**identity,'_model_origin':model_origin,'_continuation':continuation}
+        identity={**identity,'_model_origin':model_origin,'_continuation':continuation,'_autonomous_moment':moment}
         if not self.valid(id,identity):raise PreflightRejected('stale_internal_work')
         kind=action['kind'];target=''
         import agreement_state

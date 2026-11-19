@@ -23,6 +23,9 @@ def event(identifier='101',at=None):
 class Recovery(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.db=sqlite3.connect(':memory:');self.p=BotPipeline(self.db)
+        # Match the real BehaviorStore dependency used by original ingress.
+        from relationships import SCHEMA,migrate
+        self.db.execute('CREATE TABLE '+SCHEMA);migrate(self.db)
         self.lease={'tenantId':'tenant','botId':'bot','generation':1,'revision':1}
         self.issues=[]
         self.store=NS(db=self.db,reflection=NS(checkpoint_issue=lambda *args:self.issues.append(args)))
@@ -51,6 +54,19 @@ class Recovery(unittest.IsolatedAsyncioTestCase):
         self.core.event_queue=asyncio.Queue();self.core.event_queue.put_nowait(e)
         self.assertFalse(await self.resume());self.assertEqual(self.input(),'pending')
         self.assertEqual(self.core.event_queue.qsize(),1)
+
+    async def test_restarted_voice_can_recover_while_later_text_writer_waits(self):
+        e=event();e.message_obj.raw_message['message']=[{'type':'record','data':{'file':'opaque'}}]
+        self.assertTrue(self.p.persist_input(e,self.lease));delivered=[]
+        writer=asyncio.current_task();writer._hosted_voice_waiting=True
+        self.store.model_writer=NS(owner=writer)
+        self.core.event_bus._pending_tasks={writer:e}
+        async def convert(raw):return NS(message_id='101',timestamp=time.time(),raw_message=raw)
+        self.core.platform_manager.get_insts=lambda:[NS(meta=lambda:NS(id='qq'),convert_message=convert,create_event=lambda m:m,commit_event=delivered.append)]
+        try:
+            with patch.dict(sys.modules,{'aiocqhttp':NS(Event=NS(from_payload=lambda raw:raw))}):self.assertTrue(await self.resume())
+            self.assertEqual(len(delivered),1)
+        finally:writer._hosted_voice_waiting=False
 
     async def test_raw_retention_clock_does_not_replace_bound_sdk_time_on_recovery(self):
         from context_protocol import event_message,model_json

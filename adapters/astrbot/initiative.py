@@ -75,57 +75,8 @@ def candidates(db,cfg,now,rng=random.random):
     if total>=b.get('dailyProactiveLimit',10):return []
     owner_item=autonomy.owner_delivery_candidate(db,cfg,now)
     if owner_item:return [owner_item]
-    if not cfg.get('proactive'):return []
-    if not targets:return []
-    rows=db.execute('SELECT scope,subject,self_id,last_user,last_bot,last_attempt,unanswered,opted_out,last_text,last_output FROM contacts WHERE scope IN ('+','.join('?' for _ in targets)+') ORDER BY last_user DESC LIMIT 50',tuple(targets)).fetchall()
-    result=[]
-    for r in rows:
-        scope,subject,self_id,last_user,last_bot,last_attempt,unanswered,opted_out,last_text,last_output=r
-        if b.get('ownerContactEnabled',autonomy.BEHAVIOR_DEFAULTS['ownerContactEnabled']) and scope=='private:'+str(b.get('ownerUin') or ''):continue
-        if scope.startswith('group:') and not autonomy.group_allowed(cfg,scope):continue
-        selected=companion_state.select_member(db,cfg,scope,now,allow_without_topic=b.get('proactiveModelSchedule',False))
-        automatic=scope not in b.get('proactiveTargets',[])
-        if automatic and not selected:continue
-        if scope not in targets or opted_out or paused(db,scope,now) or unanswered>=b.get('maxUnanswered',4):continue
-        if scope.startswith('group:') and cfg.get('groups') and scope[6:] not in cfg['groups']:continue
-        if now-last_user<b.get('silenceSeconds',1800) or now-max(last_bot,last_attempt)<b.get('proactiveIntervalSeconds',3600):continue
-        topic=selected['topic'] if selected else ''
-        if b.get('proactiveModelSchedule'):
-            plan=db.execute('SELECT due,topic,allowed FROM companion_plans WHERE scope=? AND anchor=?',(scope,max(last_user,last_bot,last_attempt))).fetchone()
-            if not plan or not plan[2] or now<plan[0]:continue
-            topic=plan[1]
-            planned=db.execute('SELECT subject,seen FROM companion_plan_members WHERE scope=? AND anchor=?',(scope,max(last_user,last_bot,last_attempt))).fetchone()
-            if planned:
-                # Membership/consent must still be eligible at send time, not
-                # merely present when the model picked a person half an hour ago.
-                eligible=companion_state.select_members(db,cfg,scope,now,allow_without_topic=True)
-                selected=next((m for m in eligible if m['subject']==planned[0] and m['seen']==planned[1]),None)
-                if not selected:continue
-        if b.get('proactiveRandomInterval') and not b.get('proactiveModelSchedule'):
-            minimum=max(30,min(600,b.get('proactiveMinMinutes',30)));maximum=max(minimum,min(600,b.get('proactiveMaxMinutes',600)))
-            anchor=max(last_user,last_bot,last_attempt)
-            schedule=db.execute('SELECT anchor,minimum,maximum,due FROM initiative_schedule WHERE scope=?',(scope,)).fetchone()
-            if not schedule or schedule[:3]!=(anchor,minimum,maximum):
-                due=anchor+(minimum+(maximum-minimum)*rng())*60
-                db.execute('INSERT OR REPLACE INTO initiative_schedule VALUES(?,?,?,?,?)',(scope,anchor,minimum,maximum,due))
-                db.execute('DELETE FROM initiative_schedule WHERE anchor<?',(now-8*86400,));db.commit()
-            else:due=schedule[3]
-            if now<due:continue
-        if now-last_user>7*86400:continue
-        # Polling is not a new probability trial: keep one decision for the
-        # configured interval, including across restarts. Successful candidates
-        # remain available while QQ reconnects; reserve() fences actual attempts.
-        chance=1 if b.get('proactiveModelSchedule') else b.get('proactiveChance',0.25)
-        check=db.execute('SELECT checked,chance,allowed FROM initiative_checks WHERE scope=?',(scope,)).fetchone()
-        if check and check[1]==chance and 0<=now-check[0]<b.get('proactiveIntervalSeconds',3600):allowed=bool(check[2])
-        else:
-            allowed=chance>0 and rng()<chance
-            db.execute('INSERT INTO initiative_checks VALUES(?,?,?,?) ON CONFLICT(scope) DO UPDATE SET checked=excluded.checked,chance=excluded.chance,allowed=excluded.allowed',(scope,now,chance,int(allowed)))
-            db.execute('DELETE FROM initiative_checks WHERE checked<?',(now-8*86400,));db.commit()
-        if not allowed:continue
-        result.append({'scope':scope,'subject':subject,'self_id':self_id,'last_text':last_text,'last_output':last_output,'last_user':last_user,'topic':topic,'contact_subject':selected['subject'] if selected else None,'contact_seen':selected['seen'] if selected else None})
-        break # bounded to one candidate per bot per sweep
-    return result
+    return []  # Other proactive decisions belong to the main autonomous activation.
+
 
 def reserve(db,cfg,item,now):
     day=datetime.fromtimestamp(now,ZONE).date().isoformat();b=cfg.get('behavior') or {}
@@ -208,6 +159,9 @@ async def resume_scope_input(core,id,lease,store,settings):
     # Native admission can await protocol preparation before bind creates its
     # ledger row. Its queue/task still owns that delivery; a retry deadline is
     # not permission to enqueue it again while that owner is alive.
+    if getattr(store,'ingress',0):return False
+    writer=getattr(getattr(store,'model_writer',None),'owner',None)
+    voice_waiting=bool(writer and getattr(writer,'_hosted_voice_waiting',False))
     queue=getattr(core,'event_queue',None)
     if queue is not None and queue.qsize()>0:
         # The shared SDK queue contains other members too. Only this member's
@@ -216,7 +170,7 @@ async def resume_scope_input(core,id,lease,store,settings):
         entries=getattr(queue,'_queue',None)
         if entries is None or any(not callable(getattr(event,'get_platform_id',None)) or event.get_platform_id()==id for event in entries):return False
     for task,event in getattr(getattr(core,'event_bus',None),'_pending_tasks',{}).items():
-        if not task.done() and event.get_platform_id()==id:return False
+        if not task.done() and event.get_platform_id()==id and not (voice_waiting and task is writer):return False
     from input_reconciliation import reconcile
     reconcile(store.db,store.reflection)
     # Protocol redelivery may already have a terminal original Work. Reconcile
@@ -240,12 +194,12 @@ async def resume_scope_input(core,id,lease,store,settings):
         store.db.execute("""UPDATE pipeline_work_inputs AS i SET retry_count=coalesce(retry_count,0)+1,
           status=CASE WHEN coalesce(retry_count,0)>=4 THEN 'blocked_recovery' ELSE 'pending' END
           WHERE i.status='queued' AND coalesce(i.retry_at,0)<?
-          AND NOT EXISTS (SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope)
+          AND (NOT EXISTS (SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope) OR i.voice IS NOT NULL)
           AND NOT EXISTS (SELECT 1 FROM pipeline_events e WHERE e.scope=i.scope AND e.subject=i.subject AND e.event=i.event)""",(time.time(),))
         for failed_scope,failed_event,count in store.db.execute("SELECT scope,min(event),max(retry_count) FROM pipeline_work_inputs WHERE status='blocked_recovery' GROUP BY scope").fetchall():
             store.reflection.checkpoint_issue('bot_shared',0,'input_recovery:'+failed_scope+':'+failed_event,{'scope':failed_scope,'event':failed_event,'reason':'ingress_not_accepted','state':'blocked_recovery','retry_count':count,'external_replay':False})
     boundary=getattr(store,'compression_boundary',None)
-    row=store.db.execute("SELECT scope,event,payload,observed_at,retry_count FROM pipeline_work_inputs i WHERE status='pending' AND coalesce(retry_at,0)<=? AND (? IS NULL OR i.rowid<=?) AND NOT EXISTS (SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope) ORDER BY created LIMIT 1",(time.time(),boundary,boundary)).fetchone()
+    row=store.db.execute("SELECT scope,event,payload,observed_at,retry_count FROM pipeline_work_inputs i WHERE status='pending' AND coalesce(retry_at,0)<=? AND (? IS NULL OR i.rowid<=?) AND (NOT EXISTS (SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope) OR (? AND i.voice IS NOT NULL)) ORDER BY created,rowid LIMIT 1",(time.time(),boundary,boundary,voice_waiting)).fetchone()
     if not row:return False
     scope,event_id,payload,observed_at,retries=row
     binding=store.db.execute('SELECT identity,payload_sha,addressed_self FROM pipeline_work_inputs WHERE scope=? AND event=?',(scope,event_id)).fetchone()
@@ -277,7 +231,8 @@ async def resume_scope_input(core,id,lease,store,settings):
         if not store.db.execute("UPDATE pipeline_work_inputs SET status='queued',retry_at=? WHERE scope=? AND event=? AND status='pending'",(time.time()+30,scope,event_id)).rowcount:return False
     try:
         raw=Event.from_payload(json.loads(payload));convert_retained=getattr(platform,'convert_retained_message',None) or platform.convert_message
-        message=await asyncio.wait_for(convert_retained(raw),5)
+        from voice_inputs import has_voice,HARD_TIMEOUT
+        message=await asyncio.wait_for(convert_retained(raw),HARD_TIMEOUT+5 if has_voice(raw) else 5)
         if message is None or settings.get(id) is not lease:raise RuntimeError('scope_resume_stale')
         # The SDK conversion stamps replay time. Reuse the first trusted
         # observation instead; redelivery must not change protocol identity.
@@ -365,14 +320,6 @@ def start(core,settings,store,metrics):
                         platform.commit_event(event)
                         m=metrics.setdefault(id,{});m['groupDeferredChecksQueued']=m.get('groupDeferredChecksQueued',0)+1
                         continue
-                    if id not in core.event_bus.stopped_platforms:
-                        st.planner.maybe_start(cfg,provider,lambda sid=id,lease=s:settings.get(sid) is lease and sid not in core.event_bus.stopped_platforms,current_message_event,metrics.setdefault(id,{}),lease=s)
-                        task=st.planner.task
-                        if task and not task.done() and not getattr(task,'_hosted_slot',False):
-                            task._hosted_slot=True;st.active+=1
-                            def finished(_,owner=st):owner.active-=1
-                            task.add_done_callback(finished)
-                        if getattr(core,'_hosted_care',None):core._hosted_care.track(st,task)
                     items=candidates(st.db,cfg,time.time())
                     if not items:
                         # Keep the empty-sweep reason visible instead of folding

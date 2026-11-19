@@ -68,7 +68,9 @@ class Activity(unittest.IsolatedAsyncioTestCase):
         before=self.st.db.execute('SELECT count(*) FROM pipeline_events').fetchone()[0]
         with patch.object(self.brain,'candidates',side_effect=AssertionError('scheduler must not project social history')),patch('companion_state.context',side_effect=AssertionError('scheduler must not repeat personality/memory')):
             view=await self.brain.handle('qq','snapshot',{})
-        self.assertEqual(set(view),{'pendingHandoffs','agreementStates','canceledHandoffs','foregroundFeedback','event','feedbackVersion','foregroundBusy','nextEventCheckSeconds'})
+        self.assertEqual(set(view),{'pendingHandoffs','agreementStates','canceledHandoffs','foregroundFeedback','event','feedbackVersion','foregroundBusy','nextEventCheckSeconds','dshBusy','proactiveEnabled'})
+        self.assertIs(view['dshBusy'],False)
+        self.assertIs(view['proactiveEnabled'],True)
         self.assertIs(view['foregroundFeedback'],feedback)
         self.assertEqual(view['feedbackVersion'],123)
         self.assertEqual(view['foregroundFeedback']['result']['status'],'unknown')

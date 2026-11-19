@@ -40,10 +40,17 @@ class RawInput:
     def get_extra(self, key, default=None): return default
 
 
-def bind(platform, acquire, allowed=lambda raw: True, quiescing=lambda: False):
+def bind(platform, acquire, allowed=lambda raw: True, quiescing=lambda: False, prepare=None):
     """Bind once per platform; no task pool, raw cache or second queue."""
     original = platform.convert_message
-    platform.convert_retained_message = original
+    async def retained(raw):
+        derived = await prepare(raw) if prepare else raw
+        message = await original(derived)
+        if message is not None:
+            message.raw_message = raw
+            message._hosted_ingress_retained = True
+        return message
+    platform.convert_retained_message = retained
 
     async def convert(raw):
         if not allowed(raw): return None
@@ -58,7 +65,7 @@ def bind(platform, acquire, allowed=lambda raw: True, quiescing=lambda: False):
         if release is None: return None
         try:
             if quiescing(): return None
-            message = await original(raw)
+            message = await retained(raw)
             if message is not None:
                 message._hosted_ingress_retained = True
             return message

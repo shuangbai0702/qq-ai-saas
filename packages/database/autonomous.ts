@@ -1,4 +1,5 @@
 import {BilibiliTools} from './bilibili-tools.js';
+import type {RuntimeCall} from '../shared/runtime-client.js';
 import {externalCount,biliWorkEffects} from './external-action-budget.js';
 import {modelRequestTotals} from './model-request-budget.js';
 import {createHash,randomUUID} from 'node:crypto';
@@ -12,7 +13,7 @@ const daySql="to_char(now() AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD')";
 const onlineSql=runtimeOnlineSql();
 export class AutonomyConflict extends Error {}
 export class AutonomyRepository {
- constructor(public db:Sql){}
+ constructor(public db:Sql,private call?:RuntimeCall){}
  /** Complete current responsibility, with original intent and result evidence intact. */
  async goalAudience(bot:any,value:unknown,tx=this.db){
   const audience=AutonomousGoalAudienceSchema.parse(value);
@@ -63,9 +64,16 @@ export class AutonomyRepository {
   });
  }
  async ensure(tenantId:string,botId:string,tx=this.db){
-  await tx.query("INSERT INTO autonomy_settings(bot_id,tenant_id,config) SELECT id,tenant_id,$3 FROM bots WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL ON CONFLICT(bot_id) DO NOTHING",[botId,tenantId,JSON.stringify(defaultAutonomyConfig)]);
+  await tx.query("INSERT INTO autonomy_settings(bot_id,tenant_id,config) SELECT b.id,b.tenant_id,CASE WHEN r.config->>'proactive'='true' THEN jsonb_set($3::jsonb,'{mode}','\"active\"'::jsonb) ELSE $3::jsonb END FROM bots b JOIN bot_config_revisions r ON r.bot_id=b.id AND r.revision=b.revision WHERE b.id=$1 AND b.tenant_id=$2 AND b.deleted_at IS NULL ON CONFLICT(bot_id) DO NOTHING",[botId,tenantId,JSON.stringify(defaultAutonomyConfig)]);
   const [s]=await tx.query('SELECT * FROM autonomy_settings WHERE bot_id=$1 AND tenant_id=$2',[botId,tenantId]);
   if(!s)throw new AutonomyConflict('机器人不可用');return s;
+ }
+ async enableProactive(tenantId:string,botId:string,tx=this.db){
+  await this.ensure(tenantId,botId,tx);
+  // The UI's proactive toggle enables the existing execution lifecycle. It
+  // does not replace its epoch or drop any pending wake/receipt responsibility.
+  const [s]=await tx.query("UPDATE autonomy_settings SET config=jsonb_set(config,'{mode}','\"active\"'::jsonb),state=CASE WHEN config->>'mode'='passive' THEN 'ready' ELSE state END,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 RETURNING epoch",[botId,tenantId]);
+  await this.wake(tenantId,botId,s.epoch,'mode-enabled',0,'',tx);
  }
  async view(tenantId:string,botId:string){
   const settings=await this.ensure(tenantId,botId);
@@ -95,7 +103,7 @@ export class AutonomyRepository {
  async wake(tenantId:string,botId:string,epoch:number,reason:string,seconds=0,scope='',tx=this.db){
   // One row per source/scope merges events instead of retaining message text.
   const dedupe=reason+':'+scope;
-  await tx.query("INSERT INTO autonomy_wakes(bot_id,tenant_id,dedupe_key,epoch,due_at,reason,scope) SELECT bot_id,tenant_id,$4,epoch,now()+($5*interval '1 second'),$6,$7 FROM autonomy_settings WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND config->>'mode'='active' ON CONFLICT(bot_id,dedupe_key) DO UPDATE SET epoch=excluded.epoch,due_at=LEAST(autonomy_wakes.due_at,excluded.due_at),reason=excluded.reason",[botId,tenantId,epoch,dedupe,Math.max(0,seconds),reason,scope]);
+  await tx.query("INSERT INTO autonomy_wakes(bot_id,tenant_id,dedupe_key,epoch,due_at,reason,scope) SELECT bot_id,tenant_id,$4,epoch,now()+($5*interval '1 second'),$6,$7 FROM autonomy_settings WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND config->>'mode'='active' AND NOT EXISTS(SELECT 1 FROM autonomy_cycles c WHERE $6='operator-wake' AND c.bot_id=$1 AND c.tenant_id=$2 AND c.epoch=$3 AND c.decision->>'activationWakeConsumed'=$4) ON CONFLICT(bot_id,dedupe_key) DO UPDATE SET epoch=excluded.epoch,due_at=LEAST(autonomy_wakes.due_at,excluded.due_at),reason=excluded.reason",[botId,tenantId,epoch,dedupe,Math.max(0,seconds),reason,scope]);
   await tx.query('UPDATE autonomy_settings SET next_wake_at=(SELECT min(due_at) FROM autonomy_wakes WHERE bot_id=$1),updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3',[botId,tenantId,epoch]);
  }
  async rearmHandoffs(tenantId:string,botId:string,epoch:number,tx=this.db){
@@ -206,9 +214,9 @@ export class AutonomyRepository {
     await this.waitForDailyBudget(tx,s,'今日自主模型预算已预留或用完');return null;
    }
    const id=randomUUID();
-   const wakes=await tx.query('DELETE FROM autonomy_wakes WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND due_at<=now() RETURNING reason,scope',[s.bot_id,s.tenant_id,s.epoch]);
-   // Consuming a wake is atomic with cycle ownership. Activity is re-armed
-   // separately at a minimum five-minute interval, without a queued backlog.
+   const wakes=await tx.query('SELECT dedupe_key,reason,scope FROM autonomy_wakes WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND due_at<=now() ORDER BY created_at,due_at,dedupe_key',[s.bot_id,s.tenant_id,s.epoch]);
+   // Claim the existing cycle lease, not the activation itself. A busy DSH,
+   // crash before execution or duplicate delivery must retain the same wake.
    await tx.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget) VALUES($1,$2,$3,$4,$5,$6,$7,'thinking',$8)",[id,s.bot_id,s.tenant_id,s.epoch,s.generation,s.revision,owner,JSON.stringify({...config,cycleTokenBudget:tokenLimit,configuredCycleTokenBudget:config.cycleTokenBudget,day:usage.day})]);
    await tx.query("UPDATE autonomy_settings SET lease_owner=$3,lease_until=now()+interval '30 seconds',state='thinking',next_wake_at=(SELECT min(due_at) FROM autonomy_wakes WHERE bot_id=$1),updated_at=now() WHERE bot_id=$1 AND tenant_id=$2",[s.bot_id,s.tenant_id,owner]);
    return{...s,config,tokenLimit,cycleId:id,owner,day:usage.day,wakes};
@@ -217,6 +225,7 @@ export class AutonomyRepository {
  private async recover(s:any,tx:Sql){
   const lost=await tx.query("SELECT * FROM autonomy_cycles WHERE bot_id=$1 AND tenant_id=$2 AND finished_at IS NULL FOR UPDATE",[s.bot_id,s.tenant_id]);
   for(const cycle of lost){
+   if(cycle.state==='acting'&&cycle.budget.activationWake){await tx.query("UPDATE autonomy_cycles SET decision=coalesce(decision,'{}'::jsonb)||jsonb_build_object('activationWakeConsumed',$2::text) WHERE id=$1",[cycle.id,cycle.budget.activationWake]);await tx.query('DELETE FROM autonomy_wakes WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND dedupe_key=$4',[s.bot_id,s.tenant_id,cycle.epoch,cycle.budget.activationWake]);}
    const reserved=cycle.budget.cycleTokenBudget,externalActions=await externalCount(tx,cycle.id),requests=modelRequestTotals(cycle.budget);
    // No returned usage after a crash is charged conservatively, not refunded.
    await tx.query('UPDATE autonomy_daily_usage SET reserved_tokens=GREATEST(0,reserved_tokens-$3),used_tokens=used_tokens+$3,external_actions=external_actions+$5,model_calls=model_calls+$6 WHERE bot_id=$1 AND tenant_id=$2 AND day=$4',[s.bot_id,s.tenant_id,reserved,cycle.budget.day,externalActions,requests.modelCalls]);
@@ -240,6 +249,7 @@ export class AutonomyRepository {
   return this.db.transaction(async tx=>{
    const [s]=await tx.query("SELECT * FROM autonomy_settings WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND lease_owner=$4 AND lease_until>now() FOR UPDATE",[claim.bot_id,claim.tenant_id,claim.epoch,claim.owner]);
    if(!s||!AutonomyConfigSchema.parse(s.config).activityEnabled&&!claim.wakes?.some((w:any)=>['handoff-due','operator-wake'].includes(w.reason)))throw new AutonomyConflict();
+   if(claim.activationWake)await tx.query("UPDATE autonomy_cycles SET budget=jsonb_set(budget,'{activationWake}',$2::jsonb) WHERE id=$1",[claim.cycleId,JSON.stringify(claim.activationWake.dedupe_key)]);
    const [cycle]=await tx.query("UPDATE autonomy_cycles SET decision=jsonb_build_object('reason','autonomous_moment'),usage=$4,state='planned',work_expires_at=now()+($5*interval '1 second') WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND state='thinking' AND finished_at IS NULL RETURNING id",[claim.cycleId,claim.bot_id,claim.tenant_id,JSON.stringify(usage),claim.config.cycleSeconds]);
    if(!cycle)throw new AutonomyConflict();
    return{id:cycle.id,kind:'research',target:'',objective:'根据当前真实状态自主选择行动或休息'};
@@ -284,10 +294,10 @@ export class AutonomyRepository {
   if(!uncertain)await this.db.query("UPDATE autonomy_cycles SET reason='receipt_resolved',decision=COALESCE(decision,'{}'::jsonb)-'receiptCheck' WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND finished_at IS NOT NULL AND reason IN ('lease_expired','activity_unknown','tool_continuation_unknown')",[id,claim.bot_id,claim.tenant_id]);
  }
  async withExternalEffects(claim:any,id:string,result:any){
-  const bili=await biliWorkEffects(this.db,claim.bot_id,claim.tenant_id,id);
+  const bili=await biliWorkEffects(this.db,claim.bot_id,claim.tenant_id,id,this.call);
   const effects=[...(result.effects||[]).filter((e:any)=>e.source!=='bilibili'),...bili];
   const uncertain=effects.some((e:any)=>e.status==='unknown');
-  const pending=(await new BilibiliTools(this.db).pending(claim,id)).filter(e=>e.authority==='autonomous'&&e.operation==='analyze');
+  const pending=(await new BilibiliTools(this.db,this.call).pending(claim,id)).filter(e=>e.authority==='autonomous'&&e.operation==='analyze');
   if(pending.length&&result.status==='completed')result={...result,status:'partial',unfinished:[...(result.unfinished||[]),'后台分析结果尚未交回原任务理解：'+pending.map(p=>p.id).join(',')]};
   return{...result,effects,...(uncertain?{status:effects.some((e:any)=>e.status==='confirmed')?'partial':'unknown'}:{})};
  }
@@ -321,13 +331,19 @@ export class AutonomyRepository {
    const settled=['no_due_work','handoff_executed','activity_completed','goal_awaits_model_decision'].includes(reason);
    const done=await tx.query("UPDATE autonomy_cycles SET state=$2,usage=$3,reason=$4,finished_at=now(),decision=COALESCE(decision,'{}'::jsonb)||CASE WHEN work_expires_at IS NOT NULL AND NOT (COALESCE(decision,'{}'::jsonb) ? 'receiptPending') THEN '{\"receiptPending\":true}'::jsonb ELSE '{}'::jsonb END||$5::jsonb WHERE id=$1 AND bot_id=$6 AND tenant_id=$7 AND finished_at IS NULL RETURNING id",[claim.cycleId,settled?'completed':'ended',JSON.stringify(usage),reason,faultJson,claim.bot_id,claim.tenant_id]);
    if(!done.length)return;
+   if(claim.consumeWake)await tx.query("UPDATE autonomy_cycles SET decision=decision||jsonb_build_object('activationWakeConsumed',$2::text) WHERE id=$1",[claim.cycleId,claim.consumeWake]);
+   for(const wake of claim.wakes||[]){
+    const activation=['activity','handoff-due','operator-wake'].includes(wake.reason);
+    if(!activation||claim.consumeWake===wake.dedupe_key)await tx.query('DELETE FROM autonomy_wakes WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND dedupe_key=$4',[claim.bot_id,claim.tenant_id,claim.epoch,wake.dedupe_key]);
+    else await tx.query("UPDATE autonomy_wakes SET due_at=GREATEST(due_at,now()+($5*interval '1 second')) WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND dedupe_key=$4",[claim.bot_id,claim.tenant_id,claim.epoch,wake.dedupe_key,claim.retrySeconds??15]);
+   }
    await tx.query('UPDATE autonomy_daily_usage SET reserved_tokens=GREATEST(0,reserved_tokens-$3),used_tokens=used_tokens+$4,model_calls=model_calls+$5,tool_calls=tool_calls+$6,external_actions=external_actions+$7 WHERE bot_id=$1 AND tenant_id=$2 AND day=$8',[claim.bot_id,claim.tenant_id,claim.tokenLimit??claim.config.cycleTokenBudget,Math.max(0,usage.tokens),usage.modelCalls,usage.toolCalls,usage.externalActions,claim.day]);
    // No polling wake: the event-driven cycle re-arms 'handoff-due' itself
    // before finishing whenever due work remains. next_wake_at keeps pointing
    // at the nearest future handoff deadline, or nothing until the next
    // accepted handoff / event / config change writes a wake.
    const sleepState=reason==='waiting_receipt'||reason==='handoff_retry_wait'?'waiting_receipt':settled?'sleeping':'backoff';
-   await tx.query("UPDATE autonomy_settings SET lease_owner=NULL,lease_until=NULL,state=$5,last_error=$6,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND lease_owner=$4 RETURNING epoch",[claim.bot_id,claim.tenant_id,claim.epoch,claim.owner,sleepState,settled?null:reason]);
+   await tx.query("UPDATE autonomy_settings SET lease_owner=NULL,lease_until=NULL,state=$5,last_error=$6,next_wake_at=(SELECT min(due_at) FROM autonomy_wakes WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3),updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND lease_owner=$4 RETURNING epoch",[claim.bot_id,claim.tenant_id,claim.epoch,claim.owner,sleepState,settled?null:reason]);
   });
  }
 }

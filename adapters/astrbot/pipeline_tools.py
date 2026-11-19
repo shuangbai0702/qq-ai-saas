@@ -38,6 +38,18 @@ def rows(db):
     return [row(db,x[0]) for x in db.execute("SELECT event FROM pipeline_events WHERE source='tool' AND (status IN ('received','waiting','sending','unknown') OR json_extract(request,'$.completion.state') IN ('pending','claimed','unknown')) ORDER BY at")]
 
 
+def dsh_busy(db):
+    """Original tool responsibility, including its unconsumed main receipt.
+
+    Used only for NEW autonomous admission; foreground input and the original
+    completion retain their existing interruption/continuation permissions.
+    """
+    return db.execute("""SELECT 1 FROM pipeline_events WHERE source='tool'
+      AND json_type(request,'$.continuation.dsh')='object'
+      AND (status IN ('received','waiting','sending') OR
+           json_extract(request,'$.completion.state') IN ('pending','claimed','unknown')) LIMIT 1""").fetchone() is not None
+
+
 def view(value):
     if not value or not value['request']:return None
     request=value['request'];completion=request.get('completion',{})

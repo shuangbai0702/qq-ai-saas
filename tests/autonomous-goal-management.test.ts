@@ -162,10 +162,10 @@ test('blocked activation leaves Goal decisions to the model; only a committed Go
   assert.equal(body.action.goalId,undefined);assert.equal(body.action.target,'');
   return{status:block?'blocked':'completed',summary:'actual decision',effects:[],unfinished:[],evidence:[],usage:{tokens:10,modelCalls:1,toolCalls:0}};
  });t.after(()=>coordinator.stop());
- await repo.wake('tenant','bot',2,'operator-wake');await coordinator.tick();await coordinator.active?.task;
+ await repo.wake('tenant','bot',2,'operator-wake',0,'first-activation');await coordinator.tick();await coordinator.active?.task;
  assert.equal(executions,1);assert.equal((await repo.view('tenant','bot')).goals[0].status,'active');
  const changed=await repo.updateGoal(bot,{scope:'private:12345678',senderId:'12345678'},{goalId,expectedRevision:1,changes:{progress:'new user instruction/evidence'}});assert.equal(changed.status,'updated');
- block=false;await repo.wake('tenant','bot',2,'operator-wake');await coordinator.tick();await coordinator.active?.task;assert.equal(executions,2);
+ block=false;await repo.wake('tenant','bot',2,'operator-wake',0,'new-evidence-activation');await coordinator.tick();await coordinator.active?.task;assert.equal(executions,2);
  const reviewed=await repo.view('tenant','bot');assert.equal(reviewed.goals[0].status,'active');assert.equal(reviewed.goals[0].revision,changed.goal.revision);assert.equal(reviewed.cycles[0].reason,'activity_completed');
  await coordinator.tick();await coordinator.active?.task;assert.equal(executions,2,'no automatic Goal execution or result replay');
  const done=await repo.updateGoal(bot,{scope:'private:12345678',senderId:'12345678'},{goalId,expectedRevision:changed.goal.revision,changes:{status:'completed'}});assert.equal(done.status,'updated');

@@ -313,6 +313,8 @@ def _purge(db,checkpoint_id,*,preview=False):
             if (channel,identifier) in ambient:
                 db.execute("UPDATE pipeline_work_inputs SET status='settled_retired_observation' WHERE scope=? AND event=? AND status='deferred'",(channel,identifier))
             db.execute("UPDATE pipeline_work_inputs SET payload=NULL WHERE scope=? AND event=? AND status<>'owned'",(channel,identifier))
+            if 'voice' in {r[1] for r in db.execute('PRAGMA table_info(pipeline_work_inputs)')}:
+                db.execute("UPDATE pipeline_work_inputs SET voice=NULL WHERE scope=? AND event=? AND payload IS NULL",(channel,identifier))
         for table,(column,indexed) in semantic_sources.items():
             matching=indexed.pop((channel,identifier),[])
             if matching:

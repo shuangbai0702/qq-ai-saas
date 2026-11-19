@@ -15,6 +15,7 @@ async function fixture(){
 }
 test('activity uses one durable wake, native budget and logical cycle without a fake goal; rest survives restart',async()=>{
  const f=await fixture();let n=0;const c=new AutonomyCoordinator(f.db,async(_b,op,body:any)=>{
+  if(op==='tool')return{pending:[],effects:[]};
   if(op==='policy'||op==='snapshot')return{};
   assert.equal(op,'execute');n++;assert.equal(body.action.autonomousMoment,true);assert.equal(body.action.goalId,undefined);
   assert.deepEqual(body.work.budget,{modelCalls:2,toolCalls:3,tokens:9000,seconds:90,externalActions:0});
@@ -38,12 +39,12 @@ test('activity uses one durable wake, native budget and logical cycle without a 
   assert.equal((await c.repo.acceptHandoff(bot,{...source,id:'d871187b-951f-44d0-a119-06351a5fbd03',parentActionId:'e871187b-951f-44d0-a119-06351a5fbd03',eventId:'e871187b-951f-44d0-a119-06351a5fbd03'})).status,'rejected','forged parent');
  }finally{await c.stop();await f.close()}
 });
-test('busy activity skips and rearms once without a model request or 15-second poll',async()=>{
+test('busy activity retains its durable activation instead of skipping to the next interval',async()=>{
  const f=await fixture();const c=new AutonomyCoordinator(f.db,async(_b,op)=>{if(op==='snapshot')return{foregroundBusy:true};if(op==='policy')return{};throw Error('no execution')});
  try{await c.repo.configure('t','b',1,{mode:'active'});await c.tick();await c.active?.task;
  await f.db.query("UPDATE autonomy_wakes SET due_at=now()-interval '1 second' WHERE reason='activity'");await c.tick();await c.active?.task;
  assert.equal((await f.db.query('SELECT count(*)::int n FROM autonomy_cycles WHERE work_expires_at IS NOT NULL'))[0].n,0);
- const rows=await f.db.query("SELECT reason,extract(epoch FROM due_at-now()) wait FROM autonomy_wakes");assert.equal(rows.length,1);assert.equal(rows[0].reason,'activity');assert.ok(Number(rows[0].wait)>295);
+ const rows=await f.db.query("SELECT reason,extract(epoch FROM due_at-now()) wait FROM autonomy_wakes");assert.equal(rows.length,1);assert.equal(rows[0].reason,'activity');assert.ok(Number(rows[0].wait)>0&&Number(rows[0].wait)<=15);
  }finally{await c.stop();await f.close()}
 });
 test('interval cannot be less than five minutes and internal provenance is strict',()=>{
@@ -73,9 +74,10 @@ test('activity preserves IPC failure and conservative ceiling instead of reporti
 });
 
 
-test('due goals coalesce into one main activation without selecting a goal or replaying its fields',async()=>{
+test('distinct due activations retain order without selecting a goal or replaying its fields',async()=>{
  const f=await fixture();let n=0;
  const c=new AutonomyCoordinator(f.db,async(_b,op,body:any)=>{
+  if(op==='tool')return{pending:[],effects:[]};
   if(op==='policy'||op==='snapshot')return{};
   if(op==='execute'){
    n++;assert.equal(body.action.autonomousMoment,true);assert.equal(body.action.activationTrigger,'handoff-due');
@@ -95,8 +97,52 @@ test('due goals coalesce into one main activation without selecting a goal or re
   for(const method of ['experience','dueHandoffs','planHandoff'])assert.equal(method in c.repo,false,'retired history/Goal dispatch entry must not remain callable');
   await c.tick();await c.active?.task;assert.equal(n,1);
   assert.deepEqual(await f.db.query('SELECT * FROM autonomy_goals ORDER BY id'),before);
-  const rows=await f.db.query("SELECT decision FROM autonomy_cycles WHERE work_expires_at IS NOT NULL");assert.deepEqual(rows,[{decision:{reason:'autonomous_moment',receiptPending:false}}]);
+  const rows=await f.db.query("SELECT decision FROM autonomy_cycles WHERE work_expires_at IS NOT NULL");assert.deepEqual(rows,[{decision:{reason:'autonomous_moment',receiptPending:false,activationWakeConsumed:'handoff-due:'+before[0].id}}]);
   await c.tick();await c.active?.task;assert.equal(n,1,'consumed due wakes do not loop over retained goals');
+  assert.equal((await f.db.query("SELECT count(*)::int n FROM autonomy_wakes WHERE reason='handoff-due'"))[0].n,1,'another real activation remains queued');
+  await f.db.query("UPDATE autonomy_wakes SET due_at=now()-interval '1 second' WHERE reason='handoff-due'");
+  await c.tick();await c.active?.task;assert.equal(n,2);
+  assert.equal((await f.db.query("SELECT count(*)::int n FROM autonomy_wakes WHERE reason='handoff-due'"))[0].n,0);
+ }finally{await c.stop();await f.close()}
+});
+
+test('persistent DSH defers unique activations through coordinator restart and admits each once',async()=>{
+ const f=await fixture();let dsh=true,requests=0;
+ const call=async(_b:any,op:string,body:any)=>{
+  if(op==='snapshot')return{dshBusy:dsh,proactiveEnabled:true};
+  if(op==='policy')return{};
+  if(op==='tool')return{pending:[],effects:[]};
+  if(op==='execute'){requests++;return{status:'completed',continuationAccepted:true,effects:[],usage:{modelCalls:1,toolCalls:0,tokens:25}}}
+  throw Error(op);
+ };
+ let c=new AutonomyCoordinator(f.db,call);
+ try{
+  await c.repo.configure('t','b',1,{mode:'active',activityEnabled:false});
+  const bot=(await c.repo.policies())[0];
+  for(const scope of ['first','first','second'])await c.repo.wake('t','b',bot.epoch,'operator-wake',0,scope);
+  await c.tick();await c.active?.task;assert.equal(requests,0);
+  assert.deepEqual((await f.db.query("SELECT scope FROM autonomy_wakes WHERE reason='operator-wake' ORDER BY created_at,dedupe_key")).map(x=>x.scope),['first','second']);
+  await c.stop();c=new AutonomyCoordinator(f.db,call);dsh=false;
+  for(let i=1;i<=2;i++){
+   await f.db.query("UPDATE autonomy_wakes SET due_at=now()-interval '1 second'");
+   await c.tick();await c.active?.task;assert.equal(requests,i);
+  }
+  await c.tick();await c.active?.task;assert.equal(requests,2);
+  await c.repo.wake('t','b',bot.epoch,'operator-wake',0,'first');
+  await c.tick();await c.active?.task;assert.equal(requests,2,'redelivery after consumption must not start another model request');
+ }finally{await c.stop();await f.close()}
+});
+
+test('proactive off keeps a real activation queued without blocking existing social settings',async()=>{
+ const f=await fixture();const c=new AutonomyCoordinator(f.db,async(_b,op)=>{
+  if(op==='snapshot')return{proactiveEnabled:false};if(op==='policy')return{};throw Error('no new model or tool execution');
+ });
+ try{
+  await c.repo.configure('t','b',1,{mode:'active'});await c.tick();await c.active?.task;
+  const bot=(await c.repo.policies())[0];await c.repo.wake('t','b',bot.epoch,'operator-wake',0,'preserved');
+  await c.tick();await c.active?.task;
+  assert.equal((await f.db.query('SELECT count(*)::int n FROM autonomy_cycles WHERE work_expires_at IS NOT NULL'))[0].n,0);
+  assert.equal((await f.db.query("SELECT count(*)::int n FROM autonomy_wakes WHERE scope='preserved'"))[0].n,1);
  }finally{await c.stop();await f.close()}
 });
 

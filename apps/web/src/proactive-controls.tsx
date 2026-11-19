@@ -28,7 +28,7 @@ export function ProactiveControls({id,botConfig,onError,onDirtyChange,searchSect
   const lease=owner.current;if(!lease||lease.signal.aborted||writing.current||!view||kind==='wake'&&dirtyRef.current)return;setBusy(true);writing.current=true;lease.seq++;
   const keepDraft=kind==='stop'&&dirtyRef.current;
   try{
-   if(kind==='wake')await api('/bots/'+id+'/autonomous/wake',{expectedEpoch:view.settings.epoch},'POST',lease.signal);
+   if(kind==='wake')await api('/bots/'+id+'/autonomous/wake',{expectedEpoch:view.settings.epoch,requestId:crypto.randomUUID()},'POST',lease.signal);
    else await api('/bots/'+id+'/autonomous',{expectedEpoch:view.settings.epoch,config:AutonomyConfigSchema.parse(kind==='stop'?{...view.settings.config,mode:'passive',rollout:view.canConfigureShadow?view.settings.config.rollout:'live'}:config)},'PUT',lease.signal);
    if(owner.current!==lease||lease.signal.aborted)return;
    dirtyRef.current=keepDraft;setDirty(keepDraft);if(keepDraft)setConfig(c=>({...c,mode:'passive'}));setNotice(kind==='wake'?'已加入唤醒队列；离线时不会启动 QQ。':keepDraft?'主动模式已暂停，其余未保存编辑仍保留在页面。':'已保存，等待运行实例确认。QQ 连接保持运行。');

@@ -1,6 +1,7 @@
 import type {Sql} from './index.js';
 import {runtimeStatus} from '../shared/runtime-status.js';
 import {runtimeClient} from '../shared/runtime-client.js';
+import type {RuntimeCall} from '../shared/runtime-client.js';
 
 const conflict=(message:string)=>Object.assign(new Error(message),{statusCode:409});
 // QQ reservations belong to the original cycle budget, alongside model usage.
@@ -52,8 +53,8 @@ export async function qqExternalBudgetInTransaction(tx:Sql,bot:any,v:ExternalBud
   await tx.query('UPDATE autonomy_cycles SET budget=$2 WHERE id=$1',[cycle.id,JSON.stringify({...cycle.budget,qqExternalRequests:requests})]);
   return{reserved:status!=='released',status,used:await settleCycleExternal(tx,cycle)};
 }
-export async function biliWorkEffects(db:Sql,bot:string,tenant:string,workId:string){
+export async function biliWorkEffects(db:Sql,bot:string,tenant:string,workId:string,call=runtimeClient(db) as RuntimeCall){
  const [current]=await db.query('SELECT id AS bot_id,tenant_id,generation,revision FROM bots WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL',[bot,tenant]);
  if(!current)throw conflict('外部回执机器人不存在');
- return(await runtimeClient(db)(current,'tool',{operation:'effects',data:{workId}})).effects;
+ return(await call(current,'tool',{operation:'effects',data:{workId}})).effects;
 }

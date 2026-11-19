@@ -473,7 +473,7 @@ class BotPipeline:
           scope TEXT,event TEXT,subject TEXT,owner TEXT,payload TEXT,seen INTEGER DEFAULT 0,
           status TEXT,created REAL,PRIMARY KEY(scope,event))''')
         columns={r[1] for r in db.execute('PRAGMA table_info(pipeline_work_inputs)')}
-        for name,kind in (('observed_at','REAL'),('retry_count','INTEGER DEFAULT 0'),('retry_at','REAL DEFAULT 0'),('payload_sha','TEXT'),('identity','TEXT'),('addressed_self','INTEGER')):
+        for name,kind in (('observed_at','REAL'),('retry_count','INTEGER DEFAULT 0'),('retry_at','REAL DEFAULT 0'),('payload_sha','TEXT'),('identity','TEXT'),('addressed_self','INTEGER'),('voice','TEXT')):
             if name not in columns:db.execute('ALTER TABLE pipeline_work_inputs ADD COLUMN '+name+' '+kind)
         for scope,owner,pid in db.execute('SELECT scope,runtime,pid FROM pipeline_scope_work').fetchall():
             # os.kill(pid, 0) terminates processes on Windows. A read-only
@@ -647,6 +647,8 @@ class BotPipeline:
                 return valid
             observe_message(self.db,scope,str(event.get_sender_id()),raw.get('time'))
             self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,subject,owner,payload,status,created,observed_at,payload_sha,identity,addressed_self) VALUES(?,?,?,NULL,?,'pending',?,?,?,?,?)",(scope,identifier,str(event.get_sender_id()),payload,time.time(),observed,digest,binding,addressed))
+            from voice_inputs import retain
+            retain(self.db,scope,identifier,raw)
         return True
 
     def settle_refused_input(self,scope,identifier,reason='settled_refused'):

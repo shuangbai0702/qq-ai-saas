@@ -9,6 +9,7 @@ import {createMemoryMonitor,collectMemory,collectProcesses,readHostSnapshot} fro
 import {buildMemoryView} from './memory-view.js';
 import {registerBehaviorData} from './behavior-data.js';
 import {registerAutonomous} from './autonomous.js';
+import {AutonomyRepository} from '../../../packages/database/autonomous.js';
 import {registerBilibili} from './bilibili.js';
 import {getBotQuota} from './bot-quota.js';
 import {probeModel} from '../../../packages/shared/model-probe.js';
@@ -96,6 +97,7 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
  app.post('/v1/bots',{config:{rateLimit:{max:10,timeWindow:'1 minute'}}},async(req,reply)=>{const v=z.object({name:z.string().trim().min(1).max(80),protocol:ProtocolSchema.default('napcat'),runtimeMode:z.enum(['dedicated','shared']).default('shared'),expectedUin:z.string().regex(/^\d{5,20}$|^$/).default(''),config:BotConfigSchema.default(defaultConfig),apiKey:modelKeyInput}).parse(req.body);const id=randomUUID();
    await db.transaction(async tx=>{await requirePlatformCredit(v.config,req.user!.tenant_id,tx);const quota=await getBotQuota(tx,req.user!.tenant_id,true);if(!quota.canCreate)fail('机器人名额已用完（'+quota.used+'/'+quota.limit+'）。请先删除现有机器人，删除完成后再创建；停止运行不会释放名额。',409);
    await tx.query('INSERT INTO bots(id,tenant_id,name,protocol,expected_uin,runtime_mode) VALUES($1,$2,$3,$4,$5,$6)',[id,req.user!.tenant_id,v.name,v.protocol,v.expectedUin,v.runtimeMode]);await tx.query('INSERT INTO bot_config_revisions(bot_id,revision,config) VALUES($1,1,$2)',[id,JSON.stringify(v.config)]);
+   if(v.config.proactive)await new AutonomyRepository(db).enableProactive(req.user!.tenant_id,id,tx);
    await tx.query('LOCK TABLE instances IN SHARE ROW EXCLUSIVE MODE');
    const used=new Set((await tx.query('SELECT ai_port FROM instances')).map(row=>row.ai_port));const offset=Math.floor(Math.random()*4000);let port=0;for(let slot=0;slot<4000;slot++){const candidate=20000+((slot+offset)%4000)*4;if(!used.has(candidate)){port=candidate;break}}if(!port)fail('节点端口池已满，请联系管理员',503);
    await tx.query('INSERT INTO instances(bot_id,generation,ai_port,protocol_port,token) VALUES($1,0,$2,$3,$4)',[id,port,port+2,randomBytes(32).toString('hex')]);
@@ -114,7 +116,9 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
       const next=destination(v.config);
       if(saved&&destination(saved.config).some((value,index)=>value!==next[index]))fail('模型服务地址已更改，请输入对应的 API Key，或清除已保存的 Key');
      }
+     const [prior]=await tx.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[bot.id,current.revision]);
      await tx.query('INSERT INTO bot_config_revisions(bot_id,revision,config) VALUES($1,$2,$3)',[bot.id,revision,JSON.stringify(v.config)]);await tx.query('UPDATE bots SET name=$2,revision=$3,expected_uin=$4 WHERE id=$1',[bot.id,v.name,revision,v.expectedUin]);
+     if(v.config.proactive&&!prior?.config?.proactive)await new AutonomyRepository(db).enableProactive(bot.tenant_id,bot.id,tx);
      if(v.clearKey)await tx.query('DELETE FROM secrets WHERE bot_id=$1 AND tenant_id=$2',[bot.id,req.user!.tenant_id]);else if(v.apiKey)await tx.query('INSERT INTO secrets(id,tenant_id,bot_id,ciphertext) VALUES($1,$2,$3,$4) ON CONFLICT(bot_id) DO UPDATE SET ciphertext=$4,updated_at=now()',[randomUUID(),req.user!.tenant_id,bot.id,encrypt(key,`${req.user!.tenant_id}:${bot.id}`,v.apiKey)]);
      if(bot.desired_state==='running')await tx.query('INSERT INTO commands(id,bot_id,idempotency_key,generation,kind) VALUES($1,$2,$3,$4,$5)',[randomUUID(),bot.id,`config-${revision}`,bot.generation,'apply']);
      // This audit row is the backend-issued, one-use witness for a System

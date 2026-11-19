@@ -207,6 +207,8 @@ class BehaviorStore:
     def close(self):
         if getattr(self,'_closing',False):return
         self._closing=True
+        self.slot_changed.set()
+        for task in tuple(getattr(self,'_voice_inflight',{}).values()):task.cancel()
         if getattr(self,'_local_db_workers',None):
             # Invalidate publication now, but keep storage and ownership alive
             # until the local transaction has actually stopped.
@@ -922,6 +924,7 @@ def install_runtime(core,settings):
                     # shared whitelist; settle it instead of letting the
                     # recovery sweep retry it five times into blocked_recovery.
                     st.pipeline.settle_refused_input(scope,str(getattr(event.message_obj,'message_id','') or ''))
+                    st.slot_changed.set()
                     bot_pipeline.stop(event,'outside_shared_group_whitelist','silent');return
             import forwarded_messages
             await forwarded_messages.apply(event,live=lambda:current(event))
@@ -937,7 +940,9 @@ def install_runtime(core,settings):
             event.set_extra('_hosted_journal_scope',shared_context.JOURNAL_SCOPE)
             if not shared_context.included(scope,cfg,st.shared_group_limit):
                 bot_pipeline.stop(event,'outside_shared_group_whitelist','silent');return
-            if not internal and not deferred and not continuation:shared_context.observe(st.db,event,cfg,st.shared_group_limit)
+            if not internal and not deferred and not continuation:
+                shared_context.observe(st.db,event,cfg,st.shared_group_limit)
+                st.slot_changed.set()
         if not internal and not deferred and not continuation:
             import quote_reply
             quote_reply.observe(st.db,event,s,scope)
@@ -1005,7 +1010,9 @@ def install_runtime(core,settings):
             st.batches[scope]=[entry]
             flush=st.batch_flush.setdefault(scope,asyncio.Event());flush.clear()
             try:
-                if debounce>0:await asyncio.wait_for(flush.wait(),timeout=debounce)
+                first=st.db.execute("SELECT min(created) FROM pipeline_work_inputs WHERE scope=? AND seen=0 AND status IN ('pending','queued','owned')",(scope,)).fetchone()[0]
+                remaining=max(0,debounce-max(0,time.time()-(first or time.time())))
+                if remaining>0:await asyncio.wait_for(flush.wait(),timeout=remaining)
                 else:await asyncio.sleep(0)
             except asyncio.TimeoutError:pass
             except BaseException:
@@ -1530,6 +1537,9 @@ def install_runtime(core,settings):
         bound=inspect.signature(original).bind_partial(self,*args,**kwargs);event=current_message_event.get()
         if event and event.get_extra('_hosted_lease') is not None and not delivery_current(event):raise asyncio.CancelledError('stale bot configuration')
         if event and setting(event):
+            # Match the pinned SDK's own typed-Message conversion before the
+            # context view reads roles. This is serialization, not history edit.
+            bound.arguments['contexts']=self._ensure_message_to_dicts(bound.arguments.get('contexts'))
             from context_protocol import persona_prompt
             from model_cache import is_foreground_event
             foreground=is_foreground_event(event)
@@ -1989,6 +1999,11 @@ def install_runtime(core,settings):
         if not (foreground or (st.shared_context and event.get_extra('_hosted_internal_work'))):return None
         await st.model_writer.acquire()
         event.set_extra('_hosted_model_writer',st)
+        try:
+            from voice_inputs import ready
+            await ready(st,lambda:current(event) and delivery_current(event))
+        except BaseException:
+            st.model_writer.release();raise
         if not current(event) or not delivery_current(event):
             st.model_writer.release();raise asyncio.CancelledError('stale_shared_context_writer')
         if st.shared_context and foreground:
@@ -2432,9 +2447,15 @@ def install_runtime(core,settings):
             st.ingress-=1
             care.stamp(st.root)
         return completed
+    async def prepare_raw_ingress(id,raw):
+        from voice_inputs import prepare
+        lease=settings[id];st=store(id,lease)
+        platform=next(p for p in core.platform_manager.get_insts() if p.meta().id==id)
+        return await prepare(st,raw,platform.bot.call_action,lambda:settings.get(id) is lease and not getattr(st,'_closing',False))
     runtime={'manage':manage,'stores':stores,'metrics':metrics,'release':release,'close':close,'autonomous':brain.handle,'drain':brain.drain,'activity':lambda:care.status(core),'settle_work_round':settle_work_round,'retain_ingress':retain_ingress,'acquire_raw_ingress':acquire_raw_ingress}
     from model_cache import loaded_build
     runtime['build']=loaded_build()
+    runtime['prepare_raw_ingress']=prepare_raw_ingress
     print('FISHBOT_RUNTIME_BUILD '+model_json(runtime['build']),flush=True)
     core._hosted_runtime_binding={'settings':settings,'runtime':runtime,'closed':False}
     return runtime

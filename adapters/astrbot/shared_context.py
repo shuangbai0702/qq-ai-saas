@@ -283,6 +283,11 @@ def queued(db,cfg,journal,group_limit=2,current=None):
         selected.update(row[0] for row in items if (row[1],row[2]) in required)
         discarded.extend(row[0] for row in items if row[0] not in selected)
     rows=[row for row in rows if not row[1].startswith('group:') or row[0] in selected]
+    if has_inputs:
+        # Queue ids follow SDK preparation, not original arrival (voice may
+        # finish after text). Only NEW additions are ordered; never the base.
+        order={(s,e):(at,rid) for s,e,at,rid in db.execute('SELECT i.scope,i.event,i.created,i.rowid FROM pipeline_work_inputs i JOIN fishbot_shared_inputs q ON q.scope=i.scope AND q.event=i.event')}
+        rows.sort(key=lambda row:order.get((row[1],row[2]),(float('inf'),row[0])))
     result=[]
     for _,scope,event,raw in rows:
         if included(scope,cfg,group_limit) and (scope,event) not in known:

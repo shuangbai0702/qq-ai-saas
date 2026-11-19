@@ -45,10 +45,10 @@ export function registerAutonomous(app:FastifyInstance,db:Sql,owned:(req:any,id:
   try{return await repo.configure(bot.tenant_id,bot.id,body.expectedEpoch,body.config)}catch(error){if(error instanceof AutonomyConflict)throw Object.assign(error,{statusCode:409});throw error}
  });
  app.post<{Params:{id:string}}>('/v1/bots/:id/autonomous/wake',async req=>{
-  const bot=await owned(req,req.params.id);const body=z.object({expectedEpoch:z.number().int().positive()}).strict().parse(req.body),s=await repo.ensure(bot.tenant_id,bot.id);
+  const bot=await owned(req,req.params.id);const body=z.object({expectedEpoch:z.number().int().positive(),requestId:z.string().uuid().optional()}).strict().parse(req.body),s=await repo.ensure(bot.tenant_id,bot.id);
   if(s.epoch!==body.expectedEpoch||s.config.mode!=='active')throw Object.assign(new Error('自主模式已变化，请刷新'),{statusCode:409});
   // Offline wake persists, but claim() never creates or starts a QQ runtime.
-  await repo.wake(bot.tenant_id,bot.id,s.epoch,'operator-wake',0);return{queued:true,startsQQ:false};
+  await repo.wake(bot.tenant_id,bot.id,s.epoch,'operator-wake',0,body.requestId??String(req.id));return{queued:true,startsQQ:false};
  });
  app.post<{Params:{id:string}}>('/v1/bots/:id/autonomous/goals',async req=>{
   const bot=await owned(req,req.params.id);

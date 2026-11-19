@@ -46,7 +46,8 @@ async def main():
         if hasattr(platform,'convert_message'):
             bind_ingress(platform,lambda raw:behavior['acquire_raw_ingress']('qq',raw),
                 lambda raw:(not manifest.get('expectedUin') or str(raw.get('self_id'))==str(manifest['expectedUin']))
-                and admitted(raw,manifest.get('config',{})))
+                and admitted(raw,manifest.get('config',{})),
+                prepare=lambda raw:behavior['prepare_raw_ingress']('qq',raw))
     stop=asyncio.Event()
     async def health(request):
         if request.headers.get('Authorization')!='Bearer '+manifest['token']:raise web.HTTPUnauthorized()

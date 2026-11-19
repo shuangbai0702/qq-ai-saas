@@ -59,11 +59,14 @@ class DshCompletion(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await bilibili_tools.resume_completion(core,'bot',self.settings,SimpleNamespace(db=self.db),{'bot':self.settings}))
         return events
     async def test_completion_branch_delivers_only_final_text_in_original_event(self):
+        self.assertTrue(pipeline_tools.dsh_busy(self.db),'claimed DSH completion still owns its original responsibility')
         events=await self.complete();self.assertEqual(len(events),1)
         prompt=events[0].message_obj.message_str
         self.assertIn('已核实的视频结论',prompt);self.assertNotIn('raw objective',prompt);self.assertNotIn('private media',prompt)
         self.assertNotIn('toolResult',prompt);self.assertEqual(events[0].extra['_hosted_tool_completion']['id'],self.item['id'])
         self.assertEqual(self.acks,[])
+        pipeline_tools.acknowledge(self.pipeline,self.item['id'],self.item['owner'],'done')
+        self.assertFalse(pipeline_tools.dsh_busy(self.db),'settled completion releases autonomous admission')
     async def test_completion_branch_pending_ack_and_error_release(self):
         self.frames=[{'type':'tool','id':'forbidden'}];self.assertEqual(await self.complete(),[])
         self.assertEqual(self.acks[-1]['status'],'pending')

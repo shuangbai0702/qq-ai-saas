@@ -10,7 +10,7 @@ export function AutonomyControls({config,onChange,kind,metrics}:Props){
  const normalized=(b.groupParticipationGroups||[]).join(', '),[groups,setGroups]=useState(normalized),input=useRef<HTMLInputElement>(null);
  useEffect(()=>{if(document.activeElement!==input.current)setGroups(normalized)},[normalized]);
  if(kind==='owner')return <section className="panel" aria-label="定时关心主人"><h2>定时判断是否找主人聊天</h2><p>主人联系由自己的开关控制，独立于主动模式与群聊参与。仍遵守安静时段、每小时发送总额、每日联系额度和未回应保护。</p>
-  <label className="toggle-row"><div><b>主动模式</b><small>控制模型自发登记的后台研究及普通定时联系；主人联系、群聊参与各用自己的开关。关闭后保留用户已授权的持久提醒。</small></div><input aria-label="主动模式" type="checkbox" checked={config.proactive} onChange={e=>onChange({...config,proactive:e.target.checked})}/></label>
+  <label className="toggle-row"><div><b>主动模式</b><small>控制真正的自主激活，由主AI自行决定行动或休息；主人联系、群聊参与各用自己的开关。关闭不丢弃原工具回执。</small></div><input aria-label="主动模式" type="checkbox" checked={config.proactive} onChange={e=>onChange({...config,proactive:e.target.checked})}/></label>
   <label className="toggle-row"><div><b>定时关心主人</b><small>只向设置的主人发起私聊，需已有真实私聊记录。模型判断有自然动机才发；不使用主动联系概率抽签。</small></div><input aria-label="定时关心主人" type="checkbox" checked={b.ownerContactEnabled??behaviorDefaults.ownerContactEnabled} onChange={e=>update({ownerContactEnabled:e.target.checked})}/></label>
   <p>主人身份在人格与主人中统一设置；这里保留联系人判断条件。</p>
   {(b.ownerContactEnabled===false||!b.ownerUin||b.enabled===false)&&<p className="notice">暂不执行：{b.enabled===false?'聊天总开关已关闭':b.ownerContactEnabled===false?'定时关心主人已关闭':'尚未设置主人 QQ'}。设置的偏好会保留。</p>}

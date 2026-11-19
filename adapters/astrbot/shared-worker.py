@@ -179,7 +179,8 @@ async def main():
                 and (not member.get('uin') or str(raw.get('self_id'))==str(member['uin']))
                 and admitted(raw,behavior_settings[id]['config'])
                 and (not member['modelConfigured'] or 'provider-'+id in core.provider_manager.inst_map))
-        bind_ingress(platform,lambda raw:behavior['acquire_raw_ingress'](id,raw),raw_allowed,lambda:stop_fence.quiescing)
+        bind_ingress(platform,lambda raw:behavior['acquire_raw_ingress'](id,raw),raw_allowed,lambda:stop_fence.quiescing,
+            prepare=lambda raw:behavior['prepare_raw_ingress'](id,raw))
         core.event_bus.stopped_platforms.discard(id)
         errors.pop(id,None)
     @web.middleware
