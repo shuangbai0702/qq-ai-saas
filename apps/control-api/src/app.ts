@@ -44,7 +44,9 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
  app.addHook('onSend',async(req,reply,payload)=>{reply.header('X-Content-Type-Options','nosniff').header('Referrer-Policy','same-origin').header('X-Frame-Options','DENY').header('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");if(req.url.startsWith('/v1/'))reply.header('Cache-Control','no-store');return payload});
  app.addHook('preClose',async()=>{for(const stream of streams)stream.end();streams.clear()});
  app.setErrorHandler((error:any,request,reply)=>{const status=error instanceof z.ZodError?400:error.statusCode;const code=Number.isInteger(status)&&status>=400&&status<600?status:500;reply.code(code).send({error:code>=500?'服务器处理失败，请查看管理员日志':redact(error instanceof z.ZodError?error.issues.map(x=>x.message).join('；'):error.message)});if(code>=500)app.log.error({message:redact(error.message),code:error.code},'request failed')});
- app.addHook('onRequest',async(req,reply)=>{
+ // Route onRequest rate limits run before authentication, including rejected
+ // sessions. Authentication still completes before any request body is parsed.
+ const authenticate=async(req:import('fastify').FastifyRequest,reply:import('fastify').FastifyReply)=>{
    const route=req.routeOptions.url;
    if(!route?.startsWith('/v1/')&&!req.url.startsWith('/v1/'))return;
    const origin=req.headers.origin;const allowed=new Set([process.env.APP_ORIGIN||'http://127.0.0.1:5173',`http://127.0.0.1:${process.env.PORT||8787}`]);
@@ -52,7 +54,8 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
    if(['/v1/auth/register','/v1/auth/login','/v1/health',platformModelPath+'/chat/completions'].includes(route??''))return;
    const token=req.cookies.fish_session;if(!token)throw Object.assign(new Error('请先登录'),{statusCode:401});
    const [user]=await db.query('SELECT u.id,u.email,u.name,u.is_admin,m.tenant_id FROM sessions s JOIN users u ON u.id=s.user_id JOIN memberships m ON m.user_id=u.id WHERE s.id=$1 AND s.expires_at>now()',[digest(token)]);if(!user)throw Object.assign(new Error('登录已失效'),{statusCode:401});req.user=user;
- });
+ };
+ app.addHook('preParsing',async(req,reply,payload)=>{await authenticate(req,reply);return payload});
  const fail=(message:string,statusCode=400)=>{throw Object.assign(new Error(message),{statusCode})};
  async function owned(req:any,id:string,tx:Sql=db){if(!z.uuid().safeParse(id).success)fail('资源不存在',404);const [bot]=await tx.query('SELECT b.*,q.qq_uin FROM bots b LEFT JOIN qq_bindings q ON q.bot_id=b.id WHERE b.id=$1 AND b.tenant_id=$2 AND b.deleted_at IS NULL',[id,req.user.tenant_id]);if(!bot)fail('机器人不存在',404);return bot}
  async function audit(req:any,event:string,botId?:string){await db.query('INSERT INTO audit_events(tenant_id,event,bot_id) VALUES($1,$2,$3)',[req.user.tenant_id,event,botId||null])}

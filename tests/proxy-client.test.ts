@@ -31,4 +31,9 @@ test('one edge client cannot exhaust another client login quota',async t=>{
  assert.equal((await login('203.0.113.1')).statusCode,429);
  assert.equal((await login('203.0.113.2')).statusCode,401);
  assert.equal((await app.inject('/v1/health')).statusCode,200);
+ // Invalid sessions must not skip the global limiter or keep querying the DB.
+ const headers={...signed('203.0.113.3'),cookie:'fish_session=synthetic-invalid-session'};
+ for(let n=0;n<180;n++)assert.equal((await app.inject({url:'/v1/auth/me',headers})).statusCode,401);
+ assert.equal((await app.inject({url:'/v1/auth/me',headers})).statusCode,429);
+ assert.equal((await app.inject({url:'/v1/auth/me',headers:signed('203.0.113.4')})).statusCode,401);
 });
