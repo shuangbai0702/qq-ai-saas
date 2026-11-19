@@ -24,7 +24,7 @@ const entries=[
  ['QQ内置表情','config/faces','允许QQ内置表情','小黄脸 原生表情'],
  ['标准模式主动联系','config/proactive','定时关心主人','找主人 主动私聊 定时'],
  ['群判断间隔','config/chat','群判断最短间隔（分钟）','冷却 群聊 判定'],
- ['主动模式','autonomous/settings','主动行为模式','自主 外层 目标 休眠 唤醒'],
+ ['主动模式','autonomous','开启主动模式','自主 外层 目标 休眠 唤醒'],
  ['自主思考间隔','autonomous/settings','自主活动间隔（分钟）','主动模式 定时 休眠'],
  ['B站账号与工具','bilibili','启用B站工具','bilibili 登录 扫码 绑定'],
  ['B站合集与系列','bilibili/permissions','公开视频、搜索与字幕','视频 分P 合集'],
