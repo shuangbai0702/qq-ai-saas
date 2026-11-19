@@ -96,6 +96,21 @@ export function installResilienceRuntime(agent:NodeAgent,release:string,heartbea
  return{pid:process.pid,release,agentOwnerPreserved:true,heartbeatQueuePreserved:true};
 }
 
+/** Refresh process inspection only; keep Agent, QQ, AI and existing queues. */
+export async function installProcessInspectionRuntime(agent:NodeAgent,release:string){
+ if(!/^[a-f0-9]{64}$/.test(release)||agent.closed)throw new Error('Invalid process inspection release');
+ const timer=agent.timer;if(timer)clearInterval(timer);agent.timer=undefined;
+ const host=agent.host as any,names=['helper','beginInspection','inspect'],previous=names.map(name=>host[name]);
+ try{
+  const deadline=Date.now()+20000;
+  while(controlBusy(agent)&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
+  if(controlBusy(agent)||agent.closed)throw new Error('Agent did not reach process inspection boundary');
+  for(const name of names)host[name]=(ProcessHost.prototype as any)[name];
+  return{pid:process.pid,release,agentOwnerPreserved:true,processOwnersPreserved:true};
+ }catch(error){names.forEach((name,index)=>host[name]=previous[index]);throw error}
+ finally{if(timer&&!agent.closed){agent.timer=setInterval(()=>void agent.tick().catch(error=>console.error('agent tick:',redact(String(error)))),500);agent.timer.unref()}}
+}
+
 /** Refresh only trusted frontend configuration transport; retain all owners. */
 export async function installForegroundContextRuntime(agent:NodeAgent,release:string){
  if(!/^[a-f0-9]{64}$/.test(release)||agent.closed)throw new Error('Invalid foreground release');

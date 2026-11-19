@@ -66,6 +66,7 @@ def inspect(pid,root,created=None):
             except psutil.NoSuchProcess:pass
         return {'valid':True,'pid':pid,'rssBytes':rss,'processCount':count,'created':p.create_time(),'loopActivity':loop_activity(root,[p,*children])}
     except psutil.NoSuchProcess:return {'valid':False}
+    except psutil.AccessDenied:return {'valid':False,'inspectionError':'access_denied'}
 
 def stop_tree(process):
     try: children=process.children(recursive=True)
@@ -93,4 +94,8 @@ def main():
     if process is None:return 2 if psutil.pid_exists(pid) else 0
     return 0 if stop_tree(process) else 3
 
-if __name__=='__main__':sys.exit(main())
+if __name__=='__main__':
+    try:sys.exit(main())
+    except psutil.AccessDenied:
+        print('Process access denied; check the Agent and process service identities.',file=sys.stderr)
+        sys.exit(1)

@@ -27,14 +27,14 @@ export class ProcessHost {
     }).finally(()=>{this.memorySweep=undefined});
     return this.memorySweep;
   }
-  private helper(args:string[],input?:string,script='process_control.py',timeout=15000){return new Promise<string>((resolve,reject)=>{const child=execFile(this.python,['-B',path.resolve('scripts',script),...args],{windowsHide:true,timeout,maxBuffer:1024*1024},(error,stdout)=>error?reject(error):resolve(stdout));if(input){child.stdin?.on('error',reject);child.stdin?.end(input)}})}
+  private helper(args:string[],input?:string,script='process_control.py',timeout=15000){return new Promise<string>((resolve,reject)=>{const child=execFile(this.python,['-B',path.resolve('scripts',script),...args],{windowsHide:true,timeout,maxBuffer:1024*1024},(error,stdout)=>error?reject(new Error('进程管理检查或操作失败，请管理员检查服务运行身份及服务日志。')):resolve(stdout));if(input){child.stdin?.on('error',reject);child.stdin?.end(input)}})}
   // One short-lived interpreter for an entire health sweep, not one per probe.
   // The cache never spans a command, start/stop, or another health sweep.
-  async beginInspection(){const records=[];for(const id of await readdir(path.join(this.root,'bots')).catch(()=>[])){for(const kind of ['ai','protocol']){const rec=await this.record(id,kind);if(rec)records.push({id,kind,pid:rec.pid,created:rec.created,root:path.join(this.root,'bots',id)})}}const values=JSON.parse(await this.helper(['batch'],JSON.stringify(records)));await this.maintainMemory(records);this.inspection=new Map(values.map((v:any)=>[`${v.id}:${v.kind}`,v.valid?{...v,memoryPolicy:this.memoryStatus.get(`${v.id}:${v.kind}`)}:null]))}
+  async beginInspection(){const records=[];for(const id of await readdir(path.join(this.root,'bots')).catch(()=>[])){for(const kind of ['ai','protocol']){const rec=await this.record(id,kind);if(rec)records.push({id,kind,pid:rec.pid,created:rec.created,root:path.join(this.root,'bots',id)})}}const values=JSON.parse(await this.helper(['batch'],JSON.stringify(records)));await this.maintainMemory(records);this.inspection=new Map(values.map((v:any)=>[`${v.id}:${v.kind}`,v.inspectionError?v:v.valid?{...v,memoryPolicy:this.memoryStatus.get(`${v.id}:${v.kind}`)}:null]))}
   endInspection(){this.inspection=undefined}
   file(id:string,kind:string){return path.join(this.root,'bots',id,`${kind}.process.json`)}
   async record(id:string,kind:string){try{return JSON.parse(await readFile(this.file(id,kind),'utf8'))}catch{return null}}
-  async inspect(id:string,kind:string){if(this.inspection)return this.inspection.get(`${id}:${kind}`)||null;const rec=await this.record(id,kind);if(!rec)return null;const v=JSON.parse(await this.helper(['inspect',String(rec.pid),path.join(this.root,'bots',id),String(rec.created??'unknown')]));return v.valid?{...v,memoryPolicy:this.memoryStatus.get(`${id}:${kind}`)}:null}
+  async inspect(id:string,kind:string){let v;if(this.inspection)v=this.inspection.get(`${id}:${kind}`);else{const rec=await this.record(id,kind);if(!rec)return null;v=JSON.parse(await this.helper(['inspect',String(rec.pid),path.join(this.root,'bots',id),String(rec.created??'unknown')]))}if(v?.inspectionError)throw new Error('无法核实进程归属：服务运行身份无权读取该进程。请管理员通过原 Agent 恢复，未启动或停止进程。');return v?.valid?{...v,memoryPolicy:this.memoryStatus.get(`${id}:${kind}`)}:null}
   async start(id:string,kind:string,executable:string,args:string[],cwd:string,env:NodeJS.ProcessEnv,keys:string[]=[]){
     this.endInspection();
     if(await this.inspect(id,kind))return;

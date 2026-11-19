@@ -18,3 +18,14 @@ export function runtimeStatus(bot:any,now=Date.now()){
  const available=!bot?.deleted_at&&bot?.desired_state==='running';
  return{fresh,online:fresh&&available&&bot?.health?.protocol?.online===true,aiReady:fresh&&available&&bot?.health?.ai?.ready===true,aiAlive:fresh&&available&&bot?.health?.ai?.alive===true};
 }
+
+// A recent health sample can still carry an upstream online flag while a real
+// send has no receipt. Describe the last send; never claim an account is banned
+// or offline, nor let this observation authorize a retry or process restart.
+export function deliveryWarning(bot:any,now=Date.now()){
+ const runtime=runtimeStatus(bot,now),delivery=bot?.health?.ai?.metrics?.lastDelivery;
+ if(!runtime.fresh||!runtime.online||!Number.isFinite(delivery?.at)||delivery.at*1000>now+HEALTH_FUTURE_SKEW_MS)return null;
+ if(delivery.status==='rejected'&&delivery.reason==='qq_write_restricted')return 'QQ 上次发送被限制';
+ if(delivery.status==='unknown'&&delivery.reason==='qq_send_unconfirmed')return 'QQ 上次发送未确认';
+ return null;
+}
