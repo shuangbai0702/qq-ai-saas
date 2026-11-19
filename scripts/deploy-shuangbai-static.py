@@ -47,6 +47,10 @@ def main():
         print('Uploaded bucket',i+1,'of',len(upload['buckets']),flush=True)
     if not completion:raise RuntimeError('Missing upload completion token')
     metadata={key:settings[key] for key in ('compatibility_date','compatibility_flags','usage_model','bindings','tail_consumers','logpush','placement','tags') if key in settings}
+    # Settings redact secret values. Preserve them server-side instead of
+    # resubmitting valueless secret bindings during a later static deployment.
+    metadata['keep_bindings']=['secret_text','secret_key']
+    metadata['bindings']=[binding for binding in metadata.get('bindings',[]) if binding['type'] not in metadata['keep_bindings']]
     if args.upstream_origin:
         from urllib.parse import urlsplit
         origin=urlsplit(args.upstream_origin)
