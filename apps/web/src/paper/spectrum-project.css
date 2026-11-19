@@ -288,3 +288,15 @@ body.paper-app.paper-spectrum :is(.admin-tabs button,.auth-form .switch button,[
   opacity:var(--selection-fill);
   pointer-events:none;
 }
+.feedback-group {
+  position: relative;
+  z-index: 1;
+  padding: 8px 16px;
+  color: var(--ink, #25434b);
+  background: linear-gradient(100deg, #b9e1dc30, #d8cee32b, #b9d8ec30);
+  border-bottom: 1px solid #718f9526;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.feedback-group strong { white-space: nowrap; user-select: text; }

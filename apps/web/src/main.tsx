@@ -39,7 +39,7 @@ async function start(){
   try{const response=await fetch('/v1/health',{signal:controller.signal});const info=await response.json();const target=new URL(info.publicOrigin);if(target.protocol==='https:'&&target.origin!==location.origin){target.pathname=location.pathname;target.search=location.search;target.hash=location.hash;location.replace(target.href);return}}catch{/* The UI offers its own connection retry. */}finally{clearTimeout(timer)}
  }
  applySpectrumTheme(document.body);
- createRoot(document.getElementById('root')!).render(<ScreenBoundary><App/></ScreenBoundary>);
+ createRoot(document.getElementById('root')!).render(<><aside className="feedback-group" aria-label="问题反馈">有问题或建议？欢迎加入 QQ 反馈群：<strong>176138627</strong></aside><ScreenBoundary><App/></ScreenBoundary></>);
  // Touch uses the same painter with a lightweight renderer; reduced motion is handled by its clock.
  setTimeout(()=>{void import('./paper/start').then(({startPaper})=>startPaper()).catch(()=>{/* Business UI stays available. */})},2000);
 }
