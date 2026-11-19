@@ -145,6 +145,16 @@ def start_runner(root, token):
         subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, start_new_session=True)
         return
+    # A Windows venv redirector owns another kill-on-close job. Bypass it so
+    # the short launcher can exit without killing the protocol it handed off.
+    # Preserve this interpreter's module paths (including venv dependencies).
+    bootstrap = (
+        'import runpy,sys;'
+        f'sys.path[:]={list(map(os.path.abspath, sys.path))!r};'
+        'sys.argv=sys.argv[1:];'
+        "runpy.run_path(sys.argv[0],run_name='__main__')"
+    )
+    args = [sys._base_executable, '-B', '-c', bootstrap, *args[2:]]
     # WMI creates the runner outside the calling Agent and Supervisor jobs.
     # The command contains only the private directory and a launch nonce.
     ps = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
@@ -260,8 +270,8 @@ def own_process_tree(cgroup):
         spec.loader.exec_module(module)
         job = module.WindowsJob()
         job.assign()
-        # The Job handle belongs only to this runner and is closed by the OS
-        # when it exits, which also cleans any surviving protocol descendants.
+        # Generic protocols keep this owner resident. Node receives its own
+        # non-inheritable copy before this runner exits.
         return job
     if cgroup:
         group = Path(cgroup['root']) / cgroup['id']
@@ -320,6 +330,70 @@ def enqueue(output, text):
         pass
 
 
+def handoff_node(root, token, config, job):
+    """The existing Node owns its Job; this launcher has no resident work.
+
+    This process already belongs to the private Job before Popen, so Windows
+    atomically puts the child in that Job too. No suspended/orphan interval.
+    Until the ownership transfer completes the preload only waits on stdin:
+    launcher death either closes the last Job handle or delivers EOF without
+    a valid grant, causing Node to exit. The copied handle is NOT inheritable.
+    """
+    import _winapi
+
+    bootstrap = Path(__file__).with_name('protocol-node-runtime.mjs').resolve()
+    child = subprocess.Popen(
+        [config['executable'], '--import', bootstrap.as_uri(), *config['args']],
+        cwd=config['cwd'], env=config['env'], stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        creationflags=subprocess.DETACHED_PROCESS, close_fds=True,
+    )
+    try:
+        # Wait for the preload's JS runtime before copying an external handle.
+        # An early CRT/libuv stdio initialization can close a low-numbered
+        # handle copied into a process that has not initialized yet.
+        child.stdin.write(json.dumps(dict(root=str(root), token=token)).encode('utf-8') + b'\n')
+        child.stdin.flush()
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            pending = read_json(root / REQUEST)
+            if pending and pending.get('token') == token and pending.get('readyPid') == child.pid:
+                break
+            if child.poll() is not None:
+                raise ProtocolError('Protocol preload exited before ownership transfer')
+            time.sleep(.025)
+        else:
+            raise ProtocolError('Protocol preload did not accept ownership transfer')
+        _winapi.DuplicateHandle(
+            _winapi.GetCurrentProcess(), job.handle, int(child._handle),
+            0, False, _winapi.DUPLICATE_SAME_ACCESS,
+        )
+        identity = psutil.Process(child.pid)
+        created = identity.create_time()
+        grant = json.dumps(dict(root=str(root), pid=child.pid, created=created,
+                                authority=config.get('authority'), keys=config['keys'])).encode('utf-8')
+        if len(grant) > 65536:
+            raise ProtocolError('Protocol startup grant is too large')
+        atomic_json(root / RECORD, dict(pid=child.pid, created=created,
+                    startedAt=datetime.now(timezone.utc).isoformat(), kind='protocol'))
+        child.stdin.write(grant)
+        child.stdin.close()
+        # Node holds the only lasting handle after Python exits. Do not make
+        # its grandchildren inherit that handle: Node death must clean them.
+    except BaseException:
+        try:
+            child.stdin.close()
+        except OSError:
+            pass
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=5)
+        record = read_json(root / RECORD)
+        if record and record.get('pid') == child.pid:
+            (root / RECORD).unlink(missing_ok=True)
+        raise
+
+
 def run(root, token):
     ticket = root / REQUEST
     file = root / RECORD
@@ -333,8 +407,11 @@ def run(root, token):
             config = decode_request(pending['config'])
             if not authority_matches(config['authority']):
                 raise ProtocolError('Protocol execution authority expired before launch')
-            # The Windows Job stays alive for the duration of the runner.
+            # Establish ownership before creating any protocol child.
             job = own_process_tree(config.get('cgroup'))
+            if WINDOWS and Path(config['executable']).name.lower() in ('node', 'node.exe'):
+                handoff_node(root, token, config, job)
+                return
             identity = psutil.Process()
             child = subprocess.Popen(
                 [config['executable'], *config['args']],

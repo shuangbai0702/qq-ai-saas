@@ -1,6 +1,7 @@
 import ctypes
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -15,6 +16,7 @@ PROTOCOL = ROOT / 'scripts/protocol_process.py'
 CONTROL = ROOT / 'scripts/process_control.py'
 SUPERVISOR = ROOT / 'scripts/windows-production-supervisor.py'
 SECRET = 'synthetic-private-key'
+NODE = os.environ.get('FISHBOT_TEST_NODE') or shutil.which('node')
 
 
 @unittest.skipUnless(os.name == 'nt', 'requires Windows Job Objects and local WMI')
@@ -180,6 +182,43 @@ class WindowsProtocolLifecycle(unittest.TestCase):
         qq.wait(timeout=5)
         grandchild.wait(timeout=5)
         self.assertIn('execution authority revoked', self.runtime_log.read_text(encoding='utf-8'))
+
+
+@unittest.skipUnless(os.name == 'nt' and NODE, 'requires Windows and Node')
+class WindowsNodeProtocolLifecycle(WindowsProtocolLifecycle):
+    def setUp(self):
+        super().setUp()
+        self.worker = self.bot / 'protocol-worker.mjs'
+        self.worker.write_text(
+            "import fs from 'node:fs';import {spawn} from 'node:child_process';\n"
+            "const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});\n"
+            "fs.writeFileSync(process.argv[2],String(child.pid));\n"
+            "process.stdout.write('synthetic-');setTimeout(()=>{process.stdout.write('private-key\\n');"
+            "console.log('x'.repeat(70000)+process.env.FIXTURE_SECRET);console.log('protocol ready')},100);\n"
+            "setInterval(()=>console.log('protocol heartbeat'),100);\n",
+            encoding='utf-8',
+        )
+        self.config.update(executable=str(Path(NODE).resolve()),
+                           args=[str(self.worker), str(self.grandchild)])
+
+    def record(self):
+        record = super().record()
+        process = psutil.Process(record['pid'])
+        self.assertEqual(process.name().lower(), 'node.exe')
+        self.assertFalse(any(p.name().lower() in ('python.exe', 'conhost.exe')
+                             for p in process.children(recursive=True)))
+        return record
+
+    def test_node_crash_cleans_descendants_without_a_resident_launcher(self):
+        self.call('start')
+        node = psutil.Process(self.record()['pid'])
+        child = psutil.Process(self.wait_for(lambda: int(self.grandchild.read_text())))
+        self.wait_for(lambda: 'protocol ready' in self.runtime_log.read_text(encoding='utf-8'))
+        node.kill()
+        node.wait(timeout=5)
+        child.wait(timeout=5)
+        self.call('start')
+        self.assertNotEqual(self.record()['pid'], node.pid)
 
 
 if __name__ == '__main__':
