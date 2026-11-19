@@ -10,6 +10,18 @@ const CACHE_MS = 30000;
 
 let cached = { url: null, at: 0 };
 
+async function signClient(headers, request, secret) {
+  const ip = request.headers.get('cf-connecting-ip');
+  if (!secret || !ip) return;
+  const at = String(Date.now());
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey('raw', encoder.encode(secret), {name: 'HMAC', hash: 'SHA-256'}, false, ['sign']);
+  const signed = await crypto.subtle.sign('HMAC', key, encoder.encode(at + '\n' + ip));
+  headers.set('x-fishbot-client-ip', ip);
+  headers.set('x-fishbot-client-at', at);
+  headers.set('x-fishbot-client-signature', Array.from(new Uint8Array(signed), b => b.toString(16).padStart(2, '0')).join(''));
+}
+
 // Only Vite's public, content-hashed JS/CSS may be shared across visitors.
 // HTML, API responses, query variants and authenticated requests stay on origin.
 function assetCacheKey(request) {
@@ -59,6 +71,10 @@ async function resolveUpstream() {
 
 export default {
   async fetch(request, env, ctx) {
+    // Runtime IPC has its own bearer authentication and is never a web API.
+    if (/^\/internal(?:\/|$)/i.test(new URL(request.url).pathname)) {
+      return new Response('Not found', {status: 404, headers: {'cache-control': 'no-store'}});
+    }
     const key = assetCacheKey(request);
     const edgeCache = key ? caches.default : null;
     if (edgeCache) {
@@ -88,6 +104,8 @@ export default {
       headers.delete('if-modified-since');
     }
     ['host', 'cf-connecting-ip', 'cf-ipcountry', 'cf-ray', 'cf-visitor', 'forwarded', 'x-forwarded-for', 'x-forwarded-host'].forEach((h) => headers.delete(h));
+    ['x-fishbot-client-ip', 'x-fishbot-client-at', 'x-fishbot-client-signature'].forEach(h => headers.delete(h));
+    await signClient(headers, request, env.FISHBOT_PROXY_SECRET);
     headers.set('x-forwarded-proto', 'https');
 
     const init = { method: request.method, headers, redirect: 'manual' };

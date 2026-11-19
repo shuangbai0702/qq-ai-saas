@@ -1,4 +1,5 @@
 import {registerActivities} from './activities.js';
+import {proxyClientIp} from './proxy-client.js';
 import {lockOwnedBot,revokeLoginSessions} from './bot-access.js';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
@@ -26,7 +27,7 @@ import {createPlatformModels} from './platform-models-admin.js';
 import {modelCredentialDestination} from '../../../packages/shared/model-http.js';
 import {platformModelPath} from '../../../packages/shared/platform-model.js';
 import Fastify from 'fastify';import cookie from '@fastify/cookie';import rateLimit from '@fastify/rate-limit';import serveStatic from '@fastify/static';import {z} from 'zod';
-import {randomBytes,randomUUID} from 'node:crypto';import path from 'node:path';import os from 'node:os';import {mkdir,access,open} from 'node:fs/promises';import QRCode from 'qrcode';
+import {randomBytes,randomUUID} from 'node:crypto';import path from 'node:path';import os from 'node:os';import {mkdir,access,open,readFile} from 'node:fs/promises';import QRCode from 'qrcode';
 import {openDatabase,configuredDatabaseUrl,type Sql} from '../../../packages/database/index.js';import {hashPassword,verifyPassword,digest,loadKey,encrypt,redact} from '../../../packages/shared/security.js';import {defaultConfig,BotConfigSchema,ProtocolSchema,personas,terminalLogin} from '../../../packages/contracts/index.js';import {NodeAgent} from '../../node-agent/src/agent.js';import {MockProtocolAdapter} from '../../../adapters/mock/index.js';
 declare module 'fastify'{interface FastifyRequest{user?:{id:string;email:string;name:string;is_admin:boolean;tenant_id:string}}}
 const modelKeyInput=z.string().trim().max(4096).regex(/^[^\s\x00-\x1f\x7f]*$/,'Key 不能包含空格或控制字符').optional();
@@ -35,7 +36,11 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
  const root=path.resolve(options.root||process.env.DATA_ROOT||'.local');await mkdir(root,{recursive:true});
  const databaseUrl=options.databaseUrl??await configuredDatabaseUrl();const db=await openDatabase(root,databaseUrl);let key:Buffer;try{key=await loadKey(root,{createIfMissing:!(await db.query('SELECT 1 FROM secrets UNION ALL SELECT 1 FROM bilibili_accounts UNION ALL SELECT 1 FROM bilibili_settings WHERE model_secret IS NOT NULL UNION ALL SELECT 1 FROM bilibili_logins WHERE secret<>\'\' LIMIT 1')).length})}catch(error){await db.close();throw error}const agent=new NodeAgent(db,root,key);
  const streams=new Set<import('node:http').ServerResponse>();const streamOwners=new Map<string,number>();
- const app=Fastify({logger:options.logger??false,bodyLimit:65536});await app.register(cookie);await app.register(rateLimit,{max:180,timeWindow:'1 minute'});
+ const proxySecret=process.env.FISHBOT_PROXY_SECRET||await readFile(path.join(root,'proxy-client.key'),'utf8').then(s=>s.trim()).catch(error=>{if(error.code==='ENOENT')return undefined;throw error});
+ const app=Fastify({logger:options.logger??false,bodyLimit:65536});await app.register(cookie);await app.register(rateLimit,{max:180,timeWindow:'1 minute',keyGenerator:req=>{
+  const client=proxyClientIp(req.headers,proxySecret);
+  return (req.routeOptions.url==='/v1/health'?'health:':'request:')+(client||req.ip);
+ }});
  app.addHook('onSend',async(req,reply,payload)=>{reply.header('X-Content-Type-Options','nosniff').header('Referrer-Policy','same-origin').header('X-Frame-Options','DENY').header('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");if(req.url.startsWith('/v1/'))reply.header('Cache-Control','no-store');return payload});
  app.addHook('preClose',async()=>{for(const stream of streams)stream.end();streams.clear()});
  app.setErrorHandler((error:any,request,reply)=>{const status=error instanceof z.ZodError?400:error.statusCode;const code=Number.isInteger(status)&&status>=400&&status<600?status:500;reply.code(code).send({error:code>=500?'服务器处理失败，请查看管理员日志':redact(error instanceof z.ZodError?error.issues.map(x=>x.message).join('；'):error.message)});if(code>=500)app.log.error({message:redact(error.message),code:error.code},'request failed')});

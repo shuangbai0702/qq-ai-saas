@@ -2,13 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
+import {webcrypto,createHmac} from 'node:crypto';
 
 const source = await readFile(new URL('../scripts/shuangbai-proxy-worker.mjs', import.meta.url), 'utf8');
 const asset = 'https://shuangbai.online/assets/index-D-3wsGOD.js';
 
-function harness(origin = () => new Response('console.log(1)', {headers: {'content-type': 'application/javascript'}}), brokenCache = false, upstreamOrigin = undefined) {
+function harness(origin = () => new Response('console.log(1)', {headers: {'content-type': 'application/javascript'}}), brokenCache = false, upstreamOrigin = undefined, secret = undefined) {
   const entries = new Map(), calls = [], pending = [];
-  const context = vm.createContext({Request, Response, Headers, URL, Date, caches: {default: {
+  const context = vm.createContext({Request, Response, Headers, URL, Date, TextEncoder, Uint8Array, crypto: webcrypto, caches: {default: {
     async match(key) {if (brokenCache) throw Error('cache unavailable'); return entries.get(key.url)?.clone();},
     async put(key, response) {if (brokenCache) throw Error('cache unavailable'); entries.set(key.url, response.clone());},
   }}, fetch: async (url, init) => {
@@ -19,11 +20,26 @@ function harness(origin = () => new Response('console.log(1)', {headers: {'conte
   }});
   vm.runInContext(source.replace('export default {', 'globalThis.worker = {'), context);
   return {entries, calls, async fetch(url = asset, init) {
-    const response = await context.worker.fetch(new Request(url, init), {UPSTREAM_ORIGIN: upstreamOrigin}, {waitUntil: task => pending.push(task)});
+    const response = await context.worker.fetch(new Request(url, init), {UPSTREAM_ORIGIN: upstreamOrigin, FISHBOT_PROXY_SECRET: secret}, {waitUntil: task => pending.push(task)});
     await Promise.all(pending.splice(0));
     return response;
   }};
 }
+
+test('edge signs the actual client, discards forged identity and blocks web access to IPC', async () => {
+  const secret='synthetic-edge-secret';
+  const h=harness(()=>new Response('ok',{headers:{'content-security-policy':"default-src 'self'"}}),false,'https://origin.example.test',secret);
+  const response=await h.fetch('https://shuangbai.online/v1/auth/me',{headers:{'cf-connecting-ip':'203.0.113.1','x-fishbot-client-ip':'attacker','x-fishbot-client-signature':'forged','x-forwarded-for':'attacker'}});
+  const headers=h.calls[0].init.headers;
+  assert.equal(headers.get('x-fishbot-client-ip'),'203.0.113.1');
+  assert.equal(headers.get('x-fishbot-client-signature'),createHmac('sha256',secret).update(headers.get('x-fishbot-client-at')+'\n203.0.113.1').digest('hex'));
+  assert.equal(headers.has('x-forwarded-for'),false);
+  assert.equal(response.headers.get('content-security-policy'),"default-src 'self'");
+  assert.equal((await h.fetch('https://shuangbai.online/internal/v1/bots/test')).status,404);
+  assert.equal(h.calls.length,1);
+  const unsigned=harness();await unsigned.fetch('https://shuangbai.online/v1/health',{headers:{'x-fishbot-client-ip':'forged','x-fishbot-client-signature':'forged'}});
+  assert.equal(unsigned.calls.at(-1).init.headers.has('x-fishbot-client-ip'),false);
+});
 
 test('hashed assets are shared at the edge; a hit bypasses DNS and origin, including HEAD', async () => {
   const h = harness();
