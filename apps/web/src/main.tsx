@@ -16,7 +16,7 @@ class ScreenBoundary extends Component<{children:ReactNode},{failed:boolean}>{
  static getDerivedStateFromError(){return {failed:true}}
  render(){return this.state.failed?<Failure message="页面资源加载失败，请检查网络后重新加载。"/>:this.props.children}
 }
-function Failure({message,retry}:{message:string;retry?:()=>void}){return <div className="loading" role="alert"><h2>暂时未能加载</h2><p>{message}</p><button className="secondary" onClick={retry||(()=>location.reload())}>{retry?'重试连接':'重新加载'}</button></div>}
+function Failure({message,retry}:{message:string;retry?:()=>void}){return <div className="loading" role="alert"><h2>暂时未能加载</h2><p>{message}</p><button className="primary" onClick={retry||(()=>location.reload())}>{retry?'重试连接':'重新加载'}</button></div>}
 function App(){
  const[user,setUser]=useState<any>(),[loading,setLoading]=useState(true),[error,setError]=useState('');
  const request=useRef<AbortController|null>(null),sequence=useRef(0);

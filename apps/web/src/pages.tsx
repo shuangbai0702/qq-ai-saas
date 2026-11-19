@@ -39,7 +39,7 @@ export function Create({onDirtyChange}:{onDirtyChange:(dirty:boolean,guardWithin
    if(!page.signal.aborted){pending.current=false;setBusy(false)}
   }
  }
- if(!availability)return <section className="panel"><h1>创建机器人</h1>{quotaError?<><p role="alert">名额查询失败：{quotaError}</p><button className="secondary" onClick={()=>void refreshQuota()}>重试</button></>:<p>正在查询机器人名额…</p>}</section>;
+ if(!availability)return <section className="panel"><h1>创建机器人</h1>{quotaError?<><p role="alert">名额查询失败：{quotaError}</p><button className="primary" onClick={()=>void refreshQuota()}>重试</button></>:<p>正在查询机器人名额…</p>}</section>;
  if(!availability.quota.canCreate)return <section className="panel quota-block"><h1>机器人名额已用完</h1><p>已使用 {availability.quota.used} / {availability.quota.limit} 个名额。每个机器人对应一个 QQ。</p><p>创建新机器人前，请先删除原机器人。停止运行不会释放名额，删除完成后才可重新创建。</p><p className="muted">进入机器人概览，展开“更多操作”，再点击“删除机器人”。删除会停止旧实例并撤销模型 Key 与 QQ 绑定。</p><div className="button-row">{availability.items.map((b:any)=><a className="secondary" key={b.id} href={'#/bots/'+b.id+'/overview'}>管理 {b.name}</a>)}</div><div className="button-row"><button className="secondary" onClick={()=>void refreshQuota()}>刷新名额</button><a className="back" href="#/bots">返回机器人列表</a></div>{quotaError&&<p role="alert">刷新失败：{quotaError}</p>}</section>;
  return <>
   <a className="back" href="#/bots"><ArrowLeft size={16}/>返回机器人列表</a>

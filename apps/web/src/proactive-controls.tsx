@@ -54,7 +54,7 @@ export function ProactiveControls({id,botConfig,onError,onDirtyChange,searchSect
  ]}>
   <section className="panel autonomy-controls" aria-label="主动模式运行控制">
    <div className="autonomy-mode-heading"><span className="eyebrow">AUTONOMY</span><h2>主动模式 <small className="autonomy-mode-state">{!view?'读取中':view.settings.config.mode==='active'?'已开启':'已暂停'}</small></h2><p>{!view?'正在读取运行状态。':view.settings.config.mode==='active'?'模型自主决定行动或休息。':'开启后沿用已保存的节奏与预算。'}</p></div>
-   <button type="button" className={view?.settings.config.mode==='active'?'danger':'primary'} disabled={!view||busy||(view.settings.config.mode!=='active'&&(dirty||view.pendingRuntime))} onClick={()=>void submit(view?.settings.config.mode==='active'?'stop':'resume')}>{view?.settings.config.mode==='active'?'暂停主动模式':'开启主动模式'}</button>
+   <button type="button" className="primary" disabled={!view||busy||(view.settings.config.mode!=='active'&&(dirty||view.pendingRuntime))} onClick={()=>void submit(view?.settings.config.mode==='active'?'stop':'resume')}>{view?.settings.config.mode==='active'?'暂停主动模式':'开启主动模式'}</button>
    {view?.settings.config.mode==='active'&&<div className="autonomy-wake-row"><span>想让它现在重新判断？</span><button type="button" className="autonomy-wake" disabled={busy||dirty||view.pendingRuntime} onClick={()=>void submit('wake')}>立即唤醒 →</button></div>}
   </section>
   <section className="panel" hidden={section!=='overview'} aria-label="主动型 AI 生命周期" onKeyDown={event=>{if(event.key==='Enter'&&event.target instanceof HTMLInputElement)event.preventDefault()}}><div className="section-heading"><span className="eyebrow">AUTONOMY / OVERVIEW</span><h2>运行概览</h2><p>这里管理持久任务与通用自主活动。通用活动直接唤醒内层模型，自行行动或休息；主人联系和群聊参与各自独立。</p></div>

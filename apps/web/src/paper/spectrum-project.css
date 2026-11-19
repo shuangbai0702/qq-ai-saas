@@ -6,7 +6,8 @@ body.paper-app.paper-spectrum {
 .paper-spectrum .header-inner,
 .paper-spectrum .content { max-width: 1140px; }
 /* A standalone main action uses the same footprint as the robot start/stop action. */
-body.paper-app.paper-spectrum :is(.panel,.qr-info,.empty,.page-title) > .primary,
+body.paper-app.paper-spectrum :is(.panel,.qr-info,.empty,.page-title,.loading,.section-heading) > .primary,
+body.paper-app.paper-spectrum .actions > .primary:only-child,
 body.paper-app.paper-spectrum .button-row > .primary:only-child {
   min-height:44px;
   min-width:130px;
