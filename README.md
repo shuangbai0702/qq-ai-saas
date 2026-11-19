@@ -154,4 +154,4 @@ Python 适配器测试位于 `tests/*_test.py`；涉及 AstrBot 原生事件、�
 | `tests` | 单测、运行时与浏览器验证 |
 | `scripts` / `docker` | 安装、构建、启动和容器交付 |
 
-进一步阅读：[机器人管线合同](docs/robot-pipeline-20261101.md)、[主动操作合同](docs/proactive-operations-contract-20261102.md)、[B 站工具与内层 Agent](docs/bilibili-tools-and-inner-agent-20261102.md)、[主动系统实施记录](docs/proactive-ai-implementation-20261101.md)。历史实验记录只证明对应版本的结果，不能代替当前版本的实际验收。
+进一步阅读：[上下文管线合同](docs/context-pipeline-contract-20261105.md)、[公共能力合同](docs/capability-contract-20261108.md)、[公开入口部署合同](docs/public-origin-contract.md)。内部运维报告与生产验收记录保留在私有运维资料中，不随公开源码发布。
