@@ -74,6 +74,27 @@ class WindowsPolicy(unittest.TestCase):
             with patch.object(guard,'owned',side_effect=ValueError('lifetime-mismatch')):
                 with self.assertRaisesRegex(ValueError,'lifetime-mismatch'):guard.service_lifetimes(base)
 
+    def test_service_restart_race_skips_stale_owner_and_reads_replacement_next_tick(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);directory=base/'services';directory.mkdir()
+            for index,role in enumerate(('control-api','agent','postgres')):
+                (directory/(role+'.process.json')).write_text(json.dumps(dict(pid=100+index,created=5,root=tmp)))
+            file=directory/'control-api.process.json'
+            for error in (psutil.NoSuchProcess(100),psutil.AccessDenied(100),ValueError('lifetime-mismatch')):
+                with self.subTest(error=type(error).__name__):
+                    def tree(row):
+                        if row['pid']==100:raise error
+                        return [(types.SimpleNamespace(pid=row['pid']),row['created'])]
+                    with patch.object(controller,'owned_tree',side_effect=tree):
+                        rows=list(controller.services(base))
+                        self.assertEqual([row[1] for row in rows],['agent','postgres'])
+                        file.write_text(json.dumps(dict(pid=200,created=6,root=tmp)))
+                        recovered=list(controller.services(base))
+                        self.assertEqual([row[1] for row in recovered],['control-api','agent','postgres'])
+                        self.assertEqual(recovered[0][0]['pid'],200)
+                        self.assertEqual(recovered[0][0]['created'],6)
+                    file.write_text(json.dumps(dict(pid=100,created=5,root=tmp)))
+
     def test_failed_native_reclaim_backs_off_instead_of_retrying_every_tick(self):
         with tempfile.TemporaryDirectory() as tmp:
             row=dict(pid=1,created=2,root=tmp,kind='ai')

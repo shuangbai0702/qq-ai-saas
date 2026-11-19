@@ -71,7 +71,13 @@ def services(base):
         if not isinstance(row.get('root'), str) or not Path(row['root']).is_absolute():
             raise ValueError('Service root must be an absolute argv owner')
         row.update(recordFile=str(file), id=role, kind=role)
-        yield row, role, owned_tree(row)
+        try:
+            tree = owned_tree(row)
+        except (psutil.Error, ValueError):
+            # A service can exit or be replaced after its record was read.
+            # Skip unverified ownership; reread the current record next tick.
+            continue
+        yield row, role, tree
 
 
 def discover(root):
