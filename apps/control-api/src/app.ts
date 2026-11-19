@@ -20,6 +20,7 @@ import {registerInvitations} from './invitations.js';
 import {registerModelCatalog} from './model-catalog.js';
 import {creditBalance,grantReferral,referralInput,referralInvitationId,registerReferrals} from './referrals.js';
 import {loadPlatformModelSecret,registerPlatformModel} from './platform-model.js';
+import {createPlatformModels} from './platform-models-admin.js';
 import {modelCredentialDestination} from '../../../packages/shared/model-http.js';
 import {platformModelPath} from '../../../packages/shared/platform-model.js';
 import Fastify from 'fastify';import cookie from '@fastify/cookie';import rateLimit from '@fastify/rate-limit';import serveStatic from '@fastify/static';import {z} from 'zod';
@@ -64,14 +65,16 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
  try{platformSecret=await loadPlatformModelSecret(root,key)}catch{
   app.log.error('platform-model credential unreadable; platform model and referral rewards disabled');
  }
- registerPlatformModel(app,db,key,platformSecret,options.platformModelTransport);
- registerReferrals(app,db,!!platformSecret,key);
+ const platformModels=await createPlatformModels(db,key,platformSecret,options.platformModelTransport);
+ platformModels.register(app);
+ registerPlatformModel(app,db,key,platformModels,options.platformModelTransport);
+ registerReferrals(app,db,platformModels.available,key);
  async function requirePlatformCredit(config:z.infer<typeof BotConfigSchema>,tenantId:string,tx:Sql){
-  if(config.platformModel&&(!platformSecret||!(await creditBalance(tx,tenantId)).granted))fail('当前工作区暂无平台模型额度，请前往邀请奖励页',403);
+  if(config.platformModel&&(!await platformModels.available(tx)||!(await creditBalance(tx,tenantId)).granted))fail('当前工作区暂无平台模型额度，请前往邀请奖励页',403);
  }
  app.get('/v1/health',async()=>{await db.query('SELECT 1');return{ok:true,publicOrigin:process.env.APP_ORIGIN||'',database:databaseUrl?'postgresql':'pglite-postgresql',agent:options.agent!==false}});
  app.post('/v1/auth/register',{config:{rateLimit:{max:10,timeWindow:'1 minute'}}},async(req,reply)=>{
-   const value=z.object({email:z.email().max(254),password:z.string().min(8).max(128),name:z.string().min(1).max(60),inviteCode:z.string({error:'请输入激活码'}).trim().min(1,'请输入激活码').max(100),referralCode:referralInput}).parse(req.body);const id=randomUUID(),tenant=randomUUID();const hash=await hashPassword(value.password);if(value.referralCode&&!platformSecret)fail('邀请活动暂不可用',503);
+   const value=z.object({email:z.email().max(254),password:z.string().min(8).max(128),name:z.string().min(1).max(60),inviteCode:z.string({error:'请输入激活码'}).trim().min(1,'请输入激活码').max(100),referralCode:referralInput}).parse(req.body);const id=randomUUID(),tenant=randomUUID();const hash=await hashPassword(value.password);if(value.referralCode&&!await platformModels.available())fail('邀请活动暂不可用',503);
    const lookup=value.referralCode?'id':'code_hash';
    const activation=value.referralCode?referralInvitationId(key,value.referralCode,value.inviteCode):digest(value.inviteCode);
    try{
@@ -107,7 +110,7 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
    await provisionJournal(python,['-B',path.resolve('scripts/initialize-shared-journal.py'),path.join(root,'bots',id),groupLimit],{timeout:10000,windowsHide:true});
    });await audit(req,'bot.created',id);reply.code(201);return{id};
  });
- app.get<{Params:{id:string}}>('/v1/bots/:id',async req=>{const bot=await owned(req,req.params.id);const [revision]=await db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[bot.id,bot.revision]);const secret=(await db.query('SELECT id FROM secrets WHERE bot_id=$1 AND tenant_id=$2',[bot.id,req.user!.tenant_id])).length>0;return{bot,config:revision.config,hasKey:revision.config.platformModel?!!platformSecret:secret,hasPersonalKey:secret,capabilities:agent.protocols[bot.protocol].getCapabilities(),commands:await db.query('SELECT id,kind,status,error,created_at FROM commands WHERE bot_id=$1 ORDER BY created_at DESC LIMIT 10',[bot.id])}});
+ app.get<{Params:{id:string}}>('/v1/bots/:id',async req=>{const bot=await owned(req,req.params.id);const [revision]=await db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[bot.id,bot.revision]);const secret=(await db.query('SELECT id FROM secrets WHERE bot_id=$1 AND tenant_id=$2',[bot.id,req.user!.tenant_id])).length>0;return{bot,config:revision.config,hasKey:revision.config.platformModel?await platformModels.available():secret,hasPersonalKey:secret,capabilities:agent.protocols[bot.protocol].getCapabilities(),commands:await db.query('SELECT id,kind,status,error,created_at FROM commands WHERE bot_id=$1 ORDER BY created_at DESC LIMIT 10',[bot.id])}});
  app.put<{Params:{id:string}}>('/v1/bots/:id/config',async req=>{const v=z.object({expectedRevision:z.number().int(),config:BotConfigSchema,name:z.string().trim().min(1).max(80),expectedUin:z.string().regex(/^\d{5,20}$|^$/).default(''),apiKey:modelKeyInput,clearKey:z.boolean().optional()}).parse(req.body);let revision=0;
    await db.transaction(async tx=>{const bot=await owned(req,req.params.id,tx);await tx.query('SELECT id FROM bots WHERE id=$1 FOR UPDATE',[bot.id]);const [current]=await tx.query('SELECT revision,desired_state,deleted_at,expected_uin FROM bots WHERE id=$1',[bot.id]);await requirePlatformCredit(v.config,req.user!.tenant_id,tx);if(current.deleted_at||current.desired_state==='deleting')fail('机器人正在删除',409);if(current.revision!==v.expectedRevision)fail('配置已被其他操作修改，请刷新后重试',409);if(v.expectedUin!==(current.expected_uin||''))fail('不能通过配置修改QQ账号。已绑定账号不可更换；如需换号，请删除机器人后重新创建。',409);revision=current.revision+1;
      if(!v.apiKey&&!v.clearKey){
@@ -140,7 +143,7 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
   });await audit(req,'qq.account.changed',req.params.id);return result;
  });
  app.put<{Params:{id:string}}>('/v1/bots/:id/runtime',async req=>{const v=z.object({mode:z.enum(['dedicated','shared']),expectedRevision:z.number().int()}).parse(req.body);await db.transaction(async tx=>{const bot=await lockOwnedBot(tx,owned,req,req.params.id);if(bot.desired_state!=='stopped'||bot.health?.ai?.alive)fail('请先停止机器人，再切换运行模式',409);if(bot.revision!==v.expectedRevision)fail('配置版本冲突',409);if(bot.runtime_mode!==v.mode){await tx.query('DELETE FROM group_members WHERE bot_id=$1',[bot.id]);await tx.query('UPDATE bots SET group_id=NULL WHERE id=$1',[bot.id]);await tx.query('UPDATE bots SET runtime_mode=$2,generation=generation+1 WHERE id=$1',[bot.id,v.mode]);}});return{mode:v.mode}});
- app.post<{Params:{id:string}}>('/v1/bots/:id/model-probe',{config:{rateLimit:{max:2,timeWindow:'1 minute'}}},async req=>{const value=z.object({extended:z.boolean().default(false)}).parse(req.body??{});const bot=await owned(req,req.params.id);const ctx=await agent.context(bot);if(!ctx.apiKey)fail('请先保存模型Key');if(ctx.config.platformModel)return{platform:true,configured:!!platformSecret,...await creditBalance(db,bot.tenant_id)};return probeModel(ctx.config.baseUrl,ctx.config.model,ctx.apiKey,value.extended,{root,botId:bot.id,tenantId:bot.tenant_id,generation:bot.generation,revision:bot.revision})});
+ app.post<{Params:{id:string}}>('/v1/bots/:id/model-probe',{config:{rateLimit:{max:2,timeWindow:'1 minute'}}},async req=>{const value=z.object({extended:z.boolean().default(false)}).parse(req.body??{});const bot=await owned(req,req.params.id);const ctx=await agent.context(bot);if(!ctx.apiKey)fail('请先保存模型Key');if(ctx.config.platformModel)return{platform:true,configured:await platformModels.available(),...await creditBalance(db,bot.tenant_id)};return probeModel(ctx.config.baseUrl,ctx.config.model,ctx.apiKey,value.extended,{root,botId:bot.id,tenantId:bot.tenant_id,generation:bot.generation,revision:bot.revision})});
  app.post<{Params:{id:string}}>('/v1/bots/:id/actions',async req=>{const v=z.object({action:z.enum(['start','stop','restart']),idempotencyKey:z.string().min(1).max(150)}).parse(req.body);return db.transaction(async tx=>{const bot=await owned(req,req.params.id,tx);await tx.query('SELECT id FROM bots WHERE id=$1 FOR UPDATE',[bot.id]);const [old]=await tx.query('SELECT id,status FROM commands WHERE bot_id=$1 AND idempotency_key=$2',[bot.id,v.idempotencyKey]);if(old)return old;
     const [fresh]=await tx.query('SELECT * FROM bots WHERE id=$1',[bot.id]);if(fresh.deleted_at||fresh.desired_state==='deleting')fail('机器人正在删除',409);
     if(v.action==='start'&&fresh.desired_state==='running'){

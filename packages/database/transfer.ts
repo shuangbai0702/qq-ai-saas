@@ -26,10 +26,15 @@ export const transferSchema={
  bilibili_accounts:['bot_id','tenant_id','uid','label','secret','revision','state','refresh_state','pending_confirm','updated_at'],
  bilibili_logins:['bot_id','tenant_id','id','secret','state','expires_at','updated_at'],
  tool_service_cooldowns:['service','until_at','reason'],
+ referral_codes:['user_id','tenant_id','code'],
+ referral_rewards:['invitee_id','inviter_id','rewarded_at'],
+ platform_model_credits:['tenant_id','granted','spent','reserved'],
+ platform_model_reservations:['id','tenant_id','bot_id','tokens','created_at'],
+ platform_model_providers:['id','name','base_url','model','secret','priority','enabled','revision','last_status','last_checked_at','last_http_status','updated_at'],
 } as const;
 export type TransferTable=keyof typeof transferSchema;
 export const transferTables=Object.keys(transferSchema) as TransferTable[];
-export const expectedSchemaVersions=['001','002','003','004','005','006','007','008','009','010','011','012','013','014','015'];
+export const expectedSchemaVersions=['001','002','003','004','005','006','007','008','009','010','011','012','013','014','015','016','017'];
 
 function canonical(value:any):any{
  if(value instanceof Date)return value.toISOString();

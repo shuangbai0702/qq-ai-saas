@@ -36,7 +36,14 @@ export function Referrals(){
  }
  async function copy(){
   const page=owner.current;
-  try{await navigator.clipboard.writeText(link);if(!page?.signal.aborted)setNote('邀请链接已复制')}
+  try{
+   await navigator.clipboard.writeText(link);
+   if(!page?.signal.aborted){
+    setNote('邀请链接已复制');
+    const code=link.match(/#\/invite\/([A-Za-z0-9_-]{24})\?/)?.[1];
+    if(code)void api('/referrals/copied',{code},'POST',page?.signal).catch(()=>{});
+   }
+  }
   catch{if(!page?.signal.aborted)setNote('复制失败，请手动选中邀请链接复制。')}
  }
  return <section className="panel"><h1>邀请奖励</h1>

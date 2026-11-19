@@ -7,10 +7,10 @@ import {z} from 'zod';
 import type {Sql} from '../../../packages/database/index.js';
 import {modelHttp} from '../../../packages/shared/model-http.js';
 import {decrypt} from '../../../packages/shared/security.js';
-import {platformModelId,platformModelPath,platformUpstream,verifyPlatformModelCredential} from '../../../packages/shared/platform-model.js';
+import {platformModelId,platformModelPath,verifyPlatformModelCredential} from '../../../packages/shared/platform-model.js';
+import type {PlatformModels} from './platform-models-admin.js';
 
 export const platformSecretPurpose='fishbot:platform-model:v1';
-const primaryUpstream={baseUrl:'https://crab-ai.net/v1',model:'gpt-6.1-sol'};
 const platformCredentials=z.object({primary:z.string().min(1),fallback:z.string().min(1)});
 type PlatformSecrets=z.infer<typeof platformCredentials>;
 const quotaRejectionCodes=new Set(['insufficient_quota','insufficient_user_quota','insufficient_token_quota','quota_exhausted']);
@@ -141,10 +141,10 @@ async function streamModel(upstream:Response,reply:FastifyReply,signal:AbortSign
  }
 }
 
-export function registerPlatformModel(app:FastifyInstance,db:Sql,key:Buffer,secret:PlatformSecrets|'',transport=modelHttp){
+export function registerPlatformModel(app:FastifyInstance,db:Sql,key:Buffer,models:PlatformModels,transport=modelHttp){
  const error=(reply:FastifyReply,status:number,message:string)=>reply.code(status).send({error:{message,type:'platform_model_error'}});
  app.post(platformModelPath+'/chat/completions',{bodyLimit:16*1024*1024,config:{rateLimit:{max:180,timeWindow:'1 minute'}},onRequest:async(req,reply)=>{
-  if(!secret)return error(reply,503,'平台模型暂不可用');
+  if(!await models.available())return error(reply,503,'平台模型暂不可用');
   try{await authorizedBot(db,key,req.headers.authorization||'')}catch(cause){
    const failure=cause as Error & {statusCode?:number};
    if(failure.statusCode!==401)throw cause;
@@ -155,11 +155,13 @@ export function registerPlatformModel(app:FastifyInstance,db:Sql,key:Buffer,secr
   if(!parsed.success)return error(reply,400,'平台模型请求格式无效');
   const {max_tokens,max_completion_tokens,...request}=parsed.data;
   const outputLimit=max_completion_tokens??max_tokens??32768;
-  if(!secret)return error(reply,503,'平台模型暂不可用');
+  const providers=await models.providers();
+  if(!providers.length)return error(reply,503,'平台模型暂不可用');
   const bodyFor=(model:string)=>JSON.stringify({...request,model,max_tokens:outputLimit,...(request.stream?{stream_options:{include_usage:true}}:{})});
-  const firstProvider=secret.primary?primaryUpstream:platformUpstream;
+  let provider=providers[0];
+  const firstProvider={baseUrl:provider.base_url,model:provider.model};
   const initialBody=bodyFor(firstProvider.model);
-  const fallbackModelExtra=Math.max(0,Buffer.byteLength(platformUpstream.model)-Buffer.byteLength(firstProvider.model));
+  const fallbackModelExtra=Math.max(0,...providers.map(p=>Buffer.byteLength(bodyFor(p.model))-Buffer.byteLength(initialBody)));
   const media=request.messages.some(message=>Array.isArray(message.content)&&message.content.some(part=>part?.type==='image_url'||part?.type==='input_audio'));
   // UTF-8 byte count bounds byte-tokenized text. Media uses a full-context hold.
   const hold=(media?1_048_576:Buffer.byteLength(initialBody)+fallbackModelExtra+4096)+outputLimit;
@@ -171,6 +173,7 @@ export function registerPlatformModel(app:FastifyInstance,db:Sql,key:Buffer,secr
    if(used===undefined||adopted)return;
    await settle(db,id,used);
    adopted=true;
+   await models.observe(provider,'available',200).catch(()=>{});
    if(used>hold)app.log.error({reservation:id,used,hold},'platform-model provider exceeded reservation');
   };
   // An HTTP client leaving does not revoke the provider call. Keep reading for its usage receipt.
@@ -179,15 +182,18 @@ export function registerPlatformModel(app:FastifyInstance,db:Sql,key:Buffer,secr
    const send=(baseUrl:string,credential:string,body:string)=>transport(baseUrl+'/chat/completions',{
     method:'POST',headers:{Authorization:'Bearer '+credential,'Content-Type':'application/json'},body,signal,
    });
-   let upstream=await send(firstProvider.baseUrl,secret.primary||secret.fallback,initialBody);
+   let upstream=await send(provider.base_url,models.credential(provider),initialBody);
    let rejectedForQuota=await quotaRejected(upstream);
-   if(rejectedForQuota&&secret.primary&&secret.fallback){
+   for(let next=1;rejectedForQuota&&next<providers.length;next++){
     await upstream.body?.cancel().catch(()=>{});
-    app.log.info({reservation:id},'platform-model primary quota rejected; using fallback');
-    upstream=await send(platformUpstream.baseUrl,secret.fallback,bodyFor(platformUpstream.model));
+    await models.observe(provider,'limited',upstream.status).catch(()=>{});
+    app.log.info({reservation:id,providerId:provider.id},'platform-model quota rejected; using next priority');
+    provider=providers[next];
+    upstream=await send(provider.base_url,models.credential(provider),bodyFor(provider.model));
     rejectedForQuota=await quotaRejected(upstream);
    }
    if(!upstream.ok){
+    await models.observe(provider,rejectedForQuota?'limited':'failed',upstream.status).catch(()=>{});
     await upstream.body?.cancel().catch(()=>{});
     if(rejectedForQuota||preDispatchRejections.has(upstream.status))await settle(db,id,0);
     if(rejectedForQuota)return error(reply,503,'平台模型供应商额度暂不可用');
@@ -198,10 +204,11 @@ export function registerPlatformModel(app:FastifyInstance,db:Sql,key:Buffer,secr
    }else{
     const result=await readCompletion(upstream);
     await adopt(result);
-    if(!adopted)return error(reply,502,'平台模型未返回可核对的用量，本次额度暂时保留');
+    if(!adopted){await models.observe(provider,'unconfirmed',upstream.status).catch(()=>{});return error(reply,502,'平台模型未返回可核对的用量，本次额度暂时保留')}
     return publicFrame(result);
    }
   }catch{
+   await models.observe(provider,'unconfirmed').catch(()=>{});
    if(!reply.sent&&!reply.raw.destroyed)return error(reply,502,'平台模型未完成请求，本次用量暂无法确认');
   }finally{
    if(!adopted)app.log.info({reservation:id},'platform-model usage was not settled from a completion receipt');
