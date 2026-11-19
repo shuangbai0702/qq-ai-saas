@@ -531,7 +531,9 @@ def install_runtime(core,settings):
             if scope==work.scope and not confirmed:
                 from group_freshness import response_coverage
                 event.set_extra('_hosted_responded_events',response_coverage(event.get_extra('_hosted_responded_events',[]),decision))
-                if decision['action']=='keep':st.pipeline.covered_inputs(work,decision.get('responded_events',[]))
+                # The unchanged final check retains the replacement's explicit
+                # coverage; it does not issue a fresh, empty coverage claim.
+                if decision['action']=='keep':st.pipeline.covered_inputs(work,event.get_extra('_hosted_responded_events',[]))
         if scope==work.scope and decision.get('checked'):
             st.pipeline.ignored_inputs(work,decision.get('ignored_events',[]))
         metrics.setdefault(event.get_platform_id(),{})['lastGroupFreshness']={'scope':scope,'at':time.time(),**{k:decision[k] for k in ('action','reason','checked') if k in decision}}
