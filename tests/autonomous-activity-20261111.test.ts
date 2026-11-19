@@ -5,6 +5,8 @@ import path from 'node:path';
 import {openDatabase} from '../packages/database/index.js';
 import {AutonomyCoordinator} from '../apps/node-agent/src/autonomous.js';
 import {AutonomyConfigSchema,TaskHandoffSchema} from '../packages/contracts/autonomous.js';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
 
 async function fixture(){
  const root=await mkdtemp(path.resolve('.local/activity-test-')),db=await openDatabase(root);
@@ -13,6 +15,16 @@ async function fixture(){
  await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) SELECT id,revision,'{}' FROM bots");
  return {db,close:async()=>{await db.close();await rm(root,{recursive:true,force:true})}};
 }
+
+test('a separate Node process resumes DSH-queued activations exactly once from the original database',async()=>{
+ const root=await mkdtemp(path.resolve('.local/activation-process-'));
+ const run=async(phase:string)=>{
+  const result=await promisify(execFile)(process.execPath,['--import','tsx','tests/helpers/autonomous-wake-child.ts',root,phase],{timeout:30000});
+  return JSON.parse(result.stdout.trim().split('\n').at(-1)!);
+ };
+ try{const queued=await run('queue'),resumed=await run('consume');assert.notEqual(queued.pid,resumed.pid);assert.equal(queued.calls,0);assert.equal(resumed.calls,2)}
+ finally{await rm(root,{recursive:true,force:true})}
+});
 test('activity uses one durable wake, native budget and logical cycle without a fake goal; rest survives restart',async()=>{
  const f=await fixture();let n=0;const c=new AutonomyCoordinator(f.db,async(_b,op,body:any)=>{
   if(op==='tool')return{pending:[],effects:[]};

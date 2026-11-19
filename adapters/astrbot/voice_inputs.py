@@ -7,6 +7,7 @@ import uuid
 
 SOFT_TIMEOUT = 20
 HARD_TIMEOUT = 60
+RESULT_RETRY_DELAY = .5
 
 
 def has_voice(raw):
@@ -25,7 +26,7 @@ def load(db, scope, identifier):
     return json.loads(row[0]) if row and row[0] else None
 
 
-def finish(db, scope, identifier, owner, state, text=None):
+def finish(db, scope, identifier, owner, state, text=None, reason=None):
     # A late response cannot mutate a prepared/committed input or retired raw.
     row = db.execute('SELECT voice,payload,seen FROM pipeline_work_inputs WHERE scope=? AND event=?', (scope, identifier)).fetchone()
     if not row or not row[0] or row[1] is None or row[2]:
@@ -36,6 +37,8 @@ def finish(db, scope, identifier, owner, state, text=None):
     value.update(state=state, finished=True)
     if text is not None:
         value['text'] = text
+    if reason is not None:
+        value['reason'] = reason
     with db:
         db.execute('UPDATE pipeline_work_inputs SET voice=? WHERE scope=? AND event=?',
                    (json.dumps(value, ensure_ascii=False), scope, identifier))
@@ -63,6 +66,33 @@ async def prepare(st, raw, call, current=lambda: True):
     return await asyncio.shield(task)
 
 
+def result_unavailable(error):
+    # NapCat may acknowledge translation before its subsequent message read
+    # contains text. Retry only this explicit response, never an unknown send.
+    result = getattr(error, 'result', None)
+    return (isinstance(result, dict) and result.get('status') == 'failed'
+            and any(isinstance(result.get(k), str) and result[k].removeprefix('Error: ') == '获取语音转文字结果失败'
+                    for k in ('message', 'wording')))
+
+
+async def transcribe(st, scope, identifier, owner, call, current):
+    try:
+        return await call('fetch_ptt_text', message_id=identifier)
+    except Exception as error:
+        if not result_unavailable(error):raise
+        await asyncio.sleep(RESULT_RETRY_DELAY)
+        if not current() or getattr(st, '_storage_closed', False):
+            raise asyncio.CancelledError('voice_binding_changed')
+        value = load(st.db, scope, identifier)
+        if value.get('owner') != owner or value.get('finished'):
+            raise asyncio.CancelledError('voice_owner_changed')
+        value.update(attempts=2, reason='qq_result_unavailable')
+        with st.db:
+            st.db.execute('UPDATE pipeline_work_inputs SET voice=? WHERE scope=? AND event=?',
+                          (json.dumps(value), scope, identifier))
+        return await call('fetch_ptt_text', message_id=identifier)
+
+
 async def _prepare(st, raw, call, current):
     """One bounded attempt; interrupted attempts recover as unknown, not replay."""
     if not has_voice(raw):
@@ -84,11 +114,12 @@ async def _prepare(st, raw, call, current):
             with st.db:
                 st.db.execute('UPDATE pipeline_work_inputs SET voice=? WHERE scope=? AND event=?',
                               (json.dumps(value), scope, identifier))
-            task = asyncio.create_task(call('fetch_ptt_text', message_id=identifier))
+            task = asyncio.create_task(transcribe(st, scope, identifier, owner, call, current))
             try:
                 try:
                     result = await asyncio.wait_for(asyncio.shield(task), SOFT_TIMEOUT)
                 except asyncio.TimeoutError:
+                    value = load(st.db, scope, identifier)
                     value['state'] = 'unknown'
                     with st.db:
                         st.db.execute('UPDATE pipeline_work_inputs SET voice=? WHERE scope=? AND event=?',
@@ -98,7 +129,7 @@ async def _prepare(st, raw, call, current):
                     raise asyncio.CancelledError('voice_binding_changed')
                 text = result.get('text') if isinstance(result, dict) else None
                 if not isinstance(text, str) or not text.strip():
-                    finish(st.db, scope, identifier, owner, 'failed')
+                    finish(st.db, scope, identifier, owner, 'failed', reason='empty_result')
                 else:
                     finish(st.db, scope, identifier, owner, 'success', text.strip())
             except asyncio.CancelledError:
@@ -108,7 +139,8 @@ async def _prepare(st, raw, call, current):
                 # NapCat's PromiseTimer is also indeterminate, even when its
                 # translated error contains the word "failed".
                 uncertain = isinstance(error, (TimeoutError, ConnectionError, OSError)) or 'PromiseTimer' in str(error) or 'timeout' in str(error).lower()
-                if not getattr(st,'_storage_closed',False):finish(st.db, scope, identifier, owner, 'unknown' if uncertain else 'failed')
+                reason = 'timeout_or_transport' if uncertain else ('qq_result_unavailable' if result_unavailable(error) else type(error).__name__[:80])
+                if not getattr(st,'_storage_closed',False):finish(st.db, scope, identifier, owner, 'unknown' if uncertain else 'failed', reason=reason)
             finally:
                 if not task.done():
                     task.cancel()

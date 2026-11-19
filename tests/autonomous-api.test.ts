@@ -14,12 +14,15 @@ test('autonomous public control enforces tenancy, epochs and preserves runtime/c
  const call=(cookie:string,method:any,url:string,payload?:any)=>app.inject({method,url,payload,cookies:{fish_session:cookie}});
  const r=await call(a,'POST','/v1/bots',{name:'autonomous robot',protocol:'mock'});assert.equal(r.statusCode,201,r.body);const id=r.json().id,url='/v1/bots/'+id+'/autonomous';
  const [before]=await db.query('SELECT * FROM bots WHERE id=$1',[id]);
- const initial=await call(a,'GET',url);assert.equal(initial.statusCode,200);assert.equal(initial.json().settings.config.mode,'passive');
+ const initial=await call(a,'GET',url);assert.equal(initial.statusCode,200);assert.equal(initial.json().settings.config.mode,'active','default proactive=true enters the same autonomous lifecycle at creation');
  assert.equal((await call(b,'GET',url)).statusCode,404);assert.equal((await call(b,'PUT',url,{expectedEpoch:1,config:{mode:'active'}})).statusCode,404);
  assert.equal((await call(a,'PUT',url,{expectedEpoch:1,config:{mode:'active',capabilities:['shell']}})).statusCode,400);
  const enabled=await call(a,'PUT',url,{expectedEpoch:1,config:{mode:'active'}});assert.equal(enabled.statusCode,200,enabled.body);assert.equal(enabled.json().pendingRuntime,true);
  assert.equal((await call(a,'PUT',url,{expectedEpoch:1,config:{mode:'passive'}})).statusCode,409);
- const wake=await call(a,'POST',url+'/wake',{expectedEpoch:2});assert.equal(wake.statusCode,200);assert.equal(wake.json().startsQQ,false);
+ const wakeRequest={expectedEpoch:2,requestId:'00000000-0000-4000-8000-000000000001'};
+ const wake=await call(a,'POST',url+'/wake',wakeRequest);assert.equal(wake.statusCode,200);assert.equal(wake.json().startsQQ,false);
+ assert.equal((await call(a,'POST',url+'/wake',wakeRequest)).statusCode,200);
+ assert.equal((await db.query("SELECT count(*)::int n FROM autonomy_wakes WHERE bot_id=$1 AND reason='operator-wake'",[id]))[0].n,1,'same activation request is idempotent');
  const stop=await call(a,'PUT',url,{expectedEpoch:2,config:{mode:'passive'}});assert.equal(stop.statusCode,200);
  const [after]=await db.query('SELECT * FROM bots WHERE id=$1',[id]);assert.equal(after.generation,before.generation);assert.equal(after.revision,before.revision);assert.equal(after.desired_state,before.desired_state);
  assert.equal((await db.query('SELECT * FROM commands WHERE bot_id=$1',[id])).length,0);assert.equal((await db.query('SELECT * FROM autonomy_wakes WHERE bot_id=$1',[id])).length,0);

@@ -62,6 +62,34 @@ class VoiceTests(unittest.IsolatedAsyncioTestCase):
             await voice.prepare(st,raw,call)
             self.assertEqual(voice.load(st.db,'private:123456','1')['state'],state)
 
+    async def test_napcat_explicit_missing_result_retries_once(self):
+        from aiocqhttp.exceptions import ActionFailed
+        for succeeds in (True, False):
+            st=self.store();raw=self.raw(st);calls=[]
+            async def call(*a,**kw):
+                calls.append(kw)
+                if len(calls)==2 and succeeds:return {'text':'真实转写'}
+                raise ActionFailed({'status':'failed','retcode':1200,'message':'Error: 获取语音转文字结果失败'})
+            with patch.object(voice,'RESULT_RETRY_DELAY',0):
+                result=await voice.prepare(st,raw,call)
+            value=voice.load(st.db,'private:123456','1')
+            self.assertEqual(len(calls),2)
+            self.assertEqual(value['attempts'],2)
+            self.assertEqual(value['state'],'success' if succeeds else 'failed')
+            self.assertNotIn('qq_result_unavailable',str(result['message']))
+            await voice.prepare(st,raw,call)
+            self.assertEqual(len(calls),2)
+
+    async def test_napcat_timeout_response_never_retried(self):
+        from aiocqhttp.exceptions import ActionFailed
+        st=self.store();raw=self.raw(st);calls=[]
+        async def call(*a,**kw):
+            calls.append(kw)
+            raise ActionFailed({'status':'failed','retcode':1200,'message':'获取语音转文字结果失败: PromiseTimer: timeout'})
+        await voice.prepare(st,raw,call)
+        self.assertEqual(len(calls),1)
+        self.assertEqual(voice.load(st.db,'private:123456','1')['state'],'unknown')
+
     async def test_two_voices_hold_writer_until_both_staged_and_hard_timeout_is_unknown(self):
         st=self.store();first,second=self.raw(st,'1'),self.raw(st,'2');gate=asyncio.Event()
         async def quick(*args,**kw):return {'text':'第一条'}
