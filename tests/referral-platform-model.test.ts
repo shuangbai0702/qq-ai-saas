@@ -90,6 +90,10 @@ test('referral registration, scoped credentials, concurrency, usage and unknown'
   assert.equal(context.config.model,'platform');
   assert.equal(await agent.personalModelKey(bot),'test-personal-key');
   assert.equal((await request('/v1/bots/'+bot.id,undefined,inviter)).statusCode,404);
+  // This fixture exercises insufficient platform credit without a personal
+  // fallback. Personal-key retention was checked above; automatic fallback is
+  // covered separately with independent tenants and concurrent reservations.
+  await db.query('DELETE FROM secrets WHERE bot_id=$1',[bot.id]);
   const call=(content='normal',stream=false,credential=context.apiKey)=>app.inject({method:'POST',url:'/v1/platform-model/chat/completions',headers:{authorization:'Bearer '+credential},payload:{model:'platform',max_tokens:50,stream,messages:[{role:'user',content}]}});
   assert.equal((await call('normal',false,'untrusted')).statusCode,401);
   // Keep just enough credit for one concurrent reservation.

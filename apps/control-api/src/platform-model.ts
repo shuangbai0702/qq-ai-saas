@@ -5,7 +5,7 @@ import {once} from 'node:events';
 import type {FastifyInstance,FastifyReply,FastifyRequest} from 'fastify';
 import {z} from 'zod';
 import type {Sql} from '../../../packages/database/index.js';
-import {modelHttp} from '../../../packages/shared/model-http.js';
+import {modelHttp,modelCredentialDestination} from '../../../packages/shared/model-http.js';
 import {decrypt} from '../../../packages/shared/security.js';
 import {platformModelId,platformModelPath,verifyPlatformModelCredential} from '../../../packages/shared/platform-model.js';
 import type {PlatformModels} from './platform-models-admin.js';
@@ -54,6 +54,21 @@ async function settle(db:Sql,id:string,used:number){
  await db.transaction(async tx=>{
   const [row]=await tx.query('DELETE FROM platform_model_reservations WHERE id=$1 RETURNING tenant_id,tokens',[id]);
   if(row)await tx.query('UPDATE platform_model_credits SET reserved=reserved-$2,spent=spent+$3 WHERE tenant_id=$1',[row.tenant_id,row.tokens,used]);
+ });
+}
+
+async function personalConnection(db:Sql,key:Buffer,auth:string){
+ return db.transaction(async tx=>{
+  // Revalidate revision/tenant after the failed reservation. The same Bot lock
+  // used by config saves binds the current personal destination and credential.
+  const bot=await authorizedBot(tx,key,auth,true),config=bot.config;
+  const [secret]=await tx.query('SELECT ciphertext FROM secrets WHERE bot_id=$1 AND tenant_id=$2',[bot.id,bot.tenant_id]);
+  const missing=()=>invalid('平台额度不足，且未保存完整的自备模型配置。请填写自备模型 URL、模型 ID 和 Key。',402);
+  if(!secret?.ciphertext||!config.baseUrl||!config.model||config.model===platformModelId)throw missing();
+  let baseUrl:string,credential:string;
+  try{baseUrl=modelCredentialDestination(config.baseUrl);credential=decrypt(key,bot.tenant_id+':'+bot.id,secret.ciphertext)}catch{throw missing()}
+  if(!credential||new URL(baseUrl).pathname.replace(/\/$/,'')===platformModelPath)throw missing();
+  return{baseUrl,model:config.model as string,credential,reasoningEffort:config.reasoningEffort as string|undefined};
  });
 }
 
@@ -158,7 +173,7 @@ export function registerPlatformModel(app:FastifyInstance,db:Sql,key:Buffer,mode
   const outputLimit=max_completion_tokens??max_tokens??32768;
   const providers=await models.providers();
   if(!providers.length)return error(reply,503,'平台模型暂不可用');
-  const bodyFor=(model:string)=>JSON.stringify({...request,model,max_tokens:outputLimit,...(request.stream?{stream_options:{include_usage:true}}:{})});
+  const bodyFor=(model:string,reasoningEffort?:string)=>JSON.stringify({...request,model,max_tokens:outputLimit,...(reasoningEffort?{reasoning_effort:reasoningEffort}:{}),...(request.stream?{stream_options:{include_usage:true}}:{})});
   let provider=providers[0];
   const firstProvider={baseUrl:provider.base_url,model:provider.model};
   const initialBody=bodyFor(firstProvider.model);
@@ -166,12 +181,16 @@ export function registerPlatformModel(app:FastifyInstance,db:Sql,key:Buffer,mode
   const media=request.messages.some(message=>Array.isArray(message.content)&&message.content.some(part=>part?.type==='image_url'||part?.type==='input_audio'));
   // UTF-8 byte count bounds byte-tokenized text. Media uses a full-context hold.
   const hold=(media?1_048_576:Buffer.byteLength(initialBody)+fallbackModelExtra+4096)+outputLimit;
-  let id:string;
-  try{id=await reserve(db,key,req.headers.authorization||'',hold)}catch(e){const failure=e as Error & {statusCode?:number};if(!failure.statusCode)throw e;return error(reply,failure.statusCode,failure.message)}
+  let id:string|undefined,personal:Awaited<ReturnType<typeof personalConnection>>|undefined;
+  try{id=await reserve(db,key,req.headers.authorization||'',hold)}catch(e){
+   const failure=e as Error & {statusCode?:number};if(!failure.statusCode)throw e;
+   if(failure.statusCode!==402)return error(reply,failure.statusCode,failure.message);
+   try{personal=await personalConnection(db,key,req.headers.authorization||'')}catch(cause){const f=cause as Error & {statusCode?:number};if(!f.statusCode)throw cause;return error(reply,f.statusCode,f.message)}
+  }
   let adopted=false;
   const adopt=async(frame:unknown)=>{
    const used=usage(frame);
-   if(used===undefined||adopted)return;
+   if(!id||used===undefined||adopted)return;
    await settle(db,id,used);
    adopted=true;
    await models.observe(provider,'available',200).catch(()=>{});
@@ -183,8 +202,8 @@ export function registerPlatformModel(app:FastifyInstance,db:Sql,key:Buffer,mode
    const send=(baseUrl:string,credential:string,body:string)=>transport(baseUrl+'/chat/completions',{
     method:'POST',headers:{Authorization:'Bearer '+credential,'Content-Type':'application/json'},body,signal,
    });
-   let upstream=await send(provider.base_url,models.credential(provider),initialBody);
-   let rejectedForQuota=await quotaRejected(upstream);
+   let upstream=await send(personal?.baseUrl??provider.base_url,personal?.credential??models.credential(provider),personal?bodyFor(personal.model,personal.reasoningEffort):initialBody);
+   let rejectedForQuota=!personal&&await quotaRejected(upstream);
    for(let next=1;rejectedForQuota&&next<providers.length;next++){
     await upstream.body?.cancel().catch(()=>{});
     await models.observe(provider,'limited',upstream.status).catch(()=>{});
@@ -194,11 +213,11 @@ export function registerPlatformModel(app:FastifyInstance,db:Sql,key:Buffer,mode
     rejectedForQuota=await quotaRejected(upstream);
    }
    if(!upstream.ok){
-    await models.observe(provider,rejectedForQuota?'limited':'failed',upstream.status).catch(()=>{});
+    if(!personal)await models.observe(provider,rejectedForQuota?'limited':'failed',upstream.status).catch(()=>{});
     await upstream.body?.cancel().catch(()=>{});
-    if(rejectedForQuota||preDispatchRejections.has(upstream.status))await settle(db,id,0);
+    if(id&&(rejectedForQuota||preDispatchRejections.has(upstream.status)))await settle(db,id,0);
     if(rejectedForQuota)return error(reply,503,'平台模型供应商额度暂不可用');
-    return error(reply,upstream.status===429?429:502,'平台模型服务暂时无法完成请求');
+    return error(reply,upstream.status===429?429:502,personal?'自备模型服务暂时无法完成请求':'平台模型服务暂时无法完成请求');
    }
    if(request.stream){
     // Some providers attach cumulative usage to content/finish frames. Keep
@@ -210,14 +229,15 @@ export function registerPlatformModel(app:FastifyInstance,db:Sql,key:Buffer,mode
    }else{
     const result=await readCompletion(upstream);
     await adopt(result);
-    if(!adopted){await models.observe(provider,'unconfirmed',upstream.status).catch(()=>{});return error(reply,502,'平台模型未返回可核对的用量，本次额度暂时保留')}
+    if(personal&&!Array.isArray(result?.choices))return error(reply,502,'自备模型未返回兼容的响应');
+    if(!personal&&!adopted){await models.observe(provider,'unconfirmed',upstream.status).catch(()=>{});return error(reply,502,'平台模型未返回可核对的用量，本次额度暂时保留')}
     return publicFrame(result);
    }
   }catch{
-   await models.observe(provider,'unconfirmed').catch(()=>{});
-   if(!reply.sent&&!reply.raw.destroyed)return error(reply,502,'平台模型未完成请求，本次用量暂无法确认');
+   if(!personal)await models.observe(provider,'unconfirmed').catch(()=>{});
+   if(!reply.sent&&!reply.raw.destroyed)return error(reply,502,personal?'自备模型未完成请求，请检查个人接口配置或稍后重试':'平台模型未完成请求，本次用量暂无法确认');
   }finally{
-   if(!adopted)app.log.info({reservation:id},'platform-model usage was not settled from a completion receipt');
+   if(id&&!adopted)app.log.info({reservation:id},'platform-model usage was not settled from a completion receipt');
   }
  });
 }
