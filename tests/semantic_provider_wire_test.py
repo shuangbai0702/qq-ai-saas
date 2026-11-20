@@ -114,7 +114,7 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
             self.callbacks.append((scope, result))
         self.store.reflection.checkpoint_callback = checkpoint
 
-    async def test_network_failure_is_exactly_two_real_stream_requests(self):
+    async def test_network_failure_is_two_bounded_sdk_requests_with_same_material(self):
         from memory_reflection import summary_model_output
         async def no_retry(provider,error,*args,**kwargs):raise error
         self.mode='network_error'
@@ -122,7 +122,10 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(Exception):
                 await summary_model_output(self.provider,dict(prompt='fixture',contexts=[],func_tool=None,request_max_retries=0),lambda:True,{},800)
         self.assertEqual(len(self.requests),2)
-        self.assertTrue(all(r['stream'] is True for r in self.requests))
+        self.assertTrue(self.requests[0]['stream'])
+        self.assertFalse(self.requests[1].get('stream',False))
+        self.assertEqual(self.requests[0]['messages'],self.requests[1]['messages'])
+        self.assertEqual(self.requests[0]['model'],self.requests[1]['model'])
 
     async def test_stream_read_error_recovers_through_same_sdk_nonstream_request(self):
         from memory_reflection import summary_model_output
@@ -177,6 +180,11 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
                 parts.append({'type': 'image_url', 'image_url': {'url': self.image}})
             user = {'role': 'user', 'content': parts}
             assistant = {'role': 'assistant', 'content': answer}
+            # Protocol ingress owns activity identity separately from semantic
+            # last_seen. A direct Reflection fixture must supply that real
+            # ingress fact too; do not infer active speakers from old cognition.
+            from relationships import observe_message
+            observe_message(self.store.db,SCOPE,'12345678',100+i)
             material = summary_material.snapshots([user, assistant], SCOPE)
             self.assertTrue(material[0]['complete'])
             self.store.reflection.record(SCOPE, '12345678', event, text, answer,
@@ -188,7 +196,7 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
         self.journal = ReadonlyJournal(self.store.db, SCOPE)
         self.journal.serial = 1
         prepared = Prepared(1, None, copy.deepcopy(self.native), copy.deepcopy(self.native),
-                            {}, 1, 135, 'initial')
+                            {}, 1, 30, 'initial')
         self.assertTrue(self.journal.commit(prepared))
         self.store.model_journals[SCOPE] = self.journal
 
@@ -218,7 +226,8 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
             self.control_texts.append(question)
         self.store.db.commit()
         self.control_ledger = self.store.db.execute('SELECT * FROM pipeline_events ORDER BY event').fetchall()
-        self.assertEqual(self.store.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0], 37)
+        self.assertEqual(len(self.events),30)
+        self.assertEqual(self.store.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],30+len(self.control_events))
 
     def assert_failed_controls_discarded(self):
         db = self.store.db
