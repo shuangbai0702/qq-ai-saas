@@ -62,5 +62,8 @@ class SummaryLearningFixture:
     def sample_count(self):
         return self.db.execute('SELECT count(*) FROM social_samples').fetchone()[0]
 
+    def sample_state(self):
+        return self.db.execute('SELECT * FROM social_samples ORDER BY id').fetchall()
+
     def social_attempts(self):
         return self.db.execute('SELECT count(*) FROM social_learning').fetchone()[0]

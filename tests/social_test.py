@@ -157,24 +157,25 @@ class LifecycleTests(SummaryLearningFixture,unittest.IsolatedAsyncioTestCase):
  async def test_failed_model_preserves_learning_batch_across_reopen(self):
   from behavior import BehaviorStore
   self.record()
+  original=self.sample_state();self.assertEqual(len(original),30)
   async def fail(**kwargs):raise ConnectionError('summary model unavailable')
   self.start(fail);await self.finish()
   self.assertEqual(self.metrics['summaryFailures'],1);self.assertEqual(self.social_attempts(),0)
-  self.assertEqual(self.sample_count(),35);self.assertEqual(self.patterns(),[])
+  self.assertEqual(self.sample_state(),original);self.assertEqual(self.patterns(),[])
   self.store.close();self.store=BehaviorStore(self.path);self.db=self.store.db;self.ref=self.store.reflection
-  self.assertEqual(self.sample_count(),35)
+  self.assertEqual(self.sample_state(),original)
   self.db.execute('UPDATE memory_reflection_retry SET next_at=0');self.db.commit()
   self.start();await self.finish()
   self.assertEqual(self.patterns(),[(self.scope,'有节目效果')])
  async def test_late_learner_cannot_write_after_replacement(self):
-  self.record();entered,release=asyncio.Event(),asyncio.Event()
+  self.record();original=self.sample_state();entered,release=asyncio.Event(),asyncio.Event()
   async def model(**kw):entered.set();await release.wait();return self.result(kw)
   self.start(model);await entered.wait();self.state['current']=False;release.set();await self.finish()
-  self.assertEqual(self.patterns(),[]);self.assertEqual(self.sample_count(),35)
+  self.assertEqual(self.patterns(),[]);self.assertEqual(self.sample_state(),original)
  async def test_close_cancels_pending_learning(self):
-  self.record();entered=asyncio.Event()
+  self.record();original=self.sample_state();entered=asyncio.Event()
   async def model(**kw):entered.set();await asyncio.Event().wait()
   self.start(model);await entered.wait();task=self.ref.task;self.ref.close()
   with self.assertRaises(asyncio.CancelledError):await task
-  self.assertEqual(self.patterns(),[]);self.assertEqual(self.sample_count(),35)
+  self.assertEqual(self.patterns(),[]);self.assertEqual(self.sample_state(),original)
 if __name__=='__main__':unittest.main(verbosity=2)

@@ -171,6 +171,14 @@ async def summary_model_output(provider,request,live,metrics,limit,on_decode=Non
         except Exception as error:
             if not live():return None
             if attempt:raise
+            if isinstance(error,ValueError) and str(error)=='summary_output_capacity_exceeded_material_retained':
+                # One bounded corrective request, with the exact same source
+                # inventory. Never truncate a product or retire a failed batch.
+                # The retry slot still owns this same input/policy family; its
+                # dispatch replaces the invalid response before another read.
+                request={**request,'system_prompt':str(request.get('system_prompt') or '')+
+                    f' 上次summary超过接收容量。本次summary必须不超过{limit}字符，目标{max(1,limit*3//4)}字符；按语义合并重复描述，保留关键人物、条件、纠正和未完事项，不截断句子，不增加新结论。其他产品和来源要求不变。'}
+                metrics['summaryCapacityRetries']=metrics.get('summaryCapacityRetries',0)+1
             from httpx import TransportError
             from openai import APIConnectionError,APIError,InternalServerError
             if callable(getattr(provider,'text_chat',None)) and (
@@ -1458,7 +1466,7 @@ class Reflection:
                         if discarded:
                             prompt['incomplete_material']=[{k:v for k,v in item.items() if k!='images'} for item in discarded]
                         if scope=='bot_shared':prompt['previous_summaries']=previous_products
-                        from summary_material import summary_claims,protected_claim,claim_view,bound_claim_views
+                        from summary_material import summary_claims,protected_claim,claim_view
                         prior_claims=[];prior_ids=set()
                         # Processing inputs may include a legacy multi-big
                         # basis that is not yet publishable to the main model.
@@ -1552,11 +1560,13 @@ class Reflection:
                     def starting():
                         nonlocal operation_audit
                         operation_audit=Audit(merge_scope or scope,epoch,job,{},decode_status='not_received',through_round_id=rows[-1][0] if rows else None)
+                        operation_audit.input_coverage(prompt)
                         if self._active_summary:self._active_summary['operation_audit']=operation_audit
                     from memory_model_view import memory_json
                     def decoded(data,diagnostics):
                         nonlocal operation_audit
                         operation_audit=Audit(merge_scope or scope,epoch,job,data,{str(r['sender_id']) for r in author_payload},through_round_id=rows[-1][0] if rows else None,**diagnostics)
+                        operation_audit.input_coverage(prompt)
                         if self._active_summary:self._active_summary['operation_audit']=operation_audit
                     live=lambda:not self.closed and is_current() and self.epoch()==epoch
                     request=dict(prompt=memory_json(prompt),system_prompt=system,contexts=[],func_tool=None,request_max_retries=0,**({'image_urls':summary_images} if summary_images else {}))

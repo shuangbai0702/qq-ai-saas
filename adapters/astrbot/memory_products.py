@@ -9,7 +9,7 @@ SCHEMAS={
  'motive':('companion_motives',('scope','subject','topic'),('scope','subject','topic','due','expires','status','evidence')),
  'expression':('social_patterns',('scope','expression'),('scope','expression','situation','sources','weight','updated')),
 }
-SYSTEM='''existing_memory.products列出既有兴趣、动机与表达条目。可选memory_operations数组只输出有变化的指定条目，每项{"kind":"interest|motive|expression","op":"create|replace|delete","target":{条目主键},"expected_version":"逐字复制version，create为null","value":{创建或替换后的完整认知值，delete省略}}。未指定条目保持，不支持追加或自动拼接。target主键：interest为scope/topic；motive为scope/subject/topic；expression为scope/expression。interest的value为{"weight":0到8}，可降低或放下既有兴趣；新兴趣不伪造互动次数。motive的value为{"status":"open|contacted|resolved|abandoned","due":Unix秒,"expires":Unix秒}，due必须小于等于expires，expires不得超过current_time.unix_seconds后7天；新条目只能是模型自己的model_plan，不是已接受的用户约定或平台任务。expression替换value为{"situation":"完整适用语境，最多120字符","weight":0到5}；学习新短语必须继续用learning及真实样本证据，不能凭空create表达。固定persona兴趣、管理员禁用的表达及身份/权限不允许修改。此处只修订认知，不改真实工具、发送或用户约定账本。'''
+SYSTEM='''existing_memory.products列出既有兴趣、动机与表达条目。可选memory_operations数组只输出有变化的指定条目，每项{"kind":"interest|motive|expression","op":"create|replace|delete","target":{条目主键},"expected_version":"逐字复制version，create为null","value":{创建或替换后的完整认知值，delete省略}}。未指定条目保持，不支持追加或自动拼接。target主键：interest为scope/topic；motive为scope/subject/topic；expression为scope/expression。interest的value为{"weight":0到8}，可降低或放下既有兴趣；新兴趣不伪造互动次数。motive的value为{"status":"open|contacted|resolved|abandoned","due":Unix秒,"expires":Unix秒}，due必须小于等于expires，expires不得超过current_time.unix_seconds后7天；新条目只能是模型自己的model_plan，不是已接受的用户约定或平台任务。expression替换value为{"situation":"完整适用语境，最多120字符","weight":0到5}；学习新短语必须继续用learning及真实样本证据，不能凭空create表达。Persona正文、管理员禁用的表达及身份/权限不允许修改。source为persona的旧派生兴趣是冗余副本，只允许按精确target和version删除，不得创建或改写；删除副本不改变Persona。此处只修订认知，不改真实工具、发送或用户约定账本。'''
 
 def version(row):return hashlib.sha256(json.dumps(row,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()[:32]
 def safe(text,maximum):return isinstance(text,str) and 1<=len(text.strip())<=maximum and not re.search(r'(?i)sk-[A-Za-z0-9_-]{8,}|Bearer\s+\S+|密钥|密码|系统指令|管理员权限',text)
@@ -24,9 +24,9 @@ def snapshot(db,scope,people):
   rows=[]
   for raw in db.execute('SELECT '+','.join(columns)+' FROM '+table+' ORDER BY '+','.join(keys)):
    row=dict(zip(columns,raw));origin=row['scope']
-   if not valid_scope(origin) or scope!='bot_shared' and origin not in (scope,'self'):continue
+   legacy_persona=kind=='interest' and origin=='*' and row['source']=='persona'
+   if not legacy_persona and (not valid_scope(origin) or scope!='bot_shared' and origin not in (scope,'self')):continue
    if kind=='motive' and row['subject'] not in people:continue
-   if kind=='interest' and row['source']=='persona':continue
    target={k:row[k] for k in keys}
    # Evidence, sample IDs and observed counts stay in the owned tables. They
    # are not a second raw-history packet or model-editable fields.
@@ -44,7 +44,8 @@ def apply(db,scope,cfg,data,before,now,audit=None):
   if not isinstance(item,dict) or item.get('kind') not in SCHEMAS or item.get('op') not in ('create','replace','delete'):reject('invalid_operation');continue
   if not cfg.get('selfDevelopment',True):reject('disabled');continue
   kind=item['kind'];op=item['op'];target=item.get('target');table,keys,columns=SCHEMAS[kind]
-  if not isinstance(target,dict) or set(target)!=set(keys) or not valid_scope(target.get('scope')):reject('invalid_target');continue
+  legacy_persona=kind=='interest' and isinstance(target,dict) and target.get('scope')=='*'
+  if not isinstance(target,dict) or set(target)!=set(keys) or not (valid_scope(target.get('scope')) or legacy_persona):reject('invalid_target');continue
   if any(not safe(target[k],1000) for k in keys):reject('unsafe_target');continue
   token=(kind,tuple(target[k] for k in keys))
   if token in seen:reject('duplicate_target');continue
@@ -57,7 +58,8 @@ def apply(db,scope,cfg,data,before,now,audit=None):
   else:
    if not prior or item.get('expected_version')!=prior['version']:reject('target_not_offered_or_stale_version');continue
    if current is None or version(current)!=prior['version']:raise ValueError('semantic_product_snapshot_changed')
-  if kind=='interest' and current and current['source']=='persona':reject('fixed_persona');continue
+  if legacy_persona and (not current or current['source']!='persona' or op!='delete'):reject('legacy_persona_delete_only');continue
+  if kind=='interest' and current and current['source']=='persona' and op!='delete':reject('fixed_persona');continue
   if kind=='expression' and db.execute('SELECT 1 FROM social_pattern_blocks WHERE scope=? AND expression=?',tuple(target[k] for k in keys)).fetchone():reject('operator_blocked');continue
   value=item.get('value')
   if op!='delete':

@@ -62,6 +62,22 @@ class Audit:
                 self.details[(category,position)]=entry
                 if not valid:self.mark(category,position,'rejected','invalid_container')
 
+    def input_coverage(self,prompt):
+        """Count offered candidates, never claim that a model verified truth.
+
+        Stored in the existing content-free receipt; no memory/history copy.
+        Scope/author eligibility is resolved by the authoritative snapshot.
+        """
+        state=prompt.get('existing_memory',{})
+        groups={'facts':state.get('facts',[]),'relations':state.get('relations',[]),
+                'core_note':[prompt['core_note']] if prompt.get('core_note',{}).get('text') else [],
+                'products':[row for rows in state.get('products',{}).values() for row in rows]}
+        for name,rows in groups.items():
+            if name in self.counts:self.counts[name]['input_coverage']={'eligible':len(rows),'offered':len(rows),'omitted':0,'boundary':'current_snapshot_authority'}
+        visibility=prompt.get('previous_commitments_visibility',{})
+        if visibility:
+            self.counts['core_note']['commitment_input_coverage']={k:visibility[k] for k in ('total','shown','omitted') if k in visibility}
+
     def mark(self,category,position,decision,reason,changed=False):
         entry=self.details.get((category,position))
         if entry is None:return

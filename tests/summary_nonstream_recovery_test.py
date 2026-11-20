@@ -9,6 +9,29 @@ def valid():
     return NS(completion_text='{"summary":"complete"}',raw_completion={'choices':[{'finish_reason':'stop'}]})
 
 class Recovery(unittest.IsolatedAsyncioTestCase):
+    async def test_capacity_retry_keeps_all_97_materials_without_budget_growth(self):
+        import json
+        calls=[];metrics={};materials=[{'event':str(i),'text':'待合并材料'+str(i)} for i in range(97)]
+        request={'prompt':json.dumps({'materials':materials}),'system_prompt':'original policy','contexts':[]}
+        async def stream(**kw):
+            calls.append(kw)
+            text='超长材料'*401 if len(calls)==1 else '97条材料中的必要认知已按原始条件合并。'
+            yield NS(completion_text=json.dumps({'summary':text}),raw_completion={'choices':[{'finish_reason':'stop'}]})
+        result=await summary_model_output(NS(text_chat_stream=stream),request,lambda:True,metrics,1500)
+        self.assertEqual(len(calls),2);self.assertEqual(metrics['summaryCapacityRetries'],1)
+        self.assertEqual(calls[0]['prompt'],calls[1]['prompt']);self.assertEqual(json.loads(calls[1]['prompt'])['materials'],materials)
+        self.assertEqual(calls[0]['contexts'],calls[1]['contexts']);self.assertNotIn('max_tokens',calls[1])
+        self.assertLessEqual(len(result[2]),1500)
+        self.assertIn('不超过1500字符',calls[1]['system_prompt'])
+    async def test_repeated_capacity_failure_does_not_truncate_or_make_third_call(self):
+        import json
+        calls=[]
+        async def stream(**kw):
+            calls.append(kw)
+            yield NS(completion_text=json.dumps({'summary':'原始信息'*401}),raw_completion={'choices':[{'finish_reason':'stop'}]})
+        with self.assertRaisesRegex(ValueError,'summary_output_capacity_exceeded_material_retained'):
+            await summary_model_output(NS(text_chat_stream=stream),{},lambda:True,{},1500)
+        self.assertEqual(len(calls),2)
     async def test_disconnect_closes_stream_and_uses_same_request_once(self):
         calls=[];closed=[];metrics={};request={'prompt':'original','request_max_retries':0}
         async def stream(**kw):

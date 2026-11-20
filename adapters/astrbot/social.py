@@ -213,6 +213,7 @@ class SocialStore:
         rows.sort(key=lambda r:(relevance(r[0]+' '+r[1],text),decay(r[2],r[4],time.time(),EXPRESSION_HALF_LIFE),r[3]==scope),reverse=True)
         selected={}
         for row in rows:
+            if relevance(row[0]+' '+row[1],text)<=0:continue
             if row[0] not in selected and (row[0] not in used or row[0] in text):selected[row[0]]={'expression':row[0],'situation':row[1]}
         return list(selected.values())[:3]
 

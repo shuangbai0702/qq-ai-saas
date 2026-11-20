@@ -35,8 +35,8 @@ class Deltas(unittest.TestCase):
  def test_interest_targeted_replace_delete_create_preserves_observations_and_persona(self):
   self.db.execute("INSERT INTO companion_interests VALUES('self','天文',3,8,1,'real observations','autonomous_choice')")
   self.db.execute("INSERT INTO companion_interests VALUES('self','固定喜好',4,9,1,'persona','persona')");self.db.commit()
-  before=self.before();offered=before['memory_state']['products']['interest'][0]
   target={'scope':'self','topic':'天文'}
+  before=self.before();offered=next(r for r in before['memory_state']['products']['interest'] if r['target']==target)
   with self.db:self.assertEqual(self.apply({'memory_operations':[{'kind':'interest','op':'replace','target':target,'expected_version':offered['version'],'value':{'weight':1}}]},before),1)
   self.assertEqual(self.db.execute("SELECT hits,evidence,weight FROM companion_interests WHERE topic='天文'").fetchone(),(8,'real observations',1))
   with self.db:self.assertEqual(self.apply({'memory_operations':[{'kind':'interest','op':'create','target':{'scope':'self','topic':'海洋'},'expected_version':None,'value':{'weight':2}}]}),1)

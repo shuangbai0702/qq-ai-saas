@@ -106,23 +106,8 @@ def reflect_interest(db,topic,operation,reason,action,evidence,now):
     return result
 
 
-def seed(db,cfg,now):
-    # Only configured persona declares global preferences. Conversation-derived
-    # preferences remain scoped so private conversations never leak to a group.
-    persona=str(cfg.get('systemPrompt') or '')
-    digest=hashlib.sha256(persona.encode()).hexdigest()
-    old=db.execute("SELECT evidence FROM companion_interests WHERE scope='*' LIMIT 1").fetchone()
-    if old and old[0]==digest:return
-    db.execute("DELETE FROM companion_interests WHERE scope='*'")
-    for match in list(re.finditer(r'(?:喜欢|喜爱|爱好|热衷)(?:的是|是)?([^，,。；;\n！？!?]{2,30})',persona))[:12]:
-        if re.search(r'不(?:太|怎么)?$|没(?:有)?$',persona[max(0,match.start()-4):match.start()]):continue
-        note_interest(db,'*',match[1],now,digest,'persona')
-    db.commit()
-
-
 def observe(db,cfg,scope,subject,text,event,now,directed=False):
     if not text.strip() or not enabled(cfg):return
-    seed(db,cfg,now)
     if not event or not db.execute('INSERT OR IGNORE INTO companion_seen VALUES(?,?,?)',(scope,str(event),now)).rowcount:return
     db.execute('DELETE FROM companion_seen WHERE at<?',(now-7*86400,))
     db.execute('DELETE FROM companion_seen WHERE rowid NOT IN (SELECT rowid FROM companion_seen ORDER BY at DESC LIMIT 2000)')
@@ -131,7 +116,7 @@ def observe(db,cfg,scope,subject,text,event,now,directed=False):
         db.execute('DELETE FROM companion_members WHERE seen<?',(now-30*86400,))
         db.execute('DELETE FROM companion_members WHERE rowid NOT IN (SELECT rowid FROM companion_members ORDER BY seen DESC LIMIT 1000)')
     # Heat is evidence of a shared topic, never proof of the bot's preference.
-    candidates=db.execute("SELECT topic,weight,hits,updated,source FROM companion_interests WHERE scope IN (?, '*') LIMIT 512",(scope,)).fetchall()
+    candidates=db.execute("SELECT topic,weight,hits,updated,source FROM companion_interests WHERE scope IN (?, '*') AND source!='persona' LIMIT 512",(scope,)).fetchall()
     candidates.sort(key=lambda r:(relevance(r[0],text),interest_strength(r[1],r[2],r[3],now,r[4])),reverse=True)
     for topic,*_ in candidates[:24]:
         if tokens(topic)&tokens(text):note_interest(db,scope,topic,now,text,'conversation_heat')
@@ -168,8 +153,10 @@ def outgoing(db,cfg,scope,subject,text,event,now,internal=False,request=''):
 
 def context(db,cfg,scope,now,query=''):
     if not enabled(cfg):return {}
-    seed(db,cfg,now)
-    rows=db.execute("SELECT topic,weight,source,updated,scope,hits FROM companion_interests WHERE scope IN (?, '*') OR (scope='self' AND source='autonomous_choice') LIMIT 512",(scope,)).fetchall()
+    # Persona is already authoritative input, not learned evidence. Legacy
+    # regex seeds stay untouched for authorized correction, never reinforced
+    # or recalled as independently learned interests. Reads perform no writes.
+    rows=db.execute("SELECT topic,weight,source,updated,scope,hits FROM companion_interests WHERE (scope IN (?, '*') OR (scope='self' AND source='autonomous_choice')) AND source!='persona' LIMIT 512",(scope,)).fetchall()
     rows.sort(key=lambda r:(relevance(r[0],query),interest_strength(r[1],r[5],r[3],now,r[2])),reverse=True)
     interests=[{'topic':r[0],'heat':round(interest_strength(r[1],r[5],r[3],now,r[2]),4),'source':r[2],'source_scope':r[4],'consolidated':r[5]>=3,**({'attribution':'bot_self_interest_not_user_statement'} if r[4]=='self' and r[2]=='autonomous_choice' else {})} for r in rows[:12]]
     motives=[{'topic':r[0],'subject':r[1],'expires':r[2],'status':r[3],**motive_evidence(r[4])[0]} for r in db.execute("SELECT topic,subject,expires,status,evidence FROM companion_motives WHERE scope=? AND status IN ('open','contacted') AND expires>? ORDER BY due LIMIT 3",(scope,now))]
@@ -198,7 +185,7 @@ def select_members(db,cfg,scope,now,allow_without_topic=False):
         if check and now-check[0]<300:continue
         relation=db.execute('SELECT affinity FROM relations WHERE subject=?',(subject,)).fetchone()
         motive=db.execute("SELECT topic FROM companion_motives WHERE scope=? AND subject=? AND status='open' AND due<=? AND expires>? LIMIT 1",(scope,subject,now,now)).fetchone()
-        interests=db.execute("SELECT topic,weight,hits,updated,source FROM companion_interests WHERE scope IN (?, '*') AND (source='persona' OR hits>=2) LIMIT 512",(scope,)).fetchall()
+        interests=db.execute("SELECT topic,weight,hits,updated,source FROM companion_interests WHERE scope IN (?, '*') AND source!='persona' AND hits>=2 LIMIT 512",(scope,)).fetchall()
         interest=max(interests,key=lambda r:interest_strength(r[1],r[2],r[3],now,r[4]),default=None)
         if not motive and not interest and not allow_without_topic:continue
         score=(10 if motive else 0)+(relation[0]/20 if relation else 0)+max(0,1-(now-seen)/86400)
