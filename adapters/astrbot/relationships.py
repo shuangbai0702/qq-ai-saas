@@ -215,8 +215,68 @@ def edit_by_user(db,data):
         or type(trust) not in (int,float) or not math.isfinite(trust) or not -1<=trust<=1
         or not isinstance(impression,str) or len(impression)>1000):return {'error':'人物关系内容格式不正确','status':400}
     now=max(time.time(),before['semantic_updated']+0.000001)
+    import json
+    from person_memory import relation_view
+    origin=relation_fingerprint(relation_view(db,data['subject']))
+    has_proof='user_edit' in {r[1] for r in db.execute('PRAGMA table_info(relations)')}
+    prior=db.execute('SELECT user_edit FROM relations WHERE subject=?',(data['subject'],)).fetchone() if has_proof else None
+    proof=json.loads(prior[0]) if prior and prior[0] else {}
     db.execute('UPDATE relations SET affinity=?,trust=?,impression=?,semantic_updated=? WHERE subject=?',(affinity,trust,impression,now,data['subject']))
+    if not has_proof:db.execute('ALTER TABLE relations ADD COLUMN user_edit TEXT')
+    proof={'actorId':data['actorId'],'target':relation_fingerprint(relation_view(db,data['subject'])),
+           'origins':list(dict.fromkeys([*proof.get('origins',[]),origin]))}
+    db.execute('UPDATE relations SET user_edit=? WHERE subject=?',(json.dumps(proof,separators=(',',':')),data['subject']))
     return {'ok':True,'updatedRegion':'relation','version':user_version(state(db,data['subject']))}
+
+
+def relation_fingerprint(row):
+    from memory_products import version
+    return version(row)
+
+
+def user_edits(db):
+    """Read only still-current authenticated edits; semantic updates revoke them."""
+    import json
+    from person_memory import relation_view
+    if 'user_edit' not in {r[1] for r in db.execute('PRAGMA table_info(relations)')}:return []
+    result=[]
+    for subject,raw in db.execute('SELECT subject,user_edit FROM relations WHERE user_edit IS NOT NULL'):
+        proof=json.loads(raw);current=relation_view(db,subject)
+        if proof.get('actorId') and relation_fingerprint(current)==proof.get('target'):
+            result.append({'proof':proof,'relation':current})
+    return result
+
+
+def project_user_edits(snapshot,edits):
+    """Only exact foundation relations are editable; dynamic history is untouched."""
+    if snapshot is None or not edits:return snapshot
+    import copy,json
+    from context_foundation import FOUNDATION_CURRENT
+    from readonly_journal import ContextPrefixViolation
+    from person_memory import expand
+    from memory_model_view import memory_json
+    replacements={}
+    for change in edits:
+        proof=change['proof'];current=change['relation']
+        if not proof.get('actorId') or relation_fingerprint(current)!=proof.get('target'):raise ContextPrefixViolation('web_relation_provenance_mismatch')
+        for origin in proof.get('origins',[]):replacements[origin]=current
+    def replace(rows):return [copy.deepcopy(replacements.get(relation_fingerprint(row),row)) for row in rows]
+    def patch(messages):
+        result=copy.deepcopy(messages)
+        for message in result:
+            text=message.get('content')
+            if message.get('role')!='user' or not isinstance(text,str) or not text.startswith(FOUNDATION_CURRENT+'\n'):continue
+            packet=expand(json.loads(text.split('\n',1)[1]))
+            if packet.get('region')!='long_term_facts' or not isinstance(packet.get('relations'),list):continue
+            updated=replace(packet['relations'])
+            if updated!=packet['relations']:
+                packet['relations']=updated;message['content']=FOUNDATION_CURRENT+'\n'+memory_json(packet)
+        return result
+    result=copy.copy(snapshot);result.state=copy.deepcopy(snapshot.state)
+    foundation=result.state.get('memory_foundation',{})
+    if isinstance(foundation.get('relations'),list):foundation['relations']=replace(foundation['relations'])
+    result.base=patch(snapshot.base);result.wire=patch(snapshot.wire)
+    return result
 
 
 IMPRESSION_CHARS=1000

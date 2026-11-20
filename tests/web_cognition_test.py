@@ -73,6 +73,32 @@ class WebCognition(unittest.TestCase):
   with self.assertRaises(ContextPrefixViolation):project_user_edits(snapshot,forged)
   self.assertEqual(project_user_edits(candidate,edits).wire,candidate.wire)
   self.assertEqual(self.db.execute('SELECT value,version FROM facts WHERE active=1').fetchall(),[('咖啡',2)])
+ def test_relation_projection_only_exact_foundation_and_user_version(self):
+  from context_foundation import arrange
+  from person_memory import relation_view
+  from relationships import user_version,user_edits,project_user_edits
+  from types import SimpleNamespace
+  self.db.execute("INSERT INTO relations(scope,subject,affinity,last_seen,trust,impression,semantic_updated) VALUES('private:12345678','12345678',5,1,.2,'旧印象',1)");self.db.commit()
+  from relationships import state as relation_state
+  before=relation_state(self.db,'12345678')
+  state={'memory_foundation':{'relations':[relation_view(self.db,'12345678')]}}
+  dynamic={'role':'user','content':'过去说过旧印象，这是动态历史'}
+  messages=arrange([{'role':'system','content':'system'}],state)+[dynamic]
+  snapshot=SimpleNamespace(base=copy.deepcopy(messages),wire=copy.deepcopy(messages),state=state)
+  body={'action':'edit_relation','actorId':'real-user','scope':before['scope'],'subject':before['subject'],'expectedVersion':user_version(before),'affinity':20,'trust':.8,'impression':'新印象'}
+  self.assertTrue(run(self.path,body,connection=self.db)['ok'])
+  self.db.execute('PRAGMA query_only=ON');edits=user_edits(self.db);self.db.execute('PRAGMA query_only=OFF')
+  candidate=project_user_edits(snapshot,edits)
+  self.assertEqual(candidate.wire[-1],dynamic);self.assertEqual(snapshot.wire,messages)
+  self.assertEqual(sum(a!=b for a,b in zip(candidate.wire,messages)),1)
+  self.assertEqual(candidate.state['memory_foundation']['relations'][0]['impression'],'新印象')
+  self.assertNotIn('actorId',json.dumps(candidate.wire))
+  self.assertEqual(project_user_edits(candidate,edits).wire,candidate.wire)
+  forged=copy.deepcopy(edits);forged[0]['relation']['impression']='伪造'
+  with self.assertRaises(ContextPrefixViolation):project_user_edits(snapshot,forged)
+  self.db.execute('UPDATE relations SET semantic_updated=semantic_updated+1');self.db.commit()
+  self.assertEqual(user_edits(self.db),[],'later compression revokes old edit projection authority')
+
  def initial(self):
   journal=ReadonlyJournal(self.db,'bot_shared')
   messages=[{'role':'system','content':'fixed system'},{'role':'user','content':'original input'},{'role':'assistant','content':'original answer'}]

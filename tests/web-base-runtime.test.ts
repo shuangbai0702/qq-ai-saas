@@ -10,8 +10,8 @@ import {permitModelFixture} from './helpers/model-fixture.js';
 import {defaultConfig} from '../packages/contracts/index.js';
 import {MockProtocolAdapter} from '../adapters/mock/index.js';
 
-for(const region of ['persona','core_note','tools','facts'] as const)for(const mode of ['shared','dedicated'] as const)test(`real ${mode} Worker applies only ${region} during an in-flight SDK request`, {timeout:150000},async()=>{
- const cognition=region==='core_note'||region==='facts';
+for(const region of ['persona','core_note','tools','facts','relations'] as const)for(const mode of ['shared','dedicated'] as const)test(`real ${mode} Worker applies only ${region} during an in-flight SDK request`, {timeout:150000},async()=>{
+ const cognition=region==='core_note'||region==='facts'||region==='relations';
  const seen:any[]=[];let unblock=()=>{};let hold=false;
  const server=http.createServer(async(req,res)=>{
   if(req.method==='GET'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({data:[{id:'base-fixture'}]}));return;}
@@ -34,6 +34,10 @@ for(const region of ['persona','core_note','tools','facts'] as const)for(const m
    const python=path.resolve(process.env.ASTRBOT_PYTHON||'references/astrbot/.venv/Scripts/python.exe');
    execFileSync(python,['-X','utf8','-c',`import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); db.execute("CREATE TABLE facts(scope TEXT,subject TEXT,name TEXT,value TEXT,event TEXT,updated REAL,version INTEGER,active INTEGER,PRIMARY KEY(scope,subject,name,version))"); db.execute("INSERT INTO facts VALUES('private:12345678','12345678','饮料','OLD_CORE_NOTE_ONLY','old-source',1,1,1)"); db.commit(); db.close()`,path.join(root,'bots',id,'behavior.sqlite')],{windowsHide:true});
   }
+  if(region==='relations'){
+   const python=path.resolve(process.env.ASTRBOT_PYTHON||'references/astrbot/.venv/Scripts/python.exe');
+   execFileSync(python,['-X','utf8','-c',`import sqlite3,sys; sys.path.insert(0,sys.argv[2]); from relationships import SCHEMA; db=sqlite3.connect(sys.argv[1]); db.execute('CREATE TABLE '+SCHEMA); db.execute("INSERT INTO relations(scope,subject,affinity,emotion,expires,last_seen,trust,impression,semantic_updated) VALUES('private:12345678','12345678',5,'平静',0,1,.2,'OLD_CORE_NOTE_ONLY',1)"); db.commit(); db.close()`,path.join(root,'bots',id,'behavior.sqlite'),path.resolve('adapters/astrbot')],{windowsHide:true});
+  }
   await x.db.query("UPDATE bots SET desired_state='running',generation=1 WHERE id=$1",[id]);
   let ctx=await x.agent.context((await x.db.query('SELECT * FROM bots WHERE id=$1',[id]))[0]);const mock=x.agent.protocols.mock as MockProtocolAdapter;
   await mock.beginLogin(ctx);await wait(async()=>{try{await mock.call(ctx,'/transition',{state:'online',uin:ctx.expectedUin});return true;}catch{return false;}},'mock');
@@ -45,8 +49,8 @@ for(const region of ['persona','core_note','tools','facts'] as const)for(const m
   if(cognition)await x.db.query("UPDATE bots SET applied_revision=revision,observed_state='running' WHERE id=$1",[id]);
   const coreResponse=cognition?await x.app.inject({url:`/v1/bots/${id}/behavior-data`,cookies}):null;
   if(coreResponse)assert.equal(coreResponse.statusCode,200,coreResponse.body);
-  const core=(region==='facts'?coreResponse?.json().facts[0]:coreResponse?.json().persona_core_note);
-  const saved=await x.app.inject(!cognition?{method:'PUT',url:`/v1/bots/${id}/config`,cookies,payload:{expectedRevision:detail.bot.revision,name:'runtime base',expectedUin:'91000001',config:{...detail.config,...(region==='persona'?{systemPrompt:'NEW_PERSONA_ONLY'}:{toolPrompts:{dsh:'NEW_TOOL_PROMPT_ONLY'}})}}}:{method:'POST',url:`/v1/bots/${id}/behavior-data`,cookies,payload:region==='facts'?{action:'edit_fact',scope:'private:12345678',subject:'12345678',name:'饮料',value:'NEW_CORE_NOTE_ONLY',expectedVersion:core.version}:{action:'edit_core_note',text:'NEW_CORE_NOTE_ONLY',expectedVersion:core.version}});assert.equal(saved.statusCode,200,saved.body);
+  const core=(region==='facts'?coreResponse?.json().facts[0]:region==='relations'?coreResponse?.json().relations[0]:coreResponse?.json().persona_core_note);
+  const saved=await x.app.inject(!cognition?{method:'PUT',url:`/v1/bots/${id}/config`,cookies,payload:{expectedRevision:detail.bot.revision,name:'runtime base',expectedUin:'91000001',config:{...detail.config,...(region==='persona'?{systemPrompt:'NEW_PERSONA_ONLY'}:{toolPrompts:{dsh:'NEW_TOOL_PROMPT_ONLY'}})}}}:{method:'POST',url:`/v1/bots/${id}/behavior-data`,cookies,payload:region==='facts'?{action:'edit_fact',scope:'private:12345678',subject:'12345678',name:'饮料',value:'NEW_CORE_NOTE_ONLY',expectedVersion:core.version}:region==='relations'?{action:'edit_relation',scope:core.scope,subject:core.subject,affinity:core.affinity,trust:core.trust,impression:'NEW_CORE_NOTE_ONLY',expectedVersion:core.version}:{action:'edit_core_note',text:'NEW_CORE_NOTE_ONLY',expectedVersion:core.version}});assert.equal(saved.statusCode,200,saved.body);
   ctx=await x.agent.context((await x.db.query('SELECT * FROM bots WHERE id=$1',[id]))[0]);
   if(!cognition)assert.equal(saved.json().applied,true,'normal authenticated web save applies without a separate test attach');
   else if(region==='core_note')assert.equal(saved.json().updatedRegion,'core_note');
