@@ -1,8 +1,9 @@
 import {issueTestInvite} from './helpers/invitations.js';
-import test from 'node:test';import assert from 'node:assert/strict';import {mkdtemp} from 'node:fs/promises';import path from 'node:path';import {createApp} from '../apps/control-api/src/app.js';
+import test from 'node:test';import assert from 'node:assert/strict';import {mkdtemp,mkdir,writeFile,readFile} from 'node:fs/promises';import path from 'node:path';import {createApp} from '../apps/control-api/src/app.js';
 
 test('start superseded during AI startup cannot bring QQ online; deletion is terminal',{timeout:30000},async()=>{
- const current=await createApp({root:await mkdtemp(path.resolve('.local/command-fence-')),agent:false});const {app,agent,db}=current;
+ const root=await mkdtemp(path.resolve('.local/command-fence-'));
+ const current=await createApp({root,agent:false});const {app,agent,db}=current;
  try{
   const auth=await app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(db),email:'fence@test.invalid',name:'fence',password:'barrier-test-123'}});const cookies={fish_session:auth.cookies[0].value};
   const call=(method:any,url:string,payload?:any)=>app.inject({method,url,payload,cookies});
@@ -19,5 +20,15 @@ test('start superseded during AI startup cannot bring QQ online; deletion is ter
   assert.equal((await call('POST',`/v1/bots/${id}/actions`,{action:'start',idempotencyKey:'resurrect'})).statusCode,409);
   assert.equal((await call('DELETE',`/v1/bots/${id}`)).statusCode,409);
   const [bot]=await db.query('SELECT * FROM bots WHERE id=$1',[id]);const [deletion]=await db.query("SELECT * FROM commands WHERE bot_id=$1 AND kind='delete'",[id]);assert.equal(bot.generation,deletion.generation);
+  // Retained Journal evidence is not proof of an active Bot. A delayed
+  // command at the current generation must still obey authoritative deletion.
+  await agent.execute(deletion);
+  assert.ok((await db.query('SELECT deleted_at FROM bots WHERE id=$1',[id]))[0].deleted_at);
+  const archive=path.join(root,'bots',id,'retained-journal.evidence');
+  await mkdir(path.dirname(archive),{recursive:true});await writeFile(archive,'readonly retained evidence');
+  const starts=started;await agent.execute({...command,generation:bot.generation});
+  assert.equal(started,starts);assert.equal(protocol,0);
+  assert.equal((await db.query('SELECT status FROM commands WHERE id=$1',[command.id]))[0].status,'superseded');
+  assert.equal(await readFile(archive,'utf8'),'readonly retained evidence');
  }finally{await app.close()}
 });
