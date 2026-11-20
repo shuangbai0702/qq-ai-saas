@@ -70,14 +70,14 @@ def without_sdk_persona(text,persona):
     return text.replace(fragment,'',1) if persona and text.count(fragment)==1 else text
 
 
-def legacy_sdk_persona(text,origins,persona):
+def legacy_sdk_persona(text,origins,persona,*,replace=False):
     # Match the entire embedded Persona against authoritative config hashes.
     # A marker alone never authorizes editing arbitrary reference material.
     before,marker,after=text.partition(SDK_PERSONA_MARKER)
     if not marker:return None
     endings=[index for index,value in enumerate(after) if value=='\n' and (sha(after[:index]) in origins or after[:index]==persona)]
     if len(endings)!=1:return None
-    return before+after[endings[0]+1:]
+    return before+(marker+persona+'\n' if replace else '')+after[endings[0]+1:]
 
 
 def persona_view(previous, incoming, proof, persona):
@@ -106,6 +106,10 @@ def persona_view(previous, incoming, proof, persona):
         # arbitrary text matching. Everything after that prefix stays byte-faithful.
         from context_transport import AUTHORITY_GUIDANCE
         content=message['content'];prefix,separator,tail=content.partition('\n'+AUTHORITY_GUIDANCE)
+        sdk_replacement=legacy_sdk_persona(prefix,origins,persona,replace=True)
+        if sdk_replacement is not None:
+            matches.append((index,{**message,'content':sdk_replacement+(separator+tail if separator else '')}))
+            continue
         variants=[(prefix,persona)]
         for images,chat in ((False,False),(True,False),(False,True),(True,True)):
             rendered=persona_prompt('',images=images,chat=chat)

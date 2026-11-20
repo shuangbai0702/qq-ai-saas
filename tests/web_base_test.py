@@ -27,6 +27,24 @@ class WebBaseTests(unittest.TestCase):
         self.assertIn('old persona',old[2]['content'])
         self.assertEqual(persona_view(changed,changed,self.proof(),'new persona'),changed)
 
+    def test_old_sdk_selection_waiting_for_writer_uses_new_request_snapshot(self):
+        from context_transport import request_context_view
+        sdk='SDK rules\n# Persona Instructions\n\nold persona\ntool instruction'
+        _,messages=request_context_view('new persona',[{'role':'system','content':sdk}],None,'','','{}',platform_system='fixed',persona_proof=self.proof())
+        rendered=json.dumps(messages)
+        self.assertNotIn('old persona',rendered)
+        self.assertEqual(rendered.count('new persona'),1)
+        self.assertIn('SDK rulestool instruction',rendered)
+
+    def test_legacy_sdk_combined_system_updates_only_exact_proven_persona(self):
+        from context_transport import AUTHORITY_GUIDANCE
+        prefix='SDK rules\n# Persona Instructions\n\nold persona\ntool instruction'
+        suffix='\n'+AUTHORITY_GUIDANCE+'\nunchanged platform instructions'
+        old=[{'role':'system','content':prefix+suffix},{'role':'user','content':'real history'}]
+        actual=persona_view(old,old,self.proof(),'new persona')
+        self.assertEqual(actual[0]['content'],prefix.replace('old persona','new persona')+suffix)
+        self.assertEqual(actual[1:],old[1:])
+
     def test_only_persona_changes_even_if_fresh_sdk_system_changed(self):
         old=[{'role':'system','content':'fixed platform'},persona_reference('old persona'),
              {'role':'user','content':[{'type':'text','text':'real input'},{'type':'image_url','image_url':{'url':'data:image/png;base64,AA=='}}]},

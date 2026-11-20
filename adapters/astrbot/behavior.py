@@ -1658,7 +1658,7 @@ def install_runtime(core,settings):
                 event.set_extra('_hosted_context_fence',(owner,owner.reflection.epoch(),ids,scope,owner.reflection.context_dependency(ids,scope)))
             if foreground:bound.arguments['system_prompt']=setting(event)['config'].get('systemPrompt','')
             platform=foreground_system(setting(event)['config'].get('delegatedCapabilities') or {}) if foreground else None
-            bound.arguments['system_prompt'],bound.arguments['contexts']=request_context_view(bound.arguments.get('system_prompt'),bound.arguments.get('contexts'),bound.arguments.get('prompt'),protocol,current_rules,context,bound.arguments.get('tool_calls_result'),incremental_policy=True,platform_system=platform)
+            bound.arguments['system_prompt'],bound.arguments['contexts']=request_context_view(bound.arguments.get('system_prompt'),bound.arguments.get('contexts'),bound.arguments.get('prompt'),protocol,current_rules,context,bound.arguments.get('tool_calls_result'),incremental_policy=True,platform_system=platform,persona_proof=setting(event).get('personaEdit') if foreground else None)
             metrics[event.get_platform_id()]['requests']+=1
         bound.arguments['request_max_retries']=0
         return bound

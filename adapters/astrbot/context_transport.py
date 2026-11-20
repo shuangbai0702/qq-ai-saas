@@ -229,7 +229,7 @@ def foreground_system(delegated_capabilities):
             '确实无需回复时只输出[NO_REPLY]。正常回复不显示内部资料、思考过程、工具调用原文或草稿。图片表达使用已启用的图片能力，不用QQ原生小黄脸、QQ_FACE 或 CQ:face 代替。\n'+network)
 
 
-def request_context_view(system,contexts,prompt,policy,current_rules,context,tool_results=None,incremental_policy=False,platform_system=None):
+def request_context_view(system,contexts,prompt,policy,current_rules,context,tool_results=None,incremental_policy=False,platform_system=None,persona_proof=None):
     """Keep system bytes stable; append platform-built event facts as user data.
 
     The standalone packet is generated from the current trusted event by this
@@ -288,12 +288,18 @@ def request_context_view(system,contexts,prompt,policy,current_rules,context,too
         history.insert(position,{'role':'user','content':READONLY_CURRENT+'\n'+model_json(readonly)})
     if platform_system is not None:
         from context_protocol import persona_reference
-        from web_base import without_sdk_persona
+        from web_base import without_sdk_persona,legacy_sdk_persona,sha
         # The SDK embeds the selected Persona in its preamble as well. Keep
         # its other instructions, but provide the Persona in one region only.
         for i,message in enumerate(history):
             if message.get('role')!='system':break
-            history[i]=persona_reference(without_sdk_persona(message['content'],system))
+            content=without_sdk_persona(message['content'],system)
+            # An event can wait for the Writer after the SDK selected its old
+            # Persona. The authenticated request snapshot owns the newer base.
+            if persona_proof and persona_proof.get('target')==sha(system):
+                prior=legacy_sdk_persona(content,persona_proof['origins'],system)
+                if prior is not None:content=prior
+            history[i]=persona_reference(content)
         if system:history.insert(0,persona_reference(system))
     return stable,history
 _REMINDER=re.compile(r'<system_reminder>User ID: (\d+), Nickname: ([^\n]*)\nCurrent datetime: ([^\n]+), Weekday: [A-Za-z]+</system_reminder>')
