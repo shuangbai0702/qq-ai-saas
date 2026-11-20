@@ -16,7 +16,7 @@ const mutation=z.discriminatedUnion('action',[
  z.object({action:z.literal('forget_fact'),...fact}),
  z.object({action:z.literal('set_pattern'),scope,expression:z.string().min(2).max(16),expectedUpdated:z.number().finite(),expectedEpoch:z.number().int().nonnegative(),disabled:z.boolean()}),
  z.object({action:z.literal('edit_pattern'),scope,expression:z.string().min(2).max(16),expectedVersion:z.string().regex(/^[a-f0-9]{32}$/),expectedEpoch:z.number().int().nonnegative(),situation:z.string().trim().min(1).max(120),weight:z.number().finite().min(0).max(5)}),
- z.object({action:z.literal('clear_learning'),scope}),
+ z.object({action:z.literal('clear_learning'),scope,expectedEpoch:z.number().int().min(0)}),
  z.object({action:z.literal('forget_summary'),scope:cognitiveScope,id:z.number().int().positive(),expectedUpdated:z.number().finite()}),
  z.object({action:z.literal('pause_contact'),scope}),
  z.object({action:z.literal('edit_emotion'),scope:cognitiveScope,expectedVersion:z.string().regex(/^[a-f0-9]{32}$/),kind:z.enum(['calm','angry','sad','worried','curious','surprised','excited','happy','proud','awkward']),intensity:z.number().int().min(0).max(3),expires:z.number().finite()}),

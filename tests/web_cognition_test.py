@@ -140,7 +140,10 @@ class WebCognition(unittest.TestCase):
   disabled=social.project_user_edits(edited,social.user_edits(self.db))
   self.assertEqual(disabled.state['memory_foundation']['expression_hints'],[]);self.assertEqual(disabled.wire[-1],dynamic)
   self.assertEqual(social.foundation_view(self.db),[])
-  self.assertTrue(run(self.path,{'action':'clear_learning','actorId':'user','scope':row['scope']},self.db)['ok'])
+  stale=run(self.path,{'action':'clear_learning','actorId':'user','expectedEpoch':listed['epoch'],'scope':row['scope']},self.db)
+  self.assertEqual(stale['status'],409)
+  self.assertEqual(self.db.execute('SELECT count(*) FROM social_patterns').fetchone()[0],1)
+  self.assertTrue(run(self.path,{'action':'clear_learning','actorId':'user','expectedEpoch':run(self.path,{'action':'list'},self.db)['epoch'],'scope':row['scope']},self.db)['ok'])
   cleared=social.project_user_edits(snapshot,social.user_edits(self.db))
   self.assertEqual(cleared.state['memory_foundation']['expression_hints'],[])
   self.store.close();self.store=BehaviorStore(self.path);self.db=self.store.db

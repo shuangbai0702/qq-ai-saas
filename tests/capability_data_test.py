@@ -91,7 +91,7 @@ class ManagementTests(unittest.TestCase):
     def test_clear_keeps_facts_and_other_scope(self):
         self.store.social.observe('group:12345','1','好有节目效果','1')
         self.store.social.observe('group:54321','2','另一群的表达','2')
-        self.assertTrue(run(self.file,{'action':'clear_learning','scope':'group:12345'})['ok'])
+        self.assertTrue(run(self.file,{'action':'clear_learning','expectedEpoch':run(self.file,{'action':'list'})['epoch'],'scope':'group:12345'})['ok'])
         self.assertEqual(self.data(scope='group:12345')['patterns'],[])
         self.assertEqual(len(self.data()['facts']),2)
         self.assertEqual(self.store.db.execute('SELECT scope FROM social_samples').fetchall(),[('group:54321',)])
@@ -120,7 +120,7 @@ class ManagementTests(unittest.TestCase):
         batches=summary_learning_batches(self.store.db,'group:12345',[str(i) for i in range(12)])
         self.assertEqual(len(batches[0]['samples']),12)
         chosen={'scope':'group:12345','patterns':[{'expression':'节目效果','situation':'轻松开玩笑','source_ids':[batches[0]['samples'][0]['id'],batches[0]['samples'][1]['id']]}]}
-        run(self.file,{'action':'clear_learning','scope':'group:12345'})
+        run(self.file,{'action':'clear_learning','expectedEpoch':run(self.file,{'action':'list'})['epoch'],'scope':'group:12345'})
         with self.assertRaisesRegex(ValueError,'stale_summary_style_samples'):accept_summary_learning(self.store.db,batches,[chosen])
         self.assertEqual(self.data(scope='group:12345')['patterns'],[])
 

@@ -425,16 +425,18 @@ def edit_learning_by_user(db,data):
     if data['action']=='set_pattern':
         if db.execute('SELECT epoch FROM social_control WHERE id=1').fetchone()[0] != data['expectedEpoch']:
             return {'error': '学习管理状态已变化，请刷新后重试', 'status': 409}
-        db.execute('UPDATE social_control SET epoch=epoch+1 WHERE id=1')
         key = (scope, data['expression'])
         old = db.execute('SELECT updated FROM social_patterns WHERE scope=? AND expression=?', key).fetchone()
         if not old or old[0] != data['expectedUpdated']:
             return {'error': '表达已发生变化，请刷新后重试', 'status': 409}
+        db.execute('UPDATE social_control SET epoch=epoch+1 WHERE id=1')
         if data['disabled']:
             db.execute('INSERT OR IGNORE INTO social_pattern_blocks VALUES(?,?)', key)
         else:
             db.execute('DELETE FROM social_pattern_blocks WHERE scope=? AND expression=?', key)
     elif data['action']=='clear_learning':
+        if db.execute('SELECT epoch FROM social_control WHERE id=1').fetchone()[0]!=data.get('expectedEpoch'):
+            return {'error':'学习管理状态已变化，请刷新后重试','status':409}
         # Global epoch is deliberately conservative: a clear invalidates any
         # in-flight learning batch in this Bot, without affecting other Bots.
         db.execute('UPDATE social_control SET epoch=epoch+1 WHERE id=1')
