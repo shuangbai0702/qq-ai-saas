@@ -4,7 +4,7 @@ import {DshHost} from '../apps/node-agent/src/dsh-host.js';
 // @ts-ignore
 import {createKernel,installedDsh,delegateLocal,sessionIdentity} from '../packages/dsh/kernel.mjs';
 
-test('restarted production host returns pending for an admitted next clip after the prior completion ACK was lost',async t=>{
+for(const textEdited of [false,true])test('restarted production host preserves admitted media after ACK loss'+(textEdited?' and an authenticated tool prompt edit':''),async t=>{
  const root=await mkdtemp(path.join(os.tmpdir(),'dsh-media-ack-loss-'));
  const bot={id:'bot',tenant_id:'tenant',generation:1,revision:2,desired_state:'running',runtime_mode:'dedicated',health:{sampledAt:new Date().toISOString(),protocol:{online:true},ai:{ready:true}}};
  const parent={bot_id:bot.id,tenant_id:bot.tenant_id,generation:bot.generation,config_revision:bot.revision,authority:'foreground',work_id:'original-work',origin_scope:'private:12345',origin_event:'original-event',sender_id:'12345',settings_revision:3,account_revision:4,account_uid:'888'};
@@ -36,8 +36,11 @@ test('restarted production host returns pending for an admitted next clip after 
  await new Promise<void>(resolve=>upstream.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise<void>(resolve=>upstream.close(()=>resolve())));
  const port=(upstream.address() as import('node:net').AddressInfo).port,oldPort=process.env.FISHBOT_DSH_PORT;process.env.FISHBOT_DSH_PORT='0';
  t.after(()=>{if(oldPort===undefined)delete process.env.FISHBOT_DSH_PORT;else process.env.FISHBOT_DSH_PORT=oldPort});
+ const originalConfig={baseUrl:'http://127.0.0.1:'+port+'/v1',model:'fixture',behavior:{ownerUin:'12345'},toolPrompts:{dsh:'old'}};
+ if(textEdited)bot.revision=3;
+ const revisionRows=[{revision:2,config:originalConfig},{revision:3,config:{...originalConfig,toolPrompts:{dsh:'new'}},detail:{source:'authenticated_web_config',actorId:'user',credentialChanged:false}}];
  const agent:any={root,key:Buffer.alloc(32,1),closed:false,context:async()=>({root:botRoot,apiKey:'unused-fixture-key',config:{baseUrl:'http://127.0.0.1:'+port+'/v1',model:'fixture',behavior:{ownerUin:'12345'}}}),
-  db:{query:async(sql:string)=>sql.includes('SELECT ai_port')?[{ai_port:port-1,token:'ipc'}]:[bot]},
+  db:{query:async(sql:string)=>sql.includes('bot_config_revisions')?revisionRows:sql.includes('SELECT ai_port')?[{ai_port:port-1,token:'ipc'}]:[bot]},
   bilibili:{repo:{get:async(_tenant:string,_bot:string,id:string)=>jobs[id],settings:async()=>({revision:3,config:{enabled:true,scopes:['media.analyze']}}),pending:async()=>[jobs['clip-1'],jobs['clip-2']]},catalog:()=>[]}};
  const host=new DshHost(agent,async()=>({discover:async()=>[],close:async()=>{}}));await host.start();t.after(()=>host.stop());
  const {readFile}=await import('node:fs/promises');const bridge=JSON.parse(await readFile(path.join(botRoot,'ai/dsh-bridge.json'),'utf8'));

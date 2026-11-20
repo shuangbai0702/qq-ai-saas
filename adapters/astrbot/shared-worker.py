@@ -142,6 +142,8 @@ async def main():
         from web_base import member_shape
         member.update(confId=conf_id,events=0,modelConfigured=bool(body.get('key')))
         member['_baseShape']=member_shape(body)
+        from tool_config import member_shape as tool_member_shape
+        member['_toolsShape']=tool_member_shape(body)
         members[id]=member
         behavior_settings[id]={'root':body['runtimeRoot'],'tenantId':body.get('tenantId'),'botId':id,'config':body['behaviorConfig'],'generation':body['generation'],'revision':body['revision'],'systemChangePermitId':body.get('systemChangePermitId'),'personaEdit':body.get('personaEdit'),'expectedUin':body.get('uin',''),'_base_owner':object()}
         if body.get('key'):
@@ -219,6 +221,16 @@ async def main():
                 if stamp==prev:return web.json_response({'generation':stamp[0],'revision':stamp[1],'unchanged':True})
             elif id in tombstones and stamp<tombstones[id]:raise web.HTTPConflict()
             if not current and len(members)>=manifest['capacity']:raise web.HTTPConflict(reason='Group capacity reached')
+            from tool_config import member_shape as tool_member_shape,apply_user_tools
+            if (current and body.get('toolsEdit') and current['generation']==body['generation']
+                and current.get('_toolsShape')==tool_member_shape(body)):
+                try:replacement=apply_user_tools(behavior_settings[id],{**body,'config':body['behaviorConfig']})
+                except (ValueError,TypeError,KeyError):raise web.HTTPConflict(reason='Tool region update rejected')
+                behavior_settings[id]=replacement
+                from web_base import member_shape
+                current.update(revision=body['revision'],behaviorConfig=copy.deepcopy(body['behaviorConfig']),toolsEdit=copy.deepcopy(body['toolsEdit']),_baseShape=member_shape(body))
+                behavior['refresh_base'](id)
+                return web.json_response({'generation':stamp[0],'revision':stamp[1],'updatedRegion':'tools'})
             from web_base import member_shape,replace_cached_persona
             if (current and body.get('personaEdit') and current['generation']==body['generation']
                 and current.get('_baseShape')==member_shape(body)):
@@ -232,7 +244,7 @@ async def main():
                 replace_cached_persona(core.persona_mgr,persona,record)
                 behavior_settings[id]=replacement
                 current.update(revision=body['revision'],systemChangePermitId=body.get('systemChangePermitId'),
-                    personaEdit=copy.deepcopy(body['personaEdit']),behaviorConfig=copy.deepcopy(body['behaviorConfig']))
+                    personaEdit=copy.deepcopy(body['personaEdit']),behaviorConfig=copy.deepcopy(body['behaviorConfig']),_toolsShape=tool_member_shape(body))
                 behavior['refresh_base'](id)
                 return web.json_response({'generation':stamp[0],'revision':stamp[1],'updatedRegion':'persona'})
             if request.query.get('baseOnly')=='1':raise web.HTTPConflict(reason='Persona-only update does not match live configuration')

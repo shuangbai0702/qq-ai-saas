@@ -92,3 +92,26 @@ test('Bilibili write requires host authorization and preserves original unknown 
  const k2=await rig(async function*(o){assert.equal(o.tools.length,0);yield*text(final);});
  try{await delegateLocal(k2,denied,{goal:'no grant'});assert.equal(denied.state.calls.length,0);}finally{await k2.close();}
 });
+
+
+test('same Work follow-ups retain native history and replay only their own completed result after restart',async()=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'fishbot-dsh-followup-')),h=host();let requests=0;
+ const stream=async function*(o){requests++;const all=JSON.stringify(o.messages);if(all.includes('follow-up-two')){assert(all.includes('follow-up-one'));assert(all.includes('original-objective'));yield*text('第二次追问结论');}else if(all.includes('follow-up-one')){assert(all.includes('original-objective'));yield*text('第一次追问结论');}else yield*text('原任务结论');};
+ let k=await rig(stream,root);
+ try{
+  assert.equal(await delegateLocal(k,h,{goal:'original-objective'}),'原任务结论');
+  const opts={resumeSessionId:sessionIdentity(h.identity),followup:{id:'next-call-1'}};
+  assert.equal(await delegateLocal(k,h,{goal:'follow-up-one'},opts),'第一次追问结论');
+  assert.equal(await delegateLocal(k,h,{goal:'follow-up-one'},opts),'第一次追问结论');
+  assert.equal(requests,2);
+  await assert.rejects(delegateLocal(k,h,{goal:'changed-body'},opts),/identity conflict/);
+  assert.equal(await delegateLocal(k,h,{goal:'follow-up-two'},{...opts,followup:{id:'next-call-2'}}),'第二次追问结论');
+ }finally{await k.close();}
+ k=await rig(async function*(){throw Error('must not re-execute completed follow-up');},root);
+ try{
+  assert.equal(await delegateLocal(k,h,{goal:'follow-up-one'},{resumeSessionId:sessionIdentity(h.identity),followup:{id:'next-call-1'}}),'第一次追问结论');
+  assert.equal(await delegateLocal(k,h,{goal:'original-objective'},{resumeSessionId:sessionIdentity(h.identity)}),'原任务结论');
+  assert.equal(requests,3);
+  await assert.rejects(delegateLocal(k,host('another-bot'),{goal:'follow-up-one'},{resumeSessionId:sessionIdentity(h.identity),followup:{id:'next-call-1'}}),/ownership/);
+ }finally{await k.close();}
+});

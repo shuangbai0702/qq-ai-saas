@@ -79,6 +79,18 @@ async def main():
             manifest.update(config=copy.deepcopy(config),revision=body['revision'],systemChangePermitId=permit,personaEdit=copy.deepcopy(proof))
             behavior['refresh_base']('qq')
             return web.json_response({'updatedRegion':'persona'})
+    async def update_tools(request):
+        if request.headers.get('Authorization')!='Bearer '+manifest['token']:raise web.HTTPUnauthorized()
+        body=await request.json()
+        async with base_lock:
+            from tool_config import apply_user_tools
+            if body.get('apiKey')!=os.getenv('FISHBOT_MODEL_KEY',''):raise web.HTTPConflict()
+            try:replacement=apply_user_tools(settings['qq'],body)
+            except (ValueError,TypeError,KeyError):raise web.HTTPConflict()
+            settings['qq']=replacement
+            manifest.update(config=copy.deepcopy(replacement['config']),revision=replacement['revision'],toolsEdit=copy.deepcopy(replacement['toolsEdit']))
+            behavior['refresh_base']('qq')
+            return web.json_response({'updatedRegion':'tools'})
     async def health(request):
         if request.headers.get('Authorization')!='Bearer '+manifest['token']:raise web.HTTPUnauthorized()
         return web.json_response({'ready':True,'generation':manifest['generation'],'revision':manifest['revision'],'root':str(root),'pid':os.getpid(),'modelConfigured':bool(os.getenv('FISHBOT_MODEL_KEY')),'metrics':behavior['metrics'],'activity':behavior['activity']()})
@@ -93,7 +105,7 @@ async def main():
         data=await request.clone(client_max_size=4*1024*1024 if request.match_info['operation']=='execute' else 131072).json()
         try:return web.json_response(await behavior['autonomous']('qq',request.match_info['operation'],data))
         except (ValueError,KeyError,TypeError):raise web.HTTPConflict(reason='Autonomous work invalid or stale') from None
-    app=web.Application(client_max_size=131072);app.router.add_get('/health',health);app.router.add_put('/base/persona',update_persona);app.router.add_post('/behavior-data',manage_data);app.router.add_post('/autonomous/{operation}',autonomous_work)
+    app=web.Application(client_max_size=131072);app.router.add_get('/health',health);app.router.add_put('/base/persona',update_persona);app.router.add_put('/base/tools',update_tools);app.router.add_post('/behavior-data',manage_data);app.router.add_post('/autonomous/{operation}',autonomous_work)
     runner=web.AppRunner(app);await runner.setup();await web.TCPSite(runner,'127.0.0.1',manifest['aiPort']+1).start()
     task=asyncio.create_task(core.start())
     worker_lifecycle.install_shutdown(stop)

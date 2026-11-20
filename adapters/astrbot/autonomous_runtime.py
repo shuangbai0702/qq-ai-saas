@@ -579,7 +579,11 @@ class AutonomousRuntime:
             st=self.store(id,s)
             if getattr(st,'_closing',False):raise ValueError('stale_internal_work')
             import pipeline_tools
-            return pipeline_tools.handle(st.pipeline,s,data['operation'],data.get('data',{}))
+            # Only authenticated Node IPC supplies this after checking every
+            # intervening web audit/revision. Permissions and owner are unchanged.
+            revision=data.get('requestRevision',s['revision'])
+            if type(revision) is not int or not 0<revision<=s['revision']:raise ValueError('invalid_tool_request_revision')
+            return pipeline_tools.handle(st.pipeline,{**s,'revision':revision},data['operation'],data.get('data',{}))
         if operation!='cancel' and id in self.settings:
             lease=self.settings[id];st=self.store(id,lease)
             await st.wait_compression()

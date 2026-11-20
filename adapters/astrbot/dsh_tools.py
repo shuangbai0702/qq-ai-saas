@@ -5,19 +5,31 @@ from urllib.parse import urlsplit
 import aiohttp
 from contextlib import asynccontextmanager
 
-def manifest(settings):
+def manifest(settings,allow_newer=False):
     file=Path(settings['root'])/'ai'/'dsh-bridge.json'
     if not file.exists():return None
     if file.stat().st_size>8192:raise ValueError('dsh_manifest_too_large')
     value=json.loads(file.read_text(encoding='utf8'))
     url=urlsplit(value.get('url',''))
     if (value.get('version')!=2 or value.get('mode') not in ('local','production')
-        or any(value.get(k)!=settings.get(k) for k in ('botId','tenantId','generation','revision'))
+        or any(value.get(k)!=settings.get(k) for k in ('botId','tenantId','generation'))
+        or (type(value.get('revision')) is not int or (value['revision']<settings['revision'] if allow_newer else value['revision']!=settings['revision']))
         or url.scheme!='http' or url.hostname!='127.0.0.1' or not url.port
         or url.username or url.password or url.query or url.fragment or url.path!='/delegate'
         or not isinstance(value.get('token'),str) or len(value['token'])!=64):
         raise ValueError('dsh_manifest_invalid')
     return value
+
+def bridge_current(settings,bridge):
+    latest=manifest(settings,allow_newer=True)
+    # Token/revision refresh is transport metadata; Node independently checks
+    # every config revision and active Work. Capability revocation stays a fence.
+    if not latest or latest['revision']<bridge['revision']:return False
+    if latest['revision']==bridge['revision']:return latest==bridge
+    return bool(isinstance(bridge.get('authorityHash'),str) and len(bridge['authorityHash'])==64
+        and latest.get('authorityHash')==bridge['authorityHash'] and latest['token']!=bridge['token']
+        and all(latest.get(k)==bridge.get(k) for k in ('version','mode','botId','tenantId','generation','url','capabilities')))
+
 
 def parent_record(settings,event,current,db,context):
     if context.context.event is not event or not current():raise asyncio.CancelledError('stale DSH Work')
@@ -95,8 +107,8 @@ def tools(settings,event,current,db,bridge,social=None):
         hosted_effect=False
         @property
         def hosted_final_text(self):return True
-        async def call(self,context,goal,background='',constraints=None,image=None):
-            try:return await self.run(context,goal,background,constraints,image=image)
+        async def call(self,context,goal,background='',constraints=None,image=None,continue_task=None):
+            try:return await self.run(context,goal,background,constraints,image=image,continue_task=continue_task)
             except asyncio.CancelledError:raise
             except Exception as error:
                 from native_internal import WorkStopped,WorkBudgetExceeded
@@ -105,13 +117,14 @@ def tools(settings,event,current,db,bridge,social=None):
                 from qq_diagnostics import failure_notice
                 record_diagnostic(settings,{'kind':'dsh_delegation_error','workId':getattr(event.get_extra('_hosted_pipeline'),'event_id',''),'reason':type(error).__name__})
                 return failure_notice(type(error).__name__,stage='delegation')
-        async def run(self,context,goal,background='',constraints=None,_completion=None,*,image=None):
+        async def run(self,context,goal,background='',constraints=None,_completion=None,*,image=None,continue_task=None):
             if context.context.event is not event or not current():raise asyncio.CancelledError('stale DSH Work')
-            if manifest(settings)!=bridge:raise ValueError('dsh_configuration_changed')
+            if not bridge_current(settings,bridge):raise ValueError('dsh_configuration_changed')
             if _completion is None and (not isinstance(goal,str) or not goal.strip() or len(goal)>12000):raise ValueError('invalid_delegation_goal')
             if not isinstance(background,str) or len(background)>16000:raise ValueError('invalid_delegation_background')
             constraints=[] if constraints is None else constraints
             if not isinstance(constraints,list) or len(constraints)>32 or any(not isinstance(x,str) or len(x)>2000 for x in constraints):raise ValueError('invalid_delegation_constraints')
+            if continue_task is not None and (not isinstance(continue_task,str) or not continue_task or len(continue_task)>256 or image is not None or _completion is not None):raise ValueError('invalid_dsh_task_continuation')
             record=parent_record(settings,event,current,db,context)
             control=getattr(context.context,'hosted_run_control',None)
             if record['authority']=='autonomous' and control is None:raise ValueError('dsh_autonomous_budget_required')
@@ -120,7 +133,7 @@ def tools(settings,event,current,db,bridge,social=None):
             if not isinstance(call_id,str) or not call_id:raise ValueError('dsh_tool_call_identity_required')
             def assert_current():
                 if parent_record(settings,event,current,db,context)!=record:raise ValueError('dsh_parent_changed')
-                if manifest(settings)!=bridge:raise ValueError('dsh_configuration_changed')
+                if not bridge_current(settings,bridge):raise ValueError('dsh_configuration_changed')
             if image is not None:
                 if not vision_enabled or record['authority']!='foreground' or _completion is not None:
                     raise ValueError('dsh_image_not_authorized')
@@ -149,6 +162,7 @@ def tools(settings,event,current,db,bridge,social=None):
                         'version':hashlib.sha256(json.dumps(definition,sort_keys=True).encode()).hexdigest(),'definition':definition})
                 return rows+dsh_read_tools.catalog(settings,event,current,db,context,social)
             payload={'protocol':2,'parent':record,'delegationId':call_id,'input':{'goal':goal,'background':background,'constraints':constraints}}
+            if continue_task is not None:payload['continueDelegationId']=continue_task
             if image is not None:payload['imageAnalysis']=True
             if _completion is not None:
                 if record['authority']!='autonomous':raise ValueError('dsh_autonomous_completion_required')
@@ -211,7 +225,9 @@ def tools(settings,event,current,db,bridge,social=None):
             if final is None:raise ValueError('dsh_final_missing')
             return final
     description='将'+('联网搜索、网页查阅、' if web_enabled else '')+'当前授权群的历史深度查证、真实执行结果核对、收藏与素材语义盘点、B站查询及获授权操作、多片段媒体分析完整委托给DSH。只提供目标、必要背景和约束，不指定工具或执行步骤；只接收最终文字，不查询进度。'
+    description+='同一Work的任务追问可用continue_task引用此前dsh_delegate调用ID，复用原对话；省略则创建独立任务。'
     properties={
+        'continue_task':{'type':'string','minLength':1,'maxLength':256},
         'goal':{'type':'string','maxLength':12000},'background':{'type':'string','maxLength':16000},'constraints':{'type':'array','maxItems':32,'items':{'type':'string','maxLength':2000}}}
     if vision_enabled and not event.get_extra('_hosted_internal_work'):
         description+='用户明确要求识图、读取图中文字或查看细节，或主线无法读取当前图片时，使用 image 委托原图分析后再答复；普通图片闲聊由主线直接理解。image={}分析当前消息；图片在前一条消息时填写其真实event_id，仅使用当前会话仍有效的图片。委托也失败时如实说明限制，不把接口不支持或未读取图片说成原图模糊，不凭旧记忆断定本次图片不可读。'
@@ -224,7 +240,7 @@ def tools(settings,event,current,db,bridge,social=None):
 
 async def resume_autonomous(settings,event,current,db,context,completion):
     """Consume an already claimed media completion under this new owned cycle."""
-    bridge=manifest(settings)
+    bridge=manifest(settings,allow_newer=True)
     if not bridge:raise ValueError('dsh_completion_bridge_unavailable')
     if not isinstance(completion.get('dsh'),dict) or not completion['dsh'].get('delegationId'):raise ValueError('dsh_completion_identity_invalid')
     return await tools(settings,event,current,db,bridge)[0].run(context,'',_completion=completion)

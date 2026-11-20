@@ -35,7 +35,7 @@ def member_shape(body):
     Only a hash lives beside the existing runtime member; no credentials or
     configuration history are retained here and this never enters model input.
     """
-    value={k:copy.deepcopy(v) for k,v in body.items() if k not in ('revision','prompt','personaEdit','systemChangePermitId')}
+    value={k:copy.deepcopy(v) for k,v in body.items() if k not in ('revision','prompt','personaEdit','toolsEdit','systemChangePermitId')}
     value.get('behaviorConfig',{}).pop('systemPrompt',None)
     return sha(json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':')))
 

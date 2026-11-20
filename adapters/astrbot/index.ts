@@ -1,4 +1,4 @@
-import path from 'node:path';import {mkdir,writeFile,rename} from 'node:fs/promises';
+import path from 'node:path';import {mkdir,readFile,writeFile,rename} from 'node:fs/promises';
 import {BotConfigSchema,type RuntimeContext,type Health} from '../../packages/contracts/index.js';
 import {ProcessHost} from '../../apps/node-agent/src/process-host.js';
 export class AstrBotAdapter {
@@ -31,6 +31,13 @@ export class AstrBotAdapter {
     await this.host.start(ctx.botId,'ai',this.python,[path.resolve('adapters/astrbot/headless.py'),this.source,root],root,env,[ctx.apiKey,ctx.token]);
   }
   async stop(botId:string){await this.host.stop(botId,'ai')}
+  async applyTools(ctx:RuntimeContext){
+    if(!ctx.toolsEdit||!await this.host.inspect(ctx.botId,'ai'))return false;
+    const r=await fetch(`http://127.0.0.1:${ctx.aiPort+1}/base/tools`,{method:'PUT',headers:{Authorization:`Bearer ${ctx.token}`,'Content-Type':'application/json'},body:JSON.stringify({botId:ctx.botId,tenantId:ctx.tenantId,generation:ctx.generation,revision:ctx.revision,config:ctx.config,toolsEdit:ctx.toolsEdit,apiKey:ctx.apiKey}),signal:AbortSignal.timeout(5000)});
+    if(r.status===404||r.status===409)return false;if(!r.ok)throw Error('Tool update failed');
+    const file=path.join(ctx.root,'ai','runtime.json');const prior=JSON.parse(await readFile(file,'utf8'));
+    await writeFile(file,JSON.stringify({...prior,revision:ctx.revision,config:ctx.config,toolsEdit:ctx.toolsEdit}),{mode:0o600});return true;
+  }
   async applyPersona(ctx:RuntimeContext){
     if(!ctx.personaEdit||!await this.host.inspect(ctx.botId,'ai'))return false;
     const r=await fetch(`http://127.0.0.1:${ctx.aiPort+1}/base/persona`,{method:'PUT',headers:{Authorization:`Bearer ${ctx.token}`,'Content-Type':'application/json'},body:JSON.stringify({botId:ctx.botId,tenantId:ctx.tenantId,generation:ctx.generation,revision:ctx.revision,config:ctx.config,personaEdit:ctx.personaEdit,systemChangePermitId:ctx.systemChangePermitId,apiKey:ctx.apiKey}),signal:AbortSignal.timeout(5000)});

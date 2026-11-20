@@ -27,7 +27,7 @@ export class BilibiliTools {
   await this.settings(tenant,bot,tx);const rows=await tx.query('UPDATE bilibili_settings SET config=$4,revision=revision+1,model_secret=CASE WHEN $5 THEN $6 ELSE model_secret END,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND revision=$3 RETURNING revision',[bot,tenant,revision,JSON.stringify(BilibiliConfigSchema.parse(config)),modelSecret!==undefined,modelSecret??null]);
   if(!rows.length)throw toolConflict('B站配置已变化，请刷新');return rows[0];
  })}
- async admit(bot:any,call:BiliCall,delegation?:{sessionId:string;delegationId:string}){
+ async admit(bot:any,call:BiliCall,delegation?:{sessionId:string;delegationId:string;sessionDelegationId?:string}){
   const operation=biliOperations[call.operation],args=operation.args.parse(call.args);
   const semanticArgs=['comment','delete_comment'].includes(call.operation)?Object.fromEntries(Object.entries(args).filter(([key])=>key!=='bvid')):args;
   const hash=digest(canonical({operation:call.operation,args:semanticArgs}));
@@ -38,8 +38,8 @@ export class BilibiliTools {
    if(call.origin&&call.authority==='foreground'&&call.origin.scope.startsWith('private:')&&call.origin.scope!=='private:'+call.senderId)throw toolConflict('恢复目标与真实发送者不符',403);
    const value={tenant_id:fresh.tenant_id,generation:fresh.generation,operation:call.operation,args,args_digest:hash,bot_id:bot.id,settings_revision:s.revision,account_revision:account?.revision??null,account_uid:account?.uid??null,authority:call.authority,sender_id:call.senderId,mode_epoch:call.epoch,work_id:call.workId,step_id:call.stepId,config_revision:bot.revision,cancel_requested:false,deadlineAt:call.deadlineAt,deadline_at:new Date(call.deadlineAt),origin_scope:call.origin?.scope??'',origin_event:call.origin?.eventId??'',cycle_id:call.authority==='autonomous'?call.workId:null,write:operation.write,continuation:{objective:call.origin?.objective??'',...(call.continuation?{sourceActionId:call.continuation.actionId,sourceOwner:call.continuation.owner}:{})}};
    if(delegation){
-    if(call.operation!=='analyze'||!/^fishbot-[a-f0-9]{64}$/.test(delegation.sessionId)||!delegation.delegationId||delegation.delegationId.length>256)throw toolConflict('委托媒体身份无效',400);
-    Object.assign(value.continuation,{dsh:{sessionId:delegation.sessionId,delegationId:delegation.delegationId}});
+    if(call.operation!=='analyze'||!/^fishbot-[a-f0-9]{64}$/.test(delegation.sessionId)||!delegation.delegationId||delegation.delegationId.length>256||delegation.sessionDelegationId!==undefined&&(typeof delegation.sessionDelegationId!=='string'||!delegation.sessionDelegationId||delegation.sessionDelegationId.length>256))throw toolConflict('委托媒体身份无效',400);
+    Object.assign(value.continuation,{dsh:{sessionId:delegation.sessionId,delegationId:delegation.delegationId,...(delegation.sessionDelegationId?{sessionDelegationId:delegation.sessionDelegationId}:{})}});
    }
    await this.validate(value,s,tx);
    if(call.operation==='analyze'){

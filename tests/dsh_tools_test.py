@@ -58,8 +58,20 @@ class DshBridge(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('old conclusion',result)
             self.assertIn('未完成',result)
         finally:tool_action_id.reset(token)
+    async def test_text_only_revision_keeps_in_flight_result_but_permission_change_does_not(self):
+        self.hold_eof=True;self.bridge['authorityHash']='1'*64;self.file.write_text(json.dumps(self.bridge),encoding='utf8')
+        token=tool_action_id.set('text-only-final')
+        try:
+            task=asyncio.create_task(self.tool().call(self.context,goal='check'))
+            await self.final_written.wait()
+            self.file.write_text(json.dumps({**self.bridge,'revision':2,'token':'b'*64}),encoding='utf8')
+            self.release.set();self.assertEqual(await task,'old conclusion')
+            self.assertTrue(dsh_tools.bridge_current(self.settings,self.bridge))
+            self.file.write_text(json.dumps({**self.bridge,'revision':3,'token':'c'*64,'authorityHash':'2'*64}),encoding='utf8')
+            self.assertFalse(dsh_tools.bridge_current(self.settings,self.bridge))
+        finally:tool_action_id.reset(token)
     async def test_exact_work_and_final_only(self):
-        tool=self.tool();self.assertEqual(tool.name,'dsh_delegate');self.assertEqual(set(tool.parameters['properties']),{'goal','background','constraints'})
+        tool=self.tool();self.assertEqual(tool.name,'dsh_delegate');self.assertEqual(set(tool.parameters['properties']),{'goal','background','constraints','continue_task'})
         token=tool_action_id.set('real-call')
         try:result=await tool.call(self.context,goal='查证')
         finally:tool_action_id.reset(token)
@@ -113,6 +125,18 @@ class DshBridge(unittest.IsolatedAsyncioTestCase):
             failure=await structured(self.tool()).call(self.context,goal='查证')
             self.assertIn('委托执行未完成',failure)
             with self.assertRaises(ValueError):json.loads(failure)
+        finally:tool_action_id.reset(token)
+
+    async def test_follow_up_forwards_only_reference_under_the_current_work(self):
+        token=tool_action_id.set('new-follow-up-call')
+        try:
+            result=await self.tool().call(self.context,goal='进一步解释结果',continue_task='earlier-call')
+            self.assertEqual(result,'真实结果\nhttps://example.org/')
+            self.assertEqual(self.payloads[0]['delegationId'],'new-follow-up-call')
+            self.assertEqual(self.payloads[0]['continueDelegationId'],'earlier-call')
+            self.assertEqual(self.payloads[0]['parent']['origin_scope'],self.work.scope)
+            with self.assertRaisesRegex(ValueError,'invalid_dsh_task_continuation'):
+                await self.tool().run(self.context,goal='bad',continue_task='../bad',image={})
         finally:tool_action_id.reset(token)
 
 if __name__=='__main__':unittest.main()

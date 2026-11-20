@@ -16,6 +16,7 @@ export const BotConfigSchema = z.object({
   provider:z.enum(['deepseek','openai','custom']).default('deepseek'),
   baseUrl:ModelBaseUrlSchema,
   model:z.string().min(1).max(150), auxiliaryModel:z.string().trim().min(1).max(150).optional(), delegationModel:z.string().trim().min(1).max(150).optional(), summaryModel:z.string().trim().min(1).max(150).optional(), favoriteModel:z.string().trim().min(1).max(150).optional(), trigger:z.enum(['mention','all']).default('mention'),
+  toolPrompts:z.object({dsh:z.string().max(12000).default('')}).default({dsh:''}),
   delegatedCapabilities:z.object({webSearch:z.boolean().default(true),groupHistory:z.boolean().default(true),executionReview:z.boolean().default(true),favoriteAudit:z.boolean().default(true)}).default({webSearch:true,groupHistory:true,executionReview:true,favoriteAudit:true}),
   reasoningEffort:z.enum(['none','minimal','low','medium','high','xhigh','max']).optional(),
   groups:z.array(z.string().regex(/^\d{4,20}$/)).max(100).default([]),
@@ -25,7 +26,7 @@ export const BotConfigSchema = z.object({
 export type BotConfig = z.infer<typeof BotConfigSchema>;
 export const ProtocolSchema=z.enum(['mock','napcat','euler']);
 export type ProtocolKind=z.infer<typeof ProtocolSchema>;
-export interface RuntimeContext {botId:string;tenantId:string;root:string;generation:number;revision:number;systemChangePermitId?:string;personaEdit?:{target:string;origins:string[]};aiPort:number;protocolPort:number;token:string;config:BotConfig;apiKey:string;expectedUin:string;runtimeMode?:'dedicated'|'shared';groupId?:string;loginIntent?:'qr'|'resume'}
+export interface RuntimeContext {botId:string;tenantId:string;root:string;generation:number;revision:number;systemChangePermitId?:string;personaEdit?:{target:string;origins:string[]};toolsEdit?:{target:string;permitId:string};aiPort:number;protocolPort:number;token:string;config:BotConfig;apiKey:string;expectedUin:string;runtimeMode?:'dedicated'|'shared';groupId?:string;loginIntent?:'qr'|'resume'}
 export interface Health {alive:boolean;ready:boolean;online?:boolean;pid?:number;rssBytes?:number;metrics?:Record<string,unknown>;detail?:string;mode?:string;memoryPolicy?:unknown;loginState?:LoginState}
 export interface LoginSnapshot {state:LoginState;qr?:string;uin?:string;message?:string;restartRequested?:boolean}
 export interface ProtocolAdapter {
