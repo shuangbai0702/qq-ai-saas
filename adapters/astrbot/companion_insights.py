@@ -69,8 +69,8 @@ def semantic_snapshot(db,scope,subjects,cfg=None):
     return {'scope':scope,'subjects':people,'products':product_snapshot(db,scope,people),
             'fact_versions':[{'subject':person,'name':name,'version':memory_version([r for r in facts if r['subject']==person and r['name']==name])} for person,name in sorted({(r['subject'],r['name']) for r in facts})],
             'relation_versions':[{'subject':r['subject'],'version':memory_version({k:v for k,v in r.items() if k!='last_seen'})} for r in relations],
-            'facts':[row for person in people for row in _fact_state(db,scope,person)],
-            'relations':[row for person in people if (row:=_relation_state(db,scope,person)) is not None],
+            'facts':facts,
+            'relations':relations,
             'writable':{'facts':bool(cfg.get('memory',True) and cfg.get('memoryAutoCapture')),
                         'relations':bool(cfg.get('selfDevelopment',True))}}
 
