@@ -84,6 +84,9 @@ def run(file, data, connection=None):
                 current=note(db)
                 core={'text':current['text'],'updated':current['updated'],'version':fingerprint(current)}
             companion={t:[dict(r) for r in listed(t,'SELECT * FROM '+t+(' WHERE scope=?' if scope else '')+' ORDER BY rowid DESC LIMIT 30',([scope] if scope else []),30)] for t in ['companion_interests','companion_motives','companion_emotion','companion_signals','dialogue_feedback'] if t in tables}
+            from emotion_state import user_version as emotion_version
+            for row in companion.get('companion_emotion',[]):
+                row['version']=emotion_version(row);row.pop('user_edit',None)
             from companion_state import editable_version
             for kind,table in (('interest','companion_interests'),('motive','companion_motives')):
                 for row in companion.get(table,[]):row['version']=editable_version(db,kind,{k:row[k] for k in (('scope','topic') if kind=='interest' else ('scope','subject','topic'))})
@@ -121,6 +124,11 @@ def run(file, data, connection=None):
             if not result.get('ok'):return result
         elif action == 'edit_companion':
             from companion_state import edit_by_user
+            result=edit_by_user(db,data)
+            if not result.get('ok'):return result
+            db.commit();return result
+        elif action == 'edit_emotion':
+            from emotion_state import edit_by_user
             result=edit_by_user(db,data)
             if not result.get('ok'):return result
             db.commit();return result

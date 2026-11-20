@@ -51,5 +51,11 @@ test('authenticated Core Note save uses owner identity, exact CAS and existing S
  const agreementSaved=await app.inject({method:'POST',url,cookies,payload:agreementPayload});assert.equal(agreementSaved.statusCode,200,agreementSaved.body);
  assert.equal((await app.inject({method:'POST',url,cookies,payload:agreementPayload})).statusCode,409);
  const agreementAfter=(await app.inject({method:'GET',url,cookies})).json().agreements[0];assert.equal(agreementAfter.status,'canceled');assert.equal(agreementAfter.revision,2);
+ run(`import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); db.executescript("CREATE TABLE companion_emotion(scope TEXT PRIMARY KEY,kind TEXT,intensity INTEGER,updated REAL,expires REAL,neutral INTEGER); INSERT INTO companion_emotion VALUES('bot_shared','angry',2,1,2,0); CREATE TABLE companion_mood(scope TEXT PRIMARY KEY,valence REAL,energy REAL,updated REAL,event TEXT); INSERT INTO companion_mood VALUES('bot_shared',-.3,.6,1,'original');"); db.commit(); db.close()`);
+ const emotion=(await app.inject({method:'GET',url,cookies})).json().companion.companion_emotion[0];
+ const emotionPayload={action:'edit_emotion',scope:'bot_shared',expectedVersion:emotion.version,kind:'calm',intensity:0,expires:0};
+ assert.equal((await app.inject({method:'POST',url,cookies:other,payload:emotionPayload})).statusCode,404);
+ const emotionSaved=await app.inject({method:'POST',url,cookies,payload:emotionPayload});assert.equal(emotionSaved.statusCode,200,emotionSaved.body);
+ assert.equal((await app.inject({method:'POST',url,cookies,payload:emotionPayload})).statusCode,409);
  const result=await app.inject({method:'GET',url,cookies});assert.equal(result.json().persona_core_note.text,payload.text);assert.notEqual(result.json().persona_core_note.version,version);
 });

@@ -188,13 +188,8 @@ def apply(db,memory,scope,cfg,payload,data,before,now=None):
         elif status in ('resolved','abandoned'):
             db.execute("UPDATE companion_motives SET status=? WHERE scope=? AND subject=? AND topic=? AND status IN ('open','contacted')",(status,scope,person,topic))
     item=data.get('emotion');source=evidence(item,'user')
-    current=db.execute('SELECT kind,intensity,updated,expires,neutral FROM companion_emotion WHERE scope=?',(scope,)).fetchone()
-    if source and current==before['emotion'] and item.get('kind') in emotion_state.LABELS and type(item.get('intensity')) is int and 1<=item['intensity']<=3:
-        kind=item['kind'];strength=0 if kind=='calm' else item['intensity']
-        db.execute('INSERT OR REPLACE INTO companion_emotion VALUES(?,?,?,?,?,0)',(scope,kind,strength,now,now+emotion_state.TTL[kind] if strength else now))
+    if emotion_state.apply_summary(db,scope,item,source,before['emotion'],now):
         db.execute('INSERT OR IGNORE INTO companion_signals VALUES(?,?,?,?,?)',(scope,source['event'],'emotion',item['quote'][:200],now));saved+=1
-        valence=(-1 if kind in ('angry','sad','worried','awkward') else 0 if kind=='calm' else 1)*strength/6
-        db.execute('INSERT OR REPLACE INTO companion_mood VALUES(?,?,?,?,?)',(scope,valence,strength/3,now,source['event']))
     for item in items('relations'):
         source=evidence(item,'user')
         if not source or type(item.get('sentiment')) is not int or item['sentiment'] not in (-1,0,1):continue

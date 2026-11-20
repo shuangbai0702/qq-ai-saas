@@ -58,6 +58,23 @@ class Ownership(unittest.TestCase):
   row=self.db.execute('SELECT expression,situation,sources,weight FROM social_patterns').fetchone()
   self.assertEqual(row,('好耶','朋友分享红茶时',json.dumps(['e']),.3));self.assertEqual(self.snapshot(list(before)),before)
 
+ def test_emotion_user_correction_is_temporary_local_and_fences_late_summary(self):
+  import emotion_state
+  self.db.execute('INSERT INTO companion_emotion VALUES(?,?,?,?,?,0)',(self.scope,'angry',2,self.now,self.now+1200))
+  self.db.execute('INSERT INTO companion_mood VALUES(?,?,?,?,?)',(self.scope,-.3,.6,self.now,'original'))
+  self.db.commit();old=tuple(self.db.execute('SELECT kind,intensity,updated,expires,neutral FROM companion_emotion').fetchone())
+  row=run(self.path,{'action':'list'},self.db)['companion']['companion_emotion'][0]
+  body={'action':'edit_emotion','actorId':'user','scope':self.scope,'kind':'happy','intensity':2,'expires':self.now+300,'expectedVersion':row['version']}
+  other=self.snapshot(['facts','relations','memory_core_notes','memory_summaries','memory_rounds','companion_signals'])
+  self.assertEqual(run(self.path,{**body,'actorId':''},self.db)['status'],403)
+  self.assertEqual(run(self.path,{**body,'expires':self.now+86400},self.db)['status'],400)
+  self.assertTrue(run(self.path,body,self.db)['ok']);self.assertEqual(run(self.path,body,self.db)['status'],409)
+  self.assertFalse(emotion_state.apply_summary(self.db,self.scope,{'kind':'angry','intensity':3},{'event':'old'},old,self.now+1))
+  self.assertEqual(emotion_state.context(self.db,self.scope,self.now)['kind'],'happy')
+  self.assertEqual(emotion_state.context(self.db,self.scope,self.now+301)['kind'],'calm')
+  self.assertEqual(self.snapshot(list(other)),other)
+  self.db.execute('PRAGMA query_only=ON');emotion_state.state(self.db,self.scope);emotion_state.context(self.db,self.scope,self.now);self.db.execute('PRAGMA query_only=OFF')
+
  def test_agreement_archive_pagination_has_matching_totals_and_no_overlap(self):
   import agreement_state
   for index in range(105):
