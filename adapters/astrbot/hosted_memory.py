@@ -235,9 +235,7 @@ def edit_by_user(db,data):
     old = db.execute('SELECT version FROM facts WHERE scope=? AND subject=? AND name=? AND active=1', key).fetchone()
     if not old or old['version'] != data['expectedVersion']:
         return {'error': '记忆已发生变化，请刷新后重试', 'status': 409}
-    from memory_reflection import invalidate
     from memory_scope import person_filter
-    if action=='forget_fact':invalidate(db,scope,data['subject'])
     # Editing is not forgetting. Keep Core Note, summaries, pending
     # evidence and lawful checkpoints intact. Compression compares
     # its cognition snapshot again inside the commit transaction.
@@ -252,6 +250,10 @@ def edit_by_user(db,data):
     db.execute('UPDATE facts SET active=0 WHERE '+where+' AND name=?',args+(data['name'],))
     if action == 'forget_fact':
         db.execute("INSERT INTO memory_blocks(scope,subject,name,block_all,rejected_values,revision) VALUES(?,?,?,1,'[]',0) ON CONFLICT(scope,subject,name) DO UPDATE SET block_all=1", key)
+        db.execute("INSERT INTO fact_metadata(scope,subject,name,kind,origin,importance) VALUES(?,?,?,'stable','explicit',.8) ON CONFLICT(scope,subject,name) DO NOTHING",key)
+        if not proof_column:db.execute('ALTER TABLE fact_metadata ADD COLUMN user_edit TEXT')
+        proof={'actorId':data['actorId'],'target':None,'origins':list(dict.fromkeys([*proof.get('origins',[]),*origins]))}
+        db.execute('UPDATE fact_metadata SET user_edit=? WHERE scope=? AND subject=? AND name=?',(json.dumps(proof,separators=(',',':')),*key))
     else:
         db.execute('INSERT INTO facts VALUES(?,?,?,?,?,?,?,1)', (*key, data['value'], 'platform-edit', time.time(), version))
         db.execute('DELETE FROM facts WHERE '+where+' AND name=? AND version<?',args+(data['name'],max(1,version-9)))
@@ -270,6 +272,7 @@ def edit_by_user(db,data):
 
 def fact_fingerprint(item):
     """Only this fact's identity/version, never an unrelated memory snapshot."""
+    if item is None:return None
     return hashlib.sha256(json.dumps([item.get(k) for k in ('source_scope','subject','name','value','source_event','version')],ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
 
 
@@ -281,7 +284,7 @@ def user_edits(db):
         current=next((fact_item(row,person,'checkpoint_foundation') for row in fact_rows(db,scope,person) if row[0]==name),None)
         # A lawful later compression may replace the user version. Its own
         # transaction owns the new basis; old user authority cannot edit it.
-        if current and proof.get('actorId') and fact_fingerprint(current)==proof.get('target'):
+        if proof.get('actorId') and fact_fingerprint(current)==proof.get('target'):
             result.append({'proof':proof,'fact':current})
     return result
 
@@ -302,7 +305,9 @@ def project_user_edits(snapshot,edits):
     def facts(rows):
         result=[]
         for row in rows:
-            replacement=changes.get(fact_fingerprint(row))
+            identity=fact_fingerprint(row)
+            if identity in changes and changes[identity] is None:continue
+            replacement=changes.get(identity)
             result.append({**replacement,'recall_reason':row['recall_reason']} if replacement and 'recall_reason' in row else copy.deepcopy(replacement or row))
         return result
     def patch(messages):

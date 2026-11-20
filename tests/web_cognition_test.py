@@ -99,6 +99,27 @@ class WebCognition(unittest.TestCase):
   self.db.execute('UPDATE relations SET semantic_updated=semantic_updated+1');self.db.commit()
   self.assertEqual(user_edits(self.db),[],'later compression revokes old edit projection authority')
 
+ def test_forgetting_one_fact_does_not_clear_other_cognition_or_compression_material(self):
+  from context_foundation import arrange
+  from person_memory import profile
+  from hosted_memory import user_edits,project_user_edits
+  from types import SimpleNamespace
+  self.store.memory.remember('private:12345678','12345678','饮料','红茶','source',1)
+  self.store.memory.remember('private:12345678','12345678','城市','成都','source-2',1)
+  self.store.reflection.record('bot_shared','12345678','real-event','未压缩输入','真实回复',now=10)
+  self.db.execute("INSERT INTO memory_summaries(scope,text,sources,updated) VALUES('bot_shared','原摘要','[]',1)");self.db.commit()
+  tables=('memory_core_notes','memory_summaries','memory_pending','memory_rounds','memory_round_material','memory_reconstruction_checkpoints')
+  before={t:self.db.execute('SELECT * FROM '+t).fetchall() for t in tables}
+  state={'memory_foundation':{'facts':profile(self.db,'private:12345678','12345678')['facts']}}
+  dynamic={'role':'user','content':'历史中的红茶不得改写'}
+  messages=arrange([],state)+[dynamic];snapshot=SimpleNamespace(base=messages,wire=messages,state=state)
+  self.assertTrue(run(self.path,{'action':'forget_fact','actorId':'user','scope':'private:12345678','subject':'12345678','name':'饮料','expectedVersion':1},connection=self.db)['ok'])
+  self.assertEqual({t:self.db.execute('SELECT * FROM '+t).fetchall() for t in tables},before)
+  candidate=project_user_edits(snapshot,user_edits(self.db))
+  self.assertEqual(candidate.wire[-1],dynamic)
+  self.assertEqual([r['name'] for r in candidate.state['memory_foundation']['facts']],['城市'])
+  self.assertEqual([r['name'] for r in profile(self.db,'private:12345678','12345678')['facts']],['城市'])
+
  def initial(self):
   journal=ReadonlyJournal(self.db,'bot_shared')
   messages=[{'role':'system','content':'fixed system'},{'role':'user','content':'original input'},{'role':'assistant','content':'original answer'}]
