@@ -1582,6 +1582,16 @@ class Reflection:
                     with self.db:
                         self.db.execute('BEGIN IMMEDIATE')
                         if self.closed or not is_current() or self.epoch()!=epoch:return {'ok':False,'reason':'stale_configuration'}
+                        # A user edit during the provider await changes only
+                        # its authoritative record, never the history/forget
+                        # epoch. Fence the stale complete cognition snapshot
+                        # even when the model omitted that product's operation.
+                        if self.core_note()!=core_before:raise RuntimeError('semantic_core_note_snapshot_changed')
+                        if before is not None:
+                            from companion_insights import semantic_snapshot,snapshot_signature
+                            previous_memory=before['memory_state']
+                            current_memory=semantic_snapshot(self.db,scope,previous_memory['subjects'],cfg)
+                            if snapshot_signature(current_memory)!=snapshot_signature(previous_memory):raise RuntimeError('semantic_cognition_snapshot_changed')
                         if job in ('summary','hold_recovery'):
                             if previous_products:
                                 product_ids=[p['id'] for p in previous_products];product_marks=','.join('?' for _ in product_ids)

@@ -1,4 +1,4 @@
-import {useEffect,useState} from 'react';
+import {useEffect,useRef,useState} from 'react';
 import {api} from './api';
 import {behaviorDefaults} from '../../../packages/contracts/behavior-defaults';
 import type {BotConfig} from '../../../packages/contracts/index';
@@ -8,10 +8,18 @@ export function MemoryControls({config,onChange,botId}:{config:BotConfig;onChang
 }
 
 function CoreNote({botId}:{botId:string}){
- const [value,setValue]=useState<{text:string;updated:number}|null>(null),[error,setError]=useState(''),[refresh,setRefresh]=useState(0);
- useEffect(()=>{const controller=new AbortController();setValue(null);setError('');
-  void api('/bots/'+botId+'/behavior-data',undefined,'GET',controller.signal).then(data=>{if(controller.signal.aborted)return;const note=data.persona_core_note;if(typeof note?.text!=='string')throw new Error('当前实例尚未提供核心记忆数据');setValue(note)}).catch(e=>{if(!controller.signal.aborted)setError((e as Error).message)});
-  return()=>controller.abort();
+ const [value,setValue]=useState<{text:string;updated:number;version:string}|null>(null),[draft,setDraft]=useState(''),[error,setError]=useState(''),[refresh,setRefresh]=useState(0),[busy,setBusy]=useState(false);
+ const owner=useRef(0),write=useRef<AbortController|null>(null);
+ useEffect(()=>{const controller=new AbortController(),epoch=++owner.current;setValue(null);setError('');setBusy(false);write.current?.abort();
+  void api('/bots/'+botId+'/behavior-data',undefined,'GET',controller.signal).then(data=>{if(controller.signal.aborted||epoch!==owner.current)return;const note=data.persona_core_note;if(typeof note?.text!=='string')throw new Error('当前实例尚未提供核心记忆数据');setValue(note);setDraft(note.text)}).catch(e=>{if(!controller.signal.aborted&&epoch===owner.current)setError((e as Error).message)});
+  return()=>{controller.abort();write.current?.abort();owner.current++};
  },[botId,refresh]);
- return <section className="panel"><div className="section-heading"><h3>AI可整理的核心记忆区</h3><p>只有这一段由AI在每次压缩时更新，最多300字，不分多条。固定角色设定、主人身份和权限不会被它修改。</p></div><label className="field"><span>当前核心记忆</span><textarea aria-label="AI核心记忆" readOnly rows={4} value={value?.text??''} placeholder={error?'读取失败':value?'尚未生成；完成下一次压缩后，AI会按实际内容决定是否更新。':'正在读取…'}/></label><small>{value?Array.from(value.text).length+'/300字'+(value.updated?' · 更新于 '+new Date(value.updated*1000).toLocaleString():''):error||'正在读取'}</small><button type="button" className="secondary" onClick={()=>setRefresh(n=>n+1)}>刷新核心记忆</button></section>;
+ async function save(){
+  if(!value?.version||busy)return;
+  const epoch=owner.current,controller=new AbortController();write.current=controller;setBusy(true);setError('');
+  try{await api('/bots/'+botId+'/behavior-data',{action:'edit_core_note',text:draft,expectedVersion:value.version},'POST',controller.signal);if(!controller.signal.aborted&&epoch===owner.current)setRefresh(n=>n+1)}
+  catch(e){if(!controller.signal.aborted&&epoch===owner.current)setError((e as Error).message)}
+  finally{if(!controller.signal.aborted&&epoch===owner.current)setBusy(false);if(write.current===controller)write.current=null}
+ }
+ return <section className="panel"><div className="section-heading"><h3>核心记忆区</h3><p>你可以直接修改这段记忆；保存后用于下一次尚未开始的模型请求。在途请求保留原版本。AI只在合法压缩时整理，不改变角色设定、身份或权限。</p></div><label className="field"><span>当前核心记忆</span><textarea aria-label="AI核心记忆" disabled={!value||busy} rows={4} value={draft} onChange={e=>setDraft(e.target.value)} placeholder={error?'读取失败':value?'尚未生成核心记忆。':'正在读取…'}/></label><small>{error||Array.from(draft).length+'/300字'+(value?.updated?' · 更新于 '+new Date(value.updated*1000).toLocaleString():'')}</small><div className="actions"><button type="button" className="secondary" disabled={busy} onClick={()=>setRefresh(n=>n+1)}>刷新核心记忆</button><button type="button" disabled={!value?.version||busy||draft===value.text||Array.from(draft).length>300} onClick={()=>void save()}>{busy?'保存中…':'保存核心记忆'}</button></div></section>;
 }

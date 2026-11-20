@@ -760,7 +760,7 @@ class ReadonlyJournal:
 
     def prepare(self,messages,stamp,now=None,group_turn=None,reconstruction_authority=None,reconstruction_scope=None,
                 retirement=None,strict=False,compact_policy=False,guarded=True,retained_validator=None,
-                unprojected=None,coverage_view=None,system_transition_authorized=False,web_base_authorized=False):
+                unprojected=None,coverage_view=None,system_transition_authorized=False,web_base_authorized=False,cognition_edit=None):
         from context_transport import READONLY_FIELDS,EVENT_CONTEXT_CURRENT
         now=time.time() if now is None else now
         # SDK native windows can rehydrate a retired batch after restart.
@@ -822,7 +822,9 @@ class ReadonlyJournal:
             if index is not None:excluded.add(index)
         else:
             event_index=None;authority=None;excluded=set(() if index is None else (index,))
-        base=copy.deepcopy([m for i,m in enumerate(messages) if i not in excluded]);old=self.last
+        base=copy.deepcopy([m for i,m in enumerate(messages) if i not in excluded])
+        from web_cognition import project as project_cognition
+        old=project_cognition(self.last,cognition_edit)
         if old and system_transition_authorized and self.db is not None and reconstruction_scope:
             new_head=system_head(base)
             boundary=web_base_authorized or self.checkpoint_system_boundary(reconstruction_scope)

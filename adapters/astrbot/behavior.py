@@ -1823,6 +1823,8 @@ def install_runtime(core,settings):
         main_activation=bool(image_event and image_event.get_extra('_hosted_main_activation'))
         internal=bool(not main_activation and owned and work and work.source=='autonomous' and isinstance(internal_identity,dict) and internal_identity.get('id')==work.event_id)
         shared_mode=bool(foreground and owned)
+        from web_cognition import read as read_cognition_edit
+        cognition_edit=read_cognition_edit(owned.db) if shared_mode else None
         if shared_mode:
             import shared_context
             image_event.set_extra('_hosted_journal_scope',shared_context.main_journal_scope(owned.db))
@@ -1851,7 +1853,7 @@ def install_runtime(core,settings):
                     projected=persona_view(journal.last.base,projected,setting(image_event)['personaEdit'],setting(image_event)['config'].get('systemPrompt',''))
                 system_adoption=bool(setting(image_event).get('personaEdit')) and owned.system_contract.transition_available(
                     projected,setting(image_event).get('systemChangePermitId'),request_identity(),scope=key)
-                projected,tools_seen=shared_context.compose(journal,projected,work.scope,work.event_id,additions,image_event.get_extra('_hosted_shared_tools'),service=work.source not in ('message','deferred_group'),self_id=image_event.get_self_id(),input_digest=image_event.get_extra('_hosted_shared_input_digest'),system_transition_authorized=system_adoption,web_base_authorized=bool(setting(image_event).get('personaEdit')))
+                projected,tools_seen=shared_context.compose(journal,projected,work.scope,work.event_id,additions,image_event.get_extra('_hosted_shared_tools'),service=work.source not in ('message','deferred_group'),self_id=image_event.get_self_id(),input_digest=image_event.get_extra('_hosted_shared_input_digest'),system_transition_authorized=system_adoption,web_base_authorized=bool(setting(image_event).get('personaEdit')),cognition_edit=cognition_edit)
                 image_event.set_extra('_hosted_shared_tools',tools_seen)
                 from context_transport import READONLY_CURRENT,EVENT_CONTEXT_CURRENT
                 native_shared=[m for m in projected if not (m.get('role')=='user' and isinstance(m.get('content'),str) and m['content'].startswith((READONLY_CURRENT+'\n',EVENT_CONTEXT_CURRENT+'\n')))]
@@ -1925,7 +1927,7 @@ def install_runtime(core,settings):
                                          strict=foreground,compact_policy=foreground,guarded=foreground,
                                          retained_validator=(lambda wire:retained_context_visible(owned.db,wire,work.scope,str((lease['config'].get('behavior') or {}).get('ownerUin') or ''))) if foreground else None,
                                          unprojected=unprojected_for_journal,coverage_view=native_view,
-                                         system_transition_authorized=system_transition_authorized,web_base_authorized=bool(lease.get('personaEdit')))
+                                         system_transition_authorized=system_transition_authorized,web_base_authorized=bool(lease.get('personaEdit')),cognition_edit=cognition_edit)
                 if prepared:prepared.validation_dependency=dependency
                 if prepared and main_activation:
                     from activity_context import tail_service

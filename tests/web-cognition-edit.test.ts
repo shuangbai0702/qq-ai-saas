@@ -1,0 +1,30 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,mkdir} from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import {execFileSync} from 'node:child_process';
+import {createApp} from '../apps/control-api/src/app.js';
+import {issueTestInvite} from './helpers/invitations.js';
+
+test('authenticated Core Note save uses owner identity, exact CAS and existing SQLite record',async t=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'fish-cognition-'));
+ const {app,db}=await createApp({root,agent:false});t.after(()=>app.close());
+ const register=async(email:string)=>{const r=await app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(db),email,name:'test',password:'cognition-test-123'}});assert.equal(r.statusCode,200,r.body);return {fish_session:r.cookies[0].value}};
+ const cookies=await register('cognition@example.test'),other=await register('other-cognition@example.test');
+ const created=await app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'cognition test',protocol:'mock'}});assert.equal(created.statusCode,201,created.body);const id=created.json().id;
+ await mkdir(path.join(root,'bots',id),{recursive:true});const file=path.join(root,'bots',id,'behavior.sqlite');
+ const python=path.resolve(process.env.ASTRBOT_PYTHON||'references/astrbot/.venv/Scripts/python.exe');
+ const run=(code:string)=>execFileSync(python,['-X','utf8','-c',code,file],{encoding:'utf8',windowsHide:true});
+ run(`import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); db.execute("CREATE TABLE memory_core_notes(slot INTEGER PRIMARY KEY,text TEXT,scopes TEXT,people TEXT,sources TEXT,updated REAL,schema_version INTEGER DEFAULT 2,source_verification TEXT)"); db.execute("INSERT INTO memory_core_notes VALUES(1,'old','[]','[]','[]',1,2,'unknown')"); db.commit(); db.close()`);
+ const url='/v1/bots/'+id+'/behavior-data';
+ const listed=await app.inject({method:'GET',url,cookies});assert.equal(listed.statusCode,200,listed.body);const version=listed.json().persona_core_note.version;assert.match(version,/^[a-f0-9]{64}$/);
+ const payload={action:'edit_core_note',text:'direct user correction',expectedVersion:version,actorId:'forged'};
+ const unauthenticated=await app.inject({method:'POST',url,payload});assert.equal(unauthenticated.statusCode,401,unauthenticated.body);
+ const denied=await app.inject({method:'POST',url,cookies:other,payload});assert.equal(denied.statusCode,404,denied.body);
+ const saved=await app.inject({method:'POST',url,cookies,payload});assert.equal(saved.statusCode,200,saved.body);assert.equal(saved.json().updatedRegion,'core_note');
+ const stale=await app.inject({method:'POST',url,cookies,payload:{...payload,text:'late overwrite'}});assert.equal(stale.statusCode,409,stale.body);
+ const actual=JSON.parse(run(`import sqlite3,sys,json; db=sqlite3.connect(sys.argv[1]); row=db.execute('SELECT text,user_edit FROM memory_core_notes').fetchone(); print(json.dumps([row[0],json.loads(row[1])])); db.close()`));
+ assert.equal(actual[0],payload.text);assert.notEqual(actual[1].actorId,'forged');assert.ok(actual[1].actorId);
+ const result=await app.inject({method:'GET',url,cookies});assert.equal(result.json().persona_core_note.text,payload.text);assert.notEqual(result.json().persona_core_note.version,version);
+});

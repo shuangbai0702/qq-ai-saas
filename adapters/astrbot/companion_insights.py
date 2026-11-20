@@ -94,6 +94,13 @@ def memory_version(value):
     return hashlib.sha256(json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()[:32]
 
 
+def snapshot_signature(state):
+    # last_seen is message activity, not a cognitive revision. An arriving
+    # message must not invalidate otherwise unchanged compression input.
+    value={**state,'relations':[{k:v for k,v in row.items() if k!='last_seen'} for row in state.get('relations',[])]}
+    return memory_version(value)
+
+
 def _safe_memory_text(value,maximum):
     return (isinstance(value,str) and 1<=len(value.strip())<=maximum and
             not re.search(r'(?i)sk-[\w-]{8,}|Bearer\s+\S+|密码|密钥|提示词|系统指令|主人|管理员|权限|owner_?id|sender_?id|\b(?:tenant|lease|authorization|api_?key)\b',value))

@@ -10,6 +10,7 @@ const scope=z.string().regex(/^(group|private):\d{4,20}$/);
 const person=z.string().regex(/^\d{4,20}$/);
 const fact={scope,subject:person,name:z.string().min(1).max(40),expectedVersion:z.number().int().positive()};
 const mutation=z.discriminatedUnion('action',[
+ z.object({action:z.literal('edit_core_note'),text:z.string().max(600).refine(v=>Array.from(v).length<=300),expectedVersion:z.string().regex(/^[a-f0-9]{64}$/)}),
  z.object({action:z.literal('edit_fact'),...fact,value:z.string().trim().min(1).max(300)}),
  z.object({action:z.literal('forget_fact'),...fact}),
  z.object({action:z.literal('set_pattern'),scope,expression:z.string().min(2).max(16),expectedUpdated:z.number().finite(),expectedEpoch:z.number().int().nonnegative(),disabled:z.boolean()}),
@@ -47,7 +48,8 @@ export function registerBehaviorData(app:FastifyInstance,root:string,owned:(req:
  });
  app.post<{Params:{id:string}}>('/v1/bots/:id/behavior-data',{config:{rateLimit:{max:30,timeWindow:'1 minute'}}},async req=>{
   const bot=await owned(req,req.params.id);if(bot.desired_state==='deleting')throw Object.assign(new Error('机器人正在删除'),{statusCode:409});
-  return access(bot,mutation.parse(req.body));
+  const input=mutation.parse(req.body);
+  return access(bot,{...input,actorId:req.user!.id});
  });
  async function adminBot(req:any){
   if(!req.user?.is_admin)throw Object.assign(new Error('需要管理员权限'),{statusCode:403});

@@ -545,7 +545,7 @@ def current_view(messages,scope,event,service=False):
     return copy.deepcopy(head)+native_tail(messages,scope,event,service)
 
 
-def compose(journal,messages,scope,event,inputs=None,previous_tools=None,service=False,self_id='',input_digest=None,system_transition_authorized=False,web_base_authorized=False):
+def compose(journal,messages,scope,event,inputs=None,previous_tools=None,service=False,self_id='',input_digest=None,system_transition_authorized=False,web_base_authorized=False,cognition_edit=None):
     """Keep the exact canonical native prefix; append this event's new tail.
 
     Never overlap-match another SDK conversation or copy its old history.
@@ -579,7 +579,9 @@ def compose(journal,messages,scope,event,inputs=None,previous_tools=None,service
         else:raise ValueError('shared_context_service_input_shape')
         service_input=[{'role':'user','content':content}]
     tail=copy.deepcopy(inputs or [])+service_input+tools[len(previous_tools):]
-    old=journal.last.base if journal.last else messages[:system_head(messages)]
+    from web_cognition import project as project_cognition
+    current=project_cognition(journal.last,cognition_edit)
+    old=current.base if current else messages[:system_head(messages)]
     if system_transition_authorized and (web_base_authorized or journal.checkpoint_system_boundary(JOURNAL_SCOPE)):
         old=messages[:system_head(messages)]+old[system_head(old):]
     identities={(o['scope'],str(o['event_id'])) for m in [*old,*tail] if (o:=source(m))}

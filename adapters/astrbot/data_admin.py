@@ -89,19 +89,31 @@ def run(file, data, connection=None):
                 summaries=[dict(r) for r in listed('summaries','SELECT '+summary_fields+' FROM memory_summaries'+(' WHERE '+' AND '.join(conditions) if conditions else '')+' ORDER BY id DESC LIMIT 100',summary_args)]
             decisions=[dict(r) for r in listed('decisions','SELECT * FROM autonomy_decisions'+pattern_where+' ORDER BY at DESC LIMIT 50',pattern_args,50)] if 'autonomy_decisions' in tables else []
             pending=[dict(r) for r in listed('pending','SELECT scope,subject,event,question,answer,at FROM memory_pending'+(' WHERE '+' AND '.join(clauses) if clauses else '')+' ORDER BY at DESC LIMIT 100',([scope] if scope else [])+([subject] if subject else []))] if 'memory_pending' in tables else []
-            core=db.execute('SELECT text,updated FROM memory_core_notes WHERE slot=1').fetchone() if 'memory_core_notes' in tables else None
-            return {'persona_core_note':{'text':core['text'],'updated':core['updated']} if core else {'text':'','updated':0},'initialized': True, 'epoch': epoch, 'facts': facts, 'summaries':summaries,'patterns': patterns, 'contacts': contacts, 'decisions':decisions,'relations': relations, 'stats': stats, 'limit': 100,'pending':pending, 'companion': {t:[dict(r) for r in listed(t,'SELECT * FROM '+t+(' WHERE scope=?' if scope else '')+' ORDER BY rowid DESC LIMIT 30',([scope] if scope else []),30)] for t in ['companion_interests','companion_motives','companion_emotion','companion_signals','dialogue_feedback'] if t in tables},'pagination':{'page':page,'totals':totals,'pages':max([1]+[(totals[k]+page_sizes[k]-1)//page_sizes[k] for k in totals])}}
+            core={'text':'','updated':0,'version':''}
+            if 'memory_core_notes' in tables:
+                from web_cognition import note,fingerprint
+                current=note(db)
+                core={'text':current['text'],'updated':current['updated'],'version':fingerprint(current)}
+            return {'persona_core_note':core,'initialized': True, 'epoch': epoch, 'facts': facts, 'summaries':summaries,'patterns': patterns, 'contacts': contacts, 'decisions':decisions,'relations': relations, 'stats': stats, 'limit': 100,'pending':pending, 'companion': {t:[dict(r) for r in listed(t,'SELECT * FROM '+t+(' WHERE scope=?' if scope else '')+' ORDER BY rowid DESC LIMIT 30',([scope] if scope else []),30)] for t in ['companion_interests','companion_motives','companion_emotion','companion_signals','dialogue_feedback'] if t in tables},'pagination':{'page':page,'totals':totals,'pages':max([1]+[(totals[k]+page_sizes[k]-1)//page_sizes[k] for k in totals])}}
         initialize_controls(db)
         db.execute('BEGIN IMMEDIATE')
         action, scope = data['action'], data.get('scope', '')
-        if action in ('edit_fact', 'forget_fact'):
+        if action == 'edit_core_note':
+            from web_cognition import edit
+            result=edit(db,data)
+            if result.get('ok'):db.commit()
+            return result
+        elif action in ('edit_fact', 'forget_fact'):
             key = (scope, data['subject'], data['name'])
             old = db.execute('SELECT version FROM facts WHERE scope=? AND subject=? AND name=? AND active=1', key).fetchone()
             if not old or old['version'] != data['expectedVersion']:
                 return {'error': '记忆已发生变化，请刷新后重试', 'status': 409}
             from memory_reflection import invalidate
             from memory_scope import person_filter
-            invalidate(db,scope,data['subject'])
+            if action=='forget_fact':invalidate(db,scope,data['subject'])
+            # Editing is not forgetting. Keep Core Note, summaries, pending
+            # evidence and lawful checkpoints intact. Compression compares
+            # its cognition snapshot again inside the commit transaction.
             where,args=person_filter(scope,data['subject'])
             version=db.execute('SELECT max(version)+1 FROM facts WHERE '+where+' AND name=?',args+(data['name'],)).fetchone()[0]
             db.execute('UPDATE facts SET active=0 WHERE '+where+' AND name=?',args+(data['name'],))
