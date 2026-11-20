@@ -22,13 +22,16 @@ def tokens(text):
 from memory_scope import initialize_controls
 from memory_scope import person_filter,fact_rows,fact_item,shared_person,blocked_facts,record_correction,release_value,value_hash
 
+def initialize_metadata(db):
+    db.execute('CREATE TABLE IF NOT EXISTS fact_metadata(scope TEXT,subject TEXT,name TEXT,kind TEXT,origin TEXT,importance REAL,last_recalled REAL DEFAULT 0,recalls INTEGER DEFAULT 0,PRIMARY KEY(scope,subject,name))')
+
 class ScopedMemory:
     def __init__(self,db):
         self.db=db;self.closed=False;self.embedding_lock=asyncio.Lock()
         initialize_controls(db)
+        initialize_metadata(db)
         db.executescript('''CREATE INDEX IF NOT EXISTS facts_active_person ON facts(scope,subject,active);
         CREATE INDEX IF NOT EXISTS facts_shared_person ON facts(subject,active,updated);
-        CREATE TABLE IF NOT EXISTS fact_metadata(scope TEXT,subject TEXT,name TEXT,kind TEXT,origin TEXT,importance REAL,last_recalled REAL DEFAULT 0,recalls INTEGER DEFAULT 0,PRIMARY KEY(scope,subject,name));
         CREATE TABLE IF NOT EXISTS memory_capture_budget(scope TEXT,subject TEXT,day INTEGER,count INTEGER,PRIMARY KEY(scope,subject,day));
         CREATE TABLE IF NOT EXISTS memory_embedding_budget(day INTEGER PRIMARY KEY,count INTEGER);
         CREATE TABLE IF NOT EXISTS fact_vector_control(id INTEGER PRIMARY KEY CHECK(id=1),epoch INTEGER NOT NULL);
@@ -239,6 +242,7 @@ def edit_by_user(db,data):
     # evidence and lawful checkpoints intact. Compression compares
     # its cognition snapshot again inside the commit transaction.
     where,args=person_filter(scope,data['subject'])
+    initialize_metadata(db);tables.add('fact_metadata')
     origins=[fact_fingerprint(fact_item(row,data['subject'],'checkpoint_foundation'))
              for row in fact_rows(db,scope,data['subject']) if row[0]==data['name']]
     proof_column='user_edit' in {r[1] for r in db.execute('PRAGMA table_info(fact_metadata)')}

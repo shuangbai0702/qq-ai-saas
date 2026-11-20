@@ -85,13 +85,19 @@ def run(file, data, connection=None):
             from companion_state import editable_version
             for kind,table in (('interest','companion_interests'),('motive','companion_motives')):
                 for row in companion.get(table,[]):row['version']=editable_version(db,kind,{k:row[k] for k in (('scope','topic') if kind=='interest' else ('scope','subject','topic'))})
-            return {'persona_core_note':core,'initialized': True, 'epoch': epoch, 'facts': facts, 'summaries':summaries,'patterns': patterns, 'contacts': contacts, 'decisions':decisions,'relations': relations, 'stats': stats, 'limit': 100,'pending':pending, 'companion':companion,'pagination':{'page':page,'totals':totals,'pages':max([1]+[(totals[k]+page_sizes[k]-1)//page_sizes[k] for k in totals])}}
+            from agreement_state import user_records,user_record_count
+            agreements=user_records(db,scope,subject,page)
+            totals['agreements']=user_record_count(db,scope,subject);page_sizes['agreements']=100
+            return {'persona_core_note':core,'initialized': True, 'epoch': epoch, 'facts': facts, 'summaries':summaries,'patterns': patterns, 'contacts': contacts, 'decisions':decisions,'relations': relations, 'stats': stats, 'limit': 100,'pending':pending, 'companion':companion,'agreements':agreements,'pagination':{'page':page,'totals':totals,'pages':max([1]+[(totals[k]+page_sizes[k]-1)//page_sizes[k] for k in totals])}}
         if data['action'] in ('edit_fact','forget_fact'):
             from memory_scope import initialize_controls
             initialize_controls(db)
         elif data['action'] in ('set_pattern','edit_pattern','clear_learning'):
             from social import initialize_controls
             initialize_controls(db)
+        elif data['action']=='edit_agreement':
+            from agreement_state import initialize
+            initialize(db)
         db.execute('BEGIN IMMEDIATE')
         action, scope = data['action'], data.get('scope', '')
         if action == 'edit_core_note':
@@ -113,6 +119,11 @@ def run(file, data, connection=None):
             if not result.get('ok'):return result
         elif action == 'edit_companion':
             from companion_state import edit_by_user
+            result=edit_by_user(db,data)
+            if not result.get('ok'):return result
+            db.commit();return result
+        elif action == 'edit_agreement':
+            from agreement_state import edit_by_user
             result=edit_by_user(db,data)
             if not result.get('ok'):return result
             db.commit();return result

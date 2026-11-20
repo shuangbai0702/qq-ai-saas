@@ -1623,7 +1623,7 @@ class Reflection:
                                 operation_audit.input_coverage(prompt)
                                 metrics['memoryReviewCoverage']=json.loads(model_json(review_coverage))
                             reviewed=combine(parts)
-                            prompt['existing_memory']={key:before['memory_state'][key] for key in ('scope','subjects','writable')}
+                            prompt['existing_memory']={key:before['memory_state'][key] for key in ('scope','subjects','writable','agreements')}
                             prompt['reviewed_memory_changes']={key:[{k:v for k,v in op.items() if k not in ('expected_version','expected','scope')} for op in operations] for key,operations in reviewed.items() if operations}
                             request={**request,'prompt':memory_json(prompt),'system_prompt':system+' 全部旧认知已经通过独立分页完成比较；reviewed_memory_changes是本批待提交修订，不是已执行回执。请在summary/Core中保留必要变化。本请求的fact_operations、relation_operations、memory_operations只允许create真正的新条目，旧条目修订已完成，不再replace/delete。其他摘要、证据、约定、学习照常。'}
                             digest=summary_request_digest(request,provider,epoch,job,{'family':review_family,'phase':'final'})

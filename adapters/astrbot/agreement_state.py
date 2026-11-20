@@ -21,6 +21,55 @@ MAX_AUDIENCES=8
 AGREEMENT_TTL=30*86400
 
 
+def _user_filter(scope,subject):
+    where=[];args=[]
+    if scope:where.append('source_scope=?');args.append(scope)
+    if subject:where.append('EXISTS(SELECT 1 FROM json_each(participants) WHERE value=?)');args.append(subject)
+    return (' WHERE '+' AND '.join(where) if where else ''),args
+
+
+def user_record_count(db,scope='',subject=''):
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_agreements'").fetchone():return 0
+    where,args=_user_filter(scope,subject)
+    return db.execute('SELECT count(*) FROM memory_agreements'+where,args).fetchone()[0]
+
+
+def user_records(db,scope='',subject='',page=0):
+    """Administrative read of this product; never initialize on a read path."""
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_agreements'").fetchone():return []
+    where,args=_user_filter(scope,subject)
+    handoff='handoff_id' if 'handoff_id' in {r[1] for r in db.execute('PRAGMA table_info(memory_agreements)')} else 'NULL'
+    rows=db.execute('SELECT id,revision,topic,detail,status,due,participants,source_scope,updated,'+handoff+' FROM memory_agreements'+where+" ORDER BY (status IN ('proposed','accepted','uncertain')) DESC,updated DESC,id LIMIT 100 OFFSET ?",(*args,page*100))
+    return [dict(zip(('id','revision','topic','detail','status','due','participants','source_scope','updated','handoff_id'),row)) for row in rows]
+
+
+def review_view(db):
+    # Open slots are bounded at write time. Recent terminal state is necessary
+    # to stop a historical claim from resurrecting a canceled agreement.
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_agreements'").fetchone():return []
+    fields=('id','revision','topic','detail','status','due','source_scope')
+    return [dict(zip(fields,row)) for row in db.execute("SELECT "+','.join(fields)+" FROM memory_agreements WHERE status IN ('proposed','accepted','uncertain') OR updated>=? ORDER BY id",(time.time()-AGREEMENT_TTL,))]
+
+
+
+def edit_by_user(db,data):
+    """User correction is agreement state, never fabricated execution proof."""
+    if not data.get('actorId'):return {'error':'缺少真实用户操作来源','status':403}
+    row=db.execute('SELECT revision,topic,detail,status,due,handoff_id,evidence FROM memory_agreements WHERE id=?',(data.get('id'),)).fetchone()
+    if not row or row[0]!=data.get('expectedRevision'):return {'error':'约定已变化，请刷新后重试','status':409}
+    if row[5]:return {'error':'此约定已关联执行任务，请通过任务入口管理，不能改写执行状态','status':409}
+    topic=data.get('topic');detail=data.get('detail');due=data.get('due');status=data.get('status')
+    if not isinstance(topic,str) or not 2<=len(topic.strip())<=MAX_TOPIC or not isinstance(detail,str) or len(detail)>MAX_DETAIL or not isinstance(due,str) or len(due)>120 or status not in STATUSES:return {'error':'约定字段无效','status':400}
+    if status in OPEN_STATUSES and row[3] not in OPEN_STATUSES and db.execute("SELECT count(*) FROM memory_agreements WHERE status IN ('proposed','accepted','uncertain')").fetchone()[0]>=MAX_OPEN:return {'error':'有效约定已达上限','status':409}
+    if (topic.strip(),detail,status,due)==tuple(row[1:5]):return {'ok':True,'unchanged':True}
+    # Explicit user edits may correct accepted/fulfilled status, but never
+    # create a send receipt, complete a Work or confirm a tool effect.
+    now=time.time();evidence=json.loads(row[6] or '[]')
+    evidence=(evidence+[{'kind':'user_edit','actorId':data['actorId'],'at':now,'revision':row[0]+1}])[-8:]
+    db.execute('UPDATE memory_agreements SET topic=?,detail=?,status=?,due=?,revision=revision+1,updated=?,evidence=? WHERE id=? AND revision=?',(topic.strip(),detail,status,due,now,json.dumps(evidence),data['id'],row[0]))
+    return {'ok':True,'revision':row[0]+1}
+
+
 def initialize(db):
     # Existence-checked, not connection-cached: id() reuse across collected
     # connections must never skip the table's creation on a fresh database.

@@ -1,3 +1,4 @@
+import {AgreementData} from './agreement-data';
 import {ExpressionData} from './expression-data';
 import {RelationshipData} from './relationship-data';
 import {CompanionData} from './companion-data';
@@ -71,6 +72,7 @@ function BehaviorData({id}:{id:string}){
  <label className="field"><span>清理学习材料的会话</span><small>在上方选择群聊并填写群号。清空样本、表达和停用记录，旧批次不会写回。后续新聊天仍可重新学习；需要暂停时请关闭学习开关。不会删除事实记忆。</small></label><button type="button" className="secondary" disabled={busy||!/^group:\d{4,20}$/.test(scope)} onClick={()=>{if(confirm('清空群 '+scopeNumber+' 的学习材料和停用记录？以后可以从新聊天重新学习。事实记忆不会删除。'))void mutate({action:'clear_learning',scope})}}>清空该群学习材料</button>
  <h3>主动联系会话</h3>{!data.contacts.length&&<p>尚无会话记录。</p>}{data.contacts.map((c:any)=><article className="managed-item" key={c.scope}><b>{c.scope} · {c.opted_out?'已暂停或对方已拒绝':c.paused_until>Date.now()/1000?'告别后临时暂停':'未拒绝'}</b>{c.paused_until>Date.now()/1000&&!c.opted_out&&<small>暂停至 {new Date(c.paused_until*1000).toLocaleString()}；对方重新与你交流后恢复。</small>}<small>未回应次数 {c.unanswered} · 最后尝试 {c.last_attempt?new Date(c.last_attempt*1000).toLocaleString():'暂无'}</small><button type="button" className="secondary" disabled={busy||!!c.opted_out} onClick={()=>void mutate({action:'pause_contact',scope:c.scope})}>暂停主动联系</button></article>)}<p>允许被动回复不等于授权主动联系。已拒绝的会话须由对方明确表示“可以主动找我”恢复；后台不覆盖其拒绝。</p>
  <RelationshipData rows={data.relations} busy={busy} onMutate={mutate}/>
+ <AgreementData rows={data.agreements} busy={busy} onMutate={mutate}/>
  <div className="button-row" aria-label="行为数据分页"><button type="button" className="secondary" disabled={busy||loading||pageNumber===0} onClick={()=>void load(pageNumber-1)}>上一页</button><span>第 {pageNumber+1} / {data.pagination?.pages??1} 页；人物状态共 {data.pagination?.totals?.relations??data.relations.length} 条</span><button type="button" className="secondary" disabled={busy||loading||pageNumber+1>=(data.pagination?.pages??1)} onClick={()=>void load(pageNumber+1)}>下一页</button></div></>}
  {editing&&<EditDialog title={'纠正记忆：'+editing.name} fields={[{key:'value',label:'事实内容',value:editing.value,maxLength:300,required:true}]} onClose={()=>setEditing(null)} onSave={async values=>{const error=await mutate({action:'edit_fact',scope:editing.scope,subject:editing.subject,name:editing.name,expectedVersion:editing.version,value:values.value});if(error)throw new Error(error)}}/>}
  </section>;

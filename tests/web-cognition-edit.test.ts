@@ -44,5 +44,12 @@ test('authenticated Core Note save uses owner identity, exact CAS and existing S
  const expressionPayload={action:'edit_pattern',scope:'group:12345678',expression:'好耶',expectedVersion:patterns.patterns[0].version,expectedEpoch:patterns.epoch,situation:'朋友分享茶叶',weight:.4};
  const expressionSaved=await app.inject({method:'POST',url,cookies,payload:expressionPayload});assert.equal(expressionSaved.statusCode,200,expressionSaved.body);
  assert.equal((await app.inject({method:'POST',url,cookies,payload:expressionPayload})).statusCode,409);
+ run(`import sqlite3,sys; sys.path.insert(0,'adapters/astrbot'); from agreement_state import initialize,apply_update; db=sqlite3.connect(sys.argv[1]); initialize(db); apply_update(db,'propose','测试约定','12345678',['12345678','bot'],'private:12345678','sample-agreement'); db.commit(); db.close()`);
+ const agreements=(await app.inject({method:'GET',url,cookies})).json().agreements;
+ const agreementPayload={action:'edit_agreement',id:agreements[0].id,expectedRevision:agreements[0].revision,topic:'测试约定',detail:'用户直接纠正约定',status:'canceled',due:'',actorId:'forged'};
+ assert.equal((await app.inject({method:'POST',url,cookies:other,payload:agreementPayload})).statusCode,404);
+ const agreementSaved=await app.inject({method:'POST',url,cookies,payload:agreementPayload});assert.equal(agreementSaved.statusCode,200,agreementSaved.body);
+ assert.equal((await app.inject({method:'POST',url,cookies,payload:agreementPayload})).statusCode,409);
+ const agreementAfter=(await app.inject({method:'GET',url,cookies})).json().agreements[0];assert.equal(agreementAfter.status,'canceled');assert.equal(agreementAfter.revision,2);
  const result=await app.inject({method:'GET',url,cookies});assert.equal(result.json().persona_core_note.text,payload.text);assert.notEqual(result.json().persona_core_note.version,version);
 });

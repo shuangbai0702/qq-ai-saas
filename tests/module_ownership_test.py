@@ -35,6 +35,19 @@ class Ownership(unittest.TestCase):
   result=run(self.path,{'action':'set_pattern','scope':self.scope,'expression':'好耶','disabled':True,'expectedUpdated':self.now,'expectedEpoch':epoch},self.db)
   self.assertTrue(result['ok']);self.assertEqual(self.snapshot(tables),before)
   self.assertEqual(self.store.social.expressions(self.scope,'红茶'),[])
+ def test_agreement_user_edit_is_cas_local_and_cannot_forge_linked_work_completion(self):
+  import agreement_state
+  row,error=agreement_state.apply_update(self.db,'propose','明天见面','12345678',['12345678','bot'],self.scope,'original-event')
+  self.assertFalse(error);self.db.commit()
+  before=self.snapshot(['facts','relations','memory_core_notes','memory_summaries','memory_rounds','pipeline_events'])
+  body={'action':'edit_agreement','actorId':'real-user','id':row['id'],'expectedRevision':1,'topic':'明天见面','detail':'时间待确认','due':'','status':'uncertain'}
+  self.assertEqual(run(self.path,{**body,'actorId':''},self.db)['status'],403)
+  self.assertTrue(run(self.path,body,self.db)['ok']);self.assertEqual(run(self.path,body,self.db)['status'],409)
+  self.assertEqual(self.snapshot(list(before)),before)
+  self.db.execute("UPDATE memory_agreements SET handoff_id='real-work' WHERE id=?",(row['id'],));self.db.commit()
+  self.assertEqual(run(self.path,{**body,'expectedRevision':2,'status':'fulfilled'},self.db)['status'],409)
+  self.assertEqual(agreement_state.review_view(self.db)[0]['status'],'uncertain')
+  self.db.execute('PRAGMA query_only=ON');agreement_state.user_records(self.db);agreement_state.review_view(self.db);self.db.execute('PRAGMA query_only=OFF')
 
  def test_expression_content_edit_keeps_evidence_blocks_and_other_products(self):
   listed=run(self.path,{'action':'list'},self.db);row=listed['patterns'][0]
@@ -44,6 +57,21 @@ class Ownership(unittest.TestCase):
   self.assertTrue(run(self.path,data,self.db)['ok']);self.assertEqual(run(self.path,data,self.db)['status'],409)
   row=self.db.execute('SELECT expression,situation,sources,weight FROM social_patterns').fetchone()
   self.assertEqual(row,('好耶','朋友分享红茶时',json.dumps(['e']),.3));self.assertEqual(self.snapshot(list(before)),before)
+
+ def test_agreement_archive_pagination_has_matching_totals_and_no_overlap(self):
+  import agreement_state
+  for index in range(105):
+   row,error=agreement_state.apply_update(self.db,'propose','旧约定'+str(index),'12345678',['12345678','bot'],self.scope,str(index))
+   self.assertFalse(error)
+   self.db.execute("UPDATE memory_agreements SET status='canceled' WHERE id=?",(row['id'],))
+  self.db.commit()
+  first=run(self.path,{'action':'list','subject':'12345678'},self.db)
+  second=run(self.path,{'action':'list','subject':'12345678','page':1},self.db)
+  self.assertEqual(first['pagination']['totals']['agreements'],105)
+  self.assertEqual(first['pagination']['pages'],2)
+  self.assertEqual(len(first['agreements']),100);self.assertEqual(len(second['agreements']),5)
+  self.assertFalse({r['id'] for r in first['agreements']} & {r['id'] for r in second['agreements']})
+  self.assertEqual(agreement_state.user_record_count(self.db,subject='87654321'),0)
 
  def test_relation_reset_cleans_only_this_person_across_source_scopes(self):
   self.db.execute("INSERT INTO relations(scope,subject,affinity,last_seen) VALUES(?,?,?,?)",(self.scope,'12345678',5,10))
