@@ -1,4 +1,5 @@
 import {registerActivities} from './activities.js';
+import {isDeepStrictEqual} from 'node:util';
 import {edgeIngressHost,proxyClientIp} from './proxy-client.js';
 import {lockOwnedBot,revokeLoginSessions} from './bot-access.js';
 import {execFile} from 'node:child_process';
@@ -135,7 +136,7 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
    });await audit(req,'bot.created',id);reply.code(201);return{id};
  });
  app.get<{Params:{id:string}}>('/v1/bots/:id',async req=>{const bot=await owned(req,req.params.id);const [revision]=await db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[bot.id,bot.revision]);const secret=(await db.query('SELECT id FROM secrets WHERE bot_id=$1 AND tenant_id=$2',[bot.id,req.user!.tenant_id])).length>0;return{bot,config:revision.config,hasKey:revision.config.platformModel?await platformModels.available():secret,hasPersonalKey:secret,capabilities:agent.protocols[bot.protocol].getCapabilities(),commands:await db.query('SELECT id,kind,status,error,created_at FROM commands WHERE bot_id=$1 ORDER BY created_at DESC LIMIT 10',[bot.id])}});
- app.put<{Params:{id:string}}>('/v1/bots/:id/config',async req=>{const v=z.object({expectedRevision:z.number().int(),config:BotConfigSchema,name:z.string().trim().min(1).max(80),expectedUin:z.string().regex(/^\d{5,20}$|^$/).default(''),apiKey:modelKeyInput,clearKey:z.boolean().optional()}).parse(req.body);let revision=0;
+ app.put<{Params:{id:string}}>('/v1/bots/:id/config',async req=>{const v=z.object({expectedRevision:z.number().int(),config:BotConfigSchema,name:z.string().trim().min(1).max(80),expectedUin:z.string().regex(/^\d{5,20}$|^$/).default(''),apiKey:modelKeyInput,clearKey:z.boolean().optional()}).parse(req.body);let revision=0,personaOnly=false;
    await owned(req,req.params.id);
    if(!v.config.platformModel&&v.apiKey)v.config.baseUrl=await resolveModelBaseUrl((req.body as any).config.baseUrl,v.apiKey);
    await db.transaction(async tx=>{const bot=await owned(req,req.params.id,tx);await tx.query('SELECT id FROM bots WHERE id=$1 FOR UPDATE',[bot.id]);const [current]=await tx.query('SELECT revision,desired_state,deleted_at,expected_uin FROM bots WHERE id=$1',[bot.id]);await requirePlatformCredit(v.config,req.user!.tenant_id,tx);if(current.deleted_at||current.desired_state==='deleting')fail('机器人正在删除',409);if(current.revision!==v.expectedRevision)fail('配置已被其他操作修改，请刷新后重试',409);if(v.expectedUin!==(current.expected_uin||''))fail('不能通过配置修改QQ账号。已绑定账号不可更换；如需换号，请删除机器人后重新创建。',409);revision=current.revision+1;
@@ -146,13 +147,15 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
       if(saved&&destination(saved.config).some((value,index)=>value!==next[index]))fail('模型服务地址已更改，请输入对应的 API Key，或清除已保存的 Key');
      }
      const [prior]=await tx.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[bot.id,current.revision]);
+     const withoutPersona=(config:any)=>Object.fromEntries(Object.entries(config).filter(([key])=>key!=='systemPrompt'));
+     personaOnly=prior?.config?.systemPrompt!==v.config.systemPrompt&&!v.apiKey&&!v.clearKey&&isDeepStrictEqual(withoutPersona(prior.config),withoutPersona(v.config));
      await tx.query('INSERT INTO bot_config_revisions(bot_id,revision,config) VALUES($1,$2,$3)',[bot.id,revision,JSON.stringify(v.config)]);await tx.query('UPDATE bots SET name=$2,revision=$3,expected_uin=$4 WHERE id=$1',[bot.id,v.name,revision,v.expectedUin]);
      if(v.config.proactive&&!prior?.config?.proactive)await new AutonomyRepository(db).enableProactive(bot.tenant_id,bot.id,tx);
      if(v.clearKey)await tx.query('DELETE FROM secrets WHERE bot_id=$1 AND tenant_id=$2',[bot.id,req.user!.tenant_id]);else if(v.apiKey)await tx.query('INSERT INTO secrets(id,tenant_id,bot_id,ciphertext) VALUES($1,$2,$3,$4) ON CONFLICT(bot_id) DO UPDATE SET ciphertext=$4,updated_at=now()',[randomUUID(),req.user!.tenant_id,bot.id,encrypt(key,`${req.user!.tenant_id}:${bot.id}`,v.apiKey)]);
      if(bot.desired_state==='running')await tx.query('INSERT INTO commands(id,bot_id,idempotency_key,generation,kind) VALUES($1,$2,$3,$4,$5)',[randomUUID(),bot.id,`config-${revision}`,bot.generation,'apply']);
      // This audit row is the backend-issued, one-use witness for a System
      // contract transition. No request-body field can mint this permission.
-     await tx.query("INSERT INTO audit_events(tenant_id,event,bot_id,detail) VALUES($1,'config.saved',$2,$3)",[req.user!.tenant_id,bot.id,JSON.stringify({actorId:req.user!.id,revision,source:'authenticated_web_config'})]);});return{revision,applied:false};
+     await tx.query("INSERT INTO audit_events(tenant_id,event,bot_id,detail) VALUES($1,'config.saved',$2,$3)",[req.user!.tenant_id,bot.id,JSON.stringify({actorId:req.user!.id,revision,source:'authenticated_web_config'})]);});let applied=false;if(personaOnly){try{applied=await agent.applyUserPersona(req.params.id,req.user!.tenant_id)}catch{req.log.warn({botId:req.params.id},'Persona live apply pending; durable apply command retained')}}return{revision,applied};
  });
  app.put<{Params:{id:string}}>('/v1/bots/:id/qq-account',async req=>{
   const v=z.object({expectedRevision:z.number().int(),expectedUin:z.string().regex(/^\d{5,20}$|^$/)}).parse(req.body);

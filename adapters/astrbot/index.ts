@@ -31,5 +31,15 @@ export class AstrBotAdapter {
     await this.host.start(ctx.botId,'ai',this.python,[path.resolve('adapters/astrbot/headless.py'),this.source,root],root,env,[ctx.apiKey,ctx.token]);
   }
   async stop(botId:string){await this.host.stop(botId,'ai')}
+  async applyPersona(ctx:RuntimeContext){
+    if(!ctx.personaEdit||!await this.host.inspect(ctx.botId,'ai'))return false;
+    const r=await fetch(`http://127.0.0.1:${ctx.aiPort+1}/base/persona`,{method:'PUT',headers:{Authorization:`Bearer ${ctx.token}`,'Content-Type':'application/json'},body:JSON.stringify({botId:ctx.botId,tenantId:ctx.tenantId,generation:ctx.generation,revision:ctx.revision,config:ctx.config,personaEdit:ctx.personaEdit,systemChangePermitId:ctx.systemChangePermitId,apiKey:ctx.apiKey}),signal:AbortSignal.timeout(5000)});
+    if(r.status===404||r.status===409)return false;
+    if(!r.ok)throw Error('Persona update failed');
+    // Persist the existing launch manifest only after the live update succeeds.
+    await writeFile(path.join(ctx.root,'ai','persona.txt'),ctx.config.systemPrompt,{mode:0o600});
+    await writeFile(path.join(ctx.root,'ai','runtime.json'),JSON.stringify({generation:ctx.generation,revision:ctx.revision,systemChangePermitId:ctx.systemChangePermitId,personaEdit:ctx.personaEdit,token:ctx.token,aiPort:ctx.aiPort,expectedUin:ctx.expectedUin,groups:ctx.config.groups,botId:ctx.botId,tenantId:ctx.tenantId,config:ctx.config}),{mode:0o600});
+    return true;
+  }
   async probe(ctx:RuntimeContext):Promise<Health>{const p=await this.host.inspect(ctx.botId,'ai');const h:Health={alive:!!p,ready:false,...(p?{pid:p.pid,rssBytes:p.rssBytes,memoryPolicy:p.memoryPolicy}:{})};if(!h.alive)return h;try{const r=await fetch(`http://127.0.0.1:${ctx.aiPort+1}/health`,{headers:{Authorization:`Bearer ${ctx.token}`},signal:AbortSignal.timeout(1500)});const data:any=await r.json();return {...h,ready:r.ok&&data.generation===ctx.generation&&data.revision===ctx.revision,metrics:data.metrics?.qq,detail:data.modelConfigured?'模型已配置，API可用性需实际对话验证':'尚未配置模型Key'}}catch{return h}}
 }

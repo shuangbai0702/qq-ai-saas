@@ -95,6 +95,15 @@ export class NodeAgent {
  ORDER BY r.revision DESC,a.id DESC LIMIT 1`,[bot.id,bot.revision,bot.tenant_id,revision.config.systemPrompt]);
  const personaEdit=permit?{target:createHash('sha256').update(revision.config.systemPrompt).digest('hex'),origins:(await this.db.query("SELECT DISTINCT config->>'systemPrompt' AS persona FROM bot_config_revisions WHERE bot_id=$1 AND revision<=$2",[bot.id,bot.revision])).map(row=>createHash('sha256').update(row.persona||'').digest('hex'))}:undefined;const config=BotConfigSchema.parse(revision.config);const model=config.platformModel?resolvePlatformModel(config,this.key,bot):{config,apiKey:revision.ciphertext&&revision.current_config.baseUrl===revision.config.baseUrl&&(revision.current_config.behavior?.embeddingBaseUrl||'')===(revision.config.behavior?.embeddingBaseUrl||'')?decrypt(this.key,bot.tenant_id+':'+bot.id,revision.ciphertext):''};return{botId:bot.id,tenantId:bot.tenant_id,root:path.join(this.root,'bots',bot.id),generation:bot.generation,revision:bot.revision,systemChangePermitId:permit?.id,personaEdit,aiPort:instance.ai_port,protocolPort:instance.protocol_port,token:instance.token,...model,expectedUin:binding?.qq_uin||bot.expected_uin||'',runtimeMode:bot.runtime_mode,groupId:bot.group_id}}
  aiFor(bot:any){return bot.runtime_mode==='shared'?this.shared:this.ai}
+ async applyUserPersona(id:string,tenantId:string){
+   const [bot]=await this.db.query("SELECT * FROM bots WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL AND desired_state='running'",[id,tenantId]);
+   if(!bot)return false;
+   const group=bot.runtime_mode==='shared'?await this.shared.group(id):undefined;
+   if(!await this.host.inspect(group?.id||id,'ai'))return false;
+   const ctx=await this.context(bot);if(!ctx.personaEdit)return false;
+   if(group){await this.shared.attach(group,ctx,true);return true;}
+   return this.ai.applyPersona(ctx);
+ }
  async sharedEligible(ctx:RuntimeContext){const [bot]=await this.db.query('SELECT * FROM bots WHERE id=$1',[ctx.botId]);if(!bot||bot.deleted_at||bot.runtime_mode!=='shared'||bot.desired_state!=='running'||bot.tenant_id!==ctx.tenantId||bot.generation!==ctx.generation||bot.revision!==ctx.revision||!ctx.expectedUin)return false;const protocol=this.protocols[bot.protocol];return !!(await protocol.getHealth(ctx)).online&&(await protocol.queryIdentity(ctx))===ctx.expectedUin}
  async reconcileSharedMembers(){
    // Old releases retained stopped memberships indefinitely. Do not erase
@@ -210,10 +219,11 @@ export class NodeAgent {
      const superseded=()=>Object.assign(new Error('命令已被新的生命周期或配置替代'),{superseded:true});
      if(!await current())throw superseded();
      const recovering=command.kind==='restart'&&command.idempotency_key.startsWith('recover-');
+     const personaApplied=command.kind==='apply'&&bot.runtime_mode!=='shared'&&await this.ai.applyPersona(ctx);
      // Automatic recovery repairs the missing component. A failed shared AI
      // must not stop an online QQ, and a failed protocol must not detach a
      // healthy member or restart an independent AI. Manual restart is unchanged.
-     if(!recovering&&(bot.runtime_mode!=='shared'||command.kind==='restart'))await ai.stop(bot.id);
+     if(!personaApplied&&!recovering&&(bot.runtime_mode!=='shared'||command.kind==='restart'))await ai.stop(bot.id);
      if(command.kind==='restart'&&!recovering)await protocol.stop(bot.id);
      if(!await current())throw superseded();
      // Shared SDK slots belong only to online QQ accounts. The protocol can
@@ -233,7 +243,7 @@ export class NodeAgent {
      if(recovering&&command.idempotency_key.includes('-readiness-')&&recoveryHealth?.alive&&!recoveryHealth.ready&&bot.runtime_mode!=='shared')await ai.stop(bot.id);
      if(!sharedOnline)await this.shared.stop(bot.id);
      else if(recovering&&command.idempotency_key.includes('-readiness-')&&bot.runtime_mode==='shared'&&!recoveryHealth?.ready)await this.shared.recoverReadiness(ctx);
-     else if(!recovering||!recoveryHealth?.ready)await ai.start(ctx);
+     else if(!personaApplied&&(!recovering||!recoveryHealth?.ready))await ai.start(ctx);
      if(!await current()){await ai.stop(bot.id);throw superseded()}
      if(command.kind!=='apply'&&!(await protocol.getHealth(ctx)).alive){if(!await current()){await ai.stop(bot.id);throw superseded()}await protocol.beginLogin(ctx);if(!await current()){await ai.stop(bot.id);await protocol.stop(bot.id);throw superseded()}}
      await this.db.query("UPDATE bots SET observed_state='starting',last_error=NULL WHERE id=$1 AND generation=$2",[bot.id,command.generation])}

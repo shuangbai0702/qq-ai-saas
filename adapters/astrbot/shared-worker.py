@@ -235,6 +235,7 @@ async def main():
                     personaEdit=copy.deepcopy(body['personaEdit']),behaviorConfig=copy.deepcopy(body['behaviorConfig']))
                 behavior['refresh_base'](id)
                 return web.json_response({'generation':stamp[0],'revision':stamp[1],'updatedRegion':'persona'})
+            if request.query.get('baseOnly')=='1':raise web.HTTPConflict(reason='Persona-only update does not match live configuration')
             try:
                 if current or id in behavior['stores']:await unload(id)
                 await install(id,body)
