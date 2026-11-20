@@ -40,7 +40,7 @@ async def main():
                 await original(message)
             platform.handle_msg=gated
     from behavior import install_runtime
-    behavior=install_runtime(core,{'qq':{'root':str(root.parent),'tenantId':manifest.get('tenantId'),'botId':manifest.get('botId',root.parent.name),'config':manifest.get('config',{}),'generation':manifest['generation'],'revision':manifest['revision'],'systemChangePermitId':manifest.get('systemChangePermitId'),'expectedUin':manifest.get('expectedUin','')}})
+    behavior=install_runtime(core,{'qq':{'root':str(root.parent),'tenantId':manifest.get('tenantId'),'botId':manifest.get('botId',root.parent.name),'config':manifest.get('config',{}),'generation':manifest['generation'],'revision':manifest['revision'],'systemChangePermitId':manifest.get('systemChangePermitId'),'personaEdit':manifest.get('personaEdit'),'expectedUin':manifest.get('expectedUin','')}})
     from native_ingress import bind as bind_ingress
     for platform in core.platform_manager.get_insts():
         if hasattr(platform,'convert_message'):

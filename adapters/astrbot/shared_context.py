@@ -538,13 +538,14 @@ def current_view(messages,scope,event,service=False):
     decode/recompress the SDK's competing copy of that same historical prefix.
     """
     from context_transport import READONLY_CURRENT,EVENT_CONTEXT_CURRENT
-    head=[m for m in messages if m.get('role') in ('system','developer') or
-          m.get('role')=='user' and isinstance(m.get('content'),str) and
-          m['content'].startswith((READONLY_CURRENT+'\n',EVENT_CONTEXT_CURRENT+'\n'))]
+    from readonly_journal import system_head
+    boundary=system_head(messages)
+    head=messages[:boundary]+[m for m in messages[boundary:] if m.get('role')=='user' and isinstance(m.get('content'),str)
+          and m['content'].startswith((READONLY_CURRENT+'\n',EVENT_CONTEXT_CURRENT+'\n'))]
     return copy.deepcopy(head)+native_tail(messages,scope,event,service)
 
 
-def compose(journal,messages,scope,event,inputs=None,previous_tools=None,service=False,self_id='',input_digest=None,system_transition_authorized=False):
+def compose(journal,messages,scope,event,inputs=None,previous_tools=None,service=False,self_id='',input_digest=None,system_transition_authorized=False,web_base_authorized=False):
     """Keep the exact canonical native prefix; append this event's new tail.
 
     Never overlap-match another SDK conversation or copy its old history.
@@ -579,7 +580,7 @@ def compose(journal,messages,scope,event,inputs=None,previous_tools=None,service
         service_input=[{'role':'user','content':content}]
     tail=copy.deepcopy(inputs or [])+service_input+tools[len(previous_tools):]
     old=journal.last.base if journal.last else messages[:system_head(messages)]
-    if system_transition_authorized and journal.checkpoint_system_boundary(JOURNAL_SCOPE):
+    if system_transition_authorized and (web_base_authorized or journal.checkpoint_system_boundary(JOURNAL_SCOPE)):
         old=messages[:system_head(messages)]+old[system_head(old):]
     identities={(o['scope'],str(o['event_id'])) for m in [*old,*tail] if (o:=source(m))}
     if not service and (scope,str(event)) not in identities:raise ValueError('shared_context_unobserved_event')

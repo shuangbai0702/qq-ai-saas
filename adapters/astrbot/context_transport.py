@@ -288,11 +288,12 @@ def request_context_view(system,contexts,prompt,policy,current_rules,context,too
         history.insert(position,{'role':'user','content':READONLY_CURRENT+'\n'+model_json(readonly)})
     if platform_system is not None:
         from context_protocol import persona_reference
-        # Convert only the fresh SDK configuration preamble. The Journal owns
-        # old submitted roles and admits the new layout only at a legal boundary.
+        from web_base import without_sdk_persona
+        # The SDK embeds the selected Persona in its preamble as well. Keep
+        # its other instructions, but provide the Persona in one region only.
         for i,message in enumerate(history):
             if message.get('role')!='system':break
-            history[i]=persona_reference(message['content'])
+            history[i]=persona_reference(without_sdk_persona(message['content'],system))
         if system:history.insert(0,persona_reference(system))
     return stable,history
 _REMINDER=re.compile(r'<system_reminder>User ID: (\d+), Nickname: ([^\n]*)\nCurrent datetime: ([^\n]+), Weekday: [A-Za-z]+</system_reminder>')

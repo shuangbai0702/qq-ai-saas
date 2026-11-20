@@ -33,6 +33,11 @@ def validate_member(id,body):
     require('tenantId' not in body or text(body['tenantId'],80,False))
     permit=body.get('systemChangePermitId')
     require(permit is None or isinstance(permit,str) and re.fullmatch(r'\d{1,20}',permit) is not None)
+    proof=body.get('personaEdit')
+    require(proof is None or permit is not None and isinstance(proof,dict) and set(proof)=={'target','origins'}
+        and proof['target']==__import__('hashlib').sha256(body['prompt'].encode()).hexdigest()
+        and isinstance(proof['origins'],list) and bool(proof['origins'])
+        and all(isinstance(v,str) and re.fullmatch(r'[0-9a-f]{64}',v) for v in proof['origins']))
     groups=body.get('groups')
     require(isinstance(groups,list) and len(groups)<=100 and all(isinstance(g,str) and re.fullmatch(r'\d{4,20}',g) for g in groups))
     cfg=body.get('config');platform=body.get('platform');behavior=body.get('behaviorConfig')
@@ -134,9 +139,11 @@ async def main():
         await core.persona_mgr.initialize()
         conf_id=await core.astrbot_config_mgr.create_conf(cfg,name=id)
         member={k:v for k,v in body.items() if k not in ('key','config','prompt')}
+        from web_base import member_shape
         member.update(confId=conf_id,events=0,modelConfigured=bool(body.get('key')))
+        member['_baseShape']=member_shape(body)
         members[id]=member
-        behavior_settings[id]={'root':body['runtimeRoot'],'tenantId':body.get('tenantId'),'botId':id,'config':body['behaviorConfig'],'generation':body['generation'],'revision':body['revision'],'systemChangePermitId':body.get('systemChangePermitId'),'expectedUin':body.get('uin','')}
+        behavior_settings[id]={'root':body['runtimeRoot'],'tenantId':body.get('tenantId'),'botId':id,'config':body['behaviorConfig'],'generation':body['generation'],'revision':body['revision'],'systemChangePermitId':body.get('systemChangePermitId'),'personaEdit':body.get('personaEdit'),'expectedUin':body.get('uin',''),'_base_owner':object()}
         if body.get('key'):
             provider=copy.deepcopy(body['config']['provider'][0]);provider.update(id='provider-'+id,key=[body['key']])
             # load_provider initializes the real SDK but does not save the key.
@@ -212,6 +219,22 @@ async def main():
                 if stamp==prev:return web.json_response({'generation':stamp[0],'revision':stamp[1],'unchanged':True})
             elif id in tombstones and stamp<tombstones[id]:raise web.HTTPConflict()
             if not current and len(members)>=manifest['capacity']:raise web.HTTPConflict(reason='Group capacity reached')
+            from web_base import member_shape,replace_cached_persona
+            if (current and body.get('personaEdit') and current['generation']==body['generation']
+                and current.get('_baseShape')==member_shape(body)):
+                old=behavior_settings[id]
+                persona='persona-'+id
+                await db_helper.update_persona(persona,system_prompt=body['prompt'])
+                record=await db_helper.get_persona_by_id(persona)
+                if record is None:raise web.HTTPConflict(reason='Persona projection missing')
+                replacement={**old,'config':copy.deepcopy(body['behaviorConfig']),'revision':body['revision'],
+                    'systemChangePermitId':body.get('systemChangePermitId'),'personaEdit':copy.deepcopy(body['personaEdit'])}
+                replace_cached_persona(core.persona_mgr,persona,record)
+                behavior_settings[id]=replacement
+                current.update(revision=body['revision'],systemChangePermitId=body.get('systemChangePermitId'),
+                    personaEdit=copy.deepcopy(body['personaEdit']),behaviorConfig=copy.deepcopy(body['behaviorConfig']))
+                behavior['refresh_base'](id)
+                return web.json_response({'generation':stamp[0],'revision':stamp[1],'updatedRegion':'persona'})
             try:
                 if current or id in behavior['stores']:await unload(id)
                 await install(id,body)

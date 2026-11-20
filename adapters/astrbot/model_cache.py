@@ -176,6 +176,9 @@ def message_shape(messages,previous=()):
                   'messagesSha':hashlib.sha256(json.dumps(shape).encode()).hexdigest()[:24]}
 
 def current_lease(event,provider):
+    from web_base import request_lease
+    snapshot=request_lease(event)
+    if snapshot is not None:return snapshot
     lease=event.get_extra('_hosted_lease') if event else None
     if isinstance(lease,dict):return lease
     decision=_decision.get()
@@ -265,6 +268,13 @@ def unbind_system_contract(provider):
     if provider is not None:
         binding=_system_contracts.get(id(provider))
         if binding and binding[0] is provider:_system_contracts.pop(id(provider),None)
+
+
+def pin_request_configuration(lease):
+    value=_attempt.get()
+    if value and isinstance(lease,dict):
+        value['lease']=lease
+        value['systemPermitId']=lease.get('systemChangePermitId')
 
 
 def begin_attempt(event,provider,system_contract=None,system_permit_id=None):

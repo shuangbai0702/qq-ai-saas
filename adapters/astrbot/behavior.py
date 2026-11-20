@@ -313,10 +313,13 @@ def install_runtime(core,settings):
     care=RuntimeCare(stores,stop_requested=lambda:bool(getattr(getattr(core,'_hosted_stop_fence',None),'quiescing',False)))
     core._hosted_care=care
     care_timer=asyncio.create_task(care.run())
-    def setting(event):return settings.get(event.get_platform_id())
+    def setting(event):
+        from web_base import request_lease
+        return request_lease(event) or settings.get(event.get_platform_id())
     def current(event):
-        s=setting(event)
-        return s is not None and event.get_extra('_hosted_lease') is s and event.get_platform_id() not in core.event_bus.stopped_platforms
+        from web_base import same_owner
+        s=settings.get(event.get_platform_id())
+        return s is not None and same_owner(event.get_extra('_hosted_lease'),s) and event.get_platform_id() not in core.event_bus.stopped_platforms
     def delivery_current(event):
         if not current(event):return False
         st=stores.get(event.get_platform_id())
@@ -1653,6 +1656,7 @@ def install_runtime(core,settings):
                     import agreement_state
                     event.set_extra('_hosted_agreement_fence',(scope,agreement_state.agreements_stamp(owner.db,scope)))
                 event.set_extra('_hosted_context_fence',(owner,owner.reflection.epoch(),ids,scope,owner.reflection.context_dependency(ids,scope)))
+            if foreground:bound.arguments['system_prompt']=setting(event)['config'].get('systemPrompt','')
             platform=foreground_system(setting(event)['config'].get('delegatedCapabilities') or {}) if foreground else None
             bound.arguments['system_prompt'],bound.arguments['contexts']=request_context_view(bound.arguments.get('system_prompt'),bound.arguments.get('contexts'),bound.arguments.get('prompt'),protocol,current_rules,context,bound.arguments.get('tool_calls_result'),incremental_policy=True,platform_system=platform)
             metrics[event.get_platform_id()]['requests']+=1
@@ -1842,9 +1846,12 @@ def install_runtime(core,settings):
                 additions=await constrain_messages(additions,image_memo)
                 projected=shared_context.refresh_deliveries(projected,owned.db,journal)
                 from system_contract import request_identity
-                system_adoption=journal.checkpoint_system_boundary(key) and owned.system_contract.transition_available(
+                if journal.last and setting(image_event).get('systemChangePermitId') and setting(image_event).get('personaEdit'):
+                    from web_base import persona_view
+                    projected=persona_view(journal.last.base,projected,setting(image_event)['personaEdit'],setting(image_event)['config'].get('systemPrompt',''))
+                system_adoption=bool(setting(image_event).get('personaEdit')) and owned.system_contract.transition_available(
                     projected,setting(image_event).get('systemChangePermitId'),request_identity(),scope=key)
-                projected,tools_seen=shared_context.compose(journal,projected,work.scope,work.event_id,additions,image_event.get_extra('_hosted_shared_tools'),service=work.source not in ('message','deferred_group'),self_id=image_event.get_self_id(),input_digest=image_event.get_extra('_hosted_shared_input_digest'),system_transition_authorized=system_adoption)
+                projected,tools_seen=shared_context.compose(journal,projected,work.scope,work.event_id,additions,image_event.get_extra('_hosted_shared_tools'),service=work.source not in ('message','deferred_group'),self_id=image_event.get_self_id(),input_digest=image_event.get_extra('_hosted_shared_input_digest'),system_transition_authorized=system_adoption,web_base_authorized=bool(setting(image_event).get('personaEdit')))
                 image_event.set_extra('_hosted_shared_tools',tools_seen)
                 from context_transport import READONLY_CURRENT,EVENT_CONTEXT_CURRENT
                 native_shared=[m for m in projected if not (m.get('role')=='user' and isinstance(m.get('content'),str) and m['content'].startswith((READONLY_CURRENT+'\n',EVENT_CONTEXT_CURRENT+'\n')))]
@@ -1897,7 +1904,7 @@ def install_runtime(core,settings):
                 system_transition_authorized=False
                 if foreground and journal.last is not None:
                     from system_contract import request_identity
-                    system_transition_authorized=owned.system_contract.transition_available(projected,lease.get('systemChangePermitId'),request_identity(),scope=key)
+                    system_transition_authorized=bool(lease.get('personaEdit')) and owned.system_contract.transition_available(projected,lease.get('systemChangePermitId'),request_identity(),scope=key)
                     if not system_transition_authorized:
                         # A history checkpoint cannot authorize an independent
                         # System transition. Keep its committed vector before
@@ -1918,7 +1925,7 @@ def install_runtime(core,settings):
                                          strict=foreground,compact_policy=foreground,guarded=foreground,
                                          retained_validator=(lambda wire:retained_context_visible(owned.db,wire,work.scope,str((lease['config'].get('behavior') or {}).get('ownerUin') or ''))) if foreground else None,
                                          unprojected=unprojected_for_journal,coverage_view=native_view,
-                                         system_transition_authorized=system_transition_authorized)
+                                         system_transition_authorized=system_transition_authorized,web_base_authorized=bool(lease.get('personaEdit')))
                 if prepared:prepared.validation_dependency=dependency
                 if prepared and main_activation:
                     from activity_context import tail_service
@@ -2087,9 +2094,15 @@ def install_runtime(core,settings):
         foreground=is_foreground_event(event)
         attempt_token=begin_attempt(event,self,system_contract=getattr(system_store,'system_contract',None) if foreground else None,
                                     system_permit_id=lease.get('systemChangePermitId') if foreground and isinstance(lease,dict) else None)
-        writer=None
+        writer=None;config_token=None
         try:
             writer=await writer_enter(system_store,event,foreground)
+            if foreground:
+                from web_base import pin_request
+                lease=settings[event.get_platform_id()]
+                config_token=pin_request(event,lease)
+                from model_cache import pin_request_configuration
+                pin_request_configuration(lease)
             if foreground and system_store:
                 import periodic_guidance
                 await periodic_guidance.prepare_goals(system_store,event,setting(event),lambda:current(event) and delivery_current(event))
@@ -2149,6 +2162,8 @@ def install_runtime(core,settings):
             if writer:writer.release()
             model_journal_pending.reset(journal_token)
             reset_attempt(attempt_token)
+            from web_base import release_request
+            release_request(config_token)
     async def text_stream(self,*args,**kwargs):
         journal_token=model_journal_pending.set(None)
         from model_cache import begin_attempt,finish_attempt,reset_attempt,current_lease
@@ -2161,9 +2176,15 @@ def install_runtime(core,settings):
         foreground=is_foreground_event(event)
         attempt_token=begin_attempt(event,self,system_contract=getattr(system_store,'system_contract',None) if foreground else None,
                                     system_permit_id=lease.get('systemChangePermitId') if foreground and isinstance(lease,dict) else None)
-        last_response=None;writer=None;completion_done=False
+        last_response=None;writer=None;completion_done=False;config_token=None
         try:
             writer=await writer_enter(system_store,event,foreground)
+            if foreground:
+                from web_base import pin_request
+                lease=settings[event.get_platform_id()]
+                config_token=pin_request(event,lease)
+                from model_cache import pin_request_configuration
+                pin_request_configuration(lease)
             if foreground and system_store:
                 import periodic_guidance
                 await periodic_guidance.prepare_goals(system_store,event,setting(event),lambda:current(event) and delivery_current(event))
@@ -2211,6 +2232,8 @@ def install_runtime(core,settings):
             if writer:writer.release()
             model_journal_pending.reset(journal_token)
             reset_attempt(attempt_token)
+            from web_base import release_request
+            release_request(config_token)
     # Pinned upstream otherwise retries some failures up to ten times. Hosted
     # mode fails the request once; the next user message may retry deliberately.
     async def no_retry(self,error,*args,**kwargs):raise error
@@ -2491,6 +2514,7 @@ def install_runtime(core,settings):
     from model_cache import loaded_build
     runtime['build']=loaded_build()
     runtime['prepare_raw_ingress']=prepare_raw_ingress
+    runtime['refresh_base']=lambda id:store(id,settings[id])
     print('FISHBOT_RUNTIME_BUILD '+model_json(runtime['build']),flush=True)
     core._hosted_runtime_binding={'settings':settings,'runtime':runtime,'closed':False}
     return runtime

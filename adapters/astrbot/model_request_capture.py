@@ -78,7 +78,8 @@ def begin(request):
     try:
         from astrbot.core.platform.astr_message_event import current_message_event
         event=current_message_event.get()
-        lease=event.get_extra('_hosted_lease') if event else None
+        from web_base import request_lease
+        lease=(request_lease(event) or event.get_extra('_hosted_lease')) if event else None
         bot_id=event.get_platform_id() if event else None
         kind='event'
         if event is None:
