@@ -1,5 +1,5 @@
 """Controlled protocol delays: no QQ account, model or private chat involved."""
-import asyncio,json,sqlite3,sys,unittest
+import asyncio,hashlib,json,sqlite3,sys,time,unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -12,13 +12,14 @@ class VoiceTests(unittest.IsolatedAsyncioTestCase):
     def store(self):
         db=sqlite3.connect(':memory:')
         self.addCleanup(db.close)
-        db.executescript('''CREATE TABLE pipeline_work_inputs(scope,event,payload,voice,seen DEFAULT 0,status DEFAULT 'queued');
-          CREATE TABLE fishbot_shared_inputs(scope,event);''')
+        db.executescript('''CREATE TABLE pipeline_work_inputs(scope,event,subject,created,payload,voice,seen DEFAULT 0,status DEFAULT 'queued');
+          CREATE TABLE fishbot_shared_inputs(scope,event);
+          CREATE TABLE fishbot_readonly_journals(scope,version,payload,sha);''')
         return SimpleNamespace(db=db,slot_changed=asyncio.Event())
 
     def raw(self,st,id='1'):
         raw={'message_id':id,'user_id':123456,'self_id':900000,'message_type':'private','message':[{'type':'record','data':{'file':'private-path'}}]}
-        st.db.execute('INSERT INTO pipeline_work_inputs(scope,event,payload) VALUES(?,?,?)',('private:123456',id,json.dumps(raw)))
+        st.db.execute('INSERT INTO pipeline_work_inputs(scope,event,subject,created,payload) VALUES(?,?,?,?,?)',('private:123456',id,'123456',time.time(),json.dumps(raw)))
         voice.retain(st.db,'private:123456',id,raw);st.db.commit()
         return raw
 
@@ -42,6 +43,52 @@ class VoiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls),1)
         self.assertEqual(json.loads(st.db.execute('SELECT payload FROM pipeline_work_inputs').fetchone()[0]),raw)
         self.assertNotIn('private-path',str(result['message']))
+
+    async def test_committed_group_voice_does_not_block_next_work_after_restart(self):
+        from context_protocol import event_message,model_json
+        st=self.store();self.raw(st)
+        voice_state=json.dumps({'state':'success','text':'已提交','finished':True})
+        st.db.execute("UPDATE pipeline_work_inputs SET scope='group:654321',status='deferred',voice=?",(voice_state,))
+        # No shared staging row and no loaded journal after a restart.
+        scope=model_json('bot_shared')
+        origin={'scope':'group:654321','event_id':'1','sender_id':'123456'}
+        payload=model_json({'scope':scope,'base':[event_message(origin,[{'type':'text','text':'[QQ语音] 已提交'}])]})
+        st.db.execute('INSERT INTO fishbot_readonly_journals VALUES(?,1,?,?)',(scope,payload,hashlib.sha256(payload.encode()).hexdigest()))
+        await asyncio.wait_for(voice.ready(st),1)
+        self.assertEqual(st.db.execute('SELECT seen,status,voice FROM pipeline_work_inputs').fetchone(),(0,'deferred',voice_state))
+        self.raw(st)
+        waiter=asyncio.create_task(voice.ready(st));await asyncio.sleep(0)
+        self.assertFalse(waiter.done(),'a colliding ID in another scope is still pending')
+        waiter.cancel()
+        with self.assertRaises(asyncio.CancelledError):await waiter
+
+    async def test_orphaned_staging_fails_once_and_preserves_recoverable_input(self):
+        st=self.store();raw=self.raw(st)
+        st.db.execute('UPDATE pipeline_work_inputs SET created=?',(time.time()-100,))
+        with self.assertRaisesRegex(voice.VoiceInputNotReady,'qq_voice_staging_timeout'):
+            await asyncio.wait_for(voice.ready(st),1)
+        await asyncio.wait_for(voice.ready(st),1)
+        value=voice.load(st.db,'private:123456','1')
+        self.assertEqual((value['state'],value['finished'],value['staging_error']),('unknown',True,'timeout'))
+        self.assertEqual(json.loads(st.db.execute('SELECT payload FROM pipeline_work_inputs').fetchone()[0]),raw)
+        async def forbidden(*a,**kw):raise AssertionError('recovery repeated ASR')
+        derived=await voice.prepare(st,raw,forbidden)
+        self.assertEqual(derived['message'][0]['data']['text'],'[QQ语音：转写结果未知]')
+
+    async def test_hard_timeout_cannot_wait_forever_for_cancellation(self):
+        st=self.store();raw=self.raw(st);release=asyncio.Event();finished=asyncio.Event()
+        async def slow(*a,**kw):
+            try:await asyncio.Future()
+            except asyncio.CancelledError:
+                await release.wait();finished.set();return {'text':'迟到'}
+        try:
+            with patch.object(voice,'SOFT_TIMEOUT',.005),patch.object(voice,'HARD_TIMEOUT',.015):
+                result=await asyncio.wait_for(voice.prepare(st,raw,slow),1)
+            self.assertEqual(result['message'][0]['data']['text'],'[QQ语音：转写结果未知]')
+        finally:
+            release.set()
+        await asyncio.wait_for(finished.wait(),1)
+        self.assertEqual(voice.load(st.db,'private:123456','1')['state'],'unknown')
 
     async def test_soft_timeout_can_receive_late_success(self):
         st=self.store();raw=self.raw(st);release=asyncio.Event()

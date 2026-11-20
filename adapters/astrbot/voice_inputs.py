@@ -8,6 +8,17 @@ import uuid
 SOFT_TIMEOUT = 20
 HARD_TIMEOUT = 60
 RESULT_RETRY_DELAY = .5
+STAGING_GRACE = 15
+READY_POLL_INTERVAL = 2
+
+
+class VoiceInputNotReady(TimeoutError):
+    """The exact input could not be staged before a model request."""
+
+
+def _observe_task_result(task):
+    if not task.cancelled():
+        task.exception()
 
 
 def has_voice(raw):
@@ -62,6 +73,7 @@ async def prepare(st, raw, call, current=lambda: True):
         task=asyncio.create_task(_prepare(st,raw,call,current));running[key]=task
         def release(done):
             if running.get(key) is done:running.pop(key,None)
+            _observe_task_result(done)
         task.add_done_callback(release)
     return await asyncio.shield(task)
 
@@ -84,7 +96,7 @@ async def transcribe(st, scope, identifier, owner, call, current):
         if not current() or getattr(st, '_storage_closed', False):
             raise asyncio.CancelledError('voice_binding_changed')
         value = load(st.db, scope, identifier)
-        if value.get('owner') != owner or value.get('finished'):
+        if not value or value.get('owner') != owner or value.get('finished'):
             raise asyncio.CancelledError('voice_owner_changed')
         value.update(attempts=2, reason='qq_result_unavailable')
         with st.db:
@@ -120,10 +132,11 @@ async def _prepare(st, raw, call, current):
                     result = await asyncio.wait_for(asyncio.shield(task), SOFT_TIMEOUT)
                 except asyncio.TimeoutError:
                     value = load(st.db, scope, identifier)
-                    value['state'] = 'unknown'
-                    with st.db:
-                        st.db.execute('UPDATE pipeline_work_inputs SET voice=? WHERE scope=? AND event=?',
-                                      (json.dumps(value), scope, identifier))
+                    if value and value.get('owner') == owner and not value.get('finished'):
+                        value['state'] = 'unknown'
+                        with st.db:
+                            st.db.execute('UPDATE pipeline_work_inputs SET voice=? WHERE scope=? AND event=?',
+                                          (json.dumps(value), scope, identifier))
                     result = await asyncio.wait_for(asyncio.shield(task), HARD_TIMEOUT - SOFT_TIMEOUT)
                 if not current():
                     raise asyncio.CancelledError('voice_binding_changed')
@@ -143,8 +156,8 @@ async def _prepare(st, raw, call, current):
                 if not getattr(st,'_storage_closed',False):finish(st.db, scope, identifier, owner, 'unknown' if uncertain else 'failed', reason=reason)
             finally:
                 if not task.done():
+                    task.add_done_callback(_observe_task_result)
                     task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
                 st.slot_changed.set()
         value = load(st.db, scope, identifier)
     derived = copy.deepcopy(raw)
@@ -173,14 +186,64 @@ async def ready(st, current=lambda: True):
 
 
 async def _ready(st,current):
+    loop=asyncio.get_running_loop()
+    limit=HARD_TIMEOUT+STAGING_GRACE
+    deadline=loop.time()+limit
+    committed=None
     while current():
         st.slot_changed.clear()
-        row = st.db.execute("""SELECT 1 FROM pipeline_work_inputs i
+        rows = st.db.execute("""SELECT i.scope,i.event,i.subject,i.created,i.voice FROM pipeline_work_inputs i
           WHERE i.voice IS NOT NULL AND i.seen=0 AND i.payload IS NOT NULL
           AND i.status IN ('pending','queued','owned','deferred') AND
+          json_extract(i.voice,'$.staging_error') IS NULL AND
           (coalesce(json_extract(i.voice,'$.finished'),0)=0 OR NOT EXISTS
-           (SELECT 1 FROM fishbot_shared_inputs q WHERE q.scope=i.scope AND q.event=i.event)) LIMIT 1""").fetchone()
-        if not row:
+           (SELECT 1 FROM fishbot_shared_inputs q WHERE q.scope=i.scope AND q.event=i.event))""").fetchall()
+        if rows and committed is None:
+            # This task holds the Bot's Writer. The committed base cannot
+            # change while we wait for ingress, so read it only once.
+            committed=_committed_origins(st)
+        blocked=[row for row in rows if row[:3] not in committed] if rows else []
+        if not blocked:
             return
-        await st.slot_changed.wait()
+        now=time.time()
+        overdue=[row for row in blocked if now-max(row[3],json.loads(row[4]).get('started',0))>=limit]
+        if overdue:
+            _record_staging_timeout(st,overdue)
+            raise VoiceInputNotReady('qq_voice_staging_timeout')
+        remaining=deadline-loop.time()
+        if remaining<=0:
+            raise VoiceInputNotReady('qq_voice_wait_budget_exhausted')
+        try:
+            await asyncio.wait_for(st.slot_changed.wait(),min(remaining,READY_POLL_INTERVAL))
+        except asyncio.TimeoutError:
+            pass
     raise asyncio.CancelledError('voice_input_binding_changed')
+
+
+def _committed_origins(st):
+    from context_protocol import model_json,source
+    from shared_context import JOURNAL_SCOPE
+    journal=getattr(st,'model_journals',{}).get(JOURNAL_SCOPE)
+    if journal and journal.last and not journal.retired_reason:
+        messages=journal.last.base
+    else:
+        from journal_storage import read_snapshot
+        snapshot=read_snapshot(st.db,model_json(JOURNAL_SCOPE))
+        messages=snapshot['base'] if snapshot else ()
+    # The shared queue disappears on commit. Business custody or seen=0 in
+    # another scope says nothing about whether that exact input reached Wire.
+    return {(origin['scope'],str(origin['event_id']),str(origin['sender_id']))
+            for message in messages if (origin:=source(message))}
+
+
+def _record_staging_timeout(st,rows):
+    with st.db:
+        for scope,identifier,_,_,previous in rows:
+            value=json.loads(previous)
+            if not value.get('finished'):
+                value.update(state='unknown',finished=True,reason='staging_timeout')
+            # Keep the ASR verdict and the delivery failure separate. The raw
+            # input and its original queue owner can still recover normally.
+            value['staging_error']='timeout'
+            st.db.execute('UPDATE pipeline_work_inputs SET voice=? WHERE scope=? AND event=? AND voice=?',
+                          (json.dumps(value,ensure_ascii=False),scope,identifier,previous))
