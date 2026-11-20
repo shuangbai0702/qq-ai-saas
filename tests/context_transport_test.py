@@ -212,7 +212,8 @@ class SnapshotLayout(unittest.TestCase):
         raw=self.snapshot();before=copy.deepcopy(raw)
         system,history=request_context_view('人格',[],None,'策略','规则',json.dumps(raw))
         first=snapshot(history)
-        self.assertEqual({k:first[k] for k in raw},raw)
+        expected=copy.deepcopy(raw);expected['autonomous_experience'].pop('sampledAt')
+        self.assertEqual({k:first[k] for k in raw},expected)
         self.assertEqual(raw,before)
         raw['identity']['owner']=True;raw['permissions']['send']=True
         raw['persona_core_note']['text']='纠正后的便签';raw['state']['conversation_summaries']=[]
@@ -220,7 +221,8 @@ class SnapshotLayout(unittest.TestCase):
         same,next_history=request_context_view('人格',[],None,'策略','规则',json.dumps(raw))
         current=snapshot(next_history)
         self.assertEqual(same,system)
-        self.assertEqual({k:current[k] for k in raw},raw)
+        expected=copy.deepcopy(raw);expected['autonomous_experience'].pop('sampledAt')
+        self.assertEqual({k:current[k] for k in raw},expected)
         self.assertEqual(snapshot(history),first,'an already-built request never changes')
 
 
@@ -301,7 +303,8 @@ class SnapshotLayout(unittest.TestCase):
                 if isinstance(value,dict) and isinstance(target.get(key),dict):merge(target[key],value)
                 else:target[key]=value
         merge(authority,readonly)
-        self.assertEqual(authority,raw)
+        expected=copy.deepcopy(raw);expected['autonomous_experience'].pop('sampledAt')
+        self.assertEqual(authority,expected)
 
 class Wiring(unittest.IsolatedAsyncioTestCase):
     async def test_actual_runtime_provider_wrapper_projects_requests(self):
@@ -348,7 +351,7 @@ class Wiring(unittest.IsolatedAsyncioTestCase):
                 proof={'scope':scope,'event':'event-1','subject':'12345678','text':old['content'][0]['text'],'images':[],'complete':True,'digest':digest(old),'reply':'历史回复'}
                 owned.db.execute('INSERT INTO memory_summary_coverage VALUES(?,?,?,?,?)',(scope,'event-1','12345678',coverage_digest(proof),identifier));owned.db.commit()
                 latest=user();latest['content'][0]['text']=latest['content'][0]['text'].replace('event-1','event-2')
-                lease={'config':{'behavior':{'memory':True}}};settings['fixture']=lease
+                lease={'config':{'behavior':{'memory':True,'groupParticipationGroups':['55555']}}};settings['fixture']=lease
                 extra={'_hosted_lease':lease,'_hosted_pipeline':NS(source='message',scope=scope,event_id='event-2'),'_hosted_memory_epoch':owned.reflection.epoch()}
                 event=NS(get_platform_id=lambda:'fixture',get_extra=lambda k,d=None:extra.get(k,d),set_extra=lambda k,v:extra.__setitem__(k,v))
                 token=current_message_event.set(event)
@@ -363,24 +366,47 @@ class Wiring(unittest.IsolatedAsyncioTestCase):
                             await ProviderOpenAIOfficial._prepare_chat_payload(NS(),contexts=[user(),{'role':'assistant','content':'历史回复'},latest,event_packet])
                     self.assertEqual(extra['_hosted_summary_materials'][0]['event'],'event-2')
                     self.assertEqual(runtime['metrics']['fixture']['summaryHistoryMessagesOmitted'],2)
+                    # Normal runtime starts with the canonical shared Journal.
+                    # The previous store intentionally exercised missing-marker
+                    # recovery; it must not be silently migrated by this test.
+                    owned.close();owned=BehaviorStore(Path(folder)/'runtime.sqlite');runtime['stores']['fixture']=owned
+                    import shared_context
+                    shared_context.activate_empty(owned.db,{'behavior':{'groupParticipationGroups':['55555']}})
+                    owned.shared_context=True
+                    extra['_hosted_memory_epoch']=owned.reflection.epoch()
+                    event.get_self_id=lambda:'99999999'
                     # Exercise the installed text_chat wrapper commit, failure,
                     # cancellation and late configuration invalidation. Entry
                     # has no event; the fake SDK binds it before real prepare.
                     from context_protocol import READONLY_CURRENT,model_json
                     from readonly_journal import ReadonlyJournal
-                    provider=NS();provider._prepare_chat_payload=lambda **kw:ProviderOpenAIOfficial._prepare_chat_payload(provider,**kw)
+                    provider=NS(_sanitize_assistant_messages=lambda payload:ProviderOpenAIOfficial._sanitize_assistant_messages(payload));provider._prepare_chat_payload=lambda **kw:ProviderOpenAIOfficial._prepare_chat_payload(provider,**kw)
                     control.update(event=event,runtime=runtime,settings=settings)
                     def packet(value):return {'role':'user','content':READONLY_CURRENT+'\n'+model_json({'recent_messages':[value]})}
                     def live_event():return {'role':'user','content':EVENT_CONTEXT_CURRENT+'\n'+model_json({'authority':{'identity':{'sender_id':'12345678'}},'policy':'fixed policy','currentGuidance':'current guidance','meaning':'platform event data'})}
                     def packets(value):return [live_event(),packet(value)]
-                    scope='private:87654321';extra['_hosted_pipeline']=NS(source='message',scope=scope,event_id='event-2')
+                    scope='private:12345678';extra['_hosted_pipeline']=NS(source='message',scope=scope,event_id='event-2',subject='12345678',summary_materials=[],stop=lambda *args:None)
                     native=[latest]
                     async def invoke(messages):
+                        work=extra['_hosted_pipeline']
+                        if not hasattr(work,'summary_materials'):work.summary_materials=[]
+                        if not hasattr(work,'subject'):work.subject='12345678'
+                        if not hasattr(work,'stop'):work.stop=lambda *args:None
+                        if work.source=='message':
+                            from context_protocol import source
+                            current=next((m for m in messages if (o:=source(m)) and o['scope']==work.scope and str(o['event_id'])==work.event_id),None)
+                            if current:
+                                owned.db.execute('INSERT OR IGNORE INTO fishbot_shared_inputs(scope,event,message,created) VALUES(?,?,?,?)',(work.scope,work.event_id,json.dumps(current),100))
+                                owned.db.commit()
+                        if control.get('last_work')!=(work.source,work.event_id):extra.pop('_hosted_shared_tools',None)
+                        control['last_work']=(work.source,work.event_id)
                         current_message_event.set(None)
                         return await ProviderOpenAIOfficial.text_chat(provider,contexts=messages)
                     await invoke(native+packets('first'))
-                    journal=owned.model_journals[scope];first=copy.deepcopy(journal.last.wire)
-                    native+=[{'role':'assistant','content':'confirmed answer'},{'role':'user','content':'next actual question'}]
+                    journal=owned.model_journals['bot_shared'];first=copy.deepcopy(journal.last.wire)
+                    next_input=user('next actual question');next_input['content'][0]['text']=next_input['content'][0]['text'].replace('event-1','event-3')
+                    native+=[{'role':'assistant','content':'confirmed answer'},next_input]
+                    extra['_hosted_pipeline'].event_id='event-3'
                     await invoke(native+packets('second'))
                     self.assertEqual(control['payload']['messages'][:len(first)],first)
                     self.assertIsNotNone(journal.last)
@@ -404,7 +430,7 @@ class Wiring(unittest.IsolatedAsyncioTestCase):
                     # Autonomous ToolLoop uses the same wire continuity, but
                     # its owner is the exact Work, never the chat scope.
                     internal={'id':'internal-a'}
-                    foreground_journal=owned.model_journals[scope];foreground_last=foreground_journal.last
+                    foreground_journal=owned.model_journals['bot_shared'];foreground_last=foreground_journal.last
                     for index in range(7):owned.model_journals['private:'+str(20000000+index)]=ReadonlyJournal()
                     foreground_keys={key for key in owned.model_journals if isinstance(key,str)}
                     extra['_hosted_internal_work']=internal
@@ -419,7 +445,7 @@ class Wiring(unittest.IsolatedAsyncioTestCase):
                         await invoke(native+[packet('internal latest')])
                         wire=control['payload']['messages'];self.assertEqual(wire[:len(first)],first)
                         self.assertEqual(wire[len(first):len(first)+2],native[-2:])
-                        self.assertIs(owned.model_journals[scope],foreground_journal)
+                        self.assertIs(owned.model_journals['bot_shared'],foreground_journal)
                         self.assertIs(foreground_journal.last,foreground_last)
                         self.assertTrue(foreground_keys<=owned.model_journals.keys())
                         internal={'id':'internal-b'};extra['_hosted_internal_work']=internal
@@ -442,6 +468,7 @@ class Wiring(unittest.IsolatedAsyncioTestCase):
                     # mere disappearance of native history, allows continuity.
                     import time
                     group='group:55555';person='12345678'
+                    before_group_turns=owned.model_journals['bot_shared'].last.turns
                     extra['_hosted_group_round_history']=True
                     def group_message(identifier):
                         return {'role':'user','content':SOURCE+model_json({'scope':group,'event_id':identifier,'sender_id':person})+'\nquestion '+identifier}
@@ -456,7 +483,7 @@ class Wiring(unittest.IsolatedAsyncioTestCase):
                     extra['_hosted_pipeline']=NS(source='message',scope=group,event_id='group-two',subject=person)
                     await invoke([group_message('group-two')]+group_packet())
                     self.assertEqual(control['payload']['messages'][:len(prior)],prior)
-                    self.assertEqual(owned.model_journals[group].last.turns,2)
+                    self.assertEqual(owned.model_journals['bot_shared'].last.turns,before_group_turns+2)
                     extra.pop('_hosted_group_round_history')
                 finally:current_message_event.reset(token)
                 lease={'config':{}};settings['fixture']=lease
@@ -470,8 +497,6 @@ class Wiring(unittest.IsolatedAsyncioTestCase):
                 finally:current_message_event.reset(token)
             finally:runtime['close']()
 
-
-if __name__=='__main__':unittest.main()
 
 class ViewAnchors(unittest.TestCase):
  def test_foreground_clock_replaces_sampling_without_changing_real_event_times(self):

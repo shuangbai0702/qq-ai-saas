@@ -13,6 +13,9 @@ import companion_state
 from social import reinforce_expression
 from media_egress import valid_url,download_file
 from tool_outcome import project
+from summary_stream_fixture import summary_provider
+from context_protocol import event_message
+from summary_material import snapshots
 
 class MediaTests(unittest.IsolatedAsyncioTestCase):
     async def test_private_dns_never_connects(self):
@@ -70,9 +73,12 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.store=BehaviorStore(Path(self.tmp.name)/'behavior.sqlite')
         self.db=self.store.db;self.scope='private:12345678';self.var=contextvars.ContextVar('structural',default=None)
+        self.store.reflection.shared_context=False # Explicit local reflection fixture, not runtime routing.
     def tearDown(self):self.store.close();self.tmp.cleanup()
     def add(self,count,start=0):
-        for i in range(start,start+count):self.store.reflection.record(self.scope,'12345678',str(i),'我喜欢红茶'+str(i),'已回应',time.time())
+        for i in range(start,start+count):
+            material=snapshots([event_message({'scope':self.scope,'sender_id':'12345678','event_id':str(i)},'我喜欢红茶'+str(i)),{'role':'assistant','content':'已回应'}],self.scope)
+            self.store.reflection.record(self.scope,'12345678',str(i),'我喜欢红茶'+str(i),'已回应',time.time(),materials=material)
     async def drain(self):
         for _ in range(12):
             task=self.store.reflection.task
@@ -83,12 +89,12 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         calls=[]
         async def chat(**kw):
             calls.append(kw)
-            return NS(completion_text='持续背景：12345678喜欢红茶，来源私聊。' if '最多1500' in kw['system_prompt'] else json.dumps({'summary':'小摘要：12345678喜欢红茶。','facts':[]}))
+            return NS(completion_text=json.dumps({'summary':'持续背景：12345678喜欢红茶，来源私聊。' if '最多1500' in kw['system_prompt'] else '小摘要：12345678喜欢红茶。'}))
         cfg={'memory':True,'memorySummary':True,'summaryRounds':30,'naturalConversation':True}
         self.add(29)
-        self.assertFalse(self.store.reflection.maybe_start(self.scope,cfg,NS(text_chat=chat),lambda:True,{},self.var))
+        self.assertFalse(self.store.reflection.maybe_start(self.scope,cfg,summary_provider(chat),lambda:True,{},self.var))
         self.add(1,29)
-        self.assertTrue(self.store.reflection.maybe_start(self.scope,cfg,NS(text_chat=chat),lambda:True,{},self.var));await self.drain()
+        self.assertTrue(self.store.reflection.maybe_start(self.scope,cfg,summary_provider(chat),lambda:True,{},self.var));await self.drain()
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1)
         self.assertEqual(len(calls),1)
         self.add(30,30);self.store.reflection.retry();await self.drain()
@@ -104,7 +110,7 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         async def chat(**kw):calls.append(kw);return NS(completion_text=json.dumps({'summary':'有来源的持续信息'}))
         cfg={'memory':True,'memorySummary':True,'naturalConversation':True}
         self.add(29)
-        self.assertFalse(self.store.reflection.maybe_start(self.scope,cfg,NS(text_chat=chat),lambda:True,{},self.var))
+        self.assertFalse(self.store.reflection.maybe_start(self.scope,cfg,summary_provider(chat),lambda:True,{},self.var))
         self.add(1,29)
         self.assertTrue(self.store.reflection.retry());await self.drain()
         self.assertEqual(len(calls),1);self.assertEqual(len(json.loads(calls[0]['prompt'])['turns']),30)
@@ -113,9 +119,9 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         for i in range(3):self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated) VALUES(?,?,?,?)',(self.scope,'旧摘要'+str(i),'[]',time.time()))
         self.db.commit()
         entered=asyncio.Event();release=asyncio.Event()
-        async def chat(**kw):entered.set();await release.wait();return NS(completion_text='不得复活的合并')
-        self.store.reflection.maybe_start(self.scope,{'memorySummary':True},NS(text_chat=chat),lambda:True,{},self.var)
-        await entered.wait()
+        async def chat(**kw):entered.set();await release.wait();return NS(completion_text=json.dumps({'summary':'不得复活的合并'}))
+        self.store.reflection.maybe_start(self.scope,{'memorySummary':True},summary_provider(chat),lambda:True,{},self.var)
+        await asyncio.wait_for(entered.wait(),5)
         from memory_reflection import invalidate
         invalidate(self.db,self.scope,'12345678');self.db.commit();release.set();await self.drain()
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],0)
@@ -132,8 +138,8 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
             for origin in scopes:self.db.execute('INSERT INTO memory_summary_origins VALUES(?,?)',(identifier,origin))
             self.db.execute("INSERT INTO memory_summary_levels VALUES(?,'big')",(identifier,));peers.append(identifier)
         self.db.commit();prompts=[]
-        async def chat(**kw):prompts.append(json.loads(kw['prompt']));return NS(completion_text='同一个机器人跨会话的持续背景')
-        self.store.reflection.maybe_start(scopes[0],{'memorySummary':True},NS(text_chat=chat),lambda:True,{},self.var)
+        async def chat(**kw):prompts.append(json.loads(kw['prompt']));return NS(completion_text=json.dumps({'summary':'同一个机器人跨会话的持续背景'}))
+        self.store.reflection.maybe_start(scopes[0],{'memorySummary':True},summary_provider(chat),lambda:True,{},self.var)
         await self.drain()
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],4)
         # D2: the merged background keeps every origin, but a multi-origin
@@ -180,7 +186,7 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         history=self.store.reflection.group_context(scope)
         self.assertEqual(len(history),30)
         self.assertTrue(all(len(x['messages'])==13 and x['reply'] for x in history))
-        self.assertEqual(sum(len(x['messages'])+1 for x in history),490)
+        self.assertEqual(sum(len(x['messages'])+1 for x in history),30*(13+1))
         self.store.reflection.incoming(scope,'12345678','new','下一轮',base+1100)
         history=self.store.reflection.group_context(scope)
         self.assertEqual(len(history),30);self.assertEqual(len(history[-1]['messages']),1)
@@ -198,17 +204,28 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_group_summary_keeps_new_unanswered_messages(self):
         scope='group:55555';base=time.time()-1000
+        native=[{'role':'system','content':'fixture policy'}]
         for turn in range(30):
             at=base+turn*20
             self.store.reflection.incoming(scope,'12345678',str(turn),'本轮内容',at)
-            self.store.reflection.record(scope,'12345678',str(turn),'本轮内容','真实回复',at+10,context_through=at+1)
+            messages=[event_message({'scope':scope,'sender_id':'12345678','event_id':str(turn),'at':at},'本轮内容'),{'role':'assistant','content':'真实回复'}]
+            native.extend(messages)
+            self.store.reflection.record(scope,'12345678',str(turn),'本轮内容','真实回复',at+10,context_through=at+1,materials=snapshots(messages,scope))
         # Arrived after the final model snapshot, before its successful send.
         self.store.reflection.incoming(scope,'23456789','late','尚未回应的新问题',base+29*20+5)
+        native.append(event_message({'scope':scope,'sender_id':'23456789','event_id':'late','at':base+29*20+5},'尚未回应的新问题'))
+        from readonly_journal import Prepared,ReadonlyJournal
+        journal=ReadonlyJournal(self.db,scope);journal.serial=1
+        self.assertTrue(journal.commit(Prepared(1,None,native,native,{},1,30,'initial')))
+        self.store.model_journals[scope]=journal
+        from semantic_runtime import finish_semantic_batches
+        cfg={'memory':True,'memorySummary':True,'summaryRounds':30}
+        self.store.reflection.checkpoint_callback=lambda key:finish_semantic_batches(self.store,cfg,key)
         seen=[]
         async def chat(**kw):
             seen.append(json.loads(kw['prompt']))
             return NS(completion_text=json.dumps({'summary':'有会话与人物来源的持续背景'}))
-        self.store.reflection.maybe_start(scope,{'memorySummary':True,'summaryRounds':30},NS(text_chat=chat),lambda:True,{},self.var)
+        self.store.reflection.maybe_start(scope,{'memorySummary':True,'summaryRounds':30},summary_provider(chat),lambda:True,{},self.var)
         await self.drain()
         self.assertNotIn('late',[r['event'] for r in seen[0]['turns']])
         pending=self.db.execute('SELECT event FROM memory_pending WHERE scope=?',(scope,)).fetchall()

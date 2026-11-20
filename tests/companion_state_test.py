@@ -15,18 +15,25 @@ class CompanionState(unittest.IsolatedAsyncioTestCase):
   now=self.now-400 if now is None else now
   cs.observe(self.db,self.cfg,scope,subject,text,event,now,directed)
   initiative.incoming(self.db,scope,subject,'99999',text,now,directed)
+ def selected(self,now):
+  # The main AI chooses an eligible member; the outer timer never chooses one.
+  member=cs.select_member(self.db,self.cfg,'group:77777',now,allow_without_topic=True)
+  if not member:return None
+  last=self.db.execute("SELECT last_user FROM contacts WHERE scope='group:77777'").fetchone()[0]
+  return {'scope':'group:77777','last_user':last,'contact_subject':member['subject'],'contact_seen':member['seen']}
  def test_choose_real_interacting_member_and_persist(self):
-  self.seen();items=initiative.candidates(self.db,self.cfg,self.now)
-  self.assertEqual(items[0]['contact_subject'],'12345');self.assertTrue(initiative.reserve(self.db,self.cfg,items[0],self.now))
+  self.seen();self.assertEqual(initiative.candidates(self.db,self.cfg,self.now),[])
+  item=self.selected(self.now)
+  self.assertEqual(item['contact_subject'],'12345');self.assertTrue(initiative.reserve(self.db,self.cfg,item,self.now))
   self.s.close();self.s=BehaviorStore(self.path);self.db=self.s.db
   self.assertEqual(self.db.execute('SELECT unanswered FROM companion_members').fetchone()[0],1)
   # The common default now stops after four unanswered attempts. Restart must
   # retain the first attempt, while allowing the remaining three at interval.
   for index in range(1,4):
-   at=self.now+90*index;items=initiative.candidates(self.db,self.cfg,at)
-   self.assertEqual(items[0]['contact_subject'],'12345');self.assertTrue(initiative.reserve(self.db,self.cfg,items[0],at))
+   at=self.now+90*index;item=self.selected(at)
+   self.assertEqual(item['contact_subject'],'12345');self.assertTrue(initiative.reserve(self.db,self.cfg,item,at))
   self.assertEqual(self.db.execute('SELECT unanswered FROM companion_members').fetchone()[0],4)
-  self.assertEqual(initiative.candidates(self.db,self.cfg,self.now+450),[])
+  self.assertIsNone(self.selected(self.now+450))
  def test_no_stranger_no_cross_group_no_private_leak(self):
   self.seen(directed=False);self.assertEqual(initiative.candidates(self.db,self.cfg,self.now),[])
   cs.outgoing(self.db,self.cfg,'private:12345','12345','我喜欢乌龙茶','bot1',self.now)
@@ -39,14 +46,14 @@ class CompanionState(unittest.IsolatedAsyncioTestCase):
   self.assertEqual(interest['attribution'],'bot_self_interest_not_user_statement')
   self.assertEqual(interest['source_scope'],'self')
  def test_chat_is_model_evidence_and_cooldown_is_scope_local(self):
-  self.seen();item=initiative.candidates(self.db,self.cfg,self.now)[0]
+  self.seen();item=self.selected(self.now)
   self.seen(text='不要艾特我',now=self.now,event='two')
-  self.assertFalse(initiative.reserve(self.db,self.cfg,item,self.now));self.assertTrue(initiative.candidates(self.db,self.cfg,self.now+90))
+  self.assertFalse(initiative.reserve(self.db,self.cfg,item,self.now));self.assertIsNotNone(self.selected(self.now+90))
   self.assertEqual(self.db.execute('SELECT refused,pause FROM companion_members').fetchone(),(0,0))
   with self.db:autonomy.record_decision(self.db,self.cfg,'group:77777','cooldown',{'cooldown_intervals':1,'cooldown_reason':'social_distance'},False,self.now,'group')
   self.assertEqual(initiative.candidates(self.db,self.cfg,self.now+90),[])
-  self.seen(text='可以主动找我',now=self.now+100,event='three');self.assertTrue(initiative.candidates(self.db,self.cfg,self.now+200))
-  self.seen(text='晚安',now=self.now+210,event='four');self.assertTrue(cs.select_member(self.db,self.cfg,'group:77777',self.now+300))
+  self.seen(text='可以主动找我',now=self.now+100,event='three');self.assertIsNotNone(self.selected(self.now+200))
+  self.seen(text='晚安',now=self.now+210,event='four');self.assertIsNotNone(self.selected(self.now+300))
  def test_whitelist_disabled_and_daily_budget(self):
   self.seen();self.cfg['groups']=['88888'];self.assertEqual(initiative.candidates(self.db,self.cfg,self.now),[])
   self.cfg['groups']=[];self.cfg['behavior']['autonomousGroupContact']=False;self.assertEqual(initiative.candidates(self.db,self.cfg,self.now),[])
