@@ -798,6 +798,16 @@ def settle_commitments(db,scope,claims,previous):
     code checks ownership and evidence identity. No new classifier, table or
     permanent state."""
     offered={claim['id']:claim for claim in previous}
+    def origin_scope(claim):
+        scopes=set()
+        for ref in claim.get('sourceRefs',[]):
+            channel=ref.get('scope')
+            if channel=='bot_shared':
+                try:channel,_=json.loads(ref.get('event',''))
+                except (ValueError,TypeError):return None
+            if not isinstance(channel,str) or not re.fullmatch(r'(?:private|group):\d{4,20}',channel):return None
+            scopes.add(channel)
+        return next(iter(scopes)) if len(scopes)==1 else None
     changes={}
     for claim in claims:
         if claim.get('kind')!='agreement' or claim.get('stage') not in ('accepted','executed','canceled'):continue
@@ -806,7 +816,15 @@ def settle_commitments(db,scope,claims,previous):
             # Open interpretations (unresolved topics) retire exactly like
             # agreements: same scope, same speaker role, later real evidence.
             if not old or old.get('kind') not in ('agreement','interpretation') or not protected_claim(old):continue
-            if old.get('visibility')!=scope or claim.get('visibility')!=scope or old.get('speaker')!=claim.get('speaker'):continue
+            if old.get('speaker')!=claim.get('speaker'):continue
+            if scope=='bot_shared':
+                # Journal ownership is not event provenance. A claim from a
+                # private/group source can be corrected in the shared Journal,
+                # but only with the same verified original source scope.
+                origin=origin_scope(old)
+                if not origin or origin!=origin_scope(claim):continue
+                if old.get('visibility') not in (scope,origin) or claim.get('visibility') not in (scope,origin):continue
+            elif old.get('visibility')!=scope or claim.get('visibility')!=scope:continue
             if not isinstance(old.get('occurredAt'),(int,float)) or not isinstance(claim.get('occurredAt'),(int,float)) or claim['occurredAt']<=old['occurredAt']:continue
             changes[identifier]=claim['id']
     if not changes:return

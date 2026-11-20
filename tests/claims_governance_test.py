@@ -49,4 +49,13 @@ class Governance(unittest.TestCase):
   stored=json.loads(db.execute('SELECT claims FROM memory_summaries').fetchone()[0])[0]
   self.assertEqual(stored['revision'],3);self.assertGreater(stored['updatedAt'],200)
   self.assertEqual(stored['status'],'superseded');self.assertFalse(protected_claim(stored))
+ def test_shared_journal_settles_same_source_but_never_cross_scope_or_speaker(self):
+  for source,speaker,expected in (('private:123456','123456','superseded'),('group:77777','123456','open'),('private:123456','999999','open'),('bot_shared','123456','open')):
+   with self.subTest(source=source,speaker=speaker):
+    db=self.db();old=claim(1);old.update(kind='agreement',status='open')
+    db.execute('INSERT INTO memory_summaries(scope,claims) VALUES(?,?)',('bot_shared',json.dumps([old])))
+    new=claim(2);new.update(kind='agreement',stage='canceled',visibility='bot_shared',supersedes=[old['id']],speaker={'role':'human','id':speaker},sourceRefs=[{'scope':source,'event':'cancel','role':'user'}])
+    settle_commitments(db,'bot_shared',[new],[old])
+    stored=json.loads(db.execute('SELECT claims FROM memory_summaries').fetchone()[0])[0]
+    self.assertEqual(stored['status'],expected)
 if __name__=='__main__':unittest.main()
