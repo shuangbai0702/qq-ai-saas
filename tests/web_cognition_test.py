@@ -81,6 +81,18 @@ class WebCognition(unittest.TestCase):
   self.assertEqual(first.wire,before);self.assertEqual(json.dumps(candidate.wire).count('first user note'),1)
   self.assertIsNone(candidate.reconstruction_permit);self.assertTrue(journal.commit(candidate))
   self.assertEqual(self.store.reflection.core_note('bot_shared')['text'],'first user note')
+ def test_user_replacement_of_legacy_hidden_note_becomes_visible_without_old_attribution(self):
+  self.db.execute("UPDATE memory_core_notes SET scopes='[]'");self.db.commit()
+  self.before=self.store.reflection.core_note('bot_shared')
+  self.assertEqual(self.before['text'],'')
+  journal,messages,packet,first=self.initial()
+  self.assertTrue(self.edit('owner supplied new note')['ok'])
+  actual=note(self.db)
+  self.assertEqual(actual['source_scopes'],['bot_shared']);self.assertEqual(actual['subjects'],[])
+  candidate=journal.prepare(project(first,read(self.db)).base+[{'role':'user','content':'next'},packet],2,cognition_edit=read(self.db))
+  self.assertEqual(json.dumps(candidate.wire).count('owner supplied new note'),1)
+  self.assertIsNone(candidate.reconstruction_permit)
+  self.assertEqual(self.store.reflection.core_note('bot_shared')['text'],'owner supplied new note')
  def test_unknown_or_forged_region_is_not_editable(self):
   journal,_,_,first=self.initial();self.assertTrue(self.edit('new')['ok']);change=read(self.db)
   forged=copy.deepcopy(change);forged['note']['text']='forged'

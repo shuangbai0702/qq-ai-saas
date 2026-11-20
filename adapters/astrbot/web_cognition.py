@@ -28,8 +28,9 @@ def edit(db,data):
     proof=json.loads(previous[0]) if previous and previous[0] else {}
     origins=list(dict.fromkeys([*proof.get('origins',[]),fingerprint(before)]))
     updated=max(time.time(),before['updated']+0.000001)
-    after={**before,'text':value,'updated':updated,'source_verification':'user_edited'}
-    if not before['text'] and not before['source_scopes']:after['source_scopes']=['bot_shared']
+    # This replacement comes from the Bot's authenticated editor, not the
+    # previous speakers or scopes. Do not attribute new user text to them.
+    after={**before,'text':value,'updated':updated,'source_verification':'user_edited','source_scopes':['bot_shared'],'subjects':[]}
     proof={'actorId':actor,'target':fingerprint(after),'origins':origins}
     if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fishbot_readonly_journals'").fetchone():
         from journal_storage import read_snapshot
@@ -37,9 +38,17 @@ def edit(db,data):
         from readonly_journal import ContextPrefixViolation
         snapshot=read_snapshot(db,json.dumps('bot_shared'))
         if snapshot:
+            state=snapshot.get('state',{})
+            visible=state.get('foundation_core_note',state.get('memory_foundation',{}).get('core_note'))
+            # A legacy note with unknown provenance may never have been
+            # visible in this Journal. The user can create its first visible
+            # base region; this grants no edit of an unknown nonempty region.
+            if isinstance(visible,dict) and not visible.get('text'):
+                origins.append(fingerprint({k:v for k,v in visible.items() if k!='legacy_unverified'}))
+                proof['origins']=list(dict.fromkeys(origins))
             try:project(SimpleNamespace(**snapshot),{'proof':proof,'note':after})
             except ContextPrefixViolation as error:return {'error':'当前核心记忆区域无法精确定位：'+str(error),'status':409}
-    db.execute("INSERT INTO memory_core_notes(slot,text,scopes,people,sources,updated,schema_version,source_verification,user_edit) VALUES(1,?,?,?,'[]',?,2,'user_edited',?) ON CONFLICT(slot) DO UPDATE SET text=excluded.text,scopes=excluded.scopes,updated=excluded.updated,source_verification=excluded.source_verification,sources='[]',user_edit=excluded.user_edit",
+    db.execute("INSERT INTO memory_core_notes(slot,text,scopes,people,sources,updated,schema_version,source_verification,user_edit) VALUES(1,?,?,?,'[]',?,2,'user_edited',?) ON CONFLICT(slot) DO UPDATE SET text=excluded.text,scopes=excluded.scopes,people=excluded.people,updated=excluded.updated,source_verification=excluded.source_verification,sources='[]',user_edit=excluded.user_edit",
         (value,json.dumps(after['source_scopes']),json.dumps(after['subjects']),updated,json.dumps(proof,separators=(',',':'))))
     # Old AI claims supported the previous text. Keep their authoritative
     # records, but never attach them to a user's replacement as evidence.
