@@ -1,0 +1,9 @@
+import {useState} from 'react';
+import {EditDialog} from './edit-dialog';
+
+export function RelationshipData({rows,busy,onMutate}:{rows:any[];busy:boolean;onMutate:(data:unknown)=>Promise<string|undefined>}){
+ const [editing,setEditing]=useState<any>(null);
+ return <><h3>人物关系认知</h3><p>每位人物在当前机器人中只有一份综合关系。亲近、信任和印象由合法压缩整理；网页纠正直接更新对应关系，保留事实、消息和执行记录。短期反应按原有效期展示。</p>{!rows.length&&<p>尚无人物状态。</p>}{rows.map(r=><article className="managed-item" key={r.subject}><b>QQ {r.subject} · 亲近 {r.affinity} · 信任 {r.trust??0}</b><small>{r.scope} · {r.impression||'暂无综合印象'}</small><small>短期反应：{r.expires*1000>Date.now()?r.emotion:'平静'}</small><div className="button-row"><button type="button" className="secondary" disabled={busy||!r.version} onClick={()=>setEditing(r)}>编辑人物认知</button><button type="button" className="secondary" disabled={busy} onClick={()=>{if(confirm('重置该人物的综合关系和情绪？事实及业务记录会保留。'))void onMutate({action:'reset_relation',scope:r.scope,subject:r.subject,expectedLastSeen:r.last_seen,expectedVersion:r.version})}}>重置人物状态</button></div></article>)}
+ {editing&&<EditDialog title={'编辑 QQ '+editing.subject+' 的人物认知'} fields={[{key:'affinity',label:'亲近（-20 至 100）',value:String(editing.affinity),maxLength:20,required:true},{key:'trust',label:'信任（-1 至 1）',value:String(editing.trust??0),maxLength:20,required:true},{key:'impression',label:'综合印象',value:editing.impression||'',maxLength:1000}]} onClose={()=>setEditing(null)} onSave={async values=>{const affinity=Number(values.affinity),trust=Number(values.trust);if(!values.affinity.trim()||!values.trust.trim()||!Number.isFinite(affinity)||affinity< -20||affinity>100||!Number.isFinite(trust)||trust< -1||trust>1)throw Error('请填写有效的亲近和信任数值');const error=await onMutate({action:'edit_relation',scope:editing.scope,subject:editing.subject,expectedVersion:editing.version,affinity,trust,impression:values.impression});if(error)throw Error(error)}}/>}
+ </>;
+}

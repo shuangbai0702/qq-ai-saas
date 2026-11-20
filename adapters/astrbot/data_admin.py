@@ -59,7 +59,9 @@ def run(file, data, connection=None):
                     patterns.append(row)
             pause_column='(SELECT until FROM initiative_pauses p WHERE p.scope=contacts.scope)' if 'initiative_pauses' in tables else 'NULL'
             contacts = [dict(r) for r in listed('contacts','SELECT scope,last_user,last_bot,last_attempt,unanswered,opted_out,'+pause_column+' AS paused_until FROM contacts' + pattern_where + ' ORDER BY last_user DESC LIMIT 100', pattern_args)] if 'contacts' in tables else []
-            relations = [dict(r) for r in listed('relations','SELECT scope,subject,affinity,emotion,expires,last_seen FROM relations' + (' WHERE '+' AND '.join(clauses) if clauses else '') + ' ORDER BY last_seen DESC LIMIT 100',([scope] if scope else [])+([subject] if subject else []))] if 'relations' in tables else []
+            relations = [dict(r) for r in listed('relations','SELECT * FROM relations' + (' WHERE '+' AND '.join(clauses) if clauses else '') + ' ORDER BY last_seen DESC LIMIT 100',([scope] if scope else [])+([subject] if subject else []))] if 'relations' in tables else []
+            from relationships import user_version
+            for relation in relations:relation['version']=user_version(relation)
             stats = {name: db.execute('SELECT count(*) FROM ' + name).fetchone()[0] for name in ['social_samples', 'social_patterns', 'social_learning'] if name in tables}
             epoch=db.execute('SELECT epoch FROM social_control WHERE id=1').fetchone()[0] if 'social_control' in tables else 0
             summaries=[]
@@ -103,6 +105,11 @@ def run(file, data, connection=None):
             from social import edit_learning_by_user
             result=edit_learning_by_user(db,data)
             if not result.get('ok'):return result
+        elif action == 'edit_relation':
+            from relationships import edit_by_user
+            result=edit_by_user(db,data)
+            if not result.get('ok'):return result
+            db.commit();return result
         elif action == 'reset_relation':
             from relationships import reset_by_user
             result=reset_by_user(db,data)

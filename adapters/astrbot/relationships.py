@@ -183,8 +183,8 @@ def recover_activity(db):
 def reset_by_user(db,data):
     """Reset this person's relationship product without changing other products."""
     scope=data['scope'];tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    old=db.execute('SELECT last_seen FROM relations WHERE subject=?',(data['subject'],)).fetchone()
-    if not old or old[0]!=data['expectedLastSeen']:return {'error':'关系状态已变化，请刷新后重试','status':409}
+    old=state(db,data['subject'])
+    if not old or old['last_seen']!=data['expectedLastSeen'] or data.get('expectedVersion')!=user_version(old):return {'error':'关系状态已变化，请刷新后重试','status':409}
     from memory_operation_audit import forget as forget_operation_audit
     forget_operation_audit(db,scope,data['subject'],relations_only=True)
     db.execute('DELETE FROM relations WHERE subject=?',(data['subject'],))
@@ -196,3 +196,24 @@ def reset_by_user(db,data):
     if 'memory_reflection_control' in tables:
         db.execute('UPDATE memory_reflection_control SET epoch=epoch+1 WHERE id=1')
     return {'ok':True}
+
+
+def user_version(value):
+    """Cognitive CAS excludes protocol activity timestamps and derived display."""
+    import hashlib,json
+    return hashlib.sha256(json.dumps({k:value.get(k) for k in FIELDS.split(',') if k!='last_seen'},ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+
+
+def edit_by_user(db,data):
+    """Authenticated explicit edits preserve activity, events and other products."""
+    import math,time
+    if not isinstance(data.get('actorId'),str) or not data['actorId']:return {'error':'缺少真实用户操作来源','status':403}
+    before=state(db,data['subject'])
+    if not before or before['scope']!=data['scope'] or data.get('expectedVersion')!=user_version(before):return {'error':'人物关系已变化，请刷新后重试','status':409}
+    affinity,trust,impression=data.get('affinity'),data.get('trust'),data.get('impression')
+    if (type(affinity) not in (int,float) or not math.isfinite(affinity) or not -20<=affinity<=100
+        or type(trust) not in (int,float) or not math.isfinite(trust) or not -1<=trust<=1
+        or not isinstance(impression,str) or len(impression)>1000):return {'error':'人物关系内容格式不正确','status':400}
+    now=max(time.time(),before['semantic_updated']+0.000001)
+    db.execute('UPDATE relations SET affinity=?,trust=?,impression=?,semantic_updated=? WHERE subject=?',(affinity,trust,impression,now,data['subject']))
+    return {'ok':True,'updatedRegion':'relation','version':user_version(state(db,data['subject']))}

@@ -7,17 +7,19 @@ import type {NodeAgent} from '../../node-agent/src/agent.js';
 import type {Sql} from '../../../packages/database/index.js';
 
 const scope=z.string().regex(/^(group|private):\d{4,20}$/);
+const cognitiveScope=z.union([scope,z.literal('bot_shared')]);
 const person=z.string().regex(/^\d{4,20}$/);
-const fact={scope,subject:person,name:z.string().min(1).max(40),expectedVersion:z.number().int().positive()};
+const fact={scope:cognitiveScope,subject:person,name:z.string().min(1).max(40),expectedVersion:z.number().int().positive()};
 const mutation=z.discriminatedUnion('action',[
  z.object({action:z.literal('edit_core_note'),text:z.string().max(600).refine(v=>Array.from(v).length<=300),expectedVersion:z.string().regex(/^[a-f0-9]{64}$/)}),
  z.object({action:z.literal('edit_fact'),...fact,value:z.string().trim().min(1).max(300)}),
  z.object({action:z.literal('forget_fact'),...fact}),
  z.object({action:z.literal('set_pattern'),scope,expression:z.string().min(2).max(16),expectedUpdated:z.number().finite(),expectedEpoch:z.number().int().nonnegative(),disabled:z.boolean()}),
  z.object({action:z.literal('clear_learning'),scope}),
- z.object({action:z.literal('forget_summary'),scope,id:z.number().int().positive(),expectedUpdated:z.number().finite()}),
+ z.object({action:z.literal('forget_summary'),scope:cognitiveScope,id:z.number().int().positive(),expectedUpdated:z.number().finite()}),
  z.object({action:z.literal('pause_contact'),scope}),
- z.object({action:z.literal('reset_relation'),scope,subject:person,expectedLastSeen:z.number().finite()}),
+ z.object({action:z.literal('edit_relation'),scope:cognitiveScope,subject:person,expectedVersion:z.string().regex(/^[a-f0-9]{64}$/),affinity:z.number().finite().min(-20).max(100),trust:z.number().finite().min(-1).max(1),impression:z.string().max(1000)}),
+ z.object({action:z.literal('reset_relation'),scope:cognitiveScope,subject:person,expectedLastSeen:z.number().finite(),expectedVersion:z.string().regex(/^[a-f0-9]{64}$/)}),
 ]);
 
 export function registerBehaviorData(app:FastifyInstance,root:string,owned:(req:any,id:string)=>Promise<any>,agent:NodeAgent,db:Sql){
@@ -43,7 +45,7 @@ export function registerBehaviorData(app:FastifyInstance,root:string,owned:(req:
  }
  app.get<{Params:{id:string}}>('/v1/bots/:id/behavior-data',async req=>{
   const bot=await owned(req,req.params.id);
-  const query=z.object({scope:scope.optional(),subject:person.optional(),query:z.string().max(80).optional(),page:z.coerce.number().int().min(0).max(10000).default(0)}).parse(req.query);
+  const query=z.object({scope:cognitiveScope.optional(),subject:person.optional(),query:z.string().max(80).optional(),page:z.coerce.number().int().min(0).max(10000).default(0)}).parse(req.query);
   return access(bot,{action:'list',...query});
  });
  app.post<{Params:{id:string}}>('/v1/bots/:id/behavior-data',{config:{rateLimit:{max:30,timeWindow:'1 minute'}}},async req=>{

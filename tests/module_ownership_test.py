@@ -45,10 +45,23 @@ class Ownership(unittest.TestCase):
     self.db.execute('INSERT INTO relation_evidence VALUES(?,?,?,?,?,?,?)',(scope,person,'e',1,'reason','quote',1))
   self.db.commit()
   before=self.snapshot(['facts','memory_core_notes','memory_summaries','memory_rounds','autonomy_decisions'])
-  result=run(self.path,{'action':'reset_relation','scope':self.scope,'subject':'12345678','expectedLastSeen':10},self.db)
+  result=run(self.path,{'action':'reset_relation','scope':self.scope,'subject':'12345678','expectedLastSeen':10,'expectedVersion':next(r['version'] for r in run(self.path,{'action':'list'},self.db)['relations'] if r['subject']=='12345678')},self.db)
   self.assertTrue(result['ok']);self.assertEqual(self.snapshot(list(before)),before)
   for table in ('relations','relation_progress','relation_evidence'):
    self.assertFalse(self.db.execute('SELECT 1 FROM '+table+' WHERE subject=?',('12345678',)).fetchone())
    self.assertTrue(self.db.execute('SELECT 1 FROM '+table+' WHERE subject=?',('87654321',)).fetchone())
+
+ def test_user_relation_edit_is_local_and_fences_stale_or_forged_edits(self):
+  self.db.execute("INSERT INTO relations(scope,subject,affinity,last_seen,trust,impression,semantic_updated) VALUES(?,?,5,10,.2,'old',1)",(self.scope,'12345678'));self.db.commit()
+  row=run(self.path,{'action':'list'},self.db)['relations'][0]
+  data={'action':'edit_relation','scope':self.scope,'subject':'12345678','expectedVersion':row['version'],'actorId':'web-user','affinity':30,'trust':.8,'impression':'user correction'}
+  before=self.snapshot(['facts','memory_core_notes','memory_summaries','memory_rounds','autonomy_decisions'])
+  from relationships import observe_message
+  observe_message(self.db,self.scope,'12345678',100);self.db.commit()
+  self.assertEqual(run(self.path,{**data,'actorId':''},self.db)['status'],403)
+  self.assertTrue(run(self.path,data,self.db)['ok']);self.assertEqual(self.snapshot(list(before)),before)
+  row=self.db.execute('SELECT affinity,trust,impression,last_seen,last_message_at FROM relations').fetchone();self.assertEqual(row,(30,.8,'user correction',10,100))
+  self.assertEqual(run(self.path,data,self.db)['status'],409)
+  self.assertEqual(run(self.path,{'action':'reset_relation','scope':self.scope,'subject':'12345678','expectedLastSeen':10,'expectedVersion':data['expectedVersion']},self.db)['status'],409)
 
 if __name__=='__main__':unittest.main()

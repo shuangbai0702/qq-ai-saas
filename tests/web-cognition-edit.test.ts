@@ -26,5 +26,12 @@ test('authenticated Core Note save uses owner identity, exact CAS and existing S
  const stale=await app.inject({method:'POST',url,cookies,payload:{...payload,text:'late overwrite'}});assert.equal(stale.statusCode,409,stale.body);
  const actual=JSON.parse(run(`import sqlite3,sys,json; db=sqlite3.connect(sys.argv[1]); row=db.execute('SELECT text,user_edit FROM memory_core_notes').fetchone(); print(json.dumps([row[0],json.loads(row[1])])); db.close()`));
  assert.equal(actual[0],payload.text);assert.notEqual(actual[1].actorId,'forged');assert.ok(actual[1].actorId);
+ run(`import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); db.executescript("CREATE TABLE facts(scope TEXT,subject TEXT,name TEXT,value TEXT,event TEXT,updated REAL,version INTEGER,active INTEGER); INSERT INTO facts VALUES('bot_shared','12345678','饮料','红茶','original',1,1,1); CREATE TABLE relations(scope TEXT,subject TEXT PRIMARY KEY,affinity REAL,emotion TEXT,expires REAL,last_seen REAL,trust REAL,impression TEXT,semantic_updated REAL); INSERT INTO relations VALUES('bot_shared','12345678',5,'平静',0,10,.2,'old',1);"); db.commit(); db.close()`);
+ const facts=await app.inject({method:'POST',url,cookies,payload:{action:'edit_fact',scope:'bot_shared',subject:'12345678',name:'饮料',expectedVersion:1,value:'咖啡'}});assert.equal(facts.statusCode,200,facts.body);
+ const listing=await app.inject({method:'GET',url,cookies});const relation=listing.json().relations[0];assert.match(relation.version,/^[a-f0-9]{64}$/);
+ const relationPayload={action:'edit_relation',scope:'bot_shared',subject:'12345678',expectedVersion:relation.version,affinity:30,trust:.8,impression:'user correction',actorId:'forged'};
+ assert.equal((await app.inject({method:'POST',url,cookies:other,payload:relationPayload})).statusCode,404);
+ const relationSaved=await app.inject({method:'POST',url,cookies,payload:relationPayload});assert.equal(relationSaved.statusCode,200,relationSaved.body);assert.equal(relationSaved.json().updatedRegion,'relation');
+ assert.equal((await app.inject({method:'POST',url,cookies,payload:relationPayload})).statusCode,409);
  const result=await app.inject({method:'GET',url,cookies});assert.equal(result.json().persona_core_note.text,payload.text);assert.notEqual(result.json().persona_core_note.version,version);
 });

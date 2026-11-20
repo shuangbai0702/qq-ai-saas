@@ -36,8 +36,9 @@ class BehaviorTests(unittest.TestCase):
   self.assertEqual(self.s.observe('other','u','路过','e4',now=402,directed=False)['affinity'],0)
  def test_relation_reset_keeps_memory_and_dedup(self):
   from data_admin import run
+  from relationships import state,user_version
   self.s.observe('g','u','记住：饮料=茶','e',now=100)
-  self.assertTrue(run(self.file,{'action':'reset_relation','scope':'g','subject':'u','expectedLastSeen':100},self.s.db)['ok'])
+  self.assertTrue(run(self.file,{'action':'reset_relation','scope':'g','subject':'u','expectedLastSeen':100,'expectedVersion':user_version(state(self.s.db,'u'))},self.s.db)['ok'])
   self.assertEqual(self.s.observe('g','u','你好','e',now=101)['affinity'],0)
   self.assertEqual(self.s.observe('g','u','你好','new',now=102)['affinity'],0)
   self.assertEqual(self.s.memory.recall('g','u','饮料',103)[0]['value'],'茶')

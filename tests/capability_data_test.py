@@ -49,7 +49,7 @@ class ManagementTests(unittest.TestCase):
         self.assertEqual(self.data(scope='group:12345',subject='654321')['facts'],[])
         self.assertNotIn('path',json.dumps(self.data()))
         relation=self.data(scope='group:12345')['relations'][0]
-        body={'action':'reset_relation','scope':relation['scope'],'subject':relation['subject'],'expectedLastSeen':relation['last_seen']}
+        body={'action':'reset_relation','scope':relation['scope'],'subject':relation['subject'],'expectedLastSeen':relation['last_seen'],'expectedVersion':relation['version']}
         self.assertTrue(run(self.file,body)['ok'])
         self.assertEqual(run(self.file,body)['status'],409)
         self.assertEqual(len(self.data()['facts']),2)
