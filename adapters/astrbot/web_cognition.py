@@ -111,13 +111,15 @@ def project_core(snapshot,change):
 def read(db):
     from hosted_memory import user_edits
     from relationships import user_edits as relation_edits
-    core=read_core(db);facts=user_edits(db);relations=relation_edits(db)
-    return {**(core or {}),**({'facts':facts} if facts else {}),**({'relations':relations} if relations else {})} if core or facts or relations else None
+    from social import user_edits as expression_edits
+    core=read_core(db);facts=user_edits(db);relations=relation_edits(db);expressions=expression_edits(db)
+    return {**(core or {}),**({'facts':facts} if facts else {}),**({'relations':relations} if relations else {}),**({'expressions':expressions} if expressions else {})} if core or facts or relations or expressions else None
 
 
 def project(snapshot,change):
     if change is None:return snapshot
     from hosted_memory import project_user_edits
     from relationships import project_user_edits as project_relations
+    from social import project_user_edits as project_expressions
     current=project_core(snapshot,change) if 'note' in change else snapshot
-    return project_relations(project_user_edits(current,change.get('facts',[])),change.get('relations',[]))
+    return project_expressions(project_relations(project_user_edits(current,change.get('facts',[])),change.get('relations',[])),change.get('expressions',[]))

@@ -44,7 +44,8 @@ def read(store,cfg,scope,subject):
         facts.append(item);used+=size
     from person_memory import relation_view
     relations=[row for person in people if (row:=relation_view(store.db,person)) is not None]
-    styles=[{'source_scope':r[0],'expression':r[1],'situation':r[2],'updated':r[3]} for r in store.db.execute('SELECT scope,expression,situation,updated FROM social_patterns ORDER BY updated DESC LIMIT 24')]
+    from social import foundation_view
+    styles=foundation_view(store.db)
     from conversation_continuity import view as continuity_view
     continuity=continuity_view(store.db,logical) if cfg.get('memorySummary',True) else None
     return {**({'conversation_continuity':continuity} if continuity else {}),'conversation_summaries':summary_rows,'facts':facts,'relations':relations,'expression_hints':styles,

@@ -120,6 +120,33 @@ class WebCognition(unittest.TestCase):
   self.assertEqual([r['name'] for r in candidate.state['memory_foundation']['facts']],['城市'])
   self.assertEqual([r['name'] for r in profile(self.db,'private:12345678','12345678')['facts']],['城市'])
 
+ def test_expression_user_edit_disable_and_clear_patch_only_owned_foundation(self):
+  import social
+  from context_foundation import arrange
+  from types import SimpleNamespace
+  self.db.execute("INSERT INTO social_patterns VALUES('private:12345678','好耶','喝茶时','[]',1,1)");self.db.commit()
+  state={'memory_foundation':{'expression_hints':social.foundation_view(self.db)}}
+  dynamic={'role':'assistant','content':'以前说过好耶和喝茶时，这是动态历史'}
+  messages=arrange([],state)+[dynamic];snapshot=SimpleNamespace(base=messages,wire=messages,state=state)
+  listed=run(self.path,{'action':'list'},self.db);row=listed['patterns'][0]
+  body={'action':'edit_pattern','actorId':'user','scope':row['scope'],'expression':row['expression'],'expectedEpoch':listed['epoch'],'expectedVersion':row['version'],'situation':'朋友分享茶叶时','weight':1}
+  self.assertTrue(run(self.path,body,self.db)['ok'])
+  edited=social.project_user_edits(snapshot,social.user_edits(self.db))
+  self.assertEqual(edited.wire[-1],dynamic);self.assertEqual(snapshot.wire,messages)
+  self.assertEqual(edited.state['memory_foundation']['expression_hints'][0]['situation'],'朋友分享茶叶时')
+  self.assertNotIn('actorId',json.dumps(edited.wire))
+  listed=run(self.path,{'action':'list'},self.db);row=listed['patterns'][0]
+  self.assertTrue(run(self.path,{'action':'set_pattern','actorId':'user','scope':row['scope'],'expression':row['expression'],'expectedEpoch':listed['epoch'],'expectedUpdated':row['updated'],'disabled':True},self.db)['ok'])
+  disabled=social.project_user_edits(edited,social.user_edits(self.db))
+  self.assertEqual(disabled.state['memory_foundation']['expression_hints'],[]);self.assertEqual(disabled.wire[-1],dynamic)
+  self.assertEqual(social.foundation_view(self.db),[])
+  self.assertTrue(run(self.path,{'action':'clear_learning','actorId':'user','scope':row['scope']},self.db)['ok'])
+  cleared=social.project_user_edits(snapshot,social.user_edits(self.db))
+  self.assertEqual(cleared.state['memory_foundation']['expression_hints'],[])
+  self.store.close();self.store=BehaviorStore(self.path);self.db=self.store.db
+  self.assertEqual(social.project_user_edits(snapshot,social.user_edits(self.db)).wire,cleared.wire)
+  self.db.execute('PRAGMA query_only=ON');social.foundation_view(self.db);social.user_edits(self.db);self.db.execute('PRAGMA query_only=OFF')
+
  def initial(self):
   journal=ReadonlyJournal(self.db,'bot_shared')
   messages=[{'role':'system','content':'fixed system'},{'role':'user','content':'original input'},{'role':'assistant','content':'original answer'}]

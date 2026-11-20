@@ -22,7 +22,7 @@ from qq_favorites import catalog as favorite_catalog
 def initialize_controls(db):
     db.executescript("""CREATE TABLE IF NOT EXISTS social_pattern_blocks(scope TEXT,expression TEXT,PRIMARY KEY(scope,expression));
     CREATE TABLE IF NOT EXISTS social_control(id INTEGER PRIMARY KEY CHECK(id=1),epoch INTEGER NOT NULL);
-    INSERT OR IGNORE INTO social_control VALUES(1,0);""")
+    INSERT OR IGNORE INTO social_control(id,epoch) VALUES(1,0);""")
 
 
 MEME_INDEX_LIMIT = 256
@@ -407,6 +407,8 @@ class SocialStore:
 def edit_learning_by_user(db,data):
     """Own expression CAS, blocks and sample invalidation in caller transaction."""
     scope=data['scope']
+    before=product_rows(db,'expression') if data['action']=='clear_learning' else [read_product(db,'expression',{'scope':scope,'expression':data['expression']})]
+    before=[row for row in before if row and row['scope']==scope]
     if data['action']=='edit_pattern':
         from memory_products import version
         if not isinstance(data.get('actorId'),str) or not data['actorId']:return {'error':'缺少真实用户操作来源','status':403}
@@ -418,6 +420,7 @@ def edit_learning_by_user(db,data):
         now=max(time.time(),float(row['updated'])+0.000001)
         db.execute('UPDATE social_patterns SET situation=?,weight=?,updated=? WHERE scope=? AND expression=?',(situation.strip(),weight,now,scope,data['expression']))
         db.execute('UPDATE social_control SET epoch=epoch+1 WHERE id=1')
+        _record_user_edit(db,data,before)
         return {'ok':True,'updatedRegion':'expression'}
     if data['action']=='set_pattern':
         if db.execute('SELECT epoch FROM social_control WHERE id=1').fetchone()[0] != data['expectedEpoch']:
@@ -438,7 +441,80 @@ def edit_learning_by_user(db,data):
         db.execute('DELETE FROM social_pattern_blocks WHERE scope=?',(scope,))
         db.execute('DELETE FROM social_patterns WHERE scope=?', (scope,))
         db.execute('DELETE FROM social_samples WHERE scope=?', (scope,))
+    _record_user_edit(db,data,before)
     return {'ok':True}
+
+
+def foundation_view(db):
+    """Owner's bounded checkpoint view, honoring explicit expression blocks."""
+    return [_hint(dict(zip(('scope','expression','situation','updated'),row))) for row in db.execute('SELECT p.scope,p.expression,p.situation,p.updated FROM social_patterns p WHERE NOT EXISTS(SELECT 1 FROM social_pattern_blocks b WHERE b.scope=p.scope AND b.expression=p.expression) AND p.weight>0 ORDER BY p.updated DESC LIMIT 24')]
+
+
+def _hint(row):return {'source_scope':row['scope'],'expression':row['expression'],'situation':row['situation'],'updated':row['updated']}
+
+
+def _proof_key(scope,expression):return json.dumps([scope,expression],ensure_ascii=False,separators=(',',':'))
+
+
+def _record_user_edit(db,data,rows):
+    """Content-free user provenance in the existing product control row."""
+    if not rows or not data.get('actorId'):return
+    from memory_products import version
+    if 'user_edits' not in {r[1] for r in db.execute('PRAGMA table_info(social_control)')}:db.execute('ALTER TABLE social_control ADD COLUMN user_edits TEXT')
+    raw=db.execute('SELECT user_edits FROM social_control WHERE id=1').fetchone()[0]
+    proofs=json.loads(raw) if raw else {}
+    for row in rows:
+        key=_proof_key(row['scope'],row['expression']);prior=proofs.get(key,{})
+        current=read_product(db,'expression',row);blocked=product_blocked(db,row)
+        proofs[key]={'actorId':data['actorId'],'origins':list(dict.fromkeys([*prior.get('origins',[]),version(_hint(row))])),
+                     'target':version({'row':current,'blocked':blocked})}
+    db.execute('UPDATE social_control SET user_edits=? WHERE id=1',(json.dumps(proofs,ensure_ascii=False,separators=(',',':')),))
+
+
+def user_edits(db):
+    from memory_products import version
+    if 'user_edits' not in {r[1] for r in db.execute('PRAGMA table_info(social_control)')}:return []
+    raw=db.execute('SELECT user_edits FROM social_control WHERE id=1').fetchone()
+    proofs=json.loads(raw[0]) if raw and raw[0] else {};result=[]
+    for key,proof in proofs.items():
+        scope,expression=json.loads(key);target={'scope':scope,'expression':expression}
+        row=read_product(db,'expression',target);blocked=product_blocked(db,target)
+        if proof.get('actorId') and proof.get('target')==version({'row':row,'blocked':blocked}):
+            result.append({'proof':proof,'row':row,'blocked':blocked})
+    return result
+
+
+def project_user_edits(snapshot,edits):
+    if snapshot is None or not edits:return snapshot
+    import copy
+    from memory_products import version
+    from context_foundation import FOUNDATION_CURRENT
+    from person_memory import expand
+    from memory_model_view import memory_json
+    from readonly_journal import ContextPrefixViolation
+    changes={}
+    for edit in edits:
+        proof=edit['proof'];row=edit['row'];blocked=edit['blocked']
+        if not proof.get('actorId') or proof.get('target')!=version({'row':row,'blocked':blocked}):raise ContextPrefixViolation('web_expression_provenance_mismatch')
+        replacement=_hint(row) if row and not blocked and row['weight']>0 else None
+        for origin in proof.get('origins',[]):changes[origin]=replacement
+    def replace(rows):return [copy.deepcopy(changes.get(version(row),row)) for row in rows if version(row) not in changes or changes[version(row)] is not None]
+    def patch(messages):
+        result=copy.deepcopy(messages)
+        for message in result:
+            text=message.get('content')
+            if message.get('role')!='user' or not isinstance(text,str) or not text.startswith(FOUNDATION_CURRENT+'\n'):continue
+            packet=expand(json.loads(text.split('\n',1)[1]))
+            if packet.get('region')!='long_term_facts' or not isinstance(packet.get('expression_hints'),list):continue
+            updated=replace(packet['expression_hints'])
+            if updated!=packet['expression_hints']:
+                packet['expression_hints']=updated;message['content']=FOUNDATION_CURRENT+'\n'+memory_json(packet)
+        return result
+    result=copy.copy(snapshot);result.state=copy.deepcopy(snapshot.state)
+    foundation=result.state.get('memory_foundation',{})
+    if isinstance(foundation.get('expression_hints'),list):foundation['expression_hints']=replace(foundation['expression_hints'])
+    result.base=patch(snapshot.base);result.wire=patch(snapshot.wire)
+    return result
 
 
 def read_product(db,kind,target):
