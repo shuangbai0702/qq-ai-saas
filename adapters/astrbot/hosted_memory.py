@@ -252,3 +252,85 @@ def edit_by_user(db,data):
         if 'fact_metadata' in tables:
             db.execute("INSERT INTO fact_metadata(scope,subject,name,kind,origin,importance) VALUES(?,?,?,'stable','explicit',.8) ON CONFLICT(scope,subject,name) DO UPDATE SET origin='explicit'",key)
     return {'ok':True}
+
+
+FACT_NAME_CHARS=40
+FACT_VALUE_CHARS=200
+FACT_FIELDS=('scope','subject','name','value','event','updated','version','active','kind','importance','origin')
+
+def semantic_fact_state(db,scope,person):
+    from memory_scope import blocked_facts,value_hash
+    where,args=person_filter(scope,person,'f')
+    hard,_,blocked=blocked_facts(db,scope,person)
+    rows=db.execute('''SELECT f.scope,f.subject,f.name,f.value,f.event,f.updated,f.version,f.active,
+      coalesce(m.kind,'stable'),coalesce(m.importance,.8),coalesce(m.origin,'explicit')
+      FROM facts f LEFT JOIN fact_metadata m ON f.scope=m.scope AND f.subject=m.subject AND f.name=m.name
+      WHERE '''+where+''' AND f.active=1 AND coalesce(m.origin,'explicit')<>'autonomous_result'
+      ORDER BY f.scope,f.subject,f.name,f.version''',args).fetchall()
+    return [dict(zip(FACT_FIELDS,row)) for row in rows if row[2] not in hard and value_hash(row[3]) not in blocked]
+
+
+def apply_summary_facts(db,scope,cfg,data,memory_state,people,event,now,audit=None):
+    """Fact-owned semantic CAS updates; caller supplies the legal summary transaction."""
+    from memory_scope import memory_version,safe_memory_text as _safe_memory_text
+    def reject(category,index,reason):
+        if audit:audit.mark(category,index,'rejected',reason)
+    saved=0;claimed=set()
+    operations=data.get('fact_operations',[])
+    if cfg.get('memory',True) and cfg.get('memoryAutoCapture') and isinstance(operations,list):
+        for index,item in enumerate(operations):
+            if not isinstance(item,dict):reject('facts',index,'invalid_item');continue
+            action={'create':'add','replace':'revise','delete':'forget'}.get(item.get('op'),item.get('op'));person=item.get('subject');target_scope=item.get('scope');name=item.get('name');expected=item.get('expected')
+            if 'expected_version' in item:
+                offered=[r for r in memory_state.get('facts',[]) if r['subject']==person and r['name']==name]
+                if item['expected_version']!=(memory_version(offered) if offered else None):reject('facts',index,'expected_mismatch');continue
+                expected=offered
+            if not isinstance(person,str) or person not in people or target_scope!=scope or action not in ('add','revise','merge','weaken','forget'):reject('facts',index,'invalid_target_or_operation');continue
+            if not _safe_memory_text(name,FACT_NAME_CHARS) or not isinstance(expected,list) or any(not isinstance(x,dict) for x in expected):reject('facts',index,'invalid_field_or_expected');continue
+            if action=='add' and expected or action!='add' and not expected:reject('facts',index,'expected_presence');continue
+            if any(x not in memory_state.get('facts',[]) or x.get('subject')!=person for x in expected):reject('facts',index,'expected_mismatch');continue
+            names={x['name'] for x in expected}|{name}
+            if any(not _safe_memory_text(n,FACT_NAME_CHARS) or re.search(r'(?i)身份|\b(?:owner|admin|role|policy|system|binding|uin|sender|platform)\b',n) for n in names):reject('facts',index,'unsafe_field');continue
+            if action!='merge' and names!={name}:reject('facts',index,'unexpected_fields');continue
+            keys={(person,n) for n in names}
+            if claimed & keys:reject('facts',index,'duplicate_target');continue
+            # All active copies of each affected name must match the offered
+            # snapshot. This also catches a higher-priority legacy copy or ABA.
+            current=[x for x in semantic_fact_state(db,scope,person) if x['name'] in names]
+            offered=[x for x in memory_state.get('facts',[]) if x['subject']==person and x['name'] in names]
+            if current!=offered:
+                reject('facts',index,'snapshot_changed');raise ValueError('semantic_fact_snapshot_changed')
+            if len(expected)!=len(current) or any(x not in expected for x in current):reject('facts',index,'incomplete_expected');continue
+            value=item.get('value');kind=item.get('kind','stable');importance=item.get('importance',.8)
+            if action=='forget':value=None
+            elif action=='weaken':
+                if len({x['value'] for x in expected})!=1:reject('facts',index,'ambiguous_weaken');continue
+                value=expected[0]['value'];kind=item.get('kind',expected[0]['kind'])
+                if 'importance' not in item:reject('facts',index,'missing_importance');continue
+            if action!='forget' and value is None:reject('facts',index,'missing_value');continue
+            if value is not None and (not _safe_memory_text(value,FACT_VALUE_CHARS) or kind not in ('stable','event','state')):reject('facts',index,'unsafe_value_or_kind');continue
+            if type(importance) not in (int,float) or not math.isfinite(importance) or not 0<=importance<=1:reject('facts',index,'invalid_importance');continue
+            if action=='weaken' and any(importance>=x['importance'] for x in expected):reject('facts',index,'not_weakened');continue
+            from memory_scope import blocked_facts,value_hash
+            hard,_,blocked=blocked_facts(db,scope,person)
+            if name in hard or value is not None and value_hash(value) in blocked:reject('facts',index,'human_memory_block');continue
+            if value is not None and db.execute('SELECT count(*) FROM facts').fetchone()[0]>=20000:
+                reject('facts',index,'storage_capacity');continue
+            where,args=person_filter(scope,person)
+            version=db.execute('SELECT coalesce(max(version),0)+1 FROM facts WHERE '+where+' AND name=?',args+(name,)).fetchone()[0]
+            for old in expected:
+                db.execute('UPDATE facts SET active=0 WHERE scope=? AND subject=? AND name=? AND version=? AND active=1',
+                           (old['scope'],person,old['name'],old['version']))
+            if item.get('op')=='delete':
+                db.execute('DELETE FROM facts WHERE '+where+' AND name=?',args+(name,))
+                db.execute('DELETE FROM fact_metadata WHERE '+where+' AND name=?',args+(name,))
+            if value is not None:
+                db.execute('INSERT INTO facts VALUES(?,?,?,?,?,?,?,1)',(scope,person,name,value,event,now,version))
+                db.execute('''INSERT INTO fact_metadata(scope,subject,name,kind,origin,importance) VALUES(?,?,?,?,?,?)
+                  ON CONFLICT(scope,subject,name) DO UPDATE SET kind=excluded.kind,origin=excluded.origin,
+                  importance=excluded.importance,last_recalled=0,recalls=0''',(scope,person,name,kind,'semantic',importance))
+            claimed.update(keys);saved+=1
+            if audit:audit.mark('facts',index,'accepted','applied',True)
+    elif isinstance(operations,list):
+        for index in range(len(operations)):reject('facts',index,'disabled')
+    return saved

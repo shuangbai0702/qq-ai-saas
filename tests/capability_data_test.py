@@ -9,14 +9,16 @@ import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
 from behavior import BehaviorStore
 from data_admin import run
-from social import maybe_learn
+from social import summary_learning_batches,accept_summary_learning
 from contextvars import ContextVar
 
 
 def seed(file):
     store=BehaviorStore(file)
     store.observe('group:12345','123456','记住：饮料=红茶','e1')
+    store.memory.remember('group:12345','123456','饮料','红茶','e1',time.time())
     store.observe('group:54321','654321','记住：生日=五月一日','e2')
+    store.memory.remember('group:54321','654321','生日','五月一日','e2',time.time())
     store.db.execute('INSERT INTO social_patterns VALUES(?,?,?,?,?,?)',('group:12345','有节目效果','朋友间轻松开玩笑','[1,2]',2,time.time()))
     store.db.commit()
     return store
@@ -111,21 +113,16 @@ class ManagementTests(unittest.TestCase):
         run(self.file,{'action':'pause_contact','scope':'private:123456'})
         self.assertEqual(self.data()['contacts'][0]['opted_out'],1)
 
-    def test_clear_invalidates_inflight_model_result(self):
-        async def exercise():
-            ready,release=asyncio.Event(),asyncio.Event()
-            class Provider:
-                async def text_chat(self,**kwargs):
-                    ready.set();await release.wait()
-                    batch=json.loads(kwargs['prompt'])
-                    return type('Response',(),{'completion_text':json.dumps({'patterns':[{'expression':'节目效果','situation':'轻松开玩笑','source_ids':[batch[0]['id'],batch[1]['id']]}]})})()
-            for i in range(12):self.store.social.observe('group:12345',str(i%2),'真是有节目效果',str(i))
-            maybe_learn(self.store.social,'group:12345',{'styleLearning':True},Provider(),lambda:True,{},ContextVar('event'))
-            await ready.wait()
-            run(self.file,{'action':'clear_learning','scope':'group:12345'})
-            release.set();await self.store.social.task
-            self.assertEqual(self.data(scope='group:12345')['patterns'],[])
-        asyncio.run(exercise())
+    def test_clear_invalidates_pending_summary_learning_samples(self):
+        # Learning now belongs exclusively to legal reflection, not an ordinary
+        # standalone maybe_learn task. Test its real sample-validation boundary.
+        for i in range(12):self.store.social.observe('group:12345',str(i%2),'真是有节目效果',str(i))
+        batches=summary_learning_batches(self.store.db,'group:12345',[str(i) for i in range(12)])
+        self.assertEqual(len(batches[0]['samples']),12)
+        chosen={'scope':'group:12345','patterns':[{'expression':'节目效果','situation':'轻松开玩笑','source_ids':[batches[0]['samples'][0]['id'],batches[0]['samples'][1]['id']]}]}
+        run(self.file,{'action':'clear_learning','scope':'group:12345'})
+        with self.assertRaisesRegex(ValueError,'stale_summary_style_samples'):accept_summary_learning(self.store.db,batches,[chosen])
+        self.assertEqual(self.data(scope='group:12345')['patterns'],[])
 
 
 if __name__=='__main__':

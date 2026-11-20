@@ -191,20 +191,20 @@ def inspect_tool(db,cfg,scope,current,*,event=None,on_read=None):
 
 
 def editable_version(db,kind,target):
-    from memory_products import read,version
-    row=read(db,kind,target)
+    from memory_products import version
+    row=read_product(db,kind,target)
     return version(row) if row else None
 
 
 def edit_by_user(db,data):
     """Update existing cognition only. Never manufacture evidence or task receipts."""
-    from memory_products import read,version
+    from memory_products import version
     if not isinstance(data.get('actorId'),str) or not data['actorId']:return {'error':'缺少真实用户操作来源','status':403}
     kind=data['kind']
     if kind not in ('interest','motive'):return {'error':'不支持的认知类型','status':400}
     target={'scope':data['scope'],'topic':data['topic']}
     if kind=='motive':target['subject']=data['subject']
-    row=read(db,kind,target)
+    row=read_product(db,kind,target)
     if not row or data.get('expectedVersion')!=version(row):return {'error':'认知内容已变化，请刷新后重试','status':409}
     now=max(time.time(),float(row.get('updated',0))+0.000001)
     if kind=='interest':
@@ -218,3 +218,37 @@ def edit_by_user(db,data):
         if status not in ('open','contacted','resolved','abandoned') or any(type(v) not in (int,float) or not math.isfinite(v) for v in (due,expires)) or due>expires:return {'error':'话题状态或时间格式不正确','status':400}
         db.execute('UPDATE companion_motives SET status=?,due=?,expires=? WHERE scope=? AND subject=? AND topic=?',(status,due,expires,data['scope'],data['subject'],data['topic']))
     return {'ok':True,'updatedRegion':kind,'version':editable_version(db,kind,target)}
+
+
+# Product storage belongs here; the compression coordinator never owns tables.
+PRODUCT_SCHEMAS={
+ 'interest':('companion_interests',('scope','topic'),('scope','topic','weight','hits','updated','evidence','source')),
+ 'motive':('companion_motives',('scope','subject','topic'),('scope','subject','topic','due','expires','status','evidence')),
+}
+def read_product(db,kind,target):
+ table,keys,columns=PRODUCT_SCHEMAS[kind]
+ row=db.execute('SELECT '+','.join(columns)+' FROM '+table+' WHERE '+' AND '.join(k+'=?' for k in keys),tuple(target[k] for k in keys)).fetchone()
+ return dict(zip(columns,row)) if row else None
+
+def product_rows(db,kind):
+ table,keys,columns=PRODUCT_SCHEMAS[kind]
+ return [dict(zip(columns,row)) for row in db.execute('SELECT '+','.join(columns)+' FROM '+table+' ORDER BY '+','.join(keys))]
+
+def validate_product(kind,op,value,now):
+ if op=='delete':return None
+ if not isinstance(value,dict):return 'invalid_value'
+ if kind=='interest':
+  weight=value.get('weight')
+  return None if set(value)=={'weight'} and type(weight) in (int,float) and math.isfinite(weight) and 0<=weight<=8 else 'invalid_value'
+ return None if set(value)=={'status','due','expires'} and value['status'] in ('open','contacted','resolved','abandoned') and all(type(value[k]) in (int,float) and math.isfinite(value[k]) for k in ('due','expires')) and value['due']<=value['expires']<=now+604800 else 'invalid_value'
+
+def apply_product(db,kind,op,target,value,now):
+ reason=validate_product(kind,op,value,now)
+ if reason:raise ValueError(reason)
+ table,keys,_=PRODUCT_SCHEMAS[kind];args=tuple(target[k] for k in keys);where=' AND '.join(k+'=?' for k in keys)
+ if op=='delete':db.execute('DELETE FROM '+table+' WHERE '+where,args)
+ elif kind=='interest':
+  if op=='replace':db.execute('UPDATE companion_interests SET weight=?,updated=? WHERE '+where,(value['weight'],now)+args)
+  else:db.execute("INSERT INTO companion_interests VALUES(?,?,?,0,?,'','autonomous_choice')",(target['scope'],target['topic'],value['weight'],now))
+ elif op=='replace':db.execute('UPDATE companion_motives SET status=?,due=?,expires=? WHERE '+where,(value['status'],value['due'],value['expires'])+args)
+ else:db.execute('INSERT INTO companion_motives VALUES(?,?,?,?,?,?,?)',(target['scope'],target['subject'],target['topic'],value['due'],value['expires'],value['status'],motive_record('semantic-memory','model_plan')))

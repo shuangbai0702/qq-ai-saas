@@ -408,9 +408,9 @@ def edit_learning_by_user(db,data):
     """Own expression CAS, blocks and sample invalidation in caller transaction."""
     scope=data['scope']
     if data['action']=='edit_pattern':
-        from memory_products import read,version
+        from memory_products import version
         if not isinstance(data.get('actorId'),str) or not data['actorId']:return {'error':'缺少真实用户操作来源','status':403}
-        row=read(db,'expression',{'scope':scope,'expression':data['expression']})
+        row=read_product(db,'expression',{'scope':scope,'expression':data['expression']})
         if not row or data.get('expectedVersion')!=version(row) or db.execute('SELECT epoch FROM social_control WHERE id=1').fetchone()[0]!=data['expectedEpoch']:return {'error':'表达已变化，请刷新后重试','status':409}
         situation,weight=data.get('situation'),data.get('weight')
         import math
@@ -439,3 +439,32 @@ def edit_learning_by_user(db,data):
         db.execute('DELETE FROM social_patterns WHERE scope=?', (scope,))
         db.execute('DELETE FROM social_samples WHERE scope=?', (scope,))
     return {'ok':True}
+
+
+def read_product(db,kind,target):
+ if kind!='expression':raise ValueError('invalid_expression_kind')
+ columns=('scope','expression','situation','sources','weight','updated')
+ row=db.execute('SELECT '+','.join(columns)+' FROM social_patterns WHERE scope=? AND expression=?',(target['scope'],target['expression'])).fetchone()
+ return dict(zip(columns,row)) if row else None
+
+def product_rows(db,kind):
+ if kind!='expression':raise ValueError('invalid_expression_kind')
+ columns=('scope','expression','situation','sources','weight','updated')
+ return [dict(zip(columns,row)) for row in db.execute('SELECT '+','.join(columns)+' FROM social_patterns ORDER BY scope,expression')]
+
+def product_blocked(db,target):return bool(db.execute('SELECT 1 FROM social_pattern_blocks WHERE scope=? AND expression=?',(target['scope'],target['expression'])).fetchone())
+
+def validate_product(kind,op,value,now):
+ if kind!='expression':return 'invalid_expression_kind'
+ if op=='delete':return None
+ from memory_products import safe
+ weight=value.get('weight') if isinstance(value,dict) else None
+ return None if isinstance(value,dict) and set(value)=={'situation','weight'} and safe(value['situation'],120) and type(weight) in (int,float) and math.isfinite(weight) and 0<=weight<=5 else 'invalid_value'
+
+def apply_product(db,kind,op,target,value,now):
+ reason=validate_product(kind,op,value,now)
+ if reason:raise ValueError(reason)
+ args=(target['scope'],target['expression'])
+ if op=='delete':db.execute('DELETE FROM social_patterns WHERE scope=? AND expression=?',args)
+ elif op=='replace':db.execute('UPDATE social_patterns SET situation=?,weight=?,updated=? WHERE scope=? AND expression=?',(value['situation'],value['weight'],now)+args)
+ else:raise ValueError('learning_evidence_required')

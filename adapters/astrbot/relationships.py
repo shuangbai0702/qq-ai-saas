@@ -217,3 +217,51 @@ def edit_by_user(db,data):
     now=max(time.time(),before['semantic_updated']+0.000001)
     db.execute('UPDATE relations SET affinity=?,trust=?,impression=?,semantic_updated=? WHERE subject=?',(affinity,trust,impression,now,data['subject']))
     return {'ok':True,'updatedRegion':'relation','version':user_version(state(db,data['subject']))}
+
+
+IMPRESSION_CHARS=1000
+
+def apply_summary_relations(db,scope,cfg,data,memory_state,people,now,audit=None):
+    """Relationship-owned semantic updates preserve protocol activity."""
+    import math
+    from memory_scope import memory_version,safe_memory_text as _safe_memory_text
+    def reject(category,index,reason):
+        if audit:audit.mark(category,index,'rejected',reason)
+    saved=0
+    operations=data.get('relation_operations',[])
+    if cfg.get('selfDevelopment',True) and isinstance(operations,list):
+        seen=set()
+        for index,item in enumerate(operations):
+            if not isinstance(item,dict):reject('relations',index,'invalid_item');continue
+            person=item.get('subject');expected=item.get('expected');affinity=item.get('affinity');trust=item.get('trust');impression=item.get('impression')
+            if item.get('scope')!=scope or not isinstance(person,str) or person not in people or person in seen or not any(k in item for k in ('expected','expected_version')):reject('relations',index,'invalid_target_or_expected');continue
+            prior=next((r for r in memory_state.get('relations',[]) if r['subject']==person),None)
+            if 'expected_version' in item:
+                if item['expected_version']!=(memory_version({k:v for k,v in prior.items() if k!='last_seen'}) if prior else None):reject('relations',index,'expected_mismatch');continue
+                expected=prior
+            operation=item.get('op','replace')
+            if operation not in ('create','replace','delete') or operation=='create' and prior is not None or operation=='delete' and prior is None or operation=='replace' and 'op' in item and prior is None:reject('relations',index,'invalid_target_or_operation');continue
+            if expected!=prior:reject('relations',index,'expected_mismatch');continue
+            current=state(db,person)
+            cognitive=lambda row:None if row is None else {k:v for k,v in row.items() if k!='last_seen'}
+            if cognitive(current)!=cognitive(prior):
+                reject('relations',index,'snapshot_changed');raise ValueError('semantic_relation_snapshot_changed')
+            if operation=='delete':
+                db.execute('DELETE FROM relations WHERE subject=?',(person,));seen.add(person);saved+=1
+                if audit:audit.mark('relations',index,'accepted','applied',True)
+                continue
+            if type(affinity) not in (int,float) or not math.isfinite(affinity) or not -20<=affinity<=100:reject('relations',index,'invalid_affinity');continue
+            if type(trust) not in (int,float) or not math.isfinite(trust) or not -1<=trust<=1:reject('relations',index,'invalid_trust');continue
+            if impression!='' and not _safe_memory_text(impression,IMPRESSION_CHARS):reject('relations',index,'unsafe_impression');continue
+            stamp=max(now,(prior['semantic_updated']+0.000001) if prior else now)
+            if prior:
+                db.execute('UPDATE relations SET affinity=?,trust=?,impression=?,semantic_updated=?,scope=? WHERE subject=?',
+                           (affinity,trust,impression,stamp,scope,person))
+            else:
+                db.execute('''INSERT INTO relations(scope,subject,affinity,emotion,expires,last_seen,trust,impression,semantic_updated)
+                  VALUES(?,?,?,'平静',0,?,?,?,?)''',(scope,person,affinity,now,trust,impression,stamp))
+            seen.add(person);saved+=1
+            if audit:audit.mark('relations',index,'accepted','applied',prior is None or any(prior[k]!=v for k,v in (('affinity',affinity),('trust',trust),('impression',impression))))
+    elif isinstance(operations,list):
+        for index in range(len(operations)):reject('relations',index,'disabled')
+    return saved

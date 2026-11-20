@@ -19,7 +19,10 @@ class Companion(unittest.IsolatedAsyncioTestCase):
   self.p.maybe_start(self.cfg,NS(text_chat=chat),lambda:True,self.var,{},self.now);await self.p.task
   plan=self.p.plan('private:12345',self.now-400);self.assertTrue(plan['allowed'])
   self.assertEqual(initiative.candidates(self.db,self.cfg,plan['due']-1),[])
-  item=initiative.candidates(self.db,self.cfg,plan['due']+1)[0];self.assertEqual(item['topic'],'最近喝的茶')
+  # A persisted plan is evidence for the unified main activation, never a
+  # second scheduler permitted to send independently when its due time passes.
+  self.assertEqual(plan['topic'],'最近喝的茶')
+  self.assertEqual(initiative.candidates(self.db,self.cfg,plan['due']+1),[])
   initiative.incoming(self.db,'private:12345','12345','99999','新的消息',self.now)
   self.assertEqual(initiative.candidates(self.db,self.cfg,plan['due']+1),[])
  async def test_plan_receives_configured_persona(self):
