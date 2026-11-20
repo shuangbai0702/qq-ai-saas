@@ -4,7 +4,10 @@ import {api} from './api';import {useLifetime} from './hooks';import {Status,lab
 const terminal=['online','expired','failed','canceled'];
 export function QQPanel({id,mock,online,offline=false,blocked=false,onError}:{id:string;mock:boolean;online:boolean;offline?:boolean;blocked?:boolean;onError:(s:string)=>void}){
  const [session,setSession]=useState<any>(null),[busy,setBusy]=useState(false),[reconnecting,setReconnecting]=useState(false);const owner=useLifetime(),sequence=useRef(0),pending=useRef(false);
- useEffect(()=>{const c=new AbortController(),order=++sequence.current;void api('/bots/'+id+'/login-session',undefined,undefined,c.signal).then(d=>{if(!c.signal.aborted&&order===sequence.current)setSession(d)}).catch(e=>{if(!c.signal.aborted&&order===sequence.current)onError(e.message)});return()=>c.abort()},[id]);
+ useEffect(()=>{const c=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined;
+  const poll=async()=>{const order=sequence.current;try{const d=await api('/bots/'+id+'/login-session',undefined,undefined,c.signal);if(!c.signal.aborted&&!pending.current&&order===sequence.current)setSession((old:any)=>old?.id===d?.id&&Number(old?.sequence)>Number(d?.sequence)?old:d)}catch(e){if(!c.signal.aborted&&!timer)onError((e as Error).message)}finally{if(!c.signal.aborted&&!online)timer=setTimeout(()=>void poll(),2000)}};
+  void poll();return()=>{c.abort();if(timer)clearTimeout(timer)};
+ },[id,online,offline]);
  const ended=terminal.includes(session?.state);
  const scanned=!online&&['waiting_confirm','authenticating'].includes(session?.state);
  const guidance=session?.state==='waiting_confirm'?'服务器已收到扫码回执。请在手机 QQ 确认登录；如果已经确认但仍停在这里，表示协议端尚未收到登录成功回执，请勿反复扫码。':session?.state==='authenticating'?'正在等待 QQ 登录完成和协议初始化，请稍候。':session?.state==='waiting_scan'?'当前未能自动登录，请使用手机 QQ 扫码并确认登录。':session?.message;

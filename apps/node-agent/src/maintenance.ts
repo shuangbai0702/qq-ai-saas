@@ -18,6 +18,21 @@ import {createFavoriteCaptioner} from '../../../packages/shared/qq-favorite-sema
 import {resolvePlatformModel} from '../../../packages/shared/platform-model.js';
 import {NapCatAdapter} from '../../../adapters/protocol/napcat/index.js';
 
+/** QR-only patch: preserve the Agent, heartbeat, protocol pipes and AI owners. */
+export async function installQrSessionRuntime(agent:NodeAgent,release:string){
+ if(!/^[a-f0-9]{64}$/.test(release)||agent.closed)throw new Error('Invalid QR session release');
+ const timer=agent.timer;if(timer)clearInterval(timer);agent.timer=undefined;
+ const names=['recoverLoginSession','pollLogin','healthSnapshot'] as const;
+ const previous=names.map(name=>Object.getOwnPropertyDescriptor(agent,name));
+ try{
+  const deadline=Date.now()+20000;while(controlBusy(agent)&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
+  if(controlBusy(agent)||agent.closed)throw new Error('QR session boundary is busy');
+  for(const name of names)Object.defineProperty(agent,name,{value:NodeAgent.prototype[name],writable:true,configurable:true});
+  return{pid:process.pid,release,processOwnersPreserved:true,methods:names};
+ }catch(error){names.forEach((name,i)=>{if(previous[i])Object.defineProperty(agent,name,previous[i]!);else delete (agent as any)[name]});throw error}
+ finally{if(timer&&!agent.closed){agent.timer=setInterval(()=>void agent.tick().catch(error=>console.error('agent tick:',redact(String(error)))),500);agent.timer.unref()}}
+}
+
 /** Preserve independent QQ owners while replacing their control methods. */
 export async function installQqRecoveryRuntime(agent:NodeAgent,release:string){
  if(!/^[a-f0-9]{64}$/.test(release)||agent.closed)throw new Error('Invalid QQ recovery release');

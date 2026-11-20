@@ -8,7 +8,7 @@ try{
  await page.route('**/v1/**',async route=>{const url=new URL(route.request().url());const p=url.pathname;const json=(value:any)=>route.fulfill({json:value});
  if(p.endsWith('/events'))return route.abort();
  if(p.endsWith('/qr'))return route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>'});
- if(p==='/v1/bots/test/login-session')return json({id:'old',state:'expired',sequence:3,hasQr:false});
+ if(p==='/v1/bots/test/login-session')return json(current==='old'?{id:'old',state:'expired',sequence:3,hasQr:false}:{id:current,state:scanned?'waiting_confirm':'waiting_scan',sequence:3,hasQr:true});
  if(p==='/v1/bots/test/login-sessions'){current='new-'+(++reads);return json({id:current})}
  if(p.startsWith('/v1/login-sessions/')){polls++;const sid=p.split('/')[3];const n=(counts.get(sid)||0)+1;counts.set(sid,n);return json({id:sid,state:scanned?'waiting_confirm':n>=3?'waiting_scan':'starting',sequence:n>=3?2:1,hasQr:n>=3})}
  return route.fulfill({status:404,json:{error:'unexpected'}});
@@ -18,5 +18,8 @@ try{
  for(let i=1;i<=2;i++){await page.getByRole('button',{name:'刷新 / 重新登录',exact:true}).click();const img=page.locator('img[src*="new-'+i+'/qr"]');await img.waitFor({timeout:10000});assert.match(await img.getAttribute('src')||'',new RegExp('new-'+i+'/qr'));await page.getByText('当前未能自动登录，请使用手机 QQ 扫码并确认登录。',{exact:true}).waitFor();}
  scanned=true;await page.getByText(/服务器已收到扫码回执/).waitFor({timeout:10000});assert.equal(await page.locator('img[src*="/qr"]').count(),0,'scanned QR is hidden to prevent repeated scans');
  page.once('dialog',dialog=>dialog.dismiss());const beforeRefresh=reads;await page.getByRole('button',{name:'刷新 / 重新登录',exact:true}).click();assert.equal(reads,beforeRefresh,'declining refresh preserves an in-progress scanned session');
+ // A server-side recovery creates a different session without a button click.
+ // SSE is unavailable throughout this test; discovery must replace the old sid.
+ current='recovered';scanned=false;await page.locator('img[src*="recovered/qr"]').waitFor({timeout:10000});assert.equal(reads,beforeRefresh,'recovery discovery must not POST a new login');
  await page.goto('about:blank');const before=polls;await page.waitForTimeout(1500);assert.equal(polls,before,'unmount stops polling');console.log('PASS: repeated QR refresh without SSE or page reload; unmount stops polling');
 }finally{await browser.close()}
