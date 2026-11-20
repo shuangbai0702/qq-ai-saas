@@ -24,6 +24,24 @@ class WebCognition(unittest.TestCase):
   self.assertEqual(note(self.db)['text'],'new');self.assertEqual(read(self.db)['proof']['actorId'],'real-user')
   self.assertTrue(self.edit('newer')['ok']);self.assertIn(version,read(self.db)['proof']['origins'])
   with closing(sqlite3.connect(self.path)) as reopened:self.assertEqual(read(reopened),read(self.db))
+ def test_user_text_does_not_inherit_old_ai_evidence(self):
+  self.db.execute("UPDATE memory_core_notes SET sources='[\"old-event\"]',claims='[{\"id\":\"old-claim\"}]'");self.db.commit()
+  self.assertTrue(self.edit('a direct correction')['ok'])
+  self.assertEqual(tuple(self.db.execute('SELECT sources,claims FROM memory_core_notes').fetchone()),('[]','[]'))
+ def test_legacy_visibility_annotation_is_not_another_authoritative_version(self):
+  journal,_,_,first=self.initial()
+  first.state['foundation_core_note']['legacy_unverified']=True
+  import context_foundation
+  for message in first.wire:
+   if message.get('content','').startswith(context_foundation.FOUNDATION_CURRENT+'\n'):
+    packet=json.loads(message['content'].split('\n',1)[1])
+    if packet.get('region')=='core_note':
+     packet['core_note']['legacy_unverified']=True
+     from memory_model_view import memory_json
+     message['content']=context_foundation.FOUNDATION_CURRENT+'\n'+memory_json(packet)
+  self.assertTrue(self.edit('user correction')['ok'])
+  projected=project(first,read(self.db))
+  self.assertEqual(projected.state['foundation_core_note']['text'],'user correction')
  def test_fact_edit_preserves_unrelated_cognition_and_uncompressed_material(self):
   self.store.memory.remember('private:12345678','12345678','饮料','红茶','source',1)
   self.store.reflection.record('bot_shared','12345678','real-event','尚未压缩的输入','真实回复',now=10)

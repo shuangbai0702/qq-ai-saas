@@ -39,8 +39,11 @@ def edit(db,data):
         if snapshot:
             try:project(SimpleNamespace(**snapshot),{'proof':proof,'note':after})
             except ContextPrefixViolation as error:return {'error':'当前核心记忆区域无法精确定位：'+str(error),'status':409}
-    db.execute("INSERT INTO memory_core_notes(slot,text,scopes,people,sources,updated,schema_version,source_verification,user_edit) VALUES(1,?,?,?,'[]',?,2,'user_edited',?) ON CONFLICT(slot) DO UPDATE SET text=excluded.text,scopes=excluded.scopes,updated=excluded.updated,source_verification=excluded.source_verification,user_edit=excluded.user_edit",
+    db.execute("INSERT INTO memory_core_notes(slot,text,scopes,people,sources,updated,schema_version,source_verification,user_edit) VALUES(1,?,?,?,'[]',?,2,'user_edited',?) ON CONFLICT(slot) DO UPDATE SET text=excluded.text,scopes=excluded.scopes,updated=excluded.updated,source_verification=excluded.source_verification,sources='[]',user_edit=excluded.user_edit",
         (value,json.dumps(after['source_scopes']),json.dumps(after['subjects']),updated,json.dumps(proof,separators=(',',':'))))
+    # Old AI claims supported the previous text. Keep their authoritative
+    # records, but never attach them to a user's replacement as evidence.
+    if 'claims' in columns:db.execute("UPDATE memory_core_notes SET claims='[]' WHERE slot=1")
     return {'ok':True,'updatedRegion':'core_note','version':fingerprint(after)}
 
 
@@ -67,7 +70,8 @@ def project(snapshot,change):
     if previous is None:previous=state.get('memory_foundation',{}).get('core_note')
     if not isinstance(previous,dict):raise ContextPrefixViolation('web_core_note_layout_unrecognized')
     if previous==current:return snapshot
-    if fingerprint(previous) not in proof.get('origins',[]):raise ContextPrefixViolation('web_core_note_origin_mismatch')
+    origin={k:v for k,v in previous.items() if k!='legacy_unverified'}
+    if fingerprint(origin) not in proof.get('origins',[]):raise ContextPrefixViolation('web_core_note_origin_mismatch')
     def patch(messages,required):
         result=copy.deepcopy(messages);matches=[]
         for index,message in enumerate(result):
