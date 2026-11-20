@@ -12,13 +12,18 @@ import hashlib
 import math
 from collections import OrderedDict
 from memory_reflection import embedding_request, reserve_embedding
-from data_admin import initialize_controls
 from pathlib import Path
 from hosted_memory import tokens
 from meme_reactions import categories as reaction_categories, relevance as meme_relevance, SERIOUS
 from sticker_collection import StickerCollector
 from meme_packs import catalog as pack_catalog
 from qq_favorites import catalog as favorite_catalog
+
+def initialize_controls(db):
+    db.executescript("""CREATE TABLE IF NOT EXISTS social_pattern_blocks(scope TEXT,expression TEXT,PRIMARY KEY(scope,expression));
+    CREATE TABLE IF NOT EXISTS social_control(id INTEGER PRIMARY KEY CHECK(id=1),epoch INTEGER NOT NULL);
+    INSERT OR IGNORE INTO social_control VALUES(1,0);""")
+
 
 MEME_INDEX_LIMIT = 256
 RETIRED_REACTIONS = frozenset(('hug', 'laugh', 'thinking'))
@@ -397,3 +402,28 @@ class SocialStore:
         self.meme_vectors.clear()
         self.stickers.close()
         if self.task:self.task.cancel()
+
+
+def edit_learning_by_user(db,data):
+    """Own expression CAS, blocks and sample invalidation in caller transaction."""
+    scope=data['scope']
+    if data['action']=='set_pattern':
+        if db.execute('SELECT epoch FROM social_control WHERE id=1').fetchone()[0] != data['expectedEpoch']:
+            return {'error': '学习管理状态已变化，请刷新后重试', 'status': 409}
+        db.execute('UPDATE social_control SET epoch=epoch+1 WHERE id=1')
+        key = (scope, data['expression'])
+        old = db.execute('SELECT updated FROM social_patterns WHERE scope=? AND expression=?', key).fetchone()
+        if not old or old[0] != data['expectedUpdated']:
+            return {'error': '表达已发生变化，请刷新后重试', 'status': 409}
+        if data['disabled']:
+            db.execute('INSERT OR IGNORE INTO social_pattern_blocks VALUES(?,?)', key)
+        else:
+            db.execute('DELETE FROM social_pattern_blocks WHERE scope=? AND expression=?', key)
+    elif data['action']=='clear_learning':
+        # Global epoch is deliberately conservative: a clear invalidates any
+        # in-flight learning batch in this Bot, without affecting other Bots.
+        db.execute('UPDATE social_control SET epoch=epoch+1 WHERE id=1')
+        db.execute('DELETE FROM social_pattern_blocks WHERE scope=?',(scope,))
+        db.execute('DELETE FROM social_patterns WHERE scope=?', (scope,))
+        db.execute('DELETE FROM social_samples WHERE scope=?', (scope,))
+    return {'ok':True}

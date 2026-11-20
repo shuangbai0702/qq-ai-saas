@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
 from behavior import BehaviorStore
 from companion_insights import apply,snapshot
-from data_admin import initialize_controls
+from memory_scope import initialize_controls
 from memory_scope import value_hash
 import sqlite3
 

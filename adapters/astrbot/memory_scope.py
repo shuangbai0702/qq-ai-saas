@@ -312,3 +312,18 @@ def pending_messages(db,scope,subject,now,limit=16,budget=3000,cross_scope=True,
     # Equal protocol timestamps are common. Preserve ingestion order instead
     # of sorting new event IDs ahead of retained rows and resending their text.
     return sorted(result,key=lambda r:(r['at'],observed_order.get((r['source_scope'],str(r['source_event'])),max(observed_order.values(),default=0)+1)))
+
+
+def initialize_controls(db):
+    db.executescript('''
+    CREATE TABLE IF NOT EXISTS memory_blocks(scope TEXT,subject TEXT,name TEXT,block_all INTEGER DEFAULT 0,rejected_values TEXT,revision INTEGER DEFAULT 0,PRIMARY KEY(scope,subject,name));
+    ''')
+    # Additive migration: legacy rows were whole-name forgets, so they become
+    # block_all=1; correction rows written later keep block_all=0 with only
+    # their recorded rejected values hidden.
+    columns={row[1] for row in db.execute('PRAGMA table_info(memory_blocks)')}
+    if 'block_all' not in columns:
+        db.execute('ALTER TABLE memory_blocks ADD COLUMN block_all INTEGER DEFAULT 0')
+        db.execute('UPDATE memory_blocks SET block_all=1')
+    if 'rejected_values' not in columns:db.execute('ALTER TABLE memory_blocks ADD COLUMN rejected_values TEXT')
+    if 'revision' not in columns:db.execute('ALTER TABLE memory_blocks ADD COLUMN revision INTEGER DEFAULT 0')

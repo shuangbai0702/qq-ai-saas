@@ -1846,3 +1846,22 @@ class Reflection:
             self.db.commit()
         self.closed=True;self.binding=None
         if self.task:self.task.cancel()
+
+
+def forget_summary_by_user(db,data):
+    """Explicit forget of one summary and its derived coverage, in caller transaction."""
+    scope=data['scope'];tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if 'memory_summaries' not in tables:return {'error':'摘要不存在','status':404}
+    old=db.execute('SELECT updated,sources FROM memory_summaries WHERE id=? AND scope=?',(data['id'],scope)).fetchone()
+    if not old or old[0]!=data['expectedUpdated']:return {'error':'摘要已变化，请刷新后重试','status':409}
+    db.execute('DELETE FROM memory_summaries WHERE id=? AND scope=?',(data['id'],scope))
+    if 'memory_vectors' in tables:db.execute('DELETE FROM memory_vectors WHERE summary_id=?',(data['id'],))
+    # Forget only this summary's original events. New conversation debt
+    # in the same scope remains available for the next summary.
+    sources=json.loads(old[1])
+    forget_core_notes(db,scope=scope,events=sources if isinstance(sources,list) else [])
+    if isinstance(sources,list):
+        db.executemany('DELETE FROM memory_rounds WHERE scope=? AND event=?',[(scope,str(event)) for event in sources[:1000]])
+        if 'memory_pending' in tables:db.executemany('DELETE FROM memory_pending WHERE scope=? AND event=?',[(scope,str(event)) for event in sources[:1000]])
+    db.execute('UPDATE memory_reflection_control SET epoch=epoch+1 WHERE id=1')
+    return {'ok':True}

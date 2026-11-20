@@ -5,7 +5,7 @@ LivingMemory (CJK retrieval/scope separation), QQ-agent (per-member records).
 This is an independent SQLite implementation, not those frameworks' plugin API.
 Optional bounded semantic recall uses only active, attributed facts.
 """
-import asyncio,json,hashlib,math,re,collections
+import asyncio,json,hashlib,math,re,collections,time
 
 STOP={'什么','么了','是什','我的','你的','记得','记住','一下','这个','那个','你好','知道','告诉','最近','现在','还是','之前','我们','可以','是不是','有什'}
 ALIASES={'生日':('生日','生辰','出生日期'), '称呼':('名字','称呼','怎么叫','叫什么'),
@@ -19,7 +19,7 @@ def tokens(text):
     return result-STOP
 
 
-from data_admin import initialize_controls
+from memory_scope import initialize_controls
 from memory_scope import person_filter,fact_rows,fact_item,shared_person,blocked_facts,record_correction,release_value,value_hash
 
 class ScopedMemory:
@@ -161,9 +161,8 @@ class ScopedMemory:
             if used+size>budget:continue
             selected.append(fact_item(r,subject,'topic_match' if score>0 else 'profile' if r[0] in ('称呼','生日') else 'recent_fact'))
             seen.add(r[0]);used+=size
-            if score>0:self.db.execute('UPDATE fact_metadata SET last_recalled=?,recalls=recalls+1 WHERE scope=? AND subject=? AND name=?',(now,r[10],subject,r[0]))
             if len(selected)>=limit:break
-        self.db.commit();return selected
+        return selected
 
     def close(self):self.closed=True
 
@@ -222,3 +221,34 @@ class ScopedMemory:
             except Exception:
                 if metrics is not None:metrics['embeddingFailures']=metrics.get('embeddingFailures',0)+1
                 return fallback if valid() else []
+
+
+def edit_by_user(db,data):
+    """CAS edit of fact state; the authenticated admin caller owns the transaction."""
+    scope=data['scope'];action=data['action']
+    tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    key = (scope, data['subject'], data['name'])
+    old = db.execute('SELECT version FROM facts WHERE scope=? AND subject=? AND name=? AND active=1', key).fetchone()
+    if not old or old['version'] != data['expectedVersion']:
+        return {'error': '记忆已发生变化，请刷新后重试', 'status': 409}
+    from memory_reflection import invalidate
+    from memory_scope import person_filter
+    if action=='forget_fact':invalidate(db,scope,data['subject'])
+    # Editing is not forgetting. Keep Core Note, summaries, pending
+    # evidence and lawful checkpoints intact. Compression compares
+    # its cognition snapshot again inside the commit transaction.
+    where,args=person_filter(scope,data['subject'])
+    version=db.execute('SELECT max(version)+1 FROM facts WHERE '+where+' AND name=?',args+(data['name'],)).fetchone()[0]
+    db.execute('UPDATE facts SET active=0 WHERE '+where+' AND name=?',args+(data['name'],))
+    if action == 'forget_fact':
+        db.execute("INSERT INTO memory_blocks(scope,subject,name,block_all,rejected_values,revision) VALUES(?,?,?,1,'[]',0) ON CONFLICT(scope,subject,name) DO UPDATE SET block_all=1", key)
+    else:
+        db.execute('INSERT INTO facts VALUES(?,?,?,?,?,?,?,1)', (*key, data['value'], 'platform-edit', time.time(), version))
+        db.execute('DELETE FROM facts WHERE '+where+' AND name=? AND version<?',args+(data['name'],max(1,version-9)))
+        # Authenticated platform edit: lift this value's block only;
+        # other correction/forget records of the field stay recorded.
+        from memory_scope import release_value
+        release_value(db,scope,data['subject'],data['name'],data['value'])
+        if 'fact_metadata' in tables:
+            db.execute("INSERT INTO fact_metadata(scope,subject,name,kind,origin,importance) VALUES(?,?,?,'stable','explicit',.8) ON CONFLICT(scope,subject,name) DO UPDATE SET origin='explicit'",key)
+    return {'ok':True}

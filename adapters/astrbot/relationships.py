@@ -178,3 +178,21 @@ def recover_activity(db):
             for message in (snap or {}).get('base',[]):
                 origin=source(message)
                 if origin and origin.get('kind')!='platform_service_not_user':observe_message(db,origin.get('scope'),origin.get('sender_id'),origin.get('at'))
+
+
+def reset_by_user(db,data):
+    """Reset this person's relationship product without changing other products."""
+    scope=data['scope'];tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    old=db.execute('SELECT last_seen FROM relations WHERE subject=?',(data['subject'],)).fetchone()
+    if not old or old[0]!=data['expectedLastSeen']:return {'error':'关系状态已变化，请刷新后重试','status':409}
+    from memory_operation_audit import forget as forget_operation_audit
+    forget_operation_audit(db,scope,data['subject'],relations_only=True)
+    db.execute('DELETE FROM relations WHERE subject=?',(data['subject'],))
+    if 'relation_progress' in tables:
+        db.execute('DELETE FROM relation_progress WHERE subject=?',(data['subject'],))
+    if 'relation_evidence' in tables:
+        db.execute('DELETE FROM relation_evidence WHERE subject=?',(data['subject'],))
+    # Invalidate any in-flight reflection holding the pre-reset score.
+    if 'memory_reflection_control' in tables:
+        db.execute('UPDATE memory_reflection_control SET epoch=epoch+1 WHERE id=1')
+    return {'ok':True}
