@@ -407,6 +407,18 @@ class SocialStore:
 def edit_learning_by_user(db,data):
     """Own expression CAS, blocks and sample invalidation in caller transaction."""
     scope=data['scope']
+    if data['action']=='edit_pattern':
+        from memory_products import read,version
+        if not isinstance(data.get('actorId'),str) or not data['actorId']:return {'error':'缺少真实用户操作来源','status':403}
+        row=read(db,'expression',{'scope':scope,'expression':data['expression']})
+        if not row or data.get('expectedVersion')!=version(row) or db.execute('SELECT epoch FROM social_control WHERE id=1').fetchone()[0]!=data['expectedEpoch']:return {'error':'表达已变化，请刷新后重试','status':409}
+        situation,weight=data.get('situation'),data.get('weight')
+        import math
+        if not isinstance(situation,str) or not 1<=len(situation.strip())<=120 or type(weight) not in (int,float) or not math.isfinite(weight) or not 0<=weight<=5:return {'error':'适用语境或权重不正确','status':400}
+        now=max(time.time(),float(row['updated'])+0.000001)
+        db.execute('UPDATE social_patterns SET situation=?,weight=?,updated=? WHERE scope=? AND expression=?',(situation.strip(),weight,now,scope,data['expression']))
+        db.execute('UPDATE social_control SET epoch=epoch+1 WHERE id=1')
+        return {'ok':True,'updatedRegion':'expression'}
     if data['action']=='set_pattern':
         if db.execute('SELECT epoch FROM social_control WHERE id=1').fetchone()[0] != data['expectedEpoch']:
             return {'error': '学习管理状态已变化，请刷新后重试', 'status': 409}

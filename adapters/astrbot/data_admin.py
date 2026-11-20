@@ -56,6 +56,8 @@ def run(file, data, connection=None):
                     row = dict(r)
                     row['disabled'] = bool(db.execute('SELECT 1 FROM social_pattern_blocks WHERE scope=? AND expression=?', (r['scope'], r['expression'])).fetchone()) if 'social_pattern_blocks' in tables else False
                     row['expired'] = r['updated'] < time.time()-30*86400
+                    from memory_products import version
+                    row['version']=version(dict(r))
                     patterns.append(row)
             pause_column='(SELECT until FROM initiative_pauses p WHERE p.scope=contacts.scope)' if 'initiative_pauses' in tables else 'NULL'
             contacts = [dict(r) for r in listed('contacts','SELECT scope,last_user,last_bot,last_attempt,unanswered,opted_out,'+pause_column+' AS paused_until FROM contacts' + pattern_where + ' ORDER BY last_user DESC LIMIT 100', pattern_args)] if 'contacts' in tables else []
@@ -87,7 +89,7 @@ def run(file, data, connection=None):
         if data['action'] in ('edit_fact','forget_fact'):
             from memory_scope import initialize_controls
             initialize_controls(db)
-        elif data['action'] in ('set_pattern','clear_learning'):
+        elif data['action'] in ('set_pattern','edit_pattern','clear_learning'):
             from social import initialize_controls
             initialize_controls(db)
         db.execute('BEGIN IMMEDIATE')
@@ -105,7 +107,7 @@ def run(file, data, connection=None):
             from memory_reflection import forget_summary_by_user
             result=forget_summary_by_user(db,data)
             if not result.get('ok'):return result
-        elif action in ('set_pattern','clear_learning'):
+        elif action in ('set_pattern','edit_pattern','clear_learning'):
             from social import edit_learning_by_user
             result=edit_learning_by_user(db,data)
             if not result.get('ok'):return result

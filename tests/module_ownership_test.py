@@ -36,6 +36,15 @@ class Ownership(unittest.TestCase):
   self.assertTrue(result['ok']);self.assertEqual(self.snapshot(tables),before)
   self.assertEqual(self.store.social.expressions(self.scope,'红茶'),[])
 
+ def test_expression_content_edit_keeps_evidence_blocks_and_other_products(self):
+  listed=run(self.path,{'action':'list'},self.db);row=listed['patterns'][0]
+  data={'action':'edit_pattern','scope':self.scope,'expression':'好耶','expectedVersion':row['version'],'expectedEpoch':listed['epoch'],'situation':'朋友分享红茶时','weight':.3,'actorId':'user'}
+  before=self.snapshot(['facts','relations','memory_core_notes','memory_summaries','memory_rounds','companion_interests'])
+  self.assertEqual(run(self.path,{**data,'actorId':''},self.db)['status'],403)
+  self.assertTrue(run(self.path,data,self.db)['ok']);self.assertEqual(run(self.path,data,self.db)['status'],409)
+  row=self.db.execute('SELECT expression,situation,sources,weight FROM social_patterns').fetchone()
+  self.assertEqual(row,('好耶','朋友分享红茶时',json.dumps(['e']),.3));self.assertEqual(self.snapshot(list(before)),before)
+
  def test_relation_reset_cleans_only_this_person_across_source_scopes(self):
   self.db.execute("INSERT INTO relations(scope,subject,affinity,last_seen) VALUES(?,?,?,?)",(self.scope,'12345678',5,10))
   self.db.execute("INSERT INTO relations(scope,subject,affinity,last_seen) VALUES(?,?,?,?)",(self.scope,'87654321',9,11))

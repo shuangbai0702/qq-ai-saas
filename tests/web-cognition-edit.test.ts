@@ -39,5 +39,10 @@ test('authenticated Core Note save uses owner identity, exact CAS and existing S
  assert.equal((await app.inject({method:'POST',url,cookies:other,payload:interestPayload})).statusCode,404);
  const interestSaved=await app.inject({method:'POST',url,cookies,payload:interestPayload});assert.equal(interestSaved.statusCode,200,interestSaved.body);
  assert.equal((await app.inject({method:'POST',url,cookies,payload:interestPayload})).statusCode,409);
+ run(`import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); db.execute("CREATE TABLE social_patterns(scope TEXT,expression TEXT,situation TEXT,sources TEXT,weight REAL,updated REAL,PRIMARY KEY(scope,expression))"); db.execute("INSERT INTO social_patterns VALUES('group:12345678','好耶','喝茶','[1,2]',1,1)"); db.commit(); db.close()`);
+ const patterns=(await app.inject({method:'GET',url,cookies})).json();
+ const expressionPayload={action:'edit_pattern',scope:'group:12345678',expression:'好耶',expectedVersion:patterns.patterns[0].version,expectedEpoch:patterns.epoch,situation:'朋友分享茶叶',weight:.4};
+ const expressionSaved=await app.inject({method:'POST',url,cookies,payload:expressionPayload});assert.equal(expressionSaved.statusCode,200,expressionSaved.body);
+ assert.equal((await app.inject({method:'POST',url,cookies,payload:expressionPayload})).statusCode,409);
  const result=await app.inject({method:'GET',url,cookies});assert.equal(result.json().persona_core_note.text,payload.text);assert.notEqual(result.json().persona_core_note.version,version);
 });
