@@ -1,4 +1,4 @@
-import sqlite3,sys,tempfile,time,unittest
+import sqlite3,sys,tempfile,time,unittest,uuid
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
 import companion_state
@@ -30,6 +30,26 @@ class CognitionRecallTests(unittest.TestCase):
   self.assertEqual(self.social.expressions('group:12345','开玩笑'),[])
   self.assertEqual(len(self.social.expressions('group:12345','有节目效果')),1)
   self.assertEqual(self.social.expressions('group:99999','开玩笑'),[])
+ def test_ordinary_input_and_output_do_not_infer_persistent_cognition(self):
+  scope='group:12345'
+  self.db.execute('INSERT INTO companion_interests VALUES(?,?,?,?,?,?,?)',(scope,'昆曲',1,3,self.now-86400,'evidence','conversation_heat'))
+  self.db.execute('INSERT INTO companion_emotion VALUES(?,?,?,?,?,?)',(scope,'curious',1,self.now,self.now+600,0))
+  self.db.commit()
+  tables=('companion_interests','companion_emotion','companion_mood','companion_motives')
+  before={t:self.db.execute('SELECT * FROM '+t).fetchall() for t in tables}
+  companion_state.observe(self.db,{},scope,'12345678','昆曲很好听，谢谢你','input-1',self.now,directed=True)
+  companion_state.outgoing(self.db,{},scope,'12345678','我喜欢昆曲。下次一起聊昆曲','input-1',self.now)
+  self.assertEqual({t:self.db.execute('SELECT * FROM '+t).fetchall() for t in tables},before)
+  self.assertEqual(self.db.execute('SELECT subject FROM companion_members').fetchall(),[('12345678',)])
+ def test_ai_interest_tool_records_idempotent_request_without_editing_interest(self):
+  action=str(uuid.uuid4());evidence=[{'source':'existing_memory','reference':'read-1'}]
+  result=companion_state.reflect_interest(self.db,'昆曲','explore','想了解舞台表达',action,evidence,self.now)
+  self.assertEqual(result['state'],'pending_compression');self.assertFalse(result['changed'])
+  self.assertEqual(self.db.execute('SELECT count(*) FROM companion_interests').fetchone()[0],0)
+  self.assertEqual(companion_state.reflect_interest(self.db,'昆曲','explore','想了解舞台表达',action,evidence,self.now),result)
+  self.assertEqual(self.db.execute('SELECT count(*) FROM companion_reflections').fetchone()[0],1)
+  with self.assertRaisesRegex(ValueError,'identity_conflict'):
+   companion_state.reflect_interest(self.db,'昆曲','drop','想了解舞台表达',action,evidence,self.now)
  def test_legacy_persona_copy_is_offered_once_for_exact_cas_deletion(self):
   self.db.execute('INSERT INTO companion_interests VALUES(?,?,?,?,?,?,?)',('*','的东西',3,4,self.now,'legacy','persona'));self.db.commit()
   products=memory_products.snapshot(self.db,'bot_shared',[]);self.assertEqual(len(products['interest']),1)

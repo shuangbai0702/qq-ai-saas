@@ -52,6 +52,10 @@ class CompanionState(unittest.IsolatedAsyncioTestCase):
   self.cfg['groups']=[];self.cfg['behavior']['autonomousGroupContact']=False;self.assertEqual(initiative.candidates(self.db,self.cfg,self.now),[])
   self.cfg['behavior']['autonomousGroupContact']=True;self.cfg['behavior']['dailyProactiveLimit']=0;self.assertEqual(initiative.candidates(self.db,self.cfg,self.now),[])
  def test_mood_decay_dedup_and_restart(self):
+  from companion_insights import snapshot,apply
+  payload=[{'event':'summary-emotion','sender_id':'12345','user':'你好，谢谢你','bot':'你好'}]
+  before=snapshot(self.db,'group:77777',{'12345'})
+  with self.db:apply(self.db,self.s.memory,'group:77777',{},payload,{'emotion':{'event':'summary-emotion','kind':'happy','intensity':1,'quote':'谢谢你'}},before,self.now)
   self.seen();a=cs.context(self.db,self.cfg,'group:77777',self.now)
   self.seen();b=cs.context(self.db,self.cfg,'group:77777',self.now)
   self.assertEqual(a['mood'],b['mood']);self.assertGreater(a['mood']['valence'],0)
@@ -61,6 +65,12 @@ class CompanionState(unittest.IsolatedAsyncioTestCase):
   self.seen(text='我喜欢吃火锅');ctx=cs.context(self.db,self.cfg,'group:77777',self.now)
   self.assertFalse(any(x['topic']=='火锅' for x in ctx['interests']))
   cs.outgoing(self.db,self.cfg,'group:77777','12345','我喜欢乌龙茶。下次再聊茶叶烘焙。','reply1',self.now)
+  ctx=cs.context(self.db,self.cfg,'group:77777',self.now)
+  self.assertFalse(ctx['interests']);self.assertFalse(ctx['unfinished_topics'],'ordinary output is not a cognitive writer')
+  from companion_insights import snapshot,apply
+  payload=[{'event':'reply1','sender_id':'12345','user':'聊点茶叶吧','bot':'我喜欢乌龙茶。下次再聊茶叶烘焙。'}]
+  before=snapshot(self.db,'group:77777',{'12345'})
+  with self.db:apply(self.db,self.s.memory,'group:77777',{},payload,{'interests':[{'event':'reply1','topic':'乌龙茶','quote':'我喜欢乌龙茶'}],'motives':[{'event':'reply1','topic':'茶叶烘焙','status':'open','quote':'下次再聊茶叶烘焙'}]},before,self.now)
   ctx=cs.context(self.db,self.cfg,'group:77777',self.now)
   self.assertTrue(any(x['topic']=='乌龙茶' for x in ctx['interests']));self.assertTrue(ctx['unfinished_topics'])
   self.assertFalse(cs.context(self.db,self.cfg,'group:88888',self.now)['unfinished_topics'])

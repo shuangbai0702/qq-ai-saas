@@ -91,18 +91,13 @@ def reflect_interest(db,topic,operation,reason,action,evidence,now):
         if previous[0]!=fingerprint:raise ValueError('interest_reflection_identity_conflict')
         return json.loads(previous[1])
     if db.execute('SELECT count(*) FROM companion_reflections WHERE action=?',(action,)).fetchone()[0]>=3:raise ValueError('interest_reflection_work_limit')
-    row=db.execute("SELECT weight,hits,updated FROM companion_interests WHERE scope='self' AND topic=? AND source='autonomous_choice'",(topic,)).fetchone()
-    heat=interest_strength(row[0],row[1],row[2],now,'autonomous_choice') if row else 0
-    increment=0 if row and now-row[2]<INTEREST_REINFORCE_INTERVAL else .4
-    value=min(4,heat+increment) if operation=='explore' else max(0,heat-.4) if operation=='cool_down' else 0
-    result={'topic':topic,'operation':operation,'changed':abs(value-heat)>1e-9,'heat':round(value,3),'reason':reason,'evidence':sources,'scope':'self','meaning':'自主关注方向的选择，不代表已掌握主题知识或发生了线下经历'}
+    # A normal AI tool call records its requested choice, not a cognitive edit.
+    # Its existing Work/tool receipt is part of the next legal summary input.
+    result={'topic':topic,'operation':operation,'changed':False,'state':'pending_compression',
+            'reason':reason,'evidence':sources,'scope':'self'}
     with db:
-        if value>0:
-            db.execute("INSERT OR REPLACE INTO companion_interests VALUES('self',?,?,?,?,?,'autonomous_choice')",(topic,value,(row[1] if row else 0)+int(operation=='explore' and increment>0),now if increment>0 or operation!='explore' else row[2],action))
-        else:db.execute("DELETE FROM companion_interests WHERE scope='self' AND topic=? AND source='autonomous_choice'",(topic,))
         db.execute('INSERT INTO companion_reflections VALUES(?,?,?,?,?)',(action,topic,fingerprint,json.dumps(result,ensure_ascii=False),now))
         db.execute('DELETE FROM companion_reflections WHERE rowid NOT IN (SELECT rowid FROM companion_reflections ORDER BY at DESC,rowid DESC LIMIT 512)')
-        db.execute('DELETE FROM companion_interests WHERE rowid NOT IN (SELECT rowid FROM companion_interests ORDER BY updated DESC LIMIT 512)')
     return result
 
 
@@ -115,40 +110,16 @@ def observe(db,cfg,scope,subject,text,event,now,directed=False):
         db.execute('INSERT INTO companion_members(scope,subject,seen,directed) VALUES(?,?,?,?) ON CONFLICT(scope,subject) DO UPDATE SET seen=excluded.seen,directed=CASE WHEN excluded.directed>0 THEN excluded.directed ELSE directed END,unanswered=CASE WHEN excluded.directed>0 THEN 0 ELSE companion_members.unanswered END',(scope,subject,now,now if directed else 0))
         db.execute('DELETE FROM companion_members WHERE seen<?',(now-30*86400,))
         db.execute('DELETE FROM companion_members WHERE rowid NOT IN (SELECT rowid FROM companion_members ORDER BY seen DESC LIMIT 1000)')
-    # Heat is evidence of a shared topic, never proof of the bot's preference.
-    candidates=db.execute("SELECT topic,weight,hits,updated,source FROM companion_interests WHERE scope IN (?, '*') AND source!='persona' LIMIT 512",(scope,)).fetchall()
-    candidates.sort(key=lambda r:(relevance(r[0],text),interest_strength(r[1],r[2],r[3],now,r[4])),reverse=True)
-    for topic,*_ in candidates[:24]:
-        if tokens(topic)&tokens(text):note_interest(db,scope,topic,now,text,'conversation_heat')
-    emotion_state.observe(db,scope,text,now,directed)
-    if directed:
-        row=db.execute('SELECT valence,energy,updated FROM companion_mood WHERE scope=?',(scope,)).fetchone()
-        decay=2**(-max(0,now-row[2])/7200) if row else 0
-        val=(row[0]*decay if row else 0);energy=(row[1]*decay if row else 0)
-        from behavior import emotional_phrase
-        pos=emotional_phrase(text,'谢谢|喜欢你|做得好|辛苦了');neg=emotional_phrase(text,'不喜欢你|讨厌你|滚开|闭嘴')
-        val=max(-1,min(1,val+(-.3 if neg else .2 if pos else 0)));energy=max(0,min(1,energy+.08))
-        db.execute('INSERT OR REPLACE INTO companion_mood VALUES(?,?,?,?,?)',(scope,val,energy,now,str(event)))
-    db.execute('DELETE FROM companion_mood WHERE rowid NOT IN (SELECT rowid FROM companion_mood ORDER BY updated DESC LIMIT 128)')
-    db.execute('DELETE FROM companion_emotion WHERE rowid NOT IN (SELECT rowid FROM companion_emotion ORDER BY updated DESC LIMIT 128)')
+    # Input receipt/member activity is operational state. Cognitive heat,
+    # emotion and mood are produced only by the existing legal summary writer.
     db.commit()
 
 
 def outgoing(db,cfg,scope,subject,text,event,now,internal=False,request=''):
-    if not enabled(cfg) or re.search('复述|引用|翻译|假装|扮演|按我说|说一句|提示词',request):return
-    # Save explicit first-person preferences actually expressed by the bot.
-    # Quotes, role-play, questions and requested repetitions are not evidence.
-    for sentence in re.split(r'[。！？!?\n]',text):
-        m=re.fullmatch(r'我(?:最近|一直|比较|最)?(?:喜欢|偏爱|对)([^，,；;“”"<>]{2,30}?)(?:很感兴趣)?',sentence.strip())
-        if m:note_interest(db,scope,m[1],now,str(event),'bot_expression')
-    if not internal:
-        for m in list(re.finditer(r'(?:下次|改天|以后)(?:我们|咱们)?(?:再|一起)?(?:聊聊|聊|讨论|看看|研究)([^，,。；;！？!?\n]{2,40})',text))[:1]:
-            # The bot proposing a future chat is a bot_proposal, not a user
-            # agreement, and never gains user-request priority.
-            db.execute('INSERT OR IGNORE INTO companion_motives VALUES(?,?,?,?,?,?,?)',(scope,subject,m[1],now+1800,now+7*86400,'open',motive_record(str(event),'bot_proposal')))
-    emotion_state.answered(db,scope)
-    db.execute('DELETE FROM companion_motives WHERE expires<?',(now,))
-    db.execute('DELETE FROM companion_motives WHERE rowid NOT IN (SELECT rowid FROM companion_motives ORDER BY expires DESC LIMIT 64)');db.commit()
+    # Delivered text is evidence for compression, never automatic proof of a
+    # lasting preference, a new motive, or the resolution of a cognitive state.
+    # The original output/receipt pipeline already retains that evidence.
+    return
 
 
 def context(db,cfg,scope,now,query=''):

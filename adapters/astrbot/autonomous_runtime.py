@@ -375,7 +375,7 @@ class AutonomousRuntime:
                     result=companion_state.reflect_interest(st.db,topic,operation,reason,identity['id'],list(control.evidence),time.time())
                     control.evidence.append({'source':'self_interest_choice','reference':identity['id']+':'+result['topic']})
                     return json.dumps(result,ensure_ascii=False)
-            tools.append(ReflectInterest(name='reflect_interest',description='在本轮真实读取后，自主增加、降低或放下自己的关注主题；写入原有自身兴趣，最多3个主题，不改人格、关系、权限或他人的记忆。explore增加关注，cool_down降低，drop放下；不是知识验证。',parameters={'type':'object','properties':{'topic':{'type':'string','minLength':2,'maxLength':50},'operation':{'type':'string','enum':['explore','cool_down','drop']},'reason':{'type':'string','minLength':1,'maxLength':240}},'required':['topic','operation','reason'],'additionalProperties':False}))
+            tools.append(ReflectInterest(name='reflect_interest',description='在本轮真实读取后，提出增加、降低或放下自身关注主题的修订，最多3个；本次只记录请求，认知在正常压缩时按证据整理，不立即改兴趣、人格、关系或权限。explore增加，cool_down降低，drop放下；不是知识验证。',parameters={'type':'object','properties':{'topic':{'type':'string','minLength':2,'maxLength':50},'operation':{'type':'string','enum':['explore','cool_down','drop']},'reason':{'type':'string','minLength':1,'maxLength':240}},'required':['topic','operation','reason'],'additionalProperties':False}))
         from tool_outcome import structured
         return [structured(tool) for tool in tools]
 

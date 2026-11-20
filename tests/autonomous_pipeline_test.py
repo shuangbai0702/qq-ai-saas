@@ -535,10 +535,10 @@ async def main():
         reflection_action={'kind':'research','objective':'read the current self context and decide whether a focus is worth exploring'}
         result=await brain.handle('qq','execute',{'work':w,'action':reflection_action})
         assert result['status']=='completed' and result['usage']['toolCalls']==2 and calls==[],result
-        row=st.db.execute("SELECT hits FROM companion_interests WHERE scope='self' AND topic='茶叶'").fetchone();assert row[0]==1
-        assert any(i['topic']=='茶叶' and i['source']=='autonomous_choice' for i in brain.snapshot('qq')['self']['interests'])
-        import companion_state
-        assert any(i['source']=='autonomous_choice' and i['source_scope']=='self' for i in companion_state.context(st.db,settings['qq']['config'],'private:12345678',time.time())['interests'])
+        assert st.db.execute("SELECT count(*) FROM companion_interests WHERE scope='self' AND topic='茶叶'").fetchone()[0]==0
+        request=json.loads(st.db.execute('SELECT result FROM companion_reflections').fetchone()[0])
+        assert request['state']=='pending_compression' and request['changed'] is False
+        assert not any(i['topic']=='茶叶' and i['source']=='autonomous_choice' for i in brain.snapshot('qq')['self']['interests'])
         await brain.handle('qq','execute',{'work':w,'action':reflection_action})
         assert st.db.execute('SELECT count(*) FROM companion_reflections').fetchone()[0]==1 and len(research_requests)==3,'replayed Work reflected twice'
         check={**w,'kind':'research'}
