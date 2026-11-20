@@ -27,7 +27,7 @@ export const ProtocolSchema=z.enum(['mock','napcat','euler']);
 export type ProtocolKind=z.infer<typeof ProtocolSchema>;
 export interface RuntimeContext {botId:string;tenantId:string;root:string;generation:number;revision:number;systemChangePermitId?:string;aiPort:number;protocolPort:number;token:string;config:BotConfig;apiKey:string;expectedUin:string;runtimeMode?:'dedicated'|'shared';groupId?:string;loginIntent?:'qr'|'resume'}
 export interface Health {alive:boolean;ready:boolean;online?:boolean;pid?:number;rssBytes?:number;metrics?:Record<string,unknown>;detail?:string;mode?:string;memoryPolicy?:unknown;loginState?:LoginState}
-export interface LoginSnapshot {state:LoginState;qr?:string;uin?:string;message?:string}
+export interface LoginSnapshot {state:LoginState;qr?:string;uin?:string;message?:string;restartRequested?:boolean}
 export interface ProtocolAdapter {
   provision(ctx:RuntimeContext):Promise<void>;beginLogin(ctx:RuntimeContext):Promise<void>;
   getLoginState(ctx:RuntimeContext):Promise<LoginSnapshot>;cancelLogin(ctx:RuntimeContext):Promise<void>;

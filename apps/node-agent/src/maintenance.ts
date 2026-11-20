@@ -16,6 +16,25 @@ import {DshHost} from './dsh-host.js';
 import {BilibiliExecutor} from './bilibili/executor.js';
 import {createFavoriteCaptioner} from '../../../packages/shared/qq-favorite-semantics.js';
 import {resolvePlatformModel} from '../../../packages/shared/platform-model.js';
+import {NapCatAdapter} from '../../../adapters/protocol/napcat/index.js';
+
+/** Preserve independent QQ owners while replacing their control methods. */
+export async function installQqRecoveryRuntime(agent:NodeAgent,release:string){
+ if(!/^[a-f0-9]{64}$/.test(release)||agent.closed)throw new Error('Invalid QQ recovery release');
+ const timer=agent.timer;if(timer)clearInterval(timer);agent.timer=undefined;
+ const changes=[{target:agent,name:'execute',next:NodeAgent.prototype.execute},
+  {target:agent,name:'healthSnapshot',next:NodeAgent.prototype.healthSnapshot},
+  {target:agent.shared,name:'assign',next:SharedAstrBotAdapter.prototype.assign},
+  ...['getLoginState','getHealth'].map(name=>({target:agent.protocols.napcat,name,next:(NapCatAdapter.prototype as any)[name]}))];
+ const previous=changes.map(({target,name})=>Object.getOwnPropertyDescriptor(target,name));
+ try{
+  const deadline=Date.now()+20000;while(controlBusy(agent)&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
+  if(controlBusy(agent)||agent.closed)throw new Error('QQ recovery boundary is busy');
+  for(const {target,name,next} of changes){if(!target||typeof (target as any)[name]!=='function')throw new Error('QQ recovery method contract changed');Object.defineProperty(target,name,{value:next,writable:true,configurable:true})}
+  return{pid:process.pid,release,processOwnersPreserved:true};
+ }catch(error){changes.forEach(({target,name},i)=>{if(previous[i])Object.defineProperty(target,name,previous[i]!);else delete (target as any)[name]});throw error}
+ finally{if(timer&&!agent.closed){agent.timer=setInterval(()=>void agent.tick().catch(error=>console.error('agent tick:',redact(String(error)))),500);agent.timer.unref()}}
+}
 
 /** Install lifecycle methods without replacing the live Agent or QQ owners. */
 export function installProtocolLifecycleRuntime(agent:NodeAgent,release:string){

@@ -1,5 +1,5 @@
 import {createHash,randomBytes} from 'node:crypto';import path from 'node:path';import {readFile,writeFile,mkdir,access} from 'node:fs/promises';
-import type {ProtocolAdapter,RuntimeContext,LoginSnapshot} from '../../../packages/contracts/index.js';import {ProcessHost} from '../../../apps/node-agent/src/process-host.js';
+import type {ProtocolAdapter,RuntimeContext,LoginSnapshot,Health} from '../../../packages/contracts/index.js';import {ProcessHost} from '../../../apps/node-agent/src/process-host.js';
 interface Endpoint {url:string;webuiToken:string;launcher?:string;args?:string[];runtimeDir?:string}
 export class NapCatAdapter implements ProtocolAdapter{
  resumeAttempts=new Map<string,number>();
@@ -23,6 +23,7 @@ export class NapCatAdapter implements ProtocolAdapter{
  async getLoginState(ctx:RuntimeContext):Promise<LoginSnapshot>{
   const s=await this.request(ctx,'/QQLogin/CheckLoginStatus');
   if(s.isLogin&&s.coreReady){const info=await this.request(ctx,'/QQLogin/GetQQLoginInfo');const uin=String(info.uin||info.selfInfo?.uin||'');if(/^\d{5,20}$/.test(uin)&&(!ctx.expectedUin||ctx.expectedUin===uin)){await mkdir(path.join(ctx.root,'qq'),{recursive:true});await writeFile(path.join(ctx.root,'qq/identity.json'),JSON.stringify({uin}),{mode:0o600})}return{state:'online',uin}}
+  if(s.restartRequested===true)return{state:'starting',restartRequested:true,message:'QQ登录服务等待协议托管器恢复'};
   // The native quick login can race network readiness. Once per process, retry
   // the saved account after QR readiness; explicit QR refresh never uses this.
   if(s.loginPhase==='waiting_qrcode')try{const manifest=JSON.parse(await readFile(path.join(ctx.root,'napcat-platform.json'),'utf8'));const p=await this.host.inspect(ctx.botId,'protocol');if(manifest.resume&&p&&this.resumeAttempts.get(ctx.botId)!==p.pid){this.resumeAttempts.set(ctx.botId,p.pid);const saved=JSON.parse(await readFile(path.join(ctx.root,'qq/identity.json'),'utf8'));if(/^\d{5,20}$/.test(String(saved.uin))&&(!ctx.expectedUin||ctx.expectedUin===String(saved.uin))){const list=await this.request(ctx,'/QQLogin/GetQuickLoginList');if(JSON.stringify(list).includes(String(saved.uin))){await this.request(ctx,'/QQLogin/SetQuickLogin',{uin:String(saved.uin)});return{state:'authenticating',message:'正在恢复已保存的QQ会话'};}}}}catch{/* No retry loop; QR remains available to the user. */}
@@ -37,6 +38,6 @@ export class NapCatAdapter implements ProtocolAdapter{
  async cancelLogin(ctx:RuntimeContext){const s=await this.settings(ctx);if(!s.launcher)throw new Error('外部NapCat实例不受进程管理；无法保证撤销二维码，请管理员配置launcher');await this.stop(ctx.botId)}
  async queryIdentity(ctx:RuntimeContext){const s=await this.getLoginState(ctx);return s.state==='online'?s.uin||null:null}
  getCapabilities(){return ['qr','text','image','record','onebot-reverse-ws','private-management-api']}
- async getHealth(ctx:RuntimeContext){const p=await this.host.inspect(ctx.botId,'protocol');try{const s=await this.getLoginState(ctx);return{alive:!!p,ready:!!p,online:!!p&&s.state==='online',pid:p?.pid,rssBytes:p?.rssBytes,memoryPolicy:p?.memoryPolicy,mode:'real',loginState:s.state,detail:s.message}}catch(e){return{alive:!!p,ready:false,online:false,pid:p?.pid,rssBytes:p?.rssBytes,memoryPolicy:p?.memoryPolicy,mode:'real',detail:(e as Error).message}}}
+ async getHealth(ctx:RuntimeContext):Promise<Health>{const p=await this.host.inspect(ctx.botId,'protocol');try{const s=await this.getLoginState(ctx);return{alive:!!p,ready:!!p&&!s.restartRequested,online:!!p&&s.state==='online',pid:p?.pid,rssBytes:p?.rssBytes,memoryPolicy:p?.memoryPolicy,mode:'real',loginState:s.state,detail:s.message,...(s.restartRequested?{metrics:{restartRequested:true}}:{})}}catch(e){return{alive:!!p,ready:false,online:false,pid:p?.pid,rssBytes:p?.rssBytes,memoryPolicy:p?.memoryPolicy,mode:'real',detail:(e as Error).message}}}
  async stop(id:string){this.credentials.delete(id);this.resumeAttempts.delete(id);await this.host.stop(id,'protocol')}
 }

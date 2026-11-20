@@ -7,6 +7,8 @@ test('pinned native login recovers a missed connected callback once and respects
  const python=path.resolve(`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`);
  execFileSync(python,['scripts/napcat_login_patch.py',file],{windowsHide:true});const source=await readFile(file,'utf8');
  execFileSync(python,['scripts/napcat_login_patch.py',file],{windowsHide:true});assert.equal(await readFile(file,'utf8'),source,'installation is idempotent');
+ const bootstrap=source.slice(source.indexOf('/* fishbot-single-process-recovery-v1 */'),source.indexOf('console.log("NapCat Shell App Loading..."'));
+ for(const managed of [false,true]){const state:any={};let callback:any;const context=vm.createContext({process:{env:managed?{NAPCAT_PLATFORM_MANIFEST:'private',NAPCAT_DISABLE_MULTI_PROCESS:'1'}:{}},pe:{setRestartProcessCall:(fn:any)=>{callback=fn}},Ke:state});vm.runInContext(bootstrap,context);if(managed){assert.equal((await callback()).result,true);assert.equal(state.FishBotRestartRequested,true);await callback();assert.equal(state.FishBotRestartRequested,true)}else assert.equal(callback,undefined,'unmanaged upstream retains its original recovery path')}
  const start=source.indexOf('async function e2e('),end=source.indexOf('\nasync function t2e(',start);assert.ok(start>=0&&end>start);
  for(const status of [1,2,3])for(const callback of [false,true]){
   let listener:any,calls=0;const timers:Array<()=>void>=[];

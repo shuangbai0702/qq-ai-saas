@@ -2,10 +2,10 @@ import {useEffect,useId,useRef,useState} from 'react';
 import {createPortal} from 'react-dom';
 import memoryDefaults from '../../../packages/contracts/memory-defaults.json';
 
-const latest={id:'2026-11-19-qq-connection-and-referral',date:'2026年11月19日',title:'QQ 连接中断说明与邀请奖励'};
+const latest={id:'2026-11-20-qq-session-and-referral',date:'2026年11月20日',title:'QQ 掉线与重新登录说明 · 邀请奖励'};
 function LatestDetails(){return <>
- <p>近期我们的服务器出现波动，导致部分机器人的 QQ 连接中断。给大家的使用带来了不便，我们深表歉意。</p>
- <p>如果机器人仍显示离线，请打开该机器人的「QQ 登录」页面，重新登录 QQ。我们正在改进服务稳定性，感谢大家的理解与耐心。</p>
+ <p>近期腾讯加强了对 QQ 机器人的检测，导致部分机器人掉线。给大家带来不便，实在抱歉。</p>
+ <p>遇到掉线，请打开该机器人的「QQ 登录」页面，重新扫码登录。若仍无法恢复，请通过反馈群联系我们。我们正在改进掉线恢复机制，感谢大家的理解。</p>
  <h3>邀请好友，领取平台模型额度</h3>
  <p>使用管理员直接发放的激活码注册后，可以邀请好友。好友通过邀请链接注册后，你获赠 <strong>3,000 万 Token</strong>，好友获赠 <strong>2,000 万 Token</strong>。</p>
  <p>在模型设置中选择「平台提供」即可使用，也可以随时查看剩余额度。</p>

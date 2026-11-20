@@ -5,7 +5,7 @@ import {DshHost} from './dsh-host.js';
 import {BotConfigSchema} from '../../../packages/contracts/index.js';
 import {acquireLease} from '../../../packages/database/lease.js';
 import {observeOffline,evictionDue,offlineGrace} from './offline-policy.js';
-import path from 'node:path';import {mkdir,appendFile,readFile,writeFile,rm,stat,readdir,rename} from 'node:fs/promises';import {randomUUID} from 'node:crypto';
+import path from 'node:path';import {mkdir,appendFile,readFile,writeFile,rm,stat,readdir,rename} from 'node:fs/promises';import {randomUUID,randomInt} from 'node:crypto';
 import type {Sql} from '../../../packages/database/index.js';import {decrypt,redact} from '../../../packages/shared/security.js';import {terminalLogin,type RuntimeContext,type ProtocolAdapter} from '../../../packages/contracts/index.js';
 
 /** Single serialized heartbeat writer for one Agent process.
@@ -185,6 +185,19 @@ export class NodeAgent {
      await tx.query("UPDATE bots SET desired_state='offline',observed_state='stopping',generation=$2 WHERE id=$1",[bot.id,generation]);
      await tx.query("INSERT INTO commands(id,bot_id,idempotency_key,generation,kind) VALUES($1,$2,$3,$4,'evict-offline') ON CONFLICT DO NOTHING",[randomUUID(),bot.id,`evict-offline-${generation}`,generation]);
    })}
+   else if(command.kind==='restart'&&command.idempotency_key.startsWith('recover-protocol-')){
+     await this.db.transaction(async tx=>{
+       const [owner]=await tx.query('SELECT generation,revision,desired_state,deleted_at FROM bots WHERE id=$1 FOR UPDATE',[bot.id]);
+       const record=await this.host.record(bot.id,'protocol');
+       if(!owner||owner.deleted_at||owner.desired_state!=='running'||owner.generation!==ctx!.generation||owner.revision!==ctx!.revision||!record||command.idempotency_key!==`recover-protocol-${ctx!.generation}-${record.pid}-${record.created}`)throw Object.assign(new Error('协议恢复已被新操作或进程替代'),{superseded:true});
+       const health=await protocol.getHealth(ctx!);
+       if(health.online||health.metrics?.restartRequested!==true||health.pid!==record.pid)throw Object.assign(new Error('协议已恢复或请求已失效'),{superseded:true});
+       // Holding the existing Bot lifecycle lock prevents a user stop/login
+       // from interleaving replacement. ProcessHost rechecks PID birth.
+       await this.host.stop(bot.id,'protocol','native-login-service-recovery',{pid:record.pid,created:record.created});
+       await protocol.beginLogin({...ctx!,loginIntent:'resume'});
+     });
+   }
    else {
      const current=async()=>{const [fresh]=await this.db.query('SELECT generation,revision,desired_state,deleted_at FROM bots WHERE id=$1',[bot.id]);return fresh&&!fresh.deleted_at&&fresh.desired_state==='running'&&fresh.generation===ctx!.generation&&fresh.revision===ctx!.revision};
      const superseded=()=>Object.assign(new Error('命令已被新的生命周期或配置替代'),{superseded:true});
@@ -274,15 +287,17 @@ export class NodeAgent {
         const readinessExpired=ai.alive&&!ai.ready&&now-(retry.unreadySince??now)>=120000;
         const decision=async(value:string)=>{if(retry.decision!==value){retry.decision=value;await this.log(bot,`recovery decision=${value} attempts=${retry.attempts} next=${retry.next} aiAlive=${ai.alive} protocolAlive=${protocol.alive}`)}};
         if((!aiNeeded||ai.ready)&&protocol.ready){if(!retry.healthySince)retry.healthySince=now;if(now-retry.healthySince>60000){retry.attempts=0;retry.next=0}retry.decision=undefined}
-        else if(aiNeeded&&!ai.alive||!protocol.alive||aiNeeded&&readinessExpired){
+        else if(aiNeeded&&!ai.alive||!protocol.alive||aiNeeded&&readinessExpired||protocol.metrics?.restartRequested===true){
          retry.healthySince=0;
          if(login||pending)await decision(login?'login-pending':'command-pending');
          else if(now<retry.next)await decision(retry.attempts>=3?'slow-backoff':'backoff');
          else if(retry.recent.length>=9){retry.next=retry.recent[0]+3600000;await decision('hourly-limit')}
          else{
           try{
-           const id=randomUUID();const inserted=await this.db.query("INSERT INTO commands(id,bot_id,kind,generation,idempotency_key) SELECT $4,id,'restart',generation,$2 FROM bots WHERE id=$1 AND generation=$3 AND desired_state='running' AND deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM commands WHERE bot_id=$1 AND status IN ('pending','processing')) RETURNING id",[bot.id,`recover-${ctx.generation}-${readinessExpired?'readiness-':''}${id}`,ctx.generation,id]);
-           if(inserted.length){retry.attempts++;retry.unreadySince=now;retry.recent.push(now);retry.next=now+(retry.attempts>=3?600000:5000*2**retry.attempts);retry.decision=undefined;await this.log(bot,`recovery queued command=${id} attempt=${retry.attempts} next=${retry.next}`)}
+           const id=randomUUID();let recoveryKey=`recover-${ctx.generation}-${readinessExpired?'readiness-':''}${id}`;
+           if(protocol.metrics?.restartRequested===true){const record=await this.host.record(bot.id,'protocol');if(!record||record.pid!==protocol.pid)continue;recoveryKey=`recover-protocol-${ctx.generation}-${record.pid}-${record.created}`}
+           const inserted=await this.db.query("INSERT INTO commands(id,bot_id,kind,generation,idempotency_key) SELECT $4,id,'restart',generation,$2 FROM bots WHERE id=$1 AND generation=$3 AND desired_state='running' AND deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM commands WHERE bot_id=$1 AND status IN ('pending','processing')) ON CONFLICT(bot_id,idempotency_key) DO UPDATE SET status='pending',error=NULL,finished_at=NULL WHERE commands.status='failed' AND commands.idempotency_key LIKE 'recover-protocol-%' AND commands.finished_at<now()-interval '10 seconds' RETURNING id",[bot.id,recoveryKey,ctx.generation,id]);
+           if(inserted.length){retry.attempts++;retry.unreadySince=now;retry.recent.push(now);retry.next=now+(retry.attempts>=3?600000:5000*2**retry.attempts)+randomInt(0,1001);retry.decision=undefined;await this.log(bot,`recovery queued command=${inserted[0].id} attempt=${retry.attempts} next=${retry.next}`)}
            else await decision('superseded-or-pending');
           }catch(error){retry.next=now+10000;await decision('insert-failed');throw error}
          }

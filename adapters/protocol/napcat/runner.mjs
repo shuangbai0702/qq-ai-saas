@@ -21,6 +21,13 @@ export function prepareRuntime(manifestPath) {
   const onebot={network:{httpServers:[maintenance],httpSseServers:[],httpClients:[],websocketServers:[],websocketClients:[client],plugins:[]},musicSignUrl:'',enableLocalFile2Url:false,parseMultMsg:false,imageDownloadProxy:''};
   // New accounts inherit onebot11.json. Existing restored account files are refreshed too.
   const configDir=path.join(workdir,'config');
+  // Upstream #1813 advises against these experimental native patches. Make
+  // the pinned policy explicit at both startup and account config layers.
+  // O3/packet mode stays unchanged; no message delay or fingerprint rotation.
+  const bypass={hook:false,window:false,module:false,process:false,container:false,js:false};
+  const policyFiles=new Set(['napcat.json',...fs.readdirSync(configDir).filter(x=>/^napcat_\d+\.json$/.test(x))]);
+  const policies=[...policyFiles].map(file=>{const target=path.join(configDir,file);const previous=fs.existsSync(target)?JSON.parse(fs.readFileSync(target,'utf8')):{};return{target,value:{...previous,o3HookMode:0,bypass}}});
+  for(const {target,value} of policies)fs.writeFileSync(target,JSON.stringify(value,null,2),{mode:0o600});
   const files=new Set(['onebot11.json',...fs.readdirSync(configDir).filter(x=>/^onebot11_\d+\.json$/.test(x))]);
   for(const file of files)fs.writeFileSync(path.join(configDir,file),JSON.stringify(onebot,null,2),{mode:0o600});
   fs.writeFileSync(path.join(configDir,'webui.json'),JSON.stringify({host:'127.0.0.1',port:manifest.management.port,token:manifest.management.token,loginRate:3,accessControlMode:'whitelist',ipWhitelist:['127.0.0.1'],enableXForwardedFor:false}),{mode:0o600});

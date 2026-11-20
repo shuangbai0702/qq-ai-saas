@@ -80,3 +80,25 @@ test('automatic recovery preserves healthy QQ and AI components while manual res
   }
  }
 });
+
+
+test('native recovery is durable per PID, replaces protocol only, and rejects stale/online targets',async t=>{
+ const {app,db,agent}=await createApp({root:await mkdtemp(path.join(os.tmpdir(),'fish-native-recovery-')),agent:false});t.after(()=>app.close());
+ const auth=await app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(db),email:'native-recovery@example.test',name:'恢复',password:'native-recovery-123'}});
+ const created=await app.inject({method:'POST',url:'/v1/bots',cookies:{fish_session:auth.cookies[0].value},payload:{name:'恢复',protocol:'mock',runtimeMode:'dedicated'}});assert.equal(created.statusCode,201,created.body);const id=created.json().id;
+ await db.query("UPDATE bots SET desired_state='running',generation=7,expected_uin='90123456' WHERE id=$1",[id]);
+ let record:any={pid:123,created:456},online=false,requested=true;const calls:string[]=[];
+ agent.host.record=async()=>record;agent.host.stop=async(_id,kind,_intent,expected)=>{assert.equal(kind,'protocol');assert.deepEqual(expected,{pid:123,created:456});calls.push('stop');record=null};
+ agent.ai.probe=async()=>({alive:true,ready:true});agent.ai.stop=async()=>{throw new Error('must preserve AI')};agent.ai.start=async()=>{throw new Error('must preserve AI')};
+ agent.protocols.mock.getHealth=async()=>({alive:true,ready:!requested,online,pid:record?.pid,metrics:requested?{restartRequested:true}:{}});
+ agent.protocols.mock.beginLogin=async()=>{calls.push('start');record={pid:124,created:457};requested=false};
+ await agent.health();const [command]=await db.query("SELECT * FROM commands WHERE bot_id=$1",[id]);assert.equal(command.idempotency_key,'recover-protocol-7-123-456');
+ await agent.health();assert.equal((await db.query('SELECT * FROM commands')).length,1);
+ // A restarted Agent still sees the same durable claim; no duplicate request.
+ await db.query("UPDATE commands SET status='failed' WHERE id=$1",[command.id]);agent.recovery.clear();await agent.health();assert.equal((await db.query('SELECT * FROM commands')).length,1);
+ await db.query("UPDATE commands SET finished_at=now()-interval '20 seconds' WHERE id=$1",[command.id]);agent.recovery.clear();await agent.health();assert.equal((await db.query('SELECT status FROM commands WHERE id=$1',[command.id]))[0].status,'pending','transient failure retries the same durable claim after backoff');
+ await agent.execute(command);assert.deepEqual(calls,['stop','start']);
+ await agent.execute(command);assert.deepEqual(calls,['stop','start'],'a replay cannot stop the replacement PID');
+ record={pid:123,created:456};requested=true;online=true;await agent.execute(command);assert.deepEqual(calls,['stop','start'],'reconnected protocol survives a queued request');
+ online=false;await db.query("UPDATE bots SET generation=8 WHERE id=$1",[id]);await agent.execute(command);assert.deepEqual(calls,['stop','start'],'user lifecycle wins');
+});

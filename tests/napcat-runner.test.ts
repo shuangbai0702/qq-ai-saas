@@ -6,6 +6,7 @@ test('NapCat runner isolates QQ native profile, writable config and OneBot desti
  const prepared:any[]=[];
  for(const id of ['a','b']){const bot=path.join(root,id);await mkdir(bot);const manifest=path.join(bot,'napcat-platform.json');await writeFile(manifest,JSON.stringify({dataDir:path.join(bot,'qq'),runtimeDir:runtime,management:{host:'127.0.0.1',port:id==='a'?24002:24006,token:`private-${id}`},reverseWs:{url:`ws://127.0.0.1:${id==='a'?24000:24004}/ws`,token:id.repeat(64)}}));prepared.push(runner.prepareRuntime(manifest))}
  assert.notEqual(prepared[0].qqProfile,prepared[1].qqProfile);assert.notEqual(prepared[0].workdir,prepared[1].workdir);assert.notEqual(prepared[0].env.USERPROFILE,prepared[1].env.USERPROFILE);
+ const policy=JSON.parse(await readFile(path.join(prepared[0].workdir,'config/napcat.json'),'utf8'));assert.equal(policy.o3HookMode,0);assert.deepEqual(policy.bypass,{hook:false,window:false,module:false,process:false,container:false,js:false});
  for(let i=0;i<2;i++){const id=i?'b':'a';const c=JSON.parse(await readFile(path.join(prepared[i].workdir,'config/onebot11.json'),'utf8'));assert.equal(c.network.websocketClients[0].token,id.repeat(64));const web=JSON.parse(await readFile(path.join(prepared[i].workdir,'config/webui.json'),'utf8'));assert.equal(web.token,`private-${id}`);assert.equal(web.host,'127.0.0.1');assert.equal(prepared[i].env.NAPCAT_DISABLE_MULTI_PROCESS,'1')}
  const invalid=path.join(root,'invalid.json');await writeFile(invalid,JSON.stringify({...prepared[0].manifest,dataDir:path.join(root,'a/qq')}));assert.throws(()=>runner.prepareRuntime(invalid),/dataDir/);
  const manifestPath=path.join(root,'a/napcat-platform.json');
@@ -25,6 +26,7 @@ test('NapCat startup remains alive without API readiness; no premature QR or onl
  (adapter as any).request=async()=>({isOffline:true,loginPhase:'qrcode_scanned'});assert.equal((await adapter.getLoginState(ctx)).state,'waiting_confirm');
  (adapter as any).request=async()=>({isOffline:true,loginPhase:'initializing'});assert.equal((await adapter.getLoginState(ctx)).state,'authenticating');
  (adapter as any).request=async()=>({isOffline:true,loginPhase:'offline'});assert.equal((await adapter.getLoginState(ctx)).state,'failed');
+ (adapter as any).request=async()=>({restartRequested:true,isOffline:true,loginPhase:'reconnecting'});const requested=await adapter.getHealth(ctx);assert.equal(requested.alive,true);assert.equal(requested.ready,false);assert.equal(requested.metrics?.restartRequested,true);
  (adapter as any).request=async()=>({loginError:'二维码已过期，请刷新'});assert.equal((await adapter.getLoginState(ctx)).state,'expired');
  (adapter as any).request=async()=>({isLogin:true,coreReady:false,qrcodeurl:'qr'});assert.notEqual((await adapter.getLoginState(ctx)).state,'online');
  (adapter as any).request=async()=>({loginError:'账号需要验证'});const verification=await adapter.getHealth(ctx);assert.equal(verification.online,false);assert.equal(verification.loginState,'verification_required');assert.equal(verification.detail,'账号需要验证');assert.ok(!('qr' in verification),'QR is not part of health');
