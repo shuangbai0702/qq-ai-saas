@@ -144,9 +144,9 @@ class FactSemantics(unittest.IsolatedAsyncioTestCase):
             self.client.embeddings.create=delayed
             task=asyncio.create_task(self.fact_recall(current=lambda:valid[0]));await entered.wait()
             if mode=='correct':
-                self.assertTrue(run(Path('unused'),{'action':'edit_fact','scope':'group:1','subject':'123','name':'爱好','expectedVersion':1,'value':'咖啡'},self.db)['ok'])
+                self.assertTrue(run(Path('unused'),{'action':'edit_fact','actorId':'test-web-user','scope':'group:1','subject':'123','name':'爱好','expectedVersion':1,'value':'咖啡'},self.db)['ok'])
             elif mode=='forget':
-                self.assertTrue(run(Path('unused'),{'action':'forget_fact','scope':'group:1','subject':'123','name':'爱好','expectedVersion':1},self.db)['ok'])
+                self.assertTrue(run(Path('unused'),{'action':'forget_fact','actorId':'test-web-user','scope':'group:1','subject':'123','name':'爱好','expectedVersion':1},self.db)['ok'])
             elif mode in ('delete','failure-delete','aba'):
                 self.db.execute('DELETE FROM facts');self.db.commit()
                 if mode=='aba':self.seed()

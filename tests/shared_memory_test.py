@@ -89,11 +89,11 @@ class SharedMemory(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.db.execute('SELECT count(*) FROM facts WHERE active=1').fetchone()[0],1)
     def test_admin_edit_forget_and_stale_version_apply_to_shared_person(self):
         self.say('记住：饮料=红茶')
-        data={'action':'edit_fact','scope':self.group,'subject':self.person,'name':'饮料','expectedVersion':1,'value':'咖啡'}
+        data={'action':'edit_fact','actorId':'test-web-user','scope':self.group,'subject':self.person,'name':'饮料','expectedVersion':1,'value':'咖啡'}
         self.assertTrue(run(self.path,data,self.db)['ok'])
         self.assertEqual(self.say('饮料',self.private)['facts'][0]['value'],'咖啡')
         self.assertEqual(run(self.path,data,self.db)['status'],409)
-        self.assertTrue(run(self.path,{**data,'action':'forget_fact','expectedVersion':2},self.db)['ok'])
+        self.assertTrue(run(self.path,{**data,'action':'forget_fact','actorId':'test-web-user','expectedVersion':2},self.db)['ok'])
         self.assertEqual(self.say('饮料',self.private)['facts'],[])
     def test_legacy_summary_attribution_uses_events_not_model_ids(self):
         self.say('我们聊平江路夜景')

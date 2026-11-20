@@ -57,7 +57,7 @@ class ManagementTests(unittest.TestCase):
         self.assertEqual(len(self.data()['facts']),2)
 
     def test_manual_edit_is_persistent_and_conflicts(self):
-        body={'action':'edit_fact','scope':'group:12345','subject':'123456','name':'饮料','expectedVersion':1,'value':'乌龙茶'}
+        body={'action':'edit_fact','actorId':'test-web-user','scope':'group:12345','subject':'123456','name':'饮料','expectedVersion':1,'value':'乌龙茶'}
         self.assertTrue(run(self.file,body)['ok'])
         self.assertEqual(run(self.file,body)['status'],409)
         self.assertEqual(self.data(scope='group:12345')['facts'][0]['value'],'乌龙茶')
@@ -65,7 +65,7 @@ class ManagementTests(unittest.TestCase):
         self.assertIn('乌龙茶',json.dumps(recalled,ensure_ascii=False))
 
     def test_forget_blocks_auto_relearning_but_allows_explicit_consent(self):
-        body={'action':'forget_fact','scope':'group:12345','subject':'123456','name':'饮料','expectedVersion':1}
+        body={'action':'forget_fact','actorId':'test-web-user','scope':'group:12345','subject':'123456','name':'饮料','expectedVersion':1}
         self.assertTrue(run(self.file,body)['ok'])
         # A delayed replay of the original explicit message must not revoke a
         # later platform forget operation.

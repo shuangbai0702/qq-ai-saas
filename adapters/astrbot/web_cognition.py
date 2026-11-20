@@ -56,7 +56,7 @@ def edit(db,data):
     return {'ok':True,'updatedRegion':'core_note','version':fingerprint(after)}
 
 
-def read(db):
+def read_core(db):
     if 'user_edit' not in {r[1] for r in db.execute('PRAGMA table_info(memory_core_notes)')}:return None
     row=db.execute('SELECT user_edit FROM memory_core_notes WHERE slot=1').fetchone()
     if not row or not row[0]:return None
@@ -65,7 +65,7 @@ def read(db):
     return {'proof':proof,'note':current}
 
 
-def project(snapshot,change):
+def project_core(snapshot,change):
     if snapshot is None or change is None:return snapshot
     # The initialized empty shell has never submitted a prefix. Its first
     # ordinary request constructs the foundation from the authoritative row.
@@ -106,3 +106,16 @@ def project(snapshot,change):
     if 'core_note' in state.get('memory_foundation',{}):state['memory_foundation']['core_note']=copy.deepcopy(current)
     result=copy.copy(snapshot);result.base=base;result.wire=wire;result.state=state
     return result
+
+
+def read(db):
+    from hosted_memory import user_edits
+    core=read_core(db);facts=user_edits(db)
+    return {**(core or {}),**({'facts':facts} if facts else {})} if core or facts else None
+
+
+def project(snapshot,change):
+    if change is None:return snapshot
+    from hosted_memory import project_user_edits
+    current=project_core(snapshot,change) if 'note' in change else snapshot
+    return project_user_edits(current,change.get('facts',[]))

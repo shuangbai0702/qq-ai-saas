@@ -46,7 +46,7 @@ class NaturalConversation(unittest.IsolatedAsyncioTestCase):
         self.fact('职业','木雕师');self.fact('职业','不应出现的私密职业',subject='22222')
         result=self.store.memory.recall('group:1','11111','木雕师',self.now);self.assertEqual(result[0]['value'],'木雕师')
         row=self.db.execute("SELECT version FROM facts WHERE subject='11111' AND active=1").fetchone()
-        self.assertTrue(run(self.path,{'action':'forget_fact','scope':'group:1','subject':'11111','name':'职业','expectedVersion':row[0]},connection=self.db)['ok'])
+        self.assertTrue(run(self.path,{'action':'forget_fact','actorId':'test-web-user','scope':'group:1','subject':'11111','name':'职业','expectedVersion':row[0]},connection=self.db)['ok'])
         self.assertEqual(self.store.memory.recall('group:1','11111','木雕师',self.now),[])
         self.assertFalse(self.db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_search'").fetchone())
     def test_fact_recall_survives_restart_without_a_search_index(self):
@@ -70,7 +70,7 @@ class NaturalConversation(unittest.IsolatedAsyncioTestCase):
         self.extract(payload,{'facts':[{'event':'one','name':'称呼','value':'苏州','quote':'我搬到了苏州'}]},before)
         self.assertEqual(self.db.execute("SELECT value FROM facts WHERE name='称呼' AND active=1").fetchone()[0],'小林')
     def test_forgotten_value_cannot_return_under_renamed_field(self):
-        self.fact('居住城市','苏州');run(self.path,{'action':'forget_fact','scope':'group:1','subject':'11111','name':'居住城市','expectedVersion':1},connection=self.db)
+        self.fact('居住城市','苏州');run(self.path,{'action':'forget_fact','actorId':'test-web-user','scope':'group:1','subject':'11111','name':'居住城市','expectedVersion':1},connection=self.db)
         payload=self.payload();self.extract(payload,{'facts':[{'event':'one','name':'住所','value':'苏州','quote':'我搬到了苏州'}]})
         self.assertEqual(self.db.execute('SELECT count(*) FROM facts WHERE active=1').fetchone()[0],0)
     def test_own_interest_is_from_bot_not_user(self):
@@ -144,7 +144,7 @@ class NaturalConversation(unittest.IsolatedAsyncioTestCase):
             return NS(completion_text=json.dumps(data,ensure_ascii=False))
         self.assertTrue(self.store.reflection.maybe_start(scope,self.cfg,summary_provider(chat),lambda:True,{},contextvars.ContextVar('event',default=None)))
         await asyncio.wait_for(entered.wait(),3)
-        run(self.path,{'action':'forget_fact','scope':scope,'subject':'11111','name':'居住城市','expectedVersion':1},connection=self.db)
+        run(self.path,{'action':'forget_fact','actorId':'test-web-user','scope':scope,'subject':'11111','name':'居住城市','expectedVersion':1},connection=self.db)
         release.set();await self.store.reflection.task
         self.assertEqual(self.db.execute('SELECT count(*) FROM facts WHERE active=1').fetchone()[0],0)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],0)

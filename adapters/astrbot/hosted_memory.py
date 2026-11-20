@@ -225,6 +225,7 @@ class ScopedMemory:
 
 def edit_by_user(db,data):
     """CAS edit of fact state; the authenticated admin caller owns the transaction."""
+    if not data.get('actorId'):return {'error':'缺少真实用户操作来源','status':403}
     scope=data['scope'];action=data['action']
     tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     key = (scope, data['subject'], data['name'])
@@ -238,6 +239,11 @@ def edit_by_user(db,data):
     # evidence and lawful checkpoints intact. Compression compares
     # its cognition snapshot again inside the commit transaction.
     where,args=person_filter(scope,data['subject'])
+    origins=[fact_fingerprint(fact_item(row,data['subject'],'checkpoint_foundation'))
+             for row in fact_rows(db,scope,data['subject']) if row[0]==data['name']]
+    proof_column='user_edit' in {r[1] for r in db.execute('PRAGMA table_info(fact_metadata)')}
+    previous=db.execute('SELECT user_edit FROM fact_metadata WHERE scope=? AND subject=? AND name=?',key).fetchone() if proof_column else None
+    proof=json.loads(previous[0]) if previous and previous[0] else {}
     version=db.execute('SELECT max(version)+1 FROM facts WHERE '+where+' AND name=?',args+(data['name'],)).fetchone()[0]
     db.execute('UPDATE facts SET active=0 WHERE '+where+' AND name=?',args+(data['name'],))
     if action == 'forget_fact':
@@ -251,7 +257,66 @@ def edit_by_user(db,data):
         release_value(db,scope,data['subject'],data['name'],data['value'])
         if 'fact_metadata' in tables:
             db.execute("INSERT INTO fact_metadata(scope,subject,name,kind,origin,importance) VALUES(?,?,?,'stable','explicit',.8) ON CONFLICT(scope,subject,name) DO UPDATE SET origin='explicit'",key)
+            if not proof_column:db.execute('ALTER TABLE fact_metadata ADD COLUMN user_edit TEXT')
+            current=next(fact_item(row,data['subject'],'checkpoint_foundation') for row in fact_rows(db,scope,data['subject']) if row[0]==data['name'])
+            proof={'actorId':data['actorId'],'target':fact_fingerprint(current),'origins':list(dict.fromkeys([*proof.get('origins',[]),*origins]))}
+            db.execute('UPDATE fact_metadata SET user_edit=? WHERE scope=? AND subject=? AND name=?',(json.dumps(proof,separators=(',',':')),*key))
     return {'ok':True}
+
+
+def fact_fingerprint(item):
+    """Only this fact's identity/version, never an unrelated memory snapshot."""
+    return hashlib.sha256(json.dumps([item.get(k) for k in ('source_scope','subject','name','value','source_event','version')],ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+
+
+def user_edits(db):
+    if 'user_edit' not in {r[1] for r in db.execute('PRAGMA table_info(fact_metadata)')}:return []
+    result=[]
+    for scope,person,name,raw in db.execute('SELECT scope,subject,name,user_edit FROM fact_metadata WHERE user_edit IS NOT NULL'):
+        proof=json.loads(raw)
+        current=next((fact_item(row,person,'checkpoint_foundation') for row in fact_rows(db,scope,person) if row[0]==name),None)
+        # A lawful later compression may replace the user version. Its own
+        # transaction owns the new basis; old user authority cannot edit it.
+        if current and proof.get('actorId') and fact_fingerprint(current)==proof.get('target'):
+            result.append({'proof':proof,'fact':current})
+    return result
+
+
+def project_user_edits(snapshot,edits):
+    """Replace exact user-authorized foundation facts, never dynamic packets."""
+    if snapshot is None or not edits:return snapshot
+    import copy
+    from context_foundation import FOUNDATION_CURRENT
+    from readonly_journal import ContextPrefixViolation
+    from person_memory import expand
+    from memory_model_view import memory_json
+    changes={}
+    for change in edits:
+        proof=change['proof'];current=change['fact']
+        if not proof.get('actorId') or fact_fingerprint(current)!=proof.get('target'):raise ContextPrefixViolation('web_fact_provenance_mismatch')
+        for origin in proof.get('origins',[]):changes[origin]=current
+    def facts(rows):
+        result=[]
+        for row in rows:
+            replacement=changes.get(fact_fingerprint(row))
+            result.append({**replacement,'recall_reason':row['recall_reason']} if replacement and 'recall_reason' in row else copy.deepcopy(replacement or row))
+        return result
+    def patch(messages):
+        result=copy.deepcopy(messages)
+        for message in result:
+            content=message.get('content')
+            if message.get('role')!='user' or not isinstance(content,str) or not content.startswith(FOUNDATION_CURRENT+'\n'):continue
+            packet=expand(json.loads(content.split('\n',1)[1]))
+            if packet.get('region')!='long_term_facts' or not isinstance(packet.get('facts'),list):continue
+            updated=facts(packet['facts'])
+            if updated!=packet['facts']:
+                packet['facts']=updated;message['content']=FOUNDATION_CURRENT+'\n'+memory_json(packet)
+        return result
+    result=copy.copy(snapshot);result.state=copy.deepcopy(snapshot.state)
+    foundation=result.state.get('memory_foundation',{})
+    if isinstance(foundation.get('facts'),list):foundation['facts']=facts(foundation['facts'])
+    result.base=patch(snapshot.base);result.wire=patch(snapshot.wire)
+    return result
 
 
 FACT_NAME_CHARS=40

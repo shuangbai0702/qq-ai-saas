@@ -48,8 +48,30 @@ class WebCognition(unittest.TestCase):
   self.db.execute("INSERT INTO memory_summaries(scope,text,sources,updated) VALUES('bot_shared','原有历史摘要','[]',1)");self.db.commit()
   tables=('memory_core_notes','memory_summaries','memory_pending','memory_rounds','memory_round_material','memory_reflection_control','memory_reconstruction_checkpoints')
   before={t:self.db.execute('SELECT * FROM '+t).fetchall() for t in tables}
-  result=run(self.path,{'action':'edit_fact','scope':'private:12345678','subject':'12345678','name':'饮料','value':'咖啡','expectedVersion':1},connection=self.db)
+  result=run(self.path,{'action':'edit_fact','actorId':'test-web-user','scope':'private:12345678','subject':'12345678','name':'饮料','value':'咖啡','expectedVersion':1},connection=self.db)
   self.assertTrue(result['ok']);self.assertEqual({t:self.db.execute('SELECT * FROM '+t).fetchall() for t in tables},before)
+ def test_fact_projection_uses_only_real_user_exact_identity_and_keeps_dynamic_history(self):
+  from context_foundation import arrange
+  from hosted_memory import user_edits,project_user_edits
+  from person_memory import profile
+  from types import SimpleNamespace
+  self.store.memory.remember('private:12345678','12345678','饮料','红茶','source',1)
+  foundation={'facts':profile(self.db,'private:12345678','12345678')['facts']}
+  state={'memory_foundation':foundation}
+  dynamic={'role':'user','content':'历史消息说红茶，不是基础配置'}
+  messages=arrange([{'role':'system','content':'system'}],state)+[dynamic]
+  snapshot=SimpleNamespace(base=copy.deepcopy(messages),wire=copy.deepcopy(messages),state=state)
+  body={'action':'edit_fact','actorId':'real-user','scope':'private:12345678','subject':'12345678','name':'饮料','value':'咖啡','expectedVersion':1}
+  self.assertEqual(run(self.path,{**body,'actorId':''},connection=self.db)['status'],403)
+  self.assertTrue(run(self.path,body,connection=self.db)['ok'])
+  edits=user_edits(self.db);candidate=project_user_edits(snapshot,edits)
+  self.assertEqual(snapshot.wire,messages);self.assertEqual(candidate.wire[-1],dynamic)
+  self.assertEqual(candidate.state['memory_foundation']['facts'][0]['value'],'咖啡')
+  self.assertEqual(sum(a!=b for a,b in zip(candidate.wire,messages)),1)
+  self.assertNotIn('actorId',json.dumps(candidate.wire))
+  forged=copy.deepcopy(edits);forged[0]['fact']['value']='伪造'
+  with self.assertRaises(ContextPrefixViolation):project_user_edits(snapshot,forged)
+  self.assertEqual(project_user_edits(candidate,edits).wire,candidate.wire)
   self.assertEqual(self.db.execute('SELECT value,version FROM facts WHERE active=1').fetchall(),[('咖啡',2)])
  def initial(self):
   journal=ReadonlyJournal(self.db,'bot_shared')

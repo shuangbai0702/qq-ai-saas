@@ -244,7 +244,7 @@ class SemanticFactRelationOperations(unittest.TestCase):
             audit.persist(self.db,'committed','transaction_committed')
         self.assertTrue(run(path,{'action':'reset_relation','scope':SCOPE,'subject':PERSON,'expectedLastSeen':100,'expectedVersion':next(r['version'] for r in run(path,{'action':'list'},self.db)['relations'] if r['subject']==PERSON)},self.db)['ok'])
         self.assertEqual(self.db.execute('SELECT category FROM memory_operation_audit_details').fetchall(),[('facts',)])
-        self.assertTrue(run(path,{'action':'forget_fact','scope':SCOPE,'subject':PERSON,'name':'爱好','expectedVersion':1},self.db)['ok'])
+        self.assertTrue(run(path,{'action':'forget_fact','actorId':'test-web-user','scope':SCOPE,'subject':PERSON,'name':'爱好','expectedVersion':1},self.db)['ok'])
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_operation_audit_details').fetchone()[0],0)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_operation_audits').fetchone()[0],1)
 
@@ -317,7 +317,7 @@ class SemanticReflectionOperations(unittest.IsolatedAsyncioTestCase):
                     if malformed:return NS(completion_text='{"summary": broken JSON')
                     if edit:
                         from data_admin import run
-                        result=run(Path(folder)/'behavior.sqlite',{'action':'edit_fact','scope':'private:'+PERSON,'subject':PERSON,'name':'饮料偏好','value':'用户直接修正','expectedVersion':1},connection=db)
+                        result=run(Path(folder)/'behavior.sqlite',{'action':'edit_fact','actorId':'test-web-user','scope':'private:'+PERSON,'subject':PERSON,'name':'饮料偏好','value':'用户直接修正','expectedVersion':1},connection=db)
                         self.assertTrue(result['ok'])
                     if forget:store.memory.observe('private:'+PERSON,PERSON,'忘记:饮料偏好','forgot-while-awaiting',136);db.commit()
                     return NS(completion_text=json.dumps({'summary':'近期口味改为咖啡；相互交流认真而可靠。',
