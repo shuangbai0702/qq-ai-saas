@@ -188,3 +188,33 @@ def inspect_tool(db,cfg,scope,current,*,event=None,on_read=None):
             if on_read:on_read(receipt)
             return json.dumps({'execution':'completed','data':data,'receipt':receipt},ensure_ascii=False)
     return Inspect(name='inspect_context',description='按需读取当前会话的真实兴趣、心境和未完话题及来源；历史资料不代表当前状态。不会对外发送。',parameters={'type':'object','properties':{},'additionalProperties':False})
+
+
+def editable_version(db,kind,target):
+    from memory_products import read,version
+    row=read(db,kind,target)
+    return version(row) if row else None
+
+
+def edit_by_user(db,data):
+    """Update existing cognition only. Never manufacture evidence or task receipts."""
+    from memory_products import read,version
+    if not isinstance(data.get('actorId'),str) or not data['actorId']:return {'error':'缺少真实用户操作来源','status':403}
+    kind=data['kind']
+    if kind not in ('interest','motive'):return {'error':'不支持的认知类型','status':400}
+    target={'scope':data['scope'],'topic':data['topic']}
+    if kind=='motive':target['subject']=data['subject']
+    row=read(db,kind,target)
+    if not row or data.get('expectedVersion')!=version(row):return {'error':'认知内容已变化，请刷新后重试','status':409}
+    now=max(time.time(),float(row.get('updated',0))+0.000001)
+    if kind=='interest':
+        weight=data.get('weight')
+        if type(weight) not in (int,float) or not math.isfinite(weight) or not 0<=weight<=8:return {'error':'兴趣强度应为0至8','status':400}
+        # Persona-derived duplicates must not become independently learned truth.
+        if row['source']=='persona':return {'error':'这是旧角色派生副本，请通过角色编辑或合法压缩纠正','status':409}
+        db.execute('UPDATE companion_interests SET weight=?,updated=? WHERE scope=? AND topic=?',(weight,now,data['scope'],data['topic']))
+    else:
+        status,due,expires=data.get('status'),data.get('due'),data.get('expires')
+        if status not in ('open','contacted','resolved','abandoned') or any(type(v) not in (int,float) or not math.isfinite(v) for v in (due,expires)) or due>expires:return {'error':'话题状态或时间格式不正确','status':400}
+        db.execute('UPDATE companion_motives SET status=?,due=?,expires=? WHERE scope=? AND subject=? AND topic=?',(status,due,expires,data['scope'],data['subject'],data['topic']))
+    return {'ok':True,'updatedRegion':kind,'version':editable_version(db,kind,target)}

@@ -33,5 +33,11 @@ test('authenticated Core Note save uses owner identity, exact CAS and existing S
  assert.equal((await app.inject({method:'POST',url,cookies:other,payload:relationPayload})).statusCode,404);
  const relationSaved=await app.inject({method:'POST',url,cookies,payload:relationPayload});assert.equal(relationSaved.statusCode,200,relationSaved.body);assert.equal(relationSaved.json().updatedRegion,'relation');
  assert.equal((await app.inject({method:'POST',url,cookies,payload:relationPayload})).statusCode,409);
+ run(`import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); db.execute("CREATE TABLE companion_interests(scope TEXT,topic TEXT,weight REAL,hits INTEGER,updated REAL,evidence TEXT,source TEXT,PRIMARY KEY(scope,topic))"); db.execute("INSERT INTO companion_interests VALUES('self','红茶',1,3,1,'original','autonomous_choice')"); db.commit(); db.close()`);
+ const interests=(await app.inject({method:'GET',url,cookies})).json().companion.companion_interests;
+ const interestPayload={action:'edit_companion',kind:'interest',scope:'self',topic:'红茶',weight:.2,expectedVersion:interests[0].version};
+ assert.equal((await app.inject({method:'POST',url,cookies:other,payload:interestPayload})).statusCode,404);
+ const interestSaved=await app.inject({method:'POST',url,cookies,payload:interestPayload});assert.equal(interestSaved.statusCode,200,interestSaved.body);
+ assert.equal((await app.inject({method:'POST',url,cookies,payload:interestPayload})).statusCode,409);
  const result=await app.inject({method:'GET',url,cookies});assert.equal(result.json().persona_core_note.text,payload.text);assert.notEqual(result.json().persona_core_note.version,version);
 });

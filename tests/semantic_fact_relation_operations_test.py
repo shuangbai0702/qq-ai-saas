@@ -242,7 +242,7 @@ class SemanticFactRelationOperations(unittest.TestCase):
         with self.db:
             apply_semantic_memory(self.db,self.store.memory,SCOPE,CFG,self.payload,data,before,now=100,audit=audit)
             audit.persist(self.db,'committed','transaction_committed')
-        self.assertTrue(run(path,{'action':'reset_relation','scope':SCOPE,'subject':PERSON,'expectedLastSeen':100},self.db)['ok'])
+        self.assertTrue(run(path,{'action':'reset_relation','scope':SCOPE,'subject':PERSON,'expectedLastSeen':100,'expectedVersion':next(r['version'] for r in run(path,{'action':'list'},self.db)['relations'] if r['subject']==PERSON)},self.db)['ok'])
         self.assertEqual(self.db.execute('SELECT category FROM memory_operation_audit_details').fetchall(),[('facts',)])
         self.assertTrue(run(path,{'action':'forget_fact','scope':SCOPE,'subject':PERSON,'name':'爱好','expectedVersion':1},self.db)['ok'])
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_operation_audit_details').fetchone()[0],0)

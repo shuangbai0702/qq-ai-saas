@@ -18,6 +18,7 @@ const mutation=z.discriminatedUnion('action',[
  z.object({action:z.literal('clear_learning'),scope}),
  z.object({action:z.literal('forget_summary'),scope:cognitiveScope,id:z.number().int().positive(),expectedUpdated:z.number().finite()}),
  z.object({action:z.literal('pause_contact'),scope}),
+ z.object({action:z.literal('edit_companion'),kind:z.enum(['interest','motive']),scope:z.union([cognitiveScope,z.literal('self'),z.literal('*')]),topic:z.string().min(1).max(1000),subject:person.optional(),expectedVersion:z.string().regex(/^[a-f0-9]{32}$/),weight:z.number().finite().min(0).max(8).optional(),status:z.enum(['open','contacted','resolved','abandoned']).optional(),due:z.number().finite().optional(),expires:z.number().finite().optional()}).refine(v=>v.kind==='interest'?v.weight!==undefined:v.subject!==undefined&&v.status!==undefined&&v.due!==undefined&&v.expires!==undefined&&v.due<=v.expires),
  z.object({action:z.literal('edit_relation'),scope:cognitiveScope,subject:person,expectedVersion:z.string().regex(/^[a-f0-9]{64}$/),affinity:z.number().finite().min(-20).max(100),trust:z.number().finite().min(-1).max(1),impression:z.string().max(1000)}),
  z.object({action:z.literal('reset_relation'),scope:cognitiveScope,subject:person,expectedLastSeen:z.number().finite(),expectedVersion:z.string().regex(/^[a-f0-9]{64}$/)}),
 ]);

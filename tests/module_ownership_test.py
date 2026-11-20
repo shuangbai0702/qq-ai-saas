@@ -64,4 +64,17 @@ class Ownership(unittest.TestCase):
   self.assertEqual(run(self.path,data,self.db)['status'],409)
   self.assertEqual(run(self.path,{'action':'reset_relation','scope':self.scope,'subject':'12345678','expectedLastSeen':10,'expectedVersion':data['expectedVersion']},self.db)['status'],409)
 
+ def test_explicit_interest_and_motive_edits_preserve_sources_and_other_products(self):
+  self.db.execute("INSERT INTO companion_interests VALUES(?,?,1,3,1,'original','conversation_heat')",(self.scope,'红茶'))
+  self.db.execute("INSERT INTO companion_motives VALUES(?,?,?,1,100,'open','original')",(self.scope,'12345678','喝茶'))
+  self.db.commit();before=self.snapshot(['facts','relations','memory_core_notes','memory_summaries','memory_rounds','social_patterns'])
+  listed=run(self.path,{'action':'list'},self.db)['companion']
+  row=listed['companion_interests'][0];interest={'action':'edit_companion','kind':'interest','scope':self.scope,'topic':'红茶','expectedVersion':row['version'],'weight':.2,'actorId':'user'}
+  self.assertTrue(run(self.path,interest,self.db)['ok']);self.assertEqual(run(self.path,interest,self.db)['status'],409)
+  self.assertEqual(self.db.execute('SELECT hits,evidence,source FROM companion_interests').fetchone(),(3,'original','conversation_heat'))
+  row=listed['companion_motives'][0];motive={'action':'edit_companion','kind':'motive','scope':self.scope,'subject':'12345678','topic':'喝茶','expectedVersion':row['version'],'status':'resolved','due':1,'expires':100,'actorId':'user'}
+  self.assertEqual(run(self.path,{**motive,'expires':0},self.db)['status'],400)
+  self.assertTrue(run(self.path,motive,self.db)['ok']);self.assertEqual(self.db.execute('SELECT status,evidence FROM companion_motives').fetchone(),('resolved','original'))
+  self.assertEqual(self.snapshot(list(before)),before)
+
 if __name__=='__main__':unittest.main()

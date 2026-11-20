@@ -79,7 +79,11 @@ def run(file, data, connection=None):
                 from web_cognition import note,fingerprint
                 current=note(db)
                 core={'text':current['text'],'updated':current['updated'],'version':fingerprint(current)}
-            return {'persona_core_note':core,'initialized': True, 'epoch': epoch, 'facts': facts, 'summaries':summaries,'patterns': patterns, 'contacts': contacts, 'decisions':decisions,'relations': relations, 'stats': stats, 'limit': 100,'pending':pending, 'companion': {t:[dict(r) for r in listed(t,'SELECT * FROM '+t+(' WHERE scope=?' if scope else '')+' ORDER BY rowid DESC LIMIT 30',([scope] if scope else []),30)] for t in ['companion_interests','companion_motives','companion_emotion','companion_signals','dialogue_feedback'] if t in tables},'pagination':{'page':page,'totals':totals,'pages':max([1]+[(totals[k]+page_sizes[k]-1)//page_sizes[k] for k in totals])}}
+            companion={t:[dict(r) for r in listed(t,'SELECT * FROM '+t+(' WHERE scope=?' if scope else '')+' ORDER BY rowid DESC LIMIT 30',([scope] if scope else []),30)] for t in ['companion_interests','companion_motives','companion_emotion','companion_signals','dialogue_feedback'] if t in tables}
+            from companion_state import editable_version
+            for kind,table in (('interest','companion_interests'),('motive','companion_motives')):
+                for row in companion.get(table,[]):row['version']=editable_version(db,kind,{k:row[k] for k in (('scope','topic') if kind=='interest' else ('scope','subject','topic'))})
+            return {'persona_core_note':core,'initialized': True, 'epoch': epoch, 'facts': facts, 'summaries':summaries,'patterns': patterns, 'contacts': contacts, 'decisions':decisions,'relations': relations, 'stats': stats, 'limit': 100,'pending':pending, 'companion':companion,'pagination':{'page':page,'totals':totals,'pages':max([1]+[(totals[k]+page_sizes[k]-1)//page_sizes[k] for k in totals])}}
         if data['action'] in ('edit_fact','forget_fact'):
             from memory_scope import initialize_controls
             initialize_controls(db)
@@ -105,6 +109,11 @@ def run(file, data, connection=None):
             from social import edit_learning_by_user
             result=edit_learning_by_user(db,data)
             if not result.get('ok'):return result
+        elif action == 'edit_companion':
+            from companion_state import edit_by_user
+            result=edit_by_user(db,data)
+            if not result.get('ok'):return result
+            db.commit();return result
         elif action == 'edit_relation':
             from relationships import edit_by_user
             result=edit_by_user(db,data)
