@@ -47,14 +47,9 @@ func probe(rawTarget, name, expected, dns string) error {
 		return errors.New("-server-name must be a TLS host name")
 	}
 
-	input := json.NewDecoder(io.LimitReader(os.Stdin, 16*1024))
-	input.DisallowUnknownFields()
-	var cfg egress.Config
-	if err := input.Decode(&cfg); err != nil {
-		return errors.New("invalid tunnel configuration on stdin")
-	}
-	if err := input.Decode(new(json.RawMessage)); err != io.EOF {
-		return errors.New("unexpected data after tunnel configuration")
+	cfg, err := readConfig(os.Stdin)
+	if err != nil {
+		return err
 	}
 
 	path, err := egress.Open(cfg)
@@ -94,11 +89,10 @@ func probe(rawTarget, name, expected, dns string) error {
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("unexpected HTTPS probe status: %d", response.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, 128))
+	got, err := readProbeIP(response.Body)
 	if err != nil {
 		return fmt.Errorf("read HTTPS probe reply: %w", err)
 	}
-	got, err := netip.ParseAddr(strings.TrimSpace(string(body)))
 	if err != nil || got != want {
 		return errors.New("test endpoint did not return the expected observed source IP")
 	}
@@ -114,4 +108,33 @@ func probe(rawTarget, name, expected, dns string) error {
 		}
 	}
 	return json.NewEncoder(os.Stdout).Encode(result)
+}
+
+func readConfig(reader io.Reader) (egress.Config, error) {
+	const limit = 16 * 1024
+	var cfg egress.Config
+	data, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil || len(data) > limit {
+		return cfg, errors.New("tunnel configuration exceeds size limit or cannot be read")
+	}
+	input := json.NewDecoder(strings.NewReader(string(data)))
+	input.DisallowUnknownFields()
+	if err := input.Decode(&cfg); err != nil {
+		return cfg, errors.New("invalid tunnel configuration on stdin")
+	}
+	if err := input.Decode(new(json.RawMessage)); err != io.EOF {
+		return cfg, errors.New("unexpected data after tunnel configuration")
+	}
+	return cfg, nil
+}
+
+func readProbeIP(reader io.Reader) (netip.Addr, error) {
+	body, err := io.ReadAll(io.LimitReader(reader, 129))
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	if len(body) > 128 {
+		return netip.Addr{}, errors.New("HTTPS probe reply exceeds size limit")
+	}
+	return netip.ParseAddr(strings.TrimSpace(string(body)))
 }

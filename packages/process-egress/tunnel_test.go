@@ -278,3 +278,22 @@ func dnsAnswer(query []byte, ip [4]byte, truncated bool) []byte {
 	buf, _ := response.Pack()
 	return buf
 }
+
+func TestClosedTunnelRejectsNewWork(t *testing.T) {
+	path, _ := loopbackPair(t, "A", false)
+	path.Close()
+	if c, err := path.DialUDP(netip.AddrPortFrom(server4, 4080)); err == nil {
+		c.Close()
+		t.Fatal("closed tunnel admitted a UDP socket")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if c, err := path.DialTCP(ctx, netip.AddrPortFrom(server4, 4080)); err == nil {
+		c.Close()
+		t.Fatal("closed tunnel admitted TCP")
+	}
+	if _, err := path.Lookup(ctx, "closed.test"); err == nil {
+		t.Fatal("closed tunnel admitted DNS")
+	}
+	path.Close()
+}
