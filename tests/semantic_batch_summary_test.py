@@ -52,6 +52,34 @@ class SemanticSummary(unittest.IsolatedAsyncioTestCase):
   prompt=json.loads(self.calls[0]['prompt']);self.assertEqual(len(prompt['turns']),631);self.assertEqual(len(prompt['observed_requests']),631)
   self.assertEqual(self.calls[0]['image_urls'],['data:image/png;base64,YQ=='])
   self.assertEqual(len(prompt['images'][0]['events']),31)
+ async def test_97_inputs_capacity_retry_keeps_identical_material_and_one_legal_commit(self):
+  self.record(30)
+  for i in range(67):
+   event='passive-'+str(i);material=summary_material.snapshots([message(event)],SCOPE)[0]
+   self.db.execute('INSERT INTO memory_pending VALUES(?,?,?,?,?,?)',(SCOPE,'12345678',event,'看这个','',120+i/1000))
+   self.db.execute('INSERT INTO memory_round_material VALUES(?,?,?,?)',(SCOPE,event,'12345678',json.dumps(material)))
+  self.db.commit();ordinary=self.chat
+  async def first_oversized(**kw):
+   result=await ordinary(**kw)
+   if len(self.calls)==1:result.completion_text=json.dumps({'summary':'记'*801})
+   return result
+  self.chat=first_oversized;await self.run_summary()
+  self.assertEqual(len(self.calls),2);self.assertEqual(self.calls[0]['prompt'],self.calls[1]['prompt'])
+  self.assertEqual(len(json.loads(self.calls[0]['prompt'])['turns']),97)
+  self.assertEqual(self.metrics.get('summaryCapacityRetries'),1);self.assertEqual(self.checkpoint()[1:],(30,'available',None))
+  self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1)
+  self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],97)
+  self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],97)
+ async def test_all_39_existing_fact_candidates_are_offered_without_a_character_window(self):
+  for i in range(39):self.store.memory.remember(SCOPE,'12345678','字段'+str(i),'已有事实'+str(i)+'甲'*40,'old-'+str(i),1)
+  self.record();self.r.binding=({'memory':True,'memoryAutoCapture':True,'memorySummary':True},summary_provider(self.chat),lambda:True,self.metrics,contextvars.ContextVar('candidates',default=None))
+  self.assertTrue(self.r.retry());await self.r.task
+  from person_memory import expand
+  state=expand(json.loads(self.calls[0]['prompt']))['existing_memory']
+  self.assertEqual(len(state['facts']),39);self.assertGreater(len(json.dumps(state,ensure_ascii=False)),1200)
+  self.assertEqual({r['name'] for r in state['facts']},{'字段'+str(i) for i in range(39)})
+  counts=json.loads(self.db.execute('SELECT counts FROM memory_operation_audits').fetchone()[0])
+  self.assertEqual(counts['facts']['input_coverage'],{'eligible':39,'offered':39,'omitted':0,'boundary':'current_snapshot_authority'})
  async def test_failed_truncated_and_stale_do_not_commit_or_delete(self):
   for mode in ('failed','truncated','stale','oversized'):
    with self.subTest(mode=mode):
