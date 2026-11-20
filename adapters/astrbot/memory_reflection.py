@@ -55,8 +55,22 @@ class SummaryPersistenceError(RuntimeError):pass
 
 class SummaryResponseSlot:
     """Recover a response in the existing retry row; no new task authority."""
-    def __init__(self,db,scope,attempt,epoch,digest):
+    def __init__(self,db,scope,attempt,epoch,digest,family=None,part=None):
         self.db=db;self.scope=scope;self.attempt=attempt;self.epoch=epoch;self.digest=digest
+        self.family=family;self.part=part
+
+    def payload(self,data):
+        if self.part is None:return data
+        if data.get('epoch')!=self.epoch or data.get('digest')!=self.family:return {}
+        return data.get('parts',{}).get(self.part,{})
+
+    def write(self,data):
+        if self.part is not None:
+            row=self.db.execute('SELECT result FROM memory_reflection_retry WHERE scope=?',(self.scope,)).fetchone()
+            previous=json.loads(row[0]) if row and row[0] else {}
+            parts=previous.get('parts',{}) if previous.get('epoch')==self.epoch and previous.get('digest')==self.family else {}
+            data={'epoch':self.epoch,'digest':self.family,'parts':{**parts,self.part:data}}
+        return self.db.execute('UPDATE memory_reflection_retry SET result=? WHERE scope=? AND attempts=?',(model_json(data),self.scope,self.attempt)).rowcount
 
     def recover(self):
         from types import SimpleNamespace
@@ -64,6 +78,7 @@ class SummaryResponseSlot:
         if not row or not row[0]:return None
         try:data=json.loads(row[0])
         except (ValueError,TypeError):return None
+        data=self.payload(data)
         if data.get('epoch')!=self.epoch or data.get('digest')!=self.digest:return None
         content=data.get('text');raw=data.get('raw')
         if not isinstance(content,str) or hashlib.sha256(content.encode()).hexdigest()!=data.get('sha'):return None
@@ -72,7 +87,7 @@ class SummaryResponseSlot:
     def dispatch(self):
         with self.db:
             payload={'epoch':self.epoch,'digest':self.digest,'attempt':self.attempt,'phase':'dispatched'}
-            if self.db.execute('UPDATE memory_reflection_retry SET result=? WHERE scope=? AND attempts=?',(model_json(payload),self.scope,self.attempt)).rowcount!=1:
+            if self.write(payload)!=1:
                 raise SummaryPersistenceError('summary_request_owner_changed')
 
     def save(self,response):
@@ -90,7 +105,7 @@ class SummaryResponseSlot:
             with self.db:
                 current=self.db.execute('SELECT epoch FROM memory_reflection_control WHERE id=1').fetchone()
                 if not current or current[0]!=self.epoch:return
-                saved=self.db.execute('UPDATE memory_reflection_retry SET result=? WHERE scope=? AND attempts=?',(model_json(data),self.scope,self.attempt)).rowcount
+                saved=self.write(data)
                 if saved!=1:raise SummaryPersistenceError('summary_response_owner_changed')
         except SummaryPersistenceError:raise
         except Exception as error:raise SummaryPersistenceError('summary_response_persistence_failed') from error
@@ -157,16 +172,20 @@ async def summary_model_output(provider,request,live,metrics,limit,on_decode=Non
             if restored is not None:metrics['summaryResponsesRecovered']=metrics.get('summaryResponsesRecovered',0)+1
             if not live():return None
             diagnostics={}
-            data=decode(response.completion_text,diagnostics)
+            if limit is None:
+                data=json.loads(response.completion_text)
+                if not isinstance(data,dict):raise ValueError('invalid_summary_json')
+                diagnostics['decode_status']='json_object'
+            else:data=decode(response.completion_text,diagnostics)
             if on_decode:on_decode(data,diagnostics)
             validate_summary_output(response)
             from model_cache import response_shape
             reason=response_shape(getattr(response,'raw_completion',None)).get('finishReason')
             if reason!='stop':raise ValueError('invalid_summary_finish_reason')
             if diagnostics.get('decode_status')!='json_object':raise ValueError('invalid_summary_json')
-            text=clean(data['summary']).strip()
-            if not text:raise ValueError('empty_summary')
-            if len(text)>limit:raise ValueError('summary_output_capacity_exceeded_material_retained')
+            text=clean(data['summary']).strip() if limit is not None else ''
+            if limit is not None and not text:raise ValueError('empty_summary')
+            if limit is not None and len(text)>limit:raise ValueError('summary_output_capacity_exceeded_material_retained')
             return response,data,text
         except (asyncio.CancelledError,SummaryPersistenceError):raise
         except Exception as error:
@@ -1566,18 +1585,59 @@ class Reflection:
                     from memory_model_view import memory_json
                     def decoded(data,diagnostics):
                         nonlocal operation_audit
+                        if reviewed is not None:
+                            for key in reviewed:
+                                proposed=data.get(key,[])
+                                if not isinstance(proposed,list) or any(not isinstance(op,dict) or op.get('op')!='create' for op in proposed):raise ValueError('semantic_review_final_repeated_operations')
                         operation_audit=Audit(merge_scope or scope,epoch,job,data,{str(r['sender_id']) for r in author_payload},through_round_id=rows[-1][0] if rows else None,**diagnostics)
                         operation_audit.input_coverage(prompt)
                         if self._active_summary:self._active_summary['operation_audit']=operation_audit
                     live=lambda:not self.closed and is_current() and self.epoch()==epoch
                     request=dict(prompt=memory_json(prompt),system_prompt=system,contexts=[],func_tool=None,request_max_retries=0,**({'image_urls':summary_images} if summary_images else {}))
                     digest=summary_request_digest(request,provider,epoch,job,{'scope':merge_scope or scope,'throughRound':rows[-1][0] if rows else None,'sourceDependency':merge_dependency if job=='big' else previous_dependency,'materialsSha':hashlib.sha256(model_json(materials).encode()).hexdigest(),'discardStamp':discard_stamp,'learningEpoch':learning_epoch})
-                    slot=SummaryResponseSlot(self.db,scope,attempts,epoch,digest)
+                    reviewed=None;review_family=None
+                    if before is not None:
+                        from memory_review import pages,coverage,combine,validate_page
+                        review_pages=pages(before['memory_state'])
+                        if len(review_pages)>1:
+                            review_family=digest;parts=[]
+                            offered={key:0 for key in coverage(before['memory_state'])}
+                            review_coverage={'eligible':coverage(before['memory_state']),'offered':offered,'pages':len(review_pages),'completed':0}
+                            prompt['memory_review_coverage']=review_coverage
+                            starting()
+                            for number,page in enumerate(review_pages):
+                                # Every page compares different old candidates
+                                # with the same actual evidence. Stateless
+                                # requests require this evidence again; no such
+                                # replay is added to ordinary/main context.
+                                material={key:prompt[key] for key in ('turns','observed_requests','images','incomplete_material','current_time') if key in prompt}
+                                material['existing_memory']=page
+                                review_request={**request,'prompt':memory_json(material),'system_prompt':SEMANTIC_MEMORY_SYSTEM+' '+PRODUCT_MEMORY_SYSTEM+' '+summary_product_limits()+' 本请求只检查本页既有认知与真实材料，输出JSON的fact_operations、relation_operations、memory_operations；不输出summary、core_note或其他产品。没有变化则输出空数组。只能replace/delete本页展示的旧ID/version；新认知留给最后的主整理请求，本页不得create。'}
+                                page_digest=summary_request_digest(review_request,provider,epoch,'memory_review',{'family':review_family,'page':number})
+                                page_slot=SummaryResponseSlot(self.db,scope,attempts,epoch,page_digest,review_family,str(number))
+                                page_result=await summary_model_output(provider,review_request,live,metrics,None,on_decode=lambda data,diagnostics:validate_page(data,page),on_attempt=page_slot.dispatch,on_response=page_slot.save,recovered=page_slot.recover())
+                                if page_result is None:return {'ok':False,'reason':'stale_configuration'}
+                                parts.append(page_result[1])
+                                for key,count in coverage(page).items():offered[key]+=count
+                                review_coverage['completed']+=1
+                                operation_audit.input_coverage(prompt)
+                                metrics['memoryReviewCoverage']=json.loads(model_json(review_coverage))
+                            reviewed=combine(parts)
+                            prompt['existing_memory']={key:before['memory_state'][key] for key in ('scope','subjects','writable')}
+                            prompt['reviewed_memory_changes']={key:[{k:v for k,v in op.items() if k not in ('expected_version','expected','scope')} for op in operations] for key,operations in reviewed.items() if operations}
+                            request={**request,'prompt':memory_json(prompt),'system_prompt':system+' 全部旧认知已经通过独立分页完成比较；reviewed_memory_changes是本批待提交修订，不是已执行回执。请在summary/Core中保留必要变化。本请求的fact_operations、relation_operations、memory_operations只允许create真正的新条目，旧条目修订已完成，不再replace/delete。其他摘要、证据、约定、学习照常。'}
+                            digest=summary_request_digest(request,provider,epoch,job,{'family':review_family,'phase':'final'})
+                    slot=SummaryResponseSlot(self.db,scope,attempts,epoch,digest,review_family,'final' if review_family else None)
                     def request_starting():
                         slot.dispatch();starting()
                     result=await summary_model_output(provider,request,live,metrics,1500 if job=='big' else 800,decoded,request_starting,slot.save,slot.recover())
                     if result is None:return {'ok':False,'reason':'stale_configuration'}
                     response,data,text=result
+                    if reviewed is not None:
+                        data={**data,**combine([reviewed,data])}
+                        operation_audit=Audit(merge_scope or scope,epoch,job,data,{str(r['sender_id']) for r in author_payload},through_round_id=rows[-1][0] if rows else None,decode_status='json_object')
+                        operation_audit.input_coverage(prompt)
+                        if self._active_summary:self._active_summary['operation_audit']=operation_audit
                     from companion_insights import apply
                     available_before={r[0] for r in self.db.execute("SELECT id FROM memory_reconstruction_checkpoints WHERE state='available'")}
                     with self.db:

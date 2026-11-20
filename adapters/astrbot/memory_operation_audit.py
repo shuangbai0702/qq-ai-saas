@@ -74,6 +74,11 @@ class Audit:
                 'products':[row for rows in state.get('products',{}).values() for row in rows]}
         for name,rows in groups.items():
             if name in self.counts:self.counts[name]['input_coverage']={'eligible':len(rows),'offered':len(rows),'omitted':0,'boundary':'current_snapshot_authority'}
+        reviewed=prompt.get('memory_review_coverage')
+        if reviewed:
+            for name,total in reviewed['eligible'].items():
+                offered=reviewed['offered'][name]
+                self.counts[name]['input_coverage']={'eligible':total,'offered':offered,'omitted':total-offered,'boundary':'deterministic_review_pages','pages':reviewed['pages'],'completed':reviewed['completed']}
         visibility=prompt.get('previous_commitments_visibility',{})
         if visibility:
             self.counts['core_note']['commitment_input_coverage']={k:visibility[k] for k in ('total','shown','omitted') if k in visibility}
