@@ -214,7 +214,7 @@ def tools(settings,event,current,db,bridge,social=None):
     properties={
         'goal':{'type':'string','maxLength':12000},'background':{'type':'string','maxLength':16000},'constraints':{'type':'array','maxItems':32,'items':{'type':'string','maxLength':2000}}}
     if vision_enabled and not event.get_extra('_hosted_internal_work'):
-        description+='需要辨认图片或查看细节时可按需提供 image，仅使用当前会话仍有效的图片。'
+        description+='用户明确要求识图、读取图中文字或查看细节，或主线无法读取当前图片时，使用 image 委托原图分析后再答复；普通图片闲聊由主线直接理解。image={}分析当前消息；图片在前一条消息时填写其真实event_id，仅使用当前会话仍有效的图片。委托也失败时如实说明限制，不把接口不支持或未读取图片说成原图模糊，不凭旧记忆断定本次图片不可读。'
         properties['image']={'type':'object','additionalProperties':False,'properties':{
             'event_id':{'type':'string','maxLength':512,'description':'可信 QQ 消息的事件 ID，省略表示当前消息。'},
             'positions':{'type':'array','maxItems':32,'items':{'type':'integer','minimum':1,'maximum':32},'description':'消息图片从 1 开始编号，省略表示分析此消息可用的全部图片。'}}}

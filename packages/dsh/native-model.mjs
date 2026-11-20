@@ -40,7 +40,7 @@ export async function nativeModel({baseURL,model,keyEnv='FISHBOT_DSH_TEST_API_KE
   const pi=await native.load('dsh-llm-pi-ai');
   await ctx.plugin(pi,{providers:{'local-wire':{api:'openai-completions',baseURL,apiKeyEnv:keyEnv,
    ...(images?{requestImagePixelBudget:16777216,requestImageMaxBytes:VISION_MAX_BYTES,maxRequestImageBytes:6*1024*1024}:{}),
-   models:[{id:model,contextWindow:128000,maxTokens,input:images?['text','image']:['text'],reasoningEfforts:false}],timeoutMs:45000,streamIdleTimeoutMs:45000}}}).await();
+   models:[{id:model,contextWindow:128000,maxTokens,input:['text','image'],reasoningEfforts:false}],timeoutMs:45000,streamIdleTimeoutMs:45000}}}).await();
   return {images:references,stream:options=>ctx.llm.stream({...options,provider:'local-wire',model,maxTokens:Math.min(maxTokens,options.maxTokens??maxTokens)}),close:()=>ctx.fiber.dispose()};
  }catch(error){await ctx.fiber.dispose();throw error;}
 }
