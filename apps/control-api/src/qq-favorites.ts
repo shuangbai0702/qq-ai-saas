@@ -1,7 +1,7 @@
 import {atomicJson as atomic} from '../../../packages/shared/fs-atomic.js';
 import {favoriteDirectory,withFavoriteIndex,readFavoriteIndex,writeFavoriteIndex} from '../../../packages/shared/qq-favorite-index.js';
 import type {FastifyInstance} from 'fastify';import {readFile,writeFile,mkdir,rename,rm,readdir,lstat} from 'node:fs/promises';import path from 'node:path';import {createHash,randomUUID} from 'node:crypto';import {z} from 'zod';
-import type {FavoriteAnnotation} from '../../../packages/shared/qq-favorite-semantics.js';
+import {favoriteAnnotationDue,applyFavoriteAnnotation,type FavoriteAnnotation} from '../../../packages/shared/qq-favorite-semantics.js';
 type Bot={id:string;protocol:string;qq_uin?:string;generation:number;desired_state:string;health?:any};
 type Item={id:string;file:string;mime:string;meaning:string;avoid:string;enabled:boolean;animated:boolean;manual?:boolean;semantic?:FavoriteAnnotation;semanticStatus?:'ready'|'uncertain'|'pending'|'failed'|'raw_text';rawText?:string;rawSource?:string;semanticAttempts?:number;semanticFailures?:number;semanticRetryAt?:number;contentHash?:string;lastVisionError?:string;semanticWaitReason?:string;semanticWaitMs?:number;queuedAt?:number};
 type Index={account:string;enabled:boolean;syncedAt?:string;items:Item[];failed?:number;limitReached?:boolean};
@@ -34,17 +34,14 @@ export function registerQQFavorites(app:FastifyInstance,root:string,owned:(req:a
      // Bounded work per import, not a daily quota. Re-sync continues remaining
      // missing descriptions using cached images without another QQ download.
      if(item.meaning&&!item.manual&&!item.semantic){item.rawText=item.rawText||item.meaning;item.rawSource=item.rawSource||'legacy_text';item.meaning='';item.avoid='';item.enabled=false;item.semanticStatus='raw_text'}
-     if(!item.meaning&&!item.manual&&item.semantic?.confidence!=='clear'&&deps.caption){
-      if(annotationAttempts<8&&Number(item.semanticAttempts||0)<3&&Number(item.semanticFailures||0)<5&&Number(item.semanticRetryAt||0)<=Date.now()){
+     if(deps.caption&&favoriteAnnotationDue(item)){
+      if(annotationAttempts<8){
        item.semanticStatus='pending';
        annotationAttempts++;
        try{
         const semantic=await deps.caption(bot,path.join(cached?path.join(favoriteDirectory(root,bot.id),'images'):stage,item.file),signal);
-        await active(req,bot,signal);item.semantic=semantic;
-        item.semanticStatus=semantic.confidence==='clear'?'ready':'uncertain';
-        if(semantic.confidence==='clear'){item.meaning=semantic.meaning;item.avoid=semantic.avoid;item.enabled=true}
-        else{item.semanticAttempts=Number(item.semanticAttempts||0)+1;item.semanticRetryAt=Date.now()+60000*2**item.semanticAttempts}
-       }catch(e){if(signal.aborted)throw e;const message=String((e as Error)?.message||e);if(/pressure|chat_busy/.test(message)){item.semanticWaitReason=/chat_busy/.test(message)?'chat_busy':'pressure';item.semanticRetryAt=Date.now()+60000}else{item.semanticStatus='failed';item.semanticFailures=Number(item.semanticFailures||0)+1;item.semanticRetryAt=Date.now()+Math.min(86400000,60000*2**item.semanticFailures)}}
+        await active(req,bot,signal);applyFavoriteAnnotation(item,semantic,undefined);
+       }catch(e){if(signal.aborted)throw e;await active(req,bot,signal);applyFavoriteAnnotation(item,undefined,e)}
       }
      }
      items.push(item);

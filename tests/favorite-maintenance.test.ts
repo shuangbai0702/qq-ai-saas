@@ -42,6 +42,30 @@ test('fresh confirmed imports are annotated before the older backlog in the same
  await owner.maintain(bot,new AbortController().signal);
  const after=await readFavoriteIndex(root,'a');assert.equal(seen[0],id+'.png');assert.equal(after.items.find((item:any)=>item.id===id).semanticStatus,'ready');
 });
+
+test('unsupported imports cannot starve cached annotations and import attempts stay bounded',async()=>{
+ const {root,bot,owner}=await fixture();let downloads=0,captions=0;
+ owner.deps.call=(async(_r:string,_b:any,action:string)=>action==='get_login_info'?{user_id:90000}:Array.from({length:10},(_,n)=>({md5:'bad'+n,url:'https://qpic.cn/unsupported'}))) as any;
+ owner.deps.download=async()=>{downloads++;if(downloads<=4)throw Error('unsupported_fixture');return Buffer.from('valid')};
+ owner.caption=async()=>{captions++;return semantic};
+ await owner.maintain(bot,new AbortController().signal);
+ const after=await readFavoriteIndex(root,'a');assert.equal(downloads,4);assert.equal(captions,1);
+ assert.equal(after.items[0].semanticStatus,'ready');assert.equal(after.lastImportFailure.error,'unsupported_fixture');
+ assert.equal(after.items.length,1,'a failed import must not invent an image record');
+ await owner.maintain(bot,new AbortController().signal);
+ const progressed=await readFavoriteIndex(root,'a');const fifth='qqf_'+createHash('sha256').update('bad4').digest('hex').slice(0,16);
+ assert.equal(downloads,8);assert.ok(progressed.items.some((i:any)=>i.id===fifth),'failed first four must not starve later originals');
+});
+
+test('import storage failure and replaced owner are not downgraded into per-image failures',async()=>{
+ for(const kind of ['storage','owner']){
+  const {root,bot,owner}=await fixture();
+  owner.deps.call=(async(_r:string,_b:any,action:string)=>action==='get_login_info'?{user_id:90000}:[{md5:'bad',url:'https://qpic.cn/fixture'}]) as any;
+  owner.deps.download=async()=>{if(kind==='owner')bot.revision++;throw Object.assign(Error('fixture'),kind==='storage'?{code:'ENOSPC'}:{})};
+  await assert.rejects(()=>owner.maintain({...bot},new AbortController().signal));
+  const after=await readFavoriteIndex(root,'a');assert.equal(after.lastImportFailure,undefined);assert.equal(after.items[0].semanticStatus,'pending');
+ }
+});
 const semantic={description:'挥手',meaning:'欢迎',avoid:'严肃时',confidence:'clear' as const,version:1 as const,model:'fixture',at:'now',usage:null,costStatus:'unknown' as const};
 const uncertain={description:'好像在挥手',meaning:'',avoid:'',confidence:'uncertain' as const,version:1 as const,model:'fixture',at:'now',usage:null,costStatus:'unknown' as const};
 async function fixture(){

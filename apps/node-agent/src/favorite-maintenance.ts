@@ -10,11 +10,10 @@ import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import type {Sql} from '../../../packages/database/index.js';
 import {runtimeStatus} from '../../../packages/shared/runtime-status.js';
-import {createFavoriteCaptioner} from '../../../packages/shared/qq-favorite-semantics.js';
+import {createFavoriteCaptioner,favoriteAnnotationDue,applyFavoriteAnnotation} from '../../../packages/shared/qq-favorite-semantics.js';
 import {downloadFavorite,nativeCall,normalize} from '../../../packages/shared/qq-favorite-media.js';
 import {favoriteDirectory,readFavoriteIndex,writeFavoriteIndex,withFavoriteIndex} from '../../../packages/shared/qq-favorite-index.js';
-const UNCERTAIN_ATTEMPT_LIMIT=3,FAILURE_ATTEMPT_LIMIT=5,MAX_QUEUE_TICKS=2,MAX_ACTIVE_BOTS=3;
-const deferError=(error:unknown)=>/pressure|chat_busy/.test(String((error as Error)?.message||error));
+const MAX_QUEUE_TICKS=2,MAX_ACTIVE_BOTS=3;
 async function contentHash(file:string){const bytes=await readFile(file);return createHash('sha256').update(bytes).digest('hex')}
 export class FavoriteMaintenance{
  closed=false;private flight=new SingleFlight();private active=new Map<string,Promise<void>>();
@@ -56,9 +55,7 @@ export class FavoriteMaintenance{
    if(!info?.isFile()||info.isSymbolicLink()||Date.now()-info.mtimeMs>300000)continue;
    const id='qqf_'+createHash('sha256').update(name.slice(0,-6)).digest('hex').slice(0,16);
    const item=index.items.find((item:any)=>item.id===id);
-   if(!item||!item.manual&&!item.meaning&&item.semanticStatus!=='ready'
-    &&Number(item.semanticAttempts||0)<UNCERTAIN_ATTEMPT_LIMIT&&Number(item.semanticFailures||0)<FAILURE_ATTEMPT_LIMIT
-    &&Number(item.semanticRetryAt||0)<=Date.now())return true;
+   if(!item||favoriteAnnotationDue(item))return true;
   }
   return false;
  }
@@ -86,14 +83,21 @@ export class FavoriteMaintenance{
   const saved:string[]=await readdir(path.join(directory,'uploads')).catch(error=>{if((error as NodeJS.ErrnoException).code==='ENOENT')return [];throw error});
   const savedIds=new Set(saved.filter(name=>/^[a-f0-9]{32}\.image$/.test(name)).slice(0,200).map(name=>'qqf_'+createHash('sha256').update(name.slice(0,-6)).digest('hex').slice(0,16)));
   sources.sort((a:any,b:any)=>Number(saved.includes(String(b.md5||'')+'.image'))-Number(saved.includes(String(a.md5||'')+'.image')));
-  let imported=0;const importedIds=new Set<string>();
+  // A bounded batch must advance past failures, otherwise four bad originals
+  // permanently hide every later favorite. Cursor lives in the same index.
+  const importIndex=await readFavoriteIndex(this.root,bot.id);
+  const cursorAt=sources.findIndex((s:any)=>'qqf_'+createHash('sha256').update(String(s.md5||s.resId||s.url||'')).digest('hex').slice(0,16)===importIndex.importCursor);
+  if(cursorAt>=0)sources.push(...sources.splice(0,cursorAt+1));
+  let attempted=0,lastAttempted='';const importedIds=new Set<string>();
   for(const source of sources.slice(0,200)){
-   signal.throwIfAborted();if(imported>=4)break;const fingerprint=String(source.md5||source.resId||source.url||'');if(!fingerprint)continue;
+   signal.throwIfAborted();if(attempted>=4)break;const fingerprint=String(source.md5||source.resId||source.url||'');if(!fingerprint)continue;
    const id='qqf_'+createHash('sha256').update(fingerprint).digest('hex').slice(0,16);
    const existing=await readFavoriteIndex(this.root,bot.id);if(existing.account===String(bot.qq_uin)&&existing.items.some((i:any)=>i.id===id))continue;
+   attempted++;lastAttempted=id;
    const stage=path.join(directory,'stage-'+randomUUID());await mkdir(stage,{recursive:true});
-   try{
+   let mediaReady=false;try{
     const input=path.join(stage,id+'.input');await writeFile(input,await this.deps.download(String(source.url||''),signal),{mode:0o600});const result=await this.deps.convert(input,path.join(stage,id),signal);
+    mediaReady=true;
     await withFavoriteIndex(this.root,bot.id,async()=>{await this.valid(bot,signal);const index=await readFavoriteIndex(this.root,bot.id);
      if(index.account&&index.account!==String(bot.qq_uin))throw new Error('favorite_account_changed');
      if(index.items.some((i:any)=>i.id===id)||index.items.length>=200)return;
@@ -102,15 +106,28 @@ export class FavoriteMaintenance{
      await rename(path.join(stage,file),path.join(images,file));
      index.account=String(bot.qq_uin);index.items.push({id,file,mime:result.mime,animated:result.animated,rawText,rawSource:rawText?'qq_text':'',meaning:'',avoid:'',enabled:false,semanticStatus:'raw_text',semanticAttempts:0,semanticFailures:0,semanticRetryAt:0});
      // Existing explicit selection preference is never changed by discovery.
-     await writeFavoriteIndex(this.root,bot.id,index);imported++;importedIds.add(id);
+     await writeFavoriteIndex(this.root,bot.id,index);importedIds.add(id);
+    });
+   }catch(error){
+    if(mediaReady||signal.aborted||['ENOSPC','EACCES','EPERM','EROFS'].includes(String((error as NodeJS.ErrnoException)?.code)))throw error;
+    // A single unsupported original must not starve already cached images.
+    // Identity/cancellation are checked again before recording any failure.
+    await withFavoriteIndex(this.root,bot.id,async()=>{await this.valid(bot,signal);const index=await readFavoriteIndex(this.root,bot.id);
+     if(index.account&&index.account!==String(bot.qq_uin))throw new Error('favorite_account_changed');
+     index.lastImportFailure={id,at:Date.now(),error:String((error as Error)?.message||error).slice(0,120)};
+     await writeFavoriteIndex(this.root,bot.id,index);
     });
    }finally{await rm(stage,{recursive:true,force:true})}
   }
+  if(attempted)await withFavoriteIndex(this.root,bot.id,async()=>{await this.valid(bot,signal);const index=await readFavoriteIndex(this.root,bot.id);
+   if(index.account&&index.account!==String(bot.qq_uin))throw new Error('favorite_account_changed');
+   if(attempted===4)index.importCursor=lastAttempted;else delete index.importCursor;
+   await writeFavoriteIndex(this.root,bot.id,index);
+  });
   await this.migrateLegacyRawText(bot,signal);
   const index=await readFavoriteIndex(this.root,bot.id);if(index.account!==String(bot.qq_uin))return;
-  const pending=index.items.filter((i:any)=>!i.manual&&!i.meaning&&i.semanticStatus!=='ready'
-   &&Number(i.semanticAttempts||0)<UNCERTAIN_ATTEMPT_LIMIT&&Number(i.semanticFailures||0)<FAILURE_ATTEMPT_LIMIT
-   &&Number(i.semanticRetryAt||0)<=Date.now()).sort((a:any,b:any)=>Number(importedIds.has(b.id))-Number(importedIds.has(a.id))||Number(savedIds.has(b.id))-Number(savedIds.has(a.id))).slice(0,MAX_QUEUE_TICKS);
+  const due=index.items.filter((i:any)=>favoriteAnnotationDue(i)).sort((a:any,b:any)=>Number(importedIds.has(b.id))-Number(importedIds.has(a.id))||Number(savedIds.has(b.id))-Number(savedIds.has(a.id)));
+  const pending=due.slice(0,MAX_QUEUE_TICKS);
   for(const item of pending){
    const file=path.join(images,item.file);if(!/^qqf_[a-f0-9]{16}\.(gif|png)$/.test(item.file))continue;
    const info=await stat(file).catch(()=>null);if(!info||!info.isFile()||info.isSymbolicLink()||info.size>1048576)continue;
@@ -119,18 +136,12 @@ export class FavoriteMaintenance{
    const after=await contentHash(file).catch(()=>null);
    await withFavoriteIndex(this.root,bot.id,async()=>{await this.valid(bot,signal);const latest=await readFavoriteIndex(this.root,bot.id);if(latest.account!==String(bot.qq_uin))return;
     const current=latest.items.find((i:any)=>i.id===item.id);if(!current||current.manual||current.meaning||current.file!==item.file)return;
-    if(error){
-     const message=String((error as Error)?.message||error);
-     if(deferError(error)){current.semanticWaitReason=/chat_busy/.test(message)?'chat_busy':'pressure';current.semanticWaitMs=Number(current.semanticWaitMs||0)+Math.max(0,Date.now()-startedAt);current.semanticRetryAt=Date.now()+60000}
-     else{current.semanticFailures=Number(current.semanticFailures||0)+1;current.semanticStatus='failed';current.lastVisionError=String((error as Error)?.message||error).slice(0,120);current.semanticRetryAt=Date.now()+Math.min(86400000,60000*2**Number(current.semanticFailures||0))}
-    }
-    else if(before!==after||!before){current.lastVisionError='favorite_content_changed';current.semanticRetryAt=Date.now()+60000}
-    else if(result.confidence==='clear'){current.semantic=result;current.meaning=result.meaning;current.avoid=result.avoid;current.enabled=true;current.semanticStatus='ready';current.contentHash=after;delete current.lastVisionError;delete current.semanticRetryAt}
-    else{current.semantic=result;current.semanticStatus='uncertain';current.semanticAttempts=Number(current.semanticAttempts||0)+1;current.semanticRetryAt=Date.now()+Math.min(86400000,60000*2**Number(current.semanticAttempts||0))}
-    if(!current.queuedAt)current.queuedAt=startedAt;
+    if(!error&&(before!==after||!before)){current.lastVisionError='favorite_content_changed';current.semanticRetryAt=Date.now()+60000}
+    else{applyFavoriteAnnotation(current,result,error,Date.now(),Math.max(0,Date.now()-startedAt));if(!error&&result.confidence==='clear')current.contentHash=after}
     await writeFavoriteIndex(this.root,bot.id,latest);
    });
   }
+  if(due.length>pending.length)this.nextDiscovery.set(bot.id,Date.now()+5000);
  }
 }
 /** Bounded stall diagnosis for the d18 queue: evidence only, no gate changes. */

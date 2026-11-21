@@ -18,6 +18,26 @@ export function parseFavoriteAnnotation(text:string){
  return result;
 }
 
+/** Shared product rules for HTTP sync and automatic maintenance. Callers own
+ * identity/CAS and disk transactions; these functions never perform I/O. */
+export function favoriteAnnotationDue(item:any,now=Date.now()){
+ return !item.manual&&!item.meaning&&item.semanticStatus!=='ready'&&item.semantic?.confidence!=='clear'
+  &&Number(item.semanticAttempts||0)<3&&Number(item.semanticFailures||0)<5&&Number(item.semanticRetryAt||0)<=now;
+}
+export function applyFavoriteAnnotation(item:any,result:FavoriteAnnotation|undefined,error:unknown,now=Date.now(),waitMs=0){
+ if(error){
+  const message=String((error as Error)?.message||error);
+  if(/pressure|chat_busy/.test(message)){item.semanticWaitReason=/chat_busy/.test(message)?'chat_busy':'pressure';item.semanticWaitMs=Number(item.semanticWaitMs||0)+waitMs;item.semanticRetryAt=now+60000}
+  else{item.semanticFailures=Number(item.semanticFailures||0)+1;item.semanticStatus='failed';item.lastVisionError=message.slice(0,120);item.semanticRetryAt=now+Math.min(86400000,60000*2**item.semanticFailures)}
+ }else{
+  if(!result)throw new Error('favorite_annotation_missing');
+  item.semantic=result;delete item.semanticWaitReason;delete item.lastVisionError;
+  if(result.confidence==='clear'){item.meaning=result.meaning;item.avoid=result.avoid;item.enabled=true;item.semanticStatus='ready';delete item.semanticRetryAt}
+  else{item.enabled=false;item.semanticStatus='uncertain';item.semanticAttempts=Number(item.semanticAttempts||0)+1;item.semanticRetryAt=now+Math.min(86400000,60000*2**item.semanticAttempts)}
+ }
+ if(!item.queuedAt)item.queuedAt=now;
+}
+
 async function preview(file:string,output:string,signal:AbortSignal){
  const python=path.resolve(process.env.ASTRBOT_PYTHON||`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`);
  await new Promise<void>((resolve,reject)=>execFile(python,[path.resolve('adapters/astrbot/favorite_media.py'),'--preview',file,output],{signal,timeout:10000,maxBuffer:8192,windowsHide:true},error=>error?reject(new Error('favorite_preview_failed')):resolve()));

@@ -4,13 +4,24 @@ import {execFileSync} from 'node:child_process';
 import {mkdtemp,readFile,mkdir,writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import Fastify from 'fastify';
-import {createFavoriteCaptioner,parseFavoriteAnnotation} from '../packages/shared/qq-favorite-semantics.js';
+import {createFavoriteCaptioner,parseFavoriteAnnotation,favoriteAnnotationDue,applyFavoriteAnnotation} from '../packages/shared/qq-favorite-semantics.js';
 import {registerQQFavorites} from '../apps/control-api/src/qq-favorites.js';
 import {encrypt} from '../packages/shared/security.js';
 
 const clear={description:'角色抬起手挥动',meaning:'打招呼或回应到场',avoid:'严肃求助时不用',confidence:'clear' as const};
 const annotation={...clear,version:1 as const,model:'fixture',at:new Date().toISOString(),usage:null,costStatus:'unknown' as const};
 const barrier=()=>{let release!:()=>void;const promise=new Promise<void>(r=>release=r);return{promise,release}};
+test('both collection entrypoints use one bounded retry and state transition contract',()=>{
+ const item:any={meaning:'',enabled:false,semanticStatus:'pending',semanticFailures:0,semanticAttempts:0};
+ assert.equal(favoriteAnnotationDue(item,1000),true);
+ applyFavoriteAnnotation(item,undefined,Error('favorite_annotation_chat_busy'),1000,5);
+ assert.equal(item.semanticFailures,0);assert.equal(favoriteAnnotationDue(item,1001),false);
+ applyFavoriteAnnotation(item,undefined,Error('vision_failure'),62000);
+ assert.equal(item.semanticFailures,1);assert.equal(item.lastVisionError,'vision_failure');
+ applyFavoriteAnnotation(item,annotation,undefined,200000);
+ assert.equal(item.semanticStatus,'ready');assert.equal(item.enabled,true);assert.equal(item.lastVisionError,undefined);assert.equal(item.semanticWaitReason,undefined);
+ assert.equal(favoriteAnnotationDue(item,300000),false);
+});
 async function until(check:()=>Promise<boolean>){for(let i=0;i<200;i++){if(await check())return;await new Promise(r=>setTimeout(r,20))}throw Error('fixture timeout')}
 
 test('favorite meaning parser rejects unsupported claims, empty clear meanings and non-JSON',()=>{
