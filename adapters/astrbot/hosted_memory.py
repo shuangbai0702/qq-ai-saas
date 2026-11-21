@@ -86,7 +86,7 @@ class ScopedMemory:
         self.db.execute('INSERT INTO fact_metadata(scope,subject,name,kind,origin,importance) VALUES(?,?,?,?,?,?) ON CONFLICT(scope,subject,name) DO UPDATE SET kind=excluded.kind,origin=excluded.origin,importance=excluded.importance,last_recalled=0,recalls=0',(scope,subject,name,kind,origin,importance))
         return '长期事实已成功保存/更新' if origin=='explicit' else '本人明确自述已自动保存/更新'
 
-    def observe(self,scope,subject,text,event,now,auto_capture=False):
+    def observe(self,scope,subject,text,event,now):
         text=text.strip();status='没有新增长期事实'
         m=re.fullmatch(r'(记住|更正记忆|记住事件)[：:]\s*([^=＝\n]{1,40})[=＝](.{1,300})',text)
         if m:

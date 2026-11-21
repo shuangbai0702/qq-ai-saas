@@ -5,6 +5,21 @@ import {mkdtemp,mkdir,writeFile,readFile} from 'node:fs/promises';import path fr
 import {FavoriteMaintenance,favoriteQueueDiagnostics} from '../apps/node-agent/src/favorite-maintenance.js';
 import {withFavoriteIndex,readFavoriteIndex,writeFavoriteIndex,favoriteDirectory} from '../packages/shared/qq-favorite-index.js';
 
+test('a damaged candidate index cannot starve peers or overwrite the original',async()=>{
+ const {root,bot,owner}=await fixture();
+ owner.db={query:async()=>[{...bot,id:'a'},{...bot,id:'b'}]} as any;
+ const uploads=path.join(favoriteDirectory(root,'a'),'uploads');await mkdir(uploads);
+ const file=path.join(favoriteDirectory(root,'a'),'index.json');await writeFile(file,'{');
+ const scheduled:string[]=[];owner.maintain=async b=>{scheduled.push(b.id)};
+ await owner.run(owner.controller.signal);await owner.job;
+ assert.deepEqual(scheduled,['b']);assert.equal(await readFile(file,'utf8'),'{');
+ await writeFavoriteIndex(root,'a',{account:bot.qq_uin,items:[]});
+ await writeFile(path.join(uploads,'a'.repeat(32)+'.image'),'saved original');
+ await owner.run(owner.controller.signal);await owner.job;
+ assert.deepEqual(scheduled,['b','a']);
+ await owner.stop();
+});
+
 test('recent saved original wakes semantic discovery without claiming a confirmed collection',async()=>{
  const {root,bot,owner}=await fixture();const digest='a'.repeat(32),id='qqf_'+createHash('sha256').update(digest).digest('hex').slice(0,16);
  const directory=path.join(favoriteDirectory(root,'a'),'uploads');await mkdir(directory);await writeFile(path.join(directory,digest+'.image'),'original');

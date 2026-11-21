@@ -38,6 +38,8 @@ test('accepted Goal source remains queryable and is not projected as a new sende
    assert.equal(body.action.autonomousMoment,true);
    assert.equal(body.work.principal,'autonomous-service');
    return{status:'completed',summary:'actual read',effects:[],evidence:[],unfinished:[],usage}}
+  if(op==='tool'&&body.operation==='effects')return{effects:[]};
+  if(op==='tool'&&body.operation==='pending')return{pending:[]};
   throw Error(op);
  });
  try{
@@ -65,6 +67,8 @@ test('no planning model exists and activation never grants a former sender permi
    assert.equal(body.action.evidenceRefs,undefined,'no model-supplied refs exist in the event-driven dispatch');
    assert.equal(body.action.evidenceSources,undefined);assert.equal(body.action.requestSource,undefined);
    return{status:'completed',summary:'actual read',effects:[],evidence:[],unfinished:[],usage}}
+  if(op==='tool'&&body.operation==='effects')return{effects:[]};
+  if(op==='tool'&&body.operation==='pending')return{pending:[]};
   throw Error(op);
  });
  try{
@@ -85,6 +89,8 @@ test('runtime refusal of an expired reply never completes or abandons a Goal',as
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
   if(op==='execute'){executions++;return{status:'blocked',summary:'原请求回复许可无效或已使用；不能降级为主动发送重试',effects:[],evidence:[],unfinished:[],usage:{tokens:0,modelCalls:0,toolCalls:0}}}
+  if(op==='tool'&&body.operation==='effects')return{effects:[]};
+  if(op==='tool'&&body.operation==='pending')return{pending:[]};
   throw Error(op);
  });
  try{

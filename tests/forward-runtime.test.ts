@@ -21,7 +21,6 @@ test('real SDK sends attributed ordered forward nodes to Provider wire without c
  const auth=await current.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(current.db),email:'forward@test.invalid',name:'forward',password:'forward-fixture-123'}}),cookies={fish_session:auth.cookies[0].value};
  const config={...defaultConfig,proactive:false,baseUrl:`http://127.0.0.1:${(model.address()as any).port}/v1`,model:'forward-fixture',behavior:{...defaultConfig.behavior!,ownerUin:'12345678',groupParticipationEnabled:false,ownerContactEnabled:false,autonomousGroupContact:false,proactiveModelSchedule:false,selfDevelopment:false,typingSimulation:false,typoEnabled:false,splitMessages:false,burstDebounceMs:0,styleLearning:false,memorySemantic:false,memeEnabled:false,fatigueEnabled:false}};
  const created=await current.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'forward',protocol:'mock',runtimeMode:'shared',expectedUin:'90008875',apiKey:'forward-fixture-key',config}});assert.equal(created.statusCode,201,created.body);const id=created.json().id;
- await promisify(execFile)(process.env.FISHBOT_PYTHON||'python',['-B','-c',`import sys,json;sys.path.insert(0,'adapters/astrbot');from behavior import BehaviorStore;from shared_context import activate_authorized;s=BehaviorStore(sys.argv[1]);activate_authorized(s.db,json.loads(sys.argv[2]),{},'fixture-forward-shared','a'*40);s.close()`,path.join(root,'bots',id,'behavior.sqlite'),JSON.stringify(config)],{windowsHide:true});
  await current.app.inject({method:'POST',url:`/v1/bots/${id}/actions`,cookies,payload:{action:'start',idempotencyKey:'start'}});
  await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.protocol?.ready,'protocol ready');
  const ctx=await current.agent.context((await current.db.query('SELECT * FROM bots WHERE id=$1',[id]))[0]),mock=current.agent.protocols.mock as MockProtocolAdapter;
@@ -32,7 +31,7 @@ test('real SDK sends attributed ordered forward nodes to Provider wire without c
  await mock.call(ctx,'/message',{sender:'12345678',messageId:92001,text:'',segments:[{type:'forward',data:{id:'outer'}}],forwardMessages:forwards});
  await until(async()=>requests.length>0,'Provider forward request');
  const wire=JSON.stringify(requests[0].messages);
- for(const marker of ['FORWARD_FIRST','FORWARD_NESTED','22345678','32345678','1700000001','1700000002','778180','"reply"'])assert.ok(wire.includes(marker.replaceAll('"','\\"'))||wire.includes(marker),marker);
+ for(const marker of ['FORWARD_FIRST','FORWARD_NESTED','22345678','32345678','1700000001','1700000002','778180','引用消息ID：100'])assert.ok(wire.includes(marker.replaceAll('"','\\"'))||wire.includes(marker),marker);
  assert.ok(wire.indexOf('FORWARD_FIRST')<wire.indexOf('FORWARD_NESTED'));
  const actions=await mock.call(ctx,'/messages')as any[];assert.equal(actions.filter(a=>a.action==='get_forward_msg').length,2);
  await until(async()=>actions.some(a=>a.action.startsWith('send_'))||(await mock.call(ctx,'/messages')as any[]).some(a=>a.action.startsWith('send_')),'confirmed send');

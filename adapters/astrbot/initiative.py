@@ -306,6 +306,10 @@ def start(core,settings,store,metrics):
                     provider=core.provider_manager.inst_map.get('provider-'+id) or (core.provider_manager.inst_map.get('platform-model') if len(settings)==1 else None)
                     from astrbot.core.platform.astr_message_event import current_message_event
                     live=lambda sid=id,lease=s:settings.get(sid) is lease and sid not in core.event_bus.stopped_platforms and not getattr(getattr(core,'_hosted_stop_fence',None),'quiescing',False)
+                    # Reuse this sweep for the independent owner/contact checks.
+                    # The planner applies its own mechanism switches and never
+                    # creates or advances a main-line Goal.
+                    if live():st.planner.maybe_start(cfg,provider,live,current_message_event,metrics.setdefault(id,{}),lease=s)
                     pending=st.presence.pending(cfg,provider,live,time.time()) if live() else None
                     if pending:
                         platform=next((p for p in core.platform_manager.get_insts() if p.meta().id==id),None)
@@ -366,6 +370,8 @@ def start(core,settings,store,metrics):
                                 m=metrics.setdefault(id,{});m['proactiveReservationReleaseErrors']=m.get('proactiveReservationReleaseErrors',0)+1
                         send_reservation_owned=False;contact_reservation_owned=False
                     if isinstance(error,asyncio.CancelledError):raise
+                    from model_cache import record_execution_error
+                    record_execution_error(s,error,phase='initiative_sweep')
                     # No content/errors from other tenants enter shared logs.
                     m=metrics.setdefault(id,{});m['proactiveSchedulerErrors']=m.get('proactiveSchedulerErrors',0)+1
     return asyncio.create_task(sweep())

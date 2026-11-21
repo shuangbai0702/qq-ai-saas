@@ -61,7 +61,7 @@ test('process inspection snapshots belong only to the health async context',asyn
  const started=new Promise<void>(resolve=>entered=resolve),gate=new Promise<void>(resolve=>release=resolve);
  host.record=async()=>({pid:1,created:2});host.helper=async()=>JSON.stringify({valid:true,source:'fresh'});
  const sweep=host.withInspection(async()=>{
-  host.inspection=new Map([['bot:ai',{source:'snapshot'}]]);entered();await gate;
+  host.inspection=new Map([['bot:ai',{valid:true,source:'snapshot'}]]);entered();await gate;
   assert.equal((await host.inspect('bot','ai')).source,'snapshot');
  });
  await started;

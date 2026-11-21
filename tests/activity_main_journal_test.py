@@ -21,6 +21,19 @@ from readonly_journal import ReadonlyJournal
 
 class Activity(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        # A production worker installs once. Each test creates a new worker;
+        # restore its class hooks so an earlier worker cannot own later requests.
+        from astrbot.core.pipeline.scheduler import PipelineScheduler
+        from astrbot.core.pipeline.waking_check.stage import WakingCheckStage
+        from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_platform_adapter import AiocqhttpAdapter
+        from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
+        from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
+        from astrbot.core.pipeline.process_stage.method.agent_sub_stages.internal import InternalAgentSubStage
+        from aiocqhttp import CQHttp
+        targets={ProviderOpenAIOfficial:['text_chat','text_chat_stream','_prepare_chat_payload','_apply_provider_specific_request_overrides','_handle_api_error'],
+                 PipelineScheduler:['execute'],WakingCheckStage:['process'],AiocqhttpAdapter:['commit_event','send_by_session'],
+                 AiocqhttpMessageEvent:['_dispatch_send','send'],ToolLoopAgentRunner:['reset'],InternalAgentSubStage:['_save_to_history'],CQHttp:['call_action']}
+        self.sdk_hooks=[(owner,name,owner.__dict__.get(name)) for owner,names in targets.items() for name in names]
         # This fixture tests Journal/SDK transport, with no runtime HTTP bridge.
         # Shared cycle-budget enforcement is exercised by its dedicated tests.
         self.budget_binding=patch('model_request_budget.bind',return_value=None)
@@ -56,9 +69,11 @@ class Activity(unittest.IsolatedAsyncioTestCase):
         shared_context.initialize(self.st.db);self.st.shared_context=True;self.st.reflection.shared_context=True
     async def asyncTearDown(self):
         self.budget_binding.stop()
-        self.brain.close()
-        self.runtime['release']('qq')
+        self.runtime['close']()
         self.native_patch.stop()
+        for owner,name,original in self.sdk_hooks:
+            if original is None:delattr(owner,name)
+            else:setattr(owner,name,original)
         await self.provider.client.close()
     def activation_request(self,identifier=None,continuation=False,action_patch=None):
         identifier=identifier or str(uuid.uuid4());cycle=str(uuid.uuid4())

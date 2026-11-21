@@ -818,7 +818,7 @@ class BotPipeline:
                 processed=seen==3 or seen==1 and completed or seen==2 and work.status=='sent' and work.planned_messages==work.confirmed_messages
                 status='settled' if processed and terminal else 'deferred' if deferred else 'pending' if terminal else 'blocked_unknown'
                 # Preserve the settled input's parent Work as audit evidence.
-                self.db.execute('UPDATE pipeline_work_inputs SET status=?,owner=?,payload=CASE WHEN ? THEN NULL ELSE payload END WHERE scope=? AND event=?',(status,work.event_id,status=='settled' and seen==1,work.scope,identifier))
+                self.db.execute("UPDATE pipeline_work_inputs SET status=?,owner=?,retry_at=CASE WHEN ?='pending' THEN 0 ELSE retry_at END,payload=CASE WHEN ? THEN NULL ELSE payload END WHERE scope=? AND event=?",(status,work.event_id,status,status=='settled' and seen==1,work.scope,identifier))
                 if status=='settled' and identifier!=work.event_id:
                     # It was processed within this Work, not a separate reply
                     # or a second effective business round.

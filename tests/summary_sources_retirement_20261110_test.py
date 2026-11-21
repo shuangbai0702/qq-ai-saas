@@ -97,9 +97,8 @@ class SummarySources(unittest.IsolatedAsyncioTestCase):
             raise ValueError('provider_context_capacity')
         self.assertTrue(self.r.maybe_start(SCOPE,{'memorySummary':True},summary_provider(capacity),lambda:True,{},self.var))
         await self.r.task
-        self.assertEqual(len(seen),2)
+        self.assertEqual(len(seen),1,"a deterministic provider capacity rejection must not replay the identical oversized request")
         self.assertTrue(all(len(batch)==655 for batch in seen))
-        self.assertEqual(seen[0],seen[1])
         self.assertIn('完整待整理正文624',next(x['user'] for x in seen[0] if x['event']=='pending-624'))
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],655)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],30)

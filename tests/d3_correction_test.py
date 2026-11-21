@@ -27,7 +27,7 @@ class Correction(unittest.TestCase):
   before=snapshot(self.db,self.scope,{self.person})
   saved=self.insight([{'event':'e2','sender_id':self.person,'user':'我不叫江哥，以后叫我小寒','bot':'好的','at':NOW}],
    {'summary':'纠正称呼','corrections':[{'event':'e2','name':'称呼','oldValue':'江哥','newValue':'小寒','quote':'我不叫江哥，以后叫我小寒'}]},before)
-  facts=self.store.observe(self.scope,self.person,'我叫什么','e3',now=NOW+1,auto_capture=True)['facts']
+  facts=self.store.observe(self.scope,self.person,'我叫什么','e3',now=NOW+1)['facts']
   self.assertEqual(facts[0]['value'],'小寒');self.assertEqual(facts[0]['origin'],'explicit')
   block=self.block_row()
   self.assertEqual(block[0],0);self.assertEqual(block[2],1)
@@ -44,7 +44,7 @@ class Correction(unittest.TestCase):
    saved=self.insight([{'event':'late'+str(round),'sender_id':self.person,'user':'我叫江哥','bot':'嗯','at':NOW+round}],
     {'summary':'迟到的旧抽取','facts':[{'event':'late'+str(round),'name':'称呼','value':'江哥','quote':'我叫江哥','kind':'stable'}]},before)
    self.assertEqual(saved,0,'round '+str(round))
-  facts=self.store.observe(self.scope,self.person,'我叫什么','e9',now=NOW+9,auto_capture=True)['facts']
+  facts=self.store.observe(self.scope,self.person,'我叫什么','e9',now=NOW+9)['facts']
   self.assertEqual(facts[0]['value'],'小寒')
  def test_other_person_same_name_unaffected(self):
   self.store.observe(self.scope,self.person,'记住：称呼=江哥','e1',now=NOW)
@@ -53,7 +53,7 @@ class Correction(unittest.TestCase):
    {'summary':'c','corrections':[{'event':'e2','name':'称呼','oldValue':'江哥','newValue':'小寒','quote':'我不叫江哥，叫我小寒'}]},before)
   other_scope='private:u2'
   self.store.observe(other_scope,'u2','记住：称呼=江哥','e3',now=NOW+1)
-  facts=self.store.observe(other_scope,'u2','我叫什么','e4',now=NOW+2,auto_capture=True)['facts']
+  facts=self.store.observe(other_scope,'u2','我叫什么','e4',now=NOW+2)['facts']
   self.assertEqual(facts[0]['value'],'江哥')
   self.assertIsNone(self.block_row(other_scope,'u2'))
  def test_third_person_bot_apology_and_forged_quote_do_not_write(self):
@@ -70,13 +70,13 @@ class Correction(unittest.TestCase):
   self.assertEqual(saved,0,'third person pronoun waits for review')
   signals=self.db.execute("SELECT kind FROM companion_signals WHERE kind='correction_unverified'").fetchall()
   self.assertEqual(len(signals),1,'exactly the ambiguous case is parked for verification')
-  self.assertEqual(self.store.observe(self.scope,self.person,'我叫什么','e5',now=NOW+5,auto_capture=True)['facts'][0]['value'],'江哥')
+  self.assertEqual(self.store.observe(self.scope,self.person,'我叫什么','e5',now=NOW+5)['facts'][0]['value'],'江哥')
  def test_correction_without_new_value_retires_the_fact(self):
   self.store.observe(self.scope,self.person,'记住：称呼=江哥','e1',now=NOW)
   before=snapshot(self.db,self.scope,{self.person})
   self.insight([{'event':'e2','sender_id':self.person,'user':'别再叫我江哥了','bot':'好','at':NOW}],
    {'summary':'c','corrections':[{'event':'e2','name':'称呼','oldValue':'江哥','quote':'别再叫我江哥了'}]},before)
-  self.assertEqual(self.store.observe(self.scope,self.person,'我叫什么','e3',now=NOW+1,auto_capture=True)['facts'],[])
+  self.assertEqual(self.store.observe(self.scope,self.person,'我叫什么','e3',now=NOW+1)['facts'],[])
   block=self.block_row();self.assertEqual(block[0],0);self.assertEqual(block[2],1)
  def test_hard_forget_row_never_downgrades(self):
   self.store.observe(self.scope,self.person,'记住：称呼=江哥','e1',now=NOW)
@@ -112,7 +112,7 @@ class Correction(unittest.TestCase):
   entries=[e['v'] for e in json.loads(self.block_row()[1])]
   self.assertNotIn(value_hash('江哥'),entries,'the explicitly restored value is unblocked')
   self.assertIn(value_hash('小寒'),entries,'other correction records stay')
-  self.assertEqual(self.store.observe(self.scope,self.person,'我叫什么','e5',now=NOW+5,auto_capture=True)['facts'][0]['value'],'江哥')
+  self.assertEqual(self.store.observe(self.scope,self.person,'我叫什么','e5',now=NOW+5)['facts'][0]['value'],'江哥')
  def test_context_dependency_tracks_correction_revision(self):
   self.store.observe(self.scope,self.person,'记住：称呼=江哥','e1',now=NOW)
   before_dependency=self.store.reflection.context_dependency([],self.scope)

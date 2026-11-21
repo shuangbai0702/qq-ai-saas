@@ -178,9 +178,9 @@ class BehaviorStore:
                 except asyncio.TimeoutError:return False
             return valid()
         finally:self.waiting-=1
-    def observe(self,scope,subject,text,event,now=None,auto_capture=False,memory_enabled=True,directed=True,project_facts=True):
+    def observe(self,scope,subject,text,event,now=None,memory_enabled=True,directed=True,project_facts=True):
         now=time.time() if now is None else now
-        status=self.memory.observe(scope,subject,text,event,now,auto_capture) if memory_enabled else '长期记忆已关闭'
+        status=self.memory.observe(scope,subject,text,event,now) if memory_enabled else '长期记忆已关闭'
         previous=self.db.execute('SELECT affinity,emotion,expires FROM relations WHERE subject=?',(subject,)).fetchone()
         affinity=previous[0] if previous else 0;emotion=previous[1] if previous and previous[2]>now else '平静'
         expires=previous[2] if previous else 0
@@ -1020,10 +1020,16 @@ def install_runtime(core,settings):
         if not internal and not deferred and not continuation and subject!=str(event.get_self_id()) and (cfg.get('behavior') or {}).get('styleLearning'):
             st.social.observe(scope,subject,incoming,getattr(event.message_obj,'message_id',''))
             # Persist samples now; learn only after a legal 30-round checkpoint.
-        state=st.observe(scope,subject,incoming if not internal and not deferred else '',getattr(event.message_obj,'message_id',''),auto_capture=not internal and not deferred and (cfg.get('behavior') or {}).get('memoryAutoCapture',False),memory_enabled=(cfg.get('behavior') or {}).get('memory',True),directed=not internal and not deferred and (early_directed or incoming.startswith('/')),project_facts=False)
+        state=st.observe(scope,subject,incoming if not internal and not deferred else '',getattr(event.message_obj,'message_id',''),memory_enabled=(cfg.get('behavior') or {}).get('memory',True),directed=not internal and not deferred and (early_directed or incoming.startswith('/')),project_facts=False)
         if companion_state.enabled(cfg):
             emotion=companion_state.context(st.db,cfg,scope,now,event.get_message_str())['emotion'];state['emotion']=emotion['label']
-        if joined:return  # Durable ingress belongs to the active scope Work.
+        if joined:
+            # The current owner may still stop at admission (including an
+            # empty/media-only predecessor). Preserve the genuine text in the
+            # existing presence inbox; consumption/interaction fences discard
+            # it if the owner actually handles it in the meantime.
+            if group:st.presence.defer(scope,cfg,str(event.message_obj.message_id),getattr(event.message_obj,'raw_message',{}),subject,str(event.get_self_id()),incoming,now)
+            return
         # Own mood and this person's relationship reaction have separate owners.
         # Ambient messages to other people remain observable, without eliciting a reply.
         # An @ to somebody else is addressing evidence for the model, not proof

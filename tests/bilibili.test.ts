@@ -613,7 +613,7 @@ test('platform access requires login or explicit anonymous permission and never 
 test('autonomous QQ and Bili reserve one shared cycle budget before dispatch; late unknown is irrevocable',async t=>{
  const f=await fixture(t),cycle='budget-cycle',work=cycle;
  await f.db.query("UPDATE bilibili_settings SET config=jsonb_set(config,'{allowAutonomous}','true') WHERE bot_id=$1",[f.id]);
- await f.db.query("INSERT INTO autonomy_settings(bot_id,tenant_id,epoch,config) VALUES($1,$2,1,'{\"mode\":\"active\"}')",[f.id,f.bot.tenant_id]);
+ await f.db.query("INSERT INTO autonomy_settings(bot_id,tenant_id,epoch,config) VALUES($1,$2,1,'{\"mode\":\"active\"}') ON CONFLICT(bot_id) DO UPDATE SET epoch=1,config=excluded.config",[f.id,f.bot.tenant_id]);
  await f.db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget) VALUES($1,$2,$3,1,1,1,'fixture','acting','{\"cycleExternalActions\":0,\"day\":\"fixture\"}')",[cycle,f.id,f.bot.tenant_id]);
  await f.db.query("UPDATE autonomy_cycles SET generation=$2,config_revision=$3,work_expires_at=now()+interval '1 hour' WHERE id=$1",[cycle,f.bot.generation,f.bot.revision]);
  await f.db.query("UPDATE autonomy_settings SET lease_owner='fixture',lease_until=now()+interval '1 hour' WHERE bot_id=$1",[f.id]);
@@ -693,7 +693,7 @@ test('cycle reservation migration is atomic and reversible without changing rece
 
 test('QQ unknown cannot be refunded or billed twice across replay and late receipt',async t=>{
  const f=await fixture(t),cycle='qq-cycle',work=cycle;
- await f.db.query("INSERT INTO autonomy_settings(bot_id,tenant_id,epoch,config) VALUES($1,$2,1,'{\"mode\":\"active\"}')",[f.id,f.bot.tenant_id]);
+ await f.db.query("INSERT INTO autonomy_settings(bot_id,tenant_id,epoch,config) VALUES($1,$2,1,'{\"mode\":\"active\"}') ON CONFLICT(bot_id) DO UPDATE SET epoch=1,config=excluded.config",[f.id,f.bot.tenant_id]);
  await f.db.query("INSERT INTO autonomy_cycles(id,bot_id,tenant_id,epoch,generation,config_revision,owner,state,budget) VALUES($1,$2,$3,1,1,1,'fixture','acting','{\"cycleExternalActions\":1,\"day\":\"fixture\"}')",[cycle,f.id,f.bot.tenant_id]);
  await f.db.query("UPDATE autonomy_cycles SET generation=$2,config_revision=$3,work_expires_at=now()+interval '1 hour' WHERE id=$1",[cycle,f.bot.generation,f.bot.revision]);
  await f.db.query("UPDATE autonomy_settings SET lease_owner='fixture',lease_until=now()+interval '1 hour' WHERE bot_id=$1",[f.id]);

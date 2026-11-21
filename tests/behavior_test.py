@@ -33,7 +33,8 @@ class BehaviorTests(unittest.TestCase):
   self.assertEqual(self.s.db.execute("SELECT count(*) FROM relation_events WHERE scope='g'").fetchone()[0],3)
   self.s.close();self.s=BehaviorStore(self.file)
   self.assertEqual(self.s.observe('g','u','路过','e4',now=402,directed=False)['affinity'],2)
-  self.assertEqual(self.s.observe('other','u','路过','e4',now=402,directed=False)['affinity'],0)
+  self.assertEqual(self.s.observe('other','u','路过','e4',now=402,directed=False)['affinity'],2,'relationship belongs to this person across the Bot scopes')
+  self.assertEqual(self.s.observe('other','different-person','路过','e4',now=402,directed=False)['affinity'],0)
  def test_relation_reset_keeps_memory_and_dedup(self):
   from data_admin import run
   from relationships import state,user_version

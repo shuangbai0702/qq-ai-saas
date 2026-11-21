@@ -265,7 +265,12 @@ class GroupPresence:
         return True
 
     def pending(self,cfg,provider,live,now):
+        has_inputs=self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pipeline_work_inputs'").fetchone() is not None
         for scope,event,payload,at,queued in self.db.execute('SELECT scope,event,payload,at,queued FROM autonomy_group_inbox WHERE queued=0 OR queued<=? ORDER BY at DESC',(now-30,)).fetchall():
+            if has_inputs:
+                consumed=self.db.execute('SELECT seen,status FROM pipeline_work_inputs WHERE scope=? AND event=?',(scope,event)).fetchone()
+                if consumed and (consumed[0] or consumed[1] in ('settled','settled_duplicate','settled_refused')):
+                    self.discard({'scope':scope,'event':event,'at':at});continue
             # Permission removal ends scheduling, not a claimed answer. Valid
             # input responsibility is never deleted merely for being old.
             if not group_allowed(cfg,scope):
@@ -398,6 +403,8 @@ class GroupPresence:
             except asyncio.CancelledError:
                 raise
             except Exception as error:
+                from model_cache import record_execution_error
+                record_execution_error(lease,error,phase='group_presence',work_id=str(event_id))
                 discarded(type(error).__name__)
                 if failure_class(error)=='auth':note_auth_failure(lease,'group_presence')
                 if live():

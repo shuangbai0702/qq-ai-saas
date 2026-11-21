@@ -38,6 +38,7 @@ test('referral registration, scoped credentials, concurrency, usage and unknown'
    cancel(){oversizedCancelled=true;},
   }));
   if(body.messages[0].content==='rejected')return new Response(null,{status:429});
+  if(body.messages[0].content==='invalid_contract')return Response.json({error:{type:'invalid_request_error',code:'unsupported_parameter'}},{status:400});
   if(body.stream){
    assert.deepEqual(body.stream_options,{include_usage:true});
    if(body.messages[0].content==='inline_usage'||body.messages[0].content==='interrupted_usage'){
@@ -107,6 +108,10 @@ test('referral registration, scoped credentials, concurrency, usage and unknown'
   assert.equal((await request('/v1/platform-model/balance',undefined,invitee)).json().available,4470);
   assert.equal((await call('rejected')).statusCode,429);
   assert.deepEqual(routes.slice(-2),['gpt-6.1-sol','gpt-5.6-luna']); // Explicit rate rejection now tries each configured priority.
+  assert.equal((await request('/v1/platform-model/balance',undefined,invitee)).json().available,4470);
+  const beforeInvalid=requests;
+  assert.equal((await call('invalid_contract')).statusCode,502);
+  assert.equal(requests,beforeInvalid+1,'a validation refusal must not replay against another provider');
   assert.equal((await request('/v1/platform-model/balance',undefined,invitee)).json().available,4470);
   assert.equal((await call('unknown')).statusCode,502);
   assert.equal(Number((await db.query('SELECT count(*) AS count FROM platform_model_reservations'))[0].count),1);

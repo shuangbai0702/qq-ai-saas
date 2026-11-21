@@ -52,7 +52,10 @@ test('native semantic entry sends every bubble with one final image and refunds 
   await until(async()=>calls.filter(x=>x.kind==='reply').length===2,'merged silent reply evaluated once');
   await until(async()=>JSON.stringify(await state("SELECT state FROM autonomy_sends WHERE scope='group:777222'"))==='[["released"]]','selected silent reservation refunded immediately');
   assert.equal((await sends()).length,3,'silent work cannot send or consume a send slot');
-  assert.deepEqual(await state("SELECT status FROM pipeline_events WHERE event IN ('82002','82003') ORDER BY event"),[['combined'],['silent']]);
+  const terminals=await state("SELECT status FROM pipeline_events WHERE event IN ('82002','82003') ORDER BY event");
+  assert.equal(terminals.filter((row:any)=>row[0]==='silent').length,1,'one canonical Work settles the burst');
+  assert.ok(terminals.every((row:any)=>['combined','silent'].includes(row[0])));
+  assert.deepEqual(await state("SELECT event,status,seen FROM pipeline_work_inputs WHERE event IN ('82002','82003') ORDER BY event"),[['82002','settled',1],['82003','settled',1]],'both original inputs are durably consumed, even when only the pool owner runs an activation');
   assert.equal(calls.filter(x=>x.kind==='group').length,2);assert.equal(calls.filter(x=>x.kind==='reply').length,2);
  }finally{await current.app.close();await new Promise<void>(r=>model.close(()=>r()))}
 });

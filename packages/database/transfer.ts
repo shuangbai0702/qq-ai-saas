@@ -19,7 +19,7 @@ export const transferSchema={
  audit_events:['id','tenant_id','event','bot_id','detail','created_at'],
  autonomy_settings:['bot_id','tenant_id','epoch','runtime_epoch','config','state','goal_revision','summary','wait','observation','last_error','last_event_at','lease_owner','lease_until','next_wake_at','updated_at','context_cycle_seq','context_checkpoint'],
  autonomy_goals:['id','bot_id','tenant_id','origin','status','title','reason','progress','success_condition','source','revision','created_at','updated_at'],
- autonomy_cycles:['work_expires_at','id','bot_id','tenant_id','epoch','generation','config_revision','owner','state','budget','usage','reason','decision','started_at','finished_at','cycle_seq'],
+ autonomy_cycles:['id','bot_id','tenant_id','epoch','generation','config_revision','owner','state','budget','usage','reason','decision','started_at','finished_at','cycle_seq','work_expires_at'],
  autonomy_wakes:['bot_id','tenant_id','dedupe_key','epoch','due_at','reason','scope','created_at'],
  autonomy_daily_usage:['bot_id','tenant_id','day','reserved_tokens','used_tokens','model_calls','tool_calls','external_actions'],
  bilibili_settings:['bot_id','tenant_id','revision','config','model_secret','updated_at'],
@@ -28,13 +28,13 @@ export const transferSchema={
  tool_service_cooldowns:['service','until_at','reason'],
  referral_codes:['user_id','tenant_id','code'],
  referral_rewards:['invitee_id','inviter_id','rewarded_at'],
- platform_model_credits:['tenant_id','granted','spent','reserved'],
- platform_model_reservations:['id','tenant_id','bot_id','tokens','created_at'],
+ platform_model_credits:['tenant_id','granted','spent','reserved','campaign_id','campaign_claimed_at','campaign_expires_at','campaign_granted','campaign_spent','campaign_reserved'],
+ platform_model_reservations:['id','tenant_id','bot_id','tokens','created_at','campaign_tokens','dispatch_state','provider_id','dispatched_at','usage_tokens','diagnostic_code'],
  platform_model_providers:['id','name','base_url','model','secret','priority','enabled','revision','last_status','last_checked_at','last_http_status','updated_at'],
 } as const;
 export type TransferTable=keyof typeof transferSchema;
 export const transferTables=Object.keys(transferSchema) as TransferTable[];
-export const expectedSchemaVersions=['001','002','003','004','005','006','007','008','009','010','011','012','013','014','015','016','017'];
+export const expectedSchemaVersions=['001','002','003','004','005','006','007','008','009','010','011','012','013','014','015','016','017','018','019'];
 
 function canonical(value:any):any{
  if(value instanceof Date)return value.toISOString();

@@ -14,11 +14,11 @@ test('foreground transport maintenance preserves real child, coordinator and all
  const script=path.join(dir,'fixture.cjs');await writeFile(script,'setInterval(()=>{},50)');
  try{
   await agent.host.start('fixture','protocol',process.execPath,[script],dir,process.env);
-  const child=agent.host.children.get('fixture:protocol')!,pid=child.pid;
+  const child=await agent.host.inspect('fixture','protocol');assert.ok(child);const pid=child.pid;
   const owners={autonomy:agent.autonomy,favorites:agent.favorites,bilibili:agent.bilibili,tick:agent.tick,shutdown:agent.shutdown,start:agent.host.start};
   const result=await installForegroundContextRuntime(agent,'a'.repeat(64));
-  assert.equal(result.pid,process.pid);assert.equal(child.exitCode,null);
-  assert.equal(agent.host.children.get('fixture:protocol'),child);assert.equal(child.pid,pid);
+  assert.equal(result.pid,process.pid);
+  assert.equal((await agent.host.inspect('fixture','protocol'))?.pid,pid);
   for(const [key,value] of Object.entries(owners))assert.equal(key==='start'?agent.host.start:(agent as any)[key],value,key);
   assert.equal((await installForegroundContextRuntime(agent,'a'.repeat(64))).unchanged,true);
   await assert.rejects(()=>installForegroundContextRuntime(agent,'invalid'),/Invalid foreground release/);

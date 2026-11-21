@@ -95,7 +95,7 @@ async def main():
             assert any(t.name=='propose_background_task' for t in tools)==active
             assert [t.name for t in tools]==(['propose_background_task','cancel_background_task'] if active else []),'durable delegation must not itself grant execution permissions'
             token=current_message_event.set(event)
-            try:await ProviderOpenAIOfficial.text_chat(NS(),prompt=event.get_message_str(),system_prompt='original persona\n'+QUOTE_RULE,contexts=[])
+            try:await ProviderOpenAIOfficial.text_chat(provider,prompt=event.get_message_str(),system_prompt='original persona\n'+QUOTE_RULE,contexts=[])
             finally:current_message_event.reset(token)
             system=requests[-1]['system']
             assert system.count(QUOTE_RULE)==1,'configured quote preference must retain its System role'
@@ -119,7 +119,7 @@ async def main():
             assert CHAT_SEMANTIC_GUARD not in policy,'stable guard duplicated into event policy'
             event.set_extra('_hosted_context',json.dumps({'conversation_candidate':True}))
             token=current_message_event.set(event)
-            try:await ProviderOpenAIOfficial.text_chat(NS(),prompt='candidate',system_prompt='original persona\n'+QUOTE_RULE,contexts=[])
+            try:await ProviderOpenAIOfficial.text_chat(provider,prompt='candidate',system_prompt='original persona\n'+QUOTE_RULE,contexts=[])
             finally:current_message_event.reset(token)
             candidate_system=requests[-1]['system'];marker='[群聊参与判断，先于回复格式与任务执行]'
             current_context=requests[-1]['contexts'][-1]
@@ -149,7 +149,7 @@ async def main():
         st.db.execute('UPDATE memory_reflection_control SET epoch=epoch+1 WHERE id=1');st.db.commit()
         before=len(requests);token=current_message_event.set(event)
         try:
-            try:await ProviderOpenAIOfficial.text_chat(NS(),prompt='must not request with forgotten context',system_prompt='original persona',contexts=[])
+            try:await ProviderOpenAIOfficial.text_chat(provider,prompt='must not request with forgotten context',system_prompt='original persona',contexts=[])
             except asyncio.CancelledError:pass
             else:raise AssertionError('stale context started a new model request')
         finally:current_message_event.reset(token)

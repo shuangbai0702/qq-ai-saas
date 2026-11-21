@@ -229,9 +229,10 @@ class AutonomyTest(unittest.IsolatedAsyncioTestCase):
         self.store.reflection.incoming('private:22222222','22222222','secret-event','另一个人的私聊秘密',self.now)
         self.store.planner.maybe_start(self.cfg,self.provider,lambda:True,self.event,self.metrics,now=self.now+3600);await self.store.planner.task
         payload=json.loads(self.provider.calls[0]['prompt']);self.assertEqual(payload['changes']['owner_memory']['facts'][0]['value'],'看鱼')
-        self.assertEqual(payload['changes']['owner_memory']['recent_uncompressed'][0]['source_event'],'group-event')
-        self.assertEqual(payload['changes']['owner_memory']['recent_private'][0]['source_event'],'private-event')
-        self.assertEqual(payload['changes']['owner_memory']['recent_private'][0]['bot'],'自己的真实看法')
+        messages=payload['changes']['messages']
+        self.assertTrue(any(m['source_scope']=='group:12345' and m['role']=='member' and m['text']=='刚刚聊到鱼' for m in messages))
+        private=next(m for m in messages if m.get('source_event')=='private-event')
+        self.assertEqual((private['source_scope'],private['sender_id'],private['user'],private['bot']),('private:11111111','11111111','聊过的共同话题','自己的真实看法'))
         self.assertEqual(payload['changes']['conversation_timing'],{'last_private_user_at':self.now-10000,'last_private_bot_at':None,'last_owner_interaction_at':self.now-10000,'owner_idle_seconds':13600,'private_idle_seconds':13600,'last_proactive_attempt_at':None})
         self.assertNotIn('另一个人的私聊秘密',self.provider.calls[0]['prompt'])
         self.assertEqual(self.db.execute('SELECT status FROM autonomy_owner_checks').fetchone()[0],'model_silent')
@@ -243,12 +244,14 @@ class AutonomyTest(unittest.IsolatedAsyncioTestCase):
         for i in range(20):self.store.reflection.incoming('group:12345','11111111','ambient'+str(i),'群背景消息'+str(i),self.now+i)
         self.store.reflection.incoming('private:22222222','22222222','other','别人的秘密',self.now)
         self.store.planner.maybe_start(self.cfg,self.provider,lambda:True,self.event,self.metrics,now=self.now+3600);await self.store.planner.task
-        memory=json.loads(self.provider.calls[0]['prompt'])['changes']['owner_memory']
-        self.assertEqual(memory['recent_private'][0]['source_event'],'private')
-        self.assertEqual(memory['recent_private'][0]['sender_id'],'11111111')
-        self.assertEqual(len(memory['recent_uncompressed']),4)
-        for key in ('recent_private','recent_uncompressed'):
-            self.assertLessEqual(sum(len(r.get('text',''))+len(r.get('user',''))+len(r.get('bot','')) for r in memory[key]),1200)
+        messages=json.loads(self.provider.calls[0]['prompt'])['changes']['messages']
+        private=[r for r in messages if r['source_scope']=='private:11111111' and r.get('kind')=='recent_uncompressed_message']
+        incoming=next(r for r in private if r.get('source_event')=='private')
+        self.assertEqual(incoming['user'],'真实共同话题')
+        self.assertEqual(incoming['sender_id'],'11111111')
+        ambient=[r for r in messages if r['source_scope']=='group:12345']
+        self.assertEqual(len(ambient),4)
+        for rows in (private,ambient):self.assertLessEqual(sum(len(r.get('text',''))+len(r.get('user',''))+len(r.get('bot','')) for r in rows),1200)
         self.assertNotIn('别人的秘密',self.provider.calls[0]['prompt'])
         self.assertNotIn('private',{r['source_event'] for r in self.store.reflection.recent('private:11111111','11111111',now=self.now+3600)},'normal replies keep using native current-session history without injecting it twice')
     async def test_disabled_owner_memory_hides_current_and_cross_scope_pending(self):
@@ -445,6 +448,9 @@ class FeedbackNeutralityTest(unittest.TestCase):
         self.assertEqual(self.store.participation.entry_factor('group:12345'),1,'interrogation never lowers future entry')
     def test_bot_proposal_motives_are_never_user_agreements(self):
         companion_state.outgoing(self.db,self.cfg,'group:12345','12345','下次我们一起聊聊茶叶烘焙。','bot1',self.now)
+        self.assertIsNone(self.db.execute("SELECT topic FROM companion_motives WHERE scope='group:12345'").fetchone(),'ordinary delivered text cannot write cognition outside compression')
+        source={'event':'bot1','sender_id':'12345'}
+        companion_state.apply_summary_evidence(self.db,'group:12345',{'motives':[{'topic':'茶叶烘焙','quote':'下次我们一起聊聊茶叶烘焙。','status':'open'}]},lambda item,role:source if role=='bot' else None,{},set(),self.now)
         row=self.db.execute("SELECT topic,evidence FROM companion_motives WHERE scope='group:12345'").fetchone()
         self.assertEqual(row[0],'茶叶烘焙')
         evidence=companion_state.motive_evidence(row[1])[0]

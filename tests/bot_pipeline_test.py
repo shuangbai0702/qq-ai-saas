@@ -80,6 +80,12 @@ class Pipeline(unittest.TestCase):
   self.assertIsNone(self.db.execute('SELECT runtime FROM pipeline_scope_work WHERE scope=?',('group:race',)).fetchone())
   self.assertEqual(self.db.execute('SELECT status,owner FROM pipeline_work_inputs WHERE event=?',('unseen',)).fetchone(),('pending',None))
   self.assertEqual(self.db.execute('SELECT status,owner FROM pipeline_work_inputs WHERE event=?',('seen',)).fetchone(),('blocked_unknown',None))
+ def test_finished_owner_releases_unseen_input_without_old_enqueue_deadline(self):
+  work=self.bind(group='22222');work.scope_owner=True;work.status='sent';work.attempted=work.confirmed=1
+  self.db.execute('INSERT INTO pipeline_scope_work(scope,event,subject,runtime) VALUES(?,?,?,?)',(work.scope,work.event_id,work.subject,self.p.runtime))
+  self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,subject,owner,payload,status,seen,created,retry_at) VALUES(?,?,?,?,?,'owned',0,?,?)",(work.scope,'102',work.subject,work.event_id,'{}',time.time(),time.time()+30));self.db.commit()
+  self.p.release_work(work)
+  self.assertEqual(self.db.execute("SELECT status,retry_at,seen,payload FROM pipeline_work_inputs WHERE event='102'").fetchone(),('pending',0,0,'{}'))
  def test_context_capabilities_preserve_platform_and_peer_ownership(self):
   ctx=ContextBuilder({'sender_id':'12345','owner':False},'real_QQ')
   ctx.contribute('memory',{'state':{'facts':['tea']}})

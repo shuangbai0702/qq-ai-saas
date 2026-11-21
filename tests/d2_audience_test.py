@@ -60,7 +60,9 @@ class Audience(unittest.IsolatedAsyncioTestCase):
   self.db.execute('UPDATE memory_summaries SET schema_version=2,claims=? WHERE id=?',(json.dumps(claims),protected));self.db.commit()
   rolling=self.store.reflection.rolling('private:'+STRANGER)
   self.assertEqual([item['id'] for item in rolling],[protected,newer])
-  self.assertEqual(rolling[0]['protected_claims'],claims,'fixed placement retains full evidence-backed claims')
+  from summary_material import claim_view
+  self.assertEqual(rolling[0]['protected_claims'],[claim_view(c) for c in claims],'fixed placement retains all semantic claims; raw evidence identifiers stay at rest')
+  self.assertEqual(json.loads(self.db.execute('SELECT claims FROM memory_summaries WHERE id=?',(protected,)).fetchone()[0]),claims,'the compact model view must not change persisted evidence')
   self.assertEqual(self.store.reflection.recall('private:'+STRANGER,'新的纠正'),rolling,'query relevance cannot evict the protected basis')
  def test_recall_uses_fixed_basis_and_summary_search_is_retired(self):
   big=self.summary('合并背景含主人私聊内容','self','big',origins=['private:'+OWNER,'group:55555'])
@@ -102,9 +104,9 @@ class Audience(unittest.IsolatedAsyncioTestCase):
   come from the summary extractor. The same extractor's write path must still
   reach the person across their group and private conversations."""
   store=self.store
-  store.observe('group:55555',STRANGER,'我喜欢喝红茶','g1',now=self.now,auto_capture=True)
+  store.observe('group:55555',STRANGER,'我喜欢喝红茶','g1',now=self.now)
   store.memory.remember('group:55555',STRANGER,'饮料偏好','红茶','g1',self.now,origin='self_report')
-  facts=store.observe('private:'+STRANGER,STRANGER,'我爱喝什么','g2',now=self.now+1,auto_capture=True)['facts']
+  facts=store.observe('private:'+STRANGER,STRANGER,'我爱喝什么','g2',now=self.now+1)['facts']
   self.assertEqual(facts[0]['value'],'红茶');self.assertEqual(facts[0]['source_scope'],'group:55555')
 
 if __name__=='__main__':unittest.main(verbosity=2)

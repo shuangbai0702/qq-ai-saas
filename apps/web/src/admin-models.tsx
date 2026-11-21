@@ -10,6 +10,7 @@ const date=(value:string|null)=>value?new Date(value).toLocaleString('zh-CN'):'�
 export function AdminModels(){
  const {data,error,refresh}=useLiveResource<{items:Model[]}>('/admin/platform-models',0);
  const [editing,setEditing]=useState<Model|'new'>(),[busy,setBusy]=useState(false),[message,setMessage]=useState(''),[failure,setFailure]=useState('');
+ const [showReservations,setShowReservations]=useState(false);
  const owner=useLifetime(),pending=useRef(false);
  async function probe(model:Model){
   const page=owner.current;if(!page||page.signal.aborted||pending.current)return;
@@ -28,7 +29,7 @@ export function AdminModels(){
   <section className="panel">
    <div className="section-heading"><h2>模型与优先级</h2><button className="secondary" disabled={busy} onClick={()=>void refresh()}>刷新状态</button></div>
    <p className="muted">优先级数字越小越优先；保存后用于后续请求。状态是上次请求的结果，不代表持续在线。仅点击「测试连接」才发送一条小额测试请求。</p>
-   <p className="muted">只有供应商明确拒绝额度时才按顺序切换；超时、连接中断或用量不明时保留原有保护，避免重复请求和计费。</p>
+   <p className="muted">供应商明确拒绝且符合切换条件时按顺序切换；超时、连接中断或用量不明时保留原有保护，避免重复请求和计费。</p>
    {(error||failure)&&<p className="alert" role="alert">{failure||error}</p>}{message&&<p role="status">{message}</p>}
    {!data&&!error&&<p role="status">正在读取模型…</p>}
    {data&&<div className="table-wrap"><table><thead><tr><th>优先级</th><th>名称 / 模型</th><th>接口地址</th><th>状态</th><th>上次检查</th><th>操作</th></tr></thead><tbody>{data.items.map(model=><tr key={model.id}>
@@ -37,8 +38,22 @@ export function AdminModels(){
     <td>{date(model.last_checked_at)}</td><td><div className="button-row"><button className="secondary" disabled={busy||!!editing} onClick={()=>{setEditing(model);setFailure('');setMessage('')}}>编辑</button><button className="secondary" disabled={busy||!!editing} onClick={()=>void probe(model)}>{busy?'处理中…':'测试连接'}</button></div></td>
    </tr>)}</tbody></table>{!data.items.length&&<p>尚未配置平台模型。添加后可启用。</p>}</div>}
   </section>
+  <section className="panel"><button className="secondary" aria-expanded={showReservations} onClick={()=>setShowReservations(!showReservations)}>{showReservations?'收起额度对账':'查看额度预留与对账'}</button>{showReservations&&<CreditReservations/>}</section>
   {editing&&<ModelEditor key={editing==='new'?'new':editing.id+':'+editing.revision} model={editing} onCancel={()=>setEditing(undefined)} onSaved={async()=>{setEditing(undefined);setMessage('模型配置已保存，后续请求按新优先级执行。');await refresh()}}/>}
  </>;
+}
+
+function CreditReservations(){
+ const {data,error,refresh}=useLiveResource<{summary:{dispatch_state:string;count:number;tokens:string;oldest:string}[];items:{id:string;bot_id:string;tokens:number;created_at:string;dispatch_state:string;diagnostic_code:string|null}[]}>('/admin/platform-model-reservations',0);
+ const owner=useLifetime(),pending=useRef(false);const [busy,setBusy]=useState(false),[result,setResult]=useState('');
+ const labels:Record<string,string>={reserved:'尚未派发',dispatched:'已派发，等待回执',unknown:'消耗无法确认',receipt:'已有用量回执，待结算'};
+ async function reconcile(){
+  const page=owner.current;if(!page||page.signal.aborted||pending.current)return;
+  pending.current=true;setBusy(true);setResult('');
+  try{const r=await api('/admin/platform-model-reservations/reconcile',{},'POST',page.signal);if(!page.signal.aborted){setResult(`已结算 ${r.settled} 笔真实回执。`);await refresh()}}
+  catch(e){if(!page.signal.aborted)setResult((e as Error).message)}finally{pending.current=false;if(!page.signal.aborted)setBusy(false)}
+ }
+ return <><h2>额度预留与对账</h2><p>仅结算已经保存的用量回执。未知消耗保留预留，不按时间自动退款，也不重新请求模型。</p><div className="button-row"><button className="secondary" disabled={busy} onClick={()=>void refresh()}>刷新预留</button><button className="secondary" disabled={busy||!data} onClick={()=>void reconcile()}>结算已有回执</button></div>{error&&<p role="alert">{error}</p>}{result&&<p role="status">{result}</p>}{data&&<><ul>{data.summary.map(r=><li key={r.dispatch_state}>{labels[r.dispatch_state]||r.dispatch_state}：{r.count} 笔，{Number(r.tokens).toLocaleString()} Token；最早 {date(r.oldest)}</li>)}</ul><div className="table-wrap"><table><thead><tr><th>预留 / Bot</th><th>状态</th><th>Token</th><th>时间</th></tr></thead><tbody>{data.items.map(r=><tr key={r.id}><td>{r.id}<div>{r.bot_id}</div></td><td>{labels[r.dispatch_state]||r.dispatch_state}{r.diagnostic_code&&<div>{r.diagnostic_code}</div>}</td><td>{Number(r.tokens).toLocaleString()}</td><td>{date(r.created_at)}</td></tr>)}</tbody></table></div><p className="muted">明细按时间显示最早 200 笔；汇总覆盖全部预留。</p></>}</>;
 }
 
 function ModelEditor({model,onCancel,onSaved}:{model:Model|'new';onCancel:()=>void;onSaved:()=>Promise<void>}){

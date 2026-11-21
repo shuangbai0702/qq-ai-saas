@@ -7,7 +7,7 @@ test('default activation quota is one; forged limits and concurrent creates cann
  const cookies={fish_session:auth.cookies[0].value};const list=async()=>(await app.inject({method:'GET',url:'/v1/bots',cookies})).json();
  assert.deepEqual((await list()).quota,{limit:1,used:0,available:1,canCreate:true});
  const results=await Promise.all([0,1,2].map(n=>app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'race'+n,botLimit:20,config:defaultConfig,apiKey:'synthetic-quota-key'}})));
- assert.deepEqual(results.map(r=>r.statusCode).sort(),[201,409,409]);const id=results.find(r=>r.statusCode===201)!.json().id;
+ assert.equal(results.filter(r=>r.statusCode===201).length,1);assert.ok(results.every(r=>[201,409,429].includes(r.statusCode)),'concurrent requests may be rejected by the admission limiter before quota locking');const id=results.find(r=>r.statusCode===201)!.json().id;
  assert.deepEqual((await list()).quota,{limit:1,used:1,available:0,canCreate:false});
  for(const table of ['bots','instances','bot_config_revisions','secrets'])assert.equal((await db.query('SELECT count(*)::int AS n FROM '+table))[0].n,1,'no partial writes to '+table);
  assert.equal((await db.query("SELECT * FROM audit_events WHERE event='bot.created'")).length,1);assert.equal((await db.query('SELECT * FROM runtime_groups')).length,0,'creation does not start an AI runtime');

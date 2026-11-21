@@ -29,7 +29,19 @@ export class FavoriteMaintenance{
   const ordered=[...eligible.filter(b=>b.id>this.cursor),...eligible.filter(b=>b.id<=this.cursor)];
   // The existing saved originals are a wake hint, never proof of QQ success.
   // Inspect only small local metadata; idle accounts retain minute discovery.
-  const candidates=[];for(const bot of ordered){signal.throwIfAborted();if(!this.active.has(bot.id))candidates.push({bot,fresh:await this.recentSavePending(bot)})}
+  const candidates=[];
+  for(const bot of ordered){
+   signal.throwIfAborted();
+   if(this.active.has(bot.id))continue;
+   try{candidates.push({bot,fresh:await this.recentSavePending(bot)})}
+   catch(error){
+    signal.throwIfAborted();
+    if(Date.now()>=(this.nextDiscovery.get(bot.id)||0)){
+     this.nextDiscovery.set(bot.id,Date.now()+60000);
+     console.warn('favorite candidate unavailable',{botId:bot.id,generation:bot.generation,error:error instanceof Error?error.name:'UnknownError'});
+    }
+   }
+  }
   candidates.sort((a,b)=>Number(b.fresh)-Number(a.fresh));
   for(const {bot,fresh} of candidates){
    signal.throwIfAborted();if(this.closed||this.active.size>=MAX_ACTIVE_BOTS)break;

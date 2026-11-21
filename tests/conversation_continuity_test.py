@@ -111,7 +111,9 @@ class GroupActions(unittest.IsolatedAsyncioTestCase):
         self.event=NS(get_sender_id=lambda:'12345678',get_self_id=lambda:'90000000',get_group_id=lambda:'',get_extra=lambda k,d=None:self.extra.get(k,d),set_extra=lambda k,v:self.extra.update({k:v}),message_obj=NS(message_id='real-request'),bot=NS(get_login_info=login,get_group_list=groups,get_group_member_info=member,send_group_msg=send))
     def tearDown(self):self.store.close();self.tmp.cleanup()
     async def send(self,group='55555',mention='12345678'):
-        return await group_actions.send(self.event,self.cfg,self.db,group,'来接着聊',mention,lambda:self.current,lambda *args:self.recorded.append(args))
+        token=group_actions.tool_action_id.set('test-tool-call-1')
+        try:return await group_actions.send(self.event,self.cfg,self.db,group,'来接着聊',mention,lambda:self.current,lambda *args:self.recorded.append(args))
+        finally:group_actions.tool_action_id.reset(token)
     async def test_owner_send_has_real_at_and_one_attempt_per_source_event(self):
         self.assertIn('真实艾特',await self.send());self.assertEqual(self.sent[0]['message'][0],{'type':'at','data':{'qq':'12345678'}})
         await self.send();self.assertEqual(len(self.sent),1);self.assertEqual(len(self.recorded),1)

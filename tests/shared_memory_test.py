@@ -27,7 +27,7 @@ class SharedMemory(unittest.IsolatedAsyncioTestCase):
             status=self.store.memory.remember(scope,subject,'饮料偏好',text[len('我喜欢喝'):],'real-'+str(self.n),self.now+self.n,origin='self_report')
             self.db.commit()
             return {'facts':self.store.memory.recall(scope,subject,'喝什么',self.now+self.n),'memory_status':status}
-        return self.store.observe(scope,subject,text,'real-'+str(self.n),now=self.now+self.n,auto_capture=True)
+        return self.store.observe(scope,subject,text,'real-'+str(self.n),now=self.now+self.n)
     def summary(self,text,scope,people=(),events=('old',)):
         identifier=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated) VALUES(?,?,?,?)',(scope,text,json.dumps(events),self.now)).lastrowid
         self.db.executemany('INSERT INTO memory_summary_people VALUES(?,?)',[(identifier,p) for p in people]);self.db.commit();return identifier

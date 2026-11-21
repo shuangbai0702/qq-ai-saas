@@ -1,4 +1,4 @@
-import {reserveCredits,settleCredits as settle} from './platform-credits.js';
+import {reserveCredits,settleCredits as settle,dispatchCredits,receiptCredits,rejectedCredits,recoverCreditReceipts,unconfirmedCredits,releaseUndispatchedCredits} from './platform-credits.js';
 import {readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {once} from 'node:events';
@@ -94,17 +94,20 @@ async function readCompletion(response:Response,byteLimit=maxResponseBytes){
 }
 
 async function rejection(response:Response){
- if(response.ok)return {quota:false,retry:false};
- if(!response.body)return {quota:response.status===402,retry:[401,402,403,404,413,429,503].includes(response.status)};
+ if(response.ok)return {quota:false,retry:false,rejected:false};
+ if(!response.body){const retry=[401,402,403,404,413,429,503].includes(response.status);return {quota:response.status===402,retry,rejected:retry};}
  let data:any;
  try{data=await readCompletion(response,16*1024)}catch(error){
   // Empty/HTML rejection bodies do not provide a completion. An oversized or
   // interrupted response remains unknown and is never automatically replayed.
-  if(!(error instanceof SyntaxError))return {quota:false,retry:false};
+  if(!(error instanceof SyntaxError))return {quota:false,retry:false,rejected:false};
  }
- if(data?.usage||data?.choices)return {quota:false,retry:false};
+ if(data?.usage||data?.choices)return {quota:false,retry:false,rejected:false};
  const quota=response.status===402||[data?.error?.code,data?.error?.type].some(code=>quotaRejectionCodes.has(code));
- return {quota,retry:quota||[401,403,404,413,429,503].includes(response.status)};
+ const retry=quota||[401,403,404,413,429,503].includes(response.status);
+ // An explicit validation refusal has no completion to bill, but retrying
+ // the same invalid contract against every provider is not a recovery.
+ return {quota,retry,rejected:retry||([400,422].includes(response.status)&&typeof data?.error?.type==='string')};
 }
 
 async function streamModel(upstream:Response,reply:FastifyReply,signal:AbortSignal,adopt:(frame:unknown)=>Promise<void>){
@@ -149,6 +152,7 @@ async function streamModel(upstream:Response,reply:FastifyReply,signal:AbortSign
 }
 
 export function registerPlatformModel(app:FastifyInstance,db:Sql,key:Buffer,models:PlatformModels,transport=modelHttp){
+ app.addHook('onReady',async()=>{await recoverCreditReceipts(db)});
  const error=(reply:FastifyReply,status:number,message:string)=>reply.code(status).send({error:{message,type:'platform_model_error'}});
  app.post(platformModelPath+'/chat/completions',{bodyLimit:16*1024*1024,config:{rateLimit:{max:180,timeWindow:'1 minute'}},onRequest:async(req,reply)=>{
   if(!await models.available())return error(reply,503,'平台模型暂不可用');
@@ -178,10 +182,11 @@ export function registerPlatformModel(app:FastifyInstance,db:Sql,key:Buffer,mode
    if(failure.statusCode!==402)return error(reply,failure.statusCode,failure.message);
    try{personal=await personalConnection(db,key,req.headers.authorization||'')}catch(cause){const f=cause as Error & {statusCode?:number};if(!f.statusCode)throw cause;return error(reply,f.statusCode,f.message)}
   }
-  let settled=false;
+  let settled=false,uncertainty='transport_unconfirmed';
   const adopt=async(frame:unknown)=>{
    const used=usage(frame);
    if(!id||used===undefined||settled)return;
+   await receiptCredits(db,id,used);
    await settle(db,id,used);
    settled=true;
    await models.observe(provider,'available',200).catch(()=>{});
@@ -190,16 +195,19 @@ export function registerPlatformModel(app:FastifyInstance,db:Sql,key:Buffer,mode
   // An HTTP client leaving does not revoke the provider call. Keep reading for its usage receipt.
   const signal=AbortSignal.timeout(110000);
   try{
-   const send=(baseUrl:string,credential:string,body:string)=>transport(baseUrl+'/chat/completions',{
+   const send=async(baseUrl:string,credential:string,body:string)=>{
+    if(id)await dispatchCredits(db,id,provider.id);
+    return transport(baseUrl+'/chat/completions',{
     method:'POST',headers:{Authorization:'Bearer '+credential,'Content-Type':'application/json'},body,signal,
-   });
+   })};
    let upstream=await send(personal?.baseUrl??provider.base_url,personal?.credential??models.credential(provider),personal?bodyFor(personal.model,personal.reasoningEffort):initialBody);
-   let rejected=personal?{quota:false,retry:false}:await rejection(upstream);
+   let rejected=personal?{quota:false,retry:false,rejected:false}:await rejection(upstream);
    const retryable=()=>!personal&&rejected.retry;
    for(let next=1;retryable()&&next<providers.length;next++){
     await upstream.body?.cancel().catch(()=>{});
     await models.observe(provider,rejected.quota||upstream.status===429?'limited':'failed',upstream.status).catch(()=>{});
     app.log.info({reservation:id,providerId:provider.id},'platform-model rejected; using next priority');
+    if(id)await rejectedCredits(db,id);
     provider=providers[next];
     upstream=await send(provider.base_url,models.credential(provider),bodyFor(provider.model));
     rejected=await rejection(upstream);
@@ -207,7 +215,7 @@ export function registerPlatformModel(app:FastifyInstance,db:Sql,key:Buffer,mode
    if(!upstream.ok){
     if(!personal)await models.observe(provider,rejected.quota?'limited':'failed',upstream.status).catch(()=>{});
     await upstream.body?.cancel().catch(()=>{});
-    if(id&&rejected.retry){await settle(db,id,0);settled=true;}
+    if(id&&rejected.rejected){await receiptCredits(db,id,0);await settle(db,id,0);settled=true;}
     if(rejected.quota)return error(reply,503,'平台模型供应商额度暂不可用');
     return error(reply,upstream.status===429?429:502,personal?'自备模型服务暂时无法完成请求':'平台模型服务暂时无法完成请求');
    }
@@ -218,18 +226,24 @@ export function registerPlatformModel(app:FastifyInstance,db:Sql,key:Buffer,mode
     const completed=await streamModel(upstream,reply,signal,async frame=>{if(usage(frame)!==undefined)receipt=frame});
     const terminal=Array.isArray(receipt?.choices)&&(!receipt.choices.length||receipt.choices.some((c:any)=>typeof c.finish_reason==='string'&&c.finish_reason.length));
     if(receipt&&(completed||terminal))await adopt(receipt);
+    else if(completed)uncertainty='usage_missing';
    }else{
     const result=await readCompletion(upstream);
     await adopt(result);
     if(personal&&!Array.isArray(result?.choices))return error(reply,502,'自备模型未返回兼容的响应');
-    if(!personal&&!settled){await models.observe(provider,'unconfirmed',upstream.status).catch(()=>{});return error(reply,502,'平台模型未返回可核对的用量，本次额度暂时保留')}
+    if(!personal&&!settled){uncertainty='usage_missing';await models.observe(provider,'unconfirmed',upstream.status).catch(()=>{});return error(reply,502,'平台模型未返回可核对的用量，本次额度暂时保留')}
     return publicFrame(result);
    }
-  }catch{
+  }catch(cause){
+   app.log.warn({reservation:id,providerId:personal?undefined:provider.id,error:cause instanceof Error?cause.name:'UnknownError'},'platform-model completion unconfirmed');
    if(!personal)await models.observe(provider,'unconfirmed').catch(()=>{});
    if(!reply.sent&&!reply.raw.destroyed)return error(reply,502,personal?'自备模型未完成请求，请检查个人接口配置或稍后重试':'平台模型未完成请求，本次用量暂无法确认');
   }finally{
-   if(id&&!settled)app.log.info({reservation:id},'platform-model usage was not settled from a completion receipt');
+   if(id&&!settled){
+    await releaseUndispatchedCredits(db,id).catch(cause=>app.log.error({reservation:id,error:cause instanceof Error?cause.name:'UnknownError'},'platform-model undispatched release failed'));
+    await unconfirmedCredits(db,id,uncertainty).catch(cause=>app.log.error({reservation:id,error:cause instanceof Error?cause.name:'UnknownError'},'platform-model reconciliation state write failed'));
+    app.log.info({reservation:id},'platform-model usage was not settled from a completion receipt');
+   }
   }
  });
 }

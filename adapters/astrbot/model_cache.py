@@ -562,6 +562,28 @@ def error_site_metadata(error):
     except Exception:pass
     module=str(frame.filename or '').replace('\\','/').rsplit('/',1)[-1] if frame else None
     detail={'module':module,'line':frame.lineno if frame else None,'symbol':frame.name if frame else None}
+    status=getattr(error,'status_code',None)
+    if type(status) is int and 100<=status<=599:detail['httpStatus']=status
+    body=getattr(error,'body',None)
+    if isinstance(body,dict):
+        body=body.get('error',body)
+        if isinstance(body,dict):
+            # Preserve protocol codes, never supplier prose, request bodies or keys.
+            import re
+            for name in ('code','type'):
+                value=body.get(name)
+                if isinstance(value,str) and re.fullmatch(r'[a-z][a-z0-9_]{0,63}',value):detail[name]=value
+            param=body.get('param')
+            if isinstance(param,str) and re.fullmatch(r'(?:max_tokens|max_completion_tokens|temperature|top_p|model|stream|tools|tool_choice|messages)(?:\[\d{1,6}\]|\.(?:role|content|name|function|arguments|tool_calls|tool_call_id))*',param):detail['param']=param
+            message=str(body.get('message') or '').lower()
+            categories={'context_capacity':('context_length_exceeded','maximum context length','context window'),
+                        'output_limit':('max_tokens','max_completion_tokens','max output tokens'),
+                        'unsupported_parameter':('unsupported parameter','unsupported value'),
+                        'tool_contract':('tool_call_id','tool_calls','function.arguments'),
+                        'rate_limit':('rate limit','rate_limit'),
+                        'quota':('insufficient_quota','insufficient quota')}
+            matched=[name for name,terms in categories.items() if any(term in message for term in terms)]
+            if matched:detail['categories']=matched
     causes=[];seen={id(error)};current=error
     for _ in range(4):
         current=current.__cause__ if current.__cause__ is not None else (None if current.__suppress_context__ else current.__context__)

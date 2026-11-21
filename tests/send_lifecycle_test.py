@@ -50,13 +50,13 @@ async def run():
    if replacement:settings['qq']={**old,**replacement}
    await AiocqhttpMessageEvent.send(event,MessageChain(chain=[Plain('必须丢弃的旧回复')]))
    assert not entered.is_set(),'stale reply reached protocol before commit'
-  # A response may contain several SDK Plain components. The configured limit
-  # applies to their combined text, rather than resetting for each component.
+  # The retired maxReplyChars setting cannot silently truncate model output.
+  # Keep every SDK Plain component; protocol limits use lossless transport parts.
   release.set();old={'root':temp.name,'botId':'bot-A','generation':3,'config':{'behavior':{'maxReplyChars':80}}};settings['qq']=old
   extra={'_hosted_generation':3,'_hosted_lease':old}
   event=SimpleNamespace(message_obj=SimpleNamespace(message_id='send-fixture'),get_platform_id=lambda:'qq',get_self_id=lambda:'90000',get_group_id=lambda:'',get_sender_id=lambda:'12345678',get_message_str=lambda:'你好',get_extra=lambda key,default=None:extra.get(key,default),set_extra=lambda key,value:extra.update({key:value}))
   await AiocqhttpMessageEvent.send(event,MessageChain(chain=[Plain('甲'*50),Plain('乙'*50),Plain('丙'*50)]))
-  assert ''.join(x.text for x in captured[-1].chain if isinstance(x,Plain))=='甲'*50+'乙'*30,'reply limit reset per component'
+  assert ''.join(x.text for x in captured[-1].chain if isinstance(x,Plain))=='甲'*50+'乙'*50+'丙'*50,'legacy reply limit truncated model output'
   # A memory deletion while a real protocol call is in flight must not put
   # its old question/answer back into the new cross-session pending cache.
   entered.clear();release.clear();st=runtime['stores']['qq']
@@ -108,12 +108,14 @@ async def run():
   st.pipeline.finish(work,runtime['metrics'].setdefault('qq',{}))
   runtime['settle_work_round'](st,event,work,lease)
   assert work.status=='partial' and work.confirmed_messages==1
-  round_row=st.db.execute("SELECT question,answer FROM memory_rounds WHERE event='partial-fixture'").fetchone()
+  from shared_context import JOURNAL_SCOPE,event_key
+  partial_key=event_key({'scope':'group:55555','event_id':'partial-fixture'})
+  round_row=st.db.execute('SELECT question,answer FROM memory_rounds WHERE scope=? AND event=?',(JOURNAL_SCOPE,partial_key)).fetchone()
   assert round_row==('继续聊天','第一条已经到达。'),'a confirmed partial reply remains one business interaction with only its confirmed prefix'
   last_bot,last_output=st.db.execute("SELECT last_bot,last_output FROM contacts WHERE scope='group:55555'").fetchone()
   assert last_bot>=before and last_output=='第一条已经到达。','partial receipt lost actual timing or invented unsent text'
   assert st.presence.snapshot('group:55555')[1]>=before,'partial reply did not refresh local interaction clock'
-  pending=st.db.execute("SELECT question,answer FROM memory_pending WHERE event='partial-fixture'").fetchone()
+  pending=st.db.execute('SELECT question,answer FROM memory_pending WHERE scope=? AND event=?',(JOURNAL_SCOPE,partial_key)).fetchone()
   assert pending==('继续聊天','第一条已经到达。'),'memory records the confirmed prefix and never the uncertain suffix'
   # A delivered error notice is not a completed model reply. Keep its actual
   # protocol receipt while exposing the real failure to the common ledger.
@@ -123,7 +125,7 @@ async def run():
   await AiocqhttpMessageEvent.send(event,MessageChain(chain=[Plain('raw upstream failure must remain private')]))
   st.pipeline.finish(work,runtime['metrics'].setdefault('qq',{}))
   assert work.confirmed==1 and work.status=='error' and work.reason=='model_error'
-  assert st.db.execute("SELECT count(*) FROM memory_pending WHERE event='model-error-fixture'").fetchone()[0]==0
+  assert st.db.execute('SELECT count(*) FROM memory_pending WHERE scope=? AND event=?',(JOURNAL_SCOPE,event_key({'scope':'private:12345678','event_id':'model-error-fixture'}))).fetchone()[0]==0
   # Exercise the installed send path, including OutputPlan and actual receipt
   # counters. No network, media upload or model request is involved.
   cases=[('normal',[Plain('正常中英文 reply')],None),
@@ -147,7 +149,7 @@ async def run():
     assert work.confirmed==0 and work.reason==silent and work.status=='silent',(name,work)
    else:
     assert work.confirmed_messages==work.planned_messages==1,(name,work)
-    saved=st.db.execute('SELECT answer FROM memory_rounds WHERE event=?',('output-'+name,)).fetchone()
+    saved=st.db.execute('SELECT answer FROM memory_rounds WHERE scope=? AND event=?',(JOURNAL_SCOPE,event_key({'scope':'private:12345678','event_id':'output-'+name}))).fetchone()
     assert saved is not None,(name,'confirmed business round was lost')
     if name=='planning':assert saved[0]=='**Planning**\nThe update is ready.'
     if name in ('image','voice','marker-image'):assert '平台已确认发送非文本消息' in saved[0]

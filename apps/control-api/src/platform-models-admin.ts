@@ -1,3 +1,4 @@
+import {recoverCreditReceipts} from './platform-credits.js';
 import {randomUUID} from 'node:crypto';
 import type {FastifyInstance} from 'fastify';
 import {z} from 'zod';
@@ -33,6 +34,11 @@ export async function createPlatformModels(db:Sql,key:Buffer,legacy:{primary:str
  const observe=(p:PlatformProvider,status:string,httpStatus:number|null=null)=>db.query('UPDATE platform_model_providers SET last_status=$3,last_checked_at=now(),last_http_status=$4 WHERE id=$1 AND revision=$2 RETURNING id',[p.id,p.revision,status,httpStatus]);
  function register(app:FastifyInstance){
   const admin=(req:any)=>{if(!req.user?.is_admin)fail('需要管理员权限',403)};
+  app.get('/v1/admin/platform-model-reservations',async req=>{
+   admin(req);
+   return {summary:await db.query("SELECT dispatch_state,count(*)::int AS count,sum(tokens)::text AS tokens,min(created_at) AS oldest FROM platform_model_reservations GROUP BY dispatch_state ORDER BY dispatch_state"),items:await db.query("SELECT id,tenant_id,bot_id,tokens,campaign_tokens,created_at,dispatch_state,provider_id,dispatched_at,usage_tokens,diagnostic_code FROM platform_model_reservations ORDER BY created_at LIMIT 200")};
+  });
+  app.post('/v1/admin/platform-model-reservations/reconcile',async req=>{admin(req);return {settled:await recoverCreditReceipts(db)}});
   app.get('/v1/admin/platform-models',async req=>{admin(req);return{items:await db.query(`SELECT ${fields},true AS has_key FROM platform_model_providers ORDER BY priority,id`),priorityOrder:'ascending'}});
   app.post('/v1/admin/platform-models/discover',{config:{rateLimit:{max:12,timeWindow:'1 minute'}}},async(req,reply)=>{
    admin(req);const body=z.object({baseUrl:input.shape.baseUrl,apiKey:input.shape.apiKey,providerId:z.string().max(80).optional()}).strict().parse(req.body);

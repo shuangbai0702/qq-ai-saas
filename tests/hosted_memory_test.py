@@ -8,7 +8,7 @@ class MemoryTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory();self.path=Path(self.temp.name)/'behavior.sqlite';self.store=BehaviorStore(self.path);self.n=0
     def tearDown(self):self.store.close();self.temp.cleanup()
     def say(self,text,scope='private:u1',subject='u1',auto=True,now=100):
-        self.n+=1;return self.store.observe(scope,subject,text,'event-'+str(self.n),now=now,auto_capture=auto)
+        self.n+=1;return self.store.observe(scope,subject,text,'event-'+str(self.n),now=now)
     def capture(self,value,scope='private:u1',subject='u1'):
         # Exercise the storage contract after a semantic writer has selected
         # the fact; ordinary chat must never run regex extraction again.

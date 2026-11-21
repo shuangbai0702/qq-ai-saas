@@ -5,6 +5,16 @@ from types import SimpleNamespace as NS
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
 from model_cache import routing_key,decision_scope,usage_evidence,record_diagnostic
 class Tests(unittest.TestCase):
+ def test_supplier_failure_metadata_preserves_codes_without_private_prose(self):
+  from model_cache import error_site_metadata
+  error=RuntimeError('private chat and secret')
+  error.status_code=400;error.body={'error':{'code':'context_length_exceeded','type':'invalid_request_error','param':'messages[3].content','message':'maximum context length; private text sk-secret'}}
+  detail=error_site_metadata(error)
+  self.assertEqual(detail['httpStatus'],400);self.assertEqual(detail['code'],'context_length_exceeded')
+  self.assertEqual(detail['categories'],['context_capacity']);self.assertEqual(detail['param'],'messages[3].content')
+  self.assertNotIn('private',json.dumps(detail));self.assertNotIn('sk-secret',json.dumps(detail))
+  error.body={'code':'sk-secret','param':'private_content','message':'private content'}
+  safe=error_site_metadata(error);self.assertNotIn('code',safe);self.assertNotIn('param',safe)
  def test_absent_cache_usage_is_not_zero_and_explicit_zero_is_preserved(self):
   for raw in (None,{'usage':{'prompt_tokens':10}},{'usage':{'prompt_tokens_details':{'cached_tokens':None}}}):
    result=usage_evidence(NS(raw_completion=raw));self.assertIsNone(result['cachedTokens']);self.assertFalse(result['cacheUsageReported'])

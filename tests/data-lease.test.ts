@@ -8,7 +8,7 @@ test('PGlite lease is acquired before opening files, rejects duplicate owners an
 test('failed shutdown still cleans owned process records and retains its lease until ownership is resolved',async()=>{
  const root=await mkdtemp(path.resolve('.local/failed-shutdown-'));const current=await createApp({root,agent:false});const calls:string[]=[];
  try{await current.agent.begin();await mkdir(path.join(root,'bots','group-owned'),{recursive:true});current.agent.host.stop=async(id,kind)=>{calls.push(`${id}:${kind}`)};current.agent.db={...current.db,query:async()=>{throw new Error('injected database failure')}};
-  await assert.rejects(()=>current.agent.shutdown(),/injected database failure/);assert.deepEqual(calls,['group-owned:ai','group-owned:protocol']);await access(path.join(root,'agent.lock'));await assert.rejects(()=>acquireLease(root,'agent'),e=>(e as any).code==='ELOCKED');await assert.rejects(()=>current.agent.shutdown(),/injected database failure/);
+  await assert.rejects(()=>current.agent.shutdown(),/injected database failure/);assert.deepEqual(calls,['group-owned:ai']);await access(path.join(root,'agent.lock'));await assert.rejects(()=>acquireLease(root,'agent'),e=>(e as any).code==='ELOCKED');await assert.rejects(()=>current.agent.shutdown(),/injected database failure/);
  }finally{
   // This isolated fixture spawned no children. Release its test lease only
   // after proving a failed production shutdown cannot admit a second owner.
