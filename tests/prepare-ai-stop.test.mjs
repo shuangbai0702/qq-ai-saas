@@ -36,3 +36,19 @@ test('legacy replacement requires explicit transition and idle evidence',async()
  f.agent.shared.request=async()=>({pid:123,generation:7,activity:{idle:false}});
  await assert.rejects(prepareAiStop(f.agent,f.group,f.expected,{allowLegacy:true}),/busy/);
 });
+
+test('Windows launcher descendant is fenced and cancellation rejects PID reuse',async()=>{
+ const f=fixture(),original=f.agent.shared.request;
+ f.agent.host.inspect=async()=>({pid:123,created:42,processInstances:[{pid:456,created:50}]});
+ f.agent.shared.request=async(g,p)=>{const r=await original(g,p);return p==='/health'||p==='/prepare-stop'?{...r,pid:456}:r};
+ const lease=await prepareAiStop(f.agent,f.group,f.expected);assert.equal(f.fenced,true);
+ f.agent.host.inspect=async()=>({pid:123,created:42,processInstances:[{pid:456,created:51}]});
+ await lease.cancel();assert.equal(f.calls.includes('/cancel-stop'),false);
+});
+test('unrelated worker PID cannot acquire a stop fence',async()=>{
+ const f=fixture(),original=f.agent.shared.request;
+ f.agent.host.inspect=async()=>({pid:123,created:42,processInstances:[{pid:789,created:50}]});
+ f.agent.shared.request=async(g,p)=>({...await original(g,p),pid:456});
+ await assert.rejects(prepareAiStop(f.agent,f.group,f.expected),/owner changed/);
+ assert.equal(f.calls.includes('/prepare-stop'),false);
+});

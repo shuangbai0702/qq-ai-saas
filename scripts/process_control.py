@@ -60,11 +60,11 @@ def inspect(pid,root,created=None):
     try:
         p=owned_process(pid,root,created)
         if p is None:return {'valid':False}
-        children=p.children(recursive=True);rss=0;count=0
+        children=p.children(recursive=True);rss=0;count=0;instances=[]
         for child in [p,*children]:
-            try:rss+=child.memory_info().rss;count+=1
+            try:rss+=child.memory_info().rss;count+=1;instances.append({'pid':child.pid,'created':child.create_time()})
             except psutil.NoSuchProcess:pass
-        return {'valid':True,'pid':pid,'rssBytes':rss,'processCount':count,'created':p.create_time(),'loopActivity':loop_activity(root,[p,*children])}
+        return {'valid':True,'pid':pid,'rssBytes':rss,'processCount':count,'created':p.create_time(),'processInstances':instances,'loopActivity':loop_activity(root,[p,*children])}
     except psutil.NoSuchProcess:return {'valid':False}
     except psutil.AccessDenied:return {'valid':False,'inspectionError':'access_denied'}
 
