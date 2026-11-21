@@ -91,6 +91,14 @@ def accept_summary_learning(db,batches,products,now=None,edited=()):
     store=SocialStore.__new__(SocialStore);store.db=db
     return sum(store.accept_learning(product['scope'],offered[product['scope']],json.dumps({'patterns':[p for p in product['patterns'] if (product['scope'],p.get('expression')) not in edited]},ensure_ascii=False),now=now,commit=False) for product in products)
 
+def apply_summary_feedback(db,scope,text,result,event,now):
+    """Feedback may reinforce only this product's actual used expressions."""
+    if result not in ('engaged','rejected','corrected'):return
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='expression_reinforcement'").fetchone():return
+    for expression, in db.execute('SELECT expression FROM social_patterns WHERE scope=? LIMIT 200',(scope,)).fetchall():
+        if expression in text:reinforce_expression(db,scope,expression,'positive' if result=='engaged' else 'negative',event,now)
+
+
 def requests_meme(text):
     return bool(re.search(r'(?:发|来|给|看).{0,12}(?:表情包|表情图|收藏表情)|斗图',text))
 
@@ -406,12 +414,12 @@ class SocialStore:
 
 def edit_learning_by_user(db,data):
     """Own expression CAS, blocks and sample invalidation in caller transaction."""
+    if not isinstance(data.get('actorId'),str) or not data['actorId']:return {'error':'缺少真实用户操作来源','status':403}
     scope=data['scope']
     before=product_rows(db,'expression') if data['action']=='clear_learning' else [read_product(db,'expression',{'scope':scope,'expression':data['expression']})]
     before=[row for row in before if row and row['scope']==scope]
     if data['action']=='edit_pattern':
         from memory_products import version
-        if not isinstance(data.get('actorId'),str) or not data['actorId']:return {'error':'缺少真实用户操作来源','status':403}
         row=read_product(db,'expression',{'scope':scope,'expression':data['expression']})
         if not row or data.get('expectedVersion')!=version(row) or db.execute('SELECT epoch FROM social_control WHERE id=1').fetchone()[0]!=data['expectedEpoch']:return {'error':'表达已变化，请刷新后重试','status':409}
         situation,weight=data.get('situation'),data.get('weight')

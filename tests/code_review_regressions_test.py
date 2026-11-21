@@ -68,7 +68,7 @@ class ReviewMemory(unittest.TestCase):
   dependency=self.store.reflection.context_dependency([identifier],SCOPE)
   self.db.execute('UPDATE memory_summaries SET schema_version=2,claims=? WHERE id=?',(json.dumps([claim]),identifier));self.db.commit()
   visible=self.store.reflection.rolling(SCOPE)[0]
-  self.assertEqual(visible.get('protected_claims'),[claim])
+  self.assertEqual(visible.get('protected_claims'),[material.claim_view(claim)])
   self.assertNotEqual(dependency,self.store.reflection.context_dependency([identifier],SCOPE))
  def test_long_protected_claim_not_falsely_marked_retained(self):
   text='约定：'+('必要条件不能丢；'*80)+'仅限明天本人确认后执行'

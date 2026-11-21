@@ -65,9 +65,9 @@ class Receipts(unittest.TestCase):
         cfg={'memory':True,'memorySummary':False,'ownerUin':self.person,'groupParticipationGroups':['55555']}
         self.db.commit()
         shared.activate_authorized(self.db,cfg,{},'test fixture','f'*40)
-        self.db.execute('CREATE TABLE IF NOT EXISTS fishbot_readonly_journals(scope TEXT PRIMARY KEY,version INTEGER,payload TEXT,sha TEXT)')
-        payload=model_json({'scope':model_json(shared.JOURNAL_SCOPE),'base':[self.message]})
-        self.db.execute('INSERT INTO fishbot_readonly_journals(scope,version,payload,sha) VALUES(?,1,?,?)',(model_json(shared.JOURNAL_SCOPE),payload,hashlib.sha256(payload.encode()).hexdigest()))
+        from readonly_journal import ReadonlyJournal,Prepared
+        journal=ReadonlyJournal(self.db,shared.JOURNAL_SCOPE);journal.serial=1
+        self.assertTrue(journal.commit(Prepared(1,None,[self.message],[self.message],{},1,self.now,'initial')))
         self.feedback('rejected')
         one=bot_pipeline.decision_memory(self.db,cfg,'private:'+self.person,self.person,self.now)
         two=bot_pipeline.decision_memory(self.db,cfg,'private:'+self.person,self.person,self.now)
@@ -78,8 +78,11 @@ class Receipts(unittest.TestCase):
         self.assertNotIn('confirmed_text',same['current_scope_feedback'][0])
         self.db.execute("UPDATE pipeline_events SET status='sent',confirmed=1")
         message_provenance.put(self.db,self.scope,'answer','outgoing',{'receipt':'confirmed','message_ids':['qq-real'],'complete':True})
-        payload=model_json({'scope':model_json(shared.JOURNAL_SCOPE),'base':[self.message,{'role':'assistant','content':'actual answer'}]})
-        self.db.execute('UPDATE fishbot_readonly_journals SET payload=?,sha=?',(payload,hashlib.sha256(payload.encode()).hexdigest()))
+        self.db.commit()
+        old=journal.last;journal.serial+=1
+        answer={'role':'assistant','content':'actual answer'}
+        appended=Prepared(journal.serial,None,[*old.base,answer],[*old.wire,answer],old.state,old.turns+1,self.now+1,'append')
+        self.assertTrue(journal.commit(appended))
         compact=bot_pipeline.decision_memory(self.db,cfg,'private:'+self.person,self.person,self.now)
         receipt=compact['cross_scope_deliveries'][0]
         self.assertEqual(receipt['confirmed_text'],'actual answer')

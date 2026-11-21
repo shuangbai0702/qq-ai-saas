@@ -869,9 +869,11 @@ def bound_claim_views(items,budget=1200,query=''):
 def semantic_claims_product(claims,audit=None):
     """Accept a valid optional product whole; rejection does not veto summary."""
     reason='invalid_claim' if any(not valid_claim(claim) for claim in claims) else None
+    kept,dropped=fit_claims(claims)
+    if not reason and dropped:reason='capacity'
     if audit:
         audit.product('claims','rejected' if reason else 'accepted',reason or 'applied',changed=bool(claims) and reason is None)
-    return [] if reason else fit_claims(claims)[0]
+    return [] if reason else kept
 
 
 def claim_order(claim):
@@ -886,11 +888,12 @@ def fit_claims(claims,budget=None,max_claims=None):
     """Latest thirty current identities; protection never vetoes compression."""
     budget=MAX_CLAIMS_BYTES if budget is None else budget
     maximum=min(MAX_CLAIMS,MAX_CLAIMS if max_claims is None else max_claims)
-    unique={}
+    unique={};invalid_ids=set()
     for claim in claims:
+        if not valid_claim(claim) and isinstance(claim,dict) and isinstance(claim.get('id'),str):invalid_ids.add(claim['id'])
         if valid_claim(claim) and (claim['id'] not in unique or claim_order(claim)>claim_order(unique[claim['id']])):
             unique[claim['id']]=claim
-    kept=[];used=2;dropped=set()
+    kept=[];used=2;dropped=invalid_ids-set(unique)
     for claim in sorted(unique.values(),key=claim_order,reverse=True):
         size=len(model_json(claim).encode())+(1 if kept else 0)
         if len(kept)>=maximum or used+size>budget:

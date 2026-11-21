@@ -249,3 +249,52 @@ def apply_product(db,kind,op,target,value,now):
   else:db.execute("INSERT INTO companion_interests VALUES(?,?,?,0,?,'','autonomous_choice')",(target['scope'],target['topic'],value['weight'],now))
  elif op=='replace':db.execute('UPDATE companion_motives SET status=?,due=?,expires=? WHERE '+where,(value['status'],value['due'],value['expires'])+args)
  else:db.execute('INSERT INTO companion_motives VALUES(?,?,?,?,?,?,?)',(target['scope'],target['subject'],target['topic'],value['due'],value['expires'],value['status'],motive_record('semantic-memory','model_plan')))
+
+
+def _summary_target_current(db,kind,target,before):
+    from memory_products import version
+    offered=next((r for r in before.get("memory_state",{}).get("products",{}).get(kind,[]) if r["target"]==target),None)
+    current=read_product(db,kind,target)
+    return (version(current) if current else None)==(offered["version"] if offered else None)
+
+
+def apply_summary_evidence(db,scope,data,evidence,before,targeted,now):
+    """Own evidenced preferences/topics; explicit product operations win."""
+    def items(name):
+        value=data.get(name,[])
+        return value if isinstance(value,list) else []
+    saved=0
+    for item in items('interests'):
+        if isinstance(item,dict) and ('interest',json.dumps({'scope':scope,'topic':item.get('topic')},sort_keys=True)) in targeted:continue
+        source=evidence(item,'bot');topic=item.get('topic') if isinstance(item,dict) else None
+        if source and isinstance(topic,str) and 2<=len(topic)<=50 and topic in item['quote'] and not re.search(r'复述|照着说|重复这句|引用|扮演|假装|翻译',source.get('user','')) and not db.execute("SELECT 1 FROM companion_signals WHERE scope=? AND event=? AND kind=?",(scope,source['event'],'interest:'+topic)).fetchone():
+            target={'scope':scope,'topic':topic}
+            if not _summary_target_current(db,'interest',target,before):continue
+            note_interest(db,scope,topic,now,source['event'],'bot_expression')
+            db.execute('INSERT OR IGNORE INTO companion_signals VALUES(?,?,?,?,?)',(scope,source['event'],'interest:'+topic,item['quote'][:200],now));saved+=1
+    for item in items('motives'):
+        if isinstance(item,dict):
+            source=evidence(item,'bot') or evidence(item,'user')
+            if source and ('motive',json.dumps({'scope':scope,'subject':source['sender_id'],'topic':item.get('topic')},sort_keys=True)) in targeted:continue
+        source=evidence(item,'bot') or evidence(item,'user');topic=item.get('topic') if isinstance(item,dict) else None
+        if not source or not isinstance(topic,str) or not 2<=len(topic)<=50:continue
+        status=item.get('status');person=source['sender_id']
+        target={'scope':scope,'subject':person,'topic':topic}
+        if not _summary_target_current(db,'motive',target,before):continue
+        if status=='open' and topic in item['quote']:
+            # D6.4 author accounting: which side actually raised the topic is
+            # recorded on the evidence itself; acceptance stays 'none' until a
+            # real reaction event exists in the effects flow.
+            bot_evidence=evidence(item,'bot')
+            origin=bot_evidence or source
+            author='bot_proposal' if bot_evidence else 'human_request'
+            db.execute('INSERT OR IGNORE INTO companion_motives VALUES(?,?,?,?,?,?,?)',(scope,person,topic,now+1800,now+7*86400,'open',
+                motive_record(origin['event'],author)))
+        elif status in ('resolved','abandoned'):
+            db.execute("UPDATE companion_motives SET status=? WHERE scope=? AND subject=? AND topic=? AND status IN ('open','contacted')",(status,scope,person,topic))
+    return saved
+
+
+def prune_resolved_topics(db,scope,now):
+    # Capacity housekeeping must never erase another Scope's active topic.
+    db.execute("DELETE FROM companion_motives WHERE scope=? AND status IN ('resolved','abandoned') AND expires<?",(scope,now))

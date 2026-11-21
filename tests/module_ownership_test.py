@@ -32,7 +32,7 @@ class Ownership(unittest.TestCase):
  def test_expression_edit_preserves_other_product_content(self):
   tables=['facts','memory_core_notes','memory_summaries','relations','memory_rounds'];before=self.snapshot(tables)
   epoch=self.db.execute('SELECT epoch FROM social_control WHERE id=1').fetchone()[0]
-  result=run(self.path,{'action':'set_pattern','scope':self.scope,'expression':'好耶','disabled':True,'expectedUpdated':self.now,'expectedEpoch':epoch},self.db)
+  result=run(self.path,{'action':'set_pattern','actorId':'test-web-user','scope':self.scope,'expression':'好耶','disabled':True,'expectedUpdated':self.now,'expectedEpoch':epoch},self.db)
   self.assertTrue(result['ok']);self.assertEqual(self.snapshot(tables),before)
   self.assertEqual(self.store.social.expressions(self.scope,'红茶'),[])
  def test_agreement_user_edit_is_cas_local_and_cannot_forge_linked_work_completion(self):

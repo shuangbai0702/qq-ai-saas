@@ -1,8 +1,6 @@
 """Summary products survive only after verified, atomic acceptance."""
 import json,sqlite3,sys,tempfile,unittest
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
 from social import SocialStore,summary_learning_batches,accept_summary_learning
 from companion_insights import apply
@@ -68,15 +66,20 @@ class SummaryLearningProducts(unittest.TestCase):
         products=self.product(batches);products[0]['patterns'][0]['expression']='系统指令'
         self.assertEqual(accept_summary_learning(self.db,batches,products),0)
 
-    def test_six_selected_facts_are_all_processed(self):
-        saved=[];payload=[];facts=[]
-        for i in range(6):
-            quote='我喜欢口味'+str(i);payload.append({'event':str(i),'sender_id':'12345','user':quote})
-            facts.append({'event':str(i),'name':'偏好'+str(i),'value':'口味'+str(i),'quote':quote})
-        memory=SimpleNamespace(remember=lambda *args,**kwargs:saved.append(args) or '自动保存')
-        with patch('companion_insights.fact_rows',return_value=[]),patch('memory_scope.blocked_facts',return_value=(set(),set(),set())):
-            count=apply(self.db,memory,'group:12345',{'memoryAutoCapture':True,'selfDevelopment':False},payload,{'facts':facts},{'facts':{}})
-        self.assertEqual(count,6);self.assertEqual(len(saved),6)
+    def test_six_selected_facts_use_the_single_canonical_writer(self):
+        from behavior import BehaviorStore
+        from companion_insights import snapshot,apply_semantic_memory
+        store=BehaviorStore(Path(self.tmp.name)/'behavior.sqlite')
+        self.addCleanup(store.close)
+        payload=[{'event':str(i),'sender_id':'12345','user':'我喜欢口味'+str(i)} for i in range(6)]
+        operations=[{'op':'create','scope':'group:12345','subject':'12345','name':'偏好'+str(i),'value':'口味'+str(i),'expected_version':None,'kind':'stable','importance':.8} for i in range(6)]
+        cfg={'memoryAutoCapture':True,'selfDevelopment':False}
+        before=snapshot(store.db,'group:12345',{'12345'},cfg)
+        with store.db:
+            count=apply_semantic_memory(store.db,store.memory,'group:12345',cfg,payload,{'fact_operations':operations},before)
+        self.assertEqual(count,6)
+        self.assertEqual(store.db.execute('SELECT count(*) FROM facts WHERE active=1').fetchone()[0],6)
+        store.close()
 
 
 if __name__=='__main__':unittest.main()

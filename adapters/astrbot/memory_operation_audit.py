@@ -19,6 +19,13 @@ def initialize(db):
       PRIMARY KEY(audit_id,category,position))''')
 
 
+def forget_fact(db,subject,name):
+    """Forget only this fact's receipt detail, preserving unrelated products."""
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_operation_audit_details'").fetchone():return
+    db.execute("DELETE FROM memory_operation_audit_details WHERE category='facts' AND subject=? AND target_hash=?",
+               (subject,hashlib.sha256(name.encode()).hexdigest()))
+
+
 def forget(db,scope='',subject='',summary_id=None,relations_only=False):
     # A shared reflection may contain this person's material from another scope.
     # Remove complete attempt details conservatively, keeping only aggregate counts.

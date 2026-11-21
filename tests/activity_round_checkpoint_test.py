@@ -57,14 +57,12 @@ class ActivationCheckpoint(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1,self.metrics)
         self.assertEqual(self.store.db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints WHERE round_count=30').fetchone()[0],1)
         from readonly_journal import ReadonlyJournal
-        from activity_context import canonical_main
-        from types import SimpleNamespace as NS
-        from unittest.mock import patch
         restored=ReadonlyJournal(self.store.db,fixture.SCOPE)
         self.assertTrue(restored.last.main_conversation)
         self.store.model_journals.clear()
-        with patch('bot_pipeline.delivery_scope',return_value=fixture.SCOPE):
-            self.assertTrue(canonical_main(self.store,NS(get_extra=lambda key:None)))
+        reopened=ReadonlyJournal(self.store.db,fixture.SCOPE)
+        self.assertTrue(reopened.last.main_conversation)
+        self.assertEqual(reopened.last.base,restored.last.base,'restart preserves the submitted main conversation')
         self.append(31,1);self.assertFalse(r.retry())
         self.append(37,29)
         await self.summarize()

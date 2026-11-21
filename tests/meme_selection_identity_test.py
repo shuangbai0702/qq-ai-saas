@@ -57,7 +57,7 @@ class SelectionIdentity(unittest.TestCase):
         self.db.execute("INSERT INTO fishbot_guidance_cadence VALUES('self',6)")
         self.assertIsNone(periodic_guidance.view(self.db,'self'))
         self.db.execute("UPDATE fishbot_guidance_cadence SET completed=7")
-        self.assertIn('根据情形自然使用收藏或平台表情包，不必每次都发。',periodic_guidance.view(self.db,'self'))
+        self.assertIn('收藏或平台表情包不必每句都发，合适时尽量用。',periodic_guidance.view(self.db,'self'))
         self.assertEqual(periodic_guidance.INTERVAL,7)
 
 if __name__=='__main__':unittest.main()

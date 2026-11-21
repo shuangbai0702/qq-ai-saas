@@ -4,7 +4,18 @@ import assert from 'node:assert/strict';
 import {mkdtemp,rm} from 'node:fs/promises';
 import path from 'node:path';
 import {openDatabase} from '../packages/database/index.js';
-import {AutonomyCoordinator,taskResultFacts} from '../apps/node-agent/src/autonomous.js';
+import {AutonomyCoordinator as RuntimeCoordinator,taskResultFacts} from '../apps/node-agent/src/autonomous.js';
+
+// Fixtures without media work still implement the current receipt-only RPCs.
+class AutonomyCoordinator extends RuntimeCoordinator {
+ constructor(db:ConstructorParameters<typeof RuntimeCoordinator>[0],call:ConstructorParameters<typeof RuntimeCoordinator>[1]){
+  super(db,async(bot,op,body:any,timeout)=>{
+   if(op==='tool'&&body.operation==='effects')return {effects:[]};
+   if(op==='tool'&&body.operation==='pending')return {pending:[]};
+   return call(bot,op,body,timeout);
+  });
+ }
+}
 
 async function fixture(count=1){
  const root=await mkdtemp(path.resolve('.local/autonomous-coordinator-'));
@@ -12,6 +23,7 @@ async function fixture(count=1){
  const close=db.close.bind(db);db.close=async()=>{try{await close()}finally{await rm(root,{recursive:true,force:true})}};
  await db.query("INSERT INTO tenants(id,name) VALUES('tenant','tenant')");
  for(let n=0;n<count;n++)await db.query("INSERT INTO bots(id,tenant_id,name,protocol,desired_state,health) VALUES($1,'tenant',$1,'mock','running',$2)",['bot-'+n,JSON.stringify({sampledAt:new Date().toISOString(),protocol:{online:true}})]);
+ await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) SELECT id,revision,'{}' FROM bots ON CONFLICT DO NOTHING");
  return db;
 }
 const usage={modelCalls:1,toolCalls:0,tokens:400};
@@ -46,7 +58,7 @@ test('a due handoff wakes the main AI without prescribing a Goal or send target'
   throw Error(op);
  });
  try{
-  await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) SELECT id,revision,$1 FROM bots",[JSON.stringify({proactive:false})]);
+  await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) SELECT id,revision,$1 FROM bots ON CONFLICT(bot_id,revision) DO UPDATE SET config=excluded.config",[JSON.stringify({proactive:false})]);
   await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',rollout:'live'});
   await handoffGoal(db,goalId);
   const [originalGoal]=await db.query('SELECT * FROM autonomy_goals WHERE id=$1',[goalId]);
@@ -67,7 +79,7 @@ test('proactive off and an idle active-mode wake never start a planning model',a
   if(op==='snapshot')assert.deepEqual(body,{});return{};
  });
  try{
-  await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) SELECT id,revision,$1 FROM bots",[JSON.stringify({proactive:false})]);
+  await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) SELECT id,revision,$1 FROM bots ON CONFLICT(bot_id,revision) DO UPDATE SET config=excluded.config",[JSON.stringify({proactive:false})]);
   await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});
   await coordinator.tick();await coordinator.active?.task;
   const view=await coordinator.repo.view('tenant','bot-0');
@@ -592,7 +604,7 @@ test('settled Work and unchanged Goals do not generate a second execution on idl
 });
 
 
-test('two due handoffs coalesce into one activation and leave both Goals to the main model',async()=>{
+test('two distinct due handoffs drain in order without automatically selecting Goals',async()=>{
  const db=await fixture();const goals=['0ec9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c','1ec9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c'];const executed:string[]=[];
  const coordinator=new AutonomyCoordinator(db,async(_bot,op,body:any)=>{
   if(op==='policy'||op==='snapshot')return{};
@@ -606,7 +618,11 @@ test('two due handoffs coalesce into one activation and leave both Goals to the 
   assert.deepEqual(executed,[undefined],'one wake does not automatically iterate or select Goals');
   const view=await coordinator.repo.view('tenant','bot-0');
   assert.equal(view.cycles.filter(c=>c.work_expires_at).length,1);assert.equal(view.goals.every((g:any)=>g.status==='active'),true);
-  assert.equal((await db.query("SELECT count(*)::int AS n FROM autonomy_wakes WHERE bot_id='bot-0' AND reason<>'activity'"))[0].n,0,'no polling wake survives settled work');
+  assert.equal((await db.query("SELECT count(*)::int AS n FROM autonomy_wakes WHERE bot_id='bot-0' AND reason='handoff-due'"))[0].n,1,'a distinct activation must not be lost');
+  await db.query("UPDATE autonomy_wakes SET due_at=now() WHERE bot_id='bot-0' AND reason='handoff-due'");
+  await coordinator.tick();await coordinator.active?.task;
+  assert.deepEqual(executed,[undefined,undefined],'each true activation runs once and leaves Goal selection to the model');
+  assert.equal((await db.query("SELECT count(*)::int AS n FROM autonomy_wakes WHERE bot_id='bot-0' AND reason<>'activity'"))[0].n,0,'both dispatched activations are consumed');
  }finally{await coordinator.stop();await db.close()}
 });
 

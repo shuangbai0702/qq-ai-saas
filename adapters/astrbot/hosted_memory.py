@@ -136,8 +136,8 @@ class ScopedMemory:
             importance=1.0 if name in ('称呼','生日') else 0.8
             self.db.execute("INSERT INTO fact_metadata(scope,subject,name,kind,origin,importance) VALUES(?,?,?,'stable','explicit',?) ON CONFLICT(scope,subject,name) DO UPDATE SET origin='explicit',importance=excluded.importance,last_recalled=0,recalls=0",(scope,subject,name,importance))
         record_correction(self.db,scope,subject,name,old_value,event,quote,now)
-        from memory_operation_audit import forget as forget_operation_audit
-        forget_operation_audit(self.db,scope,subject)
+        from memory_operation_audit import forget_fact
+        forget_fact(self.db,subject,name)
         return '已按本人证据纠正资料'
 
     def recall(self,scope,subject,query,now,limit=8,budget=1600):
@@ -249,6 +249,8 @@ def edit_by_user(db,data):
     version=db.execute('SELECT max(version)+1 FROM facts WHERE '+where+' AND name=?',args+(data['name'],)).fetchone()[0]
     db.execute('UPDATE facts SET active=0 WHERE '+where+' AND name=?',args+(data['name'],))
     if action == 'forget_fact':
+        from memory_operation_audit import forget_fact
+        forget_fact(db,data['subject'],data['name'])
         db.execute("INSERT INTO memory_blocks(scope,subject,name,block_all,rejected_values,revision) VALUES(?,?,?,1,'[]',0) ON CONFLICT(scope,subject,name) DO UPDATE SET block_all=1", key)
         db.execute("INSERT INTO fact_metadata(scope,subject,name,kind,origin,importance) VALUES(?,?,?,'stable','explicit',.8) ON CONFLICT(scope,subject,name) DO NOTHING",key)
         if not proof_column:db.execute('ALTER TABLE fact_metadata ADD COLUMN user_edit TEXT')
@@ -407,4 +409,33 @@ def apply_summary_facts(db,scope,cfg,data,memory_state,people,event,now,audit=No
             if audit:audit.mark('facts',index,'accepted','applied',True)
     elif isinstance(operations,list):
         for index in range(len(operations)):reject('facts',index,'disabled')
+    return saved
+
+
+def apply_summary_corrections(db,memory,scope,items,evidence,before,now,on_unverified=None):
+    """Exact author corrections; general semantic edits use apply_summary_facts."""
+    saved=0
+    # Natural corrections: only the event's real author correcting their own
+    # data, against the stored current value. Third-person, quoted or
+    # otherwise ambiguous cases go to unverified signals, never to facts.
+    for item in items:
+        source=evidence(item,'user')
+        if not source:continue
+        quote=item.get('quote');name,old,new=item.get('name'),item.get('oldValue'),item.get('newValue')
+        if not isinstance(quote,str) or not isinstance(name,str) or not isinstance(old,str) or not 1<=len(name)<=40 or not 1<=len(old)<=200:continue
+        if new is not None and (not isinstance(new,str) or not 1<=len(new)<=200 or new==old):continue
+        person=source['sender_id']
+        current=next((r for r in fact_rows(db,scope,person) if r[0]==name),None)
+        # Extraction started against this exact version. Returning late
+        # after another correction (including A -> B -> A) is not consent
+        # to overwrite the newer fact, even when its value matches again.
+        if current and (current[10],current[3],current[2])!=before['facts'].get((person,name)):continue
+        # The quote must be the author's own first-person statement with an
+        # explicit correction relation; anything else waits for review.
+        explicit_relation=old in quote and re.search(r'不(?:是|叫|姓|对|准确)|别再|不要再|更正|纠正|说错|记错|改(?:叫|成|为)|以后叫我',quote)
+        verified=bool(current) and current[1]==old and explicit_relation and (new is None or new in quote) and re.search(r'我|本人',quote) and not re.search(r'[“”"「」]|假设|如果|比如|他说|她说|他们说|别人|有人|大家|摘要|道歉|抱歉|[他她它][^，。；;！!]{0,8}(?:叫|是|说)',quote+name)
+        if not verified:
+            if on_unverified:on_unverified(source,{'name':name,'oldValue':old,'newValue':new,'quote':quote[:120]})
+            continue
+        saved+=int('纠正' in memory.correct(scope,person,name,old,new,source['event'],quote,now))
     return saved

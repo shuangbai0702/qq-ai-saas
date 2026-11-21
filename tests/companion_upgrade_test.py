@@ -32,7 +32,7 @@ class Upgrades(unittest.IsolatedAsyncioTestCase):
   self.store.reflection.checkpoint_callback=lambda scope:finish_semantic_batches(self.store,cfg,scope)
   calls=[]
   async def chat(**kw):
-   calls.append(kw);return NS(completion_text=json.dumps({'summary':'11111说自己搬到了苏州，机器人喜欢昆曲。','facts':[{'event':'0','name':'居住城市','value':'苏州','quote':'我搬到了苏州'}],'interests':[{'event':'0','topic':'昆曲','quote':'我喜欢昆曲的水磨腔。'}]}))
+   calls.append(kw);return NS(completion_text=json.dumps({'summary':'11111说自己搬到了苏州，机器人喜欢昆曲。','fact_operations':[{'op':'create','scope':'group:12345','subject':'11111','name':'居住城市','value':'苏州','expected_version':None,'kind':'stable','importance':.8}],'interests':[{'event':'0','topic':'昆曲','quote':'我喜欢昆曲的水磨腔。'}]}))
   metrics={}
   self.store.reflection.maybe_start('group:12345',cfg,summary_provider(chat),lambda:True,metrics,self.var);await self.store.reflection.task
   self.assertEqual(len(calls),1,(metrics,self.db.execute('SELECT * FROM memory_checkpoint_issues').fetchall()));self.assertEqual(self.db.execute('SELECT value FROM facts WHERE active=1').fetchall(),[('苏州',)])

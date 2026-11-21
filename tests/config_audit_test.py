@@ -59,7 +59,7 @@ class ConfigurationTests(unittest.TestCase):
   self.assertFalse(self.store.eligible({'proactive':True,'behavior':{'randomReplyProbability':0}},'group:12345','12345',False,'聊天',200))
  def test_clear_learning_allows_learning_from_new_samples(self):
   scope='group:12345';self.store.db.execute('INSERT INTO social_patterns VALUES(?,?,?,?,?,?)',(scope,'有节目效果','轻松玩笑','[1,2]',1,time.time()));self.store.db.execute('INSERT INTO social_pattern_blocks VALUES(?,?)',(scope,'有节目效果'));self.store.db.commit()
-  run(self.file,{'action':'clear_learning','expectedEpoch':run(self.file,{'action':'list'})['epoch'],'scope':scope})
+  run(self.file,{'action':'clear_learning','actorId':'test-web-user','expectedEpoch':run(self.file,{'action':'list'})['epoch'],'scope':scope})
   for i in range(12):self.store.social.observe(scope,str(i%2),'真是有节目效果',str(i))
   batch=self.store.social.learning_batch(scope)
   result={'patterns':[{'expression':'有节目效果','situation':'轻松玩笑','source_ids':[batch[0]['id'],batch[1]['id']]}]}

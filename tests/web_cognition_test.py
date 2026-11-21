@@ -56,6 +56,7 @@ class WebCognition(unittest.TestCase):
   from person_memory import profile
   from types import SimpleNamespace
   self.store.memory.remember('private:12345678','12345678','饮料','红茶','source',1)
+  self.db.commit()
   foundation={'facts':profile(self.db,'private:12345678','12345678')['facts']}
   state={'memory_foundation':foundation}
   dynamic={'role':'user','content':'历史消息说红茶，不是基础配置'}

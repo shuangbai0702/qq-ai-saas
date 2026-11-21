@@ -23,7 +23,7 @@ export function CapabilityManager({id,config,onChange,revision,appliedRevision,v
   {key:'selfDevelopment',name:'持续兴趣、心境和长期话题',value:b.selfDevelopment??true,description:'按机器人和会话持久保存，带来源和时效；不混入用户事实记忆。',link:'memory'},
   {key:'bilibiliSearchEnabled',name:'B站公开搜索',value:b.bilibiliSearchEnabled??false,description:'允许内层真实检索公开视频标题、简介和链接。普通聊天与主动模式共用此开关；不包含观看、评论或投稿，默认关闭。',link:'plugins'},
   {key:'typingSimulation',name:'自然打字停顿',value:!!b.typingSimulation,description:'按字数随机等待，默认15字/秒、最长3秒。',link:'reply'},
-  {key:'memorySummary',name:'定期对话摘要',value:!!b.memorySummary,description:'每10轮使用本Bot模型合并整理摘要、明确事实、心境和未完话题，保留来源；无每日整理次数上限，失败退避重试。',link:'memory'},
+  {key:'memorySummary',name:'定期对话摘要',value:!!b.memorySummary,description:'每30个有效业务轮使用本Bot模型合并整理摘要、明确事实、心境和未完话题，保留来源；无每日整理次数上限，失败退避重试。',link:'memory'},
   {key:'pokeIntoAiContext',name:'允许戳一戳进入AI上下文',value:!!b.pokeIntoAiContext,description:'默认关闭；开启后由AI理解真实互动，不同时程序回戳。',link:'reply'},
   {key:'pokeReply',name:'被戳后偶尔回戳',value:!!b.pokeReply,description:'默认25%，每会话60秒冷却。',link:'reply'},
   {key:'qqProfile',name:'主人管理QQ资料',value:!!b.qqProfile,description:'主人明确要求时修改，不自动改变。需设置主人QQ号。',link:'plugins'},

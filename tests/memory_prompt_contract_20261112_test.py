@@ -20,13 +20,16 @@ class MemoryPromptContract(unittest.IsolatedAsyncioTestCase):
  checkpoint=fixture.SemanticSummary.checkpoint
  chat=fixture.SemanticSummary.chat
  async def test_optional_claim_capacity_rejects_product_and_commits_summary(self):
-  self.record();self.mode='claims_overflow';await self.run_summary()
+  self.record();self.mode='claims_overflow'
+  # 97 repeated references deduplicate to 30 claims. Exercise real byte
+  # capacity explicitly rather than expecting duplicates to count as new.
+  with patch.object(material,'MAX_CLAIMS_BYTES',1000):await self.run_summary()
   self.assertIsNotNone(self.checkpoint())
   receipt=self.db.execute("SELECT state,counts FROM memory_operation_audits").fetchone()
   self.assertEqual(receipt[0],'committed');self.assertEqual(json.loads(receipt[1])['claims']['rejected'],1)
   self.assertEqual(self.db.execute("SELECT reason FROM memory_operation_audit_details WHERE category='claims'").fetchone()[0],'capacity')
   # Hot inputs remain until the independently authorized Journal replacement.
-  self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],35)
+  self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],30)
  async def test_actual_plain_prompt_has_one_output_contract_and_clock(self):
   self.record();await self.run_summary();request=self.calls[0];data=json.loads(request['prompt'])
   self.assertNotIn('输出一段',request['system_prompt']);self.assertIn('JSON',request['system_prompt'])
@@ -45,7 +48,7 @@ class MemoryPromptContract(unittest.IsolatedAsyncioTestCase):
   self.r.binding=({'memory':True,'memorySummary':True,'naturalConversation':True,'_persona':'角色'*3000},summary_provider(chat),lambda:True,self.metrics,contextvars.ContextVar('prompt',default=None))
   self.assertTrue(self.r.retry());await self.r.task
   data=json.loads(self.calls[0]['prompt']);view=data['previous_commitments_visibility']
-  self.assertEqual(view['total'],18);self.assertGreater(view['omitted'],0);self.assertEqual(view['shown'],len(data['previous_commitments']['rows']) if isinstance(data['previous_commitments'],dict) else len(data['previous_commitments']))
+  self.assertEqual(view['total'],18);self.assertEqual(view['omitted'],0);self.assertEqual(view['shown'],18);self.assertEqual(view['shown'],len(data['previous_commitments']['rows']) if isinstance(data['previous_commitments'],dict) else len(data['previous_commitments']))
   self.assertTrue(data['persona_visibility']['partial']);self.assertEqual(len(data['persona']),5000)
   self.assertIn('不输出旧facts/relations',self.calls[0]['system_prompt'])
  async def test_big_partial_evidence_and_json_contract(self):

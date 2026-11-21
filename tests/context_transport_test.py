@@ -309,12 +309,17 @@ class SnapshotLayout(unittest.TestCase):
 class Wiring(unittest.IsolatedAsyncioTestCase):
     async def test_actual_runtime_provider_wrapper_projects_requests(self):
         with tempfile.TemporaryDirectory() as folder:
-            os.environ['ASTRBOT_ROOT']=folder
+            from unittest.mock import patch
+            self.enterContext(patch.dict(os.environ,{'ASTRBOT_ROOT':folder}))
             import runtime_bootstrap
             runtime_bootstrap.initialize_runtime_bootstrap()
             from slim_bootstrap import install
             install()
             from astrbot.core.provider.sources.openai_source import ProviderOpenAIOfficial
+            # Runtime wraps SDK class methods process-wide; this fixture must
+            # restore them before another real HTTP test uses the SDK.
+            for method in ('_prepare_chat_payload','_apply_provider_specific_request_overrides','_handle_api_error','text_chat','text_chat_stream'):
+                self.addCleanup(setattr,ProviderOpenAIOfficial,method,getattr(ProviderOpenAIOfficial,method))
             async def prepare(self,*args,**kwargs):
                 messages=copy.deepcopy(kwargs['contexts']);return {'messages':messages,'model':'fixture'},messages
             ProviderOpenAIOfficial._prepare_chat_payload=prepare

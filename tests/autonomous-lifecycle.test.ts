@@ -12,6 +12,7 @@ async function fixture(){
  const db=await openDatabase(await mkdtemp(path.resolve('.local/autonomous-state-')));
  for(const tenant of ['ta','tb'])await db.query('INSERT INTO tenants(id,name) VALUES($1,$1)',[tenant]);
  for(const[id,tenant]of[['a','ta'],['b','tb']])await db.query("INSERT INTO bots(id,tenant_id,name,protocol,desired_state,health) VALUES($1,$2,$1,'mock','running',$3)",[id,tenant,JSON.stringify({sampledAt:new Date().toISOString(),protocol:{online:true}})]);
+ await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) SELECT id,revision,'{}' FROM bots");
  const repo=new AutonomyRepository(db);return{db,repo};
 }
 /** An accepted handoff goal: goalId doubles as the handoff id. */
@@ -67,7 +68,7 @@ test('shared-policy migration preserves goals and receipts, replaces old default
  }finally{await db.close()}
 });
 
-test('one claim consumes due wakes only; future handoff deadlines and other owners survive',async()=>{
+test('claim retains due activation until completion; future deadlines and other owners survive',async()=>{
  const{db,repo}=await fixture();try{
   await repo.configure('ta','a',1,{mode:'active'});await repo.applied('ta','a',2);
   const bot=(await repo.policies()).find(b=>b.bot_id==='a')!;
@@ -77,7 +78,7 @@ test('one claim consumes due wakes only; future handoff deadlines and other owne
   await repo.wake('ta','a',2,'handoff-due',0,'due-goal');
   const claim=await repo.claim('new-cycle');assert.ok(claim);
   let wakes=await db.query("SELECT reason,scope FROM autonomy_wakes WHERE bot_id='a'");
-  assert.equal(wakes.some(w=>w.reason==='handoff-due'&&w.scope==='due-goal'),false,'the consumed due wake is gone');
+  assert.equal(wakes.some(w=>w.reason==='handoff-due'&&w.scope==='due-goal'),true,'claim must not consume an activation before execution');
   assert.ok(wakes.some(w=>w.reason==='handoff-due'&&w.scope==='future-goal'),'future handoff deadlines keep their wake');
   assert.ok(wakes.some(w=>w.reason==='real-event'&&w.scope==='group:12345'));
   assert.ok(wakes.some(w=>w.reason==='operator-check'));
@@ -85,6 +86,7 @@ test('one claim consumes due wakes only; future handoff deadlines and other owne
   assert.equal(wakes.some(w=>w.reason==='autonomous-time'),false);
   const view=await repo.view('ta','a');assert.ok(new Date(view.settings.next_wake_at).getTime()<=Date.now()+130000,'next_wake_at points at the nearest future deadline');
   const zero={tokens:0,modelCalls:0,toolCalls:0,externalActions:0};
+  claim.consumeWake=claim.wakes.find((w:any)=>w.reason==='handoff-due'&&w.scope==='due-goal').dedupe_key;
   await repo.finish(claim,zero,'no_due_work');
   wakes=await db.query('SELECT reason,scope,due_at FROM autonomy_wakes WHERE bot_id=$1',['a']);
   assert.equal(wakes.length,3,'a terminal cycle arms no new wake');
@@ -111,7 +113,7 @@ test('remaining daily tokens form a bounded reservation without changing config 
 
 test('foreground handoff registers one persistent goal and due wake; forged identity is rejected and registration never dispatches',async()=>{
  const{db,repo}=await fixture();try{
-  await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) SELECT id,revision,$1 FROM bots",[JSON.stringify({behavior:{ownerUin:'12345678'}})]);
+  await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) SELECT id,revision,$1 FROM bots ON CONFLICT(bot_id,revision) DO UPDATE SET config=excluded.config",[JSON.stringify({behavior:{ownerUin:'12345678'}})]);
   await repo.configure('ta','a',1,{mode:'active'});await repo.applied('ta','a',2);
   const bot=(await repo.policies()).find(b=>b.bot_id==='a')!;
   const request={id:randomUUID(),tenantId:'ta',botId:'a',epoch:2,generation:bot.generation,revision:bot.revision,eventId:'true-event',scope:'private:23456789',senderId:'23456789',at:Date.now(),objective:'read actual state later and report if permitted',delaySeconds:300};
@@ -134,7 +136,7 @@ test('foreground handoff registers one persistent goal and due wake; forged iden
 
 test('proactive disables model-origin registration while user reminder provenance stays independent',async()=>{
  const{db,repo}=await fixture();try{
-  await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) SELECT id,revision,$1 FROM bots",[JSON.stringify({proactive:false,behavior:{ownerUin:'12345678'}})]);
+  await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) SELECT id,revision,$1 FROM bots ON CONFLICT(bot_id,revision) DO UPDATE SET config=excluded.config",[JSON.stringify({proactive:false,behavior:{ownerUin:'12345678'}})]);
   await repo.configure('ta','a',1,{mode:'active'});await repo.applied('ta','a',2);
   const bot=(await repo.policies()).find(b=>b.bot_id==='a')!;
   const request={id:randomUUID(),tenantId:'ta',botId:'a',epoch:2,generation:bot.generation,revision:bot.revision,eventId:'true-event',scope:'private:23456789',senderId:'23456789',at:Date.now()-1000,objective:'read accepted evidence',delaySeconds:0,kind:'research',origin:'model'};
@@ -186,6 +188,7 @@ test('two claimers reserve one cycle; mode and offline fences revoke its lease',
 test('a tenant backlog yields the next turn to another due tenant without delaying older local work',async()=>{
  const{db,repo}=await fixture();try{
   await db.query("INSERT INTO bots(id,tenant_id,name,protocol,desired_state,health) SELECT 'a2',tenant_id,'a2',protocol,desired_state,health FROM bots WHERE id='a'");
+  await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) SELECT id,revision,'{}' FROM bots WHERE id='a2'");
   for(const [tenant,id] of [['ta','a'],['ta','a2'],['tb','b']]){
    await repo.configure(tenant,id,1,{mode:'active'});await repo.applied(tenant,id,2);
   }
@@ -293,7 +296,9 @@ test('login recovery atomically restores one wake after an offline cycle ends, w
   const view=await repo.view('ta','a'),wakes=await db.query("SELECT reason,epoch FROM autonomy_wakes WHERE bot_id='a'");
   assert.equal(view.settings.state,'ready');assert.equal(view.goals.length,1);assert.equal(view.goals[0].status,'active');assert.deepEqual(wakes,[{reason:'online-resumed',epoch:2}]);
   const next=await repo.claim('after-login');assert.ok(next,'the future handoff deadline still owns the next wake');assert.equal((await repo.view('ta','a')).usage.used_tokens,200);
-  await repo.suspendOffline();assert.equal((await db.query("SELECT * FROM autonomy_wakes WHERE bot_id='a'")).length,0);assert.equal(await repo.claim('duplicate-login'),null);assert.equal((await db.query('SELECT * FROM commands')).length,0);
+  await repo.suspendOffline();assert.equal((await db.query("SELECT * FROM autonomy_wakes WHERE bot_id='a'")).length,1,'login wake remains leased until completion');
+  await repo.finish(next,{tokens:0,modelCalls:0,toolCalls:0,externalActions:0},'no_due_work');
+  assert.equal((await db.query("SELECT * FROM autonomy_wakes WHERE bot_id='a'")).length,0);assert.equal(await repo.claim('duplicate-login'),null);assert.equal((await db.query('SELECT * FROM commands')).length,0);
   await repo.configure('ta','a',2,{mode:'passive'});await db.query("UPDATE bots SET desired_state='offline' WHERE id='a'");await repo.suspendOffline();await db.query("UPDATE bots SET desired_state='running' WHERE id='a'");await repo.suspendOffline();
   const passive=await repo.view('ta','a');assert.equal(passive.settings.state,'disabled');assert.equal(passive.goals[0].status,'paused_mode');assert.equal((await db.query("SELECT * FROM autonomy_wakes WHERE bot_id='a'")).length,0);
  }finally{await db.close()}
@@ -301,7 +306,7 @@ test('login recovery atomically restores one wake after an offline cycle ends, w
 
 test('goal slots free on settle or abandon so accepted handoffs keep flowing',async()=>{
  const{db,repo}=await fixture();try{
-  await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) SELECT id,revision,$1 FROM bots",[JSON.stringify({behavior:{ownerUin:'12345678'}})]);
+  await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) SELECT id,revision,$1 FROM bots ON CONFLICT(bot_id,revision) DO UPDATE SET config=excluded.config",[JSON.stringify({behavior:{ownerUin:'12345678'}})]);
   await repo.configure('ta','a',1,{mode:'active'});await repo.applied('ta','a',2);
   const bot=(await repo.policies()).find(b=>b.bot_id==='a')!;
   const request=(id:string)=>({id,tenantId:'ta',botId:'a',epoch:2,generation:bot.generation,revision:bot.revision,eventId:'true-event',scope:'private:23456789',senderId:'23456789',at:Date.now(),objective:'read actual state later',delaySeconds:0});
