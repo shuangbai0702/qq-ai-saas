@@ -277,4 +277,3 @@ async def summary_model_output(provider,request,live,metrics,limit,on_decode=Non
                 nonstream=True
                 metrics['summaryNonstreamFallbacks']=metrics.get('summaryNonstreamFallbacks',0)+1
             metrics['summaryImmediateRetries']=metrics.get('summaryImmediateRetries',0)+1
-
