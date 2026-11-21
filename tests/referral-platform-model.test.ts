@@ -147,3 +147,38 @@ test('an unreadable platform credential leaves normal platform services availabl
   assert.equal((await instance.app.inject({method:'POST',url:'/v1/platform-model/chat/completions',payload:{}})).statusCode,503);
  }finally{try{await instance?.app.close()}finally{await rm(root,{recursive:true,force:true})}}
 });
+
+
+test('unused registration entitlement regenerates encoded links and only committed signups consume it',async()=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'fish-referral-entitlement-')),key=await loadKey(root);
+ await writeFile(path.join(root,'platform-model-secret'),encrypt(key,platformSecretPurpose,JSON.stringify({primary:'fixture',fallback:'fixture'})));
+ const {app,db}=await createApp({root,databaseUrl:'',agent:false});
+ try{
+  const activation='fixture-original-entitlement',id=randomUUID();
+  await db.query("INSERT INTO invitations(id,code_hash,code_prefix,max_uses,expires_at) VALUES($1,$2,'fixture',3,now()+interval '1 day')",[id,digest(activation)]);
+  const signup=(email:string,code=activation,referralCode?:string)=>app.inject({method:'POST',url:'/v1/auth/register',payload:{email,name:'fixture',password:'fixture-pass',inviteCode:code,referralCode}});
+  const owner=await signup('owner@entitlement.test');assert.equal(owner.statusCode,200);
+  const cookie=owner.cookies.map(c=>c.name+'='+c.value).join(';');
+  const call=(method:any,url:string,payload?:any)=>app.inject({method,url,payload,headers:{cookie}});
+  const used=async()=>Number((await db.query('SELECT used_count FROM invitations WHERE id=$1',[id]))[0].used_count);
+  assert.equal((await call('GET','/v1/referrals')).json().remainingUses,2);
+  const first=await call('POST','/v1/referrals',{});assert.equal(first.statusCode,200,first.body);const a=first.json();
+  assert.equal((await call('POST','/v1/referrals/copied',{code:a.code})).statusCode,200);
+  const second=await call('POST','/v1/referrals',{});assert.equal(second.statusCode,200,second.body);const b=second.json();
+  assert.equal(a.code,b.code);assert.notEqual(a.activation,b.activation);assert.equal(await used(),1);
+  const link=new URL('https://fixture.test/#/invite/'+b.code+'?'+new URLSearchParams({activation:b.activation}));
+  assert.equal(new URLSearchParams(link.hash.split('?')[1]).get('activation'),b.activation);
+  assert.equal((await signup('bad@entitlement.test','19650831',b.code)).statusCode,400);assert.equal(await used(),1);
+  assert.equal((await signup('friend@entitlement.test',a.activation,a.code)).statusCode,200);assert.equal(await used(),2);
+  assert.equal((await signup('friend@entitlement.test',b.activation,b.code)).statusCode,409);assert.equal(await used(),2,'failed registration rolls back the invitation use');
+  const regenerated=await call('POST','/v1/referrals',{});assert.equal(regenerated.statusCode,200);assert.equal(regenerated.json().remainingUses,1);
+  const results=await Promise.all([signup('last-a@entitlement.test',b.activation,b.code),signup('last-b@entitlement.test',b.activation,b.code)]);
+  assert.deepEqual(results.map(r=>r.statusCode).sort(),[200,400]);assert.equal(await used(),3);
+  assert.equal((await call('GET','/v1/referrals')).json().remainingUses,0);assert.equal((await call('POST','/v1/referrals',{})).statusCode,400);
+  assert.equal((await db.query('SELECT count(*)::int AS count FROM referral_rewards WHERE inviter_id=$1',[owner.json().user.id]))[0].count,2);
+  for(const change of ["expires_at=now()-interval '1 second',revoked_at=NULL","expires_at=now()+interval '1 day',revoked_at=now()"]){
+   await db.query('UPDATE invitations SET max_uses=4,'+change+' WHERE id=$1',[id]);
+   assert.equal((await call('POST','/v1/referrals',{})).statusCode,400);assert.equal((await call('GET','/v1/referrals')).json().remainingUses,0);
+  }
+ }finally{await app.close();await rm(root,{recursive:true,force:true})}
+});

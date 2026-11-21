@@ -19,6 +19,17 @@ async function canInvite(db:Sql,userId:string){
  return row.allowed===true;
 }
 
+// Reuse the user's existing registration entitlement. Generating/copying a
+// link never redeems it; only the registration transaction consumes a use.
+async function availableInvitation(db:Sql,userId:string,inviteCode?:string){
+ const [row]=inviteCode
+  ?await db.query('SELECT id,max_uses-used_count AS remaining_uses,expires_at FROM invitations WHERE code_hash=$1 AND revoked_at IS NULL AND expires_at>now() AND used_count<max_uses',[digest(inviteCode)])
+  :await db.query(`SELECT i.id,i.max_uses-i.used_count AS remaining_uses,i.expires_at
+    FROM invitation_redemptions r JOIN invitations i ON i.id=r.invitation_id
+    WHERE r.user_id=$1 AND i.revoked_at IS NULL AND i.expires_at>now() AND i.used_count<i.max_uses`,[userId]);
+ return row;
+}
+
 export function referralInvitationId(key:Buffer,code:string,activation:string){
  try{
   const id=decrypt(key,activationScope(code),activation);
@@ -49,24 +60,25 @@ export function registerReferrals(app:FastifyInstance,db:Sql,enabled:()=>Promise
  app.get('/v1/referrals',async req=>{
   const user=req.user!;
   const eligible=await canInvite(db,user.id);
+  const invitation=eligible?await availableInvitation(db,user.id):undefined;
   const [code]=eligible?await db.query('SELECT code FROM referral_codes WHERE user_id=$1 AND tenant_id=$2',[user.id,user.tenant_id]):[];
   const [count]=await db.query('SELECT count(*) AS count FROM referral_rewards WHERE inviter_id=$1',[user.id]);
-  return {enabled:await enabled(),canInvite:eligible,code:code?.code??null,invited:Number(count.count),inviterTokens,inviteeTokens,...await creditBalance(db,user.tenant_id)};
+  return {enabled:await enabled(),canInvite:eligible,remainingUses:Number(invitation?.remaining_uses||0),expiresAt:invitation?.expires_at??null,code:code?.code??null,invited:Number(count.count),inviterTokens,inviteeTokens,...await creditBalance(db,user.tenant_id)};
  });
  app.post('/v1/referrals',{config:{rateLimit:{max:10,timeWindow:'1 minute'}}},async req=>{
   if(!await enabled())throw Object.assign(new Error('邀请活动暂不可用'),{statusCode:503});
   const user=req.user!;
   if(!await canInvite(db,user.id))throw Object.assign(new Error('仅使用管理员直接发放的激活码注册的账号可邀请好友'),{statusCode:403});
-  const {inviteCode}=z.object({inviteCode:z.string().trim().min(1,'请输入激活码').max(100)}).parse(req.body);
-  const [invitation]=await db.query('SELECT id FROM invitations WHERE code_hash=$1 AND revoked_at IS NULL AND expires_at>now() AND used_count<max_uses',[digest(inviteCode)]);
-  if(!invitation)throw Object.assign(new Error('激活码无效、已过期或已用完'),{statusCode:400});
+  const {inviteCode}=z.object({inviteCode:z.string().trim().min(1,'请输入激活码').max(100).optional()}).strict().parse(req.body||{});
   const row=await db.transaction(async tx=>{
+   const invitation=await availableInvitation(tx,user.id,inviteCode);
+   if(!invitation)throw Object.assign(new Error(inviteCode?'激活码无效、已过期或已用完':'当前邀请次数已用完、已过期或已撤销，请联系管理员'),{statusCode:400});
    await tx.query('INSERT INTO referral_codes(user_id,tenant_id,code) VALUES($1,$2,$3) ON CONFLICT (user_id) DO NOTHING',[user.id,user.tenant_id,randomBytes(18).toString('base64url')]);
    const [row]=await tx.query('SELECT code FROM referral_codes WHERE user_id=$1 AND tenant_id=$2',[user.id,user.tenant_id]);
    if(row)await tx.query("INSERT INTO audit_events(tenant_id,event,detail) VALUES($1,'referral.link_generated',$2)",[user.tenant_id,JSON.stringify({actorId:user.id,invitationId:invitation.id})]);
-   return row;
+   return row?{...row,activation:encrypt(key,activationScope(row.code),invitation.id),remainingUses:Number(invitation.remaining_uses)}:undefined;
   });
   if(!row)throw Object.assign(new Error('当前工作区无法创建邀请链接'),{statusCode:403});
-  return {code:row.code,activation:encrypt(key,activationScope(row.code),invitation.id)};
+  return row;
  });
 }
