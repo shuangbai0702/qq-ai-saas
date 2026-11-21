@@ -76,6 +76,15 @@ test('native SDK: whitelist entry, refreshed clocks, owner timer, stale decision
   await sleep(5500);assert.equal(ownerCalls(),2,'5-second poll is not repeated model evaluation');assert.equal((await actions()).filter(x=>x.action==='send_private_msg').length,2,'unanswered owner is not chased');
   for(const call of calls.filter(x=>x.kind==='owner'))assert.ok(JSON.parse(nativeMessages(call.body).at(-1).content).changes.messages.some((x:any)=>x.source_scope==='private:11111111'&&x.role==='member'&&x.text==='主人先正常聊一句'),'timer judgment receives the attributed private event once despite having no native chat contexts');
   assert.equal(JSON.parse(nativeMessages(calls.find(x=>x.kind==='group')!.body).at(-1).content).changes.style,'active','configured participation style reaches the group decision model');
+  // The current product admits only two configured groups. Change the actual
+  // user config before testing two fresh addressing scopes; a four-group fixture
+  // would correctly be rejected before any semantic judgment.
+  await settled();
+  const detail=(await current.app.inject({url:`/v1/bots/${id}`,cookies})).json();
+  const changed=await current.app.inject({method:'PUT',url:`/v1/bots/${id}/config`,cookies,payload:{expectedRevision:detail.bot.revision,name:detail.bot.name,expectedUin:detail.bot.expected_uin,config:{...config,behavior:{...config.behavior,groupParticipationGroups:['990011','991122']}}}});
+  assert.equal(changed.statusCode,200,changed.body);
+  await until(async()=>(await current.db.query('SELECT applied_revision FROM bots WHERE id=$1',[id]))[0].applied_revision===changed.json().revision,'new two-group configuration applied');
+  await until(async()=>!!(await mock.call(ctx,'/state')as any).connected,'QQ connected after configuration apply');
   const beforeAddressing=groupCalls(),beforeAddressingSends=(await actions()).length;
   await message('990011','SELF_RELATED_TO_OTHER 这个话题也和机器人有关','22222222','33333333');
   await message('990011','','22222222');
