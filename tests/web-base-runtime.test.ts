@@ -65,6 +65,10 @@ for(const region of ['persona','core_note','tools','facts','relations','expressi
   assert.deepEqual(seen[beforeRequests],first,'in-flight Wire stays unchanged');
   await mock.call(ctx,'/message',{text:'SECOND_REQUEST',sender:'12345678'});
   await wait(async()=>seen.some(body=>JSON.stringify(body).includes('SECOND_REQUEST')),'next request');
+  // Observing send_private_msg is earlier than the protocol receipt and Work
+  // settlement. A base edit must not leave either real input blocked_unknown.
+  const python=path.resolve(process.env.ASTRBOT_PYTHON||'references/astrbot/.venv/Scripts/python.exe');
+  await wait(async()=>{const statuses:string[]=JSON.parse(execFileSync(python,['-c',`import sqlite3,json,sys; d=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True); print(json.dumps([r[0] for r in d.execute('SELECT status FROM pipeline_work_inputs')]))`,path.join(root,'bots',id,'behavior.sqlite')],{windowsHide:true,encoding:'utf8'}));return statuses.length===2&&statuses.every(status=>status.startsWith('settled'));},'both inputs settle after user edit');
   const next=seen.find(body=>JSON.stringify(body).includes('SECOND_REQUEST'));
   if(region!=='tools'){assert.ok(JSON.stringify(next).includes(region==='persona'?'NEW_PERSONA_ONLY':'NEW_CORE_NOTE_ONLY'));assert.ok(!JSON.stringify(next).includes(region==='persona'?'OLD_PERSONA_ONLY':'OLD_CORE_NOTE_ONLY'));}else{assert.ok(!JSON.stringify(next).includes('NEW_TOOL_PROMPT_ONLY'));assert.equal(ctx.config.toolPrompts.dsh,'NEW_TOOL_PROMPT_ONLY');}
   const newMarker=region==='persona'?'NEW_PERSONA_ONLY':region==='tools'?'NEW_TOOL_PROMPT_ONLY':'NEW_CORE_NOTE_ONLY';

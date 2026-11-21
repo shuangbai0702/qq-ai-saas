@@ -2293,6 +2293,7 @@ def install_runtime(core,settings):
         st.reflection.maybe_start(reflection_scope,{**rhythm,'_persona':cfg.get('systemPrompt','')},provider,lambda:settings.get(id) is s and id not in core.event_bus.stopped_platforms,metrics.setdefault(id,{}),current_message_event)
         care.track(st,st.reflection.task)
     async def guarded_execute(self,event):
+        from web_base import same_owner
         lease=setting(event)
         admitted=store(event.get_platform_id(),lease) if lease is not None and current(event) else None
         ingress_owned=False
@@ -2302,7 +2303,7 @@ def install_runtime(core,settings):
                 # outside the draining prefix, otherwise their own ingress
                 # count prevents the compression they are waiting for.
                 await admitted.wait_compression(event)
-                if setting(event) is not lease or not current(event):return
+                if not same_owner(setting(event),lease) or not current(event):return
                 admitted.ingress+=1;ingress_owned=True;care.stamp(admitted.root)
             passes=0
             while True:
@@ -2314,7 +2315,7 @@ def install_runtime(core,settings):
                 # selection, not only the pre-execute ingress snapshot.
                 owner=stores.get(event.get_platform_id())
                 reason='processed'
-                if owner is None or settings.get(event.get_platform_id()) is not lease or not owner.shared_context or work is None or not work.observes_input:reason='not_foreground_owner'
+                if owner is None or not same_owner(settings.get(event.get_platform_id()),lease) or not owner.shared_context or work is None or not work.observes_input:reason='not_foreground_owner'
                 elif active_event.get_extra('_hosted_model_error',False):reason='model_error'
                 elif work.attempted!=work.confirmed:reason='unconfirmed_effect'
                 elif (continuation:=owner.pipeline.input_continuation(work))!='continue_inputs':reason=continuation
@@ -2363,7 +2364,10 @@ def install_runtime(core,settings):
                 st=stores.get(event.get_platform_id())
                 events=[event];selected=event.get_extra('_hosted_pipeline_selected_event')
                 if selected is not None and selected is not event:events.append(selected)
-                if st is not None and settings.get(event.get_platform_id()) is lease:
+                # An authenticated local base edit retains the execution owner.
+                # Its new settings object must not strand an already sent Work;
+                # a real member replacement still has a different owner token.
+                if st is not None and same_owner(settings.get(event.get_platform_id()),lease):
                     for owned_event in events:
                         work=owned_event.get_extra('_hosted_pipeline')
                         if work:

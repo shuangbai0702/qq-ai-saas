@@ -15,6 +15,17 @@ from web_base import persona_view, sha, without_sdk_persona
 
 
 class WebBaseTests(unittest.TestCase):
+    def test_only_authenticated_base_replacement_keeps_execution_ownership(self):
+        from web_base import same_owner
+        from tool_config import apply_user_tools,tool_hash
+        token=object()
+        old={'botId':'b','tenantId':'t','generation':1,'revision':1,'config':{'toolPrompts':{'dsh':'old'}},'_base_owner':token}
+        config={'toolPrompts':{'dsh':'new'}}
+        changed=apply_user_tools(old,{'botId':'b','tenantId':'t','generation':1,'revision':2,'config':config,'toolsEdit':{'permitId':'1','target':tool_hash(config)}})
+        self.assertTrue(same_owner(old,changed))
+        self.assertFalse(same_owner(old,{**changed,'_base_owner':object()}))
+        self.assertFalse(same_owner(old,{k:v for k,v in changed.items() if k!='_base_owner'}))
+
     def proof(self):return {'target':sha('new persona'),'origins':[sha('old persona')]}
 
     def test_sdk_duplicate_is_removed_without_touching_other_instructions(self):
