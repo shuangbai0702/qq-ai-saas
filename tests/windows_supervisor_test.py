@@ -19,6 +19,25 @@ supervisor=importlib.util.module_from_spec(spec);spec.loader.exec_module(supervi
 
 
 class Authority(unittest.TestCase):
+    def test_current_control_api_health_contract_allows_agent_startup(self):
+        import http.server
+        import threading
+        class Health(http.server.BaseHTTPRequestHandler):
+            payload={'ok':True,'publicOrigin':'https://example.test'}
+            def do_GET(self):
+                self.send_response(200);self.end_headers()
+                self.wfile.write(json.dumps(self.payload).encode())
+            def log_message(self,*args):pass
+        server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Health)
+        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        try:
+            url=f'http://127.0.0.1:{server.server_port}/v1/health'
+            self.assertTrue(supervisor.healthy(url))
+            Health.payload={'ok':False}
+            self.assertFalse(supervisor.healthy(url))
+        finally:
+            server.shutdown();server.server_close();thread.join()
+
     def test_postgres_probe_failure_does_not_stop_services_and_next_probe_recovers(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);(root/'postmaster.pid').write_text('123\n')

@@ -193,7 +193,7 @@ def healthy(url):
         opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
         with opener.open(url,timeout=2) as response:
             data=json.load(response)
-            return response.status == 200 and data.get('ok') is True and data.get('agent') is False
+            return response.status == 200 and data.get('ok') is True
     except (OSError,ValueError):
         return False
 
