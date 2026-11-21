@@ -52,9 +52,9 @@ test('favorite vision uses bounded real GIF samples, structured output and rejec
  const result=await caption(bot,file,new AbortController().signal);assert.equal(result.meaning,clear.meaning);assert.deepEqual(result.usage,{total_tokens:123});assert.equal(result.costStatus,'unknown');
  const activity=path.join(root,'bots',bot.id,'memory-activity.json');await mkdir(path.dirname(activity),{recursive:true});
  await writeFile(activity,JSON.stringify({active:true,at:Date.now()/1000}));
- await assert.rejects(()=>caption(bot,file,new AbortController().signal),/chat_busy/);assert.equal(calls,1,'only this Bot can defer its own annotation, before a model request');
+ assert.equal((await caption(bot,file,new AbortController().signal)).meaning,clear.meaning);assert.equal(calls,2,'active chat cannot starve its own requested favorite');
  await writeFile(activity,JSON.stringify({active:false,at:Date.now()/1000}));
- revision=3;await assert.rejects(()=>caption(bot,file,new AbortController().signal),/stale/);assert.equal(calls,2);
+ revision=3;await assert.rejects(()=>caption(bot,file,new AbortController().signal),/stale/);assert.equal(calls,3);
  const entered=barrier(),resume=barrier();
  const parallel=createFavoriteCaptioner({query:async(sql:string,args:any[])=>sql.includes('JOIN bot_config_revisions')?[{...record,id:args[0],ciphertext:encrypt(key,'tenant:'+args[0],'fixture-key')}]:[{...bot,id:args[0],revision:2}]} as any,key,root,async(_url,init)=>{
   if((init?.headers as Record<string,string>).Authorization==='Bearer fixture-key'){
