@@ -1,3 +1,4 @@
+import {stopMockProtocols} from './helpers/mock-lifecycle.js';
 import {permitModelFixture,platformContext,nativeMessages} from './helpers/model-fixture.js';
 import {issueTestInvite} from './helpers/invitations.js';
 import test from 'node:test';import assert from 'node:assert/strict';import http from 'node:http';import {mkdtemp} from 'node:fs/promises';import path from 'node:path';
@@ -8,7 +9,7 @@ test('native followup bypasses lexical and entry limits; all-message mode cannot
  const current=await createApp({root:await mkdtemp(path.resolve('.local/group-participation-'))});
  try{
   const auth=await current.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(current.db),email:'group-participation@test.invalid',name:'群搭话',password:'group-participation-123'}});const cookies={fish_session:auth.cookies[0].value};
-  let config={...defaultConfig,baseUrl:`http://127.0.0.1:${(server.address()as any).port}/v1`,model:'group-participation',proactive:false,behavior:{...defaultConfig.behavior!,ownerUin:'77778888',naturalConversation:true,groupParticipationEnabled:true,groupParticipationGroups:[],hourlyInterjectionLimit:0,followupSeconds:120,followupReplyProbability:1,randomReplyProbability:0.2,quietStart:0,quietEnd:0,typingSimulation:false,typoEnabled:false,splitMessages:false,burstDebounceMs:0,styleLearning:false,memorySummary:false,memeEnabled:false,attentionEnabled:true,fatigueEnabled:true,fatigueMaxReplies:1}};
+  let config={...defaultConfig,baseUrl:`http://127.0.0.1:${(server.address()as any).port}/v1`,model:'group-participation',proactive:false,behavior:{...defaultConfig.behavior!,ownerUin:'77778888',naturalConversation:true,groupParticipationEnabled:true,groupParticipationGroups:['778899'],hourlyInterjectionLimit:0,followupSeconds:120,followupReplyProbability:1,randomReplyProbability:0.2,quietStart:0,quietEnd:0,typingSimulation:false,typoEnabled:false,splitMessages:false,burstDebounceMs:0,styleLearning:false,memorySummary:false,memeEnabled:false,attentionEnabled:true,fatigueEnabled:true,fatigueMaxReplies:1}};
   const created=await current.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'群搭话',protocol:'mock',runtimeMode:'shared',expectedUin:'90007771',apiKey:'group-participation-key',config}});assert.equal(created.statusCode,201,created.body);const id=created.json().id;
   await current.app.inject({method:'POST',url:`/v1/bots/${id}/actions`,cookies,payload:{action:'start',idempotencyKey:'start'}});await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.protocol?.ready,'protocol ready');
   const ctx=await current.agent.context((await current.db.query('SELECT * FROM bots WHERE id=$1',[id]))[0]),mock=current.agent.protocols.mock as MockProtocolAdapter;
@@ -26,10 +27,10 @@ test('native followup bypasses lexical and entry limits; all-message mode cannot
   assert.equal(samePartner.participation_entry.same_partner_followup,true);assert.equal(samePartner.identity.directed_to_bot,false);
   assert.equal(samePartner.conversation_candidate,true,'a followup window must not invent an explicit addressee');
   assert.equal(joined.participation_entry.reply_required_by_window,false);
-  assert.ok(joined.conversation_timeline.some((x:any)=>x.role==='self'&&x.receipt==='confirmed'&&x.message_ids.length),'native sends reach the same timeline with scoped receipts');
+  assert.equal(joined.dialogue.deliveries.filter((x:any)=>x.delivery==='confirmed'&&x.source_scope==='group:778899'&&x.source_event&&x.confirmed_text==='接着聊呀。'&&x.text_complete===true).length,2,'both actual sends retain scoped delivery evidence without replaying a second timeline');
   assert.equal(first.identity.sender_id,'77778888');assert.equal(first.identity.owner,true);assert.equal(joined.identity.sender_id,'87654321');assert.equal(joined.identity.owner,false);
   assert.equal(joined.identity.owner_id,config.behavior.ownerUin||null,'a nickname or claim cannot replace configured owner');
-  assert.ok(joined.dialogue.feedback.some((f:any)=>f.recipient_id==='77778888'&&f.event_id&&typeof f.at==='number'),'past assistant replies retain their real recipients');
+  assert.ok(joined.dialogue.deliveries.some((f:any)=>f.delivery==='confirmed'&&f.recipient_id==='77778888'&&f.source_event&&typeof f.at==='number'),'past assistant replies retain their real recipients');
   const history=nativeMessages(requests[2]).filter((m:any)=>m.role==='user').map((m:any)=>JSON.stringify(m.content));
   assert.ok(history.some((m:string)=>m.includes('[QQ消息来源]')&&m.includes('77778888')),'native history preserves earlier author');
   const currentSource=history.at(-1);assert.ok(currentSource&&currentSource.includes('[QQ消息来源]')&&currentSource.includes('87654321'),'current source is preserved with the author claim treated as text');
@@ -52,5 +53,5 @@ test('native followup bypasses lexical and entry limits; all-message mode cannot
   assert.equal(platformContext(requests[6]).participation_entry.reply_required_by_window,false);
   await message('我也接着刚才的话题聊',false,'12345678');await until(async()=>(await actions()).length===7,'silence does not disable another meaningful followup');
   assert.equal(requests.length,8);
- }finally{await current.app.close();await new Promise<void>(r=>server.close(()=>r()))}
+ }finally{server.closeAllConnections();await stopMockProtocols(current.agent);await current.app.close();await new Promise<void>(r=>server.close(()=>r()))}
 });

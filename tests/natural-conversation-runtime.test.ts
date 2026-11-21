@@ -1,3 +1,4 @@
+import {stopMockProtocols} from './helpers/mock-lifecycle.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -6,7 +7,7 @@ import {mkdtemp,mkdir,writeFile} from 'node:fs/promises';
 import {createApp} from '../apps/control-api/src/app.js';
 import {defaultConfig} from '../packages/contracts/index.js';
 import {MockProtocolAdapter} from '../adapters/mock/index.js';
-import {permitModelFixture} from './helpers/model-fixture.js';
+import {permitModelFixture,nativeMessages} from './helpers/model-fixture.js';
 import {issueTestInvite} from './helpers/invitations.js';
 const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));
 async function until(fn:()=>Promise<boolean>,label:string){for(let i=0;i<150;i++){if(await fn())return;await sleep(200)}throw new Error(label)}
@@ -15,7 +16,7 @@ test('native SDK: multiple speakers, semantic silence, bounded calls and per-bot
  const requests:any[]=[];
  const server=http.createServer(async(req,res)=>{
   let raw='';for await(const b of req)raw+=b;const body=JSON.parse(raw);requests.push(body);
-  const content=body.messages.findLast((x:any)=>x.role==='user')?.content;
+  const content=nativeMessages(body).findLast((x:any)=>x.role==='user')?.content;
   const input=Array.isArray(content)?content.map((x:any)=>x.text||'').join('\n'):String(content||'');
   const reply=input.includes('比赛')?'[NO_REPLY]':input.includes('下班')?'那先坐会儿，今天够忙的。':input.includes('我也')?'给你也留个位子。':'我刚好想聊聊热茶。';
   res.setHeader('Content-Type','application/json');res.end(JSON.stringify({id:'natural-'+requests.length,model:body.model,choices:[{index:0,message:{role:'assistant',content:reply},finish_reason:'stop'}]}));
@@ -47,12 +48,12 @@ test('native SDK: multiple speakers, semantic silence, bounded calls and per-bot
   await b.mock.call(b.ctx,'/message',{group:'778899',sender:'11111111',text:'来聊会儿',mention:true});await until(async()=>(await b.actions()).length===1,'second bot reply');
   const bRequest=requests.at(-1);assert.ok(JSON.stringify(bRequest).includes(b.id));
   assert.equal(JSON.stringify(bRequest).includes('今天刚下班'),false,'shared runtime cannot borrow another bot\'s conversation');
-  const joined=requests.find(r=>JSON.stringify(r.messages.findLast((m:any)=>m.role==='user')?.content||'').includes('我也坐会儿'));
+  const joined=requests.find(r=>JSON.stringify(nativeMessages(r).findLast((m:any)=>m.role==='user')?.content||'').includes('我也坐会儿'));
   assert.ok(JSON.stringify(joined).includes('conversation_candidate'));assert.ok(JSON.stringify(joined).includes('recent_own_turns'));
   await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[a.id]))[0].health?.ai?.metrics?.replyLatencySamples?.length,'receipt latency published');
   const samples=(await current.db.query('SELECT health FROM bots WHERE id=$1',[a.id]))[0].health.ai.metrics.replyLatencySamples;
   assert.ok(samples.every((x:any)=>x.firstMs>=0&&x.completeMs>=x.firstMs));assert.ok(samples.length<=16);
   await mkdir('test-results/natural-conversation',{recursive:true});
   await writeFile('test-results/natural-conversation/native-runtime.json',JSON.stringify({passed:true,evidence:'Real AstrBot SDK, shared Agent and OneBot; model and QQ transports are fixtures',modelRequests:requests.length,firstBotReplies:(await a.actions()).length,secondBotReplies:(await b.actions()).length,silentDoesNotSpendEntryQuota:true,botIsolation:true},null,2));
- }finally{await current.app.close();await new Promise<void>(r=>server.close(()=>r()))}
+ }finally{server.closeAllConnections();await stopMockProtocols(current.agent);await current.app.close();await new Promise<void>(r=>server.close(()=>r()))}
 });
