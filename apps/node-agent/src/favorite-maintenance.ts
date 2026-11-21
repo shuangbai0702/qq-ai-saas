@@ -72,7 +72,7 @@ export class FavoriteMaintenance{
   }
   const identity=await this.deps.call(this.root,bot,'get_login_info',{},signal);if(String(identity.user_id)!==String(bot.qq_uin))throw new Error('favorite_identity_mismatch');
   const raw=await this.deps.call(this.root,bot,'fetch_custom_face_detail',{count:200},signal),sources=Array.isArray(raw)?raw:Array.isArray(raw?.data)?raw.data:[];
-  const saved=await readdir(path.join(directory,'uploads')).catch(error=>{if((error as NodeJS.ErrnoException).code==='ENOENT')return [];throw error});
+  const saved:string[]=await readdir(path.join(directory,'uploads')).catch(error=>{if((error as NodeJS.ErrnoException).code==='ENOENT')return [];throw error});
   const savedIds=new Set(saved.filter(name=>/^[a-f0-9]{32}\.image$/.test(name)).slice(0,200).map(name=>'qqf_'+createHash('sha256').update(name.slice(0,-6)).digest('hex').slice(0,16)));
   sources.sort((a:any,b:any)=>Number(saved.includes(String(b.md5||'')+'.image'))-Number(saved.includes(String(a.md5||'')+'.image')));
   let imported=0;const importedIds=new Set<string>();
