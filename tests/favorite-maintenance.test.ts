@@ -4,6 +4,29 @@ import {createHash} from 'node:crypto';
 import {mkdtemp,mkdir,writeFile,readFile} from 'node:fs/promises';import path from 'node:path';
 import {FavoriteMaintenance,favoriteQueueDiagnostics} from '../apps/node-agent/src/favorite-maintenance.js';
 import {withFavoriteIndex,readFavoriteIndex,writeFavoriteIndex,favoriteDirectory} from '../packages/shared/qq-favorite-index.js';
+
+test('recent saved original wakes semantic discovery without claiming a confirmed collection',async()=>{
+ const {root,bot,owner}=await fixture();const digest='a'.repeat(32),id='qqf_'+createHash('sha256').update(digest).digest('hex').slice(0,16);
+ const directory=path.join(favoriteDirectory(root,'a'),'uploads');await mkdir(directory);await writeFile(path.join(directory,digest+'.image'),'original');
+ assert.equal(await owner.recentSavePending(bot),true);
+ owner.caption=async()=>semantic;await owner.run(new AbortController().signal);
+ let index=await readFavoriteIndex(root,'a');assert.equal(index.items.some((item:any)=>item.id===id),false,'unconfirmed upload cannot enter the catalog');
+ index.items.push({id,file:id+'.png',meaning:'',enabled:false,semanticStatus:'pending',semanticRetryAt:0});await writeFavoriteIndex(root,'a',index);
+ assert.equal(await owner.recentSavePending(bot),true);
+ index.items.at(-1).semanticRetryAt=Date.now()+60000;await writeFavoriteIndex(root,'a',index);assert.equal(await owner.recentSavePending(bot),false);
+ index.items.at(-1).semanticRetryAt=0;index.items.at(-1).meaning='贴贴';index.items.at(-1).semanticStatus='ready';await writeFavoriteIndex(root,'a',index);
+ assert.equal(await owner.recentSavePending(bot),false,'ready image does not create repeated discovery');
+});
+
+test('fresh confirmed imports are annotated before the older backlog in the same job',async()=>{
+ const {root,bot,owner}=await fixture();const index=await readFavoriteIndex(root,'a');index.items.push({...index.items[0],id:'qqf_aaaaaaaaaaaaaaaa',file:'qqf_aaaaaaaaaaaaaaaa.png'});
+ await writeFile(path.join(favoriteDirectory(root,'a'),'images','qqf_aaaaaaaaaaaaaaaa.png'),'old');await writeFavoriteIndex(root,'a',index);
+ const digest='b'.repeat(32),id='qqf_'+createHash('sha256').update(digest).digest('hex').slice(0,16);
+ owner.deps.call=(async(_r:string,_b:any,action:string)=>action==='get_login_info'?{user_id:90000}:[{md5:digest,url:'https://qpic.cn/fixture'}]) as any;
+ const seen:string[]=[];owner.caption=async(_bot,file)=>{seen.push(path.basename(file));return semantic};
+ await owner.maintain(bot,new AbortController().signal);
+ const after=await readFavoriteIndex(root,'a');assert.equal(seen[0],id+'.png');assert.equal(after.items.find((item:any)=>item.id===id).semanticStatus,'ready');
+});
 const semantic={description:'挥手',meaning:'欢迎',avoid:'严肃时',confidence:'clear' as const,version:1 as const,model:'fixture',at:'now',usage:null,costStatus:'unknown' as const};
 const uncertain={description:'好像在挥手',meaning:'',avoid:'',confidence:'uncertain' as const,version:1 as const,model:'fixture',at:'now',usage:null,costStatus:'unknown' as const};
 async function fixture(){

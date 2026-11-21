@@ -17,17 +17,39 @@ const UNCERTAIN_ATTEMPT_LIMIT=3,FAILURE_ATTEMPT_LIMIT=5,MAX_QUEUE_TICKS=2;
 const deferError=(error:unknown)=>/pressure|chat_busy/.test(String((error as Error)?.message||error));
 async function contentHash(file:string){const bytes=await readFile(file);return createHash('sha256').update(bytes).digest('hex')}
 export class FavoriteMaintenance{
- closed=false;private flight=new SingleFlight();get job(){return this.flight.pending};controller?:AbortController;next=0;cursor='';
+ closed=false;private flight=new SingleFlight();get job(){return this.flight.pending};controller?:AbortController;next=0;cursor='';private nextDiscovery=0;
  caption:ReturnType<typeof createFavoriteCaptioner>;
  constructor(public db:Sql,public root:string,key:Buffer,public deps={call:nativeCall,download:downloadFavorite,convert:normalize}){this.caption=createFavoriteCaptioner(db,key,root)}
- tick(){if(this.closed||this.job||Date.now()<this.next)return;this.next=Date.now()+60000;this.controller=new AbortController();const signal=AbortSignal.any([this.controller.signal,AbortSignal.timeout(120000)]);void this.flight.run(()=>this.run(signal).catch(()=>{/* retries persisted; no protocol restart */}).finally(()=>{this.controller=undefined}))}
+ tick(){if(this.closed||this.job||Date.now()<this.next)return;this.next=Date.now()+5000;this.controller=new AbortController();const signal=AbortSignal.any([this.controller.signal,AbortSignal.timeout(120000)]);void this.flight.run(()=>this.run(signal).catch(()=>{/* retries persisted; no protocol restart */}).finally(()=>{this.controller=undefined}))}
  async stop(){this.closed=true;this.controller?.abort();await this.job}
  async valid(bot:any,signal:AbortSignal){signal.throwIfAborted();const [current]=await this.db.query('SELECT b.*,q.qq_uin FROM bots b JOIN qq_bindings q ON q.bot_id=b.id WHERE b.id=$1 AND b.tenant_id=$2 AND b.deleted_at IS NULL',[bot.id,bot.tenant_id]);if(!current||current.generation!==bot.generation||current.revision!==bot.revision||current.qq_uin!==bot.qq_uin||!runtimeStatus(current).online)throw new Error('favorite_owner_changed')}
  async run(signal:AbortSignal){
   const bots=await this.db.query("SELECT b.*,q.qq_uin,c.config FROM bots b JOIN qq_bindings q ON q.bot_id=b.id JOIN bot_config_revisions c ON c.bot_id=b.id AND c.revision=b.revision WHERE b.deleted_at IS NULL AND b.desired_state='running' AND b.protocol='napcat' ORDER BY b.id");
   const eligible=bots.filter(b=>runtimeStatus(b).online&&b.config?.behavior?.memeEnabled&&b.config?.behavior?.qqFavoriteSaveEnabled);
-  const bot=eligible.find(b=>b.id>this.cursor)||eligible[0];if(!bot)return;this.cursor=bot.id;
+  const ordered=[...eligible.filter(b=>b.id>this.cursor),...eligible.filter(b=>b.id<=this.cursor)];
+  // The existing saved originals are a wake hint, never proof of QQ success.
+  // Inspect only small local metadata; idle accounts retain minute discovery.
+  let bot;for(const candidate of ordered){signal.throwIfAborted();if(await this.recentSavePending(candidate)){bot=candidate;break}}
+  if(!bot){if(Date.now()<this.nextDiscovery)return;bot=ordered[0];if(!bot)return;this.nextDiscovery=Date.now()+60000}
+  this.cursor=bot.id;
   await this.maintain(bot,signal);
+ }
+ async recentSavePending(bot:any){
+  const directory=path.join(favoriteDirectory(this.root,bot.id),'uploads');
+  const folder=await lstat(directory).catch(error=>{if((error as NodeJS.ErrnoException).code==='ENOENT')return null;throw error});
+  if(!folder?.isDirectory()||folder.isSymbolicLink()||Date.now()-folder.mtimeMs>300000)return false;
+  let files:string[];try{files=await readdir(directory)}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return false;throw error}
+  const index=await readFavoriteIndex(this.root,bot.id);if(index.account&&index.account!==String(bot.qq_uin))return false;
+  for(const name of files.filter(name=>/^[a-f0-9]{32}\.image$/.test(name)).slice(0,200)){
+   const info=await lstat(path.join(directory,name)).catch(()=>null);
+   if(!info?.isFile()||info.isSymbolicLink()||Date.now()-info.mtimeMs>300000)continue;
+   const id='qqf_'+createHash('sha256').update(name.slice(0,-6)).digest('hex').slice(0,16);
+   const item=index.items.find((item:any)=>item.id===id);
+   if(!item||!item.manual&&!item.meaning&&item.semanticStatus!=='ready'
+    &&Number(item.semanticAttempts||0)<UNCERTAIN_ATTEMPT_LIMIT&&Number(item.semanticFailures||0)<FAILURE_ATTEMPT_LIMIT
+    &&Number(item.semanticRetryAt||0)<=Date.now())return true;
+  }
+  return false;
  }
  // Old-layout items whose meaning came from QQ raw text lose the automatic
  // enablement but keep their picture and record. Valid vision-clear and
@@ -50,7 +72,10 @@ export class FavoriteMaintenance{
   }
   const identity=await this.deps.call(this.root,bot,'get_login_info',{},signal);if(String(identity.user_id)!==String(bot.qq_uin))throw new Error('favorite_identity_mismatch');
   const raw=await this.deps.call(this.root,bot,'fetch_custom_face_detail',{count:200},signal),sources=Array.isArray(raw)?raw:Array.isArray(raw?.data)?raw.data:[];
-  let imported=0;
+  const saved=await readdir(path.join(directory,'uploads')).catch(error=>{if((error as NodeJS.ErrnoException).code==='ENOENT')return [];throw error});
+  const savedIds=new Set(saved.filter(name=>/^[a-f0-9]{32}\.image$/.test(name)).slice(0,200).map(name=>'qqf_'+createHash('sha256').update(name.slice(0,-6)).digest('hex').slice(0,16)));
+  sources.sort((a:any,b:any)=>Number(saved.includes(String(b.md5||'')+'.image'))-Number(saved.includes(String(a.md5||'')+'.image')));
+  let imported=0;const importedIds=new Set<string>();
   for(const source of sources.slice(0,200)){
    signal.throwIfAborted();if(imported>=4)break;const fingerprint=String(source.md5||source.resId||source.url||'');if(!fingerprint)continue;
    const id='qqf_'+createHash('sha256').update(fingerprint).digest('hex').slice(0,16);
@@ -66,7 +91,7 @@ export class FavoriteMaintenance{
      await rename(path.join(stage,file),path.join(images,file));
      index.account=String(bot.qq_uin);index.items.push({id,file,mime:result.mime,animated:result.animated,rawText,rawSource:rawText?'qq_text':'',meaning:'',avoid:'',enabled:false,semanticStatus:'raw_text',semanticAttempts:0,semanticFailures:0,semanticRetryAt:0});
      // Existing explicit selection preference is never changed by discovery.
-     await writeFavoriteIndex(this.root,bot.id,index);imported++;
+     await writeFavoriteIndex(this.root,bot.id,index);imported++;importedIds.add(id);
     });
    }finally{await rm(stage,{recursive:true,force:true})}
   }
@@ -74,7 +99,7 @@ export class FavoriteMaintenance{
   const index=await readFavoriteIndex(this.root,bot.id);if(index.account!==String(bot.qq_uin))return;
   const pending=index.items.filter((i:any)=>!i.manual&&!i.meaning&&i.semanticStatus!=='ready'
    &&Number(i.semanticAttempts||0)<UNCERTAIN_ATTEMPT_LIMIT&&Number(i.semanticFailures||0)<FAILURE_ATTEMPT_LIMIT
-   &&Number(i.semanticRetryAt||0)<=Date.now()).slice(0,MAX_QUEUE_TICKS);
+   &&Number(i.semanticRetryAt||0)<=Date.now()).sort((a:any,b:any)=>Number(importedIds.has(b.id))-Number(importedIds.has(a.id))||Number(savedIds.has(b.id))-Number(savedIds.has(a.id))).slice(0,MAX_QUEUE_TICKS);
   for(const item of pending){
    const file=path.join(images,item.file);if(!/^qqf_[a-f0-9]{16}\.(gif|png)$/.test(item.file))continue;
    const info=await stat(file).catch(()=>null);if(!info||!info.isFile()||info.isSymbolicLink()||info.size>1048576)continue;

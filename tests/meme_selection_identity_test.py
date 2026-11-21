@@ -28,6 +28,15 @@ class SelectionIdentity(unittest.TestCase):
         self.assertEqual(self.select(self.key),self.row)
         self.assertEqual(self.select(self.row['id']),self.row)
 
+    def test_persona_emotion_labels_are_text_not_an_image_selection(self):
+        from meme_reactions import SELECTION_RULE
+        self.assertIn('情绪标签只是角色文字',SELECTION_RULE)
+        with patch.object(self.store,'catalog',return_value=[self.row]):
+            text,image=self.store.select_image('抱抱你[贴贴]','private:1',self.cfg,candidates=[self.row])
+            self.assertEqual(text,'抱抱你[贴贴]');self.assertIsNone(image)
+            text,image=self.store.select_image('抱抱你[贴贴][MEME:'+self.key+']','private:1',self.cfg,candidates=[self.row])
+            self.assertEqual(text,'抱抱你[贴贴]');self.assertEqual(image,self.row)
+
     def test_other_version_same_id_and_unoffered_are_rejected(self):
         self.assertIsNone(self.select(self.key,[{**self.row,'meaning':'生气'}]))
         self.assertIsNone(self.select(self.key,[]))
