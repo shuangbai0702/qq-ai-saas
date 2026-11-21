@@ -89,3 +89,40 @@ test('cached missing meanings are annotated once; uncertain interpretations use 
   assert.equal((await app.inject({url:url+'/sync',method:'POST'})).statusCode,202);await until(async()=>!(await get()).syncing);assert.equal(calls,3,'cached clear, uncertain and manual results must not be re-billed');
  }finally{resume.release();await app.close()}
 });
+
+// The retry stays inside one annotation operation: same input, bounded output,
+// no chat history, and no retry for transport, cancellation or owner changes.
+test('favorite annotation rejects truncated output, retries structure once and preserves its input snapshot',async()=>{
+ const root=await mkdtemp(path.resolve('.local/favorite-output-')),file=path.join(root,'fixture.png');
+ const python=path.resolve(`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`);
+ execFileSync(python,['-c',"from PIL import Image;import sys;Image.new('RGB',(32,32),'blue').save(sys.argv[1])",file],{windowsHide:true});
+ const key=Buffer.alloc(32),bot={id:'fixture',generation:1,qq_uin:'90000'},record={...bot,tenant_id:'tenant',revision:2,config:{model:'fixture',baseUrl:'https://model.example/v1'},ciphertext:encrypt(key,'tenant:fixture','fixture-key')};
+ let revision=2;
+ const db={query:async(sql:string)=>sql.includes('JOIN bot_config_revisions')?[record]:[{...bot,revision}]};
+ for(const first of [
+  {choices:[{finish_reason:'length',message:{content:JSON.stringify(clear)}}]},
+  {choices:[{finish_reason:'stop',message:{content:'{"description":"unfinished'}}]},
+  {choices:[{finish_reason:'stop',message:{content:JSON.stringify({...clear,confidence:'invalid'})}}]},
+ ]){
+  const requests:any[]=[];
+  const caption=createFavoriteCaptioner(db as any,key,root,async(_url,init)=>{requests.push(JSON.parse(String(init?.body)));return new Response(JSON.stringify(requests.length===1?first:{choices:[{finish_reason:'stop',message:{content:JSON.stringify(clear)}}]}))});
+  assert.equal((await caption(bot,file,new AbortController().signal)).meaning,clear.meaning);
+  assert.equal(requests.length,2);assert.deepEqual(requests.map(r=>r.max_tokens),[1024,1536]);
+  assert.deepEqual(requests[0].messages,requests[1].messages,'retry must not append failed output or a correction conversation');
+ }
+ let calls=0;const invalid=createFavoriteCaptioner(db as any,key,root,async()=>{calls++;return new Response(JSON.stringify({choices:[{finish_reason:'length',message:{content:'{}'}}]}))});
+ await assert.rejects(()=>invalid(bot,file,new AbortController().signal),/incomplete:length/);assert.equal(calls,2);
+ calls=0;const unavailable=createFavoriteCaptioner(db as any,key,root,async()=>{calls++;throw Error('upstream disconnected')});
+ await assert.rejects(()=>unavailable(bot,file,new AbortController().signal),/upstream disconnected/);assert.equal(calls,1);
+ calls=0;const stale=createFavoriteCaptioner(db as any,key,root,async()=>{calls++;revision=3;return new Response(JSON.stringify({choices:[{finish_reason:'length',message:{content:'{}'}}]}))});
+ await assert.rejects(()=>stale(bot,file,new AbortController().signal),/stale/);assert.equal(calls,1);
+});
+
+test('a failed reannotation restores a validated previous description without re-billing, but respects manual and changed content',async()=>{
+ const {promoteFavoriteDescription}=await import('../packages/shared/qq-favorite-semantics.js');
+ const item:any={meaning:'',enabled:false,semanticStatus:'failed',semanticFailures:5,lastVisionError:'Unterminated string',semantic:{...annotation,confidence:'uncertain'}};
+ assert.equal(promoteFavoriteDescription(item),true);assert.equal(item.semanticStatus,'ready');assert.equal(item.meaning,'画面：'+clear.description);assert.equal(item.avoid,'');assert.equal(favoriteAnnotationDue(item),false);
+ for(const patch of [{manual:true},{lastVisionError:'favorite_content_changed'},{semantic:{...annotation,description:''}}]){
+  const value={...item,meaning:'',enabled:false,semanticStatus:'failed',...patch};const before=JSON.stringify(value);assert.equal(promoteFavoriteDescription(value),false);assert.equal(JSON.stringify(value),before);
+ }
+});

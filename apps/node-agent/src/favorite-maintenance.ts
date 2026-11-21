@@ -62,7 +62,7 @@ export class FavoriteMaintenance{
  // become selectable without another model request; manual items are untouched.
  async reconcileAnnotations(bot:any,signal:AbortSignal){
   const before=await readFavoriteIndex(this.root,bot.id);if(before.account!==String(bot.qq_uin))return;
-  if(!before.items.some((i:any)=>!i.manual&&(i.meaning&&!i.semantic||!i.meaning&&i.semanticStatus==='uncertain'&&favoriteSelectionText(i.semantic))))return;
+  if(!before.items.some((i:any)=>!i.manual&&(i.meaning&&!i.semantic||!i.meaning&&['uncertain','failed'].includes(i.semanticStatus)&&favoriteSelectionText(i.semantic))))return;
   await withFavoriteIndex(this.root,bot.id,async()=>{await this.valid(bot,signal);const index=await readFavoriteIndex(this.root,bot.id);if(index.account!==String(bot.qq_uin))return;
    let changed=false;
    for(const item of index.items){

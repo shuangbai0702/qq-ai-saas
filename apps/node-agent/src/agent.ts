@@ -8,6 +8,14 @@ import {observeOffline,evictionDue,offlineGrace} from './offline-policy.js';
 import path from 'node:path';import {mkdir,appendFile,readFile,writeFile,rm,stat,readdir,rename} from 'node:fs/promises';import {randomUUID,randomInt,createHash} from 'node:crypto';
 import type {Sql} from '../../../packages/database/index.js';import {decrypt,redact} from '../../../packages/shared/security.js';import {terminalLogin,type RuntimeContext,type ProtocolAdapter} from '../../../packages/contracts/index.js';
 
+// A recovery QR has its own validity, not a new resource-retention deadline.
+// Derive its existing identity from the verified protocol incarnation instead
+// of introducing a second session type or timer.
+function recoveryLoginSessionId(botId:string,generation:number,process:{pid:number;created:number}){
+ const digest=createHash('sha256').update(JSON.stringify([botId,generation,process.pid,process.created])).digest('hex');
+ return `${digest.slice(0,8)}-${digest.slice(8,12)}-5${digest.slice(13,16)}-a${digest.slice(17,20)}-${digest.slice(20,32)}`;
+}
+
 /** Single serialized heartbeat writer for one Agent process.
  * Overlapping tick writes queue on one chain; every snapshot carries a
  * monotonic sequence plus the pid/processStart identity the supervisor
@@ -270,8 +278,7 @@ export class NodeAgent {
    if(!record||record.pid!==health.pid||!Number.isFinite(record.created))return;
    const snapshot=await this.protocols.napcat.getLoginState(ctx);
    if(!snapshot.qr||!['waiting_scan','waiting_confirm'].includes(snapshot.state))return;
-   const digest=createHash('sha256').update(JSON.stringify([ctx.botId,ctx.generation,record.pid,record.created])).digest('hex');
-   const id=`${digest.slice(0,8)}-${digest.slice(8,12)}-5${digest.slice(13,16)}-a${digest.slice(17,20)}-${digest.slice(20,32)}`;
+   const id=recoveryLoginSessionId(ctx.botId,ctx.generation,record);
    await this.db.transaction(async tx=>{
      const [owner]=await tx.query('SELECT generation,deleted_at,desired_state FROM bots WHERE id=$1 FOR UPDATE',[ctx.botId]);
      const current=await this.host.record(ctx.botId,'protocol');
@@ -285,7 +292,18 @@ export class NodeAgent {
    });
  }
  async pollLogin(session:any){const [bot]=await this.db.query('SELECT * FROM bots WHERE id=$1',[session.bot_id]);if(!bot||bot.deleted_at||bot.generation!==session.generation)return;
-   if(new Date(session.expires_at).getTime()<Date.now()){await this.db.transaction(async tx=>{const updated=await tx.query("UPDATE login_sessions SET state='expired',qr=NULL,message='二维码已过期',sequence=sequence+1 WHERE id=$1 AND state NOT IN ('online','expired','canceled','failed') RETURNING id",[session.id]);if(updated.length)await tx.query("INSERT INTO commands(id,bot_id,idempotency_key,generation,kind) VALUES($1,$2,$3,$4,'cancel-login') ON CONFLICT DO NOTHING",[randomUUID(),bot.id,`cancel-${session.id}`,session.generation]);});return}
+   if(new Date(session.expires_at).getTime()<Date.now()){
+    await this.db.transaction(async tx=>{
+     const [owner]=await tx.query('SELECT generation,deleted_at FROM bots WHERE id=$1 FOR UPDATE',[bot.id]);
+     if(!owner||owner.deleted_at||owner.generation!==session.generation)return;
+     const process=bot.protocol==='napcat'?await this.host.record(bot.id,'protocol'):undefined;
+     const recovery=process&&session.id===recoveryLoginSessionId(bot.id,session.generation,process);
+     const updated=await tx.query("UPDATE login_sessions SET state='expired',qr=NULL,message='二维码已过期',sequence=sequence+1 WHERE id=$1 AND generation=$2 AND state NOT IN ('online','expired','canceled','failed') RETURNING id",[session.id,session.generation]);
+     // Native recovery QR expiry does not cancel an established account's
+     // original offline grace. healthSnapshot remains the sole eviction owner.
+     if(updated.length&&!recovery)await tx.query("INSERT INTO commands(id,bot_id,idempotency_key,generation,kind) VALUES($1,$2,$3,$4,'cancel-login') ON CONFLICT DO NOTHING",[randomUUID(),bot.id,`cancel-${session.id}`,session.generation]);
+    });return;
+   }
    try{const ctx=await this.context(bot),process=bot.protocol==='napcat'?await this.host.record(bot.id,'protocol'):undefined,s=await this.protocols[bot.protocol].getLoginState(ctx);
      if(bot.protocol==='napcat'){const current=await this.host.record(bot.id,'protocol');if(!process||!current||current.pid!==process.pid||current.created!==process.created)return;}
      if(terminalLogin.has(s.state)&&s.state==='online'){

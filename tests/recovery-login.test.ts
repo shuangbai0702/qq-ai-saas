@@ -39,3 +39,31 @@ test('native QR recovery publishes once per process, honors lifecycle ownership,
  await installQrSessionRuntime(agent,'a'.repeat(64));assert.equal(typeof agent.recoverLoginSession,'function');
  for(const [name,owner] of Object.entries(owners))assert.equal((agent as any)[name],owner,'maintenance preserves '+name);
 });
+
+test('native recovery QR expiry preserves the established offline grace and cannot expire a newer generation',async t=>{
+ const {app,db,agent}=await createApp({root:await mkdtemp(path.join(os.tmpdir(),'fish-recovery-expiry-')),agent:false});t.after(()=>app.close());
+ const r=await app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(db),email:'qr-expiry@example.test',name:'测试',password:'qr-expiry-123'}});
+ const cookies={fish_session:r.cookies[0].value};
+ const id=(await app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'恢复期限',protocol:'mock'}})).json().id;
+ await db.query("UPDATE bots SET protocol='napcat',desired_state='running',generation=7 WHERE id=$1",[id]);
+ const [bot]=await db.query('SELECT * FROM bots WHERE id=$1',[id]);const ctx=await agent.context(bot),record={pid:123,created:456};
+ agent.host.record=async()=>record as any;agent.host.inspect=async()=>({pid:record.pid,valid:true}) as any;
+ agent.protocols.napcat.getLoginState=async()=>({state:'waiting_scan',qr:'https://example.test/recovery-qr'});
+ await agent.recoverLoginSession(ctx,{alive:true,ready:true,online:false,pid:123,loginState:'waiting_scan'});
+ const [session]=await db.query('SELECT * FROM login_sessions WHERE bot_id=$1',[id]);
+ await db.query("UPDATE login_sessions SET expires_at=now()-interval '1 second' WHERE id=$1",[session.id]);
+ const [expired]=await db.query('SELECT * FROM login_sessions WHERE id=$1',[session.id]);
+ await agent.pollLogin(expired);
+ assert.equal((await db.query('SELECT state,qr FROM login_sessions WHERE id=$1',[session.id]))[0].state,'expired');
+ assert.equal((await db.query("SELECT * FROM commands WHERE bot_id=$1 AND kind='cancel-login'",[id])).length,0,'QR expiry must not shorten the account offline window');
+ assert.equal((await db.query('SELECT desired_state,generation FROM bots WHERE id=$1',[id]))[0].desired_state,'running');
+ await agent.recoverLoginSession(ctx,{alive:true,ready:true,online:false,pid:123,loginState:'waiting_scan'});
+ assert.equal((await db.query('SELECT * FROM login_sessions WHERE bot_id=$1',[id])).length,1,'expiry must not renew a QR forever');
+ // A refresh/new generation owns the remaining lifecycle, even if the old
+ // expiry worker had already read its Bot before awaiting the transaction.
+ await db.query("UPDATE login_sessions SET state='waiting_scan' WHERE id=$1",[session.id]);
+ const transaction=db.transaction.bind(db);let once=true;
+ db.transaction=async fn=>{if(once){once=false;await db.query('UPDATE bots SET generation=8 WHERE id=$1',[id])}return transaction(fn)};
+ await agent.pollLogin(expired);
+ assert.equal((await db.query('SELECT state FROM login_sessions WHERE id=$1',[session.id]))[0].state,'waiting_scan');
+});

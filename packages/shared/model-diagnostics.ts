@@ -39,6 +39,8 @@ export async function observeModel<T>(owner:ModelOwner|undefined,phase:string,mo
     const number=(v:unknown)=>typeof v==='number'&&Number.isSafeInteger(v)&&v>=0?v:null;
     const u=data?.usage,cached=number(u?.prompt_tokens_details?.cached_tokens??u?.prompt_cache_hit_tokens);
     usage={inputTokens:number(u?.prompt_tokens),outputTokens:number(u?.completion_tokens),cachedTokens:cached,cacheUsageReported:cached!==null,
+     finishReason:typeof data?.choices?.[0]?.finish_reason==='string'?data.choices[0].finish_reason.slice(0,40):undefined,
+     reasoningTokens:number(u?.completion_tokens_details?.reasoning_tokens),
      responseId:typeof data?.id==='string'&&data.id.length<=256?data.id:undefined};
    },
    adopted:(why='applied')=>{adoption='adopted';adoptionReason=why}

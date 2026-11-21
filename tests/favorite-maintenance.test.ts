@@ -198,3 +198,11 @@ print(json.dumps({'selected':image['id'],'approved':False}))`;
  const out=JSON.parse(execFileSync(python,['-B','-c',probe,path.join(root,'bots','a')],{encoding:'utf8',windowsHide:true}));
  assert.equal(out.selected,index.items[0].id);assert.equal(out.approved,false);
 });
+
+test('maintenance restores an exhausted but validated stored description through its index owner',async()=>{
+ const {root,bot,owner}=await fixture();const index=await readFavoriteIndex(root,'a');
+ Object.assign(index.items[0],{semantic:uncertain,semanticStatus:'failed',semanticFailures:5,lastVisionError:'Unterminated string in JSON'});
+ await writeFavoriteIndex(root,'a',index);owner.caption=async()=>{throw Error('must not rebill stored evidence')};
+ await owner.maintain(bot,new AbortController().signal);
+ const after=await readFavoriteIndex(root,'a');assert.equal(after.items[0].semanticStatus,'ready');assert.equal(after.items[0].meaning,'画面：'+uncertain.description);assert.equal(after.items[0].semantic.confidence,'uncertain');assert.equal(after.items.length,index.items.length);
+});
