@@ -139,67 +139,46 @@ class ModelCooldown(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(initiative.paused(self.db,'group:12345',self.now+2));self.assertFalse(initiative.paused(self.db,'private:11111111',self.now+2))
         self.assertTrue(initiative.paused(self.db,'group:67890',self.now+2))
         self.assertEqual(self.db.execute("SELECT opted_out FROM contacts WHERE scope='private:11111111'").fetchone()[0],1)
-    async def test_silent_plan_is_reconsidered_after_interval_without_new_anchor(self):
+    async def test_autonomous_activation_never_runs_retired_contact_planner(self):
         self.cfg['behavior']['ownerContactEnabled']=False
-        initiative.incoming(self.db,'private:22222222','22222222','99999999','上次交流',self.now-400)
-        self.p.answer={'contact':False,'delay_minutes':30,'topic':'','cooldown_intervals':2,'cooldown_reason':'no_motive'}
-        await self.plan();self.assertEqual(self.s.planner.plan('private:22222222',self.now-400)['due'],self.now+180)
-        await self.plan(self.now+179);self.assertEqual(len(self.p.calls),1)
-        self.p.answer={'contact':True,'delay_minutes':30,'topic':'接着聊'}
-        await self.plan(self.now+180);self.assertEqual(len(self.p.calls),2);self.assertTrue(self.s.planner.plan('private:22222222',self.now-400)['allowed'])
-    async def test_invalid_plan_retries_only_after_base_interval(self):
-        self.cfg['behavior']['ownerContactEnabled']=False
-        initiative.incoming(self.db,'private:22222222','22222222','99999999','上次交流',self.now-400)
-        self.p.answer={'contact':False,'delay_minutes':0,'topic':'','cooldown_intervals':2}
-        await self.plan();await self.plan(self.now+59);self.assertEqual(len(self.p.calls),1)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM initiative_pauses').fetchone()[0],0)
-        await self.plan(self.now+60);self.assertEqual(len(self.p.calls),2)
-    async def test_scheduled_group_member_does_not_require_keyword_interest(self):
-        self.cfg['behavior'].update(ownerContactEnabled=False,proactiveTargets=[])
-        companion_state.observe(self.db,self.cfg,'group:12345','22222222','你好','real',self.now-400,True)
-        initiative.incoming(self.db,'group:12345','22222222','99999999','你好',self.now-400)
-        self.assertIsNone(companion_state.select_member(self.db,self.cfg,'group:12345',self.now))
-        self.p.answer={'contact':True,'delay_minutes':30,'topic':'继续之前的话题','contact_subject':'22222222'}
-        await self.plan();plan=self.s.planner.plan('group:12345',self.now-400);self.assertTrue(plan['allowed'])
-        item=initiative.candidates(self.db,self.cfg,plan['due'])[0];self.assertEqual(item['contact_subject'],'22222222');self.assertEqual(item['topic'],'继续之前的话题')
-    async def test_late_group_plan_cannot_apply_after_whitelist_removed(self):
-        self.cfg['behavior'].update(ownerContactEnabled=False,proactiveTargets=['group:12345'])
-        initiative.incoming(self.db,'group:12345','22222222','99999999','真实交流',self.now-400)
-        self.p.answer={'contact':False,'delay_minutes':30,'topic':'','cooldown_intervals':2,'cooldown_reason':'busy'};self.p.entered=asyncio.Event();self.p.release=asyncio.Event()
-        self.s.planner.maybe_start(self.cfg,self.p,lambda:True,self.event,self.metrics,self.now);await self.p.entered.wait()
-        self.cfg['behavior']['groupParticipationGroups']=[];self.p.release.set();await self.s.planner.task
-        self.assertEqual(self.db.execute('SELECT count(*) FROM companion_plans').fetchone()[0],0)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM autonomy_decisions').fetchone()[0],0)
+        for scope in ['private:22222222','group:12345']:
+            initiative.incoming(self.db,scope,'22222222','99999999','真实交流',self.now-1000)
+        before=self.db.total_changes
+        for at in [self.now,self.now+900,self.now+1800]:await self.plan(at)
+        self.assertEqual(self.p.calls,[])
+        self.assertIsNone(self.s.planner.task)
+        self.assertEqual(self.db.total_changes,before,'no retired plan or cognitive write')
+        for table in ['companion_plans','companion_plan_members','companion_plan_budget','companion_motives']:
+            self.assertEqual(self.db.execute('SELECT count(*) FROM '+table).fetchone()[0],0)
+        self.assertEqual(initiative.candidates(self.db,self.cfg,self.now+1800),[])
 
-    async def test_group_planner_shares_entry_clock_and_requires_new_message(self):
-        self.cfg['behavior'].update(ownerContactEnabled=False,proactiveTargets=['group:12345'])
-        initiative.incoming(self.db,'group:12345','22222222','99999999','原来消息',self.now-400)
-        self.p.answer={'contact':False,'delay_minutes':30,'topic':''}
-        await self.plan();self.assertEqual(len(self.p.calls),1)
-        self.assertIsNone(await self.group('new',self.now+899))
-        await self.plan(self.now+900);self.assertEqual(len(self.p.calls),1,'timer alone is not a new group message')
-        initiative.incoming(self.db,'group:12345','22222222','99999999','新的旁观话题',self.now+901,directed=False)
-        await self.plan(self.now+1201);self.assertEqual(len(self.p.calls),2)
-    async def test_recent_group_entry_or_real_interaction_defers_group_planning(self):
-        self.cfg['behavior'].update(ownerContactEnabled=False,proactiveTargets=['group:12345'])
+    async def test_owner_check_is_independent_of_proactive_switch(self):
+        self.cfg['proactive']=False
+        self.owner();self.p.answer={'contact':True,'topic':'聊茶','cooldown_intervals':0}
+        await self.plan()
+        self.assertEqual(len(self.p.calls),1)
+        self.assertEqual(self.metrics.get('ownerDecisionRequests'),1)
+        self.assertIsNotNone(autonomy.owner_delivery_candidate(self.db,self.cfg,self.now))
+        self.assertEqual(self.db.execute('SELECT count(*) FROM companion_motives').fetchone()[0],0)
+
+    async def test_owner_result_from_replaced_runtime_cannot_commit(self):
+        self.owner();self.p.answer={'contact':True,'topic':'聊茶','cooldown_intervals':0}
+        self.p.entered=asyncio.Event();self.p.release=asyncio.Event();alive=[True]
+        self.s.planner.maybe_start(self.cfg,self.p,lambda:alive[0],self.event,self.metrics,self.now)
+        await asyncio.wait_for(self.p.entered.wait(),2)
+        alive[0]=False;self.p.release.set();await self.s.planner.task
+        self.assertIsNone(autonomy.owner_delivery_candidate(self.db,self.cfg,self.now))
+        self.assertEqual(self.db.execute("SELECT count(*) FROM autonomy_decisions WHERE kind='owner'").fetchone()[0],0)
+
+    async def test_group_admission_cooldown_has_no_parallel_planner(self):
+        self.cfg['behavior']['ownerContactEnabled']=False
         await self.group()
         initiative.incoming(self.db,'group:12345','22222222','99999999','新的公开话题',self.now+1,directed=False)
-        self.p.answer={'contact':False,'delay_minutes':30,'topic':''}
-        # Clear the model extension to test the shared base clock independently.
-        self.db.execute('DELETE FROM initiative_pauses');self.db.commit()
-        await self.plan(self.now+301);self.assertEqual(len(self.p.calls),1)
-        autonomy.note_interaction(self.db,self.cfg,'group:12345','22222222',self.now+600)
-        await self.plan(self.now+900);self.assertEqual(len(self.p.calls),1)
-        await self.plan(self.now+1500);self.assertEqual(len(self.p.calls),2)
-    async def test_group_plan_late_result_cannot_add_cooldown_after_conversation(self):
-        self.cfg['behavior'].update(ownerContactEnabled=False,proactiveTargets=['group:12345'])
-        initiative.incoming(self.db,'group:12345','22222222','99999999','真实交流',self.now-1000)
-        self.p.answer={'contact':False,'delay_minutes':30,'topic':'','cooldown_intervals':2,'cooldown_reason':'busy'};self.p.entered=asyncio.Event();self.p.release=asyncio.Event()
-        self.s.planner.maybe_start(self.cfg,self.p,lambda:True,self.event,self.metrics,self.now);await asyncio.wait_for(self.p.entered.wait(),2)
-        autonomy.note_interaction(self.db,self.cfg,'group:12345','22222222',self.now+1)
-        self.p.release.set();await self.s.planner.task
-        self.assertEqual(self.db.execute('SELECT count(*) FROM autonomy_decisions').fetchone()[0],0)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM initiative_pauses').fetchone()[0],0)
+        await self.plan(self.now+301);await self.plan(self.now+1800)
+        self.assertEqual(len(self.p.calls),1,'only the actual group admission judgment')
+        self.assertEqual(self.db.execute('SELECT count(*) FROM companion_plan_budget').fetchone()[0],0)
+        self.assertIsNone(await self.group('two',self.now+899))
+        self.assertIsNotNone(await self.group('two',self.now+2700))
 
 
 if __name__=='__main__':unittest.main(verbosity=2)
