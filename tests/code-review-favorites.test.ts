@@ -9,7 +9,7 @@ import {pathToFileURL} from 'node:url';
 const source=path.resolve(process.env.REVIEW_SOURCE||'.');
 const {registerQQFavorites}=await import(pathToFileURL(path.join(source,'apps/control-api/src/qq-favorites.ts')).href);
 const {withFavoriteIndex,readFavoriteIndex,writeFavoriteIndex}=await import(pathToFileURL(path.join(source,'packages/shared/qq-favorite-index.ts')).href);
-const uncertain={description:'无法确定',meaning:'',avoid:'',confidence:'uncertain',version:1,model:'fixture',at:'now',usage:null,costStatus:'unknown'};
+const uncertain={description:'模糊人物抬手，具体手势不清',meaning:'',avoid:'',confidence:'uncertain',version:1,model:'fixture',at:'now',usage:null,costStatus:'unknown'};
 const id='qqf_'+createHash('sha256').update('one').digest('hex').slice(0,16);
 async function fixture(t:any,caption?:any,existing=false){
  const root=await mkdtemp(path.resolve('.local/code-review-favorite-')),app=Fastify(),bot={id:'a',generation:1,qq_uin:'90000',protocol:'napcat',desired_state:'running',health:{protocol:{online:true}}};
@@ -25,10 +25,10 @@ async function fixture(t:any,caption?:any,existing=false){
 test('web sync never turns QQ raw descriptions into automatic semantics',async t=>{
  const {sync}=await fixture(t);const state=await sync();assert.equal(state.items[0].meaning,'');assert.equal(state.items[0].enabled,false);assert.equal(state.items[0].semanticStatus,'raw_text');assert.match(state.items[0].rawText,/QQ/);
 });
-test('web resync shares the bounded uncertain attempt ledger',async t=>{
+test('web resync reuses a description without re-billing uncertain interpretations',async t=>{
  let calls=0;const {sync,root}=await fixture(t,async()=>{calls++;return uncertain},true);
  for(let n=0;n<4;n++){await sync();await withFavoriteIndex(root,'a',async()=>{const index=await readFavoriteIndex(root,'a');index.items[0].semanticRetryAt=0;await writeFavoriteIndex(root,'a',index)})}
- const index=await readFavoriteIndex(root,'a');assert.equal(calls,3);assert.equal(index.items[0].semanticAttempts,3);assert.equal(index.items[0].semanticStatus,'uncertain');assert.equal(index.items[0].enabled,false);
+ const index=await readFavoriteIndex(root,'a');assert.equal(calls,1);assert.equal(index.items[0].semanticAttempts,0);assert.equal(index.items[0].semanticStatus,'ready');assert.equal(index.items[0].enabled,true);assert.equal(index.items[0].meaning,'画面：'+uncertain.description);assert.equal(index.items[0].semantic.confidence,'uncertain');
 });
 test('web sync cannot overwrite concurrent maintenance retry state or invent manual consent',async t=>{
  let enter!:()=>void,release!:()=>void;const entered=new Promise<void>(r=>enter=r),resume=new Promise<void>(r=>release=r);

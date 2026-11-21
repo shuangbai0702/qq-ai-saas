@@ -67,7 +67,7 @@ test('import storage failure and replaced owner are not downgraded into per-imag
  }
 });
 const semantic={description:'挥手',meaning:'欢迎',avoid:'严肃时',confidence:'clear' as const,version:1 as const,model:'fixture',at:'now',usage:null,costStatus:'unknown' as const};
-const uncertain={description:'好像在挥手',meaning:'',avoid:'',confidence:'uncertain' as const,version:1 as const,model:'fixture',at:'now',usage:null,costStatus:'unknown' as const};
+const uncertain={description:'角色抬手，手势含义不明确',meaning:'',avoid:'',confidence:'uncertain' as const,version:1 as const,model:'fixture',at:'now',usage:null,costStatus:'unknown' as const};
 async function fixture(){
  const root=await mkdtemp(path.resolve('.local/favorite-maintenance-')),bot={id:'a',tenant_id:'tenant',generation:1,revision:1,qq_uin:'90000',desired_state:'running',health:{sampledAt:new Date().toISOString(),protocol:{online:true}},config:{baseUrl:'https://fixture.test/v1',model:'fixture-model',behavior:{memeEnabled:true,qqFavoriteSaveEnabled:true}}};
  const db={query:async()=>[bot]},owner=new FavoriteMaintenance(db as any,root,Buffer.alloc(32),{call:async(_r,_b,action)=>action==='get_login_info'?{user_id:90000}:[],download:async()=>Buffer.from(''),convert:async(input:string,output:string)=>{await writeFile(output+'.png','converted');return{suffix:'.png',mime:'image/png',animated:false}}});
@@ -114,14 +114,35 @@ test('qq raw text is stored as rawText and never enables automatic selection',as
  const after=await readFavoriteIndex(root,'a');const annotated=after.items.find((i:any)=>i.id===item.id);
  assert.equal(annotated.meaning,'欢迎');assert.equal(annotated.enabled,true);assert.equal(annotated.semanticStatus,'ready');assert.equal(annotated.contentHash,createHash('sha256').update('converted').digest('hex'));
 });
-test('uncertain results retry at most three real vision attempts across restarts',async()=>{
+test('uncertain interpretation is selectable by picture description without repeated vision',async()=>{
  const {root,bot,owner}=await fixture();let calls=0;
  owner.caption=async()=>{calls++;return uncertain};
  for(let n=0;n<4;n++){await owner.maintain(bot,new AbortController().signal);const index=await readFavoriteIndex(root,'a');index.items[0].semanticRetryAt=0;await writeFavoriteIndex(root,'a',index)}
  const index=await readFavoriteIndex(root,'a');
- assert.equal(index.items[0].semanticAttempts,3);assert.equal(index.items[0].semanticStatus,'uncertain');assert.equal(calls,3,'a fourth real vision attempt must never happen');
- assert.equal(index.items[0].meaning,'');assert.equal(index.items[0].enabled,false);
+ assert.equal(index.items[0].semanticAttempts,0);assert.equal(index.items[0].semanticStatus,'ready');assert.equal(calls,1,'a usable description must not trigger repeated vision');
+ assert.equal(index.items[0].meaning,'画面：'+uncertain.description);assert.equal(index.items[0].enabled,true);assert.equal(index.items[0].semantic.confidence,'uncertain');
 });
+test('stored uncertain descriptions are adopted once without vision and manual disablement wins',async()=>{
+ const {root,bot,owner}=await fixture();const index=await readFavoriteIndex(root,'a'),item=index.items[0];
+ Object.assign(item,{semantic:{...uncertain,meaning:'猜测为嘲笑',avoid:'猜测场景'},semanticStatus:'uncertain',semanticAttempts:3,enabled:false});
+ const manual={...item,id:'qqf_aaaaaaaaaaaaaaaa',file:'qqf_aaaaaaaaaaaaaaaa.png',manual:true};index.items.push(manual);
+ await writeFile(path.join(favoriteDirectory(root,'a'),'images',manual.file),'manual');await writeFavoriteIndex(root,'a',index);
+ owner.caption=async()=>{throw Error('cached descriptions must not be billed again')};
+ await owner.maintain(bot,new AbortController().signal);const first=await readFavoriteIndex(root,'a');
+ assert.equal(first.items[0].meaning,'画面：'+uncertain.description);assert.equal(first.items[0].avoid,'');assert.equal(first.items[0].enabled,true);assert.equal(first.items[0].semantic.confidence,'uncertain');
+ assert.equal(first.items[1].enabled,false);assert.equal(first.items[1].manual,true);
+ await owner.maintain(bot,new AbortController().signal);assert.deepEqual((await readFavoriteIndex(root,'a')).items,first.items);
+ const python=path.resolve(`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`);
+ const probe=`import sys,json
+sys.path.insert(0,'adapters/astrbot')
+from qq_favorites import catalog,descriptions
+rows=catalog(sys.argv[1],'90000');assert len(rows)==1
+assert rows[0]['meaning'].startswith('画面：') and rows[0]['avoid']==''
+assert descriptions(sys.argv[1],'90000')[rows[0]['id']]['meaning']==rows[0]['meaning']
+print(json.dumps({'selected':rows[0]['id']}))`;
+ assert.equal(JSON.parse(execFileSync(python,['-B','-c',probe,path.join(root,'bots/a')],{encoding:'utf8',windowsHide:true})).selected,item.id);
+});
+
 test('pressure and chat-busy defer without consuming attempts and record waiting evidence',async()=>{
  const {root,bot,owner}=await fixture();let calls=0;
  owner.caption=async()=>{calls++;throw Error('favorite_annotation_chat_busy')};
@@ -136,8 +157,8 @@ test('legacy raw-text-enabled items are demoted at the maintenance boundary and 
  let calls=0;owner.caption=async()=>{calls++;return uncertain};
  await owner.maintain(bot,new AbortController().signal);
  const index=await readFavoriteIndex(root,'a');const item=index.items[0];
- assert.equal(item.meaning,'');assert.equal(item.enabled,false);assert.equal(item.rawText,'旧文字');assert.equal(item.rawSource,'legacy_text');
- assert.equal(item.semanticStatus,'uncertain');assert.equal(item.semanticAttempts,1,'demoted raw_text items re-enter the bounded vision queue');
+ assert.equal(item.meaning,'画面：'+uncertain.description);assert.equal(item.enabled,true);assert.equal(item.rawText,'旧文字');assert.equal(item.rawSource,'legacy_text');
+ assert.equal(item.semanticStatus,'ready');assert.equal(item.semanticAttempts,0,'a useful description needs no interpretation retry');
  assert.equal(calls,1);
  await assert.doesNotReject(readFile(path.join(favoriteDirectory(root,'a'),'images',item.file)),'the original picture must be kept');
 });
@@ -151,8 +172,8 @@ test('queue diagnostics expose evidence fields without changing any gate',async(
  const {root,bot,owner}=await fixture();owner.caption=async()=>uncertain;await owner.maintain(bot,new AbortController().signal);
  const info=await favoriteQueueDiagnostics(owner.db as any,root,'a');
  assert.ok(info);assert.equal(info.accountMatched,true);assert.equal(info.providerReady,true);assert.equal(info.revision,1);
- assert.equal(info.queueSize,1);const item=info.items[0];
- assert.equal(item.uncertainAttempts,1);assert.equal(item.manual,false);assert.ok(item.fileReadable,'image readability is part of the diagnosis');
+ assert.equal(info.queueSize,0);const item=info.items[0];
+ assert.equal(item.uncertainAttempts,0);assert.equal(item.manual,false);assert.ok(item.fileReadable,'image readability is part of the diagnosis');
 });
 
 

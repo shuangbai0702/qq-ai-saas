@@ -1,16 +1,14 @@
 import {SingleFlight} from '../../../packages/shared/single-flight.js';
 /** Bounded maintenance on the existing Agent tick, no per-bot timer/Agent.
  * Semantics (D8): QQ raw text (modifyWord/desc/ocrWord) is stored as rawText
- * and never enables automatic selection; only a manual entry or a vision
- * result with confidence=clear whose content hash still matches publishes a
- * meaning. Uncertain images get at most 3 real vision attempts; pressure or
- * chat-busy defers without consuming an attempt. */
+ * and never enables automatic selection. A verified vision result publishes
+ * either a known use or an objective description, retaining uncertainty. */
 import {mkdir,writeFile,rm,rename,lstat,readdir,stat,readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import type {Sql} from '../../../packages/database/index.js';
 import {runtimeStatus} from '../../../packages/shared/runtime-status.js';
-import {createFavoriteCaptioner,favoriteAnnotationDue,applyFavoriteAnnotation} from '../../../packages/shared/qq-favorite-semantics.js';
+import {createFavoriteCaptioner,favoriteAnnotationDue,applyFavoriteAnnotation,promoteFavoriteDescription,favoriteSelectionText} from '../../../packages/shared/qq-favorite-semantics.js';
 import {downloadFavorite,nativeCall,normalize} from '../../../packages/shared/qq-favorite-media.js';
 import {favoriteDirectory,readFavoriteIndex,writeFavoriteIndex,withFavoriteIndex} from '../../../packages/shared/qq-favorite-index.js';
 const MAX_QUEUE_TICKS=2,MAX_ACTIVE_BOTS=3;
@@ -60,14 +58,15 @@ export class FavoriteMaintenance{
   return false;
  }
  // Old-layout items whose meaning came from QQ raw text lose the automatic
- // enablement but keep their picture and record. Valid vision-clear and
- // manual items are preserved untouched.
- async migrateLegacyRawText(bot:any,signal:AbortSignal){
+ // enablement but keep their picture and record. Stored vision descriptions
+ // become selectable without another model request; manual items are untouched.
+ async reconcileAnnotations(bot:any,signal:AbortSignal){
   const before=await readFavoriteIndex(this.root,bot.id);if(before.account!==String(bot.qq_uin))return;
-  if(!before.items.some((i:any)=>i.meaning&&!i.manual&&!i.semantic))return;
+  if(!before.items.some((i:any)=>!i.manual&&(i.meaning&&!i.semantic||!i.meaning&&i.semanticStatus==='uncertain'&&favoriteSelectionText(i.semantic))))return;
   await withFavoriteIndex(this.root,bot.id,async()=>{await this.valid(bot,signal);const index=await readFavoriteIndex(this.root,bot.id);if(index.account!==String(bot.qq_uin))return;
    let changed=false;
    for(const item of index.items){
+    if(promoteFavoriteDescription(item))changed=true;
     if(item.meaning&&!item.manual&&!item.semantic){item.rawText=item.rawText||String(item.meaning);item.rawSource=item.rawSource||'legacy_text';item.meaning='';item.avoid='';item.enabled=false;item.semanticStatus='raw_text';changed=true}
    }
    if(changed)await writeFavoriteIndex(this.root,bot.id,index);
@@ -124,7 +123,7 @@ export class FavoriteMaintenance{
    if(attempted===4)index.importCursor=lastAttempted;else delete index.importCursor;
    await writeFavoriteIndex(this.root,bot.id,index);
   });
-  await this.migrateLegacyRawText(bot,signal);
+  await this.reconcileAnnotations(bot,signal);
   const index=await readFavoriteIndex(this.root,bot.id);if(index.account!==String(bot.qq_uin))return;
   const due=index.items.filter((i:any)=>favoriteAnnotationDue(i)).sort((a:any,b:any)=>Number(importedIds.has(b.id))-Number(importedIds.has(a.id))||Number(savedIds.has(b.id))-Number(savedIds.has(a.id)));
   const pending=due.slice(0,MAX_QUEUE_TICKS);
@@ -137,7 +136,7 @@ export class FavoriteMaintenance{
    await withFavoriteIndex(this.root,bot.id,async()=>{await this.valid(bot,signal);const latest=await readFavoriteIndex(this.root,bot.id);if(latest.account!==String(bot.qq_uin))return;
     const current=latest.items.find((i:any)=>i.id===item.id);if(!current||current.manual||current.meaning||current.file!==item.file)return;
     if(!error&&(before!==after||!before)){current.lastVisionError='favorite_content_changed';current.semanticRetryAt=Date.now()+60000}
-    else{applyFavoriteAnnotation(current,result,error,Date.now(),Math.max(0,Date.now()-startedAt));if(!error&&result.confidence==='clear')current.contentHash=after}
+    else{applyFavoriteAnnotation(current,result,error,Date.now(),Math.max(0,Date.now()-startedAt));if(!error)current.contentHash=after}
     await writeFavoriteIndex(this.root,bot.id,latest);
    });
   }

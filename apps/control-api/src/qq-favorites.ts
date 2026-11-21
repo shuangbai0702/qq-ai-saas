@@ -1,7 +1,7 @@
 import {atomicJson as atomic} from '../../../packages/shared/fs-atomic.js';
 import {favoriteDirectory,withFavoriteIndex,readFavoriteIndex,writeFavoriteIndex} from '../../../packages/shared/qq-favorite-index.js';
 import type {FastifyInstance} from 'fastify';import {readFile,writeFile,mkdir,rename,rm,readdir,lstat} from 'node:fs/promises';import path from 'node:path';import {createHash,randomUUID} from 'node:crypto';import {z} from 'zod';
-import {favoriteAnnotationDue,applyFavoriteAnnotation,type FavoriteAnnotation} from '../../../packages/shared/qq-favorite-semantics.js';
+import {favoriteAnnotationDue,applyFavoriteAnnotation,promoteFavoriteDescription,type FavoriteAnnotation} from '../../../packages/shared/qq-favorite-semantics.js';
 type Bot={id:string;protocol:string;qq_uin?:string;generation:number;desired_state:string;health?:any};
 type Item={id:string;file:string;mime:string;meaning:string;avoid:string;enabled:boolean;animated:boolean;manual?:boolean;semantic?:FavoriteAnnotation;semanticStatus?:'ready'|'uncertain'|'pending'|'failed'|'raw_text';rawText?:string;rawSource?:string;semanticAttempts?:number;semanticFailures?:number;semanticRetryAt?:number;contentHash?:string;lastVisionError?:string;semanticWaitReason?:string;semanticWaitMs?:number;queuedAt?:number};
 type Index={account:string;enabled:boolean;syncedAt?:string;items:Item[];failed?:number;limitReached?:boolean};
@@ -34,6 +34,7 @@ export function registerQQFavorites(app:FastifyInstance,root:string,owned:(req:a
      // Bounded work per import, not a daily quota. Re-sync continues remaining
      // missing descriptions using cached images without another QQ download.
      if(item.meaning&&!item.manual&&!item.semantic){item.rawText=item.rawText||item.meaning;item.rawSource=item.rawSource||'legacy_text';item.meaning='';item.avoid='';item.enabled=false;item.semanticStatus='raw_text'}
+     promoteFavoriteDescription(item);
      if(deps.caption&&favoriteAnnotationDue(item)){
       if(annotationAttempts<8){
        item.semanticStatus='pending';

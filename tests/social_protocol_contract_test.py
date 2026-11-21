@@ -61,6 +61,19 @@ class SocialContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(listed['meaning'],'向对方挥手打招呼');self.assertEqual(listed['avoid'],'不用于嘲笑');self.assertTrue(listed['selection_disabled'])
         result=json.loads(await tool.call(self.context,operation='prepare',favorite_handle=listed['handle']))
         self.assertEqual(result['status'],'disabled_favorite');self.assertNotIn('_hosted_tool_sticker',self.extra)
+    async def test_uncertain_context_uses_observed_description_in_actual_prepare(self):
+        row={'md5':'e'*32,'resId':'description-fixture'};self.favorite_rows.append(row)
+        folder=Path(self.tmp.name)/'qq-favorites';folder.mkdir()
+        identifier=qq_favorite_tools.description_id(row)
+        item={'id':identifier,'enabled':True,'meaning':'画面：橘猫张嘴','avoid':'猜测的情绪','semanticStatus':'ready','semantic':{'confidence':'uncertain','description':'橘猫张嘴','meaning':'愤怒大叫'}}
+        (folder/'index.json').write_text(json.dumps({'account':'900001','items':[item]}),encoding='utf8')
+        tool=qq_favorite_tools.tools(self.event,{'behavior':{'memeEnabled':True}},self.st.db,self.tmp.name,lambda:True)[0]
+        listed=json.loads(await tool.call(self.context,operation='list'))['items'][0]
+        self.assertEqual(listed['meaning'],'画面：橘猫张嘴');self.assertEqual(listed['avoid'],'');self.assertFalse(listed['selection_disabled'])
+        with patch.object(qq_favorite_tools,'prepare_original',return_value=(self.raw,'send_cache')):
+            result=await tool.call(self.context,operation='prepare',favorite_handle=listed['handle'])
+        self.assertIn('已选定真实QQ收藏',result);self.assertIn('_hosted_tool_sticker',self.extra)
+
     async def test_prepare_is_idempotent_per_work_and_never_resends_after_dispatch(self):
         row={'md5':'a'*32,'resId':'fixture-resid','url':'https://qpic.cn/fixture'};self.favorite_rows.append(row)
         other={'md5':'b'*32,'resId':'fixture-resid-2','url':'https://qpic.cn/fixture2'};self.favorite_rows.append(other)
