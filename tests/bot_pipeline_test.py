@@ -112,6 +112,16 @@ class Pipeline(unittest.TestCase):
   self.assertEqual([e['receipt'] for e in effects],['100','101','102','103'])
   self.p.internal_effect(work,'set_self_longnick','self')
   self.assertEqual(effect_units(self.p.internal_result('task')['effects']),2)
+ def test_internal_failure_cannot_be_finalized_as_silent_success(self):
+  for index,status in enumerate(('blocked','canceled','budget_exhausted','unknown','partial')):
+   identity={'id':'failed-'+str(index),'tenantId':'t','botId':'logical-bot','epoch':1,'generation':7,'revision':1,'cycleId':'cycle','kind':'research','expiresAt':time.time()*1000+60000}
+   work=self.p.bind_internal(event(),self.lease,identity,'self','check')
+   result={'status':status,'stopReason':'model_request_failed:RateLimitError','effects':[]}
+   self.p.finish_internal(work,result);self.p.finish(work,{})
+   row=self.db.execute('SELECT status,reason,result FROM pipeline_events WHERE event=?',(identity['id'],)).fetchone()
+   self.assertEqual(row[:2],(status,result['stopReason']))
+   self.assertEqual(self.p.internal_result(identity['id'])['status'],status)
+   self.assertTrue(row[2])
  def test_output_plan_is_complete_before_dispatch_and_delays_are_finite(self):
   self.assertEqual(OutputPlan(('one','image'),(0,.8)).messages,('one','image'))
   for messages,delays in [((),()),(('one',),()),(tuple(range(5)),(0,)*5),(('one',),(-1,)),(('one',),(math.nan,)),(('one',),(math.inf,)),(('one',),(True,))]:

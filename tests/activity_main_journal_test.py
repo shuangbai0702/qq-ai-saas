@@ -28,6 +28,8 @@ class Activity(unittest.IsolatedAsyncioTestCase):
         self.requests=[];self.tool_step=False;self.request_gate=None
         async def handler(request):
             body=json.loads(request.content);self.requests.append(body)
+            if getattr(self,'response_status',None):
+                return httpx.Response(self.response_status,json={'error':{'message':'fixture request limit','type':'rate_limit_error','code':'rate_limit_exceeded'}})
             if self.request_gate:
                 entered,release=self.request_gate;entered.set();await release.wait()
             msg={'role':'assistant','content':'[NO_REPLY]'};finish='stop'
@@ -71,6 +73,14 @@ class Activity(unittest.IsolatedAsyncioTestCase):
 
     async def activate(self,identifier=None,continuation=False,action_patch=None):
         return await self.brain.execute('qq',self.activation_request(identifier,continuation,action_patch))
+    async def test_real_sdk_rate_limit_remains_failed_in_pipeline_settlement(self):
+        self.response_status=429;request=self.activation_request()
+        result=await self.brain.execute('qq',request)
+        self.assertEqual(result['status'],'blocked',result)
+        row=self.st.db.execute('SELECT status,reason FROM pipeline_events WHERE event=?',(request['work']['id'],)).fetchone()
+        self.assertEqual(row[0],'blocked');self.assertNotEqual(row[1],'no_output')
+        self.assertEqual(len(self.requests),1)
+        self.assertFalse(any(action.startswith('send_') for action,_ in self.native_calls))
     async def test_scheduled_private_reply_passes_native_guard_only_with_exact_reservation(self):
         import group_actions
         from aiocqhttp import CQHttp

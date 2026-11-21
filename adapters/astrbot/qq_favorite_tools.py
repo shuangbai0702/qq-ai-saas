@@ -216,7 +216,15 @@ def tools(event,cfg,db,root,current):
                     # semantics. Unindexed favorites keep the legacy explicit
                     # prepare path; automatic semantic selection never sees them.
                     known=meanings.get(description_id(row))
-                    if known and item(row)['selection_disabled']:return json.dumps({'status':'disabled_favorite','meaning':'该收藏已停用或语义尚未确认，未准备附图。'},ensure_ascii=False)
+                    if known and item(row)['selection_disabled']:
+                        state=known.get('semanticStatus') or 'unknown'
+                        disabled=bool(known.get('manual') or state=='ready')
+                        status='disabled_favorite' if disabled else 'semantic_'+('uncertain' if state=='uncertain' else 'failed' if state=='failed' else 'pending')
+                        meaning=('该收藏已停用，未准备附图。' if disabled else
+                                 '图片语义未能确认，未准备附图；不是审核或收藏失败，不需要重复收藏。' if state=='uncertain' else
+                                 '图片语义识别失败，未准备附图；不是用户停用，不需要重复收藏。' if state=='failed' else
+                                 '图片语义尚待后台处理，未准备附图；不是审核或用户停用，不需要重复收藏。')
+                        return json.dumps({'status':status,'semanticStatus':state,'meaning':meaning},ensure_ascii=False)
                     # One Work prepares one attachment. A repeat call for the same
                     # handle is already_prepared (no second download); a different
                     # handle may only replace the attachment before any dispatch,

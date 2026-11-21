@@ -9,13 +9,28 @@ test('recent saved original wakes semantic discovery without claiming a confirme
  const {root,bot,owner}=await fixture();const digest='a'.repeat(32),id='qqf_'+createHash('sha256').update(digest).digest('hex').slice(0,16);
  const directory=path.join(favoriteDirectory(root,'a'),'uploads');await mkdir(directory);await writeFile(path.join(directory,digest+'.image'),'original');
  assert.equal(await owner.recentSavePending(bot),true);
- owner.caption=async()=>semantic;await owner.run(new AbortController().signal);
+ owner.caption=async()=>semantic;await owner.run(new AbortController().signal);await owner.job;
  let index=await readFavoriteIndex(root,'a');assert.equal(index.items.some((item:any)=>item.id===id),false,'unconfirmed upload cannot enter the catalog');
  index.items.push({id,file:id+'.png',meaning:'',enabled:false,semanticStatus:'pending',semanticRetryAt:0});await writeFavoriteIndex(root,'a',index);
  assert.equal(await owner.recentSavePending(bot),true);
  index.items.at(-1).semanticRetryAt=Date.now()+60000;await writeFavoriteIndex(root,'a',index);assert.equal(await owner.recentSavePending(bot),false);
  index.items.at(-1).semanticRetryAt=0;index.items.at(-1).meaning='贴贴';index.items.at(-1).semanticStatus='ready';await writeFavoriteIndex(root,'a',index);
  assert.equal(await owner.recentSavePending(bot),false,'ready image does not create repeated discovery');
+});
+
+test('slow accounts do not serialize other accounts; stop drains and prevents late writes',async()=>{
+ const {bot,owner}=await fixture();const bots=['a','b','c','d'].map(id=>({...bot,id}));
+ owner.db={query:async()=>bots} as any;
+ owner.recentSavePending=async()=>false;
+ const started:string[]=[];let release!:()=>void;const slow=new Promise<void>(r=>release=r);
+ owner.maintain=async(b,signal)=>{started.push(b.id);if(b.id==='a')await slow;signal.throwIfAborted()};
+ await owner.run(owner.controller.signal);await new Promise(r=>setImmediate(r));
+ assert.deepEqual(started,['a','b','c']);
+ await owner.run(owner.controller.signal);await new Promise(r=>setImmediate(r));
+ assert.deepEqual(started,['a','b','c','d'],'completed accounts release slots without waiting for slow a');
+ let stopped=false;const stopping=owner.stop().then(()=>{stopped=true});await new Promise(r=>setImmediate(r));
+ assert.equal(stopped,false);release();await stopping;assert.equal(owner.job,undefined);
+ await owner.run(new AbortController().signal);assert.equal(started.length,4,'closed owner cannot launch another account');
 });
 
 test('fresh confirmed imports are annotated before the older backlog in the same job',async()=>{

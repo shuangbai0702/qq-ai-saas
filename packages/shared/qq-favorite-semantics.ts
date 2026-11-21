@@ -24,12 +24,13 @@ async function preview(file:string,output:string,signal:AbortSignal){
 }
 
 export function createFavoriteCaptioner(db:Sql,key:Buffer,root:string,transport= modelHttp){
- // Two imports may run concurrently, but only one thumbnail/model task may run.
- let tail:Promise<unknown>=Promise.resolve();
+ // Serialize only the same account; unrelated model configurations must not
+ // wait for another Bot's request. Entries exist only while work is in flight.
+ const tails=new Map<string,Promise<void>>();
  return async(bot:{id:string;generation:number;qq_uin?:string},file:string,parent:AbortSignal):Promise<FavoriteAnnotation>=>{
   const signal=AbortSignal.any([parent,AbortSignal.timeout(25000)]);
-  const preceding=tail;
-  let release!:()=>void;tail=new Promise<void>(r=>release=r);
+  const preceding=tails.get(bot.id);
+  let release!:()=>void;const settled=new Promise<void>(r=>release=r);tails.set(bot.id,settled);
   try{
    await preceding;signal.throwIfAborted();
    if(process.platform==='linux'){
@@ -38,7 +39,9 @@ export function createFavoriteCaptioner(db:Sql,key:Buffer,root:string,transport=
    }
    const [b]=await db.query('SELECT b.*,q.qq_uin,c.config,s.ciphertext FROM bots b JOIN qq_bindings q ON q.bot_id=b.id JOIN bot_config_revisions c ON c.bot_id=b.id AND c.revision=b.revision LEFT JOIN secrets s ON s.bot_id=b.id AND s.tenant_id=b.tenant_id WHERE b.id=$1 AND b.deleted_at IS NULL',[bot.id]);
    if(!b||b.generation!==bot.generation||b.qq_uin!==bot.qq_uin||!b.config.baseUrl||!b.config.model)throw new Error('favorite_model_unavailable');
-   const activity=path.join(root,'bots',b.runtime_mode==='shared'?b.group_id:b.id,'ai','memory-activity.json');
+   // RuntimeCare publishes per-Bot activity beside its authoritative store.
+   // Shared-worker activity includes unrelated Bots and can starve annotation.
+   const activity=path.join(root,'bots',b.id,'memory-activity.json');
    try{const a=JSON.parse(await readFile(activity,'utf8'));if(a.active&&Date.now()/1000-a.at<10)throw new Error('favorite_annotation_chat_busy')}catch(e:any){if(e.code!=='ENOENT')throw e}
    const folder=await mkdtemp(path.join(path.dirname(file),'.semantic-'));
    try{
@@ -65,6 +68,6 @@ export function createFavoriteCaptioner(db:Sql,key:Buffer,root:string,transport=
     return{...result,version:1,model,at:new Date().toISOString(),usage:data.usage??null,costStatus:'unknown'};
     });
    }finally{if(path.resolve(folder).startsWith(path.resolve(path.dirname(file))+path.sep))await rm(folder,{recursive:true,force:true})}
-  }finally{release()}
+  }finally{release();if(tails.get(bot.id)===settled)tails.delete(bot.id)}
  };
 }

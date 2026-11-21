@@ -9,6 +9,35 @@ def valid():
     return NS(completion_text='{"summary":"complete"}',raw_completion={'choices':[{'finish_reason':'stop'}]})
 
 class Recovery(unittest.IsolatedAsyncioTestCase):
+    async def test_nonretryable_http_errors_do_not_repeat_paid_requests(self):
+        import httpx
+        from openai import AuthenticationError,PermissionDeniedError,RateLimitError
+        request=httpx.Request('POST','https://summary.example/v1/chat/completions')
+        for cls,status in [(AuthenticationError,401),(PermissionDeniedError,403),(RateLimitError,429)]:
+            calls=[]
+            error=cls('request rejected',response=httpx.Response(status,request=request),body=None)
+            async def stream(**kw):
+                calls.append('stream');raise error
+                yield
+            async def chat(**kw):calls.append('chat');return valid()
+            with self.subTest(status=status),self.assertRaises(cls):
+                await summary_model_output(NS(text_chat_stream=stream,text_chat=chat),{},lambda:True,{},800)
+            self.assertEqual(calls,['stream'])
+
+    async def test_invalid_response_callback_exhausts_stream_before_correction(self):
+        from summary_response import SummaryValidationError
+        calls=[];exhausted=[]
+        async def stream(**kw):
+            calls.append(kw)
+            yield NS(completion_text=None,raw_completion={'choices':[{'finish_reason':'stop'}]}) if len(calls)==1 else valid()
+            exhausted.append(len(calls))
+        def save(response):
+            if not isinstance(response.completion_text,str):raise SummaryValidationError('response_text_missing','$.completion_text')
+        result=await summary_model_output(NS(text_chat_stream=stream),{'prompt':'unchanged material'},lambda:True,{},800,on_response=save)
+        self.assertEqual(result[2],'complete');self.assertEqual(exhausted,[1,2])
+        self.assertEqual(calls[0]['prompt'],calls[1]['prompt'])
+        self.assertIn('$.completion_text',calls[1]['system_prompt'])
+
     async def test_capacity_retry_keeps_all_97_materials_without_budget_growth(self):
         import json
         calls=[];metrics={};materials=[{'event':str(i),'text':'待合并材料'+str(i)} for i in range(97)]

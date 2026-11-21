@@ -13,26 +13,37 @@ import {runtimeStatus} from '../../../packages/shared/runtime-status.js';
 import {createFavoriteCaptioner} from '../../../packages/shared/qq-favorite-semantics.js';
 import {downloadFavorite,nativeCall,normalize} from '../../../packages/shared/qq-favorite-media.js';
 import {favoriteDirectory,readFavoriteIndex,writeFavoriteIndex,withFavoriteIndex} from '../../../packages/shared/qq-favorite-index.js';
-const UNCERTAIN_ATTEMPT_LIMIT=3,FAILURE_ATTEMPT_LIMIT=5,MAX_QUEUE_TICKS=2;
+const UNCERTAIN_ATTEMPT_LIMIT=3,FAILURE_ATTEMPT_LIMIT=5,MAX_QUEUE_TICKS=2,MAX_ACTIVE_BOTS=3;
 const deferError=(error:unknown)=>/pressure|chat_busy/.test(String((error as Error)?.message||error));
 async function contentHash(file:string){const bytes=await readFile(file);return createHash('sha256').update(bytes).digest('hex')}
 export class FavoriteMaintenance{
- closed=false;private flight=new SingleFlight();get job(){return this.flight.pending};controller?:AbortController;next=0;cursor='';private nextDiscovery=0;
+ closed=false;private flight=new SingleFlight();private active=new Map<string,Promise<void>>();
+ get job(){const jobs=[this.flight.pending,...this.active.values()].filter((p):p is Promise<void>=>Boolean(p));return jobs.length?Promise.all(jobs).then(()=>{}):undefined}
+ controller=new AbortController();next=0;cursor='';private nextDiscovery=new Map<string,number>();
  caption:ReturnType<typeof createFavoriteCaptioner>;
  constructor(public db:Sql,public root:string,key:Buffer,public deps={call:nativeCall,download:downloadFavorite,convert:normalize}){this.caption=createFavoriteCaptioner(db,key,root)}
- tick(){if(this.closed||this.job||Date.now()<this.next)return;this.next=Date.now()+5000;this.controller=new AbortController();const signal=AbortSignal.any([this.controller.signal,AbortSignal.timeout(120000)]);void this.flight.run(()=>this.run(signal).catch(()=>{/* retries persisted; no protocol restart */}).finally(()=>{this.controller=undefined}))}
+ tick(){if(this.closed||this.flight.pending||Date.now()<this.next)return;this.next=Date.now()+5000;if(this.controller.signal.aborted)this.controller=new AbortController();const signal=this.controller.signal;void this.flight.run(()=>this.run(signal).catch(()=>{/* retries persisted; no protocol restart */}))}
  async stop(){this.closed=true;this.controller?.abort();await this.job}
  async valid(bot:any,signal:AbortSignal){signal.throwIfAborted();const [current]=await this.db.query('SELECT b.*,q.qq_uin FROM bots b JOIN qq_bindings q ON q.bot_id=b.id WHERE b.id=$1 AND b.tenant_id=$2 AND b.deleted_at IS NULL',[bot.id,bot.tenant_id]);if(!current||current.generation!==bot.generation||current.revision!==bot.revision||current.qq_uin!==bot.qq_uin||!runtimeStatus(current).online)throw new Error('favorite_owner_changed')}
  async run(signal:AbortSignal){
   const bots=await this.db.query("SELECT b.*,q.qq_uin,c.config FROM bots b JOIN qq_bindings q ON q.bot_id=b.id JOIN bot_config_revisions c ON c.bot_id=b.id AND c.revision=b.revision WHERE b.deleted_at IS NULL AND b.desired_state='running' AND b.protocol='napcat' ORDER BY b.id");
   const eligible=bots.filter(b=>runtimeStatus(b).online&&b.config?.behavior?.memeEnabled&&b.config?.behavior?.qqFavoriteSaveEnabled);
+  const present=new Set(eligible.map(b=>b.id));for(const id of this.nextDiscovery.keys())if(!present.has(id))this.nextDiscovery.delete(id);
   const ordered=[...eligible.filter(b=>b.id>this.cursor),...eligible.filter(b=>b.id<=this.cursor)];
   // The existing saved originals are a wake hint, never proof of QQ success.
   // Inspect only small local metadata; idle accounts retain minute discovery.
-  let bot;for(const candidate of ordered){signal.throwIfAborted();if(await this.recentSavePending(candidate)){bot=candidate;break}}
-  if(!bot){if(Date.now()<this.nextDiscovery)return;bot=ordered[0];if(!bot)return;this.nextDiscovery=Date.now()+60000}
-  this.cursor=bot.id;
-  await this.maintain(bot,signal);
+  const candidates=[];for(const bot of ordered){signal.throwIfAborted();if(!this.active.has(bot.id))candidates.push({bot,fresh:await this.recentSavePending(bot)})}
+  candidates.sort((a,b)=>Number(b.fresh)-Number(a.fresh));
+  for(const {bot,fresh} of candidates){
+   signal.throwIfAborted();if(this.closed||this.active.size>=MAX_ACTIVE_BOTS)break;
+   if(!fresh&&Date.now()<(this.nextDiscovery.get(bot.id)||0))continue;
+   this.cursor=bot.id;this.nextDiscovery.set(bot.id,Date.now()+60000);
+   const taskSignal=AbortSignal.any([signal,AbortSignal.timeout(120000)]);
+   // The Agent's existing tick owns scheduling; a slow account cannot hold
+   // the scheduler. No per-Bot timer, durable queue or duplicate index.
+   const task=Promise.resolve().then(()=>this.maintain(bot,taskSignal)).catch(()=>{/* index retains retry state */}).finally(()=>{if(this.active.get(bot.id)===task)this.active.delete(bot.id)});
+   this.active.set(bot.id,task);
+  }
  }
  async recentSavePending(bot:any){
   const directory=path.join(favoriteDirectory(this.root,bot.id),'uploads');

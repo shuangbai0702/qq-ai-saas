@@ -1048,6 +1048,12 @@ class BotPipeline:
             if handoff_id:
                 import agreement_state
                 agreement_state.settle_task(self.db,handoff_id,result)
+        # The same Work is finalized again by finish(). Carry the authoritative
+        # failed/unfinished outcome there instead of turning a failed model
+        # request into a healthy-looking silent/no_output activation. Protocol
+        # attempts and receipts still determine partial/unknown in finish().
+        if result['status']!='completed':
+            work.stop(result.get('stopReason') or result['status'],result['status'])
 
     def bind(self,event,lease):
         group=str(event.get_group_id() or '');subject=str(event.get_sender_id());self_id=str(event.get_self_id())

@@ -28,7 +28,9 @@ test('favorite vision uses bounded real GIF samples, structured output and rejec
  const preview=path.join(root,'preview.jpg'),meta=JSON.parse(execFileSync(python,['adapters/astrbot/favorite_media.py','--preview',file,preview],{encoding:'utf8',windowsHide:true}));
  assert.deepEqual(meta.sampledFrames,[0,1,2]);assert.equal(meta.audio,false);
  assert.ok((await readFile(preview)).length<131072);
- const key=Buffer.alloc(32),bot={id:'fixture',generation:1,qq_uin:'90000'},record={...bot,tenant_id:'tenant',revision:2,runtime_mode:'dedicated',config:{model:'main-fixture',favoriteModel:'image-fixture',baseUrl:'https://model.example/v1'},ciphertext:encrypt(key,'tenant:fixture','fixture-key')};
+ const key=Buffer.alloc(32),bot={id:'fixture',generation:1,qq_uin:'90000'},record={...bot,tenant_id:'tenant',revision:2,runtime_mode:'shared',group_id:'shared-group',config:{model:'main-fixture',favoriteModel:'image-fixture',baseUrl:'https://model.example/v1'},ciphertext:encrypt(key,'tenant:fixture','fixture-key')};
+ await mkdir(path.join(root,'bots','shared-group','ai'),{recursive:true});
+ await writeFile(path.join(root,'bots','shared-group','ai','memory-activity.json'),JSON.stringify({active:true,at:Date.now()/1000}));
  let revision=2,calls=0;
  const db={query:async(sql:string)=>sql.includes('JOIN bot_config_revisions')?[record]:[{...bot,revision}]};
  const caption=createFavoriteCaptioner(db as any,key,root,async(_url,init)=>{
@@ -37,7 +39,23 @@ test('favorite vision uses bounded real GIF samples, structured output and rejec
   return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify(clear)}}],usage:{total_tokens:123}}));
  });
  const result=await caption(bot,file,new AbortController().signal);assert.equal(result.meaning,clear.meaning);assert.deepEqual(result.usage,{total_tokens:123});assert.equal(result.costStatus,'unknown');
+ const activity=path.join(root,'bots',bot.id,'memory-activity.json');await mkdir(path.dirname(activity),{recursive:true});
+ await writeFile(activity,JSON.stringify({active:true,at:Date.now()/1000}));
+ await assert.rejects(()=>caption(bot,file,new AbortController().signal),/chat_busy/);assert.equal(calls,1,'only this Bot can defer its own annotation, before a model request');
+ await writeFile(activity,JSON.stringify({active:false,at:Date.now()/1000}));
  revision=3;await assert.rejects(()=>caption(bot,file,new AbortController().signal),/stale/);assert.equal(calls,2);
+ const entered=barrier(),resume=barrier();
+ const parallel=createFavoriteCaptioner({query:async(sql:string,args:any[])=>sql.includes('JOIN bot_config_revisions')?[{...record,id:args[0],ciphertext:encrypt(key,'tenant:'+args[0],'fixture-key')}]:[{...bot,id:args[0],revision:2}]} as any,key,root,async(_url,init)=>{
+  if((init?.headers as Record<string,string>).Authorization==='Bearer fixture-key'){
+   const payload=JSON.parse(String(init?.body));if(!enteredFirst){enteredFirst=true;entered.release();await resume.promise}
+   assert.equal(payload.model,'image-fixture');
+  }
+  return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify(clear)}}]}));
+ });
+ let enteredFirst=false;const slow=parallel(bot,file,new AbortController().signal);await entered.promise;
+ let timeout:ReturnType<typeof setTimeout>|undefined;
+ try{await Promise.race([parallel({...bot,id:'other'},file,new AbortController().signal),new Promise((_,reject)=>{timeout=setTimeout(()=>reject(Error('unrelated Bot blocked by account queue')),2000)})])}
+ finally{if(timeout)clearTimeout(timeout);resume.release();await slow}
 });
 
 test('cached missing meanings are annotated once; uncertain results remain unavailable; manual edits beat late AI',async()=>{

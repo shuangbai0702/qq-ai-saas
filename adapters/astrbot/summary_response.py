@@ -101,7 +101,10 @@ class SummaryResponseSlot:
     def save(self,response):
         if getattr(response,'is_chunk',False):raise SummaryPersistenceError('summary_partial_response_not_saved')
         text=getattr(response,'completion_text',None)
-        if not isinstance(text,str):raise SummaryPersistenceError('summary_response_text_missing')
+        # A malformed provider response is eligible for bounded output repair;
+        # it is not a database failure. Never save a non-text response as paid
+        # recoverable cognition, nor bypass the normal schema checks.
+        if not isinstance(text,str):raise SummaryValidationError('response_text_missing','$.completion_text')
         from model_cache import response_shape,usage_evidence
         raw=getattr(response,'raw_completion',None)
         # Preserve final/usage evidence, not duplicated reasoning or credentials.
@@ -196,13 +199,15 @@ async def summary_model_output(provider,request,live,metrics,limit,on_decode=Non
             response=await provider.text_chat(**copy.deepcopy(request))
             if on_response:on_response(response)
             return response
-        final=None
+        final=None;validation_error=None
         try:
             async with aclosing(provider.text_chat_stream(**copy.deepcopy(request))) as responses:
                 async for response in responses:
                     if not getattr(response,'is_chunk',False):
-                        if on_response:on_response(response)
                         final=response
+                        if on_response:
+                            try:on_response(response)
+                            except SummaryValidationError as error:validation_error=error
                     if not live():return None
         except SummaryPersistenceError:raise
         except Exception:
@@ -211,6 +216,7 @@ async def summary_model_output(provider,request,live,metrics,limit,on_decode=Non
             # its transport fails. Normal finish/JSON checks still follow.
             metrics['summaryStreamErrorsAfterFinal']=metrics.get('summaryStreamErrorsAfterFinal',0)+1
         if final is None:raise ValueError('incomplete_summary_stream')
+        if validation_error:raise validation_error
         return final
     for attempt in range(2):
         if not live():return None
@@ -218,14 +224,8 @@ async def summary_model_output(provider,request,live,metrics,limit,on_decode=Non
         if restored is None:
             if on_attempt:on_attempt()
             metrics['summaryRequests']=metrics.get('summaryRequests',0)+1
-        read_failed=False
         try:
-            try:
-                response=restored if restored is not None else await asyncio.wait_for(read(),SUMMARY_REQUEST_TIMEOUT_SECONDS+5)
-            except SummaryPersistenceError:raise
-            except Exception:
-                read_failed=True
-                raise
+            response=restored if restored is not None else await asyncio.wait_for(read(),SUMMARY_REQUEST_TIMEOUT_SECONDS+5)
             if restored is not None:metrics['summaryResponsesRecovered']=metrics.get('summaryResponsesRecovered',0)+1
             if not live():return None
             validate_summary_output(response)
@@ -262,8 +262,7 @@ async def summary_model_output(provider,request,live,metrics,limit,on_decode=Non
                 request={**request,'system_prompt':str(request.get('system_prompt') or '')+feedback}
             from httpx import TransportError
             from openai import APIConnectionError,APIError,InternalServerError
-            transport_error=(read_failed or
-                isinstance(error,(TransportError,APIConnectionError,InternalServerError,OSError,asyncio.TimeoutError))
+            transport_error=(isinstance(error,(TransportError,APIConnectionError,InternalServerError,OSError,asyncio.TimeoutError))
                 # OpenAI's SSE iterator raises the base APIError for in-band
                 # error events. HTTP client errors use APIStatusError subclasses.
                 or type(error) is APIError

@@ -55,7 +55,7 @@ class SocialContract(unittest.IsolatedAsyncioTestCase):
         row={'md5':'a'*32,'resId':'fixture-resid','url':'https://qpic.cn/fixture'};self.favorite_rows.append(row)
         folder=Path(self.tmp.name)/'qq-favorites';folder.mkdir()
         identifier='qqf_'+hashlib.sha256(row['md5'].encode()).hexdigest()[:16]
-        (folder/'index.json').write_text(json.dumps({'account':'900001','enabled':True,'items':[{'id':identifier,'meaning':'向对方挥手打招呼','avoid':'不用于嘲笑','enabled':False}]}),encoding='utf8')
+        (folder/'index.json').write_text(json.dumps({'account':'900001','enabled':True,'items':[{'id':identifier,'meaning':'向对方挥手打招呼','avoid':'不用于嘲笑','enabled':False,'manual':True}]}),encoding='utf8')
         tool=qq_favorite_tools.tools(self.event,{'behavior':{}},self.st.db,self.tmp.name,lambda:True)[0]
         listed=json.loads(await tool.call(self.context,operation='list'))['items'][0]
         self.assertEqual(listed['meaning'],'向对方挥手打招呼');self.assertEqual(listed['avoid'],'不用于嘲笑');self.assertTrue(listed['selection_disabled'])
@@ -89,6 +89,17 @@ class SocialContract(unittest.IsolatedAsyncioTestCase):
             self.extra['_hosted_meme_sent']=True
             blocked=await tool.call(self.context,operation='prepare',favorite_handle=first_handle)
             self.assertEqual(json.loads(blocked)['status'],'already_sent');self.assertEqual(prepared.call_count,2)
+    async def test_pending_uncertain_and_failed_semantics_are_not_reported_as_user_disabled(self):
+        row={'md5':'d'*32,'resId':'state-fixture'};self.favorite_rows.append(row)
+        folder=Path(self.tmp.name)/'qq-favorites';folder.mkdir()
+        identifier=qq_favorite_tools.description_id(row)
+        tool=qq_favorite_tools.tools(self.event,{'behavior':{}},self.st.db,self.tmp.name,lambda:True)[0]
+        for state,status in [('raw_text','semantic_pending'),('uncertain','semantic_uncertain'),('failed','semantic_failed')]:
+            (folder/'index.json').write_text(json.dumps({'account':'900001','items':[{'id':identifier,'meaning':'','enabled':False,'semanticStatus':state}]}),encoding='utf8')
+            listed=json.loads(await tool.call(self.context,operation='list'))['items'][0]
+            result=json.loads(await tool.call(self.context,operation='prepare',favorite_handle=listed['handle']))
+            self.assertEqual(result['status'],status);self.assertEqual(result['semanticStatus'],state)
+            self.assertNotIn('_hosted_tool_sticker',self.extra)
     async def test_raw_qq_text_is_never_selection_semantics(self):
         row={'md5':'c'*32,'modifyWord':'来自QQ的文字','resId':'r3'};self.favorite_rows.append(row)
         folder=Path(self.tmp.name)/'qq-favorites';folder.mkdir(exist_ok=True)
@@ -101,7 +112,7 @@ class SocialContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(listed['rawText'],'来自QQ的文字')
         self.assertTrue(listed['selection_disabled'])
         result=json.loads(await tool.call(self.context,operation='prepare',favorite_handle=listed['handle']))
-        self.assertEqual(result['status'],'disabled_favorite')
+        self.assertEqual(result['status'],'semantic_pending')
         self.assertNotIn('_hosted_tool_sticker',self.extra)
         evidence=qq_favorite_tools.descriptions(self.tmp.name,'900001')[identifier]
         self.assertEqual(evidence['rawText'],'来自QQ的文字');self.assertEqual(evidence['semanticStatus'],'raw_text')
