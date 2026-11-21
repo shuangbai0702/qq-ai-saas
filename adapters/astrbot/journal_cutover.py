@@ -287,7 +287,7 @@ def retire_owner_journals(db,bot_id,grant,backup_sha,cfg,product,*,normalize_leg
     from memory_reflection import publish_owner_migration_summary
 
     expected=_verify_grant(db,bot_id,grant,backup_sha)
-    limit=4 if len((cfg.get('behavior') or cfg).get('groupParticipationGroups') or ())>2 else 2
+    limit=2
     group_whitelist(cfg,limit)
     db.execute('PRAGMA secure_delete=ON')
     db.execute('BEGIN IMMEDIATE')

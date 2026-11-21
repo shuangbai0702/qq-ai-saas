@@ -48,7 +48,8 @@ def initialize(db):
 def service(event):return not event.get_extra('_hosted_tool_completion') and (event.get_extra('_hosted_internal_work') or {}).get('principal')=='autonomous-service'
 
 def read_groups(event,cfg):
-    groups=set((cfg.get('behavior') or {}).get('groupParticipationGroups') or [])
+    from shared_context import group_whitelist
+    groups=set(group_whitelist(cfg))
     current=str(event.get_group_id() or '')
     if current:groups.add(current)
     return groups & set(cfg['groups']) if cfg.get('groups') else groups

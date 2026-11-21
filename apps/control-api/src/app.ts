@@ -131,7 +131,7 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
    await tx.query('INSERT INTO instances(bot_id,generation,ai_port,protocol_port,token) VALUES($1,0,$2,$3,$4)',[id,port,port+2,randomBytes(32).toString('hex')]);
    if(v.apiKey)await tx.query('INSERT INTO secrets(id,tenant_id,bot_id,ciphertext) VALUES($1,$2,$3,$4)',[randomUUID(),req.user!.tenant_id,id,encrypt(key,`${req.user!.tenant_id}:${id}`,v.apiKey)]);
    const python=path.resolve(process.env.ASTRBOT_PYTHON||`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`);
-   const groupLimit=v.config.behavior.groupParticipationGroups.length>2?'4':'2';
+   const groupLimit='2';
    await provisionJournal(python,['-B',path.resolve('scripts/initialize-shared-journal.py'),path.join(root,'bots',id),groupLimit],{timeout:10000,windowsHide:true});
    });await audit(req,'bot.created',id);reply.code(201);return{id};
  });

@@ -136,10 +136,11 @@ def record_decision(db,cfg,scope,event,data,reply,now,kind):
 
 
 def group_allowed(cfg, scope):
+    from shared_context import group_whitelist
     b = cfg.get('behavior') or {}
     group = scope[6:] if scope.startswith('group:') else ''
     return bool(b.get('enabled', True) and b.get('groupParticipationEnabled', BEHAVIOR_DEFAULTS['groupParticipationEnabled'])
-                and group and group in b.get('groupParticipationGroups', [])
+                and group and group in group_whitelist(cfg)
                 and (not cfg.get('groups') or group in cfg['groups']))
 
 

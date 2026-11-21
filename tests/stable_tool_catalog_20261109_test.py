@@ -34,7 +34,7 @@ class StableCatalog(unittest.IsolatedAsyncioTestCase):
         scope='group:'+group if group else 'private:'+subject
         work=Work('bot',scope,subject,'99999999','event','tool_result' if completion else 'message',time.time(),self.settings)
         extras={'_hosted_pipeline':work,'_hosted_lease':self.settings}
-        if completion:extras['_hosted_tool_completion']={'id':'result','senderId':subject,'scope':scope,'workId':'original','owner':'permit'}
+        if completion:extras['_hosted_tool_completion']={'id':'result','senderId':subject,'scope':scope,'workId':'original','owner':'permit','originEvent':'original-event'}
         return NS(get_extra=lambda k,d=None:extras.get(k,d),set_extra=lambda k,v:extras.update({k:v}),get_sender_id=lambda:subject,
                   get_self_id=lambda:'99999999',get_group_id=lambda:group,get_message_str=lambda:text,get_messages=lambda:[],message_obj=NS(message_id='event',raw_message={})),scope
 
@@ -139,12 +139,23 @@ class StableCatalog(unittest.IsolatedAsyncioTestCase):
 
     async def test_analysis_declaration_remains_but_execution_cannot_resubmit(self):
         event,scope=self.event(completion=True)
-        tool=next(t for t in bilibili_tools.tools(self.settings,event,lambda:True,[]) if t.name=='bilibili_analyze')
+        tool=next(t for t in self.tools(event,scope) if t.name=='bilibili_analyze')
         reply=json.loads(await tool.call(NS(context=NS(event=event))))
-        self.assertEqual(reply['error'],'completion_cannot_resubmit_analysis')
+        self.assertEqual(reply['code'],'completion_capability_denied')
+        self.assertEqual(reply['receipt']['status'],'rejected')
+        tool=next(t for t in bilibili_tools.tools(self.settings,event,lambda:True,[]) if t.name=='bilibili_analyze')
         self.bridge['settingsRevision']=2;self.write_bridge()
         reply=json.loads(await tool.call(NS(context=NS(event=event))))
         self.assertEqual(reply['error'],'configuration_changed')
+
+    async def test_malformed_continuation_is_rejected_before_bridge_access(self):
+        for key in ('id','owner','workId','scope','senderId','originEvent'):
+            event,scope=self.event(completion=True)
+            del event.get_extra('_hosted_tool_completion')[key]
+            tool=next(t for t in bilibili_tools.tools(self.settings,event,lambda:True,[]) if t.name=='bilibili_search')
+            with patch('bilibili_tools.aiohttp.ClientSession',side_effect=AssertionError('invalid continuation reached network')):
+                result=json.loads(await tool.call(NS(context=NS(event=event))))
+            self.assertEqual(result,{'error':'invalid_continuation','receipt':{'status':'rejected'}})
 
     async def test_z_actual_runner_reset_retains_native_and_feature_schemas_on_completion(self):
         from behavior import install_runtime

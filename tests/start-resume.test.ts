@@ -12,6 +12,7 @@ test('start observes saved NapCat resume, reuses pending start and exposes QR fa
  await db.query("UPDATE bots SET desired_state='offline',observed_state='offline' WHERE id=$1",[id]);
  let launches=0,stops=0,alive=false,login:LoginSnapshot={state:'waiting_scan',qr:'fallback-qr'};let launched:RuntimeContext|undefined;
  agent.ai.start=async()=>{};agent.ai.stop=async()=>{};
+ agent.host.record=async()=>({pid:12345,created:1000} as any);
  agent.protocols.napcat.beginLogin=async ctx=>{launches++;alive=true;launched=ctx};agent.protocols.napcat.stop=async()=>{stops++;alive=false};
  agent.protocols.napcat.getHealth=async()=>({alive,ready:alive,online:alive&&login.state==='online'});agent.protocols.napcat.getLoginState=async()=>login;
  const first=(await call('POST',`/v1/bots/${id}/actions`,{action:'start',idempotencyKey:'start-1'})).json();assert.ok(first.loginSessionId);

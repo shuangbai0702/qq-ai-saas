@@ -14,7 +14,8 @@ def admitted(raw, config):
     if raw.get('post_type') == 'notice' and raw.get('notice_type') == 'group_msg_emoji_like': return False
     group = str(raw.get('group_id') or '')
     if not group: return True
-    whitelist = (config.get('behavior') or {}).get('groupParticipationGroups', [])
+    from shared_context import group_whitelist
+    whitelist = group_whitelist(config)
     configured = config.get('groups', [])
     return group in whitelist and (not configured or group in configured)
 

@@ -15,8 +15,9 @@ def group_whitelist(cfg,group_limit=2):
         raise ValueError('shared_context_invalid_group_whitelist')
     groups=tuple(dict.fromkeys(values))
     if type(group_limit) is not int or group_limit not in (2,4):raise ValueError('shared_context_invalid_group_limit')
-    if len(groups)>group_limit:raise ValueError('shared_context_at_most_two_groups' if group_limit==2 else 'shared_context_group_limit_exceeded')
-    return groups
+    # Old per-Bot limits remain stored as lifecycle evidence, not authority
+    # to activate more groups. Excess configured groups are inert.
+    return groups[:2]
 
 
 def included(scope,cfg,group_limit=2):

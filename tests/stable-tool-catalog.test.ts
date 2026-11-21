@@ -26,11 +26,11 @@ test('Bilibili declarations depend on configured operations while live readiness
 test('real SDK declarations and execution guards remain stable across trusted event variants',async()=>{
  const python=path.resolve(`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`);
  const output=await new Promise<string>((resolve,reject)=>execFile(python,['tests/stable_tool_catalog_20261109_test.py'],{windowsHide:true},(error,stdout,stderr)=>error?reject(new Error(stdout+stderr)):resolve(stdout+stderr)));
- assert.match(output,/Ran 4 tests/);assert.match(output,/OK/);assert.match(output,/byte-identical across 24 event variants/);
+ assert.match(output,/Ran 7 tests/);assert.match(output,/OK/);assert.match(output,/byte-identical across 24 event variants/);
 });
 
 test('periodic guidance follows confirmed business rounds and only appends its exact short text',async()=>{
  const python=path.resolve(`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`);
  const output=await new Promise<string>((resolve,reject)=>execFile(python,['tests/periodic_guidance_20261109_test.py'],{windowsHide:true},(error,stdout,stderr)=>error?reject(new Error(stdout+stderr)):resolve(stdout+stderr)));
- assert.match(output,/Ran 3 tests/);assert.match(output,/OK/);
+ assert.match(output,/Ran 6 tests/);assert.match(output,/OK/);
 });

@@ -1,3 +1,4 @@
+import {stopMockProtocols} from './helpers/mock-lifecycle.js';
 import {TaskHandoffSchema} from '../packages/contracts/autonomous.js';
 import {permitModelFixture,platformContext,nativeMessages} from './helpers/model-fixture.js';
 import {issueTestInvite} from './helpers/invitations.js';
@@ -17,10 +18,10 @@ test('real SDK queues adjacent Work through confirmed settlement and skips only 
   }
   if(body.messages.some((m:any)=>m.role==='system'&&m.content.includes('你是回复适宜性复核器'))){
    const data=JSON.parse(nativeMessages(body).at(-1).content);reviews.push(data);
-   answer=JSON.stringify({action:'keep',responded_events:data.review.latest_messages.filter((m:any)=>m.text.includes('EXTRA_A')).map((m:any)=>m.event)});
+   answer=JSON.stringify({action:'keep',responded_events:data.changes.messages.filter((m:any)=>m.role==='member'&&m.text?.includes('EXTRA_A')).map((m:any)=>m.source_event)});
   }else{
    const data=platformContext(body),text=JSON.stringify(nativeMessages(body).at(-1));
-   const label=text.includes('FIRST_A')?'FIRST_A':text.includes('OTHER_C')?'OTHER_C':'UNEXPECTED_B';
+   const label=text.includes('OTHER_C')?'OTHER_C':text.includes('FIRST_A')||text.includes('EXTRA_A')?'FIRST_A':'UNEXPECTED_B';
    requests.push({label,body,data});
    if(label==='FIRST_A')await new Promise<void>(r=>waiting.set(label,r));
    answer=label==='FIRST_A'?'已回答甲的原问题和补充。':'这是乙的独立答案。';
@@ -42,21 +43,21 @@ test('real SDK queues adjacent Work through confirmed settlement and skips only 
   await until(async()=>waiting.has('FIRST_A'),'first generation held');
   await mock.call(ctx,'/message',{group:'778180',sender:'12345678',mention:true,messageId:84001,text:'EXTRA_A'});
   await mock.call(ctx,'/message',{group:'778180',sender:'87654321',mention:true,messageId:84002,text:'OTHER_C'});
-  await until(async()=>(await state("SELECT count(*) FROM pipeline_events WHERE event IN ('84001','84002')"))[0][0]===2,'both arrivals observed');
+  await until(async()=>(await state("SELECT count(*) FROM pipeline_work_inputs WHERE event IN ('84001','84002')"))[0][0]===2,'both arrivals observed');
   assert.equal(requests.length,1,'same Scope cannot run a competing main generation');waiting.get('FIRST_A')!();
-  await until(async()=>(await state("SELECT status FROM pipeline_events WHERE event='84002'"))[0]?.[0]==='sent','independent question sent');
+  await until(async()=>(await state("SELECT exit_reason FROM pipeline_events WHERE event='84000'"))[0]?.[0]==='inputs_decided','independent question settled by the same Work');
   assert.deepEqual(requests.map(x=>x.label),['FIRST_A','OTHER_C']);
-  assert.deepEqual(await state("SELECT status,reason FROM pipeline_events WHERE event='84001'"),[['silent','confirmed_event_coverage']]);
-  const timeline=requests[1].data.conversation_timeline;
-  assert.ok(timeline.some((x:any)=>x.role==='self'&&x.text.includes('已回答甲')&&x.recipient_id==='12345678'&&x.receipt==='confirmed'&&x.message_ids.length),'queued Work sees reply confirmed after its own ingress');
-  assert.ok(reviews[0].context.conversation.timeline.some((x:any)=>x.sender_id==='87654321'&&x.source_event==='84002'),'review sees bounded authoritative multi-person timeline');
+  assert.deepEqual(await state("SELECT event,status FROM pipeline_work_inputs WHERE event IN ('84001','84002') ORDER BY event"),[['84001','settled'],['84002','settled']]);
+  assert.deepEqual(await state("SELECT event,passes FROM pipeline_events WHERE event='84000'"),[['84000',2]],'one canonical Work continues for the independent question');
+  assert.ok(nativeMessages(requests[1].body).some((x:any)=>x.role==='assistant'&&x.content.includes('已回答甲')),'queued Work sees the original committed reply without a duplicate timeline');
+  assert.ok(reviews[0].changes.messages.some((x:any)=>x.sender_id==='87654321'&&x.source_event==='84002'),'review sees the authoritative independent arrival');
   assert.equal((await mock.call(ctx,'/messages')as any[]).filter(x=>x.action==='send_group_msg').length,2,'independent question survives coverage of another sender event');
   // A new event during context assembly must not be hidden by a later cursor
   // snapshot. Hold the real opt-in meme embedding HTTP request before main
   // generation. Ordinary fact/summary embedding lookup is retired; the
   // remaining semantic catalog path supplies the same genuine assembly await.
   const detail=(await current.app.inject({url:`/v1/bots/${id}`,cookies})).json();
-  const changed=await current.app.inject({method:'PUT',url:`/v1/bots/${id}/config`,cookies,payload:{expectedRevision:detail.bot.revision,name:detail.bot.name,expectedUin:detail.bot.expected_uin,config:{...config,behavior:{...config.behavior,memeEnabled:true,memeSemantic:true,memePacks:[],embeddingModel:'fixture-embedding',embeddingBaseUrl:config.baseUrl}}}});
+  const changed=await current.app.inject({method:'PUT',url:`/v1/bots/${id}/config`,cookies,payload:{expectedRevision:detail.bot.revision,name:detail.bot.name,expectedUin:detail.bot.expected_uin,apiKey:'coordination-fixture',config:{...config,behavior:{...config.behavior,memeEnabled:true,memeSemantic:true,memePacks:[],embeddingModel:'fixture-embedding',embeddingBaseUrl:config.baseUrl}}}});
   assert.equal(changed.statusCode,200,changed.body);
   await until(async()=>(await current.db.query('SELECT applied_revision FROM bots WHERE id=$1',[id]))[0].applied_revision===changed.json().revision,'embedding config ready');
   await until(async()=>!!(await mock.call(ctx,'/state')as any).connected,'reconnected fixture');
@@ -65,12 +66,13 @@ test('real SDK queues adjacent Work through confirmed settlement and skips only 
   await mock.call(ctx,'/message',{group:'778181',sender:'12345678',mention:true,messageId:84100,text:'FIRST_A'});
   await until(async()=>!!releaseEmbedding,'embedding holds context assembly');
   await mock.call(ctx,'/message',{group:'778181',sender:'12345678',mention:true,messageId:84101,text:'EXTRA_A'});
-  await until(async()=>(await state("SELECT count(*) FROM pipeline_events WHERE event='84101'"))[0][0]===1,'arrival during embedding observed');
+  await until(async()=>(await state("SELECT count(*) FROM pipeline_work_inputs WHERE event='84101'"))[0][0]===1,'arrival during embedding observed');
   releaseEmbedding!();await until(async()=>waiting.has('FIRST_A'),'main generation starts after assembly');waiting.get('FIRST_A')!();
-  await until(async()=>(await state("SELECT reason FROM pipeline_events WHERE event='84101'"))[0]?.[0]==='confirmed_event_coverage','assembly-time arrival is reviewed and covered');
+  await until(async()=>(await state("SELECT status FROM pipeline_work_inputs WHERE event='84101'"))[0]?.[0]==='settled','assembly-time arrival is reviewed and covered');
   assert.deepEqual(requests.map(x=>x.label),['FIRST_A','OTHER_C','FIRST_A']);
-  assert.equal(reviews.length,2,'arrival during assembly adds exactly one necessary review');
- }finally{releaseEmbedding?.();for(const release of waiting.values())release();await current.app.close();await new Promise<void>(r=>model.close(()=>r()))}
+  assert.ok(JSON.stringify(requests[2].body).includes('FIRST_A')&&JSON.stringify(requests[2].body).includes('EXTRA_A'),'both assembly-time inputs enter the actual model request');
+  assert.equal(reviews.length,1,'input already adopted before model start requires no duplicate review');
+ }catch(error){console.error(error);throw error}finally{releaseEmbedding?.();for(const release of waiting.values())release();model.closeAllConnections();await stopMockProtocols(current.agent);await current.app.close();await new Promise<void>(r=>model.close(()=>r()))}
 });
 
 test('atomic model acceptance emits the existing strict Node handoff contract',async()=>{

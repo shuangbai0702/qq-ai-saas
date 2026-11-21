@@ -78,6 +78,8 @@ def tools(settings,event,current,evidence,identity=None,db=None):
                 if event is None or not owner or str(event.get_sender_id())!=owner:
                     return json.dumps({'error':'owner_required','receipt':{'status':'rejected'}})
             continuation=event.get_extra('_hosted_tool_completion') if event is not None else None
+            if continuation is not None and (not isinstance(continuation,dict) or any(not isinstance(continuation.get(key),str) or not continuation[key] for key in ('id','owner','workId','scope','senderId','originEvent'))):
+                return json.dumps({'error':'invalid_continuation','receipt':{'status':'rejected'}})
             if identity:
                 work_id=identity['id'];authority='autonomous';sender=None;epoch=identity.get('epoch')
             else:
