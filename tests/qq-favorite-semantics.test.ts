@@ -107,7 +107,7 @@ test('favorite annotation rejects truncated output, retries structure once and p
   const requests:any[]=[];
   const caption=createFavoriteCaptioner(db as any,key,root,async(_url,init)=>{requests.push(JSON.parse(String(init?.body)));return new Response(JSON.stringify(requests.length===1?first:{choices:[{finish_reason:'stop',message:{content:JSON.stringify(clear)}}]}))});
   assert.equal((await caption(bot,file,new AbortController().signal)).meaning,clear.meaning);
-  assert.equal(requests.length,2);assert.deepEqual(requests.map(r=>r.max_tokens),[1024,1536]);
+  assert.equal(requests.length,2);assert.deepEqual(requests.map(r=>r.max_tokens),[2048,4096]);
   assert.deepEqual(requests[0].messages,requests[1].messages,'retry must not append failed output or a correction conversation');
  }
  let calls=0;const invalid=createFavoriteCaptioner(db as any,key,root,async()=>{calls++;return new Response(JSON.stringify({choices:[{finish_reason:'length',message:{content:'{}'}}]}))});
