@@ -3,7 +3,7 @@ import {SingleFlight} from '../../../packages/shared/single-flight.js';
  * Semantics (D8): QQ raw text (modifyWord/desc/ocrWord) is stored as rawText
  * and never enables automatic selection. A verified vision result publishes
  * either a known use or an objective description, retaining uncertainty. */
-import {mkdir,writeFile,rm,rename,lstat,readdir,stat,readFile} from 'node:fs/promises';
+import {mkdir,writeFile,rm,rename,lstat,readdir,readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import type {Sql} from '../../../packages/database/index.js';
@@ -78,7 +78,18 @@ export class FavoriteMaintenance{
    const target=path.join(directory,entry),stat=await lstat(target);if(stat.isDirectory()&&!stat.isSymbolicLink()&&Date.now()-stat.mtimeMs>86400000)await rm(target,{recursive:true,force:true});
   }
   const identity=await this.deps.call(this.root,bot,'get_login_info',{},signal);if(String(identity.user_id)!==String(bot.qq_uin))throw new Error('favorite_identity_mismatch');
-  const raw=await this.deps.call(this.root,bot,'fetch_custom_face_detail',{count:200},signal),sources=Array.isArray(raw)?raw:Array.isArray(raw?.data)?raw.data:[];
+  let raw:any;
+  try{raw=await this.deps.call(this.root,bot,'fetch_custom_face_detail',{count:200},signal)}catch(error){
+   // Discovery is not the authority for already cached, account-owned images.
+   // An unavailable QQ catalog must not starve their independent annotation.
+   await withFavoriteIndex(this.root,bot.id,async()=>{await this.valid(bot,signal);const index=await readFavoriteIndex(this.root,bot.id);
+    if(index.account&&index.account!==String(bot.qq_uin))throw new Error('favorite_account_changed');
+    index.lastDiscoveryFailure={at:Date.now(),error:String((error as Error)?.message||error).slice(0,120)};
+    await writeFavoriteIndex(this.root,bot.id,index);
+   });
+  }
+  signal.throwIfAborted();
+  const sources=Array.isArray(raw)?raw:Array.isArray(raw?.data)?raw.data:[];
   const saved:string[]=await readdir(path.join(directory,'uploads')).catch(error=>{if((error as NodeJS.ErrnoException).code==='ENOENT')return [];throw error});
   const savedIds=new Set(saved.filter(name=>/^[a-f0-9]{32}\.image$/.test(name)).slice(0,200).map(name=>'qqf_'+createHash('sha256').update(name.slice(0,-6)).digest('hex').slice(0,16)));
   sources.sort((a:any,b:any)=>Number(saved.includes(String(b.md5||'')+'.image'))-Number(saved.includes(String(a.md5||'')+'.image')));
@@ -126,10 +137,14 @@ export class FavoriteMaintenance{
   await this.reconcileAnnotations(bot,signal);
   const index=await readFavoriteIndex(this.root,bot.id);if(index.account!==String(bot.qq_uin))return;
   const due=index.items.filter((i:any)=>favoriteAnnotationDue(i)).sort((a:any,b:any)=>Number(importedIds.has(b.id))-Number(importedIds.has(a.id))||Number(savedIds.has(b.id))-Number(savedIds.has(a.id)));
-  const pending=due.slice(0,MAX_QUEUE_TICKS);
-  for(const item of pending){
-   const file=path.join(images,item.file);if(!/^qqf_[a-f0-9]{16}\.(gif|png)$/.test(item.file))continue;
-   const info=await stat(file).catch(()=>null);if(!info||!info.isFile()||info.isSymbolicLink()||info.size>1048576)continue;
+  let attemptedAnnotations=0,inspected=0;
+  for(const item of due){
+   signal.throwIfAborted();if(attemptedAnnotations>=MAX_QUEUE_TICKS)break;inspected++;
+   if(typeof item.file!=='string'||!/^qqf_[a-f0-9]{16}\.(gif|png)$/.test(item.file))continue;
+   const file=path.join(images,item.file);
+   const info=await lstat(file).catch(error=>{if((error as NodeJS.ErrnoException).code==='ENOENT')return null;throw error});
+   if(!info||!info.isFile()||info.isSymbolicLink()||info.size>1048576)continue;
+   attemptedAnnotations++;
    const startedAt=Date.now(),before=await contentHash(file).catch(()=>null);
    let result:any,error:unknown;try{result=await this.caption(bot,file,signal)}catch(e){if(signal.aborted)throw e;error=e}
    const after=await contentHash(file).catch(()=>null);
@@ -140,7 +155,7 @@ export class FavoriteMaintenance{
     await writeFavoriteIndex(this.root,bot.id,latest);
    });
   }
-  if(due.length>pending.length)this.nextDiscovery.set(bot.id,Date.now()+5000);
+  if(due.length>inspected)this.nextDiscovery.set(bot.id,Date.now()+5000);
  }
 }
 /** Bounded stall diagnosis for the d18 queue: evidence only, no gate changes. */
@@ -151,11 +166,11 @@ export async function favoriteQueueDiagnostics(db:Sql,root:string,botId:string){
  const items=(accountMatched?index.items:[]).map((i:any)=>({id:i.id,manual:Boolean(i.manual),meaning:Boolean(i.meaning),enabled:Boolean(i.enabled),semanticStatus:i.semanticStatus||null,uncertainAttempts:Number(i.semanticAttempts||0),failures:Number(i.semanticFailures||0),waitReason:i.semanticWaitReason||null,waitMs:Number(i.semanticWaitMs||0),retryAt:Number(i.semanticRetryAt||0)||null,queuedAt:Number(i.queuedAt||0)||null,lastVisionError:i.lastVisionError||null,fileReadable:false}));
  for(const item of items){
   for(const suffix of ['.gif','.png']){
-   const info=await stat(path.join(images,String(item.id)+suffix)).catch(()=>null);
+   const info=await lstat(path.join(images,String(item.id)+suffix)).catch(()=>null);
    if(info&&info.isFile()&&!info.isSymbolicLink()){item.fileReadable=true;break}
   }
  }
  const queued=items.filter((i:{manual:boolean;meaning:boolean;semanticStatus:string|null})=>!i.manual&&!i.meaning&&i.semanticStatus!=='ready');
- const oldestQueuedAt=Math.min(...queued.map((i:{queuedAt:number|null})=>Number(i.queuedAt||0)||Number.MAX_SAFE_INTEGER));
+ const oldestQueuedAt=Math.min(...queued.map((i:{queuedAt:number|null})=>Number(i.queuedAt)).filter((at:number)=>Number.isFinite(at)&&at>0));
  return{botId,account:String(bot.qq_uin||''),indexAccount:index.account,accountMatched,revision:bot.revision,providerReady:Boolean(runtimeStatus(bot).online&&bot.config?.baseUrl&&bot.config?.model),memeEnabled:Boolean(bot.config?.behavior?.memeEnabled),qqFavoriteSaveEnabled:Boolean(bot.config?.behavior?.qqFavoriteSaveEnabled),indexEnabled:Boolean(index.enabled),queueSize:queued.length,oldestQueuedAt:Number.isFinite(oldestQueuedAt)?oldestQueuedAt:null,items};
 }

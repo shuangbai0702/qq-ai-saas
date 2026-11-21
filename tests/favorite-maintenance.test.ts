@@ -82,6 +82,40 @@ test('pending annotations resume from the same index after failure and restart',
  const next=new FavoriteMaintenance(owner.db,root,Buffer.alloc(32),owner.deps);next.caption=async()=>semantic;await next.maintain(bot,new AbortController().signal);
  index=await readFavoriteIndex(root,'a');assert.equal(index.items[0].meaning,'欢迎');assert.equal(index.items[0].semanticStatus,'ready');assert.equal(index.enabled,true);
 });
+
+test('missing originals cannot consume the annotation batch and starve later valid images',async()=>{
+ const {root,bot,owner}=await fixture();const index=await readFavoriteIndex(root,'a'),valid=index.items[0];
+ index.items=[{...valid,id:'qqf_aaaaaaaaaaaaaaaa',file:'qqf_aaaaaaaaaaaaaaaa.png'},{...valid,id:'qqf_bbbbbbbbbbbbbbbb',file:'qqf_bbbbbbbbbbbbbbbb.png'},valid];
+ await writeFavoriteIndex(root,'a',index);
+ let calls=0;owner.caption=async()=>{calls++;return semantic};
+ await owner.maintain(bot,new AbortController().signal);
+ const after=await readFavoriteIndex(root,'a');assert.equal(calls,1);assert.equal(after.items[2].semanticStatus,'ready');
+ assert.equal(after.items[0].semanticFailures,0,'unavailable files must not consume model retries');
+});
+
+test('catalog discovery failure is recorded but cached images still receive annotation',async()=>{
+ const {root,bot,owner}=await fixture();let calls=0;
+ owner.deps.call=async(_r,_b,action)=>{if(action==='get_login_info')return {user_id:90000};throw Error('catalog_temporarily_unavailable')};
+ owner.caption=async()=>{calls++;return semantic};
+ await owner.maintain(bot,new AbortController().signal);
+ const index=await readFavoriteIndex(root,'a');assert.equal(calls,1);assert.equal(index.items[0].semanticStatus,'ready');
+ assert.equal(index.lastDiscoveryFailure.error,'catalog_temporarily_unavailable');
+});
+
+test('canceled catalog discovery cannot persist diagnostics or annotate from a stale owner',async()=>{
+ const {root,bot,owner}=await fixture(),controller=new AbortController();let calls=0;
+ const before=await readFavoriteIndex(root,'a');
+ owner.deps.call=async(_r,_b,action)=>{if(action==='get_login_info')return {user_id:90000};controller.abort();throw Error('canceled')};
+ owner.caption=async()=>{calls++;return semantic};
+ await assert.rejects(owner.maintain(bot,controller.signal));
+ assert.equal(calls,0);assert.deepEqual(await readFavoriteIndex(root,'a'),before);
+});
+
+test('queue diagnostics leave an unknown oldest timestamp null rather than inventing a far-future date',async()=>{
+ const {root,owner}=await fixture();const before=await readFavoriteIndex(root,'a');
+ const info=await favoriteQueueDiagnostics(owner.db,root,'a');assert.ok(info);assert.equal(info.oldestQueuedAt,null);
+ assert.deepEqual(await readFavoriteIndex(root,'a'),before,'diagnostics stay read-only');
+});
 test('manual edits win over an in-flight caption across index owners',async()=>{
  const {root,bot,owner}=await fixture();let release!:()=>void,entered!:()=>void;const start=new Promise<void>(r=>entered=r),wait=new Promise<void>(r=>release=r);
  owner.caption=async()=>{entered();await wait;return semantic};const task=owner.maintain(bot,new AbortController().signal);await start;
