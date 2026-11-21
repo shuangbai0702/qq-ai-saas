@@ -1,5 +1,6 @@
 """Deterministic compression-only pages, never a store or runtime context."""
 import copy,json
+from summary_response import SummaryValidationError
 
 PAGE_CHARS=24000
 
@@ -61,14 +62,16 @@ def validate_page(data,page):
     """Page admission is narrower than the later transaction's full snapshot."""
     for key,versions in (('fact_operations',page['fact_versions']),('relation_operations',page['relation_versions'])):
         rows=data.get(key,[])
-        if not isinstance(rows,list):raise ValueError('semantic_review_invalid_operations')
-        for op in rows:
-            if not isinstance(op,dict) or op.get('op') not in ('replace','delete') or op.get('scope')!=page['scope']:raise ValueError('semantic_review_operation_not_offered')
+        if not isinstance(rows,list):raise SummaryValidationError('expected_array','$.'+key)
+        for position,op in enumerate(rows):
+            if not isinstance(op,dict):raise SummaryValidationError('expected_object',f'$.{key}[{position}]')
+            if op.get('op') not in ('replace','delete') or op.get('scope')!=page['scope']:raise ValueError('semantic_review_operation_not_offered')
             match=next((v for v in versions if v['subject']==op.get('subject') and (key!='fact_operations' or v['name']==op.get('name'))),None)
             if not match or op.get('expected_version')!=match['version']:raise ValueError('semantic_review_operation_not_offered')
     rows=data.get('memory_operations',[])
-    if not isinstance(rows,list):raise ValueError('semantic_review_invalid_operations')
-    for op in rows:
-        if not isinstance(op,dict) or op.get('op') not in ('replace','delete'):raise ValueError('semantic_review_operation_not_offered')
+    if not isinstance(rows,list):raise SummaryValidationError('expected_array','$.memory_operations')
+    for position,op in enumerate(rows):
+        if not isinstance(op,dict):raise SummaryValidationError('expected_object',f'$.memory_operations[{position}]')
+        if op.get('op') not in ('replace','delete'):raise ValueError('semantic_review_operation_not_offered')
         match=next((r for r in page['products'].get(op.get('kind'),[]) if r['target']==op.get('target')),None)
         if not match or op.get('expected_version')!=match['version']:raise ValueError('semantic_review_operation_not_offered')

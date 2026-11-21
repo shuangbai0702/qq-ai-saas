@@ -21,7 +21,14 @@ test('capability data and gallery management authenticate, isolate, persist and 
   const created=await current.app.inject({method:'POST',url:'/v1/bots',cookies:cookies[0],payload:{name:'管理测试'}});const id=created.json().id;
   const url=`/v1/bots/${id}/behavior-data`;
   assert.equal((await current.app.inject({url})).statusCode,401);
-  assert.equal((await current.app.inject({url,cookies:cookies[0]})).json().initialized,false);
+  // Config creation can initialize the owned edit ledger before any chat.
+  // A read must neither invent cognition nor mutate that existing authority.
+  const behaviorFile=path.join(current.root,'bots',id,'behavior.sqlite');
+  const initialFile=await readFile(behaviorFile).catch(()=>null);
+  const initial=(await current.app.inject({url,cookies:cookies[0]})).json();
+  assert.deepEqual(initial.facts,[]);
+  if(initialFile)assert.deepEqual(await readFile(behaviorFile),initialFile);
+  else assert.equal(initial.initialized,false);
   await exec(python,['tests/capability_data_test.py','--seed',path.join(current.root,'bots',id,'behavior.sqlite')],{windowsHide:true});
   const list=await current.app.inject({url,cookies:cookies[0]});assert.equal(list.statusCode,200,list.body);assert.equal(list.json().facts.length,2);
   assert.equal((await current.app.inject({url,cookies:cookies[1]})).statusCode,404);

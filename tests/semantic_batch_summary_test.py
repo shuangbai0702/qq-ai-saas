@@ -67,6 +67,8 @@ class SemanticSummary(unittest.IsolatedAsyncioTestCase):
   self.assertEqual(len(self.calls),2);self.assertEqual(self.calls[0]['prompt'],self.calls[1]['prompt'])
   self.assertEqual(len(json.loads(self.calls[0]['prompt'])['turns']),97)
   self.assertEqual(self.metrics.get('summaryCapacityRetries'),1);self.assertEqual(self.checkpoint()[1:],(30,'available',None))
+  audit=json.loads(self.db.execute('SELECT counts FROM memory_operation_audits').fetchone()[0])
+  self.assertEqual(audit['response_validation']['errors'][0]['code'],'summary_output_capacity_exceeded_material_retained')
   self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1)
   self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],97)
   self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],97)

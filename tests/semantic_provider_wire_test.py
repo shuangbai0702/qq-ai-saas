@@ -115,7 +115,7 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
         self.store.reflection.checkpoint_callback = checkpoint
 
     async def test_network_failure_is_two_bounded_sdk_requests_with_same_material(self):
-        from memory_reflection import summary_model_output
+        from summary_response import summary_model_output
         async def no_retry(provider,error,*args,**kwargs):raise error
         self.mode='network_error'
         with patch.object(type(self.provider),'_handle_api_error',no_retry):
@@ -128,7 +128,7 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.requests[0]['model'],self.requests[1]['model'])
 
     async def test_stream_read_error_recovers_through_same_sdk_nonstream_request(self):
-        from memory_reflection import summary_model_output
+        from summary_response import summary_model_output
         async def no_retry(provider,error,*args,**kwargs):raise error
         self.mode='stream_disconnect';metrics={}
         with patch.object(type(self.provider),'_handle_api_error',no_retry):

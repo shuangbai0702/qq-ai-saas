@@ -1,8 +1,8 @@
 """Per-bot conversation reflection using its existing provider and SQLite.
-Inspired by LivingMemory's ten-round reflection and source/revision fencing.
+Formal thirty-round checkpoints with source/revision fencing.
 Summaries are conversation evidence, never verified profile facts or instructions.
 """
-from model_cache import auxiliary_scope,adopted,discarded as record_discarded,SUMMARY_REQUEST_TIMEOUT_SECONDS
+from model_cache import auxiliary_scope,adopted,discarded as record_discarded
 import asyncio,json,time,hashlib,inspect,re
 from pathlib import Path
 import message_provenance
@@ -48,172 +48,6 @@ def summary_author_witnesses(scope,rows,discarded=()):
         if people:add(item['event'],people[0],{'source_scope':channel,'event_id':identifier})
     return list(witnesses.values())
 
-
-class SummaryOutputTruncated(ValueError):pass
-class SummaryPersistenceError(RuntimeError):pass
-
-
-class SummaryResponseSlot:
-    """Recover a response in the existing retry row; no new task authority."""
-    def __init__(self,db,scope,attempt,epoch,digest,family=None,part=None):
-        self.db=db;self.scope=scope;self.attempt=attempt;self.epoch=epoch;self.digest=digest
-        self.family=family;self.part=part
-
-    def payload(self,data):
-        if self.part is None:return data
-        if data.get('epoch')!=self.epoch or data.get('digest')!=self.family:return {}
-        return data.get('parts',{}).get(self.part,{})
-
-    def write(self,data):
-        if self.part is not None:
-            row=self.db.execute('SELECT result FROM memory_reflection_retry WHERE scope=?',(self.scope,)).fetchone()
-            previous=json.loads(row[0]) if row and row[0] else {}
-            parts=previous.get('parts',{}) if previous.get('epoch')==self.epoch and previous.get('digest')==self.family else {}
-            data={'epoch':self.epoch,'digest':self.family,'parts':{**parts,self.part:data}}
-        return self.db.execute('UPDATE memory_reflection_retry SET result=? WHERE scope=? AND attempts=?',(model_json(data),self.scope,self.attempt)).rowcount
-
-    def recover(self):
-        from types import SimpleNamespace
-        row=self.db.execute('SELECT result FROM memory_reflection_retry WHERE scope=?',(self.scope,)).fetchone()
-        if not row or not row[0]:return None
-        try:data=json.loads(row[0])
-        except (ValueError,TypeError):return None
-        data=self.payload(data)
-        if data.get('epoch')!=self.epoch or data.get('digest')!=self.digest:return None
-        content=data.get('text');raw=data.get('raw')
-        if not isinstance(content,str) or hashlib.sha256(content.encode()).hexdigest()!=data.get('sha'):return None
-        return SimpleNamespace(completion_text=content,raw_completion=raw,is_chunk=False)
-
-    def dispatch(self):
-        with self.db:
-            payload={'epoch':self.epoch,'digest':self.digest,'attempt':self.attempt,'phase':'dispatched'}
-            if self.write(payload)!=1:
-                raise SummaryPersistenceError('summary_request_owner_changed')
-
-    def save(self,response):
-        if getattr(response,'is_chunk',False):raise SummaryPersistenceError('summary_partial_response_not_saved')
-        text=getattr(response,'completion_text',None)
-        if not isinstance(text,str):raise SummaryPersistenceError('summary_response_text_missing')
-        from model_cache import response_shape,usage_evidence
-        raw=getattr(response,'raw_completion',None)
-        # Preserve final/usage evidence, not duplicated reasoning or credentials.
-        usage=raw.get('usage') if isinstance(raw,dict) else getattr(raw,'usage',None)
-        if callable(getattr(usage,'model_dump',None)):usage=usage.model_dump()
-        data={'epoch':self.epoch,'digest':self.digest,'attempt':self.attempt,'phase':'response_saved','text':text,'sha':hashlib.sha256(text.encode()).hexdigest(),
-              'raw':{'choices':[{'finish_reason':response_shape(raw).get('finishReason')}],'usage':usage,'id':usage_evidence(response).get('responseId')}}
-        try:
-            with self.db:
-                current=self.db.execute('SELECT epoch FROM memory_reflection_control WHERE id=1').fetchone()
-                if not current or current[0]!=self.epoch:return
-                saved=self.write(data)
-                if saved!=1:raise SummaryPersistenceError('summary_response_owner_changed')
-        except SummaryPersistenceError:raise
-        except Exception as error:raise SummaryPersistenceError('summary_response_persistence_failed') from error
-
-
-def summary_request_digest(request,provider,epoch,job,anchor):
-    """Only the formatter's current clock is excluded; all evidence stays fenced."""
-    value=dict(request)
-    prompt=json.loads(value['prompt']);prompt.pop('current_time',None);value['prompt']=prompt
-    config=getattr(provider,'provider_config',{}) or {}
-    identity={k:config.get(k) for k in ('id','model','api_base','type','temperature','top_p','max_tokens','reasoning_effort','model_config','custom_parameters')}
-    return hashlib.sha256(model_json({'request':value,'provider':identity,'epoch':epoch,'job':job,'anchor':anchor}).encode()).hexdigest()
-
-
-
-def validate_summary_output(response):
-    from model_cache import response_shape
-    if response_shape(getattr(response,'raw_completion',None)).get('finishReason') in ('length','max_tokens'):
-        raise SummaryOutputTruncated('summary_output_truncated_material_retained')
-
-
-async def summary_model_output(provider,request,live,metrics,limit,on_decode=None,on_attempt=None,on_response=None,recovered=None):
-    """Retry only a complete model read and its mandatory output validation.
-
-    No product writes or transaction callbacks belong inside this boundary.
-    The hosted provider disables upstream retries; each iteration is one request.
-    """
-    from contextlib import aclosing
-    from companion_insights import decode
-    from output_clean import clean
-    nonstream=False
-    async def read():
-        if nonstream:
-            # Same bound Provider/transport, identity, budget and diagnostics.
-            # Only read-only summarization may retry; no product is committed
-            # until the complete response passes the normal validation below.
-            response=await provider.text_chat(**request)
-            if on_response:on_response(response)
-            return response
-        final=None
-        try:
-            async with aclosing(provider.text_chat_stream(**request)) as responses:
-                async for response in responses:
-                    if not getattr(response,'is_chunk',False):
-                        if on_response:on_response(response)
-                        final=response
-                    if not live():return None
-        except SummaryPersistenceError:raise
-        except Exception:
-            if final is None:raise
-            # A complete final response remains valid evidence even if closing
-            # its transport fails. Normal finish/JSON checks still follow.
-            metrics['summaryStreamErrorsAfterFinal']=metrics.get('summaryStreamErrorsAfterFinal',0)+1
-        if final is None:raise ValueError('incomplete_summary_stream')
-        return final
-    for attempt in range(2):
-        if not live():return None
-        restored=recovered if attempt==0 else None
-        if restored is None:
-            metrics['summaryRequests']=metrics.get('summaryRequests',0)+1
-            if on_attempt:on_attempt()
-        try:
-            response=restored if restored is not None else await asyncio.wait_for(read(),SUMMARY_REQUEST_TIMEOUT_SECONDS+5)
-            if restored is not None:metrics['summaryResponsesRecovered']=metrics.get('summaryResponsesRecovered',0)+1
-            if not live():return None
-            diagnostics={}
-            if limit is None:
-                data=json.loads(response.completion_text)
-                if not isinstance(data,dict):raise ValueError('invalid_summary_json')
-                diagnostics['decode_status']='json_object'
-            else:data=decode(response.completion_text,diagnostics)
-            if on_decode:on_decode(data,diagnostics)
-            validate_summary_output(response)
-            from model_cache import response_shape
-            reason=response_shape(getattr(response,'raw_completion',None)).get('finishReason')
-            if reason!='stop':raise ValueError('invalid_summary_finish_reason')
-            if diagnostics.get('decode_status')!='json_object':raise ValueError('invalid_summary_json')
-            text=clean(data['summary']).strip() if limit is not None else ''
-            if limit is not None and not text:raise ValueError('empty_summary')
-            if limit is not None and len(text)>limit:raise ValueError('summary_output_capacity_exceeded_material_retained')
-            return response,data,text
-        except (asyncio.CancelledError,SummaryPersistenceError):raise
-        except Exception as error:
-            if not live():return None
-            if attempt:raise
-            if isinstance(error,ValueError) and str(error)=='summary_output_capacity_exceeded_material_retained':
-                # One bounded corrective request, with the exact same source
-                # inventory. Never truncate a product or retire a failed batch.
-                # The retry slot still owns this same input/policy family; its
-                # dispatch replaces the invalid response before another read.
-                request={**request,'system_prompt':str(request.get('system_prompt') or '')+
-                    f' 上次summary超过接收容量。本次summary必须不超过{limit}字符，目标{max(1,limit*3//4)}字符；按语义合并重复描述，保留关键人物、条件、纠正和未完事项，不截断句子，不增加新结论。其他产品和来源要求不变。'}
-                metrics['summaryCapacityRetries']=metrics.get('summaryCapacityRetries',0)+1
-            from httpx import TransportError
-            from openai import APIConnectionError,APIError,InternalServerError
-            if callable(getattr(provider,'text_chat',None)) and (
-                isinstance(error,(TransportError,APIConnectionError,InternalServerError,OSError,asyncio.TimeoutError))
-                # OpenAI's SSE iterator raises the base APIError for in-band
-                # error events. HTTP client errors use APIStatusError subclasses.
-                or type(error) is APIError
-                or isinstance(error,ValueError) and str(error)=='incomplete_summary_stream'
-                # The hosted provider detects EOF first and uses this exact
-                # signal. Recover on the same bound nonstream transport too.
-                or isinstance(error,RuntimeError) and str(error)=='incomplete_model_stream'
-            ):
-                nonstream=True
-                metrics['summaryNonstreamFallbacks']=metrics.get('summaryNonstreamFallbacks',0)+1
-            metrics['summaryImmediateRetries']=metrics.get('summaryImmediateRetries',0)+1
 
 
 def scrub(value):
@@ -328,6 +162,7 @@ async def prepare_owner_migration_summary(db,payload,provider,cfg,*,live=lambda:
     system+=' '+CONTINUITY_SYSTEM+' '+summary_product_limits()
     request=dict(prompt=memory_json(memory_projection(prompt)),system_prompt=system,contexts=[],func_tool=None,request_max_retries=0,**({'image_urls':images} if images else {}))
     epoch=db.execute('SELECT epoch FROM memory_reflection_control WHERE id=1').fetchone()[0]
+    from summary_response import summary_request_digest,summary_model_output
     request_digest=summary_request_digest(request,provider,epoch,'owner_migration',{'dependency':dependency,'materials':material_digest})
     metrics={} if metrics is None else metrics
     with auxiliary_scope(provider,'small_summary',scope='bot_shared'):
@@ -1594,6 +1429,7 @@ class Reflection:
                         if self._active_summary:self._active_summary['operation_audit']=operation_audit
                     live=lambda:not self.closed and is_current() and self.epoch()==epoch
                     request=dict(prompt=memory_json(prompt),system_prompt=system,contexts=[],func_tool=None,request_max_retries=0,**({'image_urls':summary_images} if summary_images else {}))
+                    from summary_response import SummaryResponseSlot,summary_request_digest,summary_model_output
                     digest=summary_request_digest(request,provider,epoch,job,{'scope':merge_scope or scope,'throughRound':rows[-1][0] if rows else None,'sourceDependency':merge_dependency if job=='big' else previous_dependency,'materialsSha':hashlib.sha256(model_json(materials).encode()).hexdigest(),'discardStamp':discard_stamp,'learningEpoch':learning_epoch})
                     reviewed=None;review_family=None
                     if before is not None:
@@ -1615,7 +1451,7 @@ class Reflection:
                                 review_request={**request,'prompt':memory_json(material),'system_prompt':SEMANTIC_MEMORY_SYSTEM+' '+PRODUCT_MEMORY_SYSTEM+' '+summary_product_limits()+' 本请求只检查本页既有认知与真实材料，输出JSON的fact_operations、relation_operations、memory_operations；不输出summary、core_note或其他产品。没有变化则输出空数组。只能replace/delete本页展示的旧ID/version；新认知留给最后的主整理请求，本页不得create。'}
                                 page_digest=summary_request_digest(review_request,provider,epoch,'memory_review',{'family':review_family,'page':number})
                                 page_slot=SummaryResponseSlot(self.db,scope,attempts,epoch,page_digest,review_family,str(number))
-                                page_result=await summary_model_output(provider,review_request,live,metrics,None,on_decode=lambda data,diagnostics:validate_page(data,page),on_attempt=page_slot.dispatch,on_response=page_slot.save,recovered=page_slot.recover())
+                                page_result=await summary_model_output(provider,review_request,live,metrics,None,on_decode=lambda data,diagnostics:validate_page(data,page),on_attempt=page_slot.dispatch,on_response=page_slot.save,recovered=page_slot.recover(),on_validation_error=page_slot.record_validation)
                                 if page_result is None:return {'ok':False,'reason':'stale_configuration'}
                                 parts.append(page_result[1])
                                 for key,count in coverage(page).items():offered[key]+=count
@@ -1630,7 +1466,7 @@ class Reflection:
                     slot=SummaryResponseSlot(self.db,scope,attempts,epoch,digest,review_family,'final' if review_family else None)
                     def request_starting():
                         slot.dispatch();starting()
-                    result=await summary_model_output(provider,request,live,metrics,1500 if job=='big' else 800,decoded,request_starting,slot.save,slot.recover())
+                    result=await summary_model_output(provider,request,live,metrics,1500 if job=='big' else 800,decoded,request_starting,slot.save,slot.recover(),slot.record_validation)
                     if result is None:return {'ok':False,'reason':'stale_configuration'}
                     response,data,text=result
                     if reviewed is not None:
@@ -1828,6 +1664,7 @@ class Reflection:
                             metrics['summariesSaved']=metrics.get('summariesSaved',0)+1
                         from summary_material import govern_claims
                         govern_claims(self.db,merge_scope or scope)
+                        operation_audit.counts['response_validation']=slot.validation_evidence()
                         self.db.execute('DELETE FROM memory_reflection_retry WHERE scope=?',(scope,))
                         operation_audit.persist(self.db,'committed','transaction_committed',checkpoint_id=checkpoint_id if job!='big' else None,summary_id=identifier)
                     audit_committed=True

@@ -58,7 +58,7 @@ class MemoryModelView(unittest.TestCase):
         self.assertEqual(expand(json.loads(memory_json(snapshot))),snapshot)
 
     def test_journal_new_wire_raw_state_delta_and_committed_prefix(self):
-        raw={'memory_foundation':{'conversation_summaries':[],**fixture()},'state':{'protected_claims':fixture()['protected_claims']}}
+        raw={'foundation_core_note':{},'memory_foundation':{'conversation_summaries':[],**fixture()},'state':{'protected_claims':fixture()['protected_claims']}}
         journal=ReadonlyJournal();tail=[{'role':'user','content':'first'}]
         first=journal.prepare(messages(raw,tail),'stamp');prefix=copy.deepcopy(first.wire)
         self.assertIn(FORMAT,model_json(prefix));self.assertEqual(first.state,raw)
@@ -71,7 +71,7 @@ class MemoryModelView(unittest.TestCase):
             if str(message.get('content','')).startswith(READONLY_CURRENT+'\n'):
                 packet=expand(json.loads(message['content'].split('\n',1)[1]))
                 state=apply_changes(state,packet['readonlyChanges'])
-        self.assertEqual(state,{'state':newer['state']})
+        self.assertEqual(state,{'foundation_core_note':{},'state':newer['state']})
         self.assertEqual(pending.state,newer)
 
     def test_core_note_event_projection_keeps_authority_snapshot_raw(self):

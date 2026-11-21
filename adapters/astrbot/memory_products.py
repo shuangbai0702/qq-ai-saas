@@ -38,7 +38,7 @@ def snapshot(db,scope,people):
   result[kind]=rows
  return result
 
-def apply(db,scope,cfg,data,before,now,audit=None):
+def apply(db,scope,cfg,data,before,now,audit=None,*,source_scopes=()):
  operations=data.get('memory_operations',[]);offered=before.get('memory_state',{}).get('products',{});saved=0;seen=set()
  if not isinstance(operations,list):return 0
  for index,item in enumerate(operations):
@@ -55,7 +55,7 @@ def apply(db,scope,cfg,data,before,now,audit=None):
   prior=next((r for r in offered.get(kind,[]) if r['target']==target),None);current=read(db,kind,target)
   if op=='create':
    if current or prior or item.get('expected_version') is not None or 'expected_version' not in item:reject('target_exists_or_missing_version');continue
-   if scope!='bot_shared' and target['scope'] not in (scope,'self'):reject('scope_not_offered');continue
+   if target['scope'] not in ({scope,'self'} if scope!='bot_shared' else {'self','bot_shared',*source_scopes}):reject('scope_not_offered');continue
    if kind=='expression':reject('learning_evidence_required');continue
    if kind=='motive' and target['subject'] not in before['memory_state']['subjects']:reject('unknown_subject');continue
   else:

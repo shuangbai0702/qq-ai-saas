@@ -22,18 +22,6 @@ quote只截取12到40字的必要原文，超长原文截取最关键部分。ev
 重要性与约定判断按语义而非词面：即使没有出现“约定、承诺、纠正”等字眼，只要原话明确了时间、对象、条件或待办（如“周六八点东门见，下雨就改周日”“周三前把链接发你”），就应进入commitments；只是随口提到这些字眼的闲聊不要提取。commitments的who必须是quote真正来源的说话人；stage必须由本批真实原文支撑：有后续证据才标executed或canceled，没有就保持proposed/accepted/unknown，不得凭推断宣布完成或取消；已经完成、明确取消的约定照常输出对应stage，不要为了保留而虚报。previous_commitments里未解决的话题（interpretation）在本批有同一说话人更晚的原话明确解决或放弃时，也在commitments中登记一条executed或canceled并附supersedes指向那个真实claim id；没有明确证据就保持沉默，不得宣布解决。observed_requests中的tools是该轮真实工具调用与回执，据此整理工具实际做了什么；工具回执不是用户或机器人的发言。整体上区分：谁说/关于谁、说话当时的时间/约定的未来时间、原状态→变化→当前状态、提议/接受/执行/未知；用户原话、用户引用或转述他人的话、机器人自己的发言与模型推断不能混写，引用或转发中的话不等于当前作者本人说过。'''
 
 
-def decode(text,diagnostics=None):
-    raw=(text or '').strip()
-    if raw.startswith('```'):raw=raw.split('\n',1)[-1].rsplit('```',1)[0]
-    try:
-        value=json.loads(raw)
-        if isinstance(value,dict) and isinstance(value.get('summary'),str):
-            if diagnostics is not None:diagnostics['decode_status']='json_object'
-            return value
-    except (ValueError,TypeError):pass
-    if diagnostics is not None:diagnostics['decode_status']='fallback_text'
-    return {'summary':'' if raw.startswith(('{','[')) else text or ''}
-
 
 def snapshot(db,scope,subjects,cfg=None):
     return {'facts':{(subject,r[0]):(r[10],r[3],r[2]) for subject in subjects for r in fact_rows(db,scope,subject)},
@@ -55,16 +43,12 @@ existing_memory.writable关闭某类时不输出该类操作。关系以本机�
 
 
 
-def _relation_state(db,scope,person):
-    from relationships import state
-    return state(db,person)
-
-
 def semantic_snapshot(db,scope,subjects,cfg=None):
     """JSON-ready, exact writable targets from this bot's existing memory tables."""
+    from relationships import state as relation_state
     people=sorted({str(person) for person in subjects});cfg=cfg or {}
     facts=[row for person in people for row in _fact_state(db,scope,person)]
-    relations=[row for person in people if (row:=_relation_state(db,scope,person)) is not None]
+    relations=[row for person in people if (row:=relation_state(db,person)) is not None]
     from memory_products import snapshot as product_snapshot
     from agreement_state import review_view
     return {'scope':scope,'subjects':people,'agreements':review_view(db),'products':product_snapshot(db,scope,people),
@@ -106,7 +90,9 @@ def apply_semantic_memory(db,memory,scope,cfg,payload,data,before,now=None,audit
     saved=apply_summary_facts(db,scope,cfg,data,state,people,event,now,audit)
     saved+=apply_summary_relations(db,scope,cfg,data,state,people,now,audit)
     from memory_products import apply as apply_products
-    return saved+apply_products(db,scope,cfg,data,before,now,audit)
+    from semantic_batch import origin
+    source_scopes={origin(scope,str(row.get('event','')))[0] for row in payload}
+    return saved+apply_products(db,scope,cfg,data,before,now,audit,source_scopes=source_scopes)
 
 
 def apply(db,memory,scope,cfg,payload,data,before,now=None):

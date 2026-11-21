@@ -155,7 +155,8 @@ def decision_memory(db,cfg,scope,subject,now,recent=True,subjects=()):
             'active_agreements':[row for row in context_view(db,scope,owner=owner) if row.get('status') not in ('fulfilled','canceled','expired')],
             'cross_scope_guidance':CROSS_SCOPE_GUIDANCE}
     from relationships import selected,latest_speakers
-    participants=latest_speakers(db,scope) if scope.startswith('group:') and not subjects else list(subjects) or [subject]
+    participants=latest_speakers(db,scope) if scope.startswith('group:') and not subjects else list(subjects)
+    if subject and subject not in participants:participants=[subject,*participants]
     result['relations']=selected(db,participants[:6] if scope.startswith('group:') else participants)
     if recent:result['recent_cross_session_messages']=shared_recent(db,8,auxiliary=True) if unified else pending_messages(db,scope,subject,now,limit=6,budget=1600,people=people,owner=owner)
     if unified:

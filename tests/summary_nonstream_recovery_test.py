@@ -3,7 +3,7 @@ import asyncio,sys,unittest
 from pathlib import Path
 from types import SimpleNamespace as NS
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
-from memory_reflection import summary_model_output
+from summary_response import summary_model_output
 
 def valid():
     return NS(completion_text='{"summary":"complete"}',raw_completion={'choices':[{'finish_reason':'stop'}]})
@@ -89,7 +89,7 @@ class Recovery(unittest.IsolatedAsyncioTestCase):
             finally:closed.append(True)
         async def chat(**kw):
             self.assertEqual(closed,[True]);calls.append('chat');return valid()
-        with patch('memory_reflection.SUMMARY_REQUEST_TIMEOUT_SECONDS',-4.99):
+        with patch('summary_response.SUMMARY_REQUEST_TIMEOUT_SECONDS',-4.99):
             result=await summary_model_output(NS(text_chat_stream=stream,text_chat=chat),{},lambda:True,{},800)
         self.assertEqual(result[2],'complete');self.assertEqual(calls,['stream','chat'])
 

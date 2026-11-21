@@ -20,12 +20,12 @@ for(const region of ['persona','core_note','tools','facts','relations','expressi
   res.setHeader('Content-Type','application/json');res.end(JSON.stringify({id:'fixture-response',object:'chat.completion',created:1,model:body.model,choices:[{index:0,message:{role:'assistant',content:'测试收到。'},finish_reason:'stop'}],usage:{prompt_tokens:10,completion_tokens:3,total_tokens:13}}));
  });
  await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));permitModelFixture(server);const port=(server.address() as any).port;
- const root=await mkdtemp(path.resolve('.local/web-base-runtime-'));const x=await createApp({root,agent:false});
+ const root=await mkdtemp(path.resolve('.local/web-base-runtime-'));const x=await createApp({root,agent:false});let fixtureBotId:string|undefined;
  const wait=async(fn:()=>Promise<boolean>,label:string,timeout=60000)=>{const deadline=Date.now()+timeout;while(Date.now()<deadline){if(await fn())return;await new Promise(r=>setTimeout(r,100));}throw Error(label+' timed out; evidence root: '+root);};
  try{
   const registration=await x.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(x.db),email:'runtime-base@example.test',name:'test',password:'runtime-base-123'}});assert.equal(registration.statusCode,200,registration.body);const cookies={fish_session:registration.cookies[0].value};
   const config={...defaultConfig,platformModel:false,baseUrl:`http://127.0.0.1:${port}/v1`,model:'base-fixture',systemPrompt:region==='persona'?'OLD_PERSONA_ONLY':'STATIC_PERSONA',toolPrompts:{dsh:'OLD_TOOL_PROMPT_ONLY'},proactive:false,behavior:{...defaultConfig.behavior,memory:cognition,memorySummary:false,burstDebounceMs:0,typingSimulation:false,sendIntervalMs:0,groupParticipationEnabled:false}};
-  const created=await x.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'runtime base',protocol:'mock',runtimeMode:mode,expectedUin:'91000001',config,apiKey:'synthetic-runtime-base-key'}});assert.equal(created.statusCode,201,created.body);const id=created.json().id;
+  const created=await x.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'runtime base',protocol:'mock',runtimeMode:mode,expectedUin:'91000001',config,apiKey:'synthetic-runtime-base-key'}});assert.equal(created.statusCode,201,created.body);const id=created.json().id;fixtureBotId=id;
   if(region==='core_note'){
    const python=path.resolve(process.env.ASTRBOT_PYTHON||'references/astrbot/.venv/Scripts/python.exe');
    execFileSync(python,['-X','utf8','-c',`import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); db.execute("CREATE TABLE IF NOT EXISTS memory_core_notes(slot INTEGER PRIMARY KEY,text TEXT,scopes TEXT,people TEXT,sources TEXT,updated REAL)"); db.execute("INSERT INTO memory_core_notes VALUES(1,'OLD_CORE_NOTE_ONLY','[\\\"private:12345678\\\"]','[\\\"12345678\\\"]','[]',1)"); db.commit(); db.close()`,path.join(root,'bots',id,'behavior.sqlite')],{windowsHide:true});
@@ -79,5 +79,5 @@ for(const region of ['persona','core_note','tools','facts','relations','expressi
   }
   assert.deepEqual(next.messages[0],first.messages[0],'platform System is unchanged');
   assert.equal(seen.filter(body=>JSON.stringify(body).includes('SECOND_REQUEST')).length,1);
- }catch(error){await writeFile(path.join(root,'wire-fixture.json'),JSON.stringify(seen,null,2));console.error('Runtime evidence:',root,error);throw error;}finally{unblock();for(const key of [...x.agent.host.children.keys()]){const split=key.lastIndexOf(':');await x.agent.host.stop(key.slice(0,split),key.slice(split+1));}await x.app.close();server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}
+ }catch(error){await writeFile(path.join(root,'wire-fixture.json'),JSON.stringify(seen,null,2));console.error('Runtime evidence:',root,error);throw error;}finally{unblock();if(fixtureBotId)await x.agent.protocols.mock.stop(fixtureBotId);for(const key of [...x.agent.host.children.keys()]){const split=key.lastIndexOf(':');await x.agent.host.stop(key.slice(0,split),key.slice(split+1));}await x.app.close();server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}
 });

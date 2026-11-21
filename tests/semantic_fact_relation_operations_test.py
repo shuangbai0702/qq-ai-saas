@@ -350,7 +350,7 @@ class SemanticReflectionOperations(unittest.IsolatedAsyncioTestCase):
                     if malformed or provider_failure or close:
                         self.assertEqual(db.execute('SELECT count(*) FROM memory_operation_audit_details').fetchone()[0],0)
                         decode_status=db.execute('SELECT decode_status FROM memory_operation_audits').fetchone()[0]
-                        self.assertEqual(decode_status,'not_received' if provider_failure or close else 'fallback_text')
+                        self.assertEqual(decode_status,'not_received' if provider_failure or close else 'invalid_json')
                         self.assertIsNone(json.loads(audit_row[3])['relations']['omitted'])
                     elif forget:self.assertEqual(db.execute('SELECT count(*) FROM memory_operation_audit_details').fetchone()[0],0)
                     else:

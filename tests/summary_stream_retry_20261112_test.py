@@ -3,7 +3,7 @@ import asyncio,contextvars,json,sys,unittest
 from pathlib import Path
 from types import SimpleNamespace as NS
 sys.path[:0]=[str(Path(__file__).resolve().parents[1]/'adapters/astrbot'),str(Path(__file__).resolve().parent)]
-from memory_reflection import summary_model_output
+from summary_response import summary_model_output
 from summary_stream_fixture import summary_provider
 from semantic_batch_summary_test import SemanticSummary
 

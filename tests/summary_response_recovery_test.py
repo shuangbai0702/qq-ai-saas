@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace as NS
 sys.path[:0]=[str(Path(__file__).resolve().parents[1]/'adapters/astrbot'),str(Path(__file__).resolve().parent)]
 from semantic_batch_summary_test import SemanticSummary
-from memory_reflection import SummaryResponseSlot,SummaryPersistenceError,summary_request_digest,summary_model_output
+from summary_response import SummaryResponseSlot,SummaryPersistenceError,summary_request_digest,summary_model_output
 class Recovery(unittest.IsolatedAsyncioTestCase):
  setUp=SemanticSummary.setUp
  tearDown=SemanticSummary.tearDown
@@ -52,6 +52,82 @@ class Recovery(unittest.IsolatedAsyncioTestCase):
   slot=SummaryResponseSlot(self.db,'private:12345678',1,epoch,'digest');slot.dispatch()
   with self.assertRaises(SummaryPersistenceError):slot.save(NS(completion_text='partial',is_chunk=True))
   self.assertIsNone(slot.recover())
+ async def test_validation_failure_survives_dispatch_save_and_reopen(self):
+  from summary_response import SummaryValidationError
+  scope='private:12345678';epoch=self.r.epoch()
+  self.db.execute('INSERT INTO memory_reflection_retry(scope,attempts,next_at) VALUES(?,1,0)',(scope,));self.db.commit()
+  slot=SummaryResponseSlot(self.db,scope,1,epoch,'same');slot.dispatch()
+  slot.save(NS(completion_text='{}',raw_completion={'choices':[{'finish_reason':'stop'}]},is_chunk=False))
+  slot.record_validation(SummaryValidationError('missing_required_field','$.summary'),1)
+  slot.dispatch();slot.save(NS(completion_text='{"summary":"valid"}',raw_completion={'choices':[{'finish_reason':'stop'}]},is_chunk=False))
+  self.assertEqual(slot.validation_failures()[0]['path'],'$.summary')
+  from behavior import BehaviorStore
+  self.store.close();self.store=BehaviorStore(Path(self.tmp.name)/'behavior.sqlite');self.db=self.store.db
+  restored=SummaryResponseSlot(self.db,scope,1,epoch,'same')
+  self.assertEqual(restored.recover().completion_text,'{"summary":"valid"}')
+  self.assertEqual(restored.validation_failures()[0]['attempt'],1)
+ async def test_corrupt_saved_shape_is_not_silently_rebought(self):
+  scope='private:12345678';epoch=self.r.epoch()
+  self.db.execute('INSERT INTO memory_reflection_retry(scope,attempts,next_at,result) VALUES(?,1,0,?)',(scope,'[]'));self.db.commit()
+  slot=SummaryResponseSlot(self.db,scope,1,epoch,'same')
+  with self.assertRaisesRegex(SummaryPersistenceError,'invalid_shape'):slot.recover()
+ async def test_database_failure_during_response_save_does_not_rebuy_model(self):
+  from unittest.mock import patch
+  scope='private:12345678';epoch=self.r.epoch();calls=[]
+  self.db.execute('INSERT INTO memory_reflection_retry(scope,attempts,next_at) VALUES(?,1,0)',(scope,));self.db.commit()
+  slot=SummaryResponseSlot(self.db,scope,1,epoch,'same')
+  async def stream(**kw):calls.append(kw);yield NS(completion_text='{"summary":"paid"}',raw_completion={'choices':[{'finish_reason':'stop'}]},is_chunk=False)
+  import sqlite3
+  real=slot.validation_failures
+  def unavailable():
+   self.db.close()
+   return real()
+  with patch.object(slot,'validation_failures',side_effect=unavailable):
+   with self.assertRaises(SummaryPersistenceError):await summary_model_output(NS(text_chat_stream=stream),{},lambda:True,{},800,on_response=slot.save)
+  self.assertEqual(len(calls),1)
+  # Reopen for ordinary fixture cleanup; the closed-connection fault is local.
+  from behavior import BehaviorStore
+  self.store=BehaviorStore(Path(self.tmp.name)/'behavior.sqlite');self.r=self.store.reflection;self.db=self.store.db
+ async def test_corrupt_paid_response_fails_instead_of_silent_repurchase(self):
+  scope='private:12345678';epoch=self.r.epoch()
+  self.db.execute('INSERT INTO memory_reflection_retry(scope,attempts,next_at) VALUES(?,1,0)',(scope,));self.db.commit()
+  slot=SummaryResponseSlot(self.db,scope,1,epoch,'same');slot.dispatch()
+  slot.save(NS(completion_text='{"summary":"original"}',raw_completion={'choices':[{'finish_reason':'stop'}]},is_chunk=False))
+  raw=json.loads(self.db.execute('SELECT result FROM memory_reflection_retry').fetchone()[0]);raw['text']='tampered'
+  self.db.execute('UPDATE memory_reflection_retry SET result=?',(json.dumps(raw),));self.db.commit()
+  with self.assertRaisesRegex(SummaryPersistenceError,'integrity_failed'):slot.recover()
+ async def test_transient_sqlite_write_lock_reuses_paid_response_without_model_retry(self):
+  from unittest.mock import patch
+  import sqlite3
+  scope='private:12345678';epoch=self.r.epoch();calls=[]
+  self.db.execute('INSERT INTO memory_reflection_retry(scope,attempts,next_at) VALUES(?,1,0)',(scope,));self.db.commit()
+  slot=SummaryResponseSlot(self.db,scope,1,epoch,'same');slot.dispatch();real=slot.write;writes=[]
+  self.db.execute('PRAGMA busy_timeout=10')
+  locker=sqlite3.connect(Path(self.tmp.name)/'behavior.sqlite');locker.execute('BEGIN IMMEDIATE')
+  def locked_once(data):
+   writes.append(data)
+   try:return real(data)
+   except sqlite3.OperationalError:
+    # The first UPDATE actually encounters another SQLite writer; release
+    # that writer only after the engine has rejected this transaction.
+    locker.rollback();raise
+  async def stream(**kw):calls.append(kw);yield NS(completion_text='{"summary":"paid"}',raw_completion={'choices':[{'finish_reason':'stop'}]},is_chunk=False)
+  with patch.object(slot,'write',side_effect=locked_once):
+   result=await summary_model_output(NS(text_chat_stream=stream),{},lambda:True,{},800,on_response=slot.save)
+  self.assertEqual(len(calls),1);self.assertEqual(len(writes),2);self.assertEqual(writes[0],writes[1])
+  self.assertEqual(slot.recover().completion_text,result[0].completion_text);locker.close()
+ async def test_final_audit_retains_page_validation_failures(self):
+  from summary_response import SummaryValidationError
+  scope='private:12345678';epoch=self.r.epoch()
+  self.db.execute('INSERT INTO memory_reflection_retry(scope,attempts,next_at) VALUES(?,1,0)',(scope,));self.db.commit()
+  page=SummaryResponseSlot(self.db,scope,1,epoch,'page-digest','family','0');page.dispatch()
+  page.record_validation(SummaryValidationError('expected_array','$.fact_operations'),1)
+  page.save(NS(completion_text='{}',raw_completion={'choices':[{'finish_reason':'stop'}]},is_chunk=False))
+  final=SummaryResponseSlot(self.db,scope,1,epoch,'final-digest','family','final');final.dispatch()
+  final.save(NS(completion_text='{"summary":"done"}',raw_completion={'choices':[{'finish_reason':'stop'}]},is_chunk=False))
+  evidence=final.validation_evidence()
+  self.assertEqual(evidence['total'],1);self.assertEqual(evidence['omitted'],0)
+  self.assertEqual(evidence['errors'][0]['part'],'0');self.assertEqual(evidence['errors'][0]['path'],'$.fact_operations')
  async def test_final_is_saved_before_transport_close_failure_without_repurchase(self):
   epoch=self.r.epoch();self.db.execute('INSERT INTO memory_reflection_retry(scope,attempts,next_at) VALUES(?,1,0)',('private:12345678',));self.db.commit()
   slot=SummaryResponseSlot(self.db,'private:12345678',1,epoch,'digest');slot.dispatch()

@@ -30,7 +30,12 @@ class SummarySources(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.db.execute('SELECT sources FROM memory_summaries').fetchall(),[('[]',)])
         self.assertNotIn('source_events',self.r.foundation(SCOPE)[0])
         self.assertTrue(all('sources' not in row for call in self.calls for row in call.get('summaries',[])))
-        self.assertEqual(len(material.coverage(self.db,SCOPE)),210)
+        # Current retirement authority is the exact opaque semantic batch,
+        # not the removed per-event Coverage product (six batches x 30 rounds).
+        batches=self.db.execute('SELECT members FROM memory_semantic_batches').fetchall()
+        self.assertEqual(len(batches),6)
+        self.assertEqual(len({event for row in batches for event in json.loads(row[0])}),180)
+        self.assertEqual(material.coverage(self.db,SCOPE),{})
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summary_unresolved').fetchone()[0],0)
         self.assertEqual(self.db.execute('SELECT round_count,state FROM memory_reconstruction_checkpoints').fetchall(),[(30,'available')]*6)
         summary_id=self.db.execute('SELECT id FROM memory_summaries').fetchone()[0]
@@ -49,15 +54,15 @@ class SummarySources(unittest.IsolatedAsyncioTestCase):
             self.db.execute('INSERT INTO memory_round_material VALUES(?,?,?,?)',(SCOPE,event,m['subject'],json.dumps(m)))
         self.db.commit();await self.batch(0)
         events={r['event'] for r in self.calls[0]['turns']}
-        self.assertEqual(len(events),660);self.assertIn('pending-624',events)
+        self.assertEqual(len(events),655);self.assertIn('pending-624',events)
         self.assertEqual(self.db.execute('SELECT round_count FROM memory_reconstruction_checkpoints').fetchall(),[(30,)])
-        # Unanswered material remains held, identified by its exact digest;
-        # ordinary covered business rounds do not enter this repair ledger.
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summary_unresolved').fetchone()[0],625)
-        pending=json.loads(self.db.execute('SELECT pending_events FROM memory_reconstruction_checkpoints').fetchone()[0])
-        self.assertEqual(len(pending),625)
-        self.db.execute("DELETE FROM memory_hold_rounds WHERE event='pending-624'")
-        self.assertIsNone(self.db.execute("SELECT 1 FROM memory_summary_unresolved WHERE event='pending-624'").fetchone())
+        from semantic_batch import event_key
+        members=json.loads(self.db.execute('SELECT members FROM memory_semantic_batches').fetchone()[0])
+        self.assertEqual(len(members),655)
+        self.assertIn(event_key(SCOPE,'pending-624'),members)
+        # No transport success is invented; originals remain until replacement commits.
+        self.assertEqual(self.db.execute("SELECT answer FROM memory_pending WHERE event='pending-624'").fetchone()[0],'')
+        self.assertIsNotNone(self.db.execute("SELECT 1 FROM memory_round_material WHERE event='pending-624'").fetchone())
     async def test_legacy_migration_keeps_only_live_holds_and_preserves_product(self):
         from readonly_journal import ReadonlyJournal
         from unified_context_20261108_test import request
@@ -78,44 +83,53 @@ class SummarySources(unittest.IsolatedAsyncioTestCase):
     async def test_provider_capacity_failure_preserves_the_entire_batch(self):
         now=time.time()
         for i in range(625):
-            self.db.execute('INSERT INTO memory_pending VALUES(?,?,?,?,?,?)',(SCOPE,'12345678','pending-'+str(i),'完整待整理正文'+str(i),'',now))
+            event='pending-'+str(i);msg=message(event)
+            msg['content'][0]['text']=msg['content'][0]['text'].replace('看这个','完整待整理正文'+str(i))
+            m=material.snapshots([msg],SCOPE)[0]
+            self.db.execute('INSERT INTO memory_pending VALUES(?,?,?,?,?,?)',(SCOPE,'12345678',event,m['text'],'',now))
+            self.db.execute('INSERT INTO memory_round_material VALUES(?,?,?,?)',(SCOPE,event,'12345678',json.dumps(m)))
         self.db.commit()
         for i in range(30):
             self.r.record(SCOPE,'12345678',str(i),'看这个','已回复',materials=material.snapshots([message(str(i))],SCOPE))
         seen=[]
         async def capacity(**kw):
-            seen.extend(json.loads(kw['prompt'])['turns'])
+            seen.append(json.loads(kw['prompt'])['turns'])
             raise ValueError('provider_context_capacity')
         self.assertTrue(self.r.maybe_start(SCOPE,{'memorySummary':True},summary_provider(capacity),lambda:True,{},self.var))
         await self.r.task
-        self.assertEqual(len(seen),660)
-        self.assertEqual(next(x['user'] for x in seen if x['event']=='pending-624'),'完整待整理正文624')
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],660)
+        self.assertEqual(len(seen),2)
+        self.assertTrue(all(len(batch)==655 for batch in seen))
+        self.assertEqual(seen[0],seen[1])
+        self.assertIn('完整待整理正文624',next(x['user'] for x in seen[0] if x['event']=='pending-624'))
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_pending').fetchone()[0],655)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],30)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],30)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],655)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],0)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints').fetchone()[0],0)
         self.assertIsNotNone(self.db.execute('SELECT next_at FROM memory_reflection_retry WHERE scope=?',(SCOPE,)).fetchone())
-    async def test_live_hold_survives_rollup_and_repairs_only_matching_input(self):
+    async def test_unanswered_material_has_exact_semantic_membership_without_forged_receipt(self):
         m=material.snapshots([message('held')],SCOPE)[0]
         m.update(version=3,input_settlement=None,native_outputs=[])
         self.db.execute('INSERT INTO memory_pending VALUES(?,?,?,?,?,?)',(SCOPE,m['subject'],'held',m['text'],'',time.time()))
         self.db.execute('INSERT INTO memory_round_material VALUES(?,?,?,?)',(SCOPE,'held',m['subject'],json.dumps(m)))
-        self.db.commit()
-        for start in (0,30,60):await self.batch(start)
+        self.db.commit();await self.batch(0)
+        from semantic_batch import event_key
+        members=json.loads(self.db.execute('SELECT members FROM memory_semantic_batches').fetchone()[0])
+        self.assertIn(event_key(SCOPE,'held'),members);self.assertEqual(len(members),31)
+        offered=next(row for row in self.calls[0]['turns'] if row['event']=='held')
+        self.assertEqual(offered['bot'],'')
+        self.assertEqual(self.db.execute("SELECT answer FROM memory_pending WHERE event='held'").fetchone()[0],'')
+        stored=json.loads(self.db.execute("SELECT material FROM memory_round_material WHERE event='held'").fetchone()[0])
+        self.assertIsNone(stored['input_settlement'])
+        self.assertEqual(material.coverage(self.db,SCOPE),{})
         sid=self.db.execute('SELECT id FROM memory_summaries').fetchone()[0]
-        self.assertEqual(self.db.execute('SELECT event,summary_id,digest FROM memory_summary_unresolved').fetchall(),[('held',sid,m['digest'])])
-        self.assertEqual(self.db.execute('SELECT sources FROM memory_summaries').fetchone()[0],'[]')
-        settled={**m,'input_settlement':{'status':'silent','attempted':0,'confirmed':0,'planned':0,'confirmed_messages':0}}
-        self.r.recapture=lambda *args:None
-        changed={**settled,'digest':'0'*64}
-        self.db.execute('UPDATE memory_round_material SET material=? WHERE event=?',(json.dumps(changed),'held'))
-        self.assertEqual(self.r.recover_proven_coverage(SCOPE),0)
-        self.assertIsNotNone(self.db.execute("SELECT 1 FROM memory_hold_rounds WHERE event='held'").fetchone())
-        self.db.execute('UPDATE memory_round_material SET material=? WHERE event=?',(json.dumps(settled),'held'))
-        self.assertEqual(self.r.recover_proven_coverage(SCOPE),1)
-        self.assertEqual(material.coverage(self.db,SCOPE)['held']['version'],3)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summary_unresolved').fetchone()[0],0)
+        permit=self.r.reserve_context_reconstruction(SCOPE,'real-replacement',[sid]);self.assertIsNotNone(permit)
+        self.assertTrue(self.r.settle_context_reconstruction(permit,True))
+        from semantic_batch import purge
+        # Consuming a permit alone is insufficient: no replacement Journal
+        # has committed in this fixture, so cleanup must remain blocked.
+        with self.db:self.assertFalse(purge(self.db,permit['id']))
+        self.assertIsNotNone(self.db.execute("SELECT 1 FROM memory_pending WHERE event='held'").fetchone())
     async def test_legacy_source_field_change_appends_through_real_context_and_journal(self):
         import copy,context_foundation,shared_context
         from context_protocol import READONLY_CURRENT,model_json
@@ -151,7 +165,10 @@ class SummarySources(unittest.IsolatedAsyncioTestCase):
         p=journal.prepare(composed,('bot',1,1),strict=True,guarded=True,compact_policy=True,reconstruction_scope=logical,reconstruction_authority=self.r,retirement=self.r.reconstruction_stamp(logical))
         self.assertEqual(p.reason,'');self.assertIsNone(p.reconstruction_permit)
         self.assertEqual(model_json(p.wire[:len(before_wire)]),model_json(before_wire))
-        self.assertEqual(p.state['memory_foundation'],old_foundation)
+        # Core Note now has a separate owned foundation region; immutable
+        # committed wire above remains byte-identical, including historical Core.
+        expected_dynamic={k:v for k,v in old_foundation.items() if k!='core_note'}
+        self.assertEqual(p.state['memory_foundation'],expected_dynamic)
         self.assertTrue(journal.stage_candidate(p));self.assertTrue(journal.commit(p))
         self.assertEqual(model_json(ReadonlyJournal(self.db,logical).last.wire[:len(before_wire)]),model_json(before_wire))
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints').fetchone()[0],0)

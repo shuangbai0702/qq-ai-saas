@@ -10,6 +10,9 @@ from behavior import BehaviorStore
 from bot_pipeline import BotPipeline, Work, conversation_context
 from autonomous_runtime import AutonomousRuntime
 from memory_reflection import invalidate
+from summary_stream_fixture import summary_provider
+from summary_material_test import message
+import summary_material,json
 
 
 class CommitBoundaries(unittest.IsolatedAsyncioTestCase):
@@ -18,14 +21,17 @@ class CommitBoundaries(unittest.IsolatedAsyncioTestCase):
             st=BehaviorStore(Path(tmp)/'behavior.sqlite');now=time.time()
             try:
                 st.memory.remember('private:12345678','12345678','饮料偏好','红茶','old',now)
-                old=st.observe('private:12345678','12345678','喝什么','incoming',now)
-                self.assertEqual(old['facts'][0]['value'],'红茶')
+                from relationships import observe_message
+                observe_message(st.db,'private:12345678','12345678',now)
+                observed=st.observe('private:12345678','12345678','喝什么','incoming',now)
+                old=conversation_context(st,{'memory':True},'private:12345678','12345678','喝什么',now,state=observed)
+                self.assertEqual(old['memory_foundation']['facts'][0]['value'],'红茶')
                 # Admin/message edits can land during the pre-context await.
                 st.memory.remember('private:12345678','12345678','饮料偏好','咖啡','new',now+1)
                 st.db.commit()
                 fresh=conversation_context(st,{'memory':True},'private:12345678','12345678','喝什么',now+2,state=old)
                 self.assertEqual(fresh['memory_foundation']['facts'][0]['value'],'咖啡')
-                self.assertEqual(old['facts'][0]['value'],'红茶','do not mutate the ingress snapshot')
+                self.assertEqual(old['memory_foundation']['facts'][0]['value'],'红茶','do not mutate the ingress snapshot')
                 invalidate(st.db,'private:12345678','12345678')
                 st.db.execute("UPDATE facts SET active=0");st.db.commit()
                 self.assertEqual(conversation_context(st,{'memory':True},'private:12345678','12345678','喝什么',now+3,state=old)['memory_foundation']['facts'],[])
@@ -35,15 +41,16 @@ class CommitBoundaries(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             st=BehaviorStore(Path(tmp)/'behavior.sqlite');scope='private:12345678'
             try:
-                for i in range(30):st.reflection.record(scope,'12345678',str(i),'原问题'+str(i),'真实回答')
-                async def chat(**kwargs):return NS(completion_text='迟到摘要')
+                st.reflection.shared_context=False
+                for i in range(30):st.reflection.record(scope,'12345678',str(i),'原问题'+str(i),'真实回答',materials=summary_material.snapshots([message(str(i))],scope))
+                async def chat(**kwargs):return NS(completion_text=json.dumps({'summary':'迟到摘要'}))
                 def decode(_):
                     # Deterministically inject deletion after the initial
                     # response check, before the summary write transaction.
                     invalidate(st.db,scope,'12345678');st.db.commit()
                     return {'summary':'已删除的旧聊天不应复活'}
                 with patch('output_clean.clean',side_effect=lambda value:decode(value)['summary']) as cleaner:
-                    self.assertTrue(st.reflection.maybe_start(scope,{'memory':True,'memorySummary':True,'summaryRounds':30,'naturalConversation':False},NS(text_chat=chat),lambda:True,{},contextvars.ContextVar('audit',default=None)))
+                    self.assertTrue(st.reflection.maybe_start(scope,{'memory':True,'memorySummary':True,'summaryRounds':30,'naturalConversation':False},summary_provider(chat),lambda:True,{},contextvars.ContextVar('audit',default=None)))
                     await st.reflection.task
                 cleaner.assert_called()
                 self.assertEqual(st.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],0)
