@@ -58,6 +58,7 @@ def sha(text):
 
 
 SDK_PERSONA_MARKER='\n# Persona Instructions\n\n'
+SDK_PERSONA_XML_MARKER='<persona_instructions>\n'
 
 
 def without_sdk_persona(text,persona):
@@ -66,18 +67,28 @@ def without_sdk_persona(text,persona):
     Only fresh SDK configuration uses this helper. Unrecognized instructions
     and all text before/after the known insertion remain byte-faithful.
     """
-    fragment=SDK_PERSONA_MARKER+persona+'\n'
-    return text.replace(fragment,'',1) if persona and text.count(fragment)==1 else text
+    if not persona:return text
+    stripped=legacy_sdk_persona(text,[sha(persona)],persona)
+    return stripped if stripped is not None else text
 
 
 def legacy_sdk_persona(text,origins,persona,*,replace=False):
     # Match the entire embedded Persona against authoritative config hashes.
     # A marker alone never authorizes editing arbitrary reference material.
-    before,marker,after=text.partition(SDK_PERSONA_MARKER)
-    if not marker:return None
-    endings=[index for index,value in enumerate(after) if value=='\n' and (sha(after[:index]) in origins or after[:index]==persona)]
-    if len(endings)!=1:return None
-    return before+(marker+persona+'\n' if replace else '')+after[endings[0]+1:]
+    matches=[]
+    for marker,ending in ((SDK_PERSONA_MARKER,'\n'),(SDK_PERSONA_XML_MARKER,'\n</persona_instructions>')):
+        offset=0
+        while (start:=text.find(marker,offset))>=0:
+            begin=start+len(marker);offset=begin
+            end=begin
+            while (end:=text.find(ending,end))>=0:
+                value=text[begin:end]
+                if sha(value) in origins or value==persona:
+                    matches.append((start,end+len(ending),marker,ending))
+                end+=len(ending)
+    if len(matches)!=1:return None
+    start,end,marker,ending=matches[0]
+    return text[:start]+(marker+persona+ending if replace else '')+text[end:]
 
 
 def persona_view(previous, incoming, proof, persona):
@@ -96,7 +107,7 @@ def persona_view(previous, incoming, proof, persona):
             value=json.loads(message['content'].split('\n',1)[1])['persona']
             if sha(value) in origins or value==persona:
                 matches.append((index,persona_reference(persona)))
-            elif SDK_PERSONA_MARKER in value:
+            elif SDK_PERSONA_MARKER in value or SDK_PERSONA_XML_MARKER in value:
                 stripped=legacy_sdk_persona(value,origins,persona)
                 if stripped is not None:duplicates.append((index,persona_reference(stripped)))
             continue

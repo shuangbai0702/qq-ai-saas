@@ -85,12 +85,17 @@ class WebBaseTests(unittest.TestCase):
             persona_view([{'role':'system','content':'unverifiable old preamble'}],[],self.proof(),'new persona')
 
     def test_immediate_journal_update_and_final_http_wire_without_checkpoint(self):
+        for xml in (False,True):
+            with self.subTest(xml=xml):self.check_immediate_http_wire(xml)
+
+    def check_immediate_http_wire(self,xml):
         import httpx
         from model_cache import begin_attempt,expect_append_only_messages,observe_wire_request,finish_attempt,reset_attempt
         with tempfile.TemporaryDirectory() as root:
             db=sqlite3.connect(':memory:');self.addCleanup(db.close)
             guard=SystemContract(db);journal=ReadonlyJournal(db,'bot_shared')
-            old=[{'role':'system','content':'fixed'},persona_reference('old persona'),{'role':'user','content':'first input'}]
+            persona={'role':'system','content':'<safety_instructions>fixed</safety_instructions>\n<persona_instructions>\nold persona\n</persona_instructions>\n<tool_use_instructions>fixed tools</tool_use_instructions>'} if xml else persona_reference('old persona')
+            old=[{'role':'system','content':'fixed'},persona,{'role':'user','content':'first input'}]
             from context_protocol import READONLY_CURRENT
             packet={'role':'user','content':READONLY_CURRENT+'\n{}'}
             first=journal.prepare(old+[packet],1);self.assertTrue(journal.commit(first))
@@ -111,9 +116,33 @@ class WebBaseTests(unittest.TestCase):
             self.assertTrue(journal.commit(candidate))
             restored=ReadonlyJournal(db,'bot_shared')
             self.assertEqual(restored.last.wire,candidate.wire)
-            self.assertEqual(restored.last.wire[1],persona_reference('new persona'))
+            self.assertEqual(restored.last.wire[1],{'role':'system','content':persona['content'].replace('old persona','new persona')} if xml else persona_reference('new persona'))
             self.assertEqual(db.execute("SELECT count(*) FROM fishbot_system_permits WHERE state='consumed'").fetchone()[0],1)
             db.close()
 
+
+class LegacyXmlPersonaTests(unittest.TestCase):
+    def test_old_xml_sdk_replaces_only_proven_persona_and_keeps_history(self):
+        from web_base import legacy_sdk_persona
+        prefix='<safety_instructions>fixed rules</safety_instructions>\n\n'
+        suffix='\n</persona_instructions>\n<tool_use_instructions>fixed tools</tool_use_instructions>'
+        sdk=prefix+'<persona_instructions>\nold persona'+suffix
+        prior=[{'role':'system','content':'unchanged platform'},{'role':'system','content':sdk},{'role':'user','content':'actual history'},{'role':'system','content':sdk}]
+        proof={'target':sha('new persona'),'origins':[sha('old persona')]}
+        changed=persona_view(prior,prior,proof,'new persona')
+        self.assertEqual(changed[0],prior[0]);self.assertEqual(changed[2:],prior[2:])
+        self.assertEqual(changed[1]['content'],sdk.replace('old persona','new persona'))
+        self.assertEqual(persona_view(changed,changed,proof,'new persona'),changed)
+        self.assertIsNone(legacy_sdk_persona(sdk,[], 'unrelated',replace=True))
+        self.assertIsNone(legacy_sdk_persona(sdk+sdk,proof['origins'],'new persona',replace=True))
+        stripped=without_sdk_persona(sdk,'old persona')
+        self.assertNotIn('old persona',stripped);self.assertIn('fixed rules',stripped);self.assertIn('fixed tools',stripped)
+
+    def test_xml_sdk_duplicate_becomes_one_persona_reference(self):
+        sdk='SDK\n<persona_instructions>\nold persona\n</persona_instructions>\nTools'
+        old=[{'role':'system','content':'platform'},persona_reference('old persona'),persona_reference(sdk),{'role':'user','content':'history'}]
+        changed=persona_view(old,old,{'target':sha('new persona'),'origins':[sha('old persona')]},'new persona')
+        self.assertNotIn('old persona',json.dumps(changed));self.assertEqual(json.dumps(changed).count('new persona'),1)
+        self.assertEqual(changed[-1],old[-1])
 
 if __name__=='__main__':unittest.main()
