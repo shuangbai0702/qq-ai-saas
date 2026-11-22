@@ -209,7 +209,7 @@ async def main():
         if stop_fence.quiescing:raise web.HTTPConflict(reason='Worker preparing to stop')
         id=request.match_info['id']
         try:
-            body=await request.json()
+            body=await request.clone(client_max_size=524288).json()
             validate_member(id,body)
         except (ValueError,TypeError,RecursionError):
             raise web.HTTPBadRequest(reason='Invalid member configuration') from None

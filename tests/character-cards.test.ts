@@ -16,7 +16,7 @@ test('card API shares config authority, CAS and audit while preserving unrelated
  const detail=async()=> (await app.inject({url:`/v1/bots/${id}`,cookies})).json();const before=await detail();let calls=0;agent.applyUserCards=async()=>{calls++;return true};
  const put=(expectedRevision:number,characterCards:any)=>app.inject({method:'PUT',url,cookies,payload:{expectedRevision,characterCards}});
  assert.equal((await app.inject({method:'PUT',url,cookies:other,payload:{expectedRevision:1,characterCards:[card()]}})).statusCode,404);
- for(const cards of [[card(),card()],Array.from({length:6},(_,i)=>card(String(i))),[{...card(),content:'x'.repeat(4001)}],[{...card(),kind:'invalid'}]])assert.equal((await put(1,cards)).statusCode,400);
+ for(const cards of [[card(),card()],Array.from({length:6},(_,i)=>card(String(i))),[{...card(),content:'x'.repeat(4001)}],[{...card(),kind:'invalid'}],[{...card(),content:'\u0000'}],[{...card(),content:'\uD800'}]])assert.equal((await put(1,cards)).statusCode,400);
  assert.equal((await app.inject({method:'PUT',url,cookies,payload:{expectedRevision:1,characterCards:[card()],config:defaultConfig}})).statusCode,400);
  const results=await Promise.all([put(1,[card('a')]),put(1,[card('b')])]);assert.deepEqual(results.map(r=>r.statusCode).sort(),[200,409]);assert.equal(calls,1);
  let after=await detail();const {characterCards:ignored,...rest}=after.config;const {characterCards:old,...original}=before.config;assert.deepEqual(rest,original);
@@ -35,4 +35,8 @@ test('card API shares config authority, CAS and audit while preserving unrelated
  await agent.execute(command);assert.equal(stopped,0);assert.equal((await db.query('SELECT status FROM commands WHERE id=$1',[command.id]))[0].status,'failed');assert.equal((await detail()).config.characterCards[0].id,'durable');
  agent.ai.applyCards=async()=>true;await agent.execute(command);assert.equal(stopped,0);assert.equal((await db.query('SELECT status FROM commands WHERE id=$1',[command.id]))[0].status,'completed');
  await db.query('UPDATE bots SET generation=generation+1 WHERE id=$1',[id]);await agent.execute(command);assert.equal((await db.query('SELECT status FROM commands WHERE id=$1',[command.id]))[0].status,'superseded');
+ let reached!:()=>void,release!:()=>void;const arrived=new Promise<void>(r=>reached=r),barrier=new Promise<void>(r=>release=r);
+ agent.ai.applyCards=async()=>{reached();await barrier;return true};const inFlight=Object.getPrototypeOf(agent).applyUserCards.call(agent,id,(await detail()).bot.tenant_id,4);await arrived;await db.query('UPDATE bots SET generation=generation+1 WHERE id=$1',[id]);release();assert.equal(await inFlight,false,'an old generation acknowledgement is not current success');
+ await db.query("UPDATE bots SET desired_state='stopped' WHERE id=$1",[id]);
+ const maximum=Array.from({length:5},(_,i)=>({...card('limit-'+i),content:'\u0001'.repeat(4000)}));const large=await put(4,maximum);assert.equal(large.statusCode,200,large.body);assert.deepEqual((await detail()).config.characterCards,maximum,'legal escaped content is not rejected by the old 64KB body limit');
 });

@@ -11,6 +11,9 @@ def card(id='one',enabled=True):return dict(id=id,name='示例',kind='speech',co
 class CardsTest(unittest.TestCase):
  def test_utf16_matches_browser(self):
   validate([{**card(),'content':'😀'*2000}])
+  validate([{**card(),'content':'\u001c'}])
+  for value in ('\ufeff','\u0000','\ud800'):
+   with self.assertRaises(ValueError):validate([{**card(),'content':value}])
   with self.assertRaises(ValueError):validate([{**card(),'content':'😀'*2001}])
  def test_precise_legacy_projection_and_repeated_edits_preserve_every_other_byte(self):
   note={'text':'原note','source_scopes':['bot_shared']};state={'memory_foundation':{},'foundation_core_note':note}
@@ -33,7 +36,7 @@ class CardsTest(unittest.TestCase):
   cfg={**current['config'],'characterCards':[card()]};proof={'permitId':'7','target':identity([card()]),'origins':[sha([]),sha(messages([card()]))]}
   body={**current,'revision':2,'config':cfg,'characterCardsEdit':proof}
   result=apply_user_cards(current,body);self.assertEqual(current['config']['characterCards'],[]);self.assertEqual(result['config'],cfg)
-  for patch in [{'generation':2},{'tenantId':'other'},{'revision':0},{'config':{**cfg,'systemPrompt':'changed'}},{'characterCardsEdit':{**proof,'target':'bad'}},{'characterCardsEdit':{**proof,'origins':[]}}]:
+  for patch in [{'generation':2},{'tenantId':'other'},{'revision':0},{'config':{**cfg,'systemPrompt':'changed'}},{'characterCardsEdit':{**proof,'target':'bad'}},{'characterCardsEdit':{**proof,'origins':[]}},{'characterCardsEdit':{**proof,'origins':[sha(messages([card()]))]}}]:
    with self.assertRaises(ValueError):apply_user_cards(current,{**body,**patch})
   snapshot=SimpleNamespace(base=[{'role':'system','content':'PLATFORM'},*messages([card('foreign')]),persona_reference('P')],wire=[],state={})
   with self.assertRaises(RuntimeError):project(snapshot,{'cards':[card()],'proof':proof})

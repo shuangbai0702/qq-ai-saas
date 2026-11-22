@@ -7,10 +7,12 @@ test('PGlite export preserves the existing hex key, exports populated tenants an
   const key=await loadKey(data);await current.db.query("INSERT INTO users(id,email,password_hash,name) VALUES('migration-u1','one@example.test','hash','One'),('migration-u2','two@example.test','hash','Two')");
   await current.db.query("INSERT INTO tenants(id,name) VALUES('migration-t1','Tenant one'),('migration-t2','Tenant two')");
   await current.db.query("INSERT INTO memberships(user_id,tenant_id) VALUES('migration-u1','migration-t1'),('migration-u2','migration-t2')");
+  await current.db.query("INSERT INTO character_card_library(id,owner_id,slot,name,kind,description,content) VALUES('migration-card','migration-u1',1,'表达','speech','展示描述','保留的正文')");
   await current.db.query("INSERT INTO audit_events(id,tenant_id,event,detail) VALUES(17,'migration-t1','probe','{\"n\":1}')");
   await current.app.close();current=undefined;
   const exp=run(['export',file],{DATA_ROOT:data,DATABASE_URL:''});assert.equal(exp.status,0,exp.stderr);
   const snap=JSON.parse(await readFile(file,'utf8'));assert.equal(snap.format,1);assert.equal(snap.tables.users.rows.length,2);assert.equal(snap.tables.tenants.rows.length,2);assert.match(snap.contentSha256,/^[a-f0-9]{64}$/);assert.equal(await readFile(path.join(data,'master.key'),'utf8'),key.toString('hex'));
+  assert.equal(snap.tables.character_card_library.rows[0].content,'保留的正文');
   const corrupted=path.join(out,'corrupt.json');snap.tables.users.rows[0].name='tampered';await writeFile(corrupted,JSON.stringify(snap));
   const bad=run(['import',corrupted],{DATA_ROOT:data,DATABASE_URL:'postgresql://invalid/unused'});assert.notEqual(bad.status,0);assert.match(bad.stderr,/checksum/i);
   const lease=await import('../packages/database/lease.js').then(m=>m.acquireLease(data,'agent'));const blocked=run(['export',path.join(out,'blocked.json')],{DATA_ROOT:data,DATABASE_URL:''});await lease();assert.notEqual(blocked.status,0);assert.match(blocked.stderr,/already being held|lock/i);

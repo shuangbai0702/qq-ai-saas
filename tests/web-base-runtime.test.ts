@@ -16,7 +16,7 @@ for(const region of ['persona','core_note','tools','facts','relations','expressi
  const seen:any[]=[];let unblock=()=>{};let hold=false,exercisedTool=false;
  const server=http.createServer(async(req,res)=>{
   if(req.method==='GET'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({data:[{id:'base-fixture'}]}));return;}
-  let raw='';for await(const part of req)raw+=part;const body=JSON.parse(raw);seen.push(body);
+  const chunks:Buffer[]=[];for await(const part of req)chunks.push(part);const body=JSON.parse(Buffer.concat(chunks).toString('utf8'));seen.push(body);
   if(hold&&body.model==='base-fixture'){hold=false;await new Promise<void>(resolve=>{unblock=resolve;});}
   if(cardsRegion&&!exercisedTool&&JSON.stringify(body).includes('FIRST_REQUEST')){exercisedTool=true;res.setHeader('Content-Type','application/json');res.end(JSON.stringify({id:'fixture-tool',object:'chat.completion',created:1,model:body.model,choices:[{index:0,message:{role:'assistant',content:null,tool_calls:[{id:'fixture-context-read',type:'function',function:{name:'inspect_context',arguments:'{}'}}]},finish_reason:'tool_calls'}],usage:{prompt_tokens:10,completion_tokens:3,total_tokens:13}}));return;}
   res.setHeader('Content-Type','application/json');res.end(JSON.stringify({id:'fixture-response',object:'chat.completion',created:1,model:body.model,choices:[{index:0,message:{role:'assistant',content:'测试收到。'},finish_reason:'stop'}],usage:{prompt_tokens:10,completion_tokens:3,total_tokens:13}}));
@@ -101,7 +101,7 @@ for(const region of ['persona','core_note','tools','facts','relations','expressi
    const dynamic=first.messages.filter((m:any)=>!owned(m));assert.deepEqual(next.messages.filter((m:any)=>!owned(m)).slice(0,dynamic.length),dynamic);
    let previous=next,sequence=0;
    const original={id:'one',name:'示例',kind:'speech',content:'NEW_CARD_ONLY',enabled:true};
-   const five=Array.from({length:5},(_,i)=>({...original,id:String(i),content:'CARD_CONTENT_'+i}));
+    const five=Array.from({length:5},(_,i)=>({...original,id:String(i),content:('CARD_CONTENT_'+i+'\u0001'.repeat(4000)).slice(0,4000)}));
    const variants=[five,[...five].reverse(),five.filter((_,i)=>i!==2),five.map(c=>({...c,enabled:false})),[],[original]];
    for(const variant of variants){
     await wait(async()=>{const statuses:string[]=JSON.parse(execFileSync(python,['-c',`import sqlite3,json,sys; d=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True); print(json.dumps([r[0] for r in d.execute('SELECT status FROM pipeline_work_inputs')]))`,path.join(root,'bots',id,'behavior.sqlite')],{windowsHide:true,encoding:'utf8'}));return statuses.every(s=>s.startsWith('settled'));},'work settled before next edit');

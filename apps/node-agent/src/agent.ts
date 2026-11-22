@@ -130,7 +130,8 @@ export class NodeAgent {
  async applyUserCards(id:string,tenantId:string,expectedRevision:number){
   const [bot]=await this.db.query("SELECT * FROM bots WHERE id=$1 AND tenant_id=$2 AND revision=$3 AND deleted_at IS NULL AND desired_state='running'",[id,tenantId,expectedRevision]);
   if(!bot)return false;const ctx=await this.context(bot);if(!ctx.characterCardsEdit)return false;
-  return this.aiFor(bot).applyCards(ctx);
+  const applied=await this.aiFor(bot).applyCards(ctx);if(!applied)return false;
+  const [current]=await this.db.query("SELECT id FROM bots WHERE id=$1 AND generation=$2 AND revision=$3 AND desired_state='running' AND deleted_at IS NULL",[bot.id,ctx.generation,ctx.revision]);return !!current;
  }
  async applyUserTools(id:string,tenantId:string){
   const [bot]=await this.db.query("SELECT * FROM bots WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL AND desired_state='running'",[id,tenantId]);

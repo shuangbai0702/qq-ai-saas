@@ -81,7 +81,7 @@ async def main():
             return web.json_response({'updatedRegion':'persona'})
     async def update_cards(request):
         if request.headers.get('Authorization')!='Bearer '+manifest['token']:raise web.HTTPUnauthorized()
-        body=await request.json()
+        body=await request.clone(client_max_size=524288).json()
         async with base_lock:
             from character_cards import apply_user_cards
             if body.get('apiKey')!=os.getenv('FISHBOT_MODEL_KEY',''):raise web.HTTPConflict()

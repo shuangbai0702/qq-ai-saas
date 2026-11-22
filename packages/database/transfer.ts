@@ -2,6 +2,7 @@ import {createHash} from 'node:crypto';
 
 export const transferSchema={
  users:['id','email','password_hash','name','is_admin','created_at'],
+ character_card_library:['id','owner_id','slot','name','kind','description','content','cover','revision','created_at','updated_at'],
  tenants:['id','name','created_at','bot_limit'],
  memberships:['user_id','tenant_id','role'],
  sessions:['id','user_id','expires_at'],
@@ -34,7 +35,7 @@ export const transferSchema={
 } as const;
 export type TransferTable=keyof typeof transferSchema;
 export const transferTables=Object.keys(transferSchema) as TransferTable[];
-export const expectedSchemaVersions=['001','002','003','004','005','006','007','008','009','010','011','012','013','014','015','016','017','018','019'];
+export const expectedSchemaVersions=['001','002','003','004','005','006','007','008','009','010','011','012','013','014','015','016','017','018','019','020'];
 
 function canonical(value:any):any{
  if(value instanceof Date)return value.toISOString();

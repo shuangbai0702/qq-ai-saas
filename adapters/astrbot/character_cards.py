@@ -5,6 +5,7 @@ Config revisions own cards; this module owns no database or second history.
 import copy,hashlib,json,re
 
 MARKER='[FishBot 角色卡] '
+JS_WHITESPACE='\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff'
 def encoded(value):return json.dumps(value,ensure_ascii=False,separators=(',',':'))
 def sha(value):return hashlib.sha256(encoded(value).encode()).hexdigest()
 def utf16(value):return len(value.encode('utf-16-le'))//2
@@ -15,7 +16,7 @@ def validate(cards):
         if (not isinstance(c,dict) or set(c)!={'id','name','kind','content','enabled'}
             or not isinstance(c['id'],str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}',c['id']) or c['id'] in ids
             or c['kind'] not in ('meme','speech','world','custom') or type(c['enabled']) is not bool
-            or any(not isinstance(c[k],str) or not c[k].strip() or utf16(c[k])>limit for k,limit in [('name',80),('content',4000)])):
+            or any(not isinstance(c[k],str) or '\0' in c[k] or not c[k].strip(JS_WHITESPACE) or utf16(c[k])>limit for k,limit in [('name',80),('content',4000)])):
             raise ValueError('character_cards_invalid')
         ids.add(c['id'])
     return cards
@@ -88,6 +89,7 @@ def apply_user_cards(current,body):
     if proof.get('target')!=identity(config.get('characterCards',[])):raise ValueError('character_cards_proof_invalid')
     origins=proof.get('origins')
     if not isinstance(origins,list) or not origins or any(not isinstance(x,str) or not re.fullmatch(r'[0-9a-f]{64}',x) for x in origins):raise ValueError('character_cards_origins_invalid')
+    if sha(messages(current['config'].get('characterCards',[]))) not in origins:raise ValueError('character_cards_origin_mismatch')
     other=lambda c:{k:v for k,v in c.items() if k!='characterCards'}
     if other(config)!=other(current['config']):raise ValueError('character_cards_unrelated_change')
     if body['revision']==current['revision'] and config!=current['config']:raise ValueError('character_cards_revision_conflict')

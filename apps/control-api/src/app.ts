@@ -1,3 +1,4 @@
+import {registerCharacterCardLibrary} from './character-card-library.js';
 import {CharacterCardsSchema} from '../../../packages/contracts/character-cards.js';
 import {registerActivities} from './activities.js';
 import {isDeepStrictEqual} from 'node:util';
@@ -120,6 +121,7 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
  app.post('/v1/auth/logout',async(req,reply)=>{await db.query('DELETE FROM sessions WHERE id=$1',[digest(req.cookies.fish_session!)]);reply.clearCookie('fish_session',{path:'/'});return{ok:true}});
  app.get('/v1/auth/me',req=>({user:req.user}));app.get('/v1/personas',()=>({items:personas}));
  registerInvitations(app,db);
+ registerCharacterCardLibrary(app,db);
  registerModelCatalog(app,agent,owned);
  app.get('/v1/bots',async req=>({items:await db.query("SELECT b.*,q.qq_uin,r.config->>'personaId' AS persona_id,CASE WHEN r.config->>'platformModel'='true' THEN 'platform' ELSE r.config->>'model' END AS model_id,(r.config->>'platformModel'='true' OR EXISTS(SELECT 1 FROM secrets s WHERE s.bot_id=b.id)) IS TRUE AS has_key FROM bots b LEFT JOIN qq_bindings q ON q.bot_id=b.id LEFT JOIN bot_config_revisions r ON r.bot_id=b.id AND r.revision=b.revision WHERE b.tenant_id=$1 AND b.deleted_at IS NULL ORDER BY b.created_at DESC",[req.user!.tenant_id]),quota:await getBotQuota(db,req.user!.tenant_id)}));
  app.post('/v1/bots',{config:{rateLimit:{max:10,timeWindow:'1 minute'}}},async(req,reply)=>{const v=z.object({name:z.string().trim().min(1).max(80),protocol:ProtocolSchema.default('napcat'),runtimeMode:z.enum(['dedicated','shared']).default('shared'),expectedUin:z.string().regex(/^\d{5,20}$|^$/).default(''),config:BotConfigSchema.default(defaultConfig),apiKey:modelKeyInput}).parse(req.body);const id=randomUUID();
@@ -169,8 +171,8 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
      // contract transition. No request-body field can mint this permission.
      await tx.query("INSERT INTO audit_events(tenant_id,event,bot_id,detail) VALUES($1,'config.saved',$2,$3)",[req.user!.tenant_id,bot.id,JSON.stringify({actorId:req.user!.id,revision,credentialChanged:!!v.apiKey||!!v.clearKey,changedRegion:cardsOnlyChange?'character_cards':undefined,source:'authenticated_web_config'})]);});let applied=false,applicationError:string|undefined;if(cardsOnlyChange){try{applied=await agent.applyUserCards(req.params.id,req.user!.tenant_id,revision)}catch{applicationError='角色卡应用失败，已保留重试任务';req.log.warn({botId:req.params.id},'Character cards live apply pending')}}if(personaOnly){try{applied=await agent.applyUserPersona(req.params.id,req.user!.tenant_id)}catch{req.log.warn({botId:req.params.id},'Persona live apply pending; durable apply command retained')}}if(toolsOnly){try{applied=await agent.applyUserTools(req.params.id,req.user!.tenant_id)}catch{req.log.warn({botId:req.params.id},'Tool configuration live apply pending')}}return{revision,applied,applicationError,unchanged};
  }
- app.put<{Params:{id:string}}>('/v1/bots/:id/config',req=>saveConfig(req));
- app.put<{Params:{id:string}}>('/v1/bots/:id/character-cards',req=>saveConfig(req,true));
+ app.put<{Params:{id:string}}>('/v1/bots/:id/config',{bodyLimit:262144},req=>saveConfig(req));
+ app.put<{Params:{id:string}}>('/v1/bots/:id/character-cards',{bodyLimit:131072},req=>saveConfig(req,true));
  app.put<{Params:{id:string}}>('/v1/bots/:id/qq-account',async req=>{
   const v=z.object({expectedRevision:z.number().int(),expectedUin:z.string().regex(/^\d{5,20}$|^$/)}).parse(req.body);
   const result=await db.transaction(async tx=>{const bot=await lockOwnedBot(tx,owned,req,req.params.id);
