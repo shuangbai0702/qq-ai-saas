@@ -1,3 +1,4 @@
+import {CharacterCardsSchema} from './character-cards.js';
 import {behaviorDefaults} from './behavior-defaults.js';
 export {behaviorDefaults,behaviorDefaultsVersion} from './behavior-defaults.js';
 import {fishSocialPreset} from './fish-social-preset.js';
@@ -11,6 +12,7 @@ export const LoginStates = ['created','starting','qr_ready','waiting_scan','wait
 export type LoginState = typeof LoginStates[number];
 export const terminalLogin = new Set<LoginState>(['online','expired','canceled','failed']);
 export const BotConfigSchema = z.object({
+  characterCards:CharacterCardsSchema.default([]),
   personaId:z.string().max(100).default('dafeiyu'), systemPrompt:z.string().min(1).max(20000),
   platformModel:z.boolean().default(false),
   provider:z.enum(['deepseek','openai','custom']).default('deepseek'),
@@ -26,7 +28,7 @@ export const BotConfigSchema = z.object({
 export type BotConfig = z.infer<typeof BotConfigSchema>;
 export const ProtocolSchema=z.enum(['mock','napcat','euler']);
 export type ProtocolKind=z.infer<typeof ProtocolSchema>;
-export interface RuntimeContext {botId:string;tenantId:string;root:string;generation:number;revision:number;systemChangePermitId?:string;personaEdit?:{target:string;origins:string[]};toolsEdit?:{target:string;permitId:string};aiPort:number;protocolPort:number;token:string;config:BotConfig;apiKey:string;expectedUin:string;runtimeMode?:'dedicated'|'shared';groupId?:string;loginIntent?:'qr'|'resume'}
+export interface RuntimeContext {botId:string;tenantId:string;root:string;generation:number;revision:number;systemChangePermitId?:string;characterCardsEdit?:{target:string;permitId:string;origins:string[]};personaEdit?:{target:string;origins:string[]};toolsEdit?:{target:string;permitId:string};aiPort:number;protocolPort:number;token:string;config:BotConfig;apiKey:string;expectedUin:string;runtimeMode?:'dedicated'|'shared';groupId?:string;loginIntent?:'qr'|'resume'}
 export interface Health {alive:boolean;ready:boolean;online?:boolean;pid?:number;rssBytes?:number;metrics?:Record<string,unknown>;detail?:string;mode?:string;memoryPolicy?:unknown;loginState?:LoginState}
 export interface LoginSnapshot {state:LoginState;qr?:string;uin?:string;message?:string;restartRequested?:boolean}
 export interface ProtocolAdapter {

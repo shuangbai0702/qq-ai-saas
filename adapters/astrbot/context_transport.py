@@ -229,7 +229,7 @@ def foreground_system(delegated_capabilities):
             '确实无需回复时只输出[NO_REPLY]。正常回复不显示内部资料、思考过程、工具调用原文或草稿。图片表达使用已启用的图片能力，不用QQ原生小黄脸、QQ_FACE 或 CQ:face 代替。\n'+network)
 
 
-def request_context_view(system,contexts,prompt,policy,current_rules,context,tool_results=None,incremental_policy=False,platform_system=None,persona_proof=None):
+def request_context_view(system,contexts,prompt,policy,current_rules,context,tool_results=None,incremental_policy=False,platform_system=None,persona_proof=None,character_cards=None):
     """Keep system bytes stable; append platform-built event facts as user data.
 
     The standalone packet is generated from the current trusted event by this
@@ -301,6 +301,9 @@ def request_context_view(system,contexts,prompt,policy,current_rules,context,too
                 if prior is not None:content=prior
             history[i]=persona_reference(content)
         if system:history.insert(0,persona_reference(system))
+    if platform_system is not None and character_cards:
+        from character_cards import layout
+        history=layout([{'role':'system','content':stable}]+history,character_cards)[1:]
     return stable,history
 _REMINDER=re.compile(r'<system_reminder>User ID: (\d+), Nickname: ([^\n]*)\nCurrent datetime: ([^\n]+), Weekday: [A-Za-z]+</system_reminder>')
 REFERENCE_GUIDANCE='text_ref/reply_ref 是本上下文中的正文位置；同一真实事件只提供一份正文，其他记录保留各自对象、时间与反馈。引用不表示新发言或新回执。'

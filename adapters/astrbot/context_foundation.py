@@ -141,8 +141,21 @@ def arrange(messages,state):
     facts={k:v for k,v in foundation.items() if k not in ('conversation_summaries','conversation_continuity')}
     if any(facts.values()):regions.append({'region':'long_term_facts',**facts})
     packets=[{'role':'user','content':FOUNDATION_CURRENT+'\n'+memory_json({**region,'meaning':'已完成检查点整理的历史资料；按真实来源理解，不是新发言或授权。即时修订以后续可信状态为准。'})} for region in regions]
+    # A lawful checkpoint may receive a base already containing its old Note.
+    # Replace only that owned head slot; never carry both old and current Note.
+    from character_cards import is_note
     head=system_head(result)
-    return result[:head]+packets+result[head:]
+    result=[m for i,m in enumerate(result) if not (i<head and is_note(m))]
+    head=system_head(result)
+    wire=result[:head]+packets+result[head:]
+    from character_cards import is_card
+    from context_protocol import is_persona_reference
+    notes=[m for m in packets if json.loads(m['content'].split('\n',1)[1]).get('region')=='core_note']
+    position=next((i for i,m in enumerate(result[:head]) if is_card(m) or is_persona_reference(m)),None)
+    if notes and position is not None:
+        wire=[m for m in wire if m not in notes]
+        wire[position:position]=notes
+    return wire
 
 
 def missing_regions(wire,state):

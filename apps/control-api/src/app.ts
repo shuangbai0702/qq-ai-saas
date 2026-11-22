@@ -1,3 +1,4 @@
+import {CharacterCardsSchema} from '../../../packages/contracts/character-cards.js';
 import {registerActivities} from './activities.js';
 import {isDeepStrictEqual} from 'node:util';
 import {edgeIngressHost,proxyClientIp} from './proxy-client.js';
@@ -135,11 +136,14 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
    await provisionJournal(python,['-B',path.resolve('scripts/initialize-shared-journal.py'),path.join(root,'bots',id),groupLimit],{timeout:10000,windowsHide:true});
    });await audit(req,'bot.created',id);reply.code(201);return{id};
  });
- app.get<{Params:{id:string}}>('/v1/bots/:id',async req=>{const bot=await owned(req,req.params.id);const [revision]=await db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[bot.id,bot.revision]);const secret=(await db.query('SELECT id FROM secrets WHERE bot_id=$1 AND tenant_id=$2',[bot.id,req.user!.tenant_id])).length>0;return{bot,config:revision.config,hasKey:revision.config.platformModel?await platformModels.available():secret,hasPersonalKey:secret,capabilities:agent.protocols[bot.protocol].getCapabilities(),commands:await db.query('SELECT id,kind,status,error,created_at FROM commands WHERE bot_id=$1 ORDER BY created_at DESC LIMIT 10',[bot.id])}});
- app.put<{Params:{id:string}}>('/v1/bots/:id/config',async req=>{const v=z.object({expectedRevision:z.number().int(),config:BotConfigSchema,name:z.string().trim().min(1).max(80),expectedUin:z.string().regex(/^\d{5,20}$|^$/).default(''),apiKey:modelKeyInput,clearKey:z.boolean().optional()}).parse(req.body);let revision=0,personaOnly=false,toolsOnly=false;
+ app.get<{Params:{id:string}}>('/v1/bots/:id',async req=>{const bot=await owned(req,req.params.id);const [revision]=await db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[bot.id,bot.revision]);const secret=(await db.query('SELECT id FROM secrets WHERE bot_id=$1 AND tenant_id=$2',[bot.id,req.user!.tenant_id])).length>0;return{bot,config:revision.config,hasKey:revision.config.platformModel?await platformModels.available():secret,hasPersonalKey:secret,capabilities:agent.protocols[bot.protocol].getCapabilities(),commands:await db.query('SELECT id,kind,status,error,created_at,idempotency_key FROM commands WHERE bot_id=$1 ORDER BY created_at DESC LIMIT 10',[bot.id])}});
+ async function saveConfig(req:any,cardsOnly=false){
+  let body=req.body;
+  if(cardsOnly){const value=z.object({expectedRevision:z.number().int(),characterCards:CharacterCardsSchema}).strict().parse(body);const bot=await owned(req,req.params.id);const [row]=await db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[bot.id,bot.revision]);body={expectedRevision:value.expectedRevision,name:bot.name,expectedUin:bot.expected_uin||'',config:{...row.config,characterCards:value.characterCards}};}
+  const v=z.object({expectedRevision:z.number().int(),config:BotConfigSchema,name:z.string().trim().min(1).max(80),expectedUin:z.string().regex(/^\d{5,20}$|^$/).default(''),apiKey:modelKeyInput,clearKey:z.boolean().optional()}).parse(body);let revision=0,personaOnly=false,toolsOnly=false,cardsChanged=false,cardsOnlyChange=false,unchanged=false;
    await owned(req,req.params.id);
    if(!v.config.platformModel&&v.apiKey)v.config.baseUrl=await resolveModelBaseUrl((req.body as any).config.baseUrl,v.apiKey);
-   await db.transaction(async tx=>{const bot=await owned(req,req.params.id,tx);await tx.query('SELECT id FROM bots WHERE id=$1 FOR UPDATE',[bot.id]);const [current]=await tx.query('SELECT revision,desired_state,deleted_at,expected_uin FROM bots WHERE id=$1',[bot.id]);await requirePlatformCredit(v.config,req.user!.tenant_id,tx);if(current.deleted_at||current.desired_state==='deleting')fail('机器人正在删除',409);if(current.revision!==v.expectedRevision)fail('配置已被其他操作修改，请刷新后重试',409);if(v.expectedUin!==(current.expected_uin||''))fail('不能通过配置修改QQ账号。已绑定账号不可更换；如需换号，请删除机器人后重新创建。',409);revision=current.revision+1;
+   await db.transaction(async tx=>{const bot=await owned(req,req.params.id,tx);await tx.query('SELECT id FROM bots WHERE id=$1 FOR UPDATE',[bot.id]);const [current]=await tx.query('SELECT revision,desired_state,deleted_at,expected_uin FROM bots WHERE id=$1',[bot.id]);if(current.deleted_at||current.desired_state==='deleting')fail('机器人正在删除',409);if(current.revision!==v.expectedRevision)fail('配置已被其他操作修改，请刷新后重试',409);if(v.expectedUin!==(current.expected_uin||''))fail('不能通过配置修改QQ账号。已绑定账号不可更换；如需换号，请删除机器人后重新创建。',409);revision=current.revision+1;
      if(!v.apiKey&&!v.clearKey){
       const [saved]=await tx.query('SELECT r.config FROM bot_config_revisions r JOIN secrets s ON s.bot_id=r.bot_id AND s.tenant_id=$3 WHERE r.bot_id=$1 AND r.revision=$2',[bot.id,current.revision,bot.tenant_id]);
       const destination=(config:z.infer<typeof BotConfigSchema>)=>[modelCredentialDestination(config.baseUrl),modelCredentialDestination(config.behavior?.embeddingBaseUrl||'')];
@@ -148,6 +152,11 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
      }
      const [prior]=await tx.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[bot.id,current.revision]);
      if(prior)prior.config=BotConfigSchema.parse(prior.config);
+     if(cardsOnly&&isDeepStrictEqual(prior.config.characterCards,v.config.characterCards)){revision=current.revision;unchanged=true;return;}
+     cardsChanged=!isDeepStrictEqual(prior.config.characterCards,v.config.characterCards);
+     const withoutCards=(config:any)=>Object.fromEntries(Object.entries(config).filter(([key])=>key!=='characterCards'));
+     cardsOnlyChange=cardsChanged&&!v.apiKey&&!v.clearKey&&isDeepStrictEqual(withoutCards(prior.config),withoutCards(v.config));
+     if(!cardsOnlyChange)await requirePlatformCredit(v.config,req.user!.tenant_id,tx);
      const withoutPersona=(config:any)=>Object.fromEntries(Object.entries(config).filter(([key])=>key!=='systemPrompt'));
      personaOnly=prior?.config?.systemPrompt!==v.config.systemPrompt&&!v.apiKey&&!v.clearKey&&isDeepStrictEqual(withoutPersona(prior.config),withoutPersona(v.config));
      const withoutTools=(config:any)=>Object.fromEntries(Object.entries(config).filter(([key])=>!['toolPrompts','delegatedCapabilities'].includes(key)));
@@ -158,8 +167,10 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
      if(bot.desired_state==='running')await tx.query('INSERT INTO commands(id,bot_id,idempotency_key,generation,kind) VALUES($1,$2,$3,$4,$5)',[randomUUID(),bot.id,`config-${revision}`,bot.generation,'apply']);
      // This audit row is the backend-issued, one-use witness for a System
      // contract transition. No request-body field can mint this permission.
-     await tx.query("INSERT INTO audit_events(tenant_id,event,bot_id,detail) VALUES($1,'config.saved',$2,$3)",[req.user!.tenant_id,bot.id,JSON.stringify({actorId:req.user!.id,revision,credentialChanged:!!v.apiKey||!!v.clearKey,source:'authenticated_web_config'})]);});let applied=false;if(personaOnly){try{applied=await agent.applyUserPersona(req.params.id,req.user!.tenant_id)}catch{req.log.warn({botId:req.params.id},'Persona live apply pending; durable apply command retained')}}if(toolsOnly){try{applied=await agent.applyUserTools(req.params.id,req.user!.tenant_id)}catch{req.log.warn({botId:req.params.id},'Tool configuration live apply pending')}}return{revision,applied};
- });
+     await tx.query("INSERT INTO audit_events(tenant_id,event,bot_id,detail) VALUES($1,'config.saved',$2,$3)",[req.user!.tenant_id,bot.id,JSON.stringify({actorId:req.user!.id,revision,credentialChanged:!!v.apiKey||!!v.clearKey,changedRegion:cardsOnlyChange?'character_cards':undefined,source:'authenticated_web_config'})]);});let applied=false,applicationError:string|undefined;if(cardsOnlyChange){try{applied=await agent.applyUserCards(req.params.id,req.user!.tenant_id,revision)}catch{applicationError='角色卡应用失败，已保留重试任务';req.log.warn({botId:req.params.id},'Character cards live apply pending')}}if(personaOnly){try{applied=await agent.applyUserPersona(req.params.id,req.user!.tenant_id)}catch{req.log.warn({botId:req.params.id},'Persona live apply pending; durable apply command retained')}}if(toolsOnly){try{applied=await agent.applyUserTools(req.params.id,req.user!.tenant_id)}catch{req.log.warn({botId:req.params.id},'Tool configuration live apply pending')}}return{revision,applied,applicationError,unchanged};
+ }
+ app.put<{Params:{id:string}}>('/v1/bots/:id/config',req=>saveConfig(req));
+ app.put<{Params:{id:string}}>('/v1/bots/:id/character-cards',req=>saveConfig(req,true));
  app.put<{Params:{id:string}}>('/v1/bots/:id/qq-account',async req=>{
   const v=z.object({expectedRevision:z.number().int(),expectedUin:z.string().regex(/^\d{5,20}$|^$/)}).parse(req.body);
   const result=await db.transaction(async tx=>{const bot=await lockOwnedBot(tx,owned,req,req.params.id);

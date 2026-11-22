@@ -97,7 +97,9 @@ def project_core(snapshot,change):
             from readonly_journal import system_head
             packets=arrange([],{'memory_foundation':{},'foundation_core_note':current})
             if packets:
-                position=system_head(result);result[position:position]=packets
+                from context_protocol import is_persona_reference
+                from character_cards import is_card
+                position=next((i for i,m in enumerate(result[:system_head(result)]) if is_card(m) or is_persona_reference(m)),system_head(result));result[position:position]=packets
                 matches.append(position)
         if len(matches)>1 or required and len(matches)!=1:raise ContextPrefixViolation('web_core_note_region_missing_or_ambiguous')
         return result
@@ -122,4 +124,6 @@ def project(snapshot,change):
     from relationships import project_user_edits as project_relations
     from social import project_user_edits as project_expressions
     current=project_core(snapshot,change) if 'note' in change else snapshot
-    return project_expressions(project_relations(project_user_edits(current,change.get('facts',[])),change.get('relations',[])),change.get('expressions',[]))
+    current=project_expressions(project_relations(project_user_edits(current,change.get('facts',[])),change.get('relations',[])),change.get('expressions',[]))
+    from character_cards import project as project_cards
+    return project_cards(current,change.get('character_cards'))

@@ -1,0 +1,32 @@
+// Real isolated API + production UI; no production accounts, models or QQ.
+import {chromium} from 'playwright';import assert from 'node:assert/strict';import {mkdtemp,mkdir} from 'node:fs/promises';import path from 'node:path';
+import {createApp} from '../apps/control-api/src/app.js';import {issueTestInvite} from './helpers/invitations.js';
+const x=await createApp({root:await mkdtemp(path.resolve('.local/cards-browser-')),agent:false});const browser=await chromium.launch({headless:true}),previous=process.env.APP_ORIGIN;
+try{
+ const address=await x.app.listen({host:'127.0.0.1',port:0});process.env.APP_ORIGIN=address;const context=await browser.newContext({viewport:{width:1440,height:1000}});
+ const registered=await context.request.post(address+'/v1/auth/register',{data:{inviteCode:await issueTestInvite(x.db),email:'cards-browser@example.test',password:'cards-browser-123',name:'卡片测试'}});assert.equal(registered.status(),200);
+ const made=await context.request.post(address+'/v1/bots',{data:{name:'角色卡测试',protocol:'mock'}});assert.equal(made.status(),201);const id=(await made.json()).id;
+ const page=await context.newPage();const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));let accept=false;page.on('dialog',dialog=>accept?dialog.accept():dialog.dismiss());
+ await page.goto(address+`/#/bots/${id}/character-cards`);await page.getByRole('heading',{name:/角色卡 0\/5/}).waitFor();await page.getByRole('button',{name:'知道了',exact:true}).click();const later=page.getByRole('button',{name:'稍后再说',exact:true});if(await later.isVisible())await later.click();
+ const tabs=await page.locator('.tabs a').allTextContents();assert.ok(tabs.indexOf('角色卡')<tabs.indexOf('配置'));
+ await page.getByRole('button',{name:'说话示例',exact:true}).click();await page.getByLabel('角色卡 1 名称',{exact:true}).fill('第一张');await page.getByLabel('角色卡 1 正文',{exact:true}).fill('场景：问候\n示例：今天也来了呀。');
+ await page.getByRole('link',{name:'配置',exact:true}).click();await page.waitForURL('**/character-cards');assert.ok(page.url().endsWith('/character-cards'),'dismissed leave retains route');assert.equal(await page.getByLabel('角色卡 1 名称',{exact:true}).inputValue(),'第一张');
+ await page.getByRole('button',{name:'世界背景',exact:true}).click();await page.getByLabel('角色卡 2 正文',{exact:true}).fill('世界背景正文');await page.getByLabel('角色卡 2 名称',{exact:true}).fill('第二张');
+ await page.getByRole('button',{name:'上移角色卡 2',exact:true}).click();assert.equal(await page.getByLabel('角色卡 1 名称',{exact:true}).inputValue(),'第二张');
+ await page.getByLabel('启用角色卡 1',{exact:true}).uncheck();
+ for(let i=3;i<=5;i++){await page.getByRole('button',{name:'自定义',exact:true}).click();await page.getByLabel(`角色卡 ${i} 正文`,{exact:true}).fill('自定义正文 '+i)}
+ assert.equal(await page.getByRole('button',{name:'梗知识',exact:true}).isDisabled(),true);
+ let fail=true;await page.route('**/v1/bots/'+id+'/character-cards',async route=>{if(fail){fail=false;await route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({error:'测试保存失败'})})}else await route.continue()});
+ await page.getByRole('button',{name:'保存并生效',exact:true}).click();await page.getByRole('alert').filter({hasText:'测试保存失败'}).waitFor();assert.equal(await page.getByLabel('角色卡 1 名称',{exact:true}).inputValue(),'第二张');
+ await page.getByRole('button',{name:'保存并生效',exact:true}).click();await page.getByRole('status').filter({hasText:'下次启动'}).waitFor();await page.reload();await page.getByLabel('角色卡 1 名称',{exact:true}).waitFor();assert.equal(await page.getByLabel('启用角色卡 1',{exact:true}).isChecked(),false);
+ accept=true;await page.getByRole('button',{name:'删除角色卡 3',exact:true}).click();accept=false;await page.getByRole('heading',{name:/角色卡 4\/5/}).waitFor();await page.getByRole('button',{name:'保存并生效',exact:true}).click();await page.getByRole('status').filter({hasText:'下次启动'}).waitFor();
+ await x.db.query("UPDATE bots SET desired_state='running' WHERE id=$1",[id]);await page.reload();await page.getByRole('status').filter({hasText:'等待应用'}).waitFor();
+ await page.getByLabel('角色卡 1 正文',{exact:true}).fill('更新后正文');await page.getByRole('button',{name:'保存并生效',exact:true}).click();await page.getByRole('status').filter({hasText:'等待应用'}).waitFor();
+ await x.db.query("UPDATE commands SET status='failed',error='测试运行时不可达' WHERE bot_id=$1",[id]);await page.reload();await page.getByRole('status').filter({hasText:'应用失败'}).waitFor();
+ await x.db.query('UPDATE bots SET applied_revision=revision WHERE id=$1',[id]);await page.reload();await page.getByRole('status').filter({hasText:'已生效'}).waitFor();
+ // A config draft is not submitted by card-only saving.
+ await page.getByRole('link',{name:'配置',exact:true}).click();await page.getByLabel('角色提示词（Persona）',{exact:false}).fill('不应提交的 Persona 草稿');await page.getByRole('link',{name:'角色卡',exact:true}).click();await page.getByLabel('角色卡 1 名称',{exact:true}).fill('独立保存');await page.getByRole('button',{name:'保存并生效',exact:true}).click();await page.getByRole('status').filter({hasText:'等待应用'}).waitFor();
+ const record=await(await context.request.get(address+'/v1/bots/'+id)).json();assert.notEqual(record.config.systemPrompt,'不应提交的 Persona 草稿');assert.equal(record.config.characterCards[0].name,'独立保存');
+ await mkdir('test-results/character-cards',{recursive:true});await page.screenshot({path:'test-results/character-cards/desktop.png',fullPage:true});await page.setViewportSize({width:390,height:844});await page.screenshot({path:'test-results/character-cards/mobile.png',fullPage:true});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'no mobile horizontal overflow');
+ assert.deepEqual(errors,[]);console.log('Character card browser checks passed: CRUD, templates, sort, count, leave protection, failure/retry, persistence, runtime states, config draft isolation, desktop/mobile.');
+}finally{await browser.close();await x.app.close();if(previous===undefined)delete process.env.APP_ORIGIN;else process.env.APP_ORIGIN=previous}

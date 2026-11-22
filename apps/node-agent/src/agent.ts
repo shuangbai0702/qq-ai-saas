@@ -1,3 +1,4 @@
+import {cardsIdentity,cardMessages} from '../../../packages/contracts/character-cards.js';
 import {resolvePlatformModel} from '../../../packages/shared/platform-model.js';
 import {renameAtomic} from '../../../packages/shared/fs-atomic.js';
 import {FavoriteMaintenance} from './favorite-maintenance.js';
@@ -106,7 +107,16 @@ export class NodeAgent {
  WHERE a.bot_id=$1 AND a.tenant_id=$3 AND a.event='config.saved' AND r.revision=$2
  AND a.detail->>'source'='authenticated_web_config' AND a.detail->>'actorId' IS NOT NULL`,[bot.id,bot.revision,bot.tenant_id]);
  const toolsEdit=toolsPermit?{target:createHash('sha256').update(JSON.stringify([revision.config.toolPrompts?.dsh||'',...['webSearch','groupHistory','executionReview','favoriteAudit'].map(k=>revision.config.delegatedCapabilities?.[k]!==false)])).digest('hex'),permitId:toolsPermit.id}:undefined;
- const personaEdit=permit?{target:createHash('sha256').update(revision.config.systemPrompt).digest('hex'),origins:(await this.db.query("SELECT DISTINCT config->>'systemPrompt' AS persona FROM bot_config_revisions WHERE bot_id=$1 AND revision<=$2",[bot.id,bot.revision])).map(row=>createHash('sha256').update(row.persona||'').digest('hex'))}:undefined;const config=BotConfigSchema.parse(revision.config);const model=config.platformModel?resolvePlatformModel(config,this.key,bot):{config,apiKey:revision.ciphertext&&revision.current_config.baseUrl===revision.config.baseUrl&&(revision.current_config.behavior?.embeddingBaseUrl||'')===(revision.config.behavior?.embeddingBaseUrl||'')?decrypt(this.key,bot.tenant_id+':'+bot.id,revision.ciphertext):''};return{botId:bot.id,tenantId:bot.tenant_id,root:path.join(this.root,'bots',bot.id),generation:bot.generation,revision:bot.revision,systemChangePermitId:permit?.id,personaEdit,toolsEdit,aiPort:instance.ai_port,protocolPort:instance.protocol_port,token:instance.token,...model,expectedUin:binding?.qq_uin||bot.expected_uin||'',runtimeMode:bot.runtime_mode,groupId:bot.group_id}}
+ const [cardsPermit]=await this.db.query(`SELECT a.id::text AS id FROM audit_events a
+ JOIN bot_config_revisions r ON r.bot_id=a.bot_id AND r.revision::text=a.detail->>'revision'
+ JOIN bot_config_revisions p ON p.bot_id=r.bot_id AND p.revision=r.revision-1
+ WHERE a.bot_id=$1 AND a.tenant_id=$3 AND a.event='config.saved' AND r.revision<=$2
+ AND a.detail->>'source'='authenticated_web_config' AND a.detail->>'actorId' IS NOT NULL
+ AND coalesce(r.config->'characterCards','[]'::jsonb)=$4::jsonb
+ AND coalesce(p.config->'characterCards','[]'::jsonb) IS DISTINCT FROM coalesce(r.config->'characterCards','[]'::jsonb)
+ ORDER BY r.revision DESC,a.id DESC LIMIT 1`,[bot.id,bot.revision,bot.tenant_id,JSON.stringify(revision.config.characterCards||[])]);
+ const characterCardsEdit=cardsPermit?{permitId:cardsPermit.id,target:createHash('sha256').update(cardsIdentity(revision.config.characterCards||[])).digest('hex'),origins:[...new Set((await this.db.query("SELECT DISTINCT coalesce(config->'characterCards','[]'::jsonb) AS cards FROM bot_config_revisions WHERE bot_id=$1 AND revision<=$2",[bot.id,bot.revision])).map(row=>createHash('sha256').update(JSON.stringify(cardMessages(row.cards))).digest('hex')))]}:undefined;
+ const personaEdit=permit?{target:createHash('sha256').update(revision.config.systemPrompt).digest('hex'),origins:(await this.db.query("SELECT DISTINCT config->>'systemPrompt' AS persona FROM bot_config_revisions WHERE bot_id=$1 AND revision<=$2",[bot.id,bot.revision])).map(row=>createHash('sha256').update(row.persona||'').digest('hex'))}:undefined;const config=BotConfigSchema.parse(revision.config);const model=config.platformModel?resolvePlatformModel(config,this.key,bot):{config,apiKey:revision.ciphertext&&revision.current_config.baseUrl===revision.config.baseUrl&&(revision.current_config.behavior?.embeddingBaseUrl||'')===(revision.config.behavior?.embeddingBaseUrl||'')?decrypt(this.key,bot.tenant_id+':'+bot.id,revision.ciphertext):''};return{botId:bot.id,tenantId:bot.tenant_id,root:path.join(this.root,'bots',bot.id),generation:bot.generation,revision:bot.revision,systemChangePermitId:[permit?.id,cardsPermit?.id].filter(Boolean).sort((a,b)=>Number(b)-Number(a))[0],personaEdit,characterCardsEdit,toolsEdit,aiPort:instance.ai_port,protocolPort:instance.protocol_port,token:instance.token,...model,expectedUin:binding?.qq_uin||bot.expected_uin||'',runtimeMode:bot.runtime_mode,groupId:bot.group_id}}
  aiFor(bot:any){return bot.runtime_mode==='shared'?this.shared:this.ai}
  async applyUserPersona(id:string,tenantId:string){
    const [bot]=await this.db.query("SELECT * FROM bots WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL AND desired_state='running'",[id,tenantId]);
@@ -116,6 +126,11 @@ export class NodeAgent {
    const ctx=await this.context(bot);if(!ctx.personaEdit)return false;
    const applied=group?(await this.shared.attach(group,ctx,true),true):await this.ai.applyPersona(ctx);
    if(applied)await this.dsh?.publish(id);return applied;
+ }
+ async applyUserCards(id:string,tenantId:string,expectedRevision:number){
+  const [bot]=await this.db.query("SELECT * FROM bots WHERE id=$1 AND tenant_id=$2 AND revision=$3 AND deleted_at IS NULL AND desired_state='running'",[id,tenantId,expectedRevision]);
+  if(!bot)return false;const ctx=await this.context(bot);if(!ctx.characterCardsEdit)return false;
+  return this.aiFor(bot).applyCards(ctx);
  }
  async applyUserTools(id:string,tenantId:string){
   const [bot]=await this.db.query("SELECT * FROM bots WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL AND desired_state='running'",[id,tenantId]);
@@ -166,7 +181,7 @@ export class NodeAgent {
    this.bilibili.tick();
    if(this.dsh&&Date.now()-this.dshPublished>3000){this.dshPublished=Date.now();await this.dsh.publish()}
    this.favorites?.tick();
-   const commands=await this.db.query("SELECT c.*,b.runtime_mode FROM commands c JOIN bots b ON b.id=c.bot_id WHERE c.status='pending' ORDER BY c.created_at LIMIT 32");
+   const commands=await this.db.query("SELECT c.*,b.runtime_mode FROM commands c JOIN bots b ON b.id=c.bot_id WHERE c.status='pending' OR (c.status='failed' AND c.kind='apply' AND c.finished_at<now()-interval '10 seconds' AND c.generation=b.generation AND b.desired_state='running' AND c.idempotency_key='config-'||b.revision::text AND EXISTS(SELECT 1 FROM audit_events a WHERE a.bot_id=b.id AND a.event='config.saved' AND a.detail->>'revision'=b.revision::text AND a.detail->>'changedRegion'='character_cards')) ORDER BY c.created_at LIMIT 32");
    if(this.closed)return;
    for(const command of commands)this.launch(command.bot_id,command.runtime_mode==='shared',()=>this.execute(command));
    const sessions=await this.db.query("SELECT s.*,b.protocol,b.expected_uin,b.tenant_id FROM login_sessions s JOIN bots b ON b.id=s.bot_id WHERE s.state NOT IN ('online','expired','canceled','failed') AND b.deleted_at IS NULL");
@@ -238,7 +253,12 @@ export class NodeAgent {
      const superseded=()=>Object.assign(new Error('命令已被新的生命周期或配置替代'),{superseded:true});
      if(!await current())throw superseded();
      const recovering=command.kind==='restart'&&command.idempotency_key.startsWith('recover-');
-     const baseApplied=command.kind==='apply'&&(bot.runtime_mode==='shared'?await this.shared.applyTools(ctx):await this.ai.applyTools(ctx)||await this.ai.applyPersona(ctx));
+     const baseApplied=command.kind==='apply'&&(await this.aiFor(bot).applyCards(ctx)||(bot.runtime_mode==='shared'?await this.shared.applyTools(ctx):await this.ai.applyTools(ctx)||await this.ai.applyPersona(ctx)));
+     if(command.kind==='apply'&&!baseApplied){
+       const [cardSave]=await this.db.query("SELECT id FROM audit_events WHERE bot_id=$1 AND event='config.saved' AND detail->>'revision'=$2 AND detail->>'changedRegion'='character_cards'",[bot.id,String(ctx.revision)]);
+       const group=bot.runtime_mode==='shared'?await this.shared.group(bot.id):undefined;
+       if(cardSave&&await this.host.inspect(group?.id||bot.id,'ai'))throw Error('角色卡局部应用失败，保留现有运行实例并等待重试');
+     }
      // Automatic recovery repairs the missing component. A failed shared AI
      // must not stop an online QQ, and a failed protocol must not detach a
      // healthy member or restart an independent AI. Manual restart is unchanged.

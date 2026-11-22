@@ -32,6 +32,6 @@ def apply_user_tools(current,body):
 
 def member_shape(body):
     # A separate tool-region fingerprint: Persona and credentials still match.
-    value={k:copy.deepcopy(v) for k,v in body.items() if k not in ('revision','personaEdit','toolsEdit','systemChangePermitId')}
+    value={k:copy.deepcopy(v) for k,v in body.items() if k not in ('revision','personaEdit','toolsEdit','characterCardsEdit','systemChangePermitId')}
     for key in TOOL_FIELDS:value.get('behaviorConfig',{}).pop(key,None)
     return hashlib.sha256(json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()

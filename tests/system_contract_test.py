@@ -21,6 +21,17 @@ class SystemContractTests(unittest.TestCase):
             self.guard.reserve(after,None,'unauthorized',3,scope='bot_shared')
         self.assertNotEqual(system_vector_sha(before),system_vector_sha(after))
 
+    def test_note_owner_does_not_mint_or_consume_card_or_persona_permission(self):
+        from context_protocol import persona_reference
+        from context_foundation import arrange
+        base=[{'role':'system','content':'platform'},{'role':'system','content':'[FishBot 角色卡] card\nbody'},persona_reference('persona')]
+        with_note=arrange(base,{'memory_foundation':{},'foundation_core_note':{'text':'note'}})
+        self.assertEqual(system_vector_sha(base),system_vector_sha(with_note))
+        self.guard.settle(self.guard.reserve(base,None,'initial',1),True,2)
+        self.assertFalse(self.guard.reserve(with_note,None,'note-owner',3)['changed'])
+        altered=[dict(m) for m in with_note];altered[2]['content']='[FishBot 角色卡] card\nunauthorized'
+        with self.assertRaises(SystemContractViolation):self.guard.reserve(altered,None,'forged-card',4)
+
     def setUp(self):
         self.db = sqlite3.connect(':memory:')
         self.tmp = tempfile.TemporaryDirectory()

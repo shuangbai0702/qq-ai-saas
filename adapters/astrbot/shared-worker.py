@@ -144,8 +144,10 @@ async def main():
         member['_baseShape']=member_shape(body)
         from tool_config import member_shape as tool_member_shape
         member['_toolsShape']=tool_member_shape(body)
+        from character_cards import member_shape as cards_member_shape
+        member['_cardsShape']=cards_member_shape(body)
         members[id]=member
-        behavior_settings[id]={'root':body['runtimeRoot'],'tenantId':body.get('tenantId'),'botId':id,'config':body['behaviorConfig'],'generation':body['generation'],'revision':body['revision'],'systemChangePermitId':body.get('systemChangePermitId'),'personaEdit':body.get('personaEdit'),'expectedUin':body.get('uin',''),'_base_owner':object()}
+        behavior_settings[id]={'root':body['runtimeRoot'],'tenantId':body.get('tenantId'),'botId':id,'config':body['behaviorConfig'],'generation':body['generation'],'revision':body['revision'],'systemChangePermitId':body.get('systemChangePermitId'),'personaEdit':body.get('personaEdit'),'characterCardsEdit':body.get('characterCardsEdit'),'expectedUin':body.get('uin',''),'_base_owner':object()}
         if body.get('key'):
             provider=copy.deepcopy(body['config']['provider'][0]);provider.update(id='provider-'+id,key=[body['key']])
             # load_provider initializes the real SDK but does not save the key.
@@ -218,9 +220,21 @@ async def main():
             if current:
                 prev=(current['generation'],current['revision'])
                 if stamp<prev:raise web.HTTPConflict()
-                if stamp==prev:return web.json_response({'generation':stamp[0],'revision':stamp[1],'unchanged':True})
+                if stamp==prev:
+                    if body['behaviorConfig']!=current['behaviorConfig']:raise web.HTTPConflict(reason='Revision content mismatch')
+                    return web.json_response({'generation':stamp[0],'revision':stamp[1],'unchanged':True})
             elif id in tombstones and stamp<tombstones[id]:raise web.HTTPConflict()
             if not current and len(members)>=manifest['capacity']:raise web.HTTPConflict(reason='Group capacity reached')
+            from character_cards import member_shape as cards_member_shape,apply_user_cards
+            if current and body.get('characterCardsEdit') and current['generation']==body['generation'] and current.get('_cardsShape')==cards_member_shape(body):
+                try:replacement=apply_user_cards(behavior_settings[id],{**body,'config':body['behaviorConfig']})
+                except (ValueError,TypeError,KeyError):raise web.HTTPConflict(reason='Character card region update rejected')
+                behavior_settings[id]=replacement
+                from web_base import member_shape
+                from tool_config import member_shape as tool_member_shape
+                current.update(revision=body['revision'],behaviorConfig=copy.deepcopy(body['behaviorConfig']),characterCardsEdit=copy.deepcopy(body['characterCardsEdit']),systemChangePermitId=body.get('systemChangePermitId'),_baseShape=member_shape(body),_toolsShape=tool_member_shape(body))
+                behavior['refresh_base'](id)
+                return web.json_response({'generation':stamp[0],'revision':stamp[1],'updatedRegion':'character_cards'})
             from tool_config import member_shape as tool_member_shape,apply_user_tools
             if (current and body.get('toolsEdit') and current['generation']==body['generation']
                 and current.get('_toolsShape')==tool_member_shape(body)):
@@ -229,6 +243,8 @@ async def main():
                 behavior_settings[id]=replacement
                 from web_base import member_shape
                 current.update(revision=body['revision'],behaviorConfig=copy.deepcopy(body['behaviorConfig']),toolsEdit=copy.deepcopy(body['toolsEdit']),_baseShape=member_shape(body))
+                from character_cards import member_shape as cards_member_shape
+                current['_cardsShape']=cards_member_shape(body)
                 behavior['refresh_base'](id)
                 return web.json_response({'generation':stamp[0],'revision':stamp[1],'updatedRegion':'tools'})
             from web_base import member_shape,replace_cached_persona
@@ -245,6 +261,7 @@ async def main():
                 behavior_settings[id]=replacement
                 current.update(revision=body['revision'],systemChangePermitId=body.get('systemChangePermitId'),
                     personaEdit=copy.deepcopy(body['personaEdit']),behaviorConfig=copy.deepcopy(body['behaviorConfig']),_toolsShape=tool_member_shape(body))
+                current['_cardsShape']=cards_member_shape(body)
                 behavior['refresh_base'](id)
                 return web.json_response({'generation':stamp[0],'revision':stamp[1],'updatedRegion':'persona'})
             if request.query.get('baseOnly')=='1':raise web.HTTPConflict(reason='Persona-only update does not match live configuration')

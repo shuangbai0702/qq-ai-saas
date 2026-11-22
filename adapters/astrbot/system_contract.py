@@ -37,9 +37,15 @@ def system_vector_sha(messages):
     from context_protocol import is_persona_reference
     from readonly_journal import system_head
     head=system_head(messages)
+    from character_cards import is_note
+    note_offset=0
     for index, message in enumerate(messages):
+        # Core Note has its own authenticated cognition owner. Its presence
+        # must not spend a configuration permit merely by shifting Persona.
+        # Every other physical boundary remains part of the System vector.
+        if index<head and is_note(message):note_offset+=1
         if isinstance(message, dict) and (message.get('role') == 'system' or index<head and is_persona_reference(message)):
-            vector.append([index, message])
+            vector.append([index-note_offset, message])
     encoded = json.dumps(vector, ensure_ascii=False, separators=(',', ':'), sort_keys=False)
     return hashlib.sha256(encoded.encode('utf-8')).hexdigest()
 

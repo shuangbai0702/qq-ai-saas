@@ -1,0 +1,38 @@
+import test from 'node:test';import assert from 'node:assert/strict';import path from 'node:path';import {mkdtemp} from 'node:fs/promises';
+import {CharacterCardsSchema,cardsIdentity} from '../packages/contracts/character-cards.js';
+import {defaultConfig} from '../packages/contracts/index.js';
+import {createApp} from '../apps/control-api/src/app.js';import {issueTestInvite} from './helpers/invitations.js';
+const card=(id='one')=>({id,name:'知识',kind:'custom' as const,content:'正文😀',enabled:true});
+test('card contract validates count, stable IDs, types and UTF-16 limits without rewriting',()=>{
+ for(let count=0;count<=5;count++)assert.equal(CharacterCardsSchema.parse(Array.from({length:count},(_,i)=>card(String(i)))).length,count);
+ for(const cards of [Array.from({length:6},(_,i)=>card(String(i))),[card(),card()],[{...card(),name:' '}],[{...card(),content:'\n'}],[{...card(),content:'😀'.repeat(2001)}],[{...card(),name:'😀'.repeat(41)}],[{...card(),kind:'other'}],[{...card(),id:'bad id'}]])assert.equal(CharacterCardsSchema.safeParse(cards).success,false);
+ assert.equal(CharacterCardsSchema.parse([card()])[0].content,'正文😀');assert.notEqual(cardsIdentity([card('a'),card('b')]),cardsIdentity([card('b'),card('a')]));
+});
+test('card API shares config authority, CAS and audit while preserving unrelated fields',async t=>{
+ const {app,db,agent}=await createApp({root:await mkdtemp(path.resolve('.local/cards-api-')),agent:false});t.after(()=>app.close());
+ const register=async(email:string)=>{const r=await app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(db),email,password:'card-test-123',name:'test'}});assert.equal(r.statusCode,200,r.body);return{fish_session:r.cookies[0].value}};
+ const cookies=await register('cards@example.test'),other=await register('other-cards@example.test');
+ const made=await app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'cards',protocol:'mock',config:defaultConfig}});assert.equal(made.statusCode,201,made.body);const id=made.json().id,url=`/v1/bots/${id}/character-cards`;
+ const detail=async()=> (await app.inject({url:`/v1/bots/${id}`,cookies})).json();const before=await detail();let calls=0;agent.applyUserCards=async()=>{calls++;return true};
+ const put=(expectedRevision:number,characterCards:any)=>app.inject({method:'PUT',url,cookies,payload:{expectedRevision,characterCards}});
+ assert.equal((await app.inject({method:'PUT',url,cookies:other,payload:{expectedRevision:1,characterCards:[card()]}})).statusCode,404);
+ for(const cards of [[card(),card()],Array.from({length:6},(_,i)=>card(String(i))),[{...card(),content:'x'.repeat(4001)}],[{...card(),kind:'invalid'}]])assert.equal((await put(1,cards)).statusCode,400);
+ assert.equal((await app.inject({method:'PUT',url,cookies,payload:{expectedRevision:1,characterCards:[card()],config:defaultConfig}})).statusCode,400);
+ const results=await Promise.all([put(1,[card('a')]),put(1,[card('b')])]);assert.deepEqual(results.map(r=>r.statusCode).sort(),[200,409]);assert.equal(calls,1);
+ let after=await detail();const {characterCards:ignored,...rest}=after.config;const {characterCards:old,...original}=before.config;assert.deepEqual(rest,original);
+ const ctx=await agent.context((await db.query('SELECT * FROM bots WHERE id=$1',[id]))[0]);assert.ok(ctx.characterCardsEdit?.permitId);assert.equal(ctx.characterCardsEdit?.origins.length,2);assert.equal(ctx.personaEdit,undefined);
+ const generic=await app.inject({method:'PUT',url:`/v1/bots/${id}/config`,cookies,payload:{expectedRevision:2,name:'cards',expectedUin:'',config:{...after.config,characterCards:[card('c')]}}});assert.equal(generic.statusCode,200,generic.body);assert.equal(calls,2);
+ after=await detail();assert.equal(after.config.characterCards[0].id,'c');
+ const noOp=await put(3,[card('c')]);assert.equal(noOp.statusCode,200,noOp.body);assert.equal(noOp.json().revision,3);assert.equal(noOp.json().unchanged,true);assert.equal(calls,2);
+ const audit=await db.query("SELECT detail FROM audit_events WHERE bot_id=$1 AND event='config.saved'",[id]);assert.equal(audit.length,2);assert.ok(audit.every(r=>r.detail.source==='authenticated_web_config'&&r.detail.actorId));
+ const [commands]=await db.query('SELECT count(*)::int AS count FROM commands WHERE bot_id=$1',[id]);assert.equal(commands.count,0,'stopped bot saves do not start workers');
+ await db.query("UPDATE bots SET desired_state='running',runtime_mode='dedicated' WHERE id=$1",[id]);
+ assert.equal(await Object.getPrototypeOf(agent).applyUserCards.call(agent,id,(await detail()).bot.tenant_id,2),false,'an old save cannot acknowledge a different current revision');
+ agent.applyUserCards=async()=>{throw Error('fixture worker unavailable')};
+ const pending=await put(3,[card('durable')]);assert.equal(pending.statusCode,200,pending.body);assert.equal(pending.json().applied,false);assert.ok(pending.json().applicationError);
+ const [command]=await db.query("SELECT * FROM commands WHERE bot_id=$1 AND idempotency_key='config-4'",[id]);assert.equal(command.status,'pending');
+ let stopped=0;agent.host.inspect=async()=>({pid:123}) as any;agent.ai.applyCards=async()=>false;agent.ai.applyTools=async()=>false;agent.ai.applyPersona=async()=>false;agent.ai.stop=async()=>{stopped++};
+ await agent.execute(command);assert.equal(stopped,0);assert.equal((await db.query('SELECT status FROM commands WHERE id=$1',[command.id]))[0].status,'failed');assert.equal((await detail()).config.characterCards[0].id,'durable');
+ agent.ai.applyCards=async()=>true;await agent.execute(command);assert.equal(stopped,0);assert.equal((await db.query('SELECT status FROM commands WHERE id=$1',[command.id]))[0].status,'completed');
+ await db.query('UPDATE bots SET generation=generation+1 WHERE id=$1',[id]);await agent.execute(command);assert.equal((await db.query('SELECT status FROM commands WHERE id=$1',[command.id]))[0].status,'superseded');
+});

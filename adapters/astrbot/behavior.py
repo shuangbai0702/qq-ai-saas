@@ -1664,7 +1664,7 @@ def install_runtime(core,settings):
                 event.set_extra('_hosted_context_fence',(owner,owner.reflection.epoch(),ids,scope,owner.reflection.context_dependency(ids,scope)))
             if foreground:bound.arguments['system_prompt']=setting(event)['config'].get('systemPrompt','')
             platform=foreground_system(setting(event)['config'].get('delegatedCapabilities') or {}) if foreground else None
-            bound.arguments['system_prompt'],bound.arguments['contexts']=request_context_view(bound.arguments.get('system_prompt'),bound.arguments.get('contexts'),bound.arguments.get('prompt'),protocol,current_rules,context,bound.arguments.get('tool_calls_result'),incremental_policy=True,platform_system=platform,persona_proof=setting(event).get('personaEdit') if foreground else None)
+            bound.arguments['system_prompt'],bound.arguments['contexts']=request_context_view(bound.arguments.get('system_prompt'),bound.arguments.get('contexts'),bound.arguments.get('prompt'),protocol,current_rules,context,bound.arguments.get('tool_calls_result'),incremental_policy=True,platform_system=platform,persona_proof=setting(event).get('personaEdit') if foreground else None,character_cards=setting(event)['config'].get('characterCards') if foreground else None)
             metrics[event.get_platform_id()]['requests']+=1
         bound.arguments['request_max_retries']=0
         return bound
@@ -1831,6 +1831,8 @@ def install_runtime(core,settings):
         shared_mode=bool(foreground and owned)
         from web_cognition import read as read_cognition_edit
         cognition_edit=read_cognition_edit(owned.db) if shared_mode else None
+        if shared_mode and setting(image_event).get('characterCardsEdit'):
+            cognition_edit={**(cognition_edit or {}),'character_cards':{'cards':setting(image_event)['config'].get('characterCards',[]),'proof':setting(image_event)['characterCardsEdit']}}
         if shared_mode:
             import shared_context
             image_event.set_extra('_hosted_journal_scope',shared_context.main_journal_scope(owned.db))
@@ -1857,6 +1859,9 @@ def install_runtime(core,settings):
                 if journal.last and setting(image_event).get('systemChangePermitId') and setting(image_event).get('personaEdit'):
                     from web_base import persona_view
                     projected=persona_view(journal.last.base,projected,setting(image_event)['personaEdit'],setting(image_event)['config'].get('systemPrompt',''))
+                    if setting(image_event).get('characterCardsEdit'):
+                        from character_cards import layout
+                        projected=layout(projected,setting(image_event)['config'].get('characterCards',[]),origins=setting(image_event)['characterCardsEdit']['origins'])
                 system_adoption=bool(setting(image_event).get('personaEdit')) and owned.system_contract.transition_available(
                     projected,setting(image_event).get('systemChangePermitId'),request_identity(),scope=key)
                 projected,tools_seen=shared_context.compose(journal,projected,work.scope,work.event_id,additions,image_event.get_extra('_hosted_shared_tools'),service=work.source not in ('message','deferred_group'),self_id=image_event.get_self_id(),input_digest=image_event.get_extra('_hosted_shared_input_digest'),system_transition_authorized=system_adoption,web_base_authorized=bool(setting(image_event).get('personaEdit')),cognition_edit=cognition_edit)
@@ -1912,13 +1917,15 @@ def install_runtime(core,settings):
                 system_transition_authorized=False
                 if foreground and journal.last is not None:
                     from system_contract import request_identity
-                    system_transition_authorized=bool(lease.get('personaEdit')) and owned.system_contract.transition_available(projected,lease.get('systemChangePermitId'),request_identity(),scope=key)
+                    system_transition_authorized=bool(lease.get('personaEdit') or lease.get('characterCardsEdit')) and owned.system_contract.transition_available(projected,lease.get('systemChangePermitId'),request_identity(),scope=key)
                     if not system_transition_authorized:
                         # A history checkpoint cannot authorize an independent
                         # System transition. Keep its committed vector before
                         # reserving/consuming any reconstruction checkpoint.
                         from readonly_journal import system_head
-                        fixed_system=journal.last.base[:system_head(journal.last.base)]
+                        from web_cognition import project as project_base
+                        fixed=project_base(journal.last,cognition_edit)
+                        fixed_system=fixed.base[:system_head(fixed.base)]
                         projected=fixed_system+projected[system_head(projected):]
                         if isinstance(unprojected_for_journal,list):
                             unprojected_for_journal=fixed_system+unprojected_for_journal[system_head(unprojected_for_journal):]

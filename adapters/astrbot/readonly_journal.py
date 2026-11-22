@@ -71,8 +71,9 @@ def same_native_prefix(before,after):
 
 def system_head(messages):
     from context_protocol import is_persona_reference
+    from character_cards import head_note
     head=0
-    while head<len(messages) and isinstance(messages[head],dict) and (messages[head].get('role') in ('system','developer') or head>0 and is_persona_reference(messages[head])):head+=1
+    while head<len(messages) and isinstance(messages[head],dict) and (messages[head].get('role') in ('system','developer') or head>0 and (is_persona_reference(messages[head]) or head_note(messages,head))):head+=1
     return head
 
 def semantic_retire_projection(messages,permit):
@@ -829,8 +830,9 @@ class ReadonlyJournal:
             new_head=system_head(base)
             boundary=web_base_authorized or self.checkpoint_system_boundary(reconstruction_scope)
             if boundary and old.base!=base[:new_head]:
+                from character_cards import retain_note_head
                 old=replace(old,base=copy.deepcopy(base[:new_head])+copy.deepcopy(old.base[system_head(old.base):]),
-                    wire=copy.deepcopy(base[:new_head])+copy.deepcopy(old.wire[system_head(old.wire):]))
+                    wire=retain_note_head(base[:new_head],old.wire[:system_head(old.wire)])+copy.deepcopy(old.wire[system_head(old.wire):]))
         summary_changed=bool(old and summaries(old.state)!=summaries(state))
         retirement_changed=bool(old and old.retirement!=retirement)
         can_defer_retirement=bool(retirement_changed and guarded and strict and self.db is not None
