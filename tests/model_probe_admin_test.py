@@ -1,8 +1,9 @@
-import asyncio,sqlite3,sys,unittest
+import asyncio,contextvars,sqlite3,sys,unittest
 from pathlib import Path
 from types import SimpleNamespace as NS
+from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
-from model_probe_admin import manage
+from model_probe_admin import manage,request
 
 class ProbeTests(unittest.IsolatedAsyncioTestCase):
  async def asyncSetUp(self):
@@ -43,5 +44,43 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
   await asyncio.sleep(0)
   self.assertEqual(self.st._model_probe_jobs[self.data['requestId']]['state'],'cancelled')
   self.assertEqual(self.calls,0)
+
+ async def test_request_uses_shared_contract_before_provider_hooks(self):
+  import model_cache
+  from shared_context import JOURNAL_SCOPE
+  from system_contract import SystemContract,system_vector_sha
+  self.db.executescript('''CREATE TABLE fishbot_shared_context(id INTEGER,state TEXT);
+   INSERT INTO fishbot_shared_context VALUES(1,'active');
+   CREATE TABLE fishbot_readonly_journals(scope TEXT,state TEXT);
+   INSERT INTO fishbot_readonly_journals VALUES('"bot_shared"','ready');''')
+  contract=SystemContract(self.db)
+  wire=[{'role':'system','content':'committed shared system'}]
+  old=[{'role':'system','content':'retired physical scope system'}]
+  for scope,messages in [(JOURNAL_SCOPE,wire),(self.data['scope'],old)]:
+   self.db.execute('INSERT INTO fishbot_system_scope_contract VALUES(?,?,?)',(scope,system_vector_sha(messages),1))
+  self.db.commit()
+  before=self.db.execute('SELECT * FROM fishbot_system_scope_contract ORDER BY scope').fetchall()
+  lease={'config':{'systemPrompt':'committed shared system'}}
+  extras={};event=NS(set_extra=lambda k,v:extras.__setitem__(k,v),get_extra=lambda k:extras.get(k),get_self_id=lambda:'12345678')
+  current=contextvars.ContextVar('probe_test_event')
+  self.st.active=0;self.st.slot_changed=asyncio.Event();self.st.model_journals={JOURNAL_SCOPE:NS(last=NS(wire=wire))}
+  async def chat(**kw):
+   self.assertIs(current.get(),event)
+   token=model_cache.begin_attempt(event,provider,system_contract=contract)
+   try:
+    attempt=model_cache._attempt.get()
+    self.assertEqual(attempt['scope'],JOURNAL_SCOPE)
+    self.assertEqual(extras['_hosted_pipeline'].scope,self.data['scope'])
+    contract.reserve(wire,None,attempt['attemptId'],2,scope=attempt['scope'])
+   finally:model_cache._attempt.reset(token)
+   return NS(completion_text='OK',raw_completion={'usage':{'prompt_tokens':1,'completion_tokens':1}})
+  provider=NS(text_chat=chat)
+  brain=NS(settings={'bot':lease},make_event=lambda *args:event,prepare_context=lambda *args:{'identity':{}},provider=lambda id:provider)
+  with patch.dict(sys.modules,{'astrbot.core.platform.astr_message_event':NS(current_message_event=current)}):
+   result=await request(brain,'bot',self.st,lease,self.data)
+  self.assertTrue(result['journalCommitted']);self.assertFalse(result['qqSend'])
+  self.assertEqual(self.st.active,0);self.assertTrue(self.st.slot_changed.is_set())
+  self.assertEqual(before,self.db.execute('SELECT * FROM fishbot_system_scope_contract ORDER BY scope').fetchall())
+  self.assertIsNone(current.get(None))
 
 if __name__=='__main__':unittest.main()

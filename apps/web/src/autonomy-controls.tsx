@@ -1,4 +1,3 @@
-import {useEffect,useRef,useState} from 'react';
 import type {BotConfig} from '../../../packages/contracts/index';
 import {behaviorDefaults} from '../../../packages/contracts/behavior-defaults';
 import {Field} from './ui';
@@ -7,8 +6,8 @@ type Props={config:BotConfig;onChange:(config:BotConfig)=>void;kind:'group'|'own
 export function AutonomyControls({config,onChange,kind,metrics}:Props){
  const b=config.behavior||{} as NonNullable<BotConfig['behavior']>;
  const update=(value:Partial<NonNullable<BotConfig['behavior']>>)=>onChange({...config,behavior:{...b,...value} as NonNullable<BotConfig['behavior']>});
- const normalized=(b.groupParticipationGroups||[]).join(', '),[groups,setGroups]=useState(normalized),input=useRef<HTMLInputElement>(null);
- useEffect(()=>{if(document.activeElement!==input.current)setGroups(normalized)},[normalized]);
+ const allowedGroups=config.groups||[];
+ const participatingGroups=b.groupParticipationGroups.filter(group=>allowedGroups.includes(group));
  if(kind==='owner')return <section className="panel" aria-label="定时关心主人"><h2>定时判断是否找主人聊天</h2><p>主人联系由自己的开关控制，独立于主动模式与群聊参与。仍遵守安静时段、每小时发送总额、每日联系额度和未回应保护。</p>
   <label className="toggle-row"><div><b>主动模式</b><small>控制真正的自主激活，由主AI自行决定行动或休息；主人联系、群聊参与各用自己的开关。关闭不丢弃原工具回执，也保留用户已授权的持久提醒。</small></div><input aria-label="主动模式" type="checkbox" checked={config.proactive} onChange={e=>onChange({...config,proactive:e.target.checked})}/></label>
   <label className="toggle-row"><div><b>定时关心主人</b><small>只向设置的主人发起私聊，需已有真实私聊记录。模型判断有自然动机才发；不使用主动联系概率抽签。</small></div><input aria-label="定时关心主人" type="checkbox" checked={b.ownerContactEnabled??behaviorDefaults.ownerContactEnabled} onChange={e=>update({ownerContactEnabled:e.target.checked})}/></label>
@@ -20,10 +19,10 @@ export function AutonomyControls({config,onChange,kind,metrics}:Props){
   <p>主人没有回应或明确拒绝时停止追问；在其他群与同一个主人交流也会推迟私聊。首次启用先等待一个判断间隔，不会立即发送。</p>
   <p role="status">最近主人判断：{metrics?.lastOwnerDecision?`${new Date(metrics.lastOwnerDecision.at*1000).toLocaleString()} · ${metrics.lastOwnerDecision.contact?'愿意联系，等待发送条件':'保持安静或请求未完成'}`:'暂无记录；需要开启、已有真实私聊并达到等待条件'}</p>
  </section>;
+ if(!allowedGroups.length)return <section className="panel"><p>先在服务群范围中开启白名单群，再设置主动参与。</p></section>;
  return <section className="panel" aria-label="白名单群自主参与"><h2>白名单群自主参与</h2><p>这是首次加入或结束后重新加入话题。正常 @ 回复、引用回复与已开始的跟聊走各自链路，不重复等待自主入场的判断间隔。</p>
   <label className="toggle-row"><div><b>群语义参与判断</b><small>判断话题是否与自己有关，或自己是否想参与；替代随机搭话入口，不新增常驻模型。</small></div><input aria-label="群语义参与判断" type="checkbox" checked={b.groupParticipationEnabled??behaviorDefaults.groupParticipationEnabled} onChange={e=>update({groupParticipationEnabled:e.target.checked})}/></label>
-  <Field label="自主参与白名单群号" hint="最多两个群，按填写顺序去重后取前两个，其余无效；留空全部不启用。与上方服务群范围取交集，不会自动加入群；会话免打扰或拒绝主动联系仍然有效。"><input aria-label="自主参与白名单群号" ref={input} value={groups} maxLength={2200} placeholder="用逗号或空格分隔群号" onChange={e=>{setGroups(e.target.value);update({groupParticipationGroups:[...new Set(e.target.value.split(/[,，\s]+/).filter(Boolean))]})}}/></Field>
-  {!b.groupParticipationGroups?.length&&<p className="notice">尚未选择白名单群，自主入场不会执行；正常被叫回复和已开始的跟聊仍按设置运行。</p>}
+  <Field label="主动参与的群" hint="从已开启的白名单群中选择，最多两个。">{allowedGroups.map(group=><label key={group} className="toggle-row"><span>{group}</span><input type="checkbox" aria-label={'主动参与群 '+group} checked={participatingGroups.includes(group)} disabled={!participatingGroups.includes(group)&&participatingGroups.length>=2} onChange={e=>update({groupParticipationGroups:e.target.checked?[...b.groupParticipationGroups.filter(g=>allowedGroups.includes(g)),group].slice(0,2):b.groupParticipationGroups.filter(g=>g!==group)})}/></label>)}</Field>
   <div className="form-grid"><Field label="群判断最短间隔（分钟）" hint="有新消息，且距上次判断或本群最近真实互动至少这么久；两项同时满足。冷却内收到的消息会保留，到期自动判断，无需再发一条；真实聊天会刷新，普通旁观消息不会刷新。"><input aria-label="群判断最短间隔（分钟）" type="number" min={10} max={1440} value={b.groupParticipationIntervalMinutes??10} onChange={e=>update({groupParticipationIntervalMinutes:Number(e.target.value)})}/></Field>
    <Field label="参与风格"><select aria-label="参与风格" value={b.groupParticipationStyle||'active'} onChange={e=>update({groupParticipationStyle:e.target.value as 'reserved'|'natural'|'active'})}><option value="reserved">保守：有明确补充再参与</option><option value="natural">自然：兴趣、观点和气氛综合判断</option><option value="active">活跃：更愿意分享相关反应</option></select></Field></div>
   <label className="toggle-row"><div><b>允许旁观补充别人之间的对话</b><small>默认关闭；开启后仍由模型判断相关性，不能替别人回答或冒充群成员。</small></div><input aria-label="允许旁观补充别人之间的对话" type="checkbox" checked={!!b.groupParticipationOtherConversations} onChange={e=>update({groupParticipationOtherConversations:e.target.checked})}/></label>

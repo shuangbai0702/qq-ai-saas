@@ -13,7 +13,7 @@ export function ProactiveControls({id,botConfig,onError,onDirtyChange,searchSect
  const [loadError,setLoadError]=useState('');
  const [section,setSection]=useState('overview');
  useEffect(()=>{if(searchSection==='settings')setSection(searchSection)},[searchSection,searchAttempt]);
- const commonGroups=botConfig.behavior?.groupParticipationGroups||[];
+ const commonGroups=(botConfig.behavior?.groupParticipationGroups||[]).filter(group=>botConfig.groups.includes(group));
  const owner=useRef<{signal:AbortSignal;seq:number}|undefined>(undefined);const dirtyRef=useRef(false),writing=useRef(false);
  useEffect(()=>{dirtyRef.current=dirty},[dirty]);
  useEffect(()=>{onDirtyChange?.(dirty);return()=>onDirtyChange?.(false)},[dirty,onDirtyChange]);

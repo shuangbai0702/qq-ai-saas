@@ -48,7 +48,7 @@ async def request(brain,id,store,lease,data):
     from autonomy import decision_token_limit
     from model_cache import usage_evidence
     from readonly_journal import ReadonlyJournal
-    from shared_context import JOURNAL_SCOPE
+    from shared_context import JOURNAL_SCOPE,main_journal_scope
     from system_contract import system_vector_sha
     if brain.settings.get(id) is not lease:raise asyncio.CancelledError('stale_debug_lease')
     prompt='[管理员调试；平台内部事件，不是QQ用户发言]只确认模型请求链路可用，简短回答即可。不执行工具，不发送QQ，不创建任务。'
@@ -56,6 +56,7 @@ async def request(brain,id,store,lease,data):
     event.set_extra('_hosted_internal_work',None)
     event.set_extra('_hosted_initiative',False)
     event.set_extra('_hosted_admin_debug',True)
+    event.set_extra('_hosted_journal_scope',main_journal_scope(store.db))
     event.set_extra('_hosted_pipeline',Work(id,data['scope'],'0',str(event.get_self_id()),'admin-probe:'+data['requestId'],'admin_debug',time.time(),lease))
     context=brain.prepare_context(id,event,data['scope'],prompt)
     context['identity']['principal']='administrator-debug-service'
