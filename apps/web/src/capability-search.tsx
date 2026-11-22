@@ -89,7 +89,7 @@ export function CapabilitySearch({id,route,attempt,onRepeat}:{id:string;route:st
     if(e.key==='Escape'){e.preventDefault();setQuery('')}
     if(e.key==='Enter'&&results.length){e.preventDefault();choose(link(results[0]))}
    }}/>
-   {query&&<button type="button" className="icon" aria-label="清空功能搜索" onClick={()=>{setQuery('');field.current?.focus()}}><X size={16}/></button>}
+   {query?<button type="button" className="icon" aria-label="清空功能搜索" onClick={()=>{setQuery('');field.current?.focus()}}><X size={16}/></button>:<span className="search-kbd" aria-hidden="true">⌘K</span>}
   </div>
   {query.trim()&&<div className="capability-search-results" aria-live="polite">{results.length?results.map(entry=><a key={entry[0]} href={link(entry)} onClick={e=>{
    if(location.hash===link(entry)&&!e.ctrlKey&&!e.metaKey&&!e.shiftKey&&!e.altKey){e.preventDefault();choose(link(entry))}

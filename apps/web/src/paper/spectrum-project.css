@@ -257,7 +257,7 @@ body.paper-app.paper-spectrum[data-small-look] .overview-quick-config>.form-grid
   body.paper-app.paper-spectrum .dashboard-layout {grid-template-columns:minmax(0,1fr) minmax(220px,26%)}
   body.paper-app.paper-spectrum .companion-note {display:block}
   body.paper-app.paper-spectrum :is(.roster-head,.bot-row) {
-    grid-template-columns:minmax(185px,1.35fr) minmax(88px,.68fr) minmax(135px,.9fr) minmax(156px,auto);
+    grid-template-columns:minmax(180px,1.18fr) minmax(122px,.76fr) minmax(175px,1.05fr) minmax(162px,auto);
     gap:12px;
   }
 }
@@ -765,4 +765,552 @@ body.paper-app.paper-spectrum .rule-bullets b { color: #314b54; }
   body.paper-app.paper-spectrum .more-menu-wrap { flex: 0 0 auto; }
   body.paper-app.paper-spectrum .more-menu-popover { right: 0; left: auto; }
   body.paper-app.paper-spectrum .main-nav-divider { display: none; }
+}
+
+/* === 琉璃微透 · 左红右绿 全界面美术细节精雕 (2026-11-22) === */
+@keyframes art-pulse-ring {
+  0%   { box-shadow: 0 0 0 0 rgba(76, 168, 138, 0.42); }
+  70%  { box-shadow: 0 0 0 6px rgba(76, 168, 138, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(76, 168, 138, 0); }
+}
+@keyframes art-pulse-amber {
+  0%   { box-shadow: 0 0 0 0 rgba(212, 158, 72, 0.42); }
+  70%  { box-shadow: 0 0 0 6px rgba(212, 158, 72, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(212, 158, 72, 0); }
+}
+
+/* 1. 琉璃双色折射棱边 + 内高光 */
+body.paper-app.paper-spectrum :is(.panel,.roster,.companion-note,.stat,.quota-summary,.config-nav,.save-bar,.edit-dialog,.auth-story,.auth-form > div,.more-menu-popover):not(details) {
+  border: 1px solid transparent !important;
+  border-image: linear-gradient(100deg, rgba(212, 140, 156, 0.52), rgba(255, 255, 255, 0.65) 48%, rgba(108, 176, 166, 0.54)) 1 !important;
+  box-shadow:
+    0 14px 34px rgba(42, 56, 70, 0.062),
+    0 2px 6px rgba(154, 110, 122, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    inset 1px 0 0 rgba(255, 244, 246, 0.55),
+    inset -1px 0 0 rgba(235, 252, 248, 0.55),
+    inset 0 -1px 0 rgba(120, 156, 152, 0.16) !important;
+}
+body.paper-app.paper-spectrum .app-header {
+  border: 0 !important;
+  border-image: none !important;
+  border-bottom: 1px solid transparent !important;
+  border-image: linear-gradient(96deg, rgba(214, 142, 158, 0.52), rgba(238, 224, 214, 0.45) 48%, rgba(108, 178, 168, 0.56)) 0 0 1 0 !important;
+  box-shadow: 0 6px 22px rgba(45, 62, 74, 0.045), inset 0 -1px 0 rgba(255, 255, 255, 0.72) !important;
+}
+
+/* 2. 左上绯红 / 右下青瓷 L 形琉璃角饰 */
+body.paper-app.paper-spectrum .glass-corners {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+body.paper-app.paper-spectrum .glass-corners::before,
+body.paper-app.paper-spectrum .glass-corners::after {
+  content: "";
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  pointer-events: none;
+}
+body.paper-app.paper-spectrum .glass-corners::before {
+  top: 5px;
+  left: 5px;
+  border-top: 1.5px solid rgba(210, 134, 150, 0.65);
+  border-left: 1.5px solid rgba(210, 134, 150, 0.65);
+}
+body.paper-app.paper-spectrum .glass-corners::after {
+  right: 5px;
+  bottom: 5px;
+  border-right: 1.5px solid rgba(102, 174, 162, 0.68);
+  border-bottom: 1.5px solid rgba(102, 174, 162, 0.68);
+}
+
+/* 3. 品牌琉璃鱼纹印章 + 双环头像 + 导航菱形激活点 */
+body.paper-app.paper-spectrum .brand { gap: 11px; }
+body.paper-app.paper-spectrum .brand-seal {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  position: relative;
+  background: linear-gradient(135deg, rgba(248, 224, 230, 0.85), rgba(255, 253, 250, 0.9) 50%, rgba(218, 243, 236, 0.88));
+  border: 1px solid rgba(176, 154, 162, 0.45);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 3px 10px rgba(72, 84, 92, 0.08);
+  color: #2b5a61;
+}
+body.paper-app.paper-spectrum .brand-seal::after {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  border: 1px dashed rgba(176, 146, 156, 0.36);
+  pointer-events: none;
+}
+@media (max-width: 560px) {
+  body.paper-app.paper-spectrum .brand-seal { width: 28px; height: 28px; }
+  body.paper-app.paper-spectrum .brand-seal svg { width: 15px; height: 15px; }
+}
+body.paper-app.paper-spectrum .avatar {
+  background: linear-gradient(135deg, #fbe8ec, #fdfcf9 50%, #dff2ec);
+  color: #9e4b5d;
+  font-weight: 600;
+  border: 1px solid rgba(196, 146, 158, 0.55);
+  box-shadow: 0 0 0 2.5px rgba(255, 255, 255, 0.78), 0 0 0 3.5px rgba(124, 178, 170, 0.35), 0 3px 8px rgba(45, 62, 74, 0.08);
+}
+body.paper-app.paper-spectrum[data-small-look=open] .main-nav > a {
+  --small-edge:
+    linear-gradient(90deg, #d18a9b, #86b9ae) left top no-repeat,
+    linear-gradient(#d18a9b, #bea1b4) left 22% no-repeat,
+    linear-gradient(90deg, #c99aa8, #6bb2a5) right bottom no-repeat,
+    linear-gradient(#86b9ae, #6bb2a5) right bottom no-repeat;
+}
+body.paper-app.paper-spectrum .main-nav > a.active {
+  background: linear-gradient(100deg, rgba(246, 224, 230, 0.65), rgba(255, 253, 250, 0.55) 50%, rgba(220, 243, 236, 0.68)) !important;
+  color: #234b53 !important;
+  text-decoration: none !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85) !important;
+}
+body.paper-app.paper-spectrum .main-nav > a.active::after {
+  content: "" !important;
+  display: block !important;
+  position: absolute;
+  left: 50%;
+  bottom: -3px;
+  width: 5px;
+  height: 5px;
+  transform: translateX(-50%) rotate(45deg);
+  background: linear-gradient(135deg, #d78798, #66b0a5);
+  border: 1px solid #fffdf9;
+}
+
+/* 4. 星芒眉标、切角琉璃计数牌、左红右绿按钮 */
+body.paper-app.paper-spectrum .eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #6a7c82;
+  font-weight: 600;
+}
+body.paper-app.paper-spectrum .eyebrow::before {
+  content: "✦";
+  font-size: 9px;
+  color: #cf8294;
+  line-height: 1;
+}
+body.paper-app.paper-spectrum .eyebrow::after {
+  content: "";
+  width: 22px;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(207, 130, 148, 0.5), rgba(108, 176, 166, 0.15));
+}
+body.paper-app.paper-spectrum .count {
+  border-radius: 3px !important;
+  min-width: 26px;
+  height: 24px;
+  padding: 0 8px;
+  font-family: Consolas, "Segoe UI", monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: #8c4456 !important;
+  background: linear-gradient(120deg, rgba(248, 224, 230, 0.82), rgba(226, 245, 239, 0.82)) !important;
+  border: 1px solid rgba(186, 152, 162, 0.45) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.88) !important;
+}
+body.paper-app.paper-spectrum[data-primary-look=spectrum] :is(button, a).primary {
+  --primary-start: #f7e4e9;
+  --primary-end: #daf0ea;
+  --primary-stroke: rgba(168, 150, 160, 0.52);
+  --primary-edge: var(--ink-wash) top left / 100% 2px no-repeat;
+  --primary-depth: inset 0 1px 0 rgba(255, 255, 255, 0.92), inset 0 -2px 0 rgba(114, 168, 160, 0.18), 0 4px 14px rgba(56, 78, 86, 0.08);
+  color: #23434c !important;
+  border-radius: 3px !important;
+}
+body.paper-app.paper-spectrum[data-small-look=open] :is(.secondary:not(.overview-quick-config>.form-grid>a), button.icon, .save-bar button.primary, .overview-quick-config button.primary) {
+  --small-paper: #f9f5f6;
+  --small-radius: 2px;
+  --small-edge:
+    linear-gradient(#d48b9c, #a49cb3) left center / 1px 64% no-repeat,
+    linear-gradient(90deg, #d48b9c, #80b8ae) left top / 74% 1px no-repeat,
+    linear-gradient(90deg, #d48b9c, #68b2a5) right bottom / 74% 1px no-repeat,
+    linear-gradient(#80b8ae, #68b2a5) right bottom / 1px 0% no-repeat;
+  color: #294954 !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78) !important;
+}
+
+/* 5. 统计卡彩晕圆徽 + 短饰杠 + 发光名额刻度 */
+body.paper-app.paper-spectrum .stat-bar-accent {
+  display: block;
+  width: 22px;
+  height: 2px;
+  margin-bottom: 6px;
+  background: var(--ink-wash);
+  opacity: .78;
+}
+body.paper-app.paper-spectrum .stats.stats-with-quota .stat strong {
+  font-size: 30px !important;
+  font-weight: 560 !important;
+  letter-spacing: -0.4px;
+  font-variant-numeric: tabular-nums;
+  color: #213745;
+  margin: 4px 0 6px;
+}
+body.paper-app.paper-spectrum .stat-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.92), rgba(245, 224, 230, 0.55) 55%, rgba(214, 240, 234, 0.52)) !important;
+  border: 1px solid rgba(182, 160, 168, 0.34) !important;
+  color: #467378 !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 3px 8px rgba(64, 82, 92, 0.06) !important;
+}
+body.paper-app.paper-spectrum .quota-meter {
+  position: relative;
+  height: 5px;
+  padding: 1px;
+  background: rgba(140, 156, 158, 0.16);
+  border: 1px solid rgba(154, 166, 168, 0.24);
+  overflow: visible;
+}
+body.paper-app.paper-spectrum .quota-meter > i {
+  position: relative;
+  height: 100%;
+  background: var(--ink-wash);
+}
+body.paper-app.paper-spectrum .quota-meter > i::after {
+  content: "";
+  position: absolute;
+  right: -3px;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  transform: translateY(-50%);
+  background: #66b0a5;
+  border: 1.5px solid #fffdf9;
+  box-shadow: 0 0 8px rgba(102, 176, 165, 0.65);
+}
+
+/* 6. 筛选微标、融纸快捷键搜索框 */
+body.paper-app.paper-spectrum .roster-filters button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px 9px;
+  font-size: 13px;
+}
+body.paper-app.paper-spectrum .roster-filters button .f-count {
+  font-family: Consolas, "Segoe UI", monospace;
+  font-size: 10.5px;
+  padding: 1px 6px;
+  background: rgba(255, 253, 251, 0.62);
+  border: 1px solid rgba(162, 166, 168, 0.28);
+  color: #60737b;
+}
+body.paper-app.paper-spectrum .roster-filters button[aria-pressed=true] .f-count {
+  background: linear-gradient(100deg, rgba(244, 218, 226, 0.78), rgba(214, 240, 232, 0.78));
+  border-color: rgba(176, 148, 158, 0.44);
+  color: #234750;
+}
+body.paper-app.paper-spectrum :is(.search, .capability-search-input) {
+  background: var(--wick-line), linear-gradient(100deg, rgba(254, 248, 249, 0.62), rgba(244, 252, 250, 0.62)) !important;
+  border: 1px solid rgba(166, 164, 168, 0.28) !important;
+  border-radius: 2px 2px 0 0 !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75) !important;
+}
+body.paper-app.paper-spectrum .search-kbd {
+  font-family: Consolas, "Segoe UI", monospace;
+  font-size: 10px;
+  padding: 2px 5px;
+  color: #6b7e85;
+  background: rgba(255, 255, 255, 0.65);
+  border: 1px solid rgba(154, 168, 170, 0.34);
+  flex-shrink: 0;
+}
+
+/* 7. 头像画幅装裱、呼吸宝石点、行项左棱光条与模型芯片签 */
+body.paper-app.paper-spectrum .bot-avatar {
+  position: relative;
+  width: 58px;
+  height: 60px;
+  border-radius: 8px !important;
+  padding: 3.5px;
+  background: linear-gradient(135deg, #fceef1, #ffffff 50%, #e7f6f1) !important;
+  border: 1px solid rgba(182, 152, 162, 0.48) !important;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.92), 0 5px 14px rgba(64, 72, 82, 0.09) !important;
+}
+body.paper-app.paper-spectrum .bot-avatar.large {
+  width: 74px;
+  height: 78px;
+  border-radius: 10px !important;
+}
+body.paper-app.paper-spectrum .bot-avatar img {
+  border-radius: 5px;
+  transform: scale(1.06) translateY(1px);
+}
+body.paper-app.paper-spectrum .avatar-gem {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #8ee0c5, #3f9679);
+  border: 1.5px solid #fffdf9;
+  animation: art-pulse-ring 2.6s ease-out infinite !important;
+}
+body.paper-app.paper-spectrum .avatar-gem.amber {
+  background: radial-gradient(circle at 35% 35%, #f5d38c, #c88d34);
+  animation: art-pulse-amber 2.6s ease-out infinite !important;
+}
+body.paper-app.paper-spectrum .avatar-gem.idle {
+  background: #9ca8aa;
+  animation: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  body.paper-app.paper-spectrum .avatar-gem { animation: none !important; }
+}
+body.paper-app.paper-spectrum .bot-row {
+  position: relative;
+  padding: 18px 12px;
+  border-bottom: 1px solid rgba(154, 164, 164, 0.2) !important;
+  background: transparent !important;
+}
+body.paper-app.paper-spectrum .bot-row::before {
+  content: "" !important;
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 2.5px;
+  background: linear-gradient(180deg, #d88798, #66b0a5);
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+body.paper-app.paper-spectrum .bot-row:hover {
+  background: linear-gradient(96deg, rgba(248, 226, 232, 0.36), rgba(255, 254, 252, 0.28) 50%, rgba(218, 242, 236, 0.38)) !important;
+}
+body.paper-app.paper-spectrum .bot-row:hover::before { opacity: .9; }
+body.paper-app.paper-spectrum .row-identity p {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+body.paper-app.paper-spectrum .row-identity p span {
+  display: inline;
+  font-family: Consolas, "Segoe UI", monospace;
+  font-size: 11px;
+  color: #4f6670;
+}
+body.paper-app.paper-spectrum .meta-sep { font-style: normal; opacity: .35; }
+body.paper-app.paper-spectrum .model-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  font-family: Consolas, "Segoe UI", monospace;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #2b4752;
+  padding: 3px 8px;
+  margin-bottom: 5px;
+  background: linear-gradient(100deg, rgba(250, 238, 241, 0.78), rgba(236, 248, 245, 0.78));
+  border: 1px solid rgba(176, 158, 166, 0.32);
+  border-left: 2.5px solid #cf8a9a;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+body.paper-app.paper-spectrum .model-pill > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+body.paper-app.paper-spectrum .model-pill svg { color: #b87484; flex-shrink: 0; }
+
+/* 8. 仪表盘式信号微签 & 琉璃状态徽章 */
+body.paper-app.paper-spectrum .bot-row .bot-signals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+body.paper-app.paper-spectrum .signal {
+  min-height: 26px;
+  padding: 2px 8px;
+  font-size: 10.5px;
+  gap: 5px;
+  border-radius: 2px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78) !important;
+}
+body.paper-app.paper-spectrum .signal .sig-led {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--signal-accent);
+  margin-left: 1px;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--signal-accent) 22%, transparent);
+}
+body.paper-app.paper-spectrum .badge {
+  padding: 2px 8px;
+  min-height: 22px;
+  font-size: 10.5px;
+  font-weight: 550;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82) !important;
+}
+body.paper-app.paper-spectrum .badge i {
+  width: 5.5px;
+  height: 5.5px;
+  box-shadow: 0 0 0 2.5px color-mix(in srgb, currentColor 18%, transparent) !important;
+}
+body.paper-app.paper-spectrum .signal.good,
+body.paper-app.paper-spectrum .badge.green {
+  --signal-ink: #246151;
+  --signal-accent: #5cb099;
+  --signal-paper: #e3f4ec;
+}
+body.paper-app.paper-spectrum .signal.amber,
+body.paper-app.paper-spectrum .badge.amber {
+  --signal-ink: #825720;
+  --signal-accent: #d4a152;
+  --signal-paper: #faf1dc;
+}
+body.paper-app.paper-spectrum .signal.red,
+body.paper-app.paper-spectrum .badge.red {
+  --signal-ink: #963b4e;
+  --signal-accent: #d18092;
+  --signal-paper: #fbe9ee;
+}
+
+/* 9. 底部注记、待办卡斜纹、详情 Tab、连线时间线 */
+body.paper-app.paper-spectrum .help-bar {
+  margin-top: 8px;
+  padding: 12px 6px 4px;
+  border-top: 1px solid transparent;
+  border-image: linear-gradient(90deg, rgba(214, 140, 156, 0.42), rgba(114, 178, 168, 0.25) 58%, transparent) 1 0 0 0;
+  color: #667980;
+  gap: 10px;
+}
+body.paper-app.paper-spectrum .help-bar b { color: #3a545e; font-weight: 600; margin-right: 6px; }
+body.paper-app.paper-spectrum .companion-todo-item {
+  border-left-width: 2.5px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
+  background:
+    repeating-linear-gradient(-45deg, transparent 0 8px, rgba(255, 255, 255, 0.16) 8px 9px),
+    linear-gradient(100deg, rgba(252, 241, 243, 0.72), rgba(240, 250, 247, 0.56));
+}
+body.paper-app.paper-spectrum .companion-todo-item.warn {
+  border-left-color: #d4a152;
+  background:
+    repeating-linear-gradient(-45deg, transparent 0 8px, rgba(255, 255, 255, 0.18) 8px 9px),
+    linear-gradient(100deg, rgba(253, 244, 224, 0.78), rgba(244, 251, 249, 0.52));
+}
+body.paper-app.paper-spectrum .companion-todo-item.danger-item {
+  border-left-color: #d18092;
+  background:
+    repeating-linear-gradient(-45deg, transparent 0 8px, rgba(255, 255, 255, 0.16) 8px 9px),
+    linear-gradient(100deg, rgba(252, 234, 239, 0.8), rgba(244, 250, 249, 0.52));
+}
+body.paper-app.paper-spectrum .tabs > a {
+  border-radius: 3px;
+  background: rgba(253, 251, 250, 0.58) !important;
+  border-color: rgba(162, 166, 168, 0.34) !important;
+}
+body.paper-app.paper-spectrum .tabs > a.active {
+  background:
+    var(--ink-wash) top left / 100% 2px no-repeat,
+    linear-gradient(100deg, rgba(248, 226, 232, 0.78), rgba(224, 244, 237, 0.78)) !important;
+  border-color: rgba(168, 152, 160, 0.48) !important;
+  color: #214952 !important;
+  text-decoration: none !important;
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.82), 0 3px 10px rgba(56, 78, 86, 0.06) !important;
+}
+body.paper-app.paper-spectrum .cmd-timeline { position: relative; padding-left: 18px; }
+body.paper-app.paper-spectrum .cmd-timeline::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 16px;
+  bottom: 14px;
+  width: 1px;
+  background: linear-gradient(180deg, rgba(212, 134, 150, 0.65), rgba(102, 176, 165, 0.45));
+}
+body.paper-app.paper-spectrum .cmd-item { position: relative; }
+body.paper-app.paper-spectrum .cmd-item::before {
+  content: "";
+  position: absolute;
+  left: -17.5px;
+  top: 15px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #fffdf9;
+  border: 1.5px solid #6bb0a4;
+}
+body.paper-app.paper-spectrum .cmd-item:first-child::before {
+  background: #cf8496;
+  border-color: #fffdf9;
+  box-shadow: 0 0 0 2.5px rgba(207, 132, 150, 0.25);
+}
+body.paper-app.paper-spectrum .overview-quick-config > .form-grid > .secondary {
+  border-bottom: 1px solid rgba(154, 166, 168, 0.28) !important;
+  padding: 11px 8px;
+}
+body.paper-app.paper-spectrum .overview-quick-config > .form-grid > .secondary:hover {
+  background: linear-gradient(100deg, rgba(248, 228, 233, 0.42), rgba(224, 244, 238, 0.42)) !important;
+}
+body.paper-app.paper-spectrum .group-chip {
+  background: linear-gradient(100deg, rgba(250, 232, 237, 0.78), rgba(226, 245, 239, 0.8));
+  border-bottom: 1.5px solid transparent;
+  border-image: var(--ink-wash) 0 0 1 0;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+/* 10. 配置页琉璃拨动开关、预设卡与等宽单位标 */
+body.paper-app.paper-spectrum .toggle-row input[type=checkbox] {
+  background: rgba(245, 245, 242, 0.72) !important;
+  border-color: rgba(168, 166, 166, 0.52) !important;
+  box-shadow: inset 0 1px 3px rgba(45, 58, 70, 0.08) !important;
+}
+body.paper-app.paper-spectrum .toggle-row input[type=checkbox]:checked {
+  background: linear-gradient(96deg, rgba(242, 206, 214, 0.72), rgba(196, 234, 224, 0.76)) !important;
+  border-color: rgba(132, 174, 166, 0.65) !important;
+}
+body.paper-app.paper-spectrum .toggle-row input[type=checkbox]:checked::after {
+  color: #256454 !important;
+}
+body.paper-app.paper-spectrum .preset-card {
+  background: linear-gradient(112deg, rgba(252, 243, 245, 0.68), rgba(242, 251, 248, 0.68)) !important;
+  border: 1px solid rgba(168, 160, 166, 0.38) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82) !important;
+}
+body.paper-app.paper-spectrum .preset-card[aria-pressed=true] {
+  background:
+    var(--ink-wash) top left / 100% 2px no-repeat,
+    linear-gradient(110deg, rgba(248, 224, 230, 0.82), rgba(220, 243, 236, 0.84)) !important;
+  border-color: rgba(134, 174, 166, 0.62) !important;
+  outline: 0;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 6px 18px rgba(52, 82, 84, 0.08) !important;
+}
+body.paper-app.paper-spectrum .unit-field {
+  background: var(--wick-line), linear-gradient(100deg, rgba(254, 249, 250, 0.68), rgba(245, 252, 250, 0.68));
+  border: 1px solid rgba(166, 164, 168, 0.28);
+  border-radius: 2px 2px 0 0;
+  padding-right: 6px;
+}
+body.paper-app.paper-spectrum .unit-field > em {
+  border-left: 0;
+  padding: 2px 7px;
+  font-family: Consolas, "Segoe UI", monospace;
+  font-size: 10.5px;
+  color: #4a6870;
+  background: linear-gradient(100deg, rgba(248, 234, 237, 0.72), rgba(230, 246, 241, 0.72));
+  border: 1px solid rgba(166, 162, 166, 0.28);
+}
+body.paper-app.paper-spectrum .config-nav nav a.active {
+  background: linear-gradient(100deg, rgba(246, 224, 230, 0.62), rgba(222, 243, 236, 0.62)) !important;
+  border-left: 2px solid #cf8697 !important;
+  text-decoration: none !important;
 }

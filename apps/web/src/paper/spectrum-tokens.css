@@ -25,7 +25,12 @@
 }
 
 :is(.spectrum,.paper-spectrum) {
-  --ink-wash:linear-gradient(102deg,#66b6b2 2%,#a1ceaa 23%,#e3cf91 43%,#e7ac99 61%,#c4a6ca 78%,#95b3d1 98%);
+  --ink-wash:linear-gradient(96deg,#d78798 0%,#e7b5a6 30%,#ead8b8 52%,#9cccb9 76%,#66b0a5 100%);
+  --rg-rose:#d98b9b;
+  --rg-mint:#67b2a4;
+  --rg-wash-tint:27%;
+  --rg-edge-alpha:0.54;
+  --rg-paper-alpha:0.72;
   --input-fill:calc(100% - var(--component-input,0%));
   --search-fill:calc(100% - var(--component-search,0%));
   --select-fill:calc(100% - var(--component-select,0%));
