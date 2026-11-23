@@ -7,8 +7,8 @@ test('public card library enforces author ownership, atomic three-slot quota, CA
  const alice=await register('alice@example.test'),bob=await register('bob@example.test');const url='/v1/character-card-library';
  const request=(method:any,cookies:any,payload?:any,suffix='')=>x.app.inject({method,url:url+suffix,cookies,payload});
  assert.equal((await x.app.inject({url})).statusCode,401);
- for(const patch of [{kind:'custom'},{description:'😀'.repeat(101)},{content:' '},{name:'\n'},{ownerId:'bob'},{cover:'data:image/svg+xml;base64,PHN2Zz4='},{cover:'data:image/webp;base64,AAAA'}])assert.equal((await request('POST',alice,{...input(),...patch})).statusCode,400);
- const first=input();let response=await request('POST',alice,first);assert.equal(response.statusCode,201,response.body);
+ for(const patch of [{content:'字'.repeat(2501)},{kind:'custom'},{description:'😀'.repeat(101)},{content:' '},{name:'\n'},{ownerId:'bob'},{cover:'data:image/svg+xml;base64,PHN2Zz4='},{cover:'data:image/webp;base64,AAAA'}])assert.equal((await request('POST',alice,{...input(),...patch})).statusCode,400);
+ const first={...input(),content:'字'.repeat(2500)};let response=await request('POST',alice,first);assert.equal(response.statusCode,201,response.body);
  response=await request('POST',alice,first);assert.equal(response.statusCode,200,response.body);assert.equal(response.json().replayed,true);
  const parallel=await Promise.all(Array.from({length:3},(_,i)=>request('POST',alice,input('并发卡'+i))));assert.deepEqual(parallel.map(r=>r.statusCode).sort(),[201,201,409]);
  let listed=(await request('GET',bob)).json();assert.equal(listed.items.length,3);assert.equal(listed.mineCount,0);assert.ok(listed.items.every((r:any)=>r.editable===false&&!('owner_id' in r)&&!('content' in r)&&!('cover' in r)));

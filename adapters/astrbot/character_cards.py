@@ -16,7 +16,7 @@ def validate(cards):
         if (not isinstance(c,dict) or set(c)!={'id','name','kind','content','enabled'}
             or not isinstance(c['id'],str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}',c['id']) or c['id'] in ids
             or c['kind'] not in ('meme','speech','world','custom') or type(c['enabled']) is not bool
-            or any(not isinstance(c[k],str) or '\0' in c[k] or not c[k].strip(JS_WHITESPACE) or utf16(c[k])>limit for k,limit in [('name',80),('content',4000)])):
+            or any(not isinstance(c[k],str) or '\0' in c[k] or not c[k].strip(JS_WHITESPACE) or utf16(c[k])>limit for k,limit in [('name',80),('content',2500)])):
             raise ValueError('character_cards_invalid')
         ids.add(c['id'])
     return cards

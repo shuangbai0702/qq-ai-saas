@@ -9,7 +9,7 @@ try{
  const page=await context.newPage();const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));let accept=false;page.on('dialog',dialog=>accept?dialog.accept():dialog.dismiss());
  await page.goto(address+`/#/bots/${id}/character-cards`);await page.getByRole('tab',{name:'公共卡库',exact:true}).waitFor();await page.getByRole('button',{name:'知道了',exact:true}).click();const later=page.getByRole('button',{name:'稍后再说',exact:true});if(await later.isVisible())await later.click();await page.getByRole('tab',{name:/机器人装配/}).click();
  const tabs=await page.locator('.tabs a').allTextContents();assert.ok(tabs.indexOf('角色卡')<tabs.indexOf('配置'));
- await page.getByRole('button',{name:'说话示例',exact:true}).click();await page.getByLabel('角色卡 1 名称',{exact:true}).fill('第一张');await page.getByLabel('角色卡 1 正文',{exact:true}).fill('场景：问候\n示例：今天也来了呀。');
+ await page.getByRole('button',{name:'说话示例',exact:true}).click();await page.getByLabel('角色卡 1 名称',{exact:true}).fill('第一张');assert.equal(await page.getByLabel('角色卡 1 正文',{exact:true}).getAttribute('maxlength'),'2500');await page.getByLabel('角色卡 1 正文',{exact:true}).fill('场景：问候\n示例：今天也来了呀。');
  await page.getByRole('link',{name:'配置',exact:true}).click();await page.waitForURL('**/character-cards');assert.ok(page.url().endsWith('/character-cards'),'dismissed leave retains route');assert.equal(await page.getByLabel('角色卡 1 名称',{exact:true}).inputValue(),'第一张');
  await page.getByRole('button',{name:'世界背景',exact:true}).click();await page.getByLabel('角色卡 2 正文',{exact:true}).fill('世界背景正文');await page.getByLabel('角色卡 2 名称',{exact:true}).fill('第二张');
  await page.getByRole('button',{name:'上移角色卡 2',exact:true}).click();assert.equal(await page.getByLabel('角色卡 1 名称',{exact:true}).inputValue(),'第二张');

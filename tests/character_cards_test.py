@@ -10,11 +10,11 @@ def card(id='one',enabled=True):return dict(id=id,name='示例',kind='speech',co
 
 class CardsTest(unittest.TestCase):
  def test_utf16_matches_browser(self):
-  validate([{**card(),'content':'😀'*2000}])
+  validate([{**card(),'content':'😀'*1250}])
   validate([{**card(),'content':'\u001c'}])
   for value in ('\ufeff','\u0000','\ud800'):
    with self.assertRaises(ValueError):validate([{**card(),'content':value}])
-  with self.assertRaises(ValueError):validate([{**card(),'content':'😀'*2001}])
+  with self.assertRaises(ValueError):validate([{**card(),'content':'😀'*1251}])
  def test_precise_legacy_projection_and_repeated_edits_preserve_every_other_byte(self):
   note={'text':'原note','source_scopes':['bot_shared']};state={'memory_foundation':{},'foundation_core_note':note}
   base=[{'role':'system','content':'PLATFORM'},persona_reference('PERSONA')]

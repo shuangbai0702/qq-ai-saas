@@ -1,12 +1,13 @@
 import {z} from 'zod';
+export const characterCardLimits={maxContentLength:2500,maxCards:5} as const;
 export const CharacterCardSchema=z.object({
  id:z.string().regex(/^[A-Za-z0-9_-]{1,80}$/),
  name:z.string().refine(v=>v.length<=80,'名称最多80字符').refine(v=>!!v.trim(),'名称不能为空白').refine(v=>!/[\u0000\uD800-\uDFFF]/u.test(v),'名称含无法保存的字符'),
  kind:z.enum(['meme','speech','world','custom']),
- content:z.string().refine(v=>v.length<=4000,'正文最多4000字符').refine(v=>!!v.trim(),'正文不能为空白').refine(v=>!/[\u0000\uD800-\uDFFF]/u.test(v),'正文含无法保存的字符'),
+ content:z.string().refine(v=>v.length<=characterCardLimits.maxContentLength,'正文最多2500字').refine(v=>!!v.trim(),'正文不能为空白').refine(v=>!/[\u0000\uD800-\uDFFF]/u.test(v),'正文含无法保存的字符'),
  enabled:z.boolean(),
 }).strict();
-export const CharacterCardsSchema=z.array(CharacterCardSchema).max(5).refine(cards=>new Set(cards.map(c=>c.id)).size===cards.length,'角色卡 ID 不能重复');
+export const CharacterCardsSchema=z.array(CharacterCardSchema).max(characterCardLimits.maxCards).refine(cards=>new Set(cards.map(c=>c.id)).size===cards.length,'角色卡 ID 不能重复');
 export type CharacterCard=z.infer<typeof CharacterCardSchema>;
 export const libraryCardKinds={speech:'表达',meme:'知识',world:'背景'} as const;
 export const LibraryCardKindSchema=z.enum(['speech','meme','world']);
