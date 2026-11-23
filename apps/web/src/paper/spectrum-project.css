@@ -329,6 +329,15 @@ body.paper-app.paper-spectrum .feedback-inline strong {
   white-space: nowrap;
   user-select: text;
 }
+body.paper-app.paper-spectrum footer .feedback-inline {
+  color: #40575e;
+  font-size: 12px;
+  line-height: 1.7;
+}
+body.paper-app.paper-spectrum footer .feedback-inline strong {
+  color: #214e59;
+  font-weight: 700;
+}
 body.paper-app.paper-spectrum .page-title {
   margin: 18px 0 20px;
   min-height: 0;
