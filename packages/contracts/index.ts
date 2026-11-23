@@ -17,7 +17,7 @@ export const BotConfigSchema = z.object({
   platformModel:z.boolean().default(false),
   provider:z.enum(['deepseek','openai','custom']).default('deepseek'),
   baseUrl:ModelBaseUrlSchema,
-  model:z.string().min(1).max(150), auxiliaryModel:z.string().trim().min(1).max(150).optional(), delegationModel:z.string().trim().min(1).max(150).optional(), summaryModel:z.string().trim().min(1).max(150).optional(), favoriteModel:z.string().trim().min(1).max(150).optional(), trigger:z.enum(['mention','all']).default('mention'),
+  model:z.string().trim().max(150), auxiliaryModel:z.string().trim().min(1).max(150).optional(), delegationModel:z.string().trim().min(1).max(150).optional(), summaryModel:z.string().trim().min(1).max(150).optional(), favoriteModel:z.string().trim().min(1).max(150).optional(), trigger:z.enum(['mention','all']).default('mention'),
   toolPrompts:z.object({dsh:z.string().max(12000).default('')}).default({dsh:''}),
   delegatedCapabilities:z.object({webSearch:z.boolean().default(true),groupHistory:z.boolean().default(true),executionReview:z.boolean().default(true),favoriteAudit:z.boolean().default(true)}).default({webSearch:true,groupHistory:true,executionReview:true,favoriteAudit:true}),
   reasoningEffort:z.enum(['none','minimal','low','medium','high','xhigh','max']).optional(),
@@ -38,4 +38,4 @@ export interface ProtocolAdapter {
   getHealth(ctx:RuntimeContext):Promise<Health>;stop(botId:string):Promise<void>;
 }
 export const personas=[{id:'dafeiyu',name:'大肥鱼',description:'嘴硬心软 · 简短自然 · 群聊伙伴',prompt:fishPrompt},{id:'helpful',name:'温和助手',description:'耐心清楚 · 准确回答',prompt:'你是一位温和、清楚、可靠的聊天伙伴。简短回答，依据真实上下文，不编造记忆。\n'+quoteReplyPolicy},{id:'custom',name:'自定义角色',description:'自由设定你的聊天伙伴',prompt:'请用自然、友好的中文交流，尊重真实信息与对话边界。\n'+quoteReplyPolicy}];
-export const defaultConfig:BotConfig=BotConfigSchema.parse({personaId:'dafeiyu',systemPrompt:fishPrompt,provider:'deepseek',baseUrl:'https://api.deepseek.com/v1',model:'deepseek-chat',trigger:'mention',groups:[],...fishSocialPreset});
+export const defaultConfig:BotConfig=BotConfigSchema.parse({personaId:'dafeiyu',systemPrompt:fishPrompt,provider:'deepseek',baseUrl:'https://api.deepseek.com/v1',model:'',trigger:'mention',groups:[],...fishSocialPreset});

@@ -18,7 +18,7 @@ import {AutonomyRepository} from '../../../packages/database/autonomous.js';
 import {registerBilibili} from './bilibili.js';
 import {getBotQuota} from './bot-quota.js';
 import {probeModel} from '../../../packages/shared/model-probe.js';
-import {resolveModelBaseUrl} from '../../../packages/shared/model-catalog.js';
+import {modelSelectionChanged,validateModelSelection} from '../../../packages/shared/model-catalog.js';
 import {registerSocialMedia} from './social-media.js';
 import {registerQQFavorites} from './qq-favorites.js';
 import {createFavoriteCaptioner} from '../../../packages/shared/qq-favorite-semantics.js';
@@ -127,7 +127,7 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
  app.post('/v1/bots',{config:{rateLimit:{max:10,timeWindow:'1 minute'}}},async(req,reply)=>{const v=z.object({name:z.string().trim().min(1).max(80),protocol:ProtocolSchema.default('napcat'),runtimeMode:z.enum(['dedicated','shared']).default('shared'),expectedUin:z.string().regex(/^\d{5,20}$|^$/).default(''),config:BotConfigSchema.default(defaultConfig),apiKey:modelKeyInput}).parse(req.body);const id=randomUUID();
    v.config.behavior.groupParticipationGroups=v.config.behavior.groupParticipationGroups.filter(group=>v.config.groups.includes(group));
    if(!v.config.groups.length)v.config.behavior.groupParticipationEnabled=false;
-   if(!v.config.platformModel&&v.apiKey)v.config.baseUrl=await resolveModelBaseUrl((req.body as any)?.config?.baseUrl??v.config.baseUrl,v.apiKey);
+   v.config.baseUrl=await validateModelSelection(v.config,v.apiKey||'',(req.body as any)?.config?.baseUrl??v.config.baseUrl);
    await db.transaction(async tx=>{await requirePlatformCredit(v.config,req.user!.tenant_id,tx);const quota=await getBotQuota(tx,req.user!.tenant_id,true);if(!quota.canCreate)fail('机器人名额已用完（'+quota.used+'/'+quota.limit+'）。请先删除现有机器人，删除完成后再创建；停止运行不会释放名额。',409);
    await tx.query('INSERT INTO bots(id,tenant_id,name,protocol,expected_uin,runtime_mode) VALUES($1,$2,$3,$4,$5,$6)',[id,req.user!.tenant_id,v.name,v.protocol,v.expectedUin,v.runtimeMode]);await tx.query('INSERT INTO bot_config_revisions(bot_id,revision,config) VALUES($1,1,$2)',[id,JSON.stringify(v.config)]);
    if(v.config.proactive)await new AutonomyRepository(db).enableProactive(req.user!.tenant_id,id,tx);
@@ -145,11 +145,19 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
   let body=req.body;
   if(cardsOnly){const value=z.object({expectedRevision:z.number().int(),characterCards:CharacterCardsSchema}).strict().parse(body);const bot=await owned(req,req.params.id);const [row]=await db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[bot.id,bot.revision]);body={expectedRevision:value.expectedRevision,name:bot.name,expectedUin:bot.expected_uin||'',config:{...row.config,characterCards:value.characterCards}};}
   const v=z.object({expectedRevision:z.number().int(),config:BotConfigSchema,name:z.string().trim().min(1).max(80),expectedUin:z.string().regex(/^\d{5,20}$|^$/).default(''),apiKey:modelKeyInput,clearKey:z.boolean().optional()}).parse(body);let revision=0,personaOnly=false,toolsOnly=false,cardsChanged=false,cardsOnlyChange=false,unchanged=false;
-   await owned(req,req.params.id);
+   const existingBot=await owned(req,req.params.id);
    if(!cardsOnly){const allowedGroups=new Set(v.config.groups);
    v.config.behavior.groupParticipationGroups=v.config.behavior.groupParticipationGroups.filter(group=>allowedGroups.has(group));
    if(!allowedGroups.size)v.config.behavior.groupParticipationEnabled=false;}
-   if(!v.config.platformModel&&v.apiKey)v.config.baseUrl=await resolveModelBaseUrl((req.body as any).config.baseUrl,v.apiKey);
+   if(!cardsOnly){
+    if(existingBot.revision!==v.expectedRevision)fail('配置已被其他操作修改，请刷新后重试',409);
+    const [saved]=await db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[existingBot.id,existingBot.revision]);
+    if(!v.config.platformModel&&(v.apiKey||modelSelectionChanged(saved.config,v.config))){
+     let credential=v.clearKey?'':v.apiKey||'';
+     if(!credential&&!v.clearKey){const connection=await agent.personalModelConnection(existingBot);if(connection.apiKey&&modelCredentialDestination(connection.baseUrl)!==modelCredentialDestination(v.config.baseUrl))fail('模型服务地址已更改，请输入对应的 API Key');credential=connection.apiKey;}
+     v.config.baseUrl=await validateModelSelection(v.config,credential,(req.body as any).config.baseUrl);
+    }
+   }
    await db.transaction(async tx=>{const bot=await owned(req,req.params.id,tx);await tx.query('SELECT id FROM bots WHERE id=$1 FOR UPDATE',[bot.id]);const [current]=await tx.query('SELECT revision,desired_state,deleted_at,expected_uin FROM bots WHERE id=$1',[bot.id]);if(current.deleted_at||current.desired_state==='deleting')fail('机器人正在删除',409);if(current.revision!==v.expectedRevision)fail('配置已被其他操作修改，请刷新后重试',409);if(v.expectedUin!==(current.expected_uin||''))fail('不能通过配置修改QQ账号。已绑定账号不可更换；如需换号，请删除机器人后重新创建。',409);revision=current.revision+1;
      if(!v.apiKey&&!v.clearKey){
       const [saved]=await tx.query('SELECT r.config FROM bot_config_revisions r JOIN secrets s ON s.bot_id=r.bot_id AND s.tenant_id=$3 WHERE r.bot_id=$1 AND r.revision=$2',[bot.id,current.revision,bot.tenant_id]);

@@ -28,9 +28,9 @@ test('saved-key model discovery checks bot ownership and keeps all user model co
  assert.equal((await save('synthetic-replacement-Key-A')).statusCode,200);
  const updated=await app.inject({method:'POST',url:'/v1/model-catalog',cookies:cookies[0],payload:{baseUrl:nextUrl+'/',botId:ids[0]}});
  assert.equal(updated.statusCode,200);
- // Save and explicit refresh each probe three path candidates for a custom
- // unversioned base. All use only A's explicitly supplied replacement Key.
- assert.deepEqual(seen,['Bearer synthetic-Key-A','Bearer synthetic-Key-B',...Array(6).fill('Bearer synthetic-replacement-Key-A')]);
+ // The unconfigured draft stores no implicit model and needs no discovery on
+ // save. Explicit refresh probes three candidates with only A's replacement Key.
+ assert.deepEqual(seen,['Bearer synthetic-Key-A','Bearer synthetic-Key-B',...Array(3).fill('Bearer synthetic-replacement-Key-A')]);
 });
 
 test('reasoning metadata exposes only declared supported values and never guesses by model ID',async()=>{
