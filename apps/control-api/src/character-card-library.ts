@@ -1,5 +1,5 @@
 import type {FastifyInstance} from 'fastify';
-import {randomUUID} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import type {Sql} from '../../../packages/database/index.js';
 import {LibraryCardInputSchema,LibraryCardKindSchema,characterCardCover} from '../../../packages/contracts/character-cards.js';
@@ -55,7 +55,13 @@ export function registerCharacterCardLibrary(app:FastifyInstance,db:Sql){
   return{items:rows.slice(0,24).map(row=>present(row,req.user!.id)),hasMore:rows.length>24,mineCount:count.count};
  });
  app.get<{Params:{id:string}}>('/v1/character-card-library/:id',async req=>{const [row]=await db.query(`SELECT ${columns},c.content FROM character_card_library c JOIN users u ON u.id=c.owner_id WHERE c.id=$1`,[idOf(req)]);if(!row)fail('角色卡不存在',404);return present(row,req.user!.id)});
- app.get<{Params:{id:string}}>('/v1/character-card-library/:id/cover',async(req,reply)=>{const [row]=await db.query('SELECT cover FROM character_card_library WHERE id=$1',[idOf(req)]);if(!row?.cover)fail('封面不存在',404);return reply.type(row.cover.startsWith(`data:${characterCardCover.fallbackMime};`)?characterCardCover.fallbackMime:characterCardCover.mime).send(Buffer.from(row.cover.split(',')[1],'base64'))});
+ app.get<{Params:{id:string}}>('/v1/character-card-library/:id/cover',async(req,reply)=>{
+  const [row]=await db.query('SELECT cover FROM character_card_library WHERE id=$1',[idOf(req)]);if(!row?.cover)fail('封面不存在',404);
+  const data=Buffer.from(row.cover.split(',')[1],'base64'),etag='"'+createHash('sha256').update(data).digest('base64url')+'"';
+  reply.header('Cache-Control','private, max-age=86400').header('Vary','Cookie').header('ETag',etag);
+  if(req.headers['if-none-match']?.split(',').some(value=>value.trim().replace(/^W\//,'')===etag||value.trim()==='*'))return reply.code(304).send();
+  return reply.type(row.cover.startsWith(`data:${characterCardCover.fallbackMime};`)?characterCardCover.fallbackMime:characterCardCover.mime).send(data);
+ });
  app.post('/v1/character-card-library',{bodyLimit:262144},async(req,reply)=>{
   const v=LibraryCardInputSchema.extend({id:z.uuid().optional()}).strict().parse(req.body);validateCover(v.cover);const id=v.id||randomUUID();
   const result=await db.transaction(async tx=>{await lockOwner(tx,req);
