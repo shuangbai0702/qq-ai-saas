@@ -1152,7 +1152,14 @@ class Reflection:
         # a new round or a separate compression cycle.
         now=time.time()
         recovery_retry=self.db.execute("SELECT next_at FROM memory_reflection_retry WHERE scope='__retirement__'").fetchone()
-        recovery=self.retirement_pending() and (not recovery_retry or recovery_retry[0]<=now)
+        pending=self.retirement_pending()
+        if not pending:
+            # A prior callback may have failed before a later normal checkpoint
+            # completed its work. Close only after all retirement owners agree;
+            # neither the old exception nor its backoff is another retry job.
+            self.db.execute("DELETE FROM memory_reflection_retry WHERE scope='__retirement__'")
+            self.db.execute("UPDATE memory_checkpoint_issues SET status='resolved',updated=? WHERE kind='retirement_recovery' AND status='open'",(now,))
+        recovery=pending and (not recovery_retry or recovery_retry[0]<=now)
         if callable(self.checkpoint_callback) and recovery and not _retirement_done:
             async def recover_pending():
                 async def execute():

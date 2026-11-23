@@ -67,6 +67,44 @@ class PurgeCompletion(unittest.TestCase):
         with patch.object(batch,'_purge',side_effect=AssertionError('repeated cleanup')):
             with self.db:self.assertTrue(batch.purge(self.db,1))
 
+    def test_previous_receipt_retires_shared_signal_only_copies_without_pending(self):
+        self.db.execute('DELETE FROM memory_pending')
+        self.db.execute('INSERT INTO memory_semantic_purges VALUES(1,1,2)')
+        old=model_json([CHANNEL,'old']);new=model_json([CHANNEL,'new'])
+        for scope,event in (('bot_shared',old),(CHANNEL,'old'),('bot_shared',new),('group:67890','old')):
+            self.db.execute('INSERT INTO companion_signals VALUES(?,?,?,?)',(scope,event,'emotion','exact quote'))
+        self.db.commit()
+        with self.db:self.assertTrue(batch.purge(self.db,1))
+        self.assertEqual(set(self.db.execute('SELECT scope,event FROM companion_signals')),
+                         {('bot_shared',new),('group:67890','old')})
+        self.assertEqual(self.db.execute('SELECT cleanup_version FROM memory_semantic_purges').fetchone(),(batch.PURGE_VERSION,))
+
+    def test_shared_feedback_reaction_loses_only_retired_quote_and_source(self):
+        old=model_json([CHANNEL,'old']);new=model_json([CHANNEL,'new'])
+        self.db.execute('DELETE FROM memory_pending')
+        self.db.execute('INSERT INTO companion_signals VALUES(?,?,?,?)',('bot_shared',new,'dialogue_feedback',model_json({'reaction_event':old,'quote':'old raw reaction','result':'engaged'})))
+        self.db.commit()
+        with self.db:batch.purge(self.db,1)
+        feedback=json.loads(self.db.execute('SELECT quote FROM companion_signals').fetchone()[0])
+        self.assertEqual(feedback,{'reaction_event':'semantic:'+batch.event_key('bot_shared',old),'result':'engaged'})
+
+    def test_shared_signal_ownership_and_archive_failure_preserve_raw_until_retry(self):
+        old=model_json([CHANNEL,'old'])
+        self.db.execute('DELETE FROM memory_pending')
+        self.db.execute('INSERT INTO companion_signals VALUES(?,?,?,?)',('bot_shared',old,'correction_unverified','raw correction'))
+        self.db.execute("INSERT INTO pipeline_work_inputs VALUES('bot_shared',?,'owned','current request')",(old,));self.db.commit()
+        with self.assertRaisesRegex(ValueError,'semantic_batch_input_still_owned'):batch.purge(self.db,1)
+        self.assertEqual(self.db.execute('SELECT quote FROM companion_signals').fetchone(),('raw correction',))
+        self.assertEqual(self.receipt(),[])
+        self.db.execute("UPDATE pipeline_work_inputs SET status='settled'");self.db.commit()
+        with patch.object(journal_storage,'retire_archived_members',side_effect=ValueError('archive failure')):
+            with self.assertRaisesRegex(ValueError,'archive failure'):batch.purge(self.db,1)
+        self.assertEqual(self.db.execute('SELECT quote FROM companion_signals').fetchone(),('raw correction',))
+        self.assertEqual(self.receipt(),[])
+        with self.db:batch.purge(self.db,1)
+        self.assertEqual(self.db.execute('SELECT * FROM companion_signals').fetchall(),[])
+        self.assertEqual(self.db.execute('SELECT status,payload FROM pipeline_work_inputs').fetchone(),('settled',None))
+
     def test_archive_failure_rolls_back_cleanup_and_remains_retryable(self):
         with patch.object(journal_storage,'retire_archived_members',side_effect=ValueError('archive failure')):
             with self.assertRaisesRegex(ValueError,'archive failure'):batch.purge(self.db,1)
@@ -122,7 +160,7 @@ class PurgeCompletion(unittest.TestCase):
             self.assertEqual(feedback['feedback-'+event],{'reaction_event':'semantic:'+batch.event_key(CHANNEL,event),'score':2})
         self.assertEqual(feedback['new-feedback'],{'reaction_event':'new','quote':'keep'})
         self.assertEqual(set(self.db.execute('SELECT event FROM memory_summary_coverage')),{('new',),('owned',)})
-        self.assertEqual(sum(query.startswith('SELECT event,quote FROM companion_signals') for query in queries),1)
+        self.assertEqual(sum(query.startswith('SELECT event,quote,scope FROM companion_signals') for query in queries),1)
         self.assertFalse(any(query.startswith('SELECT 1 FROM memory_pending WHERE') for query in queries))
 
     def test_fact_and_agreement_sources_update_matching_rows_without_per_event_table_scans(self):

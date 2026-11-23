@@ -97,6 +97,45 @@ class RuntimeTests(unittest.TestCase):
                         with self.assertRaises(asyncio.CancelledError):await care.run()
                 asyncio.run(run())
                 self.assertEqual(calls,['first','second','third'])
+
+    def test_owner_cleanup_version_rechecks_shared_quotes_without_touching_journal(self):
+        from journal_cutover import _record_receipt,OWNER_EARLY_MIGRATION
+        from semantic_batch import owner_cleanup_pending,owner_cleanup_stamp,PURGE_VERSION
+        finish_semantic_batches(self.st,{},SCOPE)
+        db=self.st.db;event=model_json(['group:55555','owner-old'])
+        with db:
+            _record_receipt(db,{'grant':{'id':'owner-grant','type':OWNER_EARLY_MIGRATION},'members':[event_key('bot_shared',event)]})
+            self.st.reflection.checkpoint_issue('bot_shared',0,'owner_hot_cleanup',{'membersSha':owner_cleanup_stamp(db),'cleanupVersion':2},resolved=True)
+            db.execute("INSERT INTO companion_signals VALUES('bot_shared',?,'emotion','old quote',50)",(event,))
+        before=db.execute('SELECT * FROM fishbot_readonly_journals').fetchall()
+        self.assertTrue(owner_cleanup_pending(db))
+        result=finish_semantic_batches(self.st,{},'bot_shared')
+        self.assertEqual(result['pending'],0,result);self.assertFalse(owner_cleanup_pending(db))
+        self.assertEqual(db.execute('SELECT * FROM companion_signals').fetchall(),[])
+        detail=json.loads(db.execute("SELECT detail FROM memory_checkpoint_issues WHERE kind='owner_hot_cleanup'").fetchone()[0])
+        self.assertEqual(detail['cleanupVersion'],PURGE_VERSION)
+        self.assertEqual(db.execute('SELECT * FROM fishbot_readonly_journals').fetchall(),before)
+
+    def test_recovery_retry_and_old_error_close_only_after_authoritative_cleanup(self):
+        from unittest.mock import Mock
+        db=self.st.db;reflection=self.st.reflection
+        reflection.binding=({},Mock(side_effect=AssertionError('unexpected model call')),lambda:True,{},None)
+        reflection.checkpoint_callback=Mock(side_effect=AssertionError('unexpected callback'))
+        with db:
+            reflection.checkpoint_issue(SCOPE,0,'retirement_recovery',{'type':'old storage failure'})
+            db.execute("INSERT INTO memory_reflection_retry(scope,attempts,next_at) VALUES('__retirement__',1,?)",(time.time()+3600,))
+        # A pending checkpoint must preserve the error even during backoff.
+        self.assertFalse(reflection.retry())
+        self.assertEqual(db.execute("SELECT status FROM memory_checkpoint_issues WHERE kind='retirement_recovery'").fetchone(),('open',))
+        self.assertIsNotNone(db.execute("SELECT 1 FROM memory_reflection_retry WHERE scope='__retirement__'").fetchone())
+        finish_semantic_batches(self.st,{},SCOPE)
+        self.assertFalse(reflection.retirement_pending())
+        before=db.execute('SELECT * FROM fishbot_readonly_journals').fetchall()
+        self.assertFalse(reflection.retry())
+        self.assertEqual(db.execute("SELECT status FROM memory_checkpoint_issues WHERE kind='retirement_recovery'").fetchone(),('resolved',))
+        self.assertIsNone(db.execute("SELECT 1 FROM memory_reflection_retry WHERE scope='__retirement__'").fetchone())
+        reflection.checkpoint_callback.assert_not_called()
+        self.assertEqual(db.execute('SELECT * FROM fishbot_readonly_journals').fetchall(),before)
     def test_checkpoint_system_adoption_requires_config_permit_and_no_new_submitted_turn(self):
         from context_protocol import READONLY_CURRENT
         from context_transport import foreground_system

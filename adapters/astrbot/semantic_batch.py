@@ -7,7 +7,7 @@ import copy,hashlib,json,time
 from context_protocol import model_json
 from memory_policy import DEFAULT_SUMMARY_ROUNDS
 
-PURGE_VERSION=2
+PURGE_VERSION=3
 
 from context_protocol import scoped_event_hash as event_key
 
@@ -46,7 +46,9 @@ def owner_cleanup_pending(db):
     stamp=owner_cleanup_stamp(db)
     if stamp is None:return False
     row=db.execute("SELECT detail FROM memory_checkpoint_issues WHERE scope='bot_shared' AND checkpoint_id=0 AND kind='owner_hot_cleanup' AND status='resolved'").fetchone()
-    return not row or json.loads(row[0]).get('membersSha')!=stamp
+    if not row:return True
+    detail=json.loads(row[0])
+    return detail.get('membersSha')!=stamp or detail.get('cleanupVersion',0)<PURGE_VERSION
 
 
 def purge_owner_history(db):
@@ -264,20 +266,22 @@ def _purge_members(db,scope,members):
         if table not in tables:continue
         query='SELECT scope,'+column+' FROM '+table
         for channel,identifier in db.execute(query+(' WHERE scope=?' if scope!='bot_shared' else ''),(scope,) if scope!='bot_shared' else ()):
-            event=model_json([channel,str(identifier)]) if scope=='bot_shared' else str(identifier)
+            event=model_json([channel,str(identifier)]) if scope=='bot_shared' and channel!=scope else str(identifier)
             if event_key(scope,event) in members:events.add(event)
+    feedback_by_channel={}
     if 'companion_signals' in tables:
-        for channel,quote in db.execute("SELECT scope,quote FROM companion_signals WHERE kind='dialogue_feedback'"+(' AND scope=?' if scope!='bot_shared' else ''),(scope,) if scope!='bot_shared' else ()):
+        for signal_event,quote,channel in db.execute("SELECT event,quote,scope FROM companion_signals WHERE kind='dialogue_feedback'"+(' AND scope=?' if scope!='bot_shared' else ''),(scope,) if scope!='bot_shared' else ()):
             try:feedback=json.loads(quote)
             except (ValueError,TypeError):continue
             if not isinstance(feedback,dict) or not feedback.get('reaction_event'):continue
             identifier=str(feedback['reaction_event'])
-            event=model_json([channel,identifier]) if scope=='bot_shared' else identifier
+            feedback_by_channel.setdefault(channel,{}).setdefault(identifier,[]).append((signal_event,feedback))
+            event=model_json([channel,identifier]) if scope=='bot_shared' and channel!=scope else identifier
             if event_key(scope,event) in members:events.add(event)
     for column in ('last_user_event','last_bot_event'):
         if column not in contact_columns:continue
         for channel,identifier in db.execute('SELECT scope,'+column+' FROM contacts WHERE '+column+' IS NOT NULL'+(' AND scope=?' if scope!='bot_shared' else ''),(scope,) if scope!='bot_shared' else ()):
-            event=model_json([channel,str(identifier)]) if scope=='bot_shared' else str(identifier)
+            event=model_json([channel,str(identifier)]) if scope=='bot_shared' and channel!=scope else str(identifier)
             if event_key(scope,event) in members:events.add(event)
     # Recheck both identities under this cleanup transaction. A Work can have
     # acquired the source after summary loading; no subset may be erased then.
@@ -297,7 +301,6 @@ def _purge_members(db,scope,members):
           ON p.scope=c.scope AND p.subject=c.subject AND p.at=c.last_user
           WHERE c.last_user_event IS NULL AND
           (SELECT count(*) FROM memory_pending m WHERE m.scope=c.scope AND m.subject=c.subject AND m.at=c.last_user)=1'''))
-    feedback_by_channel={}
     semantic_sources={}
     for table,channel_column,event_column in (('facts','scope','event'),('memory_agreements','source_scope','source_event')):
         if table in tables and events:
@@ -307,6 +310,7 @@ def _purge_members(db,scope,members):
             semantic_sources[table]=(event_column,indexed)
     for event in events:
         channel,identifier=origin(scope,event)
+        identities={(scope,event),(channel,identifier)}
         if {'last_user_event','last_bot_event'}<=contact_columns:
             # Legacy incoming uses the same observation timestamp and author
             # as memory_pending. Never infer identity from matching text.
@@ -316,45 +320,40 @@ def _purge_members(db,scope,members):
             db.execute("UPDATE contacts SET last_output='',last_bot_event=NULL WHERE scope=? AND last_bot_event=?",(channel,identifier))
         for table in targets:
             if table in tables:
-                for logical,key in {(scope,event),(channel,identifier)}:
+                for logical,key in identities:
                     db.execute('DELETE FROM '+table+' WHERE scope=? AND event=?',(logical,key))
         if 'memory_message_sources' in tables:db.execute('DELETE FROM memory_message_sources WHERE scope=? AND event=?',(scope,event))
-        channel,identifier=origin(scope,event)
-        # Exact hot copies in their original conversation, never a TTL sweep.
+        # Exact source and shared copies, never a TTL sweep.
         for table in ('dialogue_feedback','social_samples','memory_pending','relation_evidence','relation_events','companion_seen'):
-            if table in tables:db.execute('DELETE FROM '+table+' WHERE scope=? AND event=?',(channel,identifier))
+            if table in tables:
+                db.executemany('DELETE FROM '+table+' WHERE scope=? AND event=?',identities)
         if 'pipeline_quote_sources' in tables:
-            db.execute('DELETE FROM pipeline_quote_sources WHERE scope=? AND message=?',(channel,identifier))
+            db.executemany('DELETE FROM pipeline_quote_sources WHERE scope=? AND message=?',identities)
         active=bool('pipeline_work_inputs' in tables and db.execute("SELECT 1 FROM pipeline_work_inputs WHERE scope=? AND event=? AND status='owned'",(channel,identifier)).fetchone())
         active=active or bool('pipeline_scope_work' in tables and db.execute('SELECT 1 FROM pipeline_scope_work WHERE scope=? AND event=?',(channel,identifier)).fetchone())
         if 'fishbot_shared_inputs' in tables and not active:
-            db.execute('DELETE FROM fishbot_shared_inputs WHERE scope=? AND event=?',(channel,identifier))
+            db.executemany('DELETE FROM fishbot_shared_inputs WHERE scope=? AND event=?',identities)
         if 'companion_signals' in tables:
             # Signals are quote evidence, not the derived companion state.
-            db.execute('DELETE FROM companion_signals WHERE scope=? AND event=?',(channel,identifier))
-            semantic='semantic:'+event_key(channel,identifier)
-            if channel not in feedback_by_channel:
-                indexed={}
-                for signal_event,quote in db.execute("SELECT event,quote FROM companion_signals WHERE scope=? AND kind='dialogue_feedback'",(channel,)):
-                    try:feedback=json.loads(quote)
-                    except (ValueError,TypeError):continue
-                    if isinstance(feedback,dict):indexed.setdefault(str(feedback.get('reaction_event','')),[]).append((signal_event,feedback))
-                feedback_by_channel[channel]=indexed
-            indexed=feedback_by_channel[channel]
-            for signal_event,feedback in indexed.pop(identifier,[]):
-                feedback['reaction_event']=semantic
-                feedback.pop('quote',None)
-                db.execute("UPDATE companion_signals SET quote=? WHERE scope=? AND event=? AND kind='dialogue_feedback'",(model_json(feedback),channel,signal_event))
-                indexed.setdefault(semantic,[]).append((signal_event,feedback))
+            db.executemany('DELETE FROM companion_signals WHERE scope=? AND event=?',identities)
+            for logical,key in identities:
+                semantic='semantic:'+event_key(logical,key)
+                indexed=feedback_by_channel.get(logical,{})
+                for signal_event,feedback in indexed.pop(key,[]):
+                    feedback['reaction_event']=semantic
+                    feedback.pop('quote',None)
+                    db.execute("UPDATE companion_signals SET quote=? WHERE scope=? AND event=? AND kind='dialogue_feedback'",(model_json(feedback),logical,signal_event))
+                    indexed.setdefault(semantic,[]).append((signal_event,feedback))
         if 'memory_message_sources' in tables:db.execute('DELETE FROM memory_message_sources WHERE scope=? AND event=?',(channel,identifier))
         if 'pipeline_work_inputs' in tables:
             # Minimal identity/status/receipt fencing remains a system ledger;
             # it is not model memory and no longer contains the raw request.
-            if (channel,identifier) in ambient:
-                db.execute("UPDATE pipeline_work_inputs SET status='settled_retired_observation' WHERE scope=? AND event=? AND status='deferred'",(channel,identifier))
-            db.execute("UPDATE pipeline_work_inputs SET payload=NULL WHERE scope=? AND event=? AND status<>'owned'",(channel,identifier))
+            for logical,key in identities:
+                if (logical,key) in ambient:
+                    db.execute("UPDATE pipeline_work_inputs SET status='settled_retired_observation' WHERE scope=? AND event=? AND status='deferred'",(logical,key))
+            db.executemany("UPDATE pipeline_work_inputs SET payload=NULL WHERE scope=? AND event=? AND status<>'owned'",identities)
             if 'voice' in {r[1] for r in db.execute('PRAGMA table_info(pipeline_work_inputs)')}:
-                db.execute("UPDATE pipeline_work_inputs SET voice=NULL WHERE scope=? AND event=? AND payload IS NULL",(channel,identifier))
+                db.executemany("UPDATE pipeline_work_inputs SET voice=NULL WHERE scope=? AND event=? AND payload IS NULL",identities)
         for table,(column,indexed) in semantic_sources.items():
             matching=indexed.pop((channel,identifier),[])
             if matching:

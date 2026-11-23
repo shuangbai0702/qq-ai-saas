@@ -127,6 +127,38 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.requests[0]['messages'],self.requests[1]['messages'])
         self.assertEqual(self.requests[0]['model'],self.requests[1]['model'])
 
+    async def test_retired_shared_quote_cleanup_adds_zero_context_and_zero_http(self):
+        from context_protocol import model_json
+        from readonly_journal import Prepared,ReadonlyJournal
+        import semantic_batch
+        db=self.store.db
+        messages=[{'role':'system','content':'UNCHANGED_PLATFORM_SYSTEM'},
+                  {'role':'user','content':[{'type':'text','text':'current user message'},
+                                           {'type':'image_url','image_url':{'url':self.image}}]},
+                  {'role':'assistant','content':None,'tool_calls':[{'id':'exact-tool','type':'function','function':{'name':'lookup','arguments':'{}'}}]},
+                  {'role':'tool','tool_call_id':'exact-tool','content':'unchanged tool receipt'},
+                  {'role':'assistant','content':'current confirmed reply'}]
+        journal=ReadonlyJournal(db,'bot_shared');journal.serial=1
+        self.assertTrue(journal.commit(Prepared(1,None,copy.deepcopy(messages),copy.deepcopy(messages),{},1,1,'initial')))
+        await self.provider.text_chat(contexts=copy.deepcopy(journal.last.wire),prompt=None,func_tool=None)
+        before=db.execute('SELECT * FROM fishbot_readonly_journals').fetchall()
+        rounds=db.execute('SELECT * FROM memory_rounds').fetchall()
+        old=model_json(['group:55555','retired-old'])
+        with db:
+            db.execute("INSERT INTO memory_semantic_batches VALUES(77,'bot_shared','digest',?,0,'retired',0,0)",(model_json([semantic_batch.event_key('bot_shared',old)]),))
+            db.execute('INSERT INTO memory_semantic_purges VALUES(77,0,2)')
+            db.execute("INSERT INTO companion_signals VALUES('bot_shared',?,'emotion','retired raw quote',0)",(old,))
+        with db:self.assertTrue(semantic_batch.purge(db,77))
+        self.assertEqual(len(self.requests),1) # Cleanup performs no model call.
+        self.assertEqual(db.execute('SELECT * FROM companion_signals').fetchall(),[])
+        self.assertEqual(db.execute('SELECT * FROM fishbot_readonly_journals').fetchall(),before)
+        self.assertEqual(db.execute('SELECT * FROM memory_rounds').fetchall(),rounds)
+        reloaded=ReadonlyJournal(db,'bot_shared')
+        await self.provider.text_chat(contexts=copy.deepcopy(reloaded.last.wire),prompt=None,func_tool=None)
+        self.assertEqual(self.requests[0],self.requests[1])
+        self.assertEqual(self.requests[1]['messages'][2]['tool_calls'][0]['id'],'exact-tool')
+        self.assertEqual(self.requests[1]['messages'][3]['tool_call_id'],'exact-tool')
+
     async def test_stream_read_error_recovers_through_same_sdk_nonstream_request(self):
         from summary_response import summary_model_output
         async def no_retry(provider,error,*args,**kwargs):raise error

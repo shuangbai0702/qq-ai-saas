@@ -166,7 +166,7 @@ def finish_semantic_batches(st,cfg,scope):
             try:
                 with st.db:
                     semantic_batch.purge_owner_history(st.db)
-                    st.reflection.checkpoint_issue(scope,0,'owner_hot_cleanup',{'membersSha':stamp},resolved=True)
+                    st.reflection.checkpoint_issue(scope,0,'owner_hot_cleanup',{'membersSha':stamp,'cleanupVersion':semantic_batch.PURGE_VERSION},resolved=True)
             except (ValueError,sqlite3.Error) as error:
                 with st.db:st.reflection.checkpoint_issue(scope,0,'owner_hot_cleanup',{'result':str(error) if isinstance(error,ValueError) else type(error).__name__,'membersSha':stamp})
                 result['pending']+=1
