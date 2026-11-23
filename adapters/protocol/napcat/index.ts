@@ -70,7 +70,7 @@ export class NapCatAdapter implements ProtocolAdapter{
      if(settings.egress){
       const current=await this.host.record(ctx.botId,'protocol');
       if(current?.pid===record.pid&&current?.created===record.created){
-       settings.egress=observeEgress(settings.egress,{pid:record.pid,created:record.created,generation:ctx.generation},s.state==='online',s.state==='failed'&&s.message==='QQ已掉线');
+       settings.egress=observeEgress(settings.egress,{pid:record.pid,created:record.created,generation:ctx.generation},s.state==='online',s.restartRequested===true||s.state==='failed'&&s.message==='QQ已掉线');
        egress={route:settings.egress.route,switches:settings.egress.switches,failures:settings.egress.failures,pending:settings.egress.pending};
        restart=settings.egress.pending&&s.state==='failed'&&s.message==='QQ已掉线';
       }

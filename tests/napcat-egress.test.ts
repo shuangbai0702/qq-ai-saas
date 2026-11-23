@@ -48,17 +48,18 @@ test('native proxy admission and real offline receipts reuse existing recovery o
  const dir=await mkdtemp(path.join(os.tmpdir(),'fish-egress-adapter-')),settingsFile=path.join(dir,'bot.json');
  const original=process.env.NAPCAT_EGRESS_PROXY_PORT;process.env.NAPCAT_EGRESS_PROXY_PORT='11973';
  const ctx:RuntimeContext={botId:'bot',tenantId:'tenant',root:dir,generation:7,revision:1,aiPort:24000,protocolPort:24002,token:'a'.repeat(64),config:defaultConfig,apiKey:'',expectedUin:''};
- let processRecord:any=null,starts=0,online=true,failedStart=false;
+ let processRecord:any=null,starts=0,online=true,failedStart=false,nativeRestart=false;
  const host:any={inspect:async()=>processRecord?{...processRecord,valid:true}:null,record:async()=>processRecord,start:async()=>{starts++;const manifest=JSON.parse(await readFile(path.join(dir,'napcat-platform.json'),'utf8'));assert.equal(manifest.network.mode,failedStart?'direct':'socks5');if(!failedStart)assert.equal(manifest.network.port,11973);assert.equal(JSON.parse(await readFile(settingsFile,'utf8')).egress.route,failedStart?'direct':'huawei','route is durable before process starts');if(failedStart)throw new Error('spawn failed');processRecord={...identity};}};
  const adapter=new NapCatAdapter(host,dir);
  await writeFile(settingsFile,JSON.stringify({url:'http://127.0.0.1:24002/api',webuiToken:'token',launcher:'fixture-node',runtimeDir:dir,egress:{...initialEgress(()=>0),pending:true}}));
- (adapter as any).getLoginState=async()=>online?{state:'online'}:{state:'failed',message:'QQ已掉线'};
+ (adapter as any).getLoginState=async()=>online?{state:'online'}:nativeRestart?{state:'starting',restartRequested:true}:{state:'failed',message:'QQ已掉线'};
  try{
   await adapter.beginLogin(ctx);assert.equal(starts,1);
   const first=await adapter.getHealth(ctx);assert.equal(first.online,true);
   online=false;const offline=await adapter.getHealth(ctx);assert.equal(offline.metrics?.restartRequested,true);
   await adapter.getHealth(ctx);assert.equal(JSON.parse(await readFile(settingsFile,'utf8')).egress.failures,1);
   await adapter.beginLogin(ctx);assert.equal(starts,1,'adoption never restarts independent QQ');
+  nativeRestart=true;assert.equal((await adapter.getHealth(ctx)).metrics?.restartRequested,true);assert.equal(JSON.parse(await readFile(settingsFile,'utf8')).egress.failures,1,'native restart does not count the same loss again');
   processRecord=null;failedStart=true;await assert.rejects(adapter.beginLogin(ctx),/spawn failed/);
   assert.equal(JSON.parse(await readFile(settingsFile,'utf8')).egress.route,'direct','failed start retains the next chosen route');
  }finally{if(original===undefined)delete process.env.NAPCAT_EGRESS_PROXY_PORT;else process.env.NAPCAT_EGRESS_PROXY_PORT=original}
