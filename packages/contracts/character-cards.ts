@@ -10,10 +10,12 @@ export const CharacterCardsSchema=z.array(CharacterCardSchema).max(5).refine(car
 export type CharacterCard=z.infer<typeof CharacterCardSchema>;
 export const libraryCardKinds={speech:'表达',meme:'知识',world:'背景'} as const;
 export const LibraryCardKindSchema=z.enum(['speech','meme','world']);
+export const characterCardCover={sourceMaxBytes:8*1024*1024,maxEdge:1024,maxBytes:128*1024,mime:'image/webp',dataPrefix:'data:image/webp;base64,'} as const;
+export const characterCardCoverDataMaxLength=characterCardCover.dataPrefix.length+4*Math.ceil(characterCardCover.maxBytes/3);
 export const LibraryCardInputSchema=CharacterCardSchema.pick({name:true,content:true}).extend({
  kind:LibraryCardKindSchema,
  description:z.string().refine(v=>v.length<=200,'描述最多200字符').refine(v=>!/[\u0000\uD800-\uDFFF]/u.test(v),'描述含无法保存的字符').default(''),
- cover:z.string().max(180000,'封面文件过大').nullable().optional(),
+ cover:z.string().max(characterCardCoverDataMaxLength,'封面处理失败，请重新选择图片').nullable().optional(),
 }).strict();
 export type LibraryCardInput=z.infer<typeof LibraryCardInputSchema>;
 export interface LibraryCard {id:string;name:string;kind:keyof typeof libraryCardKinds;description:string;revision:number;authorName:string;editable:boolean;coverUrl:string|null;content?:string}

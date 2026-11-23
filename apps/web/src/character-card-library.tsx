@@ -5,14 +5,8 @@ import {api} from './api';
 import {useLifetime,useLiveResource} from './hooks';
 import './character-cards.css';
 
-// Decode before publishing, crop to the cover frame and release the bitmap
-// even when the editor has left. This derived display asset never enters AI.
-async function coverFromFile(file:File){
- if(file.size>8*1024*1024)throw Error('请选择8MB以内的图片');
- if(!['image/png','image/jpeg','image/webp'].includes(file.type))throw Error('支持 PNG、JPG 和 WebP 图片');
- const bitmap=await createImageBitmap(file);
- try{const canvas=document.createElement('canvas');canvas.width=640;canvas.height=400;const ctx=canvas.getContext('2d');if(!ctx)throw Error('无法处理图片，请重新选择');const scale=Math.max(640/bitmap.width,400/bitmap.height);ctx.drawImage(bitmap,(640-bitmap.width*scale)/2,(400-bitmap.height*scale)/2,bitmap.width*scale,bitmap.height*scale);const data=canvas.toDataURL('image/webp',.82);if(data.length>180000)throw Error('图片压缩后仍过大，请换一张更简洁的封面');return data}finally{bitmap.close()}
-}
+import {coverFromFile} from './character-card-cover';
+
 const guidance={speech:'记录说话方式、场景和示例表达。',meme:'解释知识、梗的含义和适用场景。',world:'描述世界背景、人物关系和适用范围。'};
 
 function LibraryEditor({card,onClose,onSaved,onDirtyChange}:{card:LibraryCard|null;onClose:()=>void;onSaved:()=>Promise<void>;onDirtyChange:(v:boolean)=>void}){
@@ -28,7 +22,7 @@ function LibraryEditor({card,onClose,onSaved,onDirtyChange}:{card:LibraryCard|nu
  const image=cover===undefined?card?.coverUrl:cover;
  return <section className="cc-editor panel" aria-label="公共角色卡编辑器"><div className="cc-section-title"><div><span className="eyebrow">YOUR CREATION</span><h2>{card?'编辑我的角色卡':'创作一张角色卡'}</h2><p>保存后公开给大家选用。封面与描述用于展示，只有正文进入机器人配置。</p></div><button type="button" className="secondary" onClick={close} disabled={busy||uploading}><ArrowLeft size={16}/>返回卡库</button></div>
   {error&&<p role="alert" className="alert">{error}</p>}
-  <fieldset disabled={busy||uploading} className="cc-editor-fields"><div className="cc-cover-field"><div className={'cc-cover-preview cc-kind-'+kind}>{image?<img src={image} alt="角色卡封面预览"/>:<><Sparkles size={32}/><span>给设定一个画面</span></>}</div><label className="secondary cc-upload"><ImagePlus size={16}/>{uploading?'正在处理…':'选择封面'}<input aria-label="公共角色卡封面" type="file" accept="image/png,image/jpeg,image/webp" onChange={e=>{void upload(e.target.files?.[0]);e.target.value=''}}/></label>{image&&<button type="button" className="secondary" onClick={()=>edit(()=>setCover(null))}>移除封面</button>}<small>PNG / JPG / WebP · 最大 8MB</small></div>
+  <fieldset disabled={busy||uploading} className="cc-editor-fields"><div className="cc-cover-field"><div className={'cc-cover-preview cc-kind-'+kind}>{image?<img src={image} alt="角色卡封面预览"/>:<><Sparkles size={32}/><span>给设定一个画面</span></>}</div><label className="secondary cc-upload"><ImagePlus size={16}/>{uploading?'正在处理…':'选择封面'}<input aria-label="公共角色卡封面" type="file" accept="image/*" onChange={e=>{void upload(e.target.files?.[0]);e.target.value=''}}/></label>{image&&<button type="button" className="secondary" onClick={()=>edit(()=>setCover(null))}>移除封面</button>}<small>原图最大 8MB · 自动压缩 · 最长边不超过 1024px</small></div>
    <div className="cc-editor-meta"><div className="form-grid"><label className="field"><span>卡片名称</span><input aria-label="公共角色卡名称" maxLength={80} value={name} onChange={e=>edit(()=>setName(e.target.value))}/></label><label className="field"><span>分类</span><select aria-label="公共角色卡分类" value={kind} onChange={e=>edit(()=>setKind(e.target.value as LibraryCard['kind']))}>{Object.entries(libraryCardKinds).map(([v,label])=><option key={v} value={v}>{label}</option>)}</select></label></div><label className="field"><span>描述 <small>{description.length}/200</small></span><textarea aria-label="公共角色卡描述" maxLength={200} rows={3} placeholder="让大家一眼了解这张卡适合什么角色。" value={description} onChange={e=>edit(()=>setDescription(e.target.value))}/></label><p className="cc-editor-note">{guidance[kind]} 描述不会作为额外提示词发送。</p></div>
    <label className="field cc-editor-content"><span>角色卡正文 <small>{content.length}/4,000</small></span><textarea aria-label="公共角色卡正文" maxLength={4000} rows={9} placeholder={guidance[kind]} value={content} onChange={e=>edit(()=>setContent(e.target.value))}/></label>
   </fieldset><div className="cc-editor-actions"><span className="muted">{dirty?'有未保存修改':card?'已保存 v'+revision:'每位用户可创作3张公共卡片'}</span><div className="button-row">{card&&<button type="button" className="secondary" disabled={busy||uploading} onClick={()=>void remove()}><Trash2 size={16}/>删除我的卡片</button>}<button type="button" className="primary" disabled={busy||uploading||!dirty} onClick={()=>void save()}><Save size={16}/>{busy?'正在保存…':card?'保存修改':'发布到公共卡库'}</button></div></div>

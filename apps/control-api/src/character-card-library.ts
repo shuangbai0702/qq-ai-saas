@@ -2,7 +2,7 @@ import type {FastifyInstance} from 'fastify';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import type {Sql} from '../../../packages/database/index.js';
-import {LibraryCardInputSchema,LibraryCardKindSchema} from '../../../packages/contracts/character-cards.js';
+import {LibraryCardInputSchema,LibraryCardKindSchema,characterCardCover} from '../../../packages/contracts/character-cards.js';
 
 const fail=(message:string,statusCode=400):never=>{throw Object.assign(new Error(message),{statusCode})};
 // Covers are browser-decoded, resized still WebP files. No remote fetch or
@@ -11,14 +11,14 @@ function validateCover(value:string|null|undefined){
  if(value==null)return value;
  if(!/^data:image\/webp;base64,[A-Za-z0-9+/]+={0,2}$/.test(value))fail('封面格式无效，请重新选择图片');
  const data=Buffer.from(value.split(',')[1],'base64');
- if(data.length<30||data.length>131072||data.toString('ascii',0,4)!=='RIFF'||data.toString('ascii',8,12)!=='WEBP'||data.readUInt32LE(4)!==data.length-8)fail('封面文件无效或过大');
+ if(data.length<30||data.length>characterCardCover.maxBytes||data.toString('ascii',0,4)!=='RIFF'||data.toString('ascii',8,12)!=='WEBP'||data.readUInt32LE(4)!==data.length-8)fail('封面文件无效或过大');
  let dimensions=false;
  for(let at=12;at+8<=data.length;){const kind=data.toString('ascii',at,at+4),size=data.readUInt32LE(at+4),start=at+8;if(start+size>data.length)fail('封面文件不完整');let width=0,height=0;
   if(kind==='VP8 '&&size>=10&&data.toString('hex',start+3,start+6)==='9d012a'){width=data.readUInt16LE(start+6)&16383;height=data.readUInt16LE(start+8)&16383}
   if(kind==='VP8L'&&size>=5&&data[start]===47){const bits=data.readUInt32LE(start+1);width=(bits&16383)+1;height=((bits>>>14)&16383)+1}
   if(kind==='VP8X'&&size>=10){if(data[start]&2)fail('封面请使用静态图片');width=data.readUIntLE(start+4,3)+1;height=data.readUIntLE(start+7,3)+1}
   if(kind==='ANIM'||kind==='ANMF')fail('封面请使用静态图片');
-  if(width&&height){if(width>1024||height>1024)fail('封面尺寸过大');dimensions=true}
+  if(width&&height){if(width>characterCardCover.maxEdge||height>characterCardCover.maxEdge)fail('封面尺寸过大');dimensions=true}
   at=start+size+(size%2);
  }
  if(!dimensions)fail('封面图片无效');return value;
