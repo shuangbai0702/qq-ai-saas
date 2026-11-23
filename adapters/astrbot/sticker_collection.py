@@ -181,9 +181,15 @@ class StickerCollector:
 
 
 def manage(db,data):
-    initialize(db);action=data['action']
+    action=data['action']
+    if action in ('list_stickers','get_sticker'):
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sticker_inbox'").fetchone():
+            return {'items':[],'pendingLimit':10,'approvedLimit':20} if action=='list_stickers' else {'error':'表情包不存在','status':404}
+    else:
+        initialize(db)
     if action=='list_stickers':
-        rows=db.execute("SELECT i.id,scope,subject,event,status,meaning,created,version,coalesce(o.animated,0) FROM sticker_inbox i LEFT JOIN sticker_originals o ON o.id=i.id WHERE status!='rejected' ORDER BY created DESC LIMIT 30")
+        has_orig=bool(db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sticker_originals'").fetchone())
+        rows=db.execute("SELECT i.id,scope,subject,event,status,meaning,created,version,coalesce(o.animated,0) FROM sticker_inbox i LEFT JOIN sticker_originals o ON o.id=i.id WHERE status!='rejected' ORDER BY created DESC LIMIT 30") if has_orig else db.execute("SELECT id,scope,subject,event,status,meaning,created,version,0 FROM sticker_inbox WHERE status!='rejected' ORDER BY created DESC LIMIT 30")
         return {'items':[dict(zip(('id','scope','subject','event','status','meaning','created','version','animated'),r)) for r in rows],'pendingLimit':10,'approvedLimit':20}
     row=db.execute('SELECT status,version,png FROM sticker_inbox WHERE id=?',(data['id'],)).fetchone()
     if not row:return {'error':'表情包不存在','status':404}

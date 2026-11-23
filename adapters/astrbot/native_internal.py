@@ -120,7 +120,7 @@ async def run(provider,control,prompt,system,tools=(),handlers=None,context=None
     # Borrow the current budget owner for trusted nested model requests.
     if context is not None:context.hosted_run_control=control
     from tool_outcome import RECEIPT_GUIDANCE
-    system+='\n'+RECEIPT_GUIDANCE
+    system=(system+'\n'+RECEIPT_GUIDANCE) if system else RECEIPT_GUIDANCE
     handlers=handlers or {};allowed={tool.name:tool for tool in tools}
     tool_set=ToolSet(tools=list(tools)) if tools else None
     cooling={}

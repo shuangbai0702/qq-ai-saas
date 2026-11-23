@@ -419,88 +419,48 @@ class Reflection:
         CREATE TABLE IF NOT EXISTS memory_embedding_budget(day INTEGER PRIMARY KEY,count INTEGER);''')
         db.execute('CREATE TABLE IF NOT EXISTS memory_reflection_retry(scope TEXT PRIMARY KEY,attempts INTEGER,next_at REAL,result TEXT)')
         if 'result' not in {r[1] for r in db.execute('PRAGMA table_info(memory_reflection_retry)')}:db.execute('ALTER TABLE memory_reflection_retry ADD COLUMN result TEXT')
-        # Unresolved summary holds (scope+event): keeps their round eligible for
-        # later batches, protects their evidence from quota cleanups, and blocks
-        # reconstruction permits while evidence inside the range is uncarried.
         db.execute('CREATE TABLE IF NOT EXISTS memory_hold_rounds(scope TEXT,event TEXT,round_id INTEGER,reason TEXT,created REAL,PRIMARY KEY(scope,event))')
-        # Only live unresolved inputs need membership beyond Coverage. This is
-        # a repair fence, not an accumulating source list on summary products.
-        db.executescript('''CREATE TABLE IF NOT EXISTS memory_summary_unresolved(
-          scope TEXT,event TEXT,summary_id INTEGER,digest TEXT,
-          PRIMARY KEY(scope,event,summary_id));
-        CREATE TRIGGER IF NOT EXISTS memory_summary_unresolved_deleted AFTER DELETE ON memory_summaries BEGIN
-          DELETE FROM memory_summary_unresolved WHERE summary_id=OLD.id; END;
-        CREATE TRIGGER IF NOT EXISTS memory_summary_unresolved_released AFTER DELETE ON memory_hold_rounds BEGIN
-          DELETE FROM memory_summary_unresolved WHERE scope=OLD.scope AND event=OLD.event; END;''')
-        # Legacy products remain byte-for-byte intact. Import only their still
-        # held, captured inputs; never copy the historical source accumulation.
-        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_round_material'").fetchone():
-            db.execute('''INSERT OR IGNORE INTO memory_summary_unresolved
-              SELECT h.scope,h.event,s.id,json_extract(m.material,'$.digest')
-              FROM memory_hold_rounds h JOIN memory_round_material m ON m.scope=h.scope AND m.event=h.event
-              JOIN memory_summaries s ON s.scope=h.scope
-              JOIN json_each(s.sources) e ON CAST(e.value AS TEXT)=h.event''')
+        db.execute('''CREATE TABLE IF NOT EXISTS memory_web_context_permits(
+          permit_id TEXT NOT NULL,scope TEXT NOT NULL,revision TEXT NOT NULL,epoch INTEGER NOT NULL,
+          state TEXT NOT NULL CHECK(state IN ('available','reserved','consumed','invalidated')),
+          request_id TEXT,created REAL NOT NULL,PRIMARY KEY(permit_id,scope))''')
         checkpoint_columns={row[1] for row in db.execute('PRAGMA table_info(memory_reconstruction_checkpoints)')}
         if 'summary_id' not in checkpoint_columns:db.execute('ALTER TABLE memory_reconstruction_checkpoints ADD COLUMN summary_id INTEGER')
-        # Pending-coverage proof: the exact events a real 30-round
-        # batch completed but could not yet prove covered. Old code ignores
-        # the column; 'pending_coverage' state is never an available license.
         if 'pending_events' not in checkpoint_columns:db.execute('ALTER TABLE memory_reconstruction_checkpoints ADD COLUMN pending_events TEXT')
         if 'conversation_continuity' not in checkpoint_columns:
             db.execute('ALTER TABLE memory_reconstruction_checkpoints ADD COLUMN conversation_continuity TEXT')
         db.execute('''CREATE TABLE IF NOT EXISTS memory_checkpoint_issues(
           scope TEXT,checkpoint_id INTEGER,kind TEXT,status TEXT,detail TEXT,
           first_seen REAL,updated REAL,PRIMARY KEY(scope,checkpoint_id,kind))''')
-        # D4: structured claims ride the existing tables. Existing rows keep
-        # schema_version=1 with no claims; they are never back-filled.
         for table in ('memory_summaries','memory_core_notes'):
             claim_columns={row[1] for row in db.execute('PRAGMA table_info('+table+')')}
             if 'schema_version' not in claim_columns:db.execute('ALTER TABLE '+table+' ADD COLUMN schema_version INTEGER DEFAULT 1')
             if 'claims' not in claim_columns:db.execute('ALTER TABLE '+table+' ADD COLUMN claims TEXT')
         if 'source_verification' not in {row[1] for row in db.execute('PRAGMA table_info(memory_core_notes)')}:
             db.execute("ALTER TABLE memory_core_notes ADD COLUMN source_verification TEXT NOT NULL DEFAULT 'unknown'")
-        db.execute('''CREATE TABLE IF NOT EXISTS memory_web_context_permits(
-          permit_id TEXT NOT NULL,scope TEXT NOT NULL,revision TEXT NOT NULL,epoch INTEGER NOT NULL,
-          state TEXT NOT NULL CHECK(state IN ('available','reserved','consumed','invalidated')),
-          request_id TEXT,created REAL NOT NULL,PRIMARY KEY(permit_id,scope))''')
         db.executescript('''CREATE TABLE IF NOT EXISTS memory_pending(scope TEXT,subject TEXT,event TEXT,question TEXT,answer TEXT,at REAL,PRIMARY KEY(scope,event));
         CREATE INDEX IF NOT EXISTS memory_pending_subject_at ON memory_pending(subject,at);
-        CREATE INDEX IF NOT EXISTS memory_pending_scope_at ON memory_pending(scope,at);''')
+        CREATE INDEX IF NOT EXISTS memory_pending_scope_at ON memory_pending(scope,at);
+        DROP TRIGGER IF EXISTS memory_summary_unresolved_deleted;
+        DROP TRIGGER IF EXISTS memory_summary_unresolved_released;''')
         db.execute('CREATE TRIGGER IF NOT EXISTS memory_pending_round_deleted AFTER DELETE ON memory_pending BEGIN DELETE FROM memory_pending_rounds WHERE scope=OLD.scope AND event=OLD.event; END')
         message_provenance.initialize(db)
         from summary_material import initialize
         initialize(db)
-        db.execute('INSERT OR IGNORE INTO memory_pending SELECT scope,subject,event,question,answer,at FROM memory_rounds WHERE at>?',(time.time()-7*86400,))
-        self.prune_pending()
-        # Recover old participation only from trusted scope IDs / matching real
-        # event IDs. Never treat a QQ number mentioned in a summary as its author.
-        for identifier,scope in db.execute("SELECT id,scope FROM memory_summaries WHERE scope LIKE 'private:%' LIMIT 1000"):
-            subject=scope[8:]
-            if shared_person(scope,subject):db.execute('INSERT OR IGNORE INTO memory_summary_people VALUES(?,?)',(identifier,subject))
-        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='relation_events'").fetchone():
-            db.execute('CREATE INDEX IF NOT EXISTS relation_events_memory_source ON relation_events(scope,event)')
-            db.execute('''INSERT OR IGNORE INTO memory_summary_people
-              SELECT s.id,r.subject FROM memory_summaries s,json_each(s.sources) e
-              JOIN relation_events r ON r.scope=s.scope AND r.event=CAST(e.value AS TEXT)
-              WHERE length(r.subject) BETWEEN 5 AND 20 AND r.subject NOT GLOB '*[^0-9]*' ''')
-        from summary_material import govern_claims
-        for (claim_scope,) in db.execute('SELECT DISTINCT scope FROM memory_summaries').fetchall():govern_claims(db,claim_scope)
-        # R2 material safety: the retained-summary count quota is not a delete
-        # licence. A summary carrying structured claims, a coverage proof or a
-        # reconstruction-checkpoint reference (its retirement evidence or
-        # pending-coverage proof depends on it) survives any quota pressure;
-        # only claim-free ordinary prose ages out here.
-        db.execute('''DELETE FROM memory_summaries WHERE id NOT IN (SELECT id FROM memory_summaries ORDER BY id DESC LIMIT 1000)
-          AND id NOT IN (SELECT summary_id FROM memory_summary_coverage)
-          AND id NOT IN (SELECT summary_id FROM memory_reconstruction_checkpoints WHERE summary_id IS NOT NULL)
-          AND (claims IS NULL OR json_array_length(claims)=0)''')
-        db.execute('INSERT OR IGNORE INTO memory_summary_origins SELECT s.id,s.scope FROM memory_summaries s WHERE NOT EXISTS (SELECT 1 FROM memory_summary_origins o WHERE o.summary_id=s.id)')
-        db.execute('DELETE FROM memory_vectors WHERE summary_id NOT IN (SELECT id FROM memory_summaries)');db.commit()
-        # R5: the bounded commitment projection shares this database and its
-        # initialization; existing deployments create it on first use.
+        # Constructor performs schema initialization only; never silently rewrite
+        # cognitive claims or delete historical summaries during startup/open.
+        db.commit()
         import agreement_state
         agreement_state.initialize(db)
         self.embedding_lock=asyncio.Lock()
+
+    def run_housekeeping(self):
+        """Explicit post-commit maintenance; never invoked implicitly by __init__."""
+        self.prune_pending()
+        self.db.execute('''DELETE FROM memory_summaries WHERE id NOT IN (SELECT id FROM memory_summaries ORDER BY id DESC LIMIT 1000)
+          AND id NOT IN (SELECT summary_id FROM memory_reconstruction_checkpoints WHERE summary_id IS NOT NULL)
+          AND (claims IS NULL OR json_array_length(claims)=0)''')
+        self.db.commit()
     def epoch(self):return self.db.execute('SELECT epoch FROM memory_reflection_control WHERE id=1').fetchone()[0]
     def reconstruction_stamp(self,scope):
         """Only a real forget epoch or this scope's completed checkpoint retires wire.

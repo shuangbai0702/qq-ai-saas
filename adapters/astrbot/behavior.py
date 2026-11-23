@@ -1226,7 +1226,7 @@ def install_runtime(core,settings):
                 conversation=await manager.get_conversation(event.unified_msg_origin,cid)
                 if conversation is None:raise RuntimeError('empty mention conversation unavailable')
                 if not current(event):return
-                event.set_extra('provider_request',ProviderRequest(conversation=conversation,prompt=json.dumps({'event':'mention','text':'','sender_id':subject,'self_id':str(event.get_self_id()),'meaning':'本轮是协议确认的空艾特事件，没有用户正文。结合当前对话自行决定是否回应；没有值得回应的内容就只输出[NO_REPLY]，不假设对方提出了任务。'},ensure_ascii=False),system_prompt=s['config'].get('systemPrompt','')))
+                event.set_extra('provider_request',ProviderRequest(conversation=conversation,prompt=json.dumps({'event':'mention','text':'','sender_id':subject,'self_id':str(event.get_self_id()),'meaning':'本轮是协议确认的空艾特事件，没有用户正文。结合当前对话自行决定是否回应；没有值得回应的内容就只输出[NO_REPLY]，不假设对方提出了任务。'},ensure_ascii=False),system_prompt=''))
             bot_pipeline.stage(event,'model_tools')
             return await original_execute(self,event)
         finally:st.active-=1;st.slot_changed.set();care.stamp(s['root'])
@@ -1538,7 +1538,6 @@ def install_runtime(core,settings):
             if automatic_image_selected:m['imagesAutoSent']=m.get('imagesAutoSent',0)+1
         active_store=store(id,s)
         bot_pipeline.stage(self,'commit')
-        if rhythm.get('styleLearning'):social.expression_sent(scope,text,request=self.get_message_str())
         notice=bool(self.get_extra('_hosted_platform_notice',False)) or bool(self.get_extra('_hosted_model_error',False))
         if not notice:
             if not work or not work.confirmed:
@@ -1890,13 +1889,10 @@ def install_runtime(core,settings):
                         owned.db.execute('INSERT OR IGNORE INTO memory_pending VALUES(?,?,?,?,?,?)',(key,item['subject'],item['event'],item['text'],'',float(at)))
                         message_provenance.put(owned.db,key,item['event'],'incoming',{'sender_id':item['subject'],'source_scope':original['scope']})
                 owned.db.commit()
-                # Coverage is only a candidate retirement view, not permission
-                # to discard the canonical prefix. Keep its exact full input
-                # for prepare() to defer retirement until a real checkpoint,
-                # including when another Work already submitted this event.
+                # Whole-batch semantic compression owns history retirement via
+                # semantic_retire_projection at lawful checkpoints; retired
+                # coverage/exception tables are never queried on the hot path.
                 unprojected_for_journal=projected
-                proved={e:p for e,p in coverage(owned.db,key).items() if p.get('version') in (3,4)}
-                projected=project_history(projected,proved,key,shared_context.event_key({'scope':work.scope,'event_id':work.event_id}))
                 native_view=None
             # The one active Work is temporary and must not evict a chat's
             # warm prefix. Its journal is released by invoke's finally.

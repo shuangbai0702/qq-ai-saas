@@ -514,7 +514,9 @@ class AutonomousRuntime:
             work.stage('context');context=self.prepare_context(id,event,scope,action['objective'])
             tools=self.task_tools(id,identity,scope,event)
             context_object=SimpleNamespace(event=event)
-            system=s['config'].get('systemPrompt','')
+            # Main activation receives the authoritative Persona via platform_system
+            # in request_context_view; do not inject a second bare copy into contexts[0].
+            system='' if main_activation else s['config'].get('systemPrompt','')
             prompt=json.dumps({'kind':'autonomous_activation' if moment else 'autonomous_tool_continuation','activationId':identity['id'],
                 **({'continuation':action['continuation']} if action.get('continuation') and not action['continuation'].get('dsh') else {}),
                 'meaning':'平台激活，不是用户消息。结合原主对话、人格、目标和真实回执自主行动、修订目标或休息，不必制造任务；最终文字仅记录当前思考，不代表已发QQ。'},ensure_ascii=False,separators=(',',':'))

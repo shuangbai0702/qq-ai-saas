@@ -290,17 +290,26 @@ def request_context_view(system,contexts,prompt,policy,current_rules,context,too
         from context_protocol import persona_reference
         from web_base import without_sdk_persona,legacy_sdk_persona,sha
         # The SDK embeds the selected Persona in its preamble as well. Keep
-        # its other instructions, but provide the Persona in one region only.
-        for i,message in enumerate(history):
+        # its non-empty residual instructions, but provide the Persona once
+        # and never emit phantom empty Persona reference slots.
+        leading_end=0
+        residuals=[]
+        for message in history:
             if message.get('role')!='system':break
+            leading_end+=1
             content=without_sdk_persona(message['content'],system)
             # An event can wait for the Writer after the SDK selected its old
             # Persona. The authenticated request snapshot owns the newer base.
             if persona_proof and persona_proof.get('target')==sha(system):
                 prior=legacy_sdk_persona(content,persona_proof['origins'],system)
                 if prior is not None:content=prior
-            history[i]=persona_reference(content)
-        if system:history.insert(0,persona_reference(system))
+            if system:
+                if content==system:content=''
+                elif content.startswith(system+'\n'):content=content[len(system)+1:]
+            if content.strip():
+                residuals.append(persona_reference(content))
+        leading=([persona_reference(system)] if system else [])+residuals
+        history[:leading_end]=leading
     if platform_system is not None and character_cards:
         from character_cards import layout
         history=layout([{'role':'system','content':stable}]+history,character_cards)[1:]

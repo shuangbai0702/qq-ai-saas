@@ -63,12 +63,11 @@ def sweep_reason(db,cfg,now):
     budget={'used':int(total),'limit':limit}
     if total>=limit:return {'reason':'budget_exhausted','budget':budget,'owner':'not_considered_daily_budget_exhausted'}
     if autonomy.owner_delivery_candidate(db,cfg,now):return {'reason':'ok_owner','budget':budget}
-    if not cfg.get('proactive') or not companion_state.targets(db,cfg,now):return {'reason':'no_candidates','budget':budget,'owner':'not_due'}
     return {'reason':'no_candidates','budget':budget,'owner':'not_due'}
 
 
 def candidates(db,cfg,now,rng=random.random):
-    b=cfg.get('behavior') or {};targets=set(companion_state.targets(db,cfg,now))
+    b=cfg.get('behavior') or {}
     if b.get('enabled',True) is False or not (cfg.get('proactive') or b.get('ownerContactEnabled',autonomy.BEHAVIOR_DEFAULTS['ownerContactEnabled'])) or quiet(cfg,now):return []
     day=datetime.fromtimestamp(now,ZONE).date().isoformat()
     total=db.execute('SELECT coalesce(sum(count),0) FROM deliveries WHERE day=?',(day,)).fetchone()[0]

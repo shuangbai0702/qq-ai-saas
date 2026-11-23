@@ -11,8 +11,11 @@ def metadata(db, scope, event):
     return json.loads(row[0]) if row else None
 
 
+_SERVICE_SOURCES = ('autonomous', 'owner_contact', 'scheduled_contact')
+
+
 def annotate_service(db, scope, event, work, *, source_scope):
-    owner=db.execute("SELECT scope FROM pipeline_events WHERE event=? AND source='autonomous'",(work,)).fetchone()
+    owner=db.execute("SELECT scope FROM pipeline_events WHERE scope=? AND event=? AND source IN ('autonomous','owner_contact','scheduled_contact')",(source_scope,work)).fetchone()
     if not owner or owner[0]!=source_scope:raise ValueError('service_dialogue_owner_missing')
     data={'round_kind':'service_dialogue','owner_work':work,'source_scope':source_scope}
     previous=metadata(db,scope,event)
@@ -40,7 +43,8 @@ def valid(db, scope, row):
     data = metadata(db, scope, row[2])
     if not data:
         return bool(isinstance(row[1], str) and row[1] and isinstance(row[2], str) and row[2] and isinstance(row[3], str) and row[3].strip() and isinstance(row[4], str) and row[4].strip() and isinstance(row[5], (int, float)))
-    owner = db.execute("SELECT scope FROM pipeline_events WHERE event=? AND source='autonomous'", (data['owner_work'],)).fetchone()
+    sources = ("'autonomous'",) if data.get('round_kind') == 'autonomous_activation' else ("'autonomous'", "'owner_contact'", "'scheduled_contact'")
+    owner = db.execute(f"SELECT scope FROM pipeline_events WHERE scope=? AND event=? AND source IN ({','.join(sources)})", (data.get('source_scope'), data['owner_work'])).fetchone()
     return bool(data.get('round_kind') in ('autonomous_activation','service_dialogue') and owner and owner[0] == data['source_scope'] and isinstance(row[5], (int, float)) and (data['round_kind']=='autonomous_activation' or bool(row[3].strip() and row[4].strip())))
 
 
@@ -48,7 +52,8 @@ def settled(db, scope, rows):
     for row in rows:
         data = metadata(db, scope, row[2])
         if data:
-            owner = db.execute("SELECT status FROM pipeline_events WHERE event=? AND source='autonomous'", (data['owner_work'],)).fetchone()
+            sources = ("'autonomous'",) if data.get('round_kind') == 'autonomous_activation' else ("'autonomous'", "'owner_contact'", "'scheduled_contact'")
+            owner = db.execute(f"SELECT status FROM pipeline_events WHERE scope=? AND event=? AND source IN ({','.join(sources)})", (data.get('source_scope'), data['owner_work'])).fetchone()
             if not owner or owner[0] in ('received','sending'):
                 return False
     return True

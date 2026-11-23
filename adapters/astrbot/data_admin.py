@@ -23,7 +23,7 @@ def run(file, data, connection=None):
         return {'persona_core_note':{'text':'','updated':0},'facts': [], 'patterns': [], 'contacts': [], 'relations': [], 'stats': {}, 'epoch': 0, 'initialized': False}
     if data['action'] in ('list_stickers','get_sticker','review_sticker') and not file.exists() and connection is None:
         return {'items':[],'pendingLimit':10,'approvedLimit':20} if data['action']=='list_stickers' else {'error':'表情包不存在','status':404}
-    mode='ro' if data['action']=='list' else 'rw'
+    mode='ro' if data['action'] in ('list','list_stickers','get_sticker') else 'rw'
     db = connection or sqlite3.connect(file.as_uri() + '?mode='+mode, uri=True, timeout=3)
     old_factory=db.row_factory
     db.row_factory = sqlite3.Row

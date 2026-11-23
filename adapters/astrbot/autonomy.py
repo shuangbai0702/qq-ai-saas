@@ -300,7 +300,6 @@ class GroupPresence:
         if row:return row
         contact=self.db.execute('SELECT last_bot FROM contacts WHERE scope=?',(scope,)).fetchone()
         if contact and contact[0]:
-            self.db.execute('INSERT OR IGNORE INTO autonomy_groups(scope,interaction) VALUES(?,?)',(scope,contact[0]));self.db.commit()
             return (0,contact[0],0,'')
         return (0,0,0,'')
 
@@ -420,7 +419,7 @@ class GroupPresence:
                 event_var.reset(token)
 
 
-def owner_state(db, cfg, now):
+def owner_state(db, cfg, now, *, readonly=False):
     """Return a known owner's real private contact; never invent chat evidence."""
     b = cfg.get('behavior') or {}; owner = str(b.get('ownerUin') or '')
     if not b.get('enabled',True) or not b.get('ownerContactEnabled', BEHAVIOR_DEFAULTS['ownerContactEnabled']) or not re.fullmatch(r'\d{5,20}', owner):
@@ -429,6 +428,11 @@ def owner_state(db, cfg, now):
     contact = db.execute('SELECT subject,self_id,last_user,last_bot,last_attempt,unanswered,opted_out,last_text,last_output FROM contacts WHERE scope=?', (scope,)).fetchone()
     if not contact or contact[0] != owner or contact[1] == owner or not contact[2] or contact[6]:
         return None
+    if readonly:
+        state = db.execute('SELECT checked,interaction,version,allowed,topic,checked_version FROM autonomy_owner WHERE owner=?', (owner,)).fetchone()
+        if state is None:
+            state = (now, max(contact[2:4]), 0, 0, '', -1)
+        return owner, scope, contact, state
     db.execute('INSERT OR IGNORE INTO autonomy_owner(owner,checked,interaction) VALUES(?,?,?)', (owner, now, max(contact[2:4])))
     db.execute('UPDATE autonomy_owner SET checked=max(checked,?),armed=1 WHERE owner=? AND armed=0',(now,owner))
     db.commit()
@@ -460,7 +464,7 @@ def owner_check_candidate(db, cfg, now):
 
 def owner_delivery_candidate(db, cfg, now):
     from initiative import paused
-    b = cfg.get('behavior') or {}; data = owner_state(db, cfg, now)
+    b = cfg.get('behavior') or {}; data = owner_state(db, cfg, now, readonly=True)
     if not data:
         return None
     owner, scope, c, state = data
