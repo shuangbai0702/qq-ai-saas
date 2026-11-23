@@ -7,6 +7,7 @@ import copy,hashlib,json,time
 from context_protocol import model_json
 from memory_policy import DEFAULT_SUMMARY_ROUNDS
 
+PURGE_VERSION=2
 
 from context_protocol import scoped_event_hash as event_key
 
@@ -30,7 +31,38 @@ def initialize(db):
       members TEXT NOT NULL,cutoff REAL NOT NULL,state TEXT NOT NULL,
       created REAL NOT NULL,completed REAL)''')
     db.execute('''CREATE TABLE IF NOT EXISTS memory_semantic_purges(
-      checkpoint_id INTEGER PRIMARY KEY,completed REAL NOT NULL)''')
+      checkpoint_id INTEGER PRIMARY KEY,completed REAL NOT NULL,cleanup_version INTEGER NOT NULL DEFAULT 0)''')
+    if 'cleanup_version' not in {r[1] for r in db.execute('PRAGMA table_info(memory_semantic_purges)')}:
+        db.execute('ALTER TABLE memory_semantic_purges ADD COLUMN cleanup_version INTEGER NOT NULL DEFAULT 0')
+
+
+def owner_cleanup_stamp(db):
+    from journal_cutover import owner_members
+    members=owner_members(db)
+    return hashlib.sha256(model_json(sorted(members)).encode()).hexdigest() if members else None
+
+
+def owner_cleanup_pending(db):
+    stamp=owner_cleanup_stamp(db)
+    if stamp is None:return False
+    row=db.execute("SELECT detail FROM memory_checkpoint_issues WHERE scope='bot_shared' AND checkpoint_id=0 AND kind='owner_hot_cleanup' AND status='resolved'").fetchone()
+    return not row or json.loads(row[0]).get('membersSha')!=stamp
+
+
+def purge_owner_history(db):
+    """Reuse proven owner retirement, without changing the active Journal."""
+    from journal_cutover import owner_members
+    import journal_storage
+    members=owner_members(db)
+    if not members:return
+    if not db.in_transaction:db.execute('BEGIN')
+    db.execute('SAVEPOINT owner_hot_cleanup')
+    try:
+        _purge_members(db,'bot_shared',members)
+        journal_storage.retire_member_copies(db,'bot_shared',members)
+        db.execute('RELEASE owner_hot_cleanup')
+    except BaseException:
+        db.execute('ROLLBACK TO owner_hot_cleanup');db.execute('RELEASE owner_hot_cleanup');raise
 
 
 def permit(db,checkpoint_id):
@@ -188,13 +220,13 @@ def purge(db,checkpoint_id,*,preview=False):
     if not db.in_transaction:db.execute('BEGIN')
     db.execute('SAVEPOINT semantic_batch_purge')
     try:
-        if not preview and db.execute('SELECT 1 FROM memory_semantic_purges WHERE checkpoint_id=?',(checkpoint_id,)).fetchone():
+        if not preview and db.execute('SELECT 1 FROM memory_semantic_purges WHERE checkpoint_id=? AND cleanup_version>=?',(checkpoint_id,PURGE_VERSION)).fetchone():
             db.execute('RELEASE semantic_batch_purge');return True
         result=_purge(db,checkpoint_id,preview=preview)
         if result and not preview:
             # The receipt and every cleanup (including archive verification)
             # commit or roll back together under the caller's transaction.
-            db.execute('INSERT INTO memory_semantic_purges VALUES(?,?)',(checkpoint_id,time.time()))
+            db.execute('INSERT INTO memory_semantic_purges VALUES(?,?,?) ON CONFLICT(checkpoint_id) DO UPDATE SET completed=excluded.completed,cleanup_version=excluded.cleanup_version',(checkpoint_id,time.time(),PURGE_VERSION))
         db.execute('RELEASE semantic_batch_purge')
         return result
     except BaseException:
@@ -205,6 +237,14 @@ def _purge(db,checkpoint_id,*,preview=False):
     row=db.execute("SELECT scope,members FROM memory_semantic_batches WHERE checkpoint_id=? AND state='retired'",(checkpoint_id,)).fetchone()
     if not row:return False
     scope,members=row[0],set(json.loads(row[1]))
+    _purge_members(db,scope,members)
+    import journal_storage
+    journal_storage.retire_archived_members(db,checkpoint_id,verify_active=not preview)
+    return True
+
+
+def _purge_members(db,scope,members):
+    """Exact hot-copy cleanup shared by checkpoint and owner retirements."""
     tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     from input_reconciliation import ambient_retirement_candidates,unresolved_retirement_inputs
     ambient=ambient_retirement_candidates(db,tables)
@@ -340,9 +380,6 @@ def _purge(db,checkpoint_id,*,preview=False):
                 db.execute('DELETE FROM memory_summary_coverage WHERE scope=? AND event=?',(logical,identifier))
     # Recovery archives obey the same successful exact-batch retirement.
     # They may keep uncompressed evidence and System, never a retired copy.
-    import journal_storage
     if 'pipeline_events' in tables and 'request' in {r[1] for r in db.execute('PRAGMA table_info(pipeline_events)')}:
         import pipeline_tools
         pipeline_tools.retire_batch(db,scope,members)
-    journal_storage.retire_archived_members(db,checkpoint_id,verify_active=not preview)
-    return True

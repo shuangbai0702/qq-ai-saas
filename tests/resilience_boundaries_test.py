@@ -55,7 +55,7 @@ class Boundaries(unittest.TestCase):
                 db.execute("INSERT INTO memory_reconstruction_checkpoints(id,scope,through_round_id,round_count,epoch,state,created) VALUES(?,?,?,30,0,'consumed',1)",
                            (checkpoint,logical,30*checkpoint))
                 db.execute("INSERT INTO memory_semantic_batches VALUES(?,?,'digest',?,1,'retired',1,1)",(checkpoint,logical,model_json(members)))
-            db.execute('INSERT INTO memory_semantic_purges VALUES(1,1)')
+            db.execute('INSERT INTO memory_semantic_purges(checkpoint_id,completed) VALUES(1,1)')
             reflection.checkpoint_issue(logical,0,'input_recovery:'+scope,{'scope':scope});db.commit()
             for _ in range(2):BotPipeline(db)
             self.assertEqual(dict(db.execute('SELECT event,status FROM pipeline_work_inputs')),

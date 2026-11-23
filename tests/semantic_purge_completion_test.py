@@ -54,6 +54,19 @@ class PurgeCompletion(unittest.TestCase):
         self.assertEqual(self.receipt(),[])
         self.assertEqual(self.db.execute('SELECT event FROM memory_pending').fetchall(),[('old',)])
 
+    def test_old_receipt_is_rechecked_once_and_upgrade_rolls_back_on_failure(self):
+        self.db.execute('ALTER TABLE memory_semantic_purges DROP COLUMN cleanup_version')
+        self.db.execute('INSERT INTO memory_semantic_purges(checkpoint_id,completed) VALUES(1,1)');self.db.commit()
+        batch.initialize(self.db)
+        with patch.object(journal_storage,'retire_archived_members',side_effect=ValueError('archive failure')):
+            with self.assertRaisesRegex(ValueError,'archive failure'):batch.purge(self.db,1)
+        self.assertEqual(self.db.execute('SELECT event FROM memory_pending').fetchall(),[('old',)])
+        self.assertEqual(self.db.execute('SELECT cleanup_version FROM memory_semantic_purges').fetchone(),(0,))
+        with self.db:self.assertTrue(batch.purge(self.db,1))
+        self.assertEqual(self.db.execute('SELECT cleanup_version FROM memory_semantic_purges').fetchone(),(batch.PURGE_VERSION,))
+        with patch.object(batch,'_purge',side_effect=AssertionError('repeated cleanup')):
+            with self.db:self.assertTrue(batch.purge(self.db,1))
+
     def test_archive_failure_rolls_back_cleanup_and_remains_retryable(self):
         with patch.object(journal_storage,'retire_archived_members',side_effect=ValueError('archive failure')):
             with self.assertRaisesRegex(ValueError,'archive failure'):batch.purge(self.db,1)
@@ -80,6 +93,10 @@ class PurgeCompletion(unittest.TestCase):
                 self.assertEqual(purge.call_count,1)
             issue.assert_called_once_with(st,'bot_shared',1,'retired',resolved=True)
             self.add_batch(2,['next']);self.db.commit()
+            with patch.object(journal_storage,'retire_archived_members',side_effect=sqlite3.OperationalError('storage unavailable')):
+                self.assertEqual(runtime.finish_semantic_batches(st,{},'bot_shared')['pending'],1)
+            self.assertEqual(self.receipt(),[(1,)])
+            self.assertEqual(self.db.execute('SELECT event FROM memory_pending').fetchall(),[('next',)])
             with patch.object(journal_storage,'retire_archived_members',side_effect=ValueError('archive failure')):
                 self.assertEqual(runtime.finish_semantic_batches(st,{},'bot_shared')['pending'],1)
             with patch.object(batch,'_purge',wraps=batch._purge) as purge:

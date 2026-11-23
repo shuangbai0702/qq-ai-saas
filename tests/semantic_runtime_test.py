@@ -36,7 +36,8 @@ class RuntimeTests(unittest.TestCase):
         db.execute("UPDATE memory_reconstruction_checkpoints SET state='consumed'")
         db.commit()
         self.assertTrue(self.st.reflection.retirement_pending())
-        db.execute('INSERT INTO memory_semantic_purges VALUES(1,?)',(time.time(),));db.commit()
+        from semantic_batch import PURGE_VERSION
+        db.execute('INSERT INTO memory_semantic_purges VALUES(1,?,?)',(time.time(),PURGE_VERSION));db.commit()
         self.assertFalse(self.st.reflection.retirement_pending())
     def test_retired_diagnostics_resume_original_cleanup_without_journal_change(self):
         import semantic_media
@@ -49,6 +50,30 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result['media']['retired_untracked_records'],1)
         self.assertFalse(self.st.reflection.retirement_pending())
         self.assertEqual(self.st.model_journals[SCOPE].last.wire,before)
+
+    def test_owner_retired_hot_copies_resume_without_rewriting_current_history(self):
+        from journal_cutover import _record_receipt,OWNER_EARLY_MIGRATION
+        from semantic_batch import owner_cleanup_pending
+        from unittest.mock import patch
+        finish_semantic_batches(self.st,{},SCOPE)
+        db=self.st.db;scope='group:55555';event='owner-old'
+        with db:
+            _record_receipt(db,{'grant':{'id':'owner-grant','type':OWNER_EARLY_MIGRATION},'members':[event_key('bot_shared',model_json([scope,event]))]})
+            db.execute('INSERT INTO memory_pending VALUES(?,?,?,?,?,50)',(scope,'12345678',event,'OLD_RAW_FRAGMENT',''))
+            db.execute("INSERT INTO pipeline_work_inputs(scope,event,subject,status,payload) VALUES(?,?,?,'blocked_unknown','OLD_PROTOCOL')",(scope,event,'12345678'))
+            db.execute("INSERT INTO pipeline_work_inputs(scope,event,subject,status,payload) VALUES(?,'new','12345678','owned','NEW_KEEP')",(scope,))
+        before=db.execute('SELECT scope,payload,sha FROM fishbot_readonly_journals').fetchall()
+        self.assertTrue(owner_cleanup_pending(db));self.assertTrue(self.st.reflection.retirement_pending())
+        with patch('journal_storage.retire_member_copies',side_effect=ValueError('test_archive_failure')):
+            failed=finish_semantic_batches(self.st,{},'bot_shared')
+        self.assertEqual(failed['pending'],1)
+        self.assertIsNotNone(db.execute('SELECT 1 FROM memory_pending WHERE event=?',(event,)).fetchone())
+        result=finish_semantic_batches(self.st,{},'bot_shared')
+        self.assertEqual(result['pending'],0,result);self.assertFalse(owner_cleanup_pending(db))
+        self.assertIsNone(db.execute('SELECT 1 FROM memory_pending WHERE event=?',(event,)).fetchone())
+        self.assertEqual(db.execute('SELECT status,payload FROM pipeline_work_inputs WHERE event=?',(event,)).fetchone(),('blocked_unknown',None))
+        self.assertEqual(db.execute("SELECT payload FROM pipeline_work_inputs WHERE event='new'").fetchone(),('NEW_KEEP',))
+        self.assertEqual(db.execute('SELECT scope,payload,sha FROM fishbot_readonly_journals').fetchall(),before)
     def test_shared_maintenance_recovery_cannot_starve_later_members(self):
         from runtime_care import RuntimeCare
         from unittest.mock import patch

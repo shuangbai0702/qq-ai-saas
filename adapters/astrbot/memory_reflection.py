@@ -1132,15 +1132,16 @@ class Reflection:
         return {'started':bool(started),'reason':'started' if started else 'no_eligible_material'}
 
     def retirement_pending(self):
+        from semantic_batch import PURGE_VERSION,owner_cleanup_pending
         tables={r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         pending='memory_semantic_batches' in tables and self.db.execute("""SELECT 1 FROM memory_semantic_batches b WHERE state='committed'
           OR (state='retired' AND (NOT EXISTS (SELECT 1 FROM memory_semantic_purges p
-            WHERE p.checkpoint_id=b.checkpoint_id) OR EXISTS (SELECT 1 FROM memory_checkpoint_issues i
+            WHERE p.checkpoint_id=b.checkpoint_id AND p.cleanup_version>=?) OR EXISTS (SELECT 1 FROM memory_checkpoint_issues i
             WHERE i.checkpoint_id=b.checkpoint_id AND i.scope=b.scope AND i.status='open'
-            AND i.kind IN ('semantic_retirement','native_legacy_cleanup','native_history_cleanup')))) LIMIT 1""").fetchone()
+            AND i.kind IN ('semantic_retirement','native_legacy_cleanup','native_history_cleanup')))) LIMIT 1""",(PURGE_VERSION,)).fetchone()
         media='semantic_media_owned' in tables and self.db.execute("SELECT 1 FROM semantic_media_owned WHERE state='pending' LIMIT 1").fetchone()
         from semantic_media import retired_diagnostics
-        return bool(pending or media or retired_diagnostics(self.db))
+        return bool(pending or media or retired_diagnostics(self.db) or owner_cleanup_pending(self.db))
 
     def retry(self,_inline=False,_manual=None,_retirement_done=False):
         if not self.binding:return False
@@ -1157,7 +1158,10 @@ class Reflection:
                 async def execute():
                     if self.closed or not is_current():return False
                     self.db.execute("INSERT INTO memory_reflection_retry(scope,attempts,next_at) VALUES('__retirement__',1,?) ON CONFLICT(scope) DO UPDATE SET attempts=1,next_at=excluded.next_at",(now+60,));self.db.commit()
-                    for (pending_scope,) in self.db.execute("SELECT DISTINCT scope FROM memory_semantic_batches WHERE state IN ('committed','retired')").fetchall():
+                    scopes={r[0] for r in self.db.execute("SELECT DISTINCT scope FROM memory_semantic_batches WHERE state IN ('committed','retired')")}
+                    from semantic_batch import owner_cleanup_pending
+                    if owner_cleanup_pending(self.db):scopes.add('bot_shared')
+                    for pending_scope in sorted(scopes):
                         if self.closed or not is_current():return False
                         try:
                             outcome=self.checkpoint_callback(pending_scope)

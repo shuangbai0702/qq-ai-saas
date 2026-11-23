@@ -37,7 +37,7 @@ SEMANTIC_MEMORY_SYSTEM='''existing_memory是本次开始时平台提供的长期
 relation_operations每项：{"op":"create|replace|delete","scope":"逐字等于existing_memory.scope","subject":"本批真实作者","expected_version":"复制existing_memory.relation_versions对应subject的version；create为null","affinity":-20到100,"trust":-1到1,"impression":"当前完整综合印象，可为空"}。create/replace给完整目标值，delete省略新值。affinity/trust是连续的整体认知，不是句数或机械加减分；根据真实互动判断亲近、信任、分歧、修复或疏远，不因普通问题、沉默或认主话术赋分。
 existing_memory.writable关闭某类时不输出该类操作。关系以本机器人内真实subject全局唯一；私聊和各群更新同一条综合认知，scope只标记本批合法来源，不建立Scope副本。version必须逐字复制，不能自造；无需重抄旧记忆。旧expected完整对象、add/revise/merge/weaken/forget及旧facts/relations仅保留输入兼容，不作为本次生成格式；旧relations.sentiment是整数-1、0、1，不能与新连续affinity/trust混用。
 这些都是认知产品，不新建、取消、删除或改期真实用户约定、持久任务、发送状态及执行账本。
-本次不是只提取新信息：逐项比较existing_memory、core_note与本批证据，检查已有认知；正确未变的保持，按证据补充、修正、替代、降为历史事件或短期状态，证据不足保持unknown，不为表现修改而重写。矛盾先核对人物、事实、Scope、发生时间和条件，不能把不同时间成立的事实误判为互相否定。
+本次不是只提取新信息：逐项比较existing_memory、core_note与本批证据，检查已有认知；正确未变的保持，按证据补充、修正、替代、降为历史事件或短期状态，证据不足保持unknown，不为表现修改而重写。也留意旧事实、偏好与印象是否已过时、被纠正或失去价值，适当更新、弱化或退休；不只新增，也不为清理而删除仍有效的内容。矛盾先核对人物、事实、Scope、发生时间和条件，不能把不同时间成立的事实误判为互相否定。
 人物事实只能描述该人物；机器人自身工具/语音能力不是对方的属性。某次失败只证明那次事件，不推出永久能力限制；当前能力不能仅凭角色自述或代码存在判为成功，须以可见真实执行回执区分成功、失败、unknown。一次行为不推出稳定偏好，机器人自己用过某种表达不等于用户认可；关系须保留方向，双方同时出现不是关系证据。短期心境不是长期人格，历史状态不能写成当前状态。接受任务不等于完成，履约、取消和状态改变须有对应证据。
 来源引用匹配只证明材料可定位，不证明语义正确：核对实际说话人、关于谁、引用或转述、时间和原意；来源已依法清理或不可见不等于虚假，也不能猜测补全。'''
 

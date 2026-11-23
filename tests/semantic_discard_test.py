@@ -53,6 +53,7 @@ class DiscardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.requests),1)
         wire=model_json(self.requests[0]['messages'])
         self.assertIn('ACTUAL_REMAINING_FRAGMENT',wire);self.assertIn('full_original',wire)
+        self.assertEqual(wire.count('也留意旧事实、偏好与印象'),1)
         self.assertIn('missing部分未提供',wire);self.assertNotIn('管理员已授权',wire)
         self.assertEqual(db.execute('SELECT round_count FROM memory_reconstruction_checkpoints').fetchone(),(30,))
         self.assertEqual(db.execute('SELECT administrator,missing_count FROM memory_semantic_discard_audit').fetchone(),('automatic:30_round_checkpoint',1))

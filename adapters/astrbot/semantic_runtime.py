@@ -103,10 +103,11 @@ def finish_semantic_batches(st,cfg,scope):
     """Synchronous owner callback: reserve, replace, purge, retry safely."""
     if st.db.in_transaction:return {'result':'transaction_busy'}
     semantic_batch.initialize(st.db)
+    st.db.commit()
     rows=st.db.execute('''SELECT b.checkpoint_id,b.state,c.state,c.summary_id FROM memory_semantic_batches b
       JOIN memory_reconstruction_checkpoints c ON c.id=b.checkpoint_id WHERE b.scope=?
-      AND NOT EXISTS (SELECT 1 FROM memory_semantic_purges p WHERE p.checkpoint_id=b.checkpoint_id)
-      ORDER BY b.checkpoint_id''',(scope,)).fetchall()
+      AND NOT EXISTS (SELECT 1 FROM memory_semantic_purges p WHERE p.checkpoint_id=b.checkpoint_id AND p.cleanup_version>=?)
+      ORDER BY b.checkpoint_id''',(scope,semantic_batch.PURGE_VERSION)).fetchall()
     result={'retired':0,'pending':0}
     for checkpoint,batch_state,checkpoint_state,summary_id in rows:
         if _journals_busy(st):
@@ -115,8 +116,8 @@ def finish_semantic_batches(st,cfg,scope):
             try:
                 with st.db:semantic_batch.purge(st.db,checkpoint)
                 _issue(st,scope,checkpoint,'retired',resolved=True)
-            except ValueError as error:
-                _issue(st,scope,checkpoint,str(error));result['pending']+=1
+            except (ValueError,sqlite3.Error) as error:
+                _issue(st,scope,checkpoint,str(error) if isinstance(error,ValueError) else 'error:'+type(error).__name__);result['pending']+=1
             continue
         if checkpoint_state=='reserved' and batch_state=='committed':
             # This exact local-only path has no HTTP between reservation and
@@ -156,6 +157,19 @@ def finish_semantic_batches(st,cfg,scope):
                     if isinstance(error,ContextCapacityExceeded)
                     else str(error) if str(error) in ('semantic_active_journal_reconstruction_required','semantic_batch_input_responsibility_pending') else 'error:'+type(error).__name__)
             _issue(st,scope,checkpoint,reason);result['pending']+=1
+    if scope=='bot_shared' and semantic_batch.owner_cleanup_pending(st.db):
+        stamp=semantic_batch.owner_cleanup_stamp(st.db)
+        if _journals_busy(st):
+            with st.db:st.reflection.checkpoint_issue(scope,0,'owner_hot_cleanup',{'result':'journal_busy_or_unavailable','membersSha':stamp})
+            result['pending']+=1
+        else:
+            try:
+                with st.db:
+                    semantic_batch.purge_owner_history(st.db)
+                    st.reflection.checkpoint_issue(scope,0,'owner_hot_cleanup',{'membersSha':stamp},resolved=True)
+            except (ValueError,sqlite3.Error) as error:
+                with st.db:st.reflection.checkpoint_issue(scope,0,'owner_hot_cleanup',{'result':str(error) if isinstance(error,ValueError) else type(error).__name__,'membersSha':stamp})
+                result['pending']+=1
     import semantic_media
     _prune_hot_memory(st)
     result['media']=semantic_media.drain(st.db)
