@@ -5,13 +5,30 @@ import type {Sql} from '../../../packages/database/index.js';
 import {LibraryCardInputSchema,LibraryCardKindSchema,characterCardCover} from '../../../packages/contracts/character-cards.js';
 
 const fail=(message:string,statusCode=400):never=>{throw Object.assign(new Error(message),{statusCode})};
-// Covers are browser-decoded, resized still WebP files. No remote fetch or
+// Covers are browser-decoded, resized still WebP/JPEG files. No remote fetch or
 // model input is involved. Validate the binary size and encoded dimensions.
 function validateCover(value:string|null|undefined){
  if(value==null)return value;
- if(!/^data:image\/webp;base64,[A-Za-z0-9+/]+={0,2}$/.test(value))fail('封面格式无效，请重新选择图片');
+ if(!/^data:image\/(webp|jpeg);base64,[A-Za-z0-9+/]+={0,2}$/.test(value))fail('封面格式无效，请重新选择图片');
  const data=Buffer.from(value.split(',')[1],'base64');
- if(data.length<30||data.length>characterCardCover.maxBytes||data.toString('ascii',0,4)!=='RIFF'||data.toString('ascii',8,12)!=='WEBP'||data.readUInt32LE(4)!==data.length-8)fail('封面文件无效或过大');
+ if(data.length<30||data.length>characterCardCover.maxBytes)fail('封面文件无效或过大');
+ if(value.startsWith(`data:${characterCardCover.fallbackMime};`)){
+  if(data.readUInt16BE(0)!==0xffd8||data.readUInt16BE(data.length-2)!==0xffd9)fail('封面文件无效');
+  let dimensions=false;
+  for(let at=2;at<data.length-2;){
+   if(data[at++]!==0xff)fail('封面文件无效');while(data[at]===0xff)at++;
+   const marker=data[at++];if(at+2>data.length)fail('封面文件不完整');
+   const size=data.readUInt16BE(at);if(size<2||at+size>data.length)fail('封面文件不完整');
+   if(marker===0xc0||marker===0xc1||marker===0xc2){
+    if(size<8)fail('封面图片无效');const height=data.readUInt16BE(at+3),width=data.readUInt16BE(at+5);
+    if(!width||!height)fail('封面图片无效');if(width>characterCardCover.maxEdge||height>characterCardCover.maxEdge)fail('封面尺寸过大');dimensions=true;
+   }
+   if(marker===0xda){if(!dimensions)fail('封面图片无效');return value}
+   at+=size;
+  }
+  fail('封面图片无效');
+ }
+ if(data.toString('ascii',0,4)!=='RIFF'||data.toString('ascii',8,12)!=='WEBP'||data.readUInt32LE(4)!==data.length-8)fail('封面文件无效');
  let dimensions=false;
  for(let at=12;at+8<=data.length;){const kind=data.toString('ascii',at,at+4),size=data.readUInt32LE(at+4),start=at+8;if(start+size>data.length)fail('封面文件不完整');let width=0,height=0;
   if(kind==='VP8 '&&size>=10&&data.toString('hex',start+3,start+6)==='9d012a'){width=data.readUInt16LE(start+6)&16383;height=data.readUInt16LE(start+8)&16383}
@@ -38,7 +55,7 @@ export function registerCharacterCardLibrary(app:FastifyInstance,db:Sql){
   return{items:rows.slice(0,24).map(row=>present(row,req.user!.id)),hasMore:rows.length>24,mineCount:count.count};
  });
  app.get<{Params:{id:string}}>('/v1/character-card-library/:id',async req=>{const [row]=await db.query(`SELECT ${columns},c.content FROM character_card_library c JOIN users u ON u.id=c.owner_id WHERE c.id=$1`,[idOf(req)]);if(!row)fail('角色卡不存在',404);return present(row,req.user!.id)});
- app.get<{Params:{id:string}}>('/v1/character-card-library/:id/cover',async(req,reply)=>{const [row]=await db.query('SELECT cover FROM character_card_library WHERE id=$1',[idOf(req)]);if(!row?.cover)fail('封面不存在',404);return reply.type('image/webp').send(Buffer.from(row.cover.split(',')[1],'base64'))});
+ app.get<{Params:{id:string}}>('/v1/character-card-library/:id/cover',async(req,reply)=>{const [row]=await db.query('SELECT cover FROM character_card_library WHERE id=$1',[idOf(req)]);if(!row?.cover)fail('封面不存在',404);return reply.type(row.cover.startsWith(`data:${characterCardCover.fallbackMime};`)?characterCardCover.fallbackMime:characterCardCover.mime).send(Buffer.from(row.cover.split(',')[1],'base64'))});
  app.post('/v1/character-card-library',{bodyLimit:262144},async(req,reply)=>{
   const v=LibraryCardInputSchema.extend({id:z.uuid().optional()}).strict().parse(req.body);validateCover(v.cover);const id=v.id||randomUUID();
   const result=await db.transaction(async tx=>{await lockOwner(tx,req);

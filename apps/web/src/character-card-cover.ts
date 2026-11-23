@@ -12,11 +12,10 @@ async function decodeCover(file:File){
  }catch(error){URL.revokeObjectURL(url);throw error}
 }
 
-function encode(canvas:HTMLCanvasElement,quality:number){
- return new Promise<Blob>((resolve,reject)=>canvas.toBlob(blob=>{
-  if(!blob||blob.type!==limits.mime)reject(Error('当前浏览器无法生成封面，请更新浏览器后重试'));
-  else resolve(blob);
- },limits.mime,quality));
+function encode(canvas:HTMLCanvasElement,mime:string,quality:number){
+ return new Promise<Blob|null>(resolve=>{
+  try{canvas.toBlob(blob=>resolve(blob?.type===mime?blob:null),mime,quality)}catch{resolve(null)}
+ });
 }
 
 export async function coverFromFile(file:File){
@@ -25,14 +24,21 @@ export async function coverFromFile(file:File){
  try{
   if(!image.width||!image.height)throw Error('图片尺寸无效，请重新选择');
   const ctx=canvas.getContext('2d');if(!ctx)throw Error('无法处理图片，请重新选择');
-  let scale=Math.min(1,limits.maxEdge/Math.max(image.width,image.height));
+  let scale=Math.min(1,limits.maxEdge/Math.max(image.width,image.height)),mime:string=limits.mime;
   for(;;){
    canvas.width=Math.max(1,Math.round(image.width*scale));canvas.height=Math.max(1,Math.round(image.height*scale));
-   ctx.drawImage(image.source,0,0,canvas.width,canvas.height);
+   const draw=()=>{
+    // JPEG has no alpha channel; composite transparent originals onto white.
+    if(mime===limits.fallbackMime){ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height)}
+    ctx.drawImage(image.source,0,0,canvas.width,canvas.height);
+   };draw();
    // Detail-heavy originals need adaptive quality, then smaller dimensions.
    // Compare actual encoded bytes against the same contract as the API.
    for(const quality of [.84,.72,.60,.48,.36]){
-    const blob=await encode(canvas,quality);
+    let blob=await encode(canvas,mime,quality);
+    // Safari and embedded browsers can return PNG for unsupported WebP export.
+    if(!blob&&mime===limits.mime){mime=limits.fallbackMime;draw();blob=await encode(canvas,mime,quality)}
+    if(!blob)throw Error('封面处理失败，请尝试选择 JPG 或 PNG 图片');
     if(blob.size<=limits.maxBytes)return await new Promise<string>((resolve,reject)=>{
      const reader=new FileReader();reader.onload=()=>resolve(String(reader.result));reader.onerror=()=>reject(Error('封面处理失败，请重新选择图片'));reader.readAsDataURL(blob);
     });

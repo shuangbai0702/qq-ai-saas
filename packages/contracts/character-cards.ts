@@ -10,7 +10,7 @@ export const CharacterCardsSchema=z.array(CharacterCardSchema).max(5).refine(car
 export type CharacterCard=z.infer<typeof CharacterCardSchema>;
 export const libraryCardKinds={speech:'表达',meme:'知识',world:'背景'} as const;
 export const LibraryCardKindSchema=z.enum(['speech','meme','world']);
-export const characterCardCover={sourceMaxBytes:8*1024*1024,maxEdge:1024,maxBytes:128*1024,mime:'image/webp',dataPrefix:'data:image/webp;base64,'} as const;
+export const characterCardCover={sourceMaxBytes:8*1024*1024,maxEdge:1024,maxBytes:128*1024,mime:'image/webp',fallbackMime:'image/jpeg',dataPrefix:'data:image/webp;base64,'} as const;
 export const characterCardCoverDataMaxLength=characterCardCover.dataPrefix.length+4*Math.ceil(characterCardCover.maxBytes/3);
 export const LibraryCardInputSchema=CharacterCardSchema.pick({name:true,content:true}).extend({
  kind:LibraryCardKindSchema,
