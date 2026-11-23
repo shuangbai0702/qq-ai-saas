@@ -9,6 +9,86 @@ from context_foundation import arrange
 def card(id='one',enabled=True):return dict(id=id,name='示例',kind='speech',content='正文😀',enabled=enabled)
 
 class CardsTest(unittest.TestCase):
+ def test_sdk_persona_system_card_edits_preserve_exact_slot_and_all_history(self):
+  from readonly_journal import system_head,ContextPrefixViolation
+  from web_base import SDK_PERSONA_MARKER,SDK_PERSONA_XML_MARKER
+  note={'role':'user','content':'[FishBot 上下文固定基础区 v1]\n'+json.dumps({'region':'core_note','core_note':{'text':'owned note'}},ensure_ascii=False,separators=(',',':'))}
+  tail=[{'role':'user','content':[{'type':'image_url','image_url':{'url':'data:image/png;base64,AAAA'}}]},
+        {'role':'assistant','tool_calls':[{'id':'x','function':{'name':'test','arguments':'{}'}}]},
+        {'role':'tool','tool_call_id':'x','content':'unchanged receipt'},{'role':'assistant','content':'unchanged reply'}]
+  for marker,ending in [(SDK_PERSONA_MARKER,'\n'),(SDK_PERSONA_XML_MARKER,'\n</persona_instructions>')]:
+   platform={'role':'system','content':'UNCHANGED PLATFORM'}
+   persona={'role':'system','content':'SDK SAFETY\n'+marker+'owned persona'+ending+'\nSDK TOOLS'}
+   for with_note in [False,True]:
+    original=SimpleNamespace(base=[platform,persona,*tail],wire=[platform,persona,*([note] if with_note else []),*tail],state={'foundation_core_note':{'text':'owned note'}} if with_note else {})
+    snapshot=original;origins=[sha([])]
+    for cards in [[card(str(i)) for i in range(5)],[card('4')],[card('4',False)],[],[card('new')]]:
+     origins.append(sha(messages(cards)));change={'cards':cards,'persona':'owned persona','proof':{'permitId':'7','target':identity(cards),'origins':origins}}
+     snapshot=project(snapshot,change)
+     for key in ['base','wire']:
+      wire=getattr(snapshot,key);expected=[platform,*([note] if with_note and key=='wire' else []),*messages(cards),persona]
+      self.assertEqual(wire[:system_head(wire)],expected);self.assertEqual(wire[system_head(wire):],tail)
+      self.assertEqual(wire.count(persona),1)
+     self.assertIs(project(snapshot,change),snapshot)
+    for change in [{'cards':[card()],'proof':{'permitId':'7','target':identity([card()]),'origins':[sha([])]}},
+                   {'cards':[card()],'persona':'unproved persona','proof':{'permitId':'7','target':identity([card()]),'origins':[sha([])]}}]:
+     with self.assertRaises(ContextPrefixViolation):project(original,change)
+    self.assertEqual(original.base,[platform,persona,*tail]);self.assertEqual(original.wire,[platform,persona,*([note] if with_note else []),*tail])
+
+ def test_pending_persona_and_cards_edits_share_authoritative_config_provenance(self):
+  from web_base import sha as persona_sha,persona_view
+  from readonly_journal import ContextPrefixViolation
+  sdk={'role':'system','content':'SDK\n<persona_instructions>\nold persona\n</persona_instructions>\nTOOLS'}
+  previous=[{'role':'system','content':'PLATFORM'},sdk,{'role':'user','content':'exact history'}]
+  snapshot=SimpleNamespace(base=previous,wire=previous,state={})
+  proof={'target':persona_sha('new persona'),'origins':[persona_sha('old persona')]}
+  change={'cards':[card()],'persona':'new persona','persona_proof':proof,'proof':{'permitId':'7','target':identity([card()]),'origins':[sha([])]}}
+  projected=project(snapshot,change)
+  self.assertEqual(projected.base[2],sdk) # Card projection never edits Persona.
+  changed=persona_view(projected.base,projected.base,proof,'new persona')
+  self.assertEqual(changed[2]['content'],sdk['content'].replace('old persona','new persona'))
+  self.assertEqual(changed[-1],previous[-1])
+  for invalid in [None,{**proof,'target':persona_sha('other')},{**proof,'origins':[]}]:
+   with self.assertRaises(ContextPrefixViolation):project(snapshot,{**change,'persona_proof':invalid})
+
+ def test_missing_persona_requires_its_own_existing_web_save_proof(self):
+  from web_base import sha as persona_sha
+  from readonly_journal import ContextPrefixViolation
+  platform={'role':'system','content':'[FishBot 平台基础规则]\nPLATFORM'}
+  tail=[{'role':'user','content':'exact history'}]
+  snapshot=SimpleNamespace(base=[platform,*tail],wire=[platform,*tail],state={})
+  change={'cards':[card()],'persona':'PERSONA','proof':{'permitId':'7','target':identity([card()]),'origins':[sha([])]}}
+  with self.assertRaises(ContextPrefixViolation):project(snapshot,change)
+  change['persona_proof']={'target':persona_sha('PERSONA'),'origins':[persona_sha('PERSONA')]}
+  change['proof']['origins'].append(sha(messages([card()])))
+  projected=project(snapshot,change)
+  self.assertEqual(projected.wire,[platform,*messages([card()]),persona_reference('PERSONA'),*tail])
+  self.assertIs(project(projected,change),projected)
+  with self.assertRaises(ContextPrefixViolation):layout([{'role':'system','content':'unknown platform'},*tail],[card()],persona='PERSONA',persona_proof=change['persona_proof'])
+
+ def test_sdk_card_update_commits_locally_and_still_requires_system_permit(self):
+  import sqlite3
+  from readonly_journal import ReadonlyJournal
+  from context_protocol import READONLY_CURRENT
+  from system_contract import SystemContract,SystemContractViolation
+  with sqlite3.connect(':memory:') as db:
+   journal=ReadonlyJournal(db,'bot_shared');guard=SystemContract(db)
+   packet={'role':'user','content':READONLY_CURRENT+'\n{}'}
+   base=[{'role':'system','content':'PLATFORM'},{'role':'system','content':'SDK\n<persona_instructions>\nPERSONA\n</persona_instructions>\nTOOLS'},{'role':'user','content':'original input'}]
+   first=journal.prepare(base+[packet],1);self.assertTrue(journal.commit(first))
+   guard.settle(guard.reserve(first.wire,None,'initial',1,scope='bot_shared'),True,2)
+   change={'cards':[card()],'persona':'PERSONA','proof':{'permitId':'7','target':identity([card()]),'origins':[sha([])]}}
+   projected=project(first,change)
+   candidate=journal.prepare(projected.base+[{'role':'user','content':'next input'},packet],2,cognition_edit={'character_cards':change})
+   self.assertEqual(candidate.turns,first.turns+1);self.assertIsNone(candidate.reconstruction_permit)
+   with self.assertRaises(SystemContractViolation):guard.reserve(candidate.wire,None,'untrusted',3,scope='bot_shared')
+   reserved=guard.reserve(candidate.wire,'7','authorized',4,scope='bot_shared')
+   self.assertTrue(journal.commit(candidate));self.assertTrue(guard.settle(reserved,True,5))
+   restored=ReadonlyJournal(db,'bot_shared').last
+   self.assertEqual(restored.wire,candidate.wire);self.assertEqual(restored.base[-2:],candidate.base[-2:])
+   self.assertEqual(restored.wire[2],base[1]);self.assertEqual(restored.base[2],base[1])
+   self.assertEqual(restored.wire[3:len(first.wire)+1],first.wire[2:])
+
  def test_utf16_matches_browser(self):
   validate([{**card(),'content':'😀'*1250}])
   validate([{**card(),'content':'\u001c'}])
@@ -103,18 +183,19 @@ class CardsHttpWireTest(unittest.IsolatedAsyncioTestCase):
    tail=[{'role':'user','content':[{'type':'text','text':'historical image'},{'type':'image_url','image_url':{'url':'data:image/png;base64,'+base64.b64encode(png.getvalue()).decode(),'detail':'low'}}]},
          {'role':'assistant','content':None,'tool_calls':[{'id':'read-1','type':'function','function':{'name':'inspect_context','arguments':'{}'}}]},
          {'role':'tool','tool_call_id':'read-1','content':'original receipt'}, {'role':'assistant','content':'original reply'}, {'role':'user','content':'next request'}]
-   base=[{'role':'system','content':'PLATFORM'},persona_reference('PERSONA')]
+   bases=[[{'role':'system','content':'PLATFORM'},persona_reference('PERSONA')],
+          [{'role':'system','content':'PLATFORM'},{'role':'system','content':'SDK SAFETY\n<persona_instructions>\nPERSONA\n</persona_instructions>\nSDK TOOLS'}]]
    try:
-    for with_note in (False,True):
+    for base,with_note in [(b,n) for b in bases for n in (False,True)]:
      state={'memory_foundation':{},'foundation_core_note':{'text':'Core Note'}} if with_note else {}
-     initial=arrange(base,state)
+     initial=base
      # Exercise the committed pre-feature Persona -> Note layout over HTTP.
-     if with_note:initial=base+[initial[1]]
+     if with_note:initial=base+[arrange(bases[0],state)[1]]
      snapshot=SimpleNamespace(base=base+tail,wire=initial+tail,state=state)
      await provider.text_chat(contexts=snapshot.wire,prompt=None,func_tool=None)
      original=captured[-1]['messages'][-len(tail):];origins=[sha([])]
      for cards in [[card(str(i)) for i in range(5)],[card('4'),card('0')],[{**card('4'),'content':'edited'}],[card('4',False)],[],[card('new')]]:
-      origins.append(sha(messages(cards)));change={'cards':cards,'proof':{'permitId':'7','target':identity(cards),'origins':origins}}
+      origins.append(sha(messages(cards)));change={'cards':cards,'proof':{'permitId':'7','target':identity(cards),'origins':origins},'persona':'PERSONA'}
       snapshot=project(snapshot,change)
       await provider.text_chat(contexts=snapshot.wire,prompt=None,func_tool=None)
       wire=captured[-1]['messages'];self.assertEqual(wire[-len(tail):],original)

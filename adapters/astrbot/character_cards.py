@@ -32,7 +32,9 @@ def is_note(m):
     except (ValueError,AttributeError):return False
 def head_note(messages,index):
     from context_protocol import is_persona_reference
-    return is_note(messages[index]) and index+1<len(messages) and (is_card(messages[index+1]) or is_persona_reference(messages[index+1]))
+    # Structural parsing only; edit authority is checked separately in layout.
+    # A preserved SDK Persona may still own a complete System physical slot.
+    return is_note(messages[index]) and index+1<len(messages) and (messages[index+1].get('role') in ('system','developer') or is_persona_reference(messages[index+1]))
 
 def retain_note_head(head,previous):
     from context_protocol import is_persona_reference
@@ -43,7 +45,7 @@ def retain_note_head(head,previous):
         result[position:position]=copy.deepcopy(notes)
     return result
 
-def layout(wire,cards,*,expected_note=None,origins=None,require_note=False):
+def layout(wire,cards,*,expected_note=None,origins=None,require_note=False,persona=None,persona_proof=None):
     """Move only proven base Note/cards/Persona. Every other message is exact."""
     from context_protocol import is_persona_reference
     from readonly_journal import system_head,ContextPrefixViolation
@@ -54,6 +56,29 @@ def layout(wire,cards,*,expected_note=None,origins=None,require_note=False):
     old_cards=[m for m in head if is_card(m)]
     if origins is not None and sha(old_cards) not in origins:raise ContextPrefixViolation('character_cards_origin_mismatch')
     personas=[m for m in head if is_persona_reference(m)]
+    if not personas and isinstance(persona,str) and persona:
+        # An authenticated card edit can reach a Journal predating the separate
+        # Persona region. Prove the entire SDK insertion against config origins;
+        # retain its physical System message and every residual instruction.
+        from web_base import legacy_sdk_persona,sha as persona_sha
+        persona_origins=[persona_sha(persona)]
+        if persona_proof:
+            if (not isinstance(persona_proof,dict) or persona_proof.get('target')!=persona_sha(persona)
+                or not isinstance(persona_proof.get('origins'),list) or not persona_proof['origins']
+                or any(not isinstance(x,str) or not re.fullmatch(r'[0-9a-f]{64}',x) for x in persona_proof['origins'])):
+                raise ContextPrefixViolation('web_persona_revision_mismatch')
+            persona_origins=persona_proof['origins']
+        matches=[m for m in head if m.get('role')=='system' and isinstance(m.get('content'),str)
+                 and legacy_sdk_persona(m['content'],persona_origins,persona) is not None]
+        if not matches and persona_proof:
+            # The Persona owner already defines the exact platform-only repair.
+            # Its independent web-save proof is required; a card permit cannot
+            # manufacture a missing Persona or grant access to another region.
+            from web_base import persona_view
+            repaired=persona_view(head,head,persona_proof,persona)
+            matches=[m for m in repaired if is_persona_reference(m)]
+        if len(matches)!=1:raise ContextPrefixViolation('character_cards_legacy_persona_unproved')
+        personas=matches
     notes=[m for m in head if is_note(m)]
     if require_note and not notes:raise ContextPrefixViolation('character_cards_note_missing')
     # The SDK's residual preamble shares Persona's reference encoding. Preserve
@@ -61,7 +86,7 @@ def layout(wire,cards,*,expected_note=None,origins=None,require_note=False):
     if len(notes)>1 or not personas:raise ContextPrefixViolation('character_cards_base_ambiguous')
     if notes and expected_note is not None and json.loads(notes[0]['content'].split('\n',1)[1]).get('core_note')!=expected_note:
         raise ContextPrefixViolation('character_cards_note_mismatch')
-    platform=[m for m in head if not (is_card(m) or is_note(m) or is_persona_reference(m))]
+    platform=[m for m in head if not (is_card(m) or is_note(m) or m in personas)]
     if not platform or platform!=head[:len(platform)] or any(m.get('role') not in ('system','developer') for m in platform):raise ContextPrefixViolation('character_cards_platform_missing')
     target=platform+notes+messages(cards)+personas
     return wire if target==head else copy.deepcopy(target+tail)
@@ -77,8 +102,8 @@ def project(snapshot,change):
     from readonly_journal import system_head
     if not isinstance(note,dict) and any(is_note(m) for m in snapshot.wire[:system_head(snapshot.wire)+1]):raise ContextPrefixViolation('character_cards_note_owner_missing')
     current=copy.copy(snapshot)
-    current.base=layout(snapshot.base,cards,expected_note=note,origins=origins)
-    current.wire=layout(snapshot.wire,cards,expected_note=note,origins=origins,require_note=bool(note and note.get('text')))
+    current.base=layout(snapshot.base,cards,expected_note=note,origins=origins,persona=change.get('persona'),persona_proof=change.get('persona_proof'))
+    current.wire=layout(snapshot.wire,cards,expected_note=note,origins=origins,require_note=bool(note and note.get('text')),persona=change.get('persona'),persona_proof=change.get('persona_proof'))
     return snapshot if current.base is snapshot.base and current.wire is snapshot.wire else current
 
 def apply_user_cards(current,body):

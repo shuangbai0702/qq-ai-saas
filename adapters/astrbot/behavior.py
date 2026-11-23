@@ -1832,7 +1832,7 @@ def install_runtime(core,settings):
         from web_cognition import read as read_cognition_edit
         cognition_edit=read_cognition_edit(owned.db) if shared_mode else None
         if shared_mode and setting(image_event).get('characterCardsEdit'):
-            cognition_edit={**(cognition_edit or {}),'character_cards':{'cards':setting(image_event)['config'].get('characterCards',[]),'proof':setting(image_event)['characterCardsEdit']}}
+            cognition_edit={**(cognition_edit or {}),'character_cards':{'cards':setting(image_event)['config'].get('characterCards',[]),'proof':setting(image_event)['characterCardsEdit'],'persona':setting(image_event)['config'].get('systemPrompt',''),'persona_proof':setting(image_event).get('personaEdit')}}
         if shared_mode:
             import shared_context
             image_event.set_extra('_hosted_journal_scope',shared_context.main_journal_scope(owned.db))
@@ -1861,7 +1861,7 @@ def install_runtime(core,settings):
                     projected=persona_view(journal.last.base,projected,setting(image_event)['personaEdit'],setting(image_event)['config'].get('systemPrompt',''))
                     if setting(image_event).get('characterCardsEdit'):
                         from character_cards import layout
-                        projected=layout(projected,setting(image_event)['config'].get('characterCards',[]),origins=setting(image_event)['characterCardsEdit']['origins'])
+                        projected=layout(projected,setting(image_event)['config'].get('characterCards',[]),origins=setting(image_event)['characterCardsEdit']['origins'],persona=setting(image_event)['config'].get('systemPrompt',''))
                 system_adoption=bool(setting(image_event).get('personaEdit')) and owned.system_contract.transition_available(
                     projected,setting(image_event).get('systemChangePermitId'),request_identity(),scope=key)
                 projected,tools_seen=shared_context.compose(journal,projected,work.scope,work.event_id,additions,image_event.get_extra('_hosted_shared_tools'),service=work.source not in ('message','deferred_group'),self_id=image_event.get_self_id(),input_digest=image_event.get_extra('_hosted_shared_input_digest'),system_transition_authorized=system_adoption,web_base_authorized=bool(setting(image_event).get('personaEdit')),cognition_edit=cognition_edit)
