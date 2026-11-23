@@ -58,7 +58,7 @@ export function registerCharacterCardLibrary(app:FastifyInstance,db:Sql){
  app.get<{Params:{id:string}}>('/v1/character-card-library/:id/cover',async(req,reply)=>{
   const [row]=await db.query('SELECT cover FROM character_card_library WHERE id=$1',[idOf(req)]);if(!row?.cover)fail('封面不存在',404);
   const data=Buffer.from(row.cover.split(',')[1],'base64'),etag='"'+createHash('sha256').update(data).digest('base64url')+'"';
-  reply.header('Cache-Control','private, max-age=86400').header('Vary','Cookie').header('ETag',etag);
+  reply.header('Cache-Control','private, max-age=604800').header('Vary','Cookie').header('ETag',etag);
   if(req.headers['if-none-match']?.split(',').some(value=>value.trim().replace(/^W\//,'')===etag||value.trim()==='*'))return reply.code(304).send();
   return reply.type(row.cover.startsWith(`data:${characterCardCover.fallbackMime};`)?characterCardCover.fallbackMime:characterCardCover.mime).send(data);
  });
