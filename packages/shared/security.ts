@@ -8,3 +8,10 @@ export async function loadKey(root:string,options:{createIfMissing?:boolean}={})
 export function encrypt(key:Buffer,scope:string,text:string){const iv=randomBytes(12),c=createCipheriv('aes-256-gcm',key,iv);c.setAAD(Buffer.from(scope));const body=Buffer.concat([c.update(text,'utf8'),c.final()]);return [iv,c.getAuthTag(),body].map(x=>x.toString('base64')).join('.')}
 export function decrypt(key:Buffer,scope:string,text:string){const [iv,tag,body]=text.split('.').map(x=>Buffer.from(x,'base64'));const c=createDecipheriv('aes-256-gcm',key,iv);c.setAAD(Buffer.from(scope));c.setAuthTag(tag);return Buffer.concat([c.update(body),c.final()]).toString('utf8')}
 export function redact(text:string,keys:string[]=[]){for(const key of keys.filter(x=>x.length>2))text=text.split(key).join('[REDACTED]');return text.replace(/fish-platform\.[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}/gi,'[REDACTED]').replace(/Bearer\s+[\w.\-]+/gi,'Bearer [REDACTED]').replace(/sk-[a-zA-Z0-9_-]{8,}/g,'[REDACTED]')}
+const SAFE_SUBPROCESS_ENV_KEYS=['PATH','Path','PATHEXT','SYSTEMROOT','SystemRoot','COMSPEC','ComSpec','WINDIR','TEMP','TMP','TMPDIR','HOME','USERPROFILE','LANG','LC_ALL','PYTHONIOENCODING','PYTHONUTF8','VIRTUAL_ENV','PYTHONPATH','NODE_ENV','LOCALAPPDATA','APPDATA'];
+export function safeSubprocessEnv(extra:Record<string,string|undefined>={}):NodeJS.ProcessEnv{
+ const env:NodeJS.ProcessEnv={};
+ for(const key of SAFE_SUBPROCESS_ENV_KEYS)if(process.env[key]!==undefined)env[key]=process.env[key];
+ for(const [key,value] of Object.entries(extra))if(value===undefined)delete env[key];else env[key]=value;
+ return env;
+}

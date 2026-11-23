@@ -53,25 +53,6 @@ export function registerAutonomous(app:FastifyInstance,db:Sql,owned:(req:any,id:
  app.post<{Params:{id:string}}>('/v1/bots/:id/autonomous/goals',async req=>{
   const bot=await owned(req,req.params.id);
   const body=z.object({id:z.string().uuid(),expectedEpoch:z.number().int().positive(),expectedRevision:z.number().int().positive(),operation:z.enum(['pause','resume','abandon'])}).strict().parse(req.body);
-  return db.transaction(async tx=>{
-   const [s]=await tx.query('SELECT * FROM autonomy_settings WHERE bot_id=$1 AND tenant_id=$2 FOR UPDATE',[bot.id,bot.tenant_id]);
-   if(!s||s.epoch!==body.expectedEpoch)throw Object.assign(new Error('自主状态已变化，请刷新'),{statusCode:409});
-   const status=body.operation==='pause'?'paused_user':body.operation==='abandon'?'abandoned':s.config.mode==='active'?'active':'paused_mode';
-   if(body.operation==='resume'){
-    const [{count}]=await tx.query("SELECT count(*)::int AS count FROM autonomy_goals WHERE bot_id=$1 AND tenant_id=$2 AND status NOT IN ('completed','abandoned','canceled') AND id<>$3",[bot.id,bot.tenant_id,body.id]);
-    if(count>=MAX_CURRENT_GOALS)throw Object.assign(new Error('当前目标已达3个上限，请先完成或结束其他目标'),{statusCode:409});
-   }
-   const rows=await tx.query('UPDATE autonomy_goals SET status=$4,revision=revision+1,updated_at=now() WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND revision=$5 RETURNING id',[body.id,bot.id,bot.tenant_id,status,body.expectedRevision]);
-   if(!rows.length)throw Object.assign(new Error('目标已更新，请刷新'),{statusCode:409});
-   // Cancel the current decision/permit as well as updating the goal. A late
-   // model answer cannot turn a manually paused goal back into active work.
-   await tx.query('UPDATE autonomy_settings SET epoch=epoch+1,goal_revision=goal_revision+1,lease_owner=NULL,lease_until=NULL,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2',[bot.id,bot.tenant_id]);
-   await tx.query('DELETE FROM autonomy_wakes WHERE bot_id=$1 AND tenant_id=$2',[bot.id,bot.tenant_id]);
-   if(s.config.mode==='active'){
-    await repo.rearmHandoffs(bot.tenant_id,bot.id,s.epoch+1,tx);
-    await repo.wake(bot.tenant_id,bot.id,s.epoch+1,'goal-edited',0,'',tx);
-   }
-   return{ok:true,pendingRuntime:true};
-  });
+  try{return await repo.controlGoal(bot.tenant_id,bot.id,req.user!.id,body)}catch(error){if(error instanceof AutonomyConflict)throw Object.assign(error,{statusCode:409});throw error}
  });
 }

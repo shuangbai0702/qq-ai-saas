@@ -30,23 +30,23 @@ import {createPlatformModels} from './platform-models-admin.js';
 import {modelCredentialDestination} from '../../../packages/shared/model-http.js';
 import {platformModelPath} from '../../../packages/shared/platform-model.js';
 import Fastify from 'fastify';import cookie from '@fastify/cookie';import rateLimit from '@fastify/rate-limit';import serveStatic from '@fastify/static';import {z} from 'zod';
-import {randomBytes,randomUUID} from 'node:crypto';import path from 'node:path';import os from 'node:os';import {mkdir,access,open,readFile} from 'node:fs/promises';import QRCode from 'qrcode';
-import {openDatabase,configuredDatabaseUrl,type Sql} from '../../../packages/database/index.js';import {hashPassword,verifyPassword,digest,loadKey,encrypt,redact} from '../../../packages/shared/security.js';import {defaultConfig,BotConfigSchema,ProtocolSchema,personas,terminalLogin} from '../../../packages/contracts/index.js';import {NodeAgent} from '../../node-agent/src/agent.js';import {MockProtocolAdapter} from '../../../adapters/mock/index.js';
+import {randomBytes,randomUUID} from 'node:crypto';import path from 'node:path';import os from 'node:os';import {mkdir,access,open,readFile,rm} from 'node:fs/promises';import QRCode from 'qrcode';
+import {openDatabase,configuredDatabaseUrl,hasEncryptedSecrets,type Sql} from '../../../packages/database/index.js';import {hashPassword,verifyPassword,digest,loadKey,encrypt,redact,safeSubprocessEnv} from '../../../packages/shared/security.js';import {defaultConfig,BotConfigSchema,ProtocolSchema,personas,terminalLogin} from '../../../packages/contracts/index.js';import {NodeAgent} from '../../node-agent/src/agent.js';import {MockProtocolAdapter} from '../../../adapters/mock/index.js';
 declare module 'fastify'{interface FastifyRequest{user?:{id:string;email:string;name:string;is_admin:boolean;tenant_id:string}}}
 const modelKeyInput=z.string().trim().max(4096).regex(/^[^\s\x00-\x1f\x7f]*$/,'Key 不能包含空格或控制字符').optional();
 const provisionJournal=promisify(execFile);
 export async function createApp(options:{root?:string;databaseUrl?:string;agent?:boolean;logger?:boolean;platformModelTransport?:Parameters<typeof registerPlatformModel>[4]}={}){
  const root=path.resolve(options.root||process.env.DATA_ROOT||'.local');await mkdir(root,{recursive:true});
- const databaseUrl=options.databaseUrl??await configuredDatabaseUrl();const db=await openDatabase(root,databaseUrl);let key:Buffer;try{key=await loadKey(root,{createIfMissing:!(await db.query('SELECT 1 FROM secrets UNION ALL SELECT 1 FROM bilibili_accounts UNION ALL SELECT 1 FROM bilibili_settings WHERE model_secret IS NOT NULL UNION ALL SELECT 1 FROM bilibili_logins WHERE secret<>\'\' LIMIT 1')).length})}catch(error){await db.close();throw error}const agent=new NodeAgent(db,root,key);
+ const databaseUrl=options.databaseUrl??await configuredDatabaseUrl();const db=await openDatabase(root,databaseUrl);let key:Buffer;try{key=await loadKey(root,{createIfMissing:!(await hasEncryptedSecrets(db))})}catch(error){await db.close();throw error}const agent=new NodeAgent(db,root,key);
  const streams=new Set<import('node:http').ServerResponse>();const streamOwners=new Map<string,number>();
  const proxySecret=process.env.FISHBOT_PROXY_SECRET||await readFile(path.join(root,'proxy-client.key'),'utf8').then(s=>s.trim()).catch(error=>{if(error.code==='ENOENT')return undefined;throw error});
  const app=Fastify({logger:options.logger??false,bodyLimit:65536});await app.register(cookie);
  app.addHook('onRequest',async(req,reply)=>{
   if(req.headers.host?.toLowerCase()!==edgeIngressHost)return;
-  if(req.routeOptions.url?.startsWith('/internal/'))return reply.code(404).send({error:'接口不存在'});
+  if(req.routeOptions.url?.startsWith('/internal/')||req.url.startsWith('/internal/'))return reply.code(404).send({error:'接口不存在'});
   if(!proxyClientIp(req.headers,proxySecret))return reply.code(403).send({error:'请求入口无效'});
  });
- await app.register(rateLimit,{max:180,timeWindow:'1 minute',keyGenerator:req=>{
+ await app.register(rateLimit,{max:180,timeWindow:'1 minute',allowList:req=>req.url.startsWith('/internal/')&&req.headers.host?.toLowerCase()!==edgeIngressHost,keyGenerator:req=>{
   const client=proxyClientIp(req.headers,proxySecret);
   return (req.routeOptions.url==='/v1/health'?'health:':'request:')+(client||req.ip);
  }});
@@ -135,10 +135,12 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
    const used=new Set((await tx.query('SELECT ai_port FROM instances')).map(row=>row.ai_port));const offset=Math.floor(Math.random()*4000);let port=0;for(let slot=0;slot<4000;slot++){const candidate=20000+((slot+offset)%4000)*4;if(!used.has(candidate)){port=candidate;break}}if(!port)fail('节点端口池已满，请联系管理员',503);
    await tx.query('INSERT INTO instances(bot_id,generation,ai_port,protocol_port,token) VALUES($1,0,$2,$3,$4)',[id,port,port+2,randomBytes(32).toString('hex')]);
    if(v.apiKey)await tx.query('INSERT INTO secrets(id,tenant_id,bot_id,ciphertext) VALUES($1,$2,$3,$4)',[randomUUID(),req.user!.tenant_id,id,encrypt(key,`${req.user!.tenant_id}:${id}`,v.apiKey)]);
+   });
    const python=path.resolve(process.env.ASTRBOT_PYTHON||`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`);
    const groupLimit='2';
-   await provisionJournal(python,['-B',path.resolve('scripts/initialize-shared-journal.py'),path.join(root,'bots',id),groupLimit],{timeout:10000,windowsHide:true});
-   });await audit(req,'bot.created',id);reply.code(201);return{id};
+   try{await provisionJournal(python,['-B',path.resolve('scripts/initialize-shared-journal.py'),path.join(root,'bots',id),groupLimit],{timeout:10000,windowsHide:true,env:safeSubprocessEnv({PYTHONIOENCODING:'utf-8'})})}
+   catch(error){await db.transaction(async tx=>{await tx.query('DELETE FROM autonomy_settings WHERE bot_id=$1',[id]);await tx.query('DELETE FROM secrets WHERE bot_id=$1',[id]);await tx.query('DELETE FROM instances WHERE bot_id=$1',[id]);await tx.query('DELETE FROM bot_config_revisions WHERE bot_id=$1',[id]);await tx.query('DELETE FROM bots WHERE id=$1',[id])}).catch(()=>{});await rm(path.join(root,'bots',id),{recursive:true,force:true}).catch(()=>{});throw error}
+   await audit(req,'bot.created',id);reply.code(201);return{id};
  });
  app.get<{Params:{id:string}}>('/v1/bots/:id',async req=>{const bot=await owned(req,req.params.id);const [revision]=await db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[bot.id,bot.revision]);const secret=(await db.query('SELECT id FROM secrets WHERE bot_id=$1 AND tenant_id=$2',[bot.id,req.user!.tenant_id])).length>0;return{bot,config:revision.config,hasKey:revision.config.platformModel?await platformModels.available():secret,hasPersonalKey:secret,capabilities:agent.protocols[bot.protocol].getCapabilities(),commands:await db.query('SELECT id,kind,status,error,created_at,idempotency_key FROM commands WHERE bot_id=$1 ORDER BY created_at DESC LIMIT 10',[bot.id])}});
  async function saveConfig(req:any,cardsOnly=false){
@@ -255,7 +257,7 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
  registerConsoleStatistics(app,db,root);
  app.get('/v1/admin/overview',async req=>{if(!req.user!.is_admin)fail('需要管理员权限',403);const bots=await db.query('SELECT id,name,protocol,desired_state,observed_state,health,last_error FROM bots WHERE deleted_at IS NULL');return{total:bots.length,online:bots.filter(b=>b.protocol!=='mock'&&runtimeStatus(b).online).length,bots,server:{platform:os.platform(),totalMemory:os.totalmem(),freeMemory:os.freemem(),apiRss:process.memoryUsage().rss,uptime:os.uptime(),database:databaseUrl?'PostgreSQL':'PGlite（嵌入API进程，内存不可单独分摊）'}}});
  app.get('/v1/admin/memory',async req=>{if(!req.user!.is_admin)fail('需要管理员权限',403);return{intervalSeconds:30,capacity:240,staleAfterSeconds:90,resetOnRestart:true,...memory.status(),samples:memory.snapshot()}});
- try{await access(path.resolve('apps/web/dist'));await app.register(serveStatic,{root:path.resolve('apps/web/dist')});app.setNotFoundHandler((req,reply)=>req.url.startsWith('/v1/')?reply.code(404).send({error:'接口不存在'}):reply.sendFile('index.html'))}catch{}
+ try{await access(path.resolve('apps/web/dist'));await app.register(serveStatic,{root:path.resolve('apps/web/dist')});app.setNotFoundHandler((req,reply)=>(req.url.startsWith('/v1/')||req.url.startsWith('/internal/'))?reply.code(404).send({error:'接口不存在'}):reply.sendFile('index.html'))}catch{}
  try{if(options.agent!==false)await agent.begin()}catch(error){await db.close();throw error}const memory=createMemoryMonitor(async()=>{const [sample,processes,host,bots]=await Promise.all([collectMemory(),collectProcesses(root,agent.host.python),readHostSnapshot(root),db.query("SELECT b.id,b.name,b.group_id,b.protocol,b.runtime_mode,b.desired_state,b.observed_state,b.expected_uin,b.health,i.heartbeat_at,q.qq_uin FROM bots b LEFT JOIN instances i ON i.bot_id=b.id LEFT JOIN qq_bindings q ON q.bot_id=b.id WHERE b.deleted_at IS NULL")]);for(const p of processes.processes||[])if(p.kind==='api')p.ownerId='platform';sample.details.processSnapshot=processes;sample.details.view=buildMemoryView(sample,processes,bots,host);return sample});app.addHook('onClose',async()=>{await memory.close();budget.clear();try{if(options.agent!==false)await agent.shutdown()}finally{await db.close()}});
  return{app,db,agent,root};
 }

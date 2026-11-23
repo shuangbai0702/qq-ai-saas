@@ -35,7 +35,8 @@ export const transferSchema={
 } as const;
 export type TransferTable=keyof typeof transferSchema;
 export const transferTables=Object.keys(transferSchema) as TransferTable[];
-export const expectedSchemaVersions=['001','002','003','004','005','006','007','008','009','010','011','012','013','014','015','016','017','018','019','020'];
+import {SCHEMA_MIGRATIONS} from './index.js';
+export const expectedSchemaVersions=SCHEMA_MIGRATIONS.map(([v])=>v);
 
 function canonical(value:any):any{
  if(value instanceof Date)return value.toISOString();

@@ -75,3 +75,57 @@ export async function recoverCreditReceipts(db:Sql){
   return rows.length;
  });
 }
+
+// An explicit operator decision absorbs an unprovable legacy cost. This is
+// not a zero-usage receipt. Keep the complete original reservation in the
+// existing audit trail before releasing its hold, in the same transaction.
+export async function waiveLegacyReservation(db:Sql,id:string,expected:{tokens:number;createdAt:string},actorId:string,reason:string){
+ const conflict=()=>Object.assign(new Error('历史预留状态已变化，请刷新后重试'),{statusCode:409});
+ if(!Number.isSafeInteger(expected.tokens)||expected.tokens<=0||!Number.isFinite(Date.parse(expected.createdAt))||!actorId||reason.trim().length<10||reason.length>240)throw new Error('invalid_credit_waiver');
+ const matches=(row:any)=>Number(row.tokens)===expected.tokens&&new Date(row.created_at).getTime()===Date.parse(expected.createdAt);
+ return db.transaction(async tx=>{
+  const [row]=await tx.query('SELECT * FROM platform_model_reservations WHERE id=$1 FOR UPDATE',[id]);
+  if(!row){
+   const [audit]=await tx.query("SELECT detail FROM audit_events WHERE event='admin.platform_reservation.waived' AND detail->>'reservationId'=$1 LIMIT 1",[id]);
+   if(audit){if(!matches(audit.detail.original))throw conflict();return {released:false,alreadyResolved:true,tokens:Number(audit.detail.original.tokens)}}
+   throw Object.assign(new Error('预留不存在'),{statusCode:404});
+  }
+  if(!matches(row)||row.dispatch_state!=='unknown'||row.provider_id!==null||row.dispatched_at!==null||row.usage_tokens!==null)throw conflict();
+  const changed=await tx.query('UPDATE platform_model_credits SET reserved=reserved-$2,campaign_reserved=campaign_reserved-$3 WHERE tenant_id=$1 AND reserved>=$2 AND campaign_reserved>=$3 RETURNING tenant_id',[row.tenant_id,row.tokens,row.campaign_tokens]);
+  if(changed.length!==1)throw new Error('credit_balance_inconsistent');
+  await tx.query("INSERT INTO audit_events(tenant_id,event,detail) VALUES($1,'admin.platform_reservation.waived',$2)",[row.tenant_id,JSON.stringify({actorId,reservationId:id,decision:'platform_absorbs_unknown',consumption:'unknown',reason:reason.trim(),original:row})]);
+  await tx.query('DELETE FROM platform_model_reservations WHERE id=$1',[id]);
+  return {released:true,alreadyResolved:false,tokens:Number(row.tokens)};
+ });
+}
+
+// Explicit operator resolution for aged post-019 reservations ('unknown',
+// 'dispatched', or 'reserved') whose owner process/request has exited without a
+// receipt. Keeps waiveLegacyReservation strict for pre-019 rows while preventing
+// permanent tenant balance lockups.
+export async function resolveStaleReservation(
+ db:Sql,
+ id:string,
+ expected:{state:'unknown'|'dispatched'|'reserved';tokens:number;createdAt:string;providerId:string|null},
+ actorId:string,
+ reason:string,
+ minAgeMs=15*60*1000
+){
+ const conflict=()=>Object.assign(new Error('预留状态已变化或尚未达到可人工处置时长，请刷新后重试'),{statusCode:409});
+ if(!Number.isSafeInteger(expected.tokens)||expected.tokens<=0||!Number.isFinite(Date.parse(expected.createdAt))||!actorId||reason.trim().length<10||reason.length>240)throw Object.assign(new Error('invalid_credit_resolution'),{statusCode:400});
+ const matches=(row:any)=>row.dispatch_state===expected.state&&Number(row.tokens)===expected.tokens&&new Date(row.created_at).getTime()===Date.parse(expected.createdAt)&&(row.provider_id??null)===(expected.providerId??null);
+ return db.transaction(async tx=>{
+  const [row]=await tx.query('SELECT * FROM platform_model_reservations WHERE id=$1 FOR UPDATE',[id]);
+  if(!row){
+   const [audit]=await tx.query("SELECT detail FROM audit_events WHERE event='admin.platform_reservation.resolved' AND detail->>'reservationId'=$1 LIMIT 1",[id]);
+   if(audit){if(!matches(audit.detail.original))throw conflict();return {released:false,alreadyResolved:true,tokens:Number(audit.detail.original.tokens)}}
+   throw Object.assign(new Error('预留不存在'),{statusCode:404});
+  }
+  if(!matches(row)||row.usage_tokens!==null||Date.now()-new Date(row.created_at).getTime()<minAgeMs)throw conflict();
+  const changed=await tx.query('UPDATE platform_model_credits SET reserved=reserved-$2,campaign_reserved=campaign_reserved-$3 WHERE tenant_id=$1 AND reserved>=$2 AND campaign_reserved>=$3 RETURNING tenant_id',[row.tenant_id,row.tokens,row.campaign_tokens]);
+  if(changed.length!==1)throw new Error('credit_balance_inconsistent');
+  await tx.query("INSERT INTO audit_events(tenant_id,event,detail) VALUES($1,'admin.platform_reservation.resolved',$2)",[row.tenant_id,JSON.stringify({actorId,reservationId:id,decision:'operator_resolved_stale_reservation',consumption:'unknown',reason:reason.trim(),original:row})]);
+  await tx.query('DELETE FROM platform_model_reservations WHERE id=$1',[id]);
+  return {released:true,alreadyResolved:false,tokens:Number(row.tokens)};
+ });
+}

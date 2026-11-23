@@ -10,8 +10,17 @@ export function modelRequestTotals(budget:any,source?:'main'|'media'){
 }
 // The request journal is part of the existing cycle budget, not a second ledger.
 // Retain reservations after process loss: a missing receipt cannot prove no call.
-export async function cycleModelBudget(db:Sql,bot:any,v:ModelRequestBudget){return db.transaction(tx=>cycleModelBudgetInTransaction(tx,bot,v))}
-export async function cycleModelBudgetInTransaction(tx:Sql,bot:any,v:ModelRequestBudget,call?:RuntimeCall){
+export async function cycleModelBudget(db:Sql,bot:any,v:ModelRequestBudget,call?:RuntimeCall){
+ let prefetchedEffect:any=undefined;
+ if(v.phase==='reserve'&&v.source==='media'){
+  const [meta]=await db.query('SELECT id AS bot_id,tenant_id,generation,revision FROM bots WHERE id=$1 AND tenant_id=$2',[bot.id??bot.bot_id,bot.tenant_id]);
+  if(!meta)throw conflict('model_budget_owner_missing');
+  // Fetch worker effect outside the PG FOR UPDATE transaction to avoid holding DB locks across HTTP IPC.
+  prefetchedEffect=await (call??runtimeClient(db))(meta,'tool',{operation:'get',data:{id:v.effectId}});
+ }
+ return db.transaction(tx=>cycleModelBudgetInTransaction(tx,bot,v,call,prefetchedEffect));
+}
+export async function cycleModelBudgetInTransaction(tx:Sql,bot:any,v:ModelRequestBudget,call?:RuntimeCall,prefetchedEffect?:any){
  const params=[v.workId,bot.id??bot.bot_id,bot.tenant_id,v.epoch];
  await tx.query('SELECT id FROM autonomy_cycles WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND epoch=$4 FOR UPDATE',params);
  const [c]=await tx.query(`SELECT c.*,c.state AS action_status,c.work_expires_at AS expires_at,s.epoch AS current_epoch,s.config AS current_config,b.generation AS current_generation,b.revision AS current_revision,b.health,b.desired_state,b.deleted_at FROM autonomy_cycles c JOIN autonomy_settings s ON s.bot_id=c.bot_id AND s.tenant_id=c.tenant_id JOIN bots b ON b.id=c.bot_id AND b.tenant_id=c.tenant_id WHERE c.id=$1 AND c.bot_id=$2 AND c.tenant_id=$3 AND c.epoch=$4`,params);
@@ -24,7 +33,7 @@ export async function cycleModelBudgetInTransaction(tx:Sql,bot:any,v:ModelReques
   if((v.source==='main'&&c.finished_at)||c.current_epoch!==v.epoch||c.current_config.mode!=='active'||c.generation!==c.current_generation||c.config_revision!==c.current_revision||!runtimeStatus(c).online)throw conflict('model_budget_owner_expired');
   if(v.source==='main'&&(c.action_status!=='acting'||+new Date(c.expires_at)<=Date.now()))throw conflict('model_budget_action_expired');
   if(v.source==='media'){
-   const effect=await (call??runtimeClient(tx))({bot_id:c.bot_id,tenant_id:c.tenant_id,generation:c.current_generation,revision:c.current_revision},'tool',{operation:'get',data:{id:v.effectId}});
+   const effect=prefetchedEffect!==undefined?prefetchedEffect:await (call??runtimeClient(tx))({bot_id:c.bot_id,tenant_id:c.tenant_id,generation:c.current_generation,revision:c.current_revision},'tool',{operation:'get',data:{id:v.effectId}});
    if(!effect||effect.id!==v.effectId||effect.work_id!==v.workId||effect.bot_id!==c.bot_id||effect.tenant_id!==c.tenant_id||effect.mode_epoch!==v.epoch||effect.authority!=='autonomous'||effect.operation!=='analyze'||effect.lease_owner!==v.owner||effect.state!=='claimed'||effect.cancel_requested||+new Date(effect.lease_until)<=Date.now()||+new Date(effect.deadline_at)<=Date.now())throw conflict('model_budget_effect_expired');
   }
   const used=modelRequestTotals(c.budget),limit=c.budget.cycleModelCalls;

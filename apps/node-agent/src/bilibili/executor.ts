@@ -3,6 +3,7 @@ import {runtimeStatus} from '../../../../packages/shared/runtime-status.js';
 import {randomUUID} from 'node:crypto';
 import {cycleModelBudget,cycleModelBudgetInTransaction,type ModelRequestBudget} from '../../../../packages/database/model-request-budget.js';
 import {mkdir,writeFile,rename} from 'node:fs/promises';
+import {atomicJson} from '../../../../packages/shared/fs-atomic.js';
 import path from 'node:path';
 import type {Sql} from '../../../../packages/database/index.js';
 import {BilibiliTools} from '../../../../packages/database/bilibili-tools.js';
@@ -61,7 +62,7 @@ export class BilibiliExecutor {
    const value=JSON.stringify({version:1,botId:b.id,generation:b.generation,revision:b.revision,settingsRevision:b.settings_revision,allowAutonomous:b.config.allowAutonomous,hasCompletions:pending.some(j=>j.authority==='foreground'&&['pending','claimed'].includes(j.completion_state)),cooldownUntil:cooldown?.until_at??null,url:process.env.FISHBOT_TOOL_API_URL||'http://127.0.0.1:8787',token:bridgeToken(this.key,b.id,b.generation,b.revision),operations:this.catalog(b)});
    const file=path.join(root,'bilibili-bridge.json');
    // Only changed snapshots are replaced; idle tick does not churn files.
-   if(this.snapshots.get(b.id)===value)continue;await writeFile(file+'.tmp',value,{mode:0o600});await rename(file+'.tmp',file);this.snapshots.set(b.id,value);
+   if(this.snapshots.get(b.id)===value)continue;await atomicJson(file,JSON.parse(value));this.snapshots.set(b.id,value);
   }
  }
  private mediaCheckAt=0;private mediaStatus:Awaited<ReturnType<typeof mediaReadiness>>={ready:false,code:'unchecked',reason:'媒体依赖尚未核实',asrConfigured:false};

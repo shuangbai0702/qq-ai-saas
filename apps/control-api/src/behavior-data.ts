@@ -1,4 +1,7 @@
 import {runtimeIpc} from '../../../packages/shared/runtime-ipc.js';
+import {safeSubprocessEnv} from '../../../packages/shared/security.js';
+import lockfile from 'proper-lockfile';
+import {mkdir} from 'node:fs/promises';
 import type {FastifyInstance} from 'fastify';
 import {execFile} from 'node:child_process';
 import path from 'node:path';
@@ -39,12 +42,21 @@ export function registerBehaviorData(app:FastifyInstance,root:string,owned:(req:
    if(!response.ok)throw Object.assign(new Error('机器人正在切换状态，请稍后重试'),{statusCode:409});const result:any=await response.json();if(result.error)throw Object.assign(new Error(result.error),{statusCode:result.status||400});return {...result,accessMode:'runtime-owner'};
   }
   if(runtimeOnly||bot.desired_state==='running')throw Object.assign(new Error('运行实例尚未就绪，请稍后重试'),{statusCode:409});
-  const env={...process.env,PYTHONIOENCODING:'utf-8'};delete (env as any).MASTER_KEY;delete (env as any).DATABASE_URL;delete (env as any).FISHBOT_MODEL_KEY;
+  const isWrite=!['list','list_stickers','get_sticker'].includes((input as any)?.action);
+  const env=safeSubprocessEnv({PYTHONIOENCODING:'utf-8'});
   if(maintenance>=2)throw Object.assign(new Error('维护请求较多，请稍后重试'),{statusCode:429});
-  maintenance++;let data:string;try{data=await new Promise<string>((resolve,reject)=>{
-   const child=execFile(python,[path.resolve('adapters/astrbot/data_admin.py'),path.join(root,'bots',id,'behavior.sqlite')],{windowsHide:true,timeout:7000,maxBuffer:512*1024,env},(error,out)=>error?reject(Object.assign(new Error('行为数据访问失败'),{statusCode:503})):resolve(out));
-   child.stdin?.on('error',()=>{});child.stdin?.end(JSON.stringify(input));
-  });}finally{maintenance--}
+  maintenance++;let data:string;let releaseLock:(()=>Promise<void>)|undefined;try{
+   if(isWrite){
+    const botDir=path.join(root,'bots',id);await mkdir(botDir,{recursive:true});
+    releaseLock=await lockfile.lock(botDir,{realpath:false,stale:15000,retries:{retries:10,minTimeout:50,maxTimeout:200}});
+    // Re-verify bot is still stopped with no pending start/restart commands after acquiring lock.
+    const [fresh]=await db.query("SELECT desired_state,observed_state,EXISTS(SELECT 1 FROM commands c WHERE c.bot_id=bots.id AND c.status IN ('queued','running') AND c.kind IN ('start','restart','login')) AS starting FROM bots WHERE id=$1 AND deleted_at IS NULL",[id]);
+    if(!fresh||fresh.desired_state!=='stopped'||fresh.observed_state!=='stopped'||fresh.starting||processId&&await agent.host.inspect(processId,'ai'))throw Object.assign(new Error('机器人正在启动或切换状态，请稍后重试'),{statusCode:409});
+   }
+   data=await new Promise<string>((resolve,reject)=>{
+    const child=execFile(python,[path.resolve('adapters/astrbot/data_admin.py'),path.join(root,'bots',id,'behavior.sqlite')],{windowsHide:true,timeout:7000,maxBuffer:512*1024,env},(error,out)=>error?reject(Object.assign(new Error('行为数据访问失败'),{statusCode:503})):resolve(out));
+    child.stdin?.on('error',()=>{});child.stdin?.end(JSON.stringify(input));
+   });}finally{await releaseLock?.().catch(()=>{});maintenance--}
   const result=JSON.parse(data);if(result.error)throw Object.assign(new Error(result.error),{statusCode:result.status||400});return {...result,accessMode:'stopped-maintenance'};
  }
  app.get<{Params:{id:string}}>('/v1/bots/:id/behavior-data',async req=>{

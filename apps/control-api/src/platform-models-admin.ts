@@ -1,4 +1,4 @@
-import {recoverCreditReceipts} from './platform-credits.js';
+import {recoverCreditReceipts,waiveLegacyReservation,resolveStaleReservation} from './platform-credits.js';
 import {randomUUID} from 'node:crypto';
 import type {FastifyInstance} from 'fastify';
 import {z} from 'zod';
@@ -39,6 +39,16 @@ export async function createPlatformModels(db:Sql,key:Buffer,legacy:{primary:str
    return {summary:await db.query("SELECT dispatch_state,count(*)::int AS count,sum(tokens)::text AS tokens,min(created_at) AS oldest FROM platform_model_reservations GROUP BY dispatch_state ORDER BY dispatch_state"),items:await db.query("SELECT id,tenant_id,bot_id,tokens,campaign_tokens,created_at,dispatch_state,provider_id,dispatched_at,usage_tokens,diagnostic_code FROM platform_model_reservations ORDER BY created_at LIMIT 200")};
   });
   app.post('/v1/admin/platform-model-reservations/reconcile',async req=>{admin(req);return {settled:await recoverCreditReceipts(db)}});
+  app.post<{Params:{id:string}}>('/v1/admin/platform-model-reservations/:id/waive',async req=>{
+   admin(req);
+   const id=z.string().uuid().parse(req.params.id),body=z.object({expectedTokens:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),expectedCreatedAt:z.string().datetime(),reason:z.string().trim().min(10).max(240)}).strict().parse(req.body);
+   return waiveLegacyReservation(db,id,{tokens:body.expectedTokens,createdAt:body.expectedCreatedAt},req.user!.id,body.reason);
+  });
+  app.post<{Params:{id:string}}>('/v1/admin/platform-model-reservations/:id/resolve',async req=>{
+   admin(req);
+   const id=z.string().uuid().parse(req.params.id),body=z.object({expectedState:z.enum(['unknown','dispatched','reserved']),expectedTokens:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),expectedCreatedAt:z.string().datetime(),expectedProviderId:z.string().nullable().default(null),reason:z.string().trim().min(10).max(240)}).strict().parse(req.body);
+   return resolveStaleReservation(db,id,{state:body.expectedState,tokens:body.expectedTokens,createdAt:body.expectedCreatedAt,providerId:body.expectedProviderId},req.user!.id,body.reason);
+  });
   app.get('/v1/admin/platform-models',async req=>{admin(req);return{items:await db.query(`SELECT ${fields},true AS has_key FROM platform_model_providers ORDER BY priority,id`),priorityOrder:'ascending'}});
   app.post('/v1/admin/platform-models/discover',{config:{rateLimit:{max:12,timeWindow:'1 minute'}}},async(req,reply)=>{
    admin(req);const body=z.object({baseUrl:input.shape.baseUrl,apiKey:input.shape.apiKey,providerId:z.string().max(80).optional()}).strict().parse(req.body);

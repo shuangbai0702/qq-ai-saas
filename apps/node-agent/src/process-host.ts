@@ -1,5 +1,6 @@
 import {spawn,execFile, type ChildProcess} from 'node:child_process';import {mkdir,readFile,writeFile,appendFile,rm,stat,readdir,rename} from 'node:fs/promises';import path from 'node:path';
-import {redact} from '../../../packages/shared/security.js';
+import {redact,safeSubprocessEnv} from '../../../packages/shared/security.js';
+import {atomicJson} from '../../../packages/shared/fs-atomic.js';
 import {StringDecoder} from 'node:string_decoder';
 import {AsyncLocalStorage} from 'node:async_hooks';
 const stopIntents=new WeakMap<ChildProcess,string>();
@@ -20,14 +21,14 @@ export class ProcessHost {
     if(Date.now()-this.lastMemorySweep<30000)return;
     this.lastMemorySweep=Date.now();
     this.memorySweep=new Promise<void>(resolve=>{
-      const child=execFile(this.python,[path.resolve('scripts/runtime_memory.py'),...(process.env.FISHBOT_MEMORY_POLICY==='off'?['--disabled']:[])],{windowsHide:true,timeout:12000,maxBuffer:1024*1024},(error,stdout)=>{
+      const child=execFile(this.python,[path.resolve('scripts/runtime_memory.py'),...(process.env.FISHBOT_MEMORY_POLICY==='off'?['--disabled']:[])],{windowsHide:true,timeout:12000,maxBuffer:1024*1024,env:safeSubprocessEnv({PYTHONIOENCODING:'utf-8'})},(error,stdout)=>{
         try{if(error)throw error;const rows=JSON.parse(stdout);this.memoryStatus=new Map(rows.map((v:any)=>[`${v.id}:${v.kind}`,v]))}catch{this.memoryStatus=new Map(records.map(v=>[`${v.id}:${v.kind}`,{strategy:'system-managed',decision:'skipped',reason:'maintenance-unavailable'}]))}
         resolve();
       });child.stdin?.on('error',()=>{});child.stdin?.end(JSON.stringify(records));
     }).finally(()=>{this.memorySweep=undefined});
     return this.memorySweep;
   }
-  private helper(args:string[],input?:string,script='process_control.py',timeout=15000){return new Promise<string>((resolve,reject)=>{const child=execFile(this.python,['-B',path.resolve('scripts',script),...args],{windowsHide:true,timeout,maxBuffer:1024*1024},(error,stdout)=>error?reject(new Error('进程管理检查或操作失败，请管理员检查服务运行身份及服务日志。')):resolve(stdout));if(input){child.stdin?.on('error',reject);child.stdin?.end(input)}})}
+  private helper(args:string[],input?:string,script='process_control.py',timeout=15000){return new Promise<string>((resolve,reject)=>{const child=execFile(this.python,['-B',path.resolve('scripts',script),...args],{windowsHide:true,timeout,maxBuffer:1024*1024,env:safeSubprocessEnv({PYTHONIOENCODING:'utf-8'})},(error,stdout)=>error?reject(new Error('进程管理检查或操作失败，请管理员检查服务运行身份及服务日志。')):resolve(stdout));if(input){child.stdin?.on('error',reject);child.stdin?.end(input)}})}
   // One short-lived interpreter for an entire health sweep, not one per probe.
   // The cache never spans a command, start/stop, or another health sweep.
   async beginInspection(){const records=[];for(const id of await readdir(path.join(this.root,'bots')).catch(()=>[])){for(const kind of ['ai','protocol']){const rec=await this.record(id,kind);if(rec)records.push({id,kind,pid:rec.pid,created:rec.created,root:path.join(this.root,'bots',id)})}}const values=JSON.parse(await this.helper(['batch'],JSON.stringify(records)));await this.maintainMemory(records);this.inspection=new Map(values.map((v:any)=>[`${v.id}:${v.kind}`,v.inspectionError?v:v.valid?{...v,memoryPolicy:this.memoryStatus.get(`${v.id}:${v.kind}`)}:null]))}
@@ -36,7 +37,7 @@ export class ProcessHost {
   async record(id:string,kind:string){try{return JSON.parse(await readFile(this.file(id,kind),'utf8'))}catch{return null}}
   async inspect(id:string,kind:string){let v;if(this.inspection)v=this.inspection.get(`${id}:${kind}`);else{const rec=await this.record(id,kind);if(!rec)return null;v=JSON.parse(await this.helper(['inspect',String(rec.pid),path.join(this.root,'bots',id),String(rec.created??'unknown')]))}if(v?.inspectionError)throw new Error('无法核实进程归属：服务运行身份无权读取该进程。请管理员通过原 Agent 恢复，未启动或停止进程。');return v?.valid?{...v,memoryPolicy:this.memoryStatus.get(`${id}:${kind}`)}:null}
   async start(id:string,kind:string,executable:string,args:string[],cwd:string,env:NodeJS.ProcessEnv,keys:string[]=[]){
-    this.endInspection();
+    this.inspection?.delete(`${id}:${kind}`);
     if(await this.inspect(id,kind))return;
     const botRoot=path.join(this.root,'bots',id);
     await mkdir(botRoot,{recursive:true});
@@ -68,11 +69,11 @@ export class ProcessHost {
     const stdout=streamLogger(),stderr=streamLogger();child.stdout?.on('data',stdout.data);child.stderr?.on('data',stderr.data);
     child.once('close',(code,signal)=>{stdout.end();stderr.end();if(this.children.get(`${id}:${kind}`)===child)this.children.delete(`${id}:${kind}`);enqueue(`process exited (${code}) at=${new Date().toISOString()} pid=${child.pid} signal=${signal||'none'} intent=${stopIntents.get(child)||'unexpected-or-external'}\n`)});
     enqueue(`process started at=${new Date().toISOString()} pid=${child.pid} source=ProcessHost.start\n`);
-    await writeFile(this.file(id,kind),JSON.stringify({pid:child.pid,kind,startedAt:new Date().toISOString()}),{mode:0o600});
-    const identity=await this.inspect(id,kind);if(identity)await writeFile(this.file(id,kind),JSON.stringify({pid:child.pid,kind,created:identity.created,startedAt:new Date().toISOString()}),{mode:0o600});
+    await atomicJson(this.file(id,kind),{pid:child.pid,kind,startedAt:new Date().toISOString()});
+    const identity=await this.inspect(id,kind);if(identity)await atomicJson(this.file(id,kind),{pid:child.pid,kind,created:identity.created,startedAt:new Date().toISOString()});
   }
   async stop(id:string,kind:string,intent='managed-stop',expected?:{pid:number;created?:number}){
-    this.endInspection();
+    this.inspection?.delete(`${id}:${kind}`);
     const botRoot=path.join(this.root,'bots',id);
     const rec=await this.record(id,kind);
     if(!rec){

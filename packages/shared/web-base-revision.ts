@@ -1,7 +1,7 @@
 import {isDeepStrictEqual} from 'node:util';
 import type {Sql} from '../database/index.js';
 
-export const fixedRequestConfig=(config:any)=>Object.fromEntries(Object.entries(config).filter(([k])=>!['systemPrompt','toolPrompts'].includes(k)));
+export const fixedRequestConfig=(config:any)=>Object.fromEntries(Object.entries(config).filter(([k])=>!['systemPrompt','toolPrompts','characterCards'].includes(k)));
 
 /** Existing revision/audit rows prove a text-only web edit, never a new permission. */
 export async function allowsInFlightBaseRevision(db:Sql,botId:string,tenantId:string,from:number,to:number){

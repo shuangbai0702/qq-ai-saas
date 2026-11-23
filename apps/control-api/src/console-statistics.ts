@@ -1,4 +1,5 @@
 import type {FastifyInstance} from 'fastify';
+import {safeSubprocessEnv} from '../../../packages/shared/security.js';
 import {execFile} from 'node:child_process';
 import path from 'node:path';
 import {z} from 'zod';
@@ -16,8 +17,7 @@ export function registerConsoleStatistics(app:FastifyInstance,db:Sql,root:string
   reply.header('Cache-Control','no-store');
   if(active>=2)return reply.code(429).send({error:'统计请求较多，请稍后重试'});
   const python=path.resolve(process.env.ASTRBOT_PYTHON||`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`);
-  const env:NodeJS.ProcessEnv={...process.env,PYTHONIOENCODING:'utf-8'};
-  delete env.MASTER_KEY;delete env.DATABASE_URL;delete env.FISHBOT_MODEL_KEY;
+  const env=safeSubprocessEnv({PYTHONIOENCODING:'utf-8'});
   active++;
   try{return await new Promise((resolve,reject)=>{
    execFile(python,[path.resolve('adapters/astrbot/console_statistics.py'),path.resolve(root),id],{windowsHide:true,timeout:6000,maxBuffer:128*1024,env},(error,out)=>{

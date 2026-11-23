@@ -63,6 +63,31 @@ export class AutonomyRepository {
    return{status:'updated',goal:updated,meaning:'目标状态只表示认知目标结算；原Work、未知投递及未消费工具结果独立保留，不代表外部操作成功。'};
   });
  }
+ async controlGoal(tenantId:string,botId:string,actorId:string,body:{id:string;expectedEpoch:number;expectedRevision:number;operation:'pause'|'resume'|'abandon'}){
+  return this.db.transaction(async tx=>{
+   const [s]=await tx.query('SELECT * FROM autonomy_settings WHERE bot_id=$1 AND tenant_id=$2 FOR UPDATE',[botId,tenantId]);
+   if(!s||s.epoch!==body.expectedEpoch)throw new AutonomyConflict('自主状态已变化，请刷新');
+   const [existing]=await tx.query('SELECT id,status,revision FROM autonomy_goals WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 FOR UPDATE',[body.id,botId,tenantId]);
+   if(!existing||existing.revision!==body.expectedRevision)throw new AutonomyConflict('目标已更新，请刷新');
+   if(['completed','abandoned','canceled'].includes(existing.status))throw new AutonomyConflict('目标已终结，不可再修改或恢复');
+   const status=body.operation==='pause'?'paused_user':body.operation==='abandon'?'abandoned':s.config.mode==='active'?'active':'paused_mode';
+   if(body.operation==='resume'){
+    const [{count}]=await tx.query("SELECT count(*)::int AS count FROM autonomy_goals WHERE bot_id=$1 AND tenant_id=$2 AND status NOT IN ('completed','abandoned','canceled') AND id<>$3",[botId,tenantId,body.id]);
+    if(count>=MAX_CURRENT_GOALS)throw new AutonomyConflict('当前目标已达3个上限，请先完成或结束其他目标');
+   }
+   const rows=await tx.query("UPDATE autonomy_goals SET status=$4,revision=revision+1,updated_at=now() WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND revision=$5 AND status NOT IN ('completed','abandoned','canceled') RETURNING id,revision",[body.id,botId,tenantId,status,body.expectedRevision]);
+   if(!rows.length)throw new AutonomyConflict('目标已更新，请刷新');
+   const nextState=s.config.mode==='active'?'ready':'paused';
+   await tx.query('UPDATE autonomy_settings SET epoch=epoch+1,goal_revision=goal_revision+1,state=$3,lease_owner=NULL,lease_until=NULL,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2',[botId,tenantId,nextState]);
+   await tx.query('DELETE FROM autonomy_wakes WHERE bot_id=$1 AND tenant_id=$2',[botId,tenantId]);
+   await tx.query("INSERT INTO audit_events(tenant_id,event,bot_id,detail) VALUES($1,'autonomous.goal.controlled',$2,$3)",[tenantId,botId,JSON.stringify({actorId,goalId:body.id,operation:body.operation,previousStatus:existing.status,status,previousRevision:existing.revision,revision:rows[0].revision})]);
+   if(s.config.mode==='active'){
+    await this.rearmHandoffs(tenantId,botId,s.epoch+1,tx);
+    await this.wake(tenantId,botId,s.epoch+1,'goal-edited',0,'',tx);
+   }
+   return{ok:true,pendingRuntime:true};
+  });
+ }
  async ensure(tenantId:string,botId:string,tx=this.db){
   await tx.query("INSERT INTO autonomy_settings(bot_id,tenant_id,config) SELECT b.id,b.tenant_id,CASE WHEN r.config->>'proactive'='true' THEN jsonb_set($3::jsonb,'{mode}','\"active\"'::jsonb) ELSE $3::jsonb END FROM bots b JOIN bot_config_revisions r ON r.bot_id=b.id AND r.revision=b.revision WHERE b.id=$1 AND b.tenant_id=$2 AND b.deleted_at IS NULL ON CONFLICT(bot_id) DO NOTHING",[botId,tenantId,JSON.stringify(defaultAutonomyConfig)]);
   const [s]=await tx.query('SELECT * FROM autonomy_settings WHERE bot_id=$1 AND tenant_id=$2',[botId,tenantId]);

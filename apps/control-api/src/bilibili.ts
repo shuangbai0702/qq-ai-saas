@@ -6,7 +6,7 @@ import {randomUUID} from 'node:crypto';
 import QRCode from 'qrcode';
 import {readFile} from 'node:fs/promises';
 import path from 'node:path';
-import type {Sql} from '../../../packages/database/index.js';
+import {PLATFORM_CREDIT_AVAILABLE_SQL,type Sql} from '../../../packages/database/index.js';
 import {BilibiliTools,toolConflict} from '../../../packages/database/bilibili-tools.js';
 import {BilibiliConfigSchema,BiliCallSchema,biliOperations} from '../../../packages/contracts/bilibili.js';
 import {BiliAccounts} from '../../node-agent/src/bilibili/account-broker.js';
@@ -27,7 +27,7 @@ export function registerBilibili(app:FastifyInstance,db:Sql,key:Buffer,owned:(re
   const [login]=await db.query('SELECT id,state,expires_at,updated_at FROM bilibili_logins WHERE bot_id=$1 AND tenant_id=$2',[b.id,b.tenant_id]);
   const [cooldown]=await db.query("SELECT until_at,reason FROM tool_service_cooldowns WHERE service='bilibili' AND until_at>now()");
   let mediaReady=false,mediaReason='媒体状态尚未核实',mediaDependencies:any=null;try{const raw=await readFile(path.join(root,'media-status.json'),'utf8');if(raw.length<4096){const m=JSON.parse(raw);mediaReady=m.ready===true&&Date.now()-m.at<15000;mediaDependencies=m;mediaReason=String(m.reason||mediaReason)}}catch{}
-  const [botModel]=await db.query("SELECT r.config,CASE WHEN r.config->>'platformModel'='true' THEN EXISTS(SELECT 1 FROM platform_model_credits c WHERE c.tenant_id=$3 AND c.granted-c.spent-c.reserved>0) ELSE s.ciphertext IS NOT NULL END AS has_key FROM bot_config_revisions r LEFT JOIN secrets s ON s.bot_id=r.bot_id AND s.tenant_id=$3 WHERE r.bot_id=$1 AND r.revision=$2",[b.id,b.revision,b.tenant_id]);
+  const [botModel]=await db.query(`SELECT r.config,CASE WHEN r.config->>'platformModel'='true' THEN (${PLATFORM_CREDIT_AVAILABLE_SQL}) ELSE s.ciphertext IS NOT NULL END AS has_key FROM bot_config_revisions r LEFT JOIN secrets s ON s.bot_id=r.bot_id AND s.tenant_id=$3 WHERE r.bot_id=$1 AND r.revision=$2`,[b.id,b.revision,b.tenant_id]);
   const modelConfigured=bilibiliModelConfigured(s,botModel?.config,botModel?.has_key);
   const mediaExecutable=mediaReady&&modelConfigured;
   const workAvailable=runtimeStatus(b).online;

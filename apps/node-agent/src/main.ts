@@ -4,7 +4,7 @@ import os from 'node:os';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {readFile,rm} from 'node:fs/promises';
-import {openDatabase, configuredDatabaseUrl} from '../../../packages/database/index.js';
+import {openDatabase, configuredDatabaseUrl, hasEncryptedSecrets} from '../../../packages/database/index.js';
 import {loadKey} from '../../../packages/shared/security.js';
 import {NodeAgent,HeartbeatWriter} from './agent.js';
 import {fileURLToPath,pathToFileURL} from 'node:url';
@@ -39,7 +39,7 @@ if(process.platform==='linux'&&process.env.NAPCAT_RUNTIME_DIR){
 const db = await openDatabase(root, databaseUrl);
 let key: Buffer;
 try {
-  key = await loadKey(root, {createIfMissing: !(await db.query('SELECT 1 FROM secrets UNION ALL SELECT 1 FROM bilibili_accounts UNION ALL SELECT 1 FROM bilibili_settings WHERE model_secret IS NOT NULL UNION ALL SELECT 1 FROM bilibili_logins WHERE secret<>\'\' LIMIT 1')).length});
+  key = await loadKey(root, {createIfMissing: !(await hasEncryptedSecrets(db))});
 } catch (error) {
   await db.close();
   throw error;
@@ -47,7 +47,8 @@ try {
 const agent = new NodeAgent(db, root, key);
 const heartbeatFile=path.join(root,'agent-heartbeat.json');
 const startedAt=new Date().toISOString();
-const processStart=process.platform==='linux'?(await readFile('/proc/self/stat','utf8')).slice((await readFile('/proc/self/stat','utf8')).lastIndexOf(')')+1).trim().split(/\s+/)[19]:undefined;
+const statText=process.platform==='linux'?await readFile('/proc/self/stat','utf8'):'';
+const processStart=statText?statText.slice(statText.lastIndexOf(')')+1).trim().split(/\s+/)[19]:undefined;
 const originalTick=agent.tick.bind(agent);
 // One serialized heartbeat writer per process: overlapping ticks queue on a
 // single chain, sequence numbers stay monotonic, temp files are unique per

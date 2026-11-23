@@ -57,10 +57,21 @@ export async function openDatabase(dataRoot:string,url?:string):Promise<Sql>{
     const pglite=new PGlite(path.join(dataRoot,'postgres'),options);
     let tail:Promise<unknown>=Promise.resolve();
     const serial=<T>(fn:()=>Promise<T>)=>{const p=tail.then(fn);tail=p.catch(()=>{});return p};
-    const inner:Sql={query:async(sql,params)=>(await pglite.query<any>(sql,params)).rows,transaction:async(fn)=>pglite.transaction(async tx=>fn({...inner,query:async(sql,params)=>(await tx.query<any>(sql,params)).rows})),close:()=>pglite.close()};
+    let pgSavepoint=0;
+    const wrapTx=(tx:any):Sql=>({
+      query:async(sql,params)=>(await tx.query(sql,params)).rows,
+      transaction:async fn=>{
+        const name=`nested_${++pgSavepoint}`;
+        await tx.query(`SAVEPOINT ${name}`);
+        try{const result=await fn(wrapTx(tx));await tx.query(`RELEASE SAVEPOINT ${name}`);return result}
+        catch(error){await tx.query(`ROLLBACK TO SAVEPOINT ${name}`);await tx.query(`RELEASE SAVEPOINT ${name}`);throw error}
+      },
+      close:async()=>{throw new Error('Transaction does not own the database connection')}
+    });
+    const inner:Sql={query:async(sql,params)=>(await pglite.query<any>(sql,params)).rows,transaction:async(fn)=>pglite.transaction(async tx=>fn(wrapTx(tx))),close:()=>pglite.close()};
     db={query:(sql,params)=>serial(()=>inner.query(sql,params)),transaction:fn=>serial(()=>inner.transaction(fn)),close:()=>serial(()=>inner.close())};
   }
-  const versionsExpected=['001','002','003','004','005','006','007','008','009','010','011','012','013','014','015','016','017','018','019','020'];
+  const versionsExpected=SCHEMA_MIGRATIONS.map(([v])=>v);
   if(process.env.DB_AUTO_MIGRATE==='false'){
     let versions:string[];
     try{versions=(await db.query<{version:string}>('SELECT version FROM schema_migrations ORDER BY version')).map(x=>x.version)}catch{throw new Error('Database schema is missing; run the explicit migration command')}
@@ -68,7 +79,7 @@ export async function openDatabase(dataRoot:string,url?:string):Promise<Sql>{
   }else await db.transaction(async tx=>{
     if(url)await tx.query('SELECT pg_advisory_xact_lock(18435, 1)');
     await tx.query('CREATE TABLE IF NOT EXISTS schema_migrations(version TEXT PRIMARY KEY,applied_at TIMESTAMPTZ DEFAULT now())');
-    for(const [version,file] of [['001','001_initial.sql'],['002','002_runtime_groups.sql'],['003','003_invitations.sql'],['004','004_bot_quotas.sql'],['005','005_qq_binding_kinds.sql'],['006','006_autonomous_lifecycle.sql'],['007','007_shared_autonomous_policy.sql'],['008','008_inner_owned_capabilities.sql'],['009','009_bilibili_tools.sql'],['010','010_bilibili_media_jobs.sql'],['011','011_outer_context_cycles.sql'],['012','012_external_action_budget.sql'],['013','013_cycle_external_reservations.sql'],['014','014_retire_autonomous_actions.sql'],['015','015_retire_tool_effects.sql'],['016','016_referral_model_credits.sql'],['017','017_platform_models.sql'],['018','018_token_promotion.sql'],['019','019_platform_receipts.sql'],['020','020_character_card_library.sql']])if(!(await tx.query('SELECT version FROM schema_migrations WHERE version=$1',[version])).length){
+    for(const [version,file] of SCHEMA_MIGRATIONS)if(!(await tx.query('SELECT version FROM schema_migrations WHERE version=$1',[version])).length){
       const sql=await readFile(fileURLToPath(new URL('./migrations/'+file,import.meta.url)),'utf8');
       for(const statement of sql.split(';').filter(x=>x.trim()))await tx.query(statement);
       await tx.query('INSERT INTO schema_migrations(version) VALUES($1)',[version]);
@@ -78,3 +89,11 @@ export async function openDatabase(dataRoot:string,url?:string):Promise<Sql>{
   return db;
   }catch(error){await db?.close().catch(()=>{});await release?.();throw error}
 }
+export const SCHEMA_MIGRATIONS:[string,string][]=[['001','001_initial.sql'],['002','002_runtime_groups.sql'],['003','003_invitations.sql'],['004','004_bot_quotas.sql'],['005','005_qq_binding_kinds.sql'],['006','006_autonomous_lifecycle.sql'],['007','007_shared_autonomous_policy.sql'],['008','008_inner_owned_capabilities.sql'],['009','009_bilibili_tools.sql'],['010','010_bilibili_media_jobs.sql'],['011','011_outer_context_cycles.sql'],['012','012_external_action_budget.sql'],['013','013_cycle_external_reservations.sql'],['014','014_retire_autonomous_actions.sql'],['015','015_retire_tool_effects.sql'],['016','016_referral_model_credits.sql'],['017','017_platform_models.sql'],['018','018_token_promotion.sql'],['019','019_platform_receipts.sql'],['020','020_character_card_library.sql']];
+export async function hasEncryptedSecrets(db:Sql):Promise<boolean>{
+ const rows=await db.query("SELECT 1 FROM secrets UNION ALL SELECT 1 FROM bilibili_accounts UNION ALL SELECT 1 FROM bilibili_settings WHERE model_secret IS NOT NULL UNION ALL SELECT 1 FROM bilibili_logins WHERE secret<>'' UNION ALL SELECT 1 FROM platform_model_providers LIMIT 1");
+ return rows.length>0;
+}
+/** SQL expression matching platform-credits.ts creditBalance(): accounts for expired campaign grants. */
+export const platformCreditAvailableSql=(tenantParam='$3')=>`EXISTS(SELECT 1 FROM platform_model_credits c WHERE c.tenant_id=${tenantParam} AND (CASE WHEN c.campaign_expires_at IS NOT NULL AND c.campaign_expires_at<=clock_timestamp() THEN GREATEST(0,(c.granted-c.campaign_granted)-GREATEST(0,c.spent-c.campaign_spent)-GREATEST(0,c.reserved-c.campaign_reserved)) ELSE GREATEST(0,c.granted-c.spent-c.reserved) END)>0)`;
+export const PLATFORM_CREDIT_AVAILABLE_SQL=platformCreditAvailableSql('$3');

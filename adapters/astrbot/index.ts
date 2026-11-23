@@ -1,4 +1,4 @@
-import {renameAtomic} from '../../packages/shared/fs-atomic.js';
+import {atomicJson} from '../../packages/shared/fs-atomic.js';
 import path from 'node:path';import {mkdir,readFile,writeFile,rename} from 'node:fs/promises';
 import {BotConfigSchema,type RuntimeContext,type Health} from '../../packages/contracts/index.js';
 import {ProcessHost} from '../../apps/node-agent/src/process-host.js';
@@ -23,9 +23,9 @@ export class AstrBotAdapter {
       t2i:false,log_level:'INFO',plugin_set:[],disable_builtin_commands:true,
     };
     const root=path.join(ctx.root,'ai');await mkdir(path.join(root,'data'),{recursive:true});
-    await writeFile(path.join(root,'data/cmd_config.json.tmp'),JSON.stringify(value,null,2),{mode:0o600});await rename(path.join(root,'data/cmd_config.json.tmp'),path.join(root,'data/cmd_config.json'));
+    await atomicJson(path.join(root,'data/cmd_config.json'),value);
     await writeFile(path.join(root,'persona.txt'),cfg.systemPrompt,{mode:0o600});
-    await writeFile(path.join(root,'runtime.json'),JSON.stringify({generation:ctx.generation,revision:ctx.revision,systemChangePermitId:ctx.systemChangePermitId,personaEdit:ctx.personaEdit,characterCardsEdit:ctx.characterCardsEdit,token:ctx.token,aiPort:ctx.aiPort,expectedUin:ctx.expectedUin,groups:cfg.groups,botId:ctx.botId,tenantId:ctx.tenantId,config:cfg}),{mode:0o600});
+    await atomicJson(path.join(root,'runtime.json'),{generation:ctx.generation,revision:ctx.revision,systemChangePermitId:ctx.systemChangePermitId,personaEdit:ctx.personaEdit,characterCardsEdit:ctx.characterCardsEdit,token:ctx.token,aiPort:ctx.aiPort,expectedUin:ctx.expectedUin,groups:cfg.groups,botId:ctx.botId,tenantId:ctx.tenantId,config:cfg});
     return {appliedRevision:ctx.revision,restartRequired:!!(await this.host.inspect(ctx.botId,'ai'))};
   }
   async start(ctx:RuntimeContext){await this.provision(ctx);const root=path.join(ctx.root,'ai');
@@ -45,7 +45,7 @@ export class AstrBotAdapter {
     const file=path.join(ctx.root,'ai','runtime.json'),prior=JSON.parse(await readFile(file,'utf8'));
     if(prior.generation!==ctx.generation||prior.revision>ctx.revision)return false;
     const value={...prior,revision:ctx.revision,config:ctx.config,characterCardsEdit:ctx.characterCardsEdit,personaEdit:ctx.personaEdit,toolsEdit:ctx.toolsEdit,systemChangePermitId:ctx.systemChangePermitId};
-    await writeFile(file+'.tmp',JSON.stringify(value),{mode:0o600});await renameAtomic(file+'.tmp',file);return true;
+    await atomicJson(file,value);return true;
   }
   async applyCards(ctx:RuntimeContext){return this.updateConfig(ctx,()=>this.applyCardsLocked(ctx))}
   private async applyCardsLocked(ctx:RuntimeContext){
