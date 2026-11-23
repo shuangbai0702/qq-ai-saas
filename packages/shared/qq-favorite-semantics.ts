@@ -13,7 +13,10 @@ import {observeModel} from './model-diagnostics.js';
 const annotation=z.object({description:z.string().trim().min(1).max(200),meaning:z.string().trim().max(100),avoid:z.string().trim().max(100),confidence:z.enum(['clear','uncertain'])}).strict();
 export type FavoriteAnnotation=z.infer<typeof annotation>&{version:1;model:string;at:string;usage:unknown;costStatus:'unknown'};
 export function parseFavoriteAnnotation(text:string){
- return annotation.parse(JSON.parse(text));
+ // Providers may wrap otherwise valid JSON in one Markdown code fence.
+ // Remove only that complete envelope; prose, extra blocks and fields still fail.
+ const fenced=/^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/i.exec(text.trim());
+ return annotation.parse(JSON.parse(fenced?fenced[1]:text));
 }
 
 /** One compact selection field: a known use, or the observed picture itself.

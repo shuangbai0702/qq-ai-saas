@@ -29,7 +29,12 @@ test('favorite meaning parser accepts descriptions without a use and rejects inv
  assert.equal(parseFavoriteAnnotation(JSON.stringify({...clear,meaning:''})).description,clear.description);
  assert.throws(()=>parseFavoriteAnnotation(JSON.stringify({...clear,description:''})));
  assert.throws(()=>parseFavoriteAnnotation(JSON.stringify({...clear,confidence:'certain'})));
- assert.throws(()=>parseFavoriteAnnotation('```json\n'+JSON.stringify(clear)+'\n```'));
+ assert.deepEqual(parseFavoriteAnnotation('```json\n'+JSON.stringify(clear)+'\n```'),clear);
+ assert.deepEqual(parseFavoriteAnnotation(' \n```JSON\r\n'+JSON.stringify(clear)+'\r\n```\n '),clear);
+ assert.deepEqual(parseFavoriteAnnotation('```\n'+JSON.stringify(clear)+'\n```'),clear);
+ assert.throws(()=>parseFavoriteAnnotation('说明\n```json\n'+JSON.stringify(clear)+'\n```'));
+ assert.throws(()=>parseFavoriteAnnotation('```json\n'+JSON.stringify(clear)+'\n```\n```json\n{}\n```'));
+ assert.throws(()=>parseFavoriteAnnotation('```json\n'+JSON.stringify({...clear,sendTo:'other tenant'})+'\n```'));
  assert.throws(()=>parseFavoriteAnnotation(JSON.stringify({...clear,sendTo:'other tenant'})));
 });
 

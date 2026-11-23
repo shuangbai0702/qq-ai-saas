@@ -90,7 +90,10 @@ def allowed(event,cfg):
     if signature_mode(event,cfg):requested.add('signature')
     # Identity and capability are code decisions; interpreting a natural request
     # belongs to the reply model. Do not hide Qzone behind imperative regexes.
-    if b.get('qzone') and author_text(event):requested.update(('publish','view'))
+    # An owner may continue a publishing request with an image-only message.
+    # Text presence is not an authority boundary; the model interprets intent
+    # from the existing conversation, with the same owner/feature fences.
+    if b.get('qzone'):requested.update(('publish','view'))
     return {x for x in requested if b.get('qzone') and x in ('publish','view')}|{x for x in requested if b.get('qqProfile') and x not in ('publish','view')}
 
 
