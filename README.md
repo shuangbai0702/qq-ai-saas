@@ -114,6 +114,10 @@ npm run start:production
 
 更新只部署受影响组件：Web / API 更新不能顺带重启 Agent、NapCat 或在线 QQ。Agent 与 AI 运行时更新必须另行安排可回退的受控替换，并核对运行身份与持久数据。**源码同步、构建完成与线上部署完成是不同状态。**
 
+共享 Worker 的本机发布操作器统一调用 `scripts/worker-update.mjs` 的 `updateSharedWorkers(agent, options)`，不再复制临时 hold/reload/resume 流程；独立 Worker 和 Agent 替换不走该入口。入口独占当前 Agent、暂停新调度、保留在途任务与续租、限时等待安全边界，并用真实进程身份取得原子停止许可。超时或取消会恢复调度；安装/验收失败先回退代码，再恢复受影响 Worker，错误及恢复失败均保留。B 站媒体和收藏任务不会被无关更新取消。
+
+`options` 必须提供 `release`（40 位提交号或 64 位摘要）、绑定当前 Agent 身份的串行 `heartbeat(payload)`、原子安装 `apply()`、幂等代码/manifest 回退 `rollback()` 和真实运行验收 `verify()`；可传入 `signal`，每个排空/就绪边界的 `timeoutMs` 默认且最多 120 秒。安装与验收回调的子进程也须设置超时；回退不得还原用户数据库。`verify()` 至少返回匹配的 `release`、`runtimeApplied: true`、`journalDigestsUnchanged: true`，并实际核对代码加载、成员版本、Journal 和 QQ 状态；缺少证明会回退。调用方断开后应查询最终结果，不能重复安装。入口测试：`node --test tests/worker-update.test.mjs tests/prepare-ai-stop.test.mjs`。
+
 Windows 和 Linux 使用同一个仓库与 `main` 分支。提交前先回收两端有效修改，保留并行前端成果；同步后核对提交号。运行数据、配置、研究副本和原始生产采样不进入 Git。
 
 ## Linux 内存与生命周期

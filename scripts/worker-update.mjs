@@ -1,0 +1,147 @@
+/** In-process shared Worker release boundary. Run from the trusted local
+ * deployment operator; never expose apply/rollback as an HTTP endpoint.
+ * Disk installation stays with the release owner. QQ and Journal are borrowed.
+ */
+import assert from 'node:assert/strict';
+import {setTimeout as delay} from 'node:timers/promises';
+import {prepareAiStop} from './prepare-ai-stop.mjs';
+
+const marker=Symbol.for('fishbot.worker-update');
+
+export async function updateSharedWorkers(agent,{release,heartbeat,apply,rollback,verify,signal,timeoutMs=120000}){
+ assert.match(release,/^[a-f0-9]{40,64}$/);
+ assert.ok(Number.isFinite(timeoutMs)&&timeoutMs>0&&timeoutMs<=120000);
+ for(const fn of [heartbeat,apply,rollback,verify])assert.equal(typeof fn,'function');
+ assert.ok(!agent.closed,'Agent is closing');
+ assert.ok(!agent[marker],'Another Worker update owns this Agent');
+ for(const key of Object.getOwnPropertySymbols(agent))
+  if(key.description?.startsWith('fishbot.release.'))assert.ok(!agent[key]?.held,'Another release owns this Agent');
+ // Acquire before the first await. A disconnected caller cannot release a
+ // second operation's ownership, nor start another late installation.
+ const owner={release,phase:'draining'};agent[marker]=owner;
+ const tick=Object.getOwnPropertyDescriptor(agent,'tick');
+ const autonomy=agent.autonomy,autonomyTick=Object.getOwnPropertyDescriptor(autonomy,'tick');
+ const bili=agent.bilibili,favorites=agent.favorites;
+ const biliStopped=bili.stopped,favoritesClosed=favorites.closed;
+ const protocols=new Map(),groups=new Map(),affected=new Set();
+ let attempted=false,pulse,lastPulse=Promise.resolve(),pulseError,failure;
+ const check=()=>{
+  assert.equal(agent[marker],owner,'Worker update ownership changed');
+  assert.ok(!agent.closed,'Agent is closing');signal?.throwIfAborted();
+  if(pulseError)throw pulseError;
+ };
+ const wait=async(predicate,label)=>{
+  const deadline=Date.now()+timeoutMs;
+  for(;;){check();const done=await predicate();check();
+   if(Date.now()>=deadline)throw Error('Worker update timed out: '+label);
+   if(done)return;
+   await delay(Math.min(50,Math.max(1,deadline-Date.now())),undefined,{signal});
+  }
+ };
+ const sameProtocols=async()=>{
+  for(const [id,old]of protocols){
+   const now=await agent.host.record(id,'protocol');
+   assert.ok(now&&now.pid===old.pid&&now.created===old.created,'QQ owner changed');
+   assert.ok(await agent.host.inspect(id,'protocol'),'QQ owner is unavailable');
+  }
+ };
+ const currentGroup=async(old)=>{
+  const [now]=await agent.db.query('SELECT * FROM runtime_groups WHERE id=$1',[old.id]);
+  assert.ok(now&&now.generation===old.generation&&now.desired_state==='running','Worker generation changed');
+  return now;
+ };
+ const members=async(group)=>agent.db.query("SELECT * FROM bots WHERE group_id=$1 AND desired_state='running' AND deleted_at IS NULL ORDER BY id",[group.id]);
+ const ready=async(group)=>{
+  const current=await currentGroup(group),bots=await members(current);
+  const health=await agent.shared.request(current,'/health');
+  if(health.ready!==true||health.quiescing||Object.keys(health.memberErrors||{}).length)return false;
+  assert.equal(health.generation,current.generation,'Worker generation changed');
+  for(const bot of bots){const member=health.members?.[bot.id];
+   if(member?.generation!==bot.generation||member?.revision!==bot.revision)return false;
+  }
+  return true;
+ };
+ const start=async(group)=>{
+  const current=await currentGroup(group);
+  for(const bot of await members(current)){await sameProtocols();await agent.shared.start(await agent.context(bot))}
+ };
+ const restore=(target,name,descriptor)=>{if(descriptor)Object.defineProperty(target,name,descriptor);else delete target[name]};
+ try{
+  // Pause admission, not existing external operations. Keep autonomous Work
+  // heartbeats renewing while it naturally settles; never cancel user Work.
+  agent.tick=async()=>{};autonomy.tick=async()=>{};bili.stopped=true;favorites.closed=true;
+  pulse=setInterval(()=>{
+   lastPulse=lastPulse.then(()=>heartbeat({maintenance:release})).catch(error=>{pulseError=error});
+  },500);pulse.unref();
+  await wait(()=>agent.controlIdle()&&!autonomy.busy&&!autonomy.active&&!autonomy.heartbeatTask,'Agent control and autonomous Work');
+  const running=await agent.db.query("SELECT * FROM bots WHERE desired_state='running' AND deleted_at IS NULL ORDER BY id");check();
+  assert.ok(running.length&&running.every(bot=>bot.runtime_mode==='shared'&&bot.group_id),'Expected shared Worker members');
+  for(const bot of running){const record=await agent.host.record(bot.id,'protocol');assert.ok(record);protocols.set(bot.id,record)}
+  await sameProtocols();
+  for(const id of new Set(running.map(bot=>bot.group_id))){
+   const [row]=await agent.db.query('SELECT * FROM runtime_groups WHERE id=$1',[id]);check();
+   assert.ok(row&&row.desired_state==='running');const group={...row},expected=await agent.host.record(id,'ai');assert.ok(expected);
+   const entry={group,expected,lease:undefined};groups.set(id,entry);
+   await wait(async()=>{
+    const current=await currentGroup(group),health=await agent.shared.request(current,'/health');check();
+    assert.equal(health.stopFence,true,'Worker has no atomic stop fence');
+    if(!health.activity?.idle)return false;
+    try{entry.lease=await prepareAiStop(agent,current,expected);return true}
+    catch(error){if(/HTTP 409/.test(String(error)))return false;throw error}
+   },'Worker idle boundary');
+  }
+  await sameProtocols();check();owner.phase='installing';attempted=true;
+  await apply();check();
+  for(const [id,entry]of groups){
+   await sameProtocols();check();const current=await currentGroup(entry.group);
+   const now=await agent.host.record(id,'ai');assert.deepEqual([now?.pid,now?.created],[entry.expected.pid,entry.expected.created],'AI owner changed');
+   const health=await agent.shared.request(current,'/health');check();
+   assert.ok(health.quiescing===true&&health.activity?.idle===true,'Worker lost its stop boundary');
+   // Record before stopping: a lost stop response still requires recovery.
+   affected.add(id);owner.phase='reloading';
+   await agent.host.stop(id,'ai','worker-update',{pid:entry.expected.pid,created:entry.expected.created});
+   await start(current);await wait(()=>ready(current),'new Worker readiness');
+  }
+  check();await sameProtocols();owner.phase='verifying';
+  const proof=await verify();check();
+  assert.ok(proof?.release===release&&proof.runtimeApplied===true&&proof.journalDigestsUnchanged===true,'Missing runtime and Journal verification');
+  for(const {group}of groups.values())assert.ok(await ready(group),'Worker no longer ready');
+  await sameProtocols();check();owner.phase='applied';
+  return{release,pid:process.pid,qqPreserved:protocols.size,workers:groups.size,proof};
+ }catch(error){
+  owner.phase='recovering';const errors=[error];failure=error;
+  // Roll code back before restoring Workers. Never repeat apply on timeout.
+  let restored=true;
+  if(attempted)try{await rollback()}catch(failure){errors.push(failure);restored=false}
+  for(const [id,entry]of groups)try{
+   if(affected.has(id)&&restored&&!agent.closed){
+    // A replacement may already run the rejected code. Fence its actual
+    // owner before stopping, then start against the restored release.
+    const current=await currentGroup(entry.group),record=await agent.host.record(id,'ai');
+    if(record&&await agent.host.inspect(id,'ai')){
+     const lease=await prepareAiStop(agent,current,record);
+     try{await agent.host.stop(id,'ai','worker-update-rollback',{pid:record.pid,created:record.created})}
+     catch(failure){await lease.cancel();throw failure}
+    }
+    await start(current);
+    const deadline=Date.now()+timeoutMs;
+    while(!await ready(current)){
+     if(agent.closed||Date.now()>=deadline)throw Error('Rollback Worker did not become ready');
+     await delay(50);
+    }
+   }
+  }catch(failure){errors.push(failure)}
+  if(errors.length>1){failure=new AggregateError(errors,'Worker update failed; recovery requires inspection');throw failure}
+  throw error;
+ }finally{
+  const errors=[];
+  for(const entry of groups.values())try{await entry.lease?.cancel()}catch(error){errors.push(error)}
+  clearInterval(pulse);await lastPulse;
+  // Restore descriptors even when cancellation/verification failed. Old
+  // model calls and external tasks keep their original owner and receipts.
+  restore(agent,'tick',tick);restore(autonomy,'tick',autonomyTick);
+  bili.stopped=biliStopped;favorites.closed=favoritesClosed;
+  if(agent[marker]===owner)delete agent[marker];
+  if(errors.length)throw new AggregateError([...(failure?[failure]:[]),...errors],'Worker update admission could not be reopened');
+ }
+}
