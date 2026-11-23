@@ -18,6 +18,22 @@ import {createFavoriteCaptioner} from '../../../packages/shared/qq-favorite-sema
 import {resolvePlatformModel} from '../../../packages/shared/platform-model.js';
 import {NapCatAdapter} from '../../../adapters/protocol/napcat/index.js';
 
+/** Replace only NapCat control methods; running native QQ keeps its snapshot. */
+export async function installNapcatEgressRuntime(agent:NodeAgent,release:string){
+ if(!/^[a-f0-9]{64}$/.test(release)||agent.closed)throw new Error('Invalid NapCat egress release');
+ const timer=agent.timer;if(timer)clearInterval(timer);agent.timer=undefined;
+ const target=agent.protocols.napcat;
+ const names=['settings','writeManifest','provision','beginLogin','getHealth'] as const;
+ const previous=names.map(name=>Object.getOwnPropertyDescriptor(target,name));
+ try{
+  const deadline=Date.now()+20000;while(controlBusy(agent)&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
+  if(controlBusy(agent)||agent.closed)throw new Error('NapCat control boundary is busy');
+  for(const name of names)Object.defineProperty(target,name,{value:(NapCatAdapter.prototype as any)[name],writable:true,configurable:true});
+  return{pid:process.pid,release,processOwnersPreserved:true,methods:names};
+ }catch(error){names.forEach((name,i)=>{if(previous[i])Object.defineProperty(target,name,previous[i]!);else delete (target as any)[name]});throw error}
+ finally{if(timer&&!agent.closed){agent.timer=setInterval(()=>void agent.tick().catch(error=>console.error('agent tick:',redact(String(error)))),500);agent.timer.unref()}}
+}
+
 /** QR-only patch: preserve the Agent, heartbeat, protocol pipes and AI owners. */
 export async function installQrSessionRuntime(agent:NodeAgent,release:string){
  if(!/^[a-f0-9]{64}$/.test(release)||agent.closed)throw new Error('Invalid QR session release');

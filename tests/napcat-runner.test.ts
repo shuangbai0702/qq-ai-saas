@@ -14,9 +14,12 @@ test('NapCat runner isolates QQ native profile, writable config and OneBot desti
   await writeFile(manifestPath,JSON.stringify({...prepared[0].manifest,reverseWs}));assert.throws(()=>runner.prepareRuntime(manifestPath),/reverseWs/);
  }
  assert.equal(JSON.parse(await readFile(path.join(prepared[0].workdir,'config/onebot11.json'),'utf8')).network.websocketClients[0].token,'a'.repeat(64),'rejected manifests leave config untouched');
+ await writeFile(manifestPath,JSON.stringify({...prepared[0].manifest,network:{mode:'socks5',host:'127.0.0.1',port:11973}}));const proxy=runner.prepareRuntime(manifestPath);assert.equal(proxy.env.NAPCAT_PROXY_PORT,'11973');assert.equal(proxy.env.NAPCAT_PROXY_CLOSE,'');
+ await writeFile(manifestPath,JSON.stringify({...prepared[0].manifest,network:{mode:'direct'}}));assert.equal(runner.prepareRuntime(manifestPath).env.NAPCAT_PROXY_CLOSE,'1');
+ await writeFile(manifestPath,JSON.stringify({...prepared[0].manifest,network:{mode:'socks5',host:'external.test',port:11973}}));assert.throws(()=>runner.prepareRuntime(manifestPath),/SOCKS5/);
 });
 test('NapCat startup remains alive without API readiness; no premature QR or online',async()=>{
- const root=await mkdtemp(path.join(os.tmpdir(),'fish-napcat-state-'));const adapter=new NapCatAdapter({inspect:async()=>({pid:123,rssBytes:100})}as any,root);const ctx:RuntimeContext={botId:'a',tenantId:'a',root,generation:1,revision:1,aiPort:24000,protocolPort:24002,token:'a',config:defaultConfig,apiKey:'',expectedUin:''};
+ const root=await mkdtemp(path.join(os.tmpdir(),'fish-napcat-state-'));const adapter=new NapCatAdapter({inspect:async()=>({pid:123,rssBytes:100}),record:async()=>null}as any,root);const ctx:RuntimeContext={botId:'a',tenantId:'a',root,generation:1,revision:1,aiPort:24000,protocolPort:24002,token:'a',config:defaultConfig,apiKey:'',expectedUin:''};
  (adapter as any).request=async()=>{throw new Error('ECONNREFUSED')};const startup=await adapter.getHealth(ctx);assert.equal(startup.alive,true);assert.equal(startup.ready,false);assert.equal(startup.online,false);
  (adapter as any).request=async()=>({isLogin:false,coreReady:false,qrcodeurl:''});assert.equal((await adapter.getLoginState(ctx)).state,'starting');
  for(const phase of ['generating_qrcode','waiting_qrcode','reconnecting']){

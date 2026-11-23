@@ -9,6 +9,11 @@ export function prepareRuntime(manifestPath) {
   // Agent-generated destination only: do not send the OneBot token elsewhere.
   const reverseUrl=typeof manifest?.reverseWs?.url==='string'?/^ws:\/\/127\.0\.0\.1:([1-9]\d{0,4})\/ws$/.exec(manifest.reverseWs.url):null;
   if(!reverseUrl||Number(reverseUrl[1])>65535||typeof manifest.reverseWs.token!=='string'||!/^[a-fA-F0-9]{64}$/.test(manifest.reverseWs.token))throw new Error('A private loopback reverseWs endpoint and hex64 token are required');
+  const network=manifest.network||{mode:'direct'};
+  if(network.mode!=='direct'&&(network.mode!=='socks5'||network.host!=='127.0.0.1'||!Number.isInteger(network.port)||network.port<1||network.port>65535))throw new Error('Invalid private NapCat SOCKS5 endpoint');
+  // QQ's native MSF proxy is configured before login by the pinned upstream.
+  // Explicit direct mode also clears a proxy retained in the native profile.
+  const networkEnv=network.mode==='socks5'?{NAPCAT_PROXY_ADDRESS:'127.0.0.1',NAPCAT_PROXY_PORT:String(network.port),NAPCAT_PROXY_CLOSE:''}:{NAPCAT_PROXY_ADDRESS:'',NAPCAT_PROXY_PORT:'',NAPCAT_PROXY_CLOSE:'1'};
   const dataDir=path.resolve(manifest.dataDir),root=path.dirname(path.resolve(manifestPath));
   if(dataDir!==path.join(root,'qq'))throw new Error('NapCat dataDir must belong to the bot manifest directory');
   const runtimeDir=path.resolve(manifest.runtimeDir||'');
@@ -31,7 +36,7 @@ export function prepareRuntime(manifestPath) {
   const files=new Set(['onebot11.json',...fs.readdirSync(configDir).filter(x=>/^onebot11_\d+\.json$/.test(x))]);
   for(const file of files)fs.writeFileSync(path.join(configDir,file),JSON.stringify(onebot,null,2),{mode:0o600});
   fs.writeFileSync(path.join(configDir,'webui.json'),JSON.stringify({host:'127.0.0.1',port:manifest.management.port,token:manifest.management.token,loginRate:3,accessControlMode:'whitelist',ipWhitelist:['127.0.0.1'],enableXForwardedFor:false}),{mode:0o600});
-  return {manifest,runtimeDir,qqProfile,workdir,home,env:{HOME:home,USERPROFILE:home,APPDATA:path.join(home,'AppData/Roaming'),LOCALAPPDATA:path.join(home,'AppData/Local'),XDG_CONFIG_HOME:path.join(home,'.config'),TMP:path.join(dataDir,'tmp'),TEMP:path.join(dataDir,'tmp'),TMPDIR:path.join(dataDir,'tmp'),NAPCAT_WORKDIR:workdir,NAPCAT_DISABLE_MULTI_PROCESS:'1',NAPCAT_DISABLE_PIPE:'1',NAPCAT_FORCE_NODE_PROCESS:'1',NAPCAT_WRAPPER_PATH:path.join(runtimeDir,'wrapper.node'),NAPCAT_QQ_PACKAGE_INFO_PATH:path.join(runtimeDir,'package.json'),...(fs.existsSync(path.join(runtimeDir,'config.json'))?{NAPCAT_QQ_VERSION_CONFIG_PATH:path.join(runtimeDir,'config.json')}:{}),...(process.platform==='linux'?{NAPCAT_PRELOAD_NODE_ADDON_PATH:path.join(runtimeDir,'node_addon.node')}:{} )}};
+  return {manifest,runtimeDir,qqProfile,workdir,home,env:{...networkEnv,HOME:home,USERPROFILE:home,APPDATA:path.join(home,'AppData/Roaming'),LOCALAPPDATA:path.join(home,'AppData/Local'),XDG_CONFIG_HOME:path.join(home,'.config'),TMP:path.join(dataDir,'tmp'),TEMP:path.join(dataDir,'tmp'),TMPDIR:path.join(dataDir,'tmp'),NAPCAT_WORKDIR:workdir,NAPCAT_DISABLE_MULTI_PROCESS:'1',NAPCAT_DISABLE_PIPE:'1',NAPCAT_FORCE_NODE_PROCESS:'1',NAPCAT_WRAPPER_PATH:path.join(runtimeDir,'wrapper.node'),NAPCAT_QQ_PACKAGE_INFO_PATH:path.join(runtimeDir,'package.json'),...(fs.existsSync(path.join(runtimeDir,'config.json'))?{NAPCAT_QQ_VERSION_CONFIG_PATH:path.join(runtimeDir,'config.json')}:{}),...(process.platform==='linux'?{NAPCAT_PRELOAD_NODE_ADDON_PATH:path.join(runtimeDir,'node_addon.node')}:{} )}};
 }
 
 export function isolateNativeProfile(runtime) {
