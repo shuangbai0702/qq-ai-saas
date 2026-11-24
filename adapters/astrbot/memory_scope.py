@@ -12,19 +12,6 @@ def value_hash(value):
     return hashlib.sha256(str(value).encode()).hexdigest()[:32]
 
 
-def memory_audience(context,record):
-    """Internal same-bot read, not permission to disclose to the destination.
-
-    Callers select relevant people from this bot's database first. Scope
-    provenance remains attached; identity and external tool permissions never
-    come from the text. Unknown origins cannot establish trusted provenance.
-    """
-    if not isinstance(context,dict) or not isinstance(record,dict):return False
-    origin=record.get('source_scope')
-    if isinstance(origin,str) and origin and origin==context.get('scope'):return True
-    return valid_scope(origin) and valid_scope(context.get('scope'))
-
-
 def retained_context_visible(db,messages,scope,owner=''):
     """Validate platform provenance without reclassifying internal reads.
 

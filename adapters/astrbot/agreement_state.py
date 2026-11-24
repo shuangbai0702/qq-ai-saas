@@ -28,6 +28,11 @@ def _user_filter(scope,subject):
     return (' WHERE '+' AND '.join(where) if where else ''),args
 
 
+def rebind_agreement_source_events(db,rowids,semantic_event):
+    """Owner-only source_event rebind when raw event IDs retire into a semantic batch."""
+    db.executemany('UPDATE memory_agreements SET source_event=? WHERE rowid=?',((semantic_event,rowid) for rowid in rowids))
+
+
 def user_record_count(db,scope='',subject=''):
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_agreements'").fetchone():return 0
     where,args=_user_filter(scope,subject)

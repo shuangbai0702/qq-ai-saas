@@ -5,13 +5,13 @@ import {AutonomyRepository,AutonomyConflict} from '../../../packages/database/au
 import {MAX_CURRENT_GOALS,AutonomyConfigSchema} from '../../../packages/contracts/autonomous.js';
 import {runtimeClient} from '../../../packages/shared/runtime-client.js';
 import {runtimeStatus} from '../../../packages/shared/runtime-status.js';
+import {requireAdmin} from './http-guards.js';
 
 /** Durable control only. No model request or QQ send runs in the public API. */
 export function registerAutonomous(app:FastifyInstance,db:Sql,owned:(req:any,id:string)=>Promise<any>){
  const repo=new AutonomyRepository(db);
- const admin=(req:any)=>{if(!req.user?.is_admin)throw Object.assign(new Error('需要管理员权限'),{statusCode:403})};
  app.get('/v1/admin/autonomous',async req=>{
-  admin(req);const {page,filter}=z.object({page:z.coerce.number().int().min(1).max(10000).default(1),filter:z.enum(['all','active','attention']).default('attention')}).strict().parse(req.query),pageSize=20;
+  requireAdmin(req);const {page,filter}=z.object({page:z.coerce.number().int().min(1).max(10000).default(1),filter:z.enum(['all','active','attention']).default('attention')}).strict().parse(req.query),pageSize=20;
   const pending="EXISTS(SELECT 1 FROM autonomy_cycles c WHERE c.bot_id=s.bot_id AND c.tenant_id=s.tenant_id AND c.finished_at IS NOT NULL AND c.work_expires_at IS NOT NULL AND (c.reason='lease_expired' OR c.decision->>'receiptPending'='true'))";
   const where=`WHERE b.deleted_at IS NULL AND ($1='all' OR $1='active' AND s.config->>'mode'='active' OR $1='attention' AND (${pending} OR s.last_error IS NOT NULL OR s.lease_until<now() OR s.runtime_epoch<>s.epoch))`;
   const [count]=await db.query(`SELECT count(*)::int AS total FROM autonomy_settings s JOIN bots b ON b.id=s.bot_id AND b.tenant_id=s.tenant_id ${where}`,[filter]);
@@ -19,13 +19,13 @@ export function registerAutonomous(app:FastifyInstance,db:Sql,owned:(req:any,id:
   return{items:rows.map(({health,desired_state,...s})=>({...s,online:runtimeStatus({health,desired_state}).online,fresh:runtimeStatus({health,desired_state}).fresh,automaticReceiptCheckSeconds:30,automaticReceiptCheckMaxSeconds:300,unknownPolicy:'核对同一动作的原回执；结果不明不重发。'})),total:count.total,page,pageSize};
  });
  app.post<{Params:{id:string}}>('/v1/admin/autonomous/:id/pause',async req=>{
-  admin(req);const id=z.string().uuid().parse(req.params.id),body=z.object({expectedEpoch:z.number().int().positive(),reason:z.string().trim().min(2).max(200)}).strict().parse(req.body);
+  requireAdmin(req);const id=z.string().uuid().parse(req.params.id),body=z.object({expectedEpoch:z.number().int().positive(),reason:z.string().trim().min(2).max(200)}).strict().parse(req.body);
   const [bot]=await db.query('SELECT id,tenant_id,generation,revision FROM bots WHERE id=$1 AND deleted_at IS NULL',[id]);if(!bot)throw Object.assign(new Error('机器人不存在'),{statusCode:404});
   const s=await repo.ensure(bot.tenant_id,bot.id);
   try{return await repo.configure(bot.tenant_id,bot.id,body.expectedEpoch,{...s.config,mode:'passive'},{actorId:req.user!.id,reason:body.reason})}catch(error){if(error instanceof AutonomyConflict)throw Object.assign(error,{statusCode:409});throw error}
  });
  app.get<{Params:{id:string}}>('/v1/admin/autonomous/:id/receipts',async req=>{
-  admin(req);const id=z.string().uuid().parse(req.params.id);
+  requireAdmin(req);const id=z.string().uuid().parse(req.params.id);
   const [bot]=await db.query('SELECT id,tenant_id,generation,revision FROM bots WHERE id=$1 AND deleted_at IS NULL',[id]);if(!bot)throw Object.assign(new Error('机器人不存在'),{statusCode:404});
   const pending=await repo.unconfirmed(bot.tenant_id,bot.id),call=runtimeClient(db),items=[];
   for(const work of pending){

@@ -4,6 +4,7 @@ import {runtimeStatus} from '../shared/runtime-status.js';
 import {digest} from '../shared/security.js';
 import {BilibiliConfigSchema,biliOperations,biliOperationAllowed,biliAccessAllowed,type BiliCall,type ToolResult} from '../contracts/bilibili.js';
 import {bilibiliModelConfigured,bilibiliModelRequired} from '../shared/bilibili-model.js';
+import {modelCredentialDestination} from '../shared/model-http.js';
 import {qqExternalBudget,qqExternalBudgetInTransaction} from './external-action-budget.js';
 import {cycleModelBudget} from './model-request-budget.js';
 
@@ -24,7 +25,11 @@ export class BilibiliTools {
  }
  async configure(tenant:string,bot:string,revision:number,config:unknown,modelSecret?:string|null){return this.db.transaction(async tx=>{
   await tx.query('SELECT id FROM bots WHERE id=$1 AND tenant_id=$2 FOR UPDATE',[bot,tenant]);
-  await this.settings(tenant,bot,tx);const rows=await tx.query('UPDATE bilibili_settings SET config=$4,revision=revision+1,model_secret=CASE WHEN $5 THEN $6 ELSE model_secret END,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND revision=$3 RETURNING revision',[bot,tenant,revision,JSON.stringify(BilibiliConfigSchema.parse(config)),modelSecret!==undefined,modelSecret??null]);
+  const saved=await this.settings(tenant,bot,tx);const parsed=BilibiliConfigSchema.parse(config);
+  if(saved.revision===revision&&modelSecret===undefined&&saved.model_secret&&modelCredentialDestination(saved.config.model.baseUrl)!==modelCredentialDestination(parsed.model.baseUrl)){
+   throw toolConflict('图片模型服务地址已更改，请输入对应的 API Key，或清除已保存的 Key',400);
+  }
+  const rows=await tx.query('UPDATE bilibili_settings SET config=$4,revision=revision+1,model_secret=CASE WHEN $5 THEN $6 ELSE model_secret END,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND revision=$3 RETURNING revision',[bot,tenant,revision,JSON.stringify(parsed),modelSecret!==undefined,modelSecret??null]);
   if(!rows.length)throw toolConflict('B站配置已变化，请刷新');return rows[0];
  })}
  async admit(bot:any,call:BiliCall,delegation?:{sessionId:string;delegationId:string;sessionDelegationId?:string}){
@@ -44,7 +49,7 @@ export class BilibiliTools {
   }
   await this.validate(record,s);
   if(call.operation==='analyze'){
-   const [model]=await this.db.query(`SELECT r.config,CASE WHEN r.config->>'platformModel'='true' THEN (${PLATFORM_CREDIT_AVAILABLE_SQL}) ELSE s.ciphertext IS NOT NULL END AS has_key FROM bot_config_revisions r LEFT JOIN secrets s ON s.bot_id=r.bot_id AND s.tenant_id=$3 WHERE r.bot_id=$1 AND r.revision=$2`,[bot.id,bot.revision,bot.tenant_id]);
+   const [model]=await this.db.query(`SELECT r.config,CASE WHEN r.config->>'platformModel'='true' THEN ((${PLATFORM_CREDIT_AVAILABLE_SQL}) OR (s.ciphertext IS NOT NULL AND coalesce(r.config->>'baseUrl','')<>'' AND coalesce(r.config->>'model','')<>'' AND r.config->>'model'<>'platform')) ELSE s.ciphertext IS NOT NULL END AS has_key FROM bot_config_revisions r LEFT JOIN secrets s ON s.bot_id=r.bot_id AND s.tenant_id=$3 WHERE r.bot_id=$1 AND r.revision=$2`,[bot.id,bot.revision,bot.tenant_id]);
    if(!bilibiliModelConfigured(s,model?.config,model?.has_key)&&!await this.rpc(bot,'get',{workId:call.workId,stepId:call.stepId}))throw Object.assign(toolConflict(bilibiliModelRequired),{code:'model_not_configured'});
   }
   return this.rpc(bot,'admit',{record});

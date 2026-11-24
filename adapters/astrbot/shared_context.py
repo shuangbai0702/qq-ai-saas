@@ -306,7 +306,7 @@ def queued(db,cfg,journal,group_limit=2,current=None):
 
 
 def settle_inputs(db,journal):
-    if getattr(journal,'has_staged',getattr(journal,'_staged',None) is not None):return
+    if getattr(journal,'has_staged',False):return
     known=[(o['scope'],str(o['event_id'])) for m in journal.last.base if (o:=source(m))] if journal.last else []
     db.executemany('DELETE FROM fishbot_shared_inputs WHERE scope=? AND event=?',known)
     window=getattr(journal,'shared_input_window',None)

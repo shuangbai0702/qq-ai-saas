@@ -388,8 +388,11 @@ def archive_authorized_scope(db,scope,expected_sha,authorization,release):
         db.execute("INSERT INTO fishbot_operator_session_archives VALUES(?,?,?,?,?,?,'available')",(authorization,key,release,encoded,hashlib.sha256(encoded.encode()).hexdigest(),time.time()))
         # These belong to the explicitly closed conversation, not the new
         # Journal. Archive first; preserve all task/dispatch/unknown evidence.
-        for name in ('memory_pending_rounds','memory_pending','memory_rounds','memory_round_material','fishbot_system_scope_contract'):
+        for name in ('memory_pending_rounds','memory_pending','memory_rounds','fishbot_system_scope_contract'):
             if name in tables:db.execute('DELETE FROM '+name+' WHERE scope=?',(scope,))
+        if 'memory_round_material' in tables:
+            import summary_material
+            summary_material.delete_round_material_scope(db,scope)
         if 'memory_reconstruction_checkpoints' in tables:
             db.execute("UPDATE memory_reconstruction_checkpoints SET state='invalidated' WHERE scope=? AND state IN ('available','pending_coverage')",(scope,))
         db.execute('DELETE FROM fishbot_readonly_journals WHERE scope=? AND sha=?',(key,expected_sha))

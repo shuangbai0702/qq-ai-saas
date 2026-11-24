@@ -1,13 +1,13 @@
 import type {FastifyInstance} from 'fastify';
 import {z} from 'zod';
 import type {Sql} from '../../../packages/database/index.js';
+import {requireAdmin} from './http-guards.js';
 
 export function registerReferralsAdmin(app:FastifyInstance,db:Sql){
- const admin=(req:any)=>{if(!req.user?.is_admin)throw Object.assign(new Error('需要管理员权限'),{statusCode:403})};
  const paging=z.object({q:z.string().trim().max(100).default(''),page:z.coerce.number().int().min(1).max(10000).default(1)});
  const pageSize=20;
  app.get('/v1/admin/referrals',async req=>{
-  admin(req);const {q,page}=paging.parse(req.query);
+  requireAdmin(req);const {q,page}=paging.parse(req.query);
   const where="WHERE ($1='' OR strpos(lower(u.email),lower($1))>0 OR strpos(lower(u.name),lower($1))>0)";
   const [count]=await db.query('SELECT count(*)::int AS total FROM users u '+where,[q]);
   const items=await db.query(`SELECT u.id,u.name,u.email,u.created_at,rc.user_id IS NOT NULL AS generated,
@@ -20,7 +20,7 @@ export function registerReferralsAdmin(app:FastifyInstance,db:Sql){
   return{items,total:count.total,page,pageSize};
  });
  app.get<{Params:{id:string}}>('/v1/admin/referrals/:id',async req=>{
-  admin(req);const id=z.uuid().parse(req.params.id),{page}=paging.parse(req.query);
+  requireAdmin(req);const id=z.uuid().parse(req.params.id),{page}=paging.parse(req.query);
   const [user]=await db.query('SELECT id,name,email FROM users WHERE id=$1',[id]);
   if(!user)throw Object.assign(new Error('用户不存在'),{statusCode:404});
   const [count]=await db.query('SELECT count(*)::int AS total FROM referral_rewards WHERE inviter_id=$1',[id]);

@@ -93,7 +93,7 @@ async def transcribe(st, scope, identifier, owner, call, current):
     except Exception as error:
         if not result_unavailable(error):raise
         await asyncio.sleep(RESULT_RETRY_DELAY)
-        if not current() or getattr(st, '_storage_closed', False):
+        if not current() or getattr(st, 'storage_closed', False):
             raise asyncio.CancelledError('voice_binding_changed')
         value = load(st.db, scope, identifier)
         if not value or value.get('owner') != owner or value.get('finished'):
@@ -146,14 +146,14 @@ async def _prepare(st, raw, call, current):
                 else:
                     finish(st.db, scope, identifier, owner, 'success', text.strip())
             except asyncio.CancelledError:
-                if not getattr(st,'_storage_closed',False):finish(st.db, scope, identifier, owner, 'unknown')
+                if not getattr(st,'storage_closed',False):finish(st.db, scope, identifier, owner, 'unknown')
                 raise
             except Exception as error:
                 # NapCat's PromiseTimer is also indeterminate, even when its
                 # translated error contains the word "failed".
                 uncertain = isinstance(error, (TimeoutError, ConnectionError, OSError)) or 'PromiseTimer' in str(error) or 'timeout' in str(error).lower()
                 reason = 'timeout_or_transport' if uncertain else ('qq_result_unavailable' if result_unavailable(error) else type(error).__name__[:80])
-                if not getattr(st,'_storage_closed',False):finish(st.db, scope, identifier, owner, 'unknown' if uncertain else 'failed', reason=reason)
+                if not getattr(st,'storage_closed',False):finish(st.db, scope, identifier, owner, 'unknown' if uncertain else 'failed', reason=reason)
             finally:
                 if not task.done():
                     task.add_done_callback(_observe_task_result)

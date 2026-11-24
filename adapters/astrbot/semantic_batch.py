@@ -231,8 +231,8 @@ def _purge_members(db,scope,members):
     unresolved=unresolved_retirement_inputs(db,tables,ambient)
     contact_columns={r[1] for r in db.execute('PRAGMA table_info(contacts)')} if 'contacts' in tables else set()
     events=set()
-    targets=('memory_pending','memory_round_material','memory_pending_rounds','memory_rounds','memory_message_sources')
-    for table in (*targets,'pipeline_scope_work','pipeline_work_inputs'):
+    targets=('memory_pending','memory_pending_rounds','memory_rounds')
+    for table in (*targets,'memory_round_material','memory_message_sources','pipeline_scope_work','pipeline_work_inputs'):
         if table in tables:
             for channel,identifier in db.execute('SELECT scope,event FROM '+table+(' WHERE scope=?' if scope!='bot_shared' else ''),(scope,) if scope!='bot_shared' else ()):
                 event=model_json([channel,str(identifier)]) if scope=='bot_shared' and channel!=scope else str(identifier)
@@ -300,13 +300,20 @@ def _purge_members(db,scope,members):
             if table in tables:
                 for logical,key in identities:
                     db.execute('DELETE FROM '+table+' WHERE scope=? AND event=?',(logical,key))
+        if 'memory_round_material' in tables:
+            import summary_material
+            summary_material.delete_round_material_events(db,identities)
         if 'memory_message_sources' in tables:
             import message_provenance
+            message_provenance.delete_event_rows(db,identities)
             message_provenance.delete_event_directions(db,scope,event)
         # Exact source and shared copies, never a TTL sweep.
-        for table in ('dialogue_feedback','social_samples','memory_pending','relation_evidence','relation_events','companion_seen'):
+        for table in ('dialogue_feedback','social_samples','memory_pending','relation_events','companion_seen'):
             if table in tables:
                 db.executemany('DELETE FROM '+table+' WHERE scope=? AND event=?',identities)
+        if 'relation_evidence' in tables:
+            import relationships
+            relationships.delete_relation_evidence_events(db,identities)
         if 'pipeline_quote_sources' in tables:
             db.executemany('DELETE FROM pipeline_quote_sources WHERE scope=? AND message=?',identities)
         active=bool('pipeline_work_inputs' in tables and db.execute("SELECT 1 FROM pipeline_work_inputs WHERE scope=? AND event=? AND status='owned'",(channel,identifier)).fetchone())
@@ -340,7 +347,11 @@ def _purge_members(db,scope,members):
             matching=indexed.pop((channel,identifier),[])
             if matching:
                 semantic='semantic:'+event_key(channel,identifier)
-                db.executemany('UPDATE '+table+' SET '+column+'=? WHERE rowid=?',((semantic,rowid) for rowid in matching))
+                if table=='memory_agreements':
+                    import agreement_state
+                    agreement_state.rebind_agreement_source_events(db,matching,semantic)
+                else:
+                    db.executemany('UPDATE '+table+' SET '+column+'=? WHERE rowid=?',((semantic,rowid) for rowid in matching))
                 indexed.setdefault((channel,semantic),[]).extend(matching)
     # Original ID lists are no longer model memory or checkpoint dependencies.
     if 'memory_summaries' in tables:

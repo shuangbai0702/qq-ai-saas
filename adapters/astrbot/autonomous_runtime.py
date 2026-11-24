@@ -572,7 +572,7 @@ class AutonomousRuntime:
             s=self.settings.get(id)
             if not s or self.closed:raise ValueError('stale_internal_work')
             st=self.store(id,s)
-            if getattr(st,'_closing',False):raise ValueError('stale_internal_work')
+            if getattr(st,'closing',False):raise ValueError('stale_internal_work')
             import pipeline_tools
             # Only authenticated Node IPC supplies this after checking every
             # intervening web audit/revision. Permissions and owner are unchanged.
@@ -582,7 +582,7 @@ class AutonomousRuntime:
         if operation!='cancel' and id in self.settings:
             lease=self.settings[id];st=self.store(id,lease)
             await st.wait_compression()
-            if self.settings.get(id) is not lease or getattr(st,'_closing',False):raise ValueError('stale_internal_work')
+            if self.settings.get(id) is not lease or getattr(st,'closing',False):raise ValueError('stale_internal_work')
         if operation=='policy':return self.install(id,data)
         if operation=='snapshot':return self.snapshot(id)
         if operation=='handoff_ack':

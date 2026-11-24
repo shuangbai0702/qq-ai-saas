@@ -17,7 +17,6 @@ import {registerAutonomousGoals} from './autonomous-goals.js';
 import {registerExecutionMemory} from './execution-memory.js';
 import {bilibiliModelConfigured} from '../../../packages/shared/bilibili-model.js';
 import {runtimeStatus} from '../../../packages/shared/runtime-status.js';
-import {modelCredentialDestination} from '../../../packages/shared/model-http.js';
 
 export function registerBilibili(app:FastifyInstance,db:Sql,key:Buffer,owned:(req:any,id:string)=>Promise<any>,root:string){
  const repo=new BilibiliTools(db),broker=new BiliAccounts(db,key,new BiliWeb());
@@ -27,7 +26,7 @@ export function registerBilibili(app:FastifyInstance,db:Sql,key:Buffer,owned:(re
   const [login]=await db.query('SELECT id,state,expires_at,updated_at FROM bilibili_logins WHERE bot_id=$1 AND tenant_id=$2',[b.id,b.tenant_id]);
   const [cooldown]=await db.query("SELECT until_at,reason FROM tool_service_cooldowns WHERE service='bilibili' AND until_at>now()");
   let mediaReady=false,mediaReason='媒体状态尚未核实',mediaDependencies:any=null;try{const raw=await readFile(path.join(root,'media-status.json'),'utf8');if(raw.length<4096){const m=JSON.parse(raw);mediaReady=m.ready===true&&Date.now()-m.at<15000;mediaDependencies=m;mediaReason=String(m.reason||mediaReason)}}catch{}
-  const [botModel]=await db.query(`SELECT r.config,CASE WHEN r.config->>'platformModel'='true' THEN (${PLATFORM_CREDIT_AVAILABLE_SQL}) ELSE s.ciphertext IS NOT NULL END AS has_key FROM bot_config_revisions r LEFT JOIN secrets s ON s.bot_id=r.bot_id AND s.tenant_id=$3 WHERE r.bot_id=$1 AND r.revision=$2`,[b.id,b.revision,b.tenant_id]);
+  const [botModel]=await db.query(`SELECT r.config,CASE WHEN r.config->>'platformModel'='true' THEN ((${PLATFORM_CREDIT_AVAILABLE_SQL}) OR (s.ciphertext IS NOT NULL AND coalesce(r.config->>'baseUrl','')<>'' AND coalesce(r.config->>'model','')<>'' AND r.config->>'model'<>'platform')) ELSE s.ciphertext IS NOT NULL END AS has_key FROM bot_config_revisions r LEFT JOIN secrets s ON s.bot_id=r.bot_id AND s.tenant_id=$3 WHERE r.bot_id=$1 AND r.revision=$2`,[b.id,b.revision,b.tenant_id]);
   const modelConfigured=bilibiliModelConfigured(s,botModel?.config,botModel?.has_key);
   const mediaExecutable=mediaReady&&modelConfigured;
   const workAvailable=runtimeStatus(b).online;
@@ -38,12 +37,6 @@ export function registerBilibili(app:FastifyInstance,db:Sql,key:Buffer,owned:(re
  app.put<{Params:{id:string}}>('/v1/bots/:id/bilibili',async req=>{
   const b=await owned(req,req.params.id),v=z.object({expectedRevision:z.number().int().positive(),config:BilibiliConfigSchema,modelKey:z.string().min(1).max(2000).regex(/^[^\r\n]+$/).optional(),clearModelKey:z.boolean().optional()}).strict().parse(req.body);
   const secret=v.clearModelKey?null:v.modelKey?encrypt(key,broker.scope(b.tenant_id,b.id,'model'),v.modelKey):undefined;
-  if(secret===undefined&&v.config.model.provider==='openai'){
-   const saved=await repo.settings(b.tenant_id,b.id);
-   if(saved.revision===v.expectedRevision&&saved.model_secret&&modelCredentialDestination(saved.config.model.baseUrl)!==modelCredentialDestination(v.config.model.baseUrl)){
-    throw Object.assign(new Error('图片模型服务地址已更改，请输入对应的 API Key，或清除已保存的 Key'),{statusCode:400});
-   }
-  }
   return repo.configure(b.tenant_id,b.id,v.expectedRevision,v.config,secret);
  });
  app.post<{Params:{id:string}}>('/v1/bots/:id/bilibili/login',async req=>{

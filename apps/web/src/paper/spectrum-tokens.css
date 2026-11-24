@@ -24,7 +24,7 @@
   --hover-link:studio-sweep;
 }
 
-:is(.spectrum,.paper-spectrum) {
+.paper-spectrum {
   --ink-wash:linear-gradient(96deg,#d78798 0%,#e7b5a6 30%,#ead8b8 52%,#9cccb9 76%,#66b0a5 100%);
   --rg-rose:#d98b9b;
   --rg-mint:#67b2a4;

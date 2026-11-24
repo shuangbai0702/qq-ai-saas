@@ -90,7 +90,7 @@ class BehaviorStore:
         self.semantic_worker=None
         self.voice_inflight={}
         self.closing=False
-        self._storage_closed=False
+        self.storage_closed=False
 
     def conversation_pending(self):
         if self.active or self.ingress or self.batches or self.waiting or any(s['users'] for s in self.scope_turns.values()):return True
@@ -192,8 +192,8 @@ class BehaviorStore:
         self.close_storage()
 
     def close_storage(self):
-        if self._storage_closed:return
-        self._storage_closed=True
+        if self.storage_closed:return
+        self.storage_closed=True
         probe=self.model_probe_task
         if probe and not probe.done():probe.cancel()
         self.pipeline.close();self.planner.close();self.memory.close();self.reflection.close();self.social.close();autonomy.recover_unstarted(self.db);self.db.close()

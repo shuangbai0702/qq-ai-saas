@@ -31,7 +31,7 @@ import {modelCredentialDestination} from '../../../packages/shared/model-http.js
 import {platformModelPath} from '../../../packages/shared/platform-model.js';
 import Fastify from 'fastify';import cookie from '@fastify/cookie';import rateLimit from '@fastify/rate-limit';import serveStatic from '@fastify/static';import {z} from 'zod';
 import {randomBytes,randomUUID} from 'node:crypto';import path from 'node:path';import os from 'node:os';import {mkdir,access,open,readFile,rm} from 'node:fs/promises';import QRCode from 'qrcode';
-import {openDatabase,configuredDatabaseUrl,hasEncryptedSecrets,type Sql} from '../../../packages/database/index.js';import {hashPassword,verifyPassword,digest,loadKey,encrypt,redact,safeSubprocessEnv} from '../../../packages/shared/security.js';import {defaultConfig,BotConfigSchema,ProtocolSchema,personas,terminalLogin} from '../../../packages/contracts/index.js';import type {NodeAgent} from '../../node-agent/src/agent.js';
+import {openDatabase,configuredDatabaseUrl,hasEncryptedSecrets,platformCreditAvailableSql,type Sql} from '../../../packages/database/index.js';import {hashPassword,verifyPassword,digest,loadKey,encrypt,redact,safeSubprocessEnv} from '../../../packages/shared/security.js';import {defaultConfig,BotConfigSchema,ProtocolSchema,personas,terminalLogin} from '../../../packages/contracts/index.js';import type {NodeAgent} from '../../node-agent/src/agent.js';
 import {createEmbeddedRuntimeControl,createExternalRuntimeControl} from './bot-runtime-reader.js';
 import {httpError,mockProtocolAllowed,requireAdmin} from './http-guards.js';
 declare module 'fastify'{interface FastifyRequest{user?:{id:string;email:string;name:string;is_admin:boolean;tenant_id:string}}}
@@ -100,8 +100,8 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
  registerPlatformModel(app,db,key,platformModels,options.platformModelTransport);
  registerReferrals(app,db,platformModels.available,key);
  registerActivities(app,db,platformModels.available);
- async function requirePlatformCredit(config:z.infer<typeof BotConfigSchema>,tenantId:string,tx:Sql){
-  if(config.platformModel&&(!await platformModels.available(tx)||!(await creditBalance(tx,tenantId)).granted))fail('当前工作区暂无平台模型额度，请前往活动专区领取或查看邀请奖励',403);
+ async function requirePlatformCredit(config:z.infer<typeof BotConfigSchema>,tenantId:string,tx:Sql,alreadyPlatform=false){
+  if(config.platformModel&&(!await platformModels.available(tx)||(!alreadyPlatform&&!(await creditBalance(tx,tenantId)).available)))fail('当前工作区暂无平台模型额度，请前往活动专区领取或查看邀请奖励',403);
  }
  app.get('/v1/health',async()=>{await db.query('SELECT 1');return{ok:true,publicOrigin:process.env.APP_ORIGIN||''}});
  app.post('/v1/auth/register',{config:{rateLimit:{max:10,timeWindow:'1 minute'}}},async(req,reply)=>{
@@ -128,7 +128,7 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
  registerInvitations(app,db);
  registerCharacterCardLibrary(app,db);
  registerModelCatalog(app,runtime,owned);
- app.get('/v1/bots',async req=>({items:await db.query("SELECT b.*,q.qq_uin,r.config->>'personaId' AS persona_id,CASE WHEN r.config->>'platformModel'='true' THEN 'platform' ELSE r.config->>'model' END AS model_id,(r.config->>'platformModel'='true' OR EXISTS(SELECT 1 FROM secrets s WHERE s.bot_id=b.id)) IS TRUE AS has_key FROM bots b LEFT JOIN qq_bindings q ON q.bot_id=b.id LEFT JOIN bot_config_revisions r ON r.bot_id=b.id AND r.revision=b.revision WHERE b.tenant_id=$1 AND b.deleted_at IS NULL ORDER BY b.created_at DESC",[req.user!.tenant_id]),quota:await getBotQuota(db,req.user!.tenant_id)}));
+ app.get('/v1/bots',async req=>({items:await db.query(`SELECT b.*,q.qq_uin,r.config->>'personaId' AS persona_id,CASE WHEN r.config->>'platformModel'='true' THEN 'platform' ELSE r.config->>'model' END AS model_id,(CASE WHEN r.config->>'platformModel'='true' THEN ((${platformCreditAvailableSql('b.tenant_id')}) OR (EXISTS(SELECT 1 FROM secrets s WHERE s.bot_id=b.id AND s.tenant_id=b.tenant_id) AND coalesce(r.config->>'baseUrl','')<>'' AND coalesce(r.config->>'model','')<>'' AND r.config->>'model'<>'platform')) ELSE EXISTS(SELECT 1 FROM secrets s WHERE s.bot_id=b.id AND s.tenant_id=b.tenant_id) END) IS TRUE AS has_key FROM bots b LEFT JOIN qq_bindings q ON q.bot_id=b.id LEFT JOIN bot_config_revisions r ON r.bot_id=b.id AND r.revision=b.revision WHERE b.tenant_id=$1 AND b.deleted_at IS NULL ORDER BY b.created_at DESC`,[req.user!.tenant_id]),quota:await getBotQuota(db,req.user!.tenant_id)}));
  app.post('/v1/bots',{config:{rateLimit:{max:10,timeWindow:'1 minute'}}},async(req,reply)=>{const v=z.object({name:z.string().trim().min(1).max(80),protocol:ProtocolSchema.default('napcat'),runtimeMode:z.enum(['dedicated','shared']).default('shared'),expectedUin:z.string().regex(/^\d{5,20}$|^$/).default(''),config:BotConfigSchema.default(defaultConfig),apiKey:modelKeyInput}).parse(req.body);if(v.protocol==='mock'&&!mockProtocolAllowed())fail('生产环境已禁用模拟协议',400);const id=randomUUID();
    v.config.behavior.groupParticipationGroups=v.config.behavior.groupParticipationGroups.filter(group=>v.config.groups.includes(group));
    if(!v.config.groups.length)v.config.behavior.groupParticipationEnabled=false;
@@ -147,7 +147,7 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
    catch(error){await db.transaction(async tx=>{await tx.query('DELETE FROM autonomy_settings WHERE bot_id=$1',[id]);await tx.query('DELETE FROM secrets WHERE bot_id=$1',[id]);await tx.query('DELETE FROM instances WHERE bot_id=$1',[id]);await tx.query('DELETE FROM bot_config_revisions WHERE bot_id=$1',[id]);await tx.query('DELETE FROM bots WHERE id=$1',[id])}).catch(()=>{});await rm(path.join(root,'bots',id),{recursive:true,force:true}).catch(()=>{});throw error}
    await audit(req,'bot.created',id);reply.code(201);return{id};
  });
- app.get<{Params:{id:string}}>('/v1/bots/:id',async req=>{const bot=await owned(req,req.params.id);const [revision]=await db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[bot.id,bot.revision]);const secret=(await db.query('SELECT id FROM secrets WHERE bot_id=$1 AND tenant_id=$2',[bot.id,req.user!.tenant_id])).length>0;return{bot,config:revision.config,hasKey:revision.config.platformModel?await platformModels.available():secret,hasPersonalKey:secret,capabilities:runtime.protocolCapabilities(bot.protocol),commands:await db.query('SELECT id,kind,status,error,created_at,idempotency_key FROM commands WHERE bot_id=$1 ORDER BY created_at DESC LIMIT 10',[bot.id])}});
+ app.get<{Params:{id:string}}>('/v1/bots/:id',async req=>{const bot=await owned(req,req.params.id);const [revision]=await db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[bot.id,bot.revision]);const secret=(await db.query('SELECT id FROM secrets WHERE bot_id=$1 AND tenant_id=$2',[bot.id,req.user!.tenant_id])).length>0;const personalReady=secret&&Boolean(revision.config?.baseUrl?.trim()&&revision.config?.model?.trim()&&revision.config?.model!=='platform');const hasKey=revision.config.platformModel?((await platformModels.available()&&(await creditBalance(db,req.user!.tenant_id)).available>0)||personalReady):secret;return{bot,config:revision.config,hasKey,hasPersonalKey:secret,capabilities:runtime.protocolCapabilities(bot.protocol),commands:await db.query('SELECT id,kind,status,error,created_at,idempotency_key FROM commands WHERE bot_id=$1 ORDER BY created_at DESC LIMIT 10',[bot.id])}});
  async function saveConfig(req:any,cardsOnly=false){
   let body=req.body;
   if(cardsOnly){const value=z.object({expectedRevision:z.number().int(),characterCards:CharacterCardsSchema}).strict().parse(body);const bot=await owned(req,req.params.id);const [row]=await db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[bot.id,bot.revision]);body={expectedRevision:value.expectedRevision,name:bot.name,expectedUin:bot.expected_uin||'',config:{...row.config,characterCards:value.characterCards}};}
@@ -178,7 +178,7 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
      cardsChanged=!isDeepStrictEqual(prior.config.characterCards,v.config.characterCards);
      const withoutCards=(config:any)=>Object.fromEntries(Object.entries(config).filter(([key])=>key!=='characterCards'));
      cardsOnlyChange=cardsChanged&&!v.apiKey&&!v.clearKey&&isDeepStrictEqual(withoutCards(prior.config),withoutCards(v.config));
-     if(!cardsOnlyChange)await requirePlatformCredit(v.config,req.user!.tenant_id,tx);
+     if(!cardsOnlyChange)await requirePlatformCredit(v.config,req.user!.tenant_id,tx,Boolean(prior?.config?.platformModel));
      const withoutPersona=(config:any)=>Object.fromEntries(Object.entries(config).filter(([key])=>key!=='systemPrompt'));
      personaOnly=prior?.config?.systemPrompt!==v.config.systemPrompt&&!v.apiKey&&!v.clearKey&&isDeepStrictEqual(withoutPersona(prior.config),withoutPersona(v.config));
      const withoutTools=(config:any)=>Object.fromEntries(Object.entries(config).filter(([key])=>!['toolPrompts','delegatedCapabilities'].includes(key)));

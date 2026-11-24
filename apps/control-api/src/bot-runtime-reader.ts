@@ -5,7 +5,10 @@ import type { Sql } from '../../../packages/database/index.js';
 import { decrypt } from '../../../packages/shared/security.js';
 import { resolvePlatformModel } from '../../../packages/shared/platform-model.js';
 import { runtimeIpc } from '../../../packages/shared/runtime-ipc.js';
-import type { MockProtocolAdapter } from '../../../adapters/mock/index.js';
+
+interface MockProtocolPort extends ProtocolAdapter {
+  call(ctx: ProtocolContext, route: string, body?: unknown): Promise<any>;
+}
 
 export interface EmbeddedAgentPort {
   host: { python: string; inspect(id: string, role: 'ai' | 'protocol'): Promise<unknown> };
@@ -241,7 +244,7 @@ export function createEmbeddedRuntimeControl(agent: EmbeddedAgentPort): RuntimeC
       return agent.applyUserTools(botId, tenantId);
     },
     async mockTransition(bot, body) {
-      const adapter = agent.protocols.mock as MockProtocolAdapter;
+      const adapter = agent.protocols.mock as MockProtocolPort;
       return adapter.call(await agent.protocolContext(bot), '/transition', body);
     },
   };

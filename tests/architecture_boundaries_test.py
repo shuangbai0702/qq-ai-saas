@@ -144,28 +144,66 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             'memory_message_sources': 'message_provenance.py',
         }
         violators = []
-        for table, owner in owners.items():
-            write_re = re.compile(rf'(?:CREATE\s+TABLE|INSERT(?:\s+OR\s+\w+)?\s+INTO|UPDATE|DELETE\s+FROM)\b[^\n;]*\b{table}\b', re.I)
-            for path in sorted(ASTRBOT_DIR.glob('*.py')):
-                if path.name == owner:
-                    continue
-                if write_re.search(path.read_text('utf-8')):
-                    violators.append(f'{table}:{path.name} (owner={owner})')
+        for path in sorted(ASTRBOT_DIR.glob('*.py')):
+            source = path.read_text('utf-8')
+            tree = ast.parse(source)
+            # 1. Inspect every SQL string literal (including multiline strings) for write DDL/DML.
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    for stmt in node.value.split(';'):
+                        for table, owner in owners.items():
+                            if path.name == owner:
+                                continue
+                            if re.search(rf'(?:CREATE\s+TABLE|INSERT(?:\s+OR\s+\w+)?\s+INTO|UPDATE|DELETE\s+FROM)\b[^;]*?\b{table}\b', stmt, re.I | re.S):
+                                violators.append(f'{table}:{path.name}:{node.lineno} (owner={owner})')
+            # 2. Inspect dynamic `for <var> in <iterable>:` loops whose body runs DELETE/UPDATE on `<var>`.
+            assigned_tuples = {}
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                    if isinstance(node.value, (ast.Tuple, ast.List)):
+                        lits = [e.value for e in node.value.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+                        if lits:
+                            assigned_tuples[node.targets[0].id] = lits
+            for node in ast.walk(tree):
+                if isinstance(node, ast.For) and isinstance(node.target, ast.Name):
+                    loop_var = node.target.id
+                    tables_in_loop = []
+                    if isinstance(node.iter, (ast.Tuple, ast.List)):
+                        tables_in_loop = [e.value for e in node.iter.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+                    elif isinstance(node.iter, ast.Name) and node.iter.id in assigned_tuples:
+                        tables_in_loop = assigned_tuples[node.iter.id]
+                    if not tables_in_loop:
+                        continue
+                    body_src = ast.get_source_segment(source, node) or ''
+                    if re.search(rf"""(?:DELETE\s+FROM\s+['"]\s*\+\s*{re.escape(loop_var)}|UPDATE\s+['"]\s*\+\s*{re.escape(loop_var)})""", body_src, re.I):
+                        for table in tables_in_loop:
+                            owner = owners.get(table)
+                            if owner and path.name != owner:
+                                violators.append(f'{table}:dynamic:{path.name}:{node.lineno} (owner={owner})')
         self.assertEqual(violators, [], f'Single-owner SQLite table violations: {violators}')
 
     def test_no_cross_module_private_store_journal_access(self):
         pat = re.compile(r'\b(store|st|journal|j)\._([a-zA-Z][a-zA-Z0-9_]*)')
+        target_names = {'store', 'st', 'journal', 'j'}
         violators = []
         for path in sorted(ASTRBOT_DIR.glob('*.py')):
-            for i, line in enumerate(path.read_text('utf-8').splitlines(), 1):
+            source = path.read_text('utf-8')
+            for i, line in enumerate(source.splitlines(), 1):
                 if line.lstrip().startswith('#'):
                     continue
                 for m in pat.finditer(line):
                     violators.append(f'{path.name}:{i}:{m.group(0)}')
+            tree = ast.parse(source)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ('getattr', 'setattr', 'hasattr'):
+                    if len(node.args) >= 2 and isinstance(node.args[0], ast.Name) and node.args[0].id in target_names:
+                        attr = node.args[1]
+                        if isinstance(attr, ast.Constant) and isinstance(attr.value, str) and attr.value.startswith('_') and not attr.value.startswith('__'):
+                            violators.append(f'{path.name}:{node.lineno}:{node.func.id}({node.args[0].id}, {attr.value!r})')
         self.assertEqual(violators, [], f'Cross-module private store/journal attribute access found: {violators}')
 
     def test_legacy_hold_rounds_migrated_not_silently_dropped(self):
-        import json, sqlite3, time
+        import json, sqlite3
         if str(ASTRBOT_DIR) not in sys.path:
             sys.path.insert(0, str(ASTRBOT_DIR))
         from memory_reflection import Reflection
@@ -174,20 +212,39 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         db.execute("INSERT INTO memory_hold_rounds VALUES('group:12345','ev-old-1',7,'missing_full_original',1700000000.0)")
         db.execute('CREATE TABLE memory_summary_unresolved(scope TEXT,event TEXT,summary_id INTEGER,digest TEXT)')
         db.execute("INSERT INTO memory_summary_unresolved VALUES('private:99999','ev-unres-2',3,'abc')")
+        db.execute("INSERT INTO memory_summary_unresolved VALUES('private:99999','ev-unres-2',4,'def')")
         db.commit()
         Reflection(db)
         tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertNotIn('memory_hold_rounds', tables)
         self.assertNotIn('memory_summary_unresolved', tables)
-        issues = db.execute('SELECT scope,kind,status,detail FROM memory_checkpoint_issues ORDER BY kind').fetchall()
-        self.assertEqual(len(issues), 2)
+        issues = db.execute('SELECT scope,checkpoint_id,kind,status,detail FROM memory_checkpoint_issues ORDER BY kind').fetchall()
+        self.assertEqual(len(issues), 3)
         self.assertEqual(issues[0][0], 'group:12345')
-        self.assertEqual(issues[0][1], 'legacy_hold_round:ev-old-1')
-        self.assertEqual(issues[0][2], 'open')
-        self.assertEqual(json.loads(issues[0][3])['reason'], 'missing_full_original')
+        self.assertEqual(issues[0][2], 'legacy_hold_round:ev-old-1')
+        self.assertEqual(issues[0][3], 'open')
+        d0 = json.loads(issues[0][4])
+        self.assertEqual(d0['reason'], 'missing_full_original')
+        self.assertEqual(d0['round_id'], 7)
         self.assertEqual(issues[1][0], 'private:99999')
-        self.assertEqual(issues[1][1], 'legacy_summary_unresolved:ev-unres-2')
+        self.assertEqual(issues[1][1], 3)
+        self.assertEqual(issues[1][2], 'legacy_summary_unresolved:ev-unres-2:3')
+        self.assertEqual(json.loads(issues[1][4])['digest'], 'abc')
+        self.assertEqual(issues[2][1], 4)
+        self.assertEqual(issues[2][2], 'legacy_summary_unresolved:ev-unres-2:4')
+        self.assertEqual(json.loads(issues[2][4])['digest'], 'def')
         db.close()
+
+        # Unknown legacy schema with rows must never be silently dropped.
+        db2 = sqlite3.connect(':memory:')
+        db2.execute('CREATE TABLE memory_hold_rounds(unexpected_col TEXT)')
+        db2.execute("INSERT INTO memory_hold_rounds VALUES('keep-me')")
+        db2.commit()
+        Reflection(db2)
+        tables2 = {r[0] for r in db2.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertIn('memory_hold_rounds', tables2)
+        self.assertEqual(db2.execute('SELECT unexpected_col FROM memory_hold_rounds').fetchall(), [('keep-me',)])
+        db2.close()
 
     def test_retired_tables_not_recreated(self):
         violators = []

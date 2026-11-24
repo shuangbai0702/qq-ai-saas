@@ -11,7 +11,7 @@ class GroupQueueWindow(unittest.TestCase):
     def setUp(self):
         self.db=sqlite3.connect(':memory:');shared.initialize(self.db)
         self.cfg={'groupParticipationGroups':['12345','23456']}
-        self.j=NS(last=None,_staged=None)
+        self.j=NS(last=None,has_staged=False)
         self.messages={}
     def tearDown(self):self.db.close()
     def add(self,scope,event):
@@ -47,10 +47,10 @@ class GroupQueueWindow(unittest.TestCase):
         selected=shared.queued(self.db,self.cfg,self.j)
         shared.settle_inputs(self.db,self.j)
         self.assertEqual(self.count(),20)
-        self.j.last=NS(base=copy.deepcopy(selected));self.j._staged=object()
+        self.j.last=NS(base=copy.deepcopy(selected));self.j.has_staged=True
         shared.settle_inputs(self.db,self.j)
         self.assertEqual(self.count(),20,'staged view cannot prove the omitted rows handed over')
-        self.j._staged=None;shared.settle_inputs(self.db,self.j)
+        self.j.has_staged=False;shared.settle_inputs(self.db,self.j)
         self.assertEqual(self.count(),0)
     def test_adoption_reclaims_old_queue_not_new_arrivals_or_business_evidence(self):
         self.db.execute('CREATE TABLE memory_pending(scope,event,question)')

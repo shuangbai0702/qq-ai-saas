@@ -38,15 +38,7 @@ def is_transport_notification(raw):
         raw.get('notice_type')=='notify' and raw.get('sub_type') in ('input_status','poke'))
 
 
-def protocol_input_scope(raw):
-    """Protocol scope without inventing a message ID for notice/request."""
-    kind=raw.get('post_type','message')
-    if kind=='message':
-        mode=raw.get('message_type')
-        return 'group:'+str(raw['group_id']) if mode=='group' and raw.get('group_id') else 'private:'+str(raw['user_id']) if mode=='private' and raw.get('user_id') else None
-    if kind in ('notice','request') and raw.get('user_id'):
-        return 'group:'+str(raw['group_id']) if raw.get('group_id') else 'private:'+str(raw['user_id'])
-    return None
+from context_protocol import protocol_input_scope
 
 
 def raw_mentions_self(raw,self_id):

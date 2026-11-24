@@ -787,6 +787,16 @@ def uncarried_sources(rows,kept):
     return result
 
 
+def delete_round_material_events(db,identities):
+    """Owner-only retirement of hot round material rows for settled events."""
+    db.executemany('DELETE FROM memory_round_material WHERE scope=? AND event=?',identities)
+
+
+def delete_round_material_scope(db,scope):
+    """Owner-only scope cleanup after operator session archival."""
+    db.execute('DELETE FROM memory_round_material WHERE scope=?',(scope,))
+
+
 def summary_claims(db,identifier):
     """Read one summary's claims; v1 rows (schema_version=1, NULL claims) have
     none and are never back-filled with invented claims (D4.8)."""

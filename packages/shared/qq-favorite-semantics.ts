@@ -77,7 +77,7 @@ export function createFavoriteCaptioner(db:Sql,key:Buffer,root:string,transport=
     if(Number(/MemAvailable:\s+(\d+)/.exec(mem)?.[1]||0)<576*1024||Number(/^full avg10=([\d.]+)/m.exec(psi)?.[1]||0)>5)throw new Error('favorite_annotation_pressure');
    }
    const [b]=await db.query('SELECT b.*,q.qq_uin,c.config,s.ciphertext FROM bots b JOIN qq_bindings q ON q.bot_id=b.id JOIN bot_config_revisions c ON c.bot_id=b.id AND c.revision=b.revision LEFT JOIN secrets s ON s.bot_id=b.id AND s.tenant_id=b.tenant_id WHERE b.id=$1 AND b.deleted_at IS NULL',[bot.id]);
-   if(!b||b.generation!==bot.generation||b.qq_uin!==bot.qq_uin||!b.config.baseUrl||!b.config.model)throw new Error('favorite_model_unavailable');
+   if(!b||b.generation!==bot.generation||b.qq_uin!==bot.qq_uin||(!b.config.platformModel&&(!b.config.baseUrl||!b.config.model)))throw new Error('favorite_model_unavailable');
    // Annotation is independent of chat/Journal execution. A busy-chat veto can
    // starve the very picture being requested. The owner bounds concurrency;
    // memory pressure, cancellation and identity checks still apply here.

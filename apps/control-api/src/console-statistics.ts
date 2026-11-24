@@ -4,11 +4,12 @@ import {execFile} from 'node:child_process';
 import path from 'node:path';
 import {z} from 'zod';
 import type {Sql} from '../../../packages/database/index.js';
+import {requireAdmin} from './http-guards.js';
 
 export function registerConsoleStatistics(app:FastifyInstance,db:Sql,root:string){
  let active=0;
  app.get<{Params:{id:string}}>('/v1/admin/bots/:id/statistics',{config:{rateLimit:{max:30,timeWindow:'1 minute'}}},async(req,reply)=>{
-  if(!req.user?.is_admin)return reply.code(403).send({error:'需要管理员权限'});
+  requireAdmin(req);
   const parsed=z.uuid().safeParse(req.params.id);
   if(!parsed.success)return reply.code(400).send({error:'机器人 ID 无效'});
   const id=parsed.data;

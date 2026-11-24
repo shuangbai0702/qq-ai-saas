@@ -891,7 +891,8 @@ def install_runtime(core,settings):
             care.stamp(s['root']);generation=s.get('generation');stamps=metrics.setdefault(id,{})
             bot_pipeline.stage(event,'context')
             from incoming_media import attach_recent
-            recent_image=await attach_recent(event,st.db,s,lambda:delivery_current(event),journal=st.model_journals.get(scope))
+            from shared_context import JOURNAL_SCOPE
+            recent_image=await attach_recent(event,st.db,s,lambda:delivery_current(event),journal=st.model_journals.get(JOURNAL_SCOPE if st.shared_context else scope))
             if not delivery_current(event):return
             for k in ('received','requests','replies','failures'):stamps.setdefault(k,0)
             stamps['received']+=1
@@ -1667,7 +1668,7 @@ def install_runtime(core,settings):
         from voice_inputs import prepare
         lease=settings[id];st=store(id,lease)
         platform=next(p for p in core.platform_manager.get_insts() if p.meta().id==id)
-        return await prepare(st,raw,platform.bot.call_action,lambda:settings.get(id) is lease and not getattr(st,'_closing',False))
+        return await prepare(st,raw,platform.bot.call_action,lambda:settings.get(id) is lease and not getattr(st,'closing',False))
     runtime={'manage':manage,'stores':stores,'metrics':metrics,'release':release,'close':close,'autonomous':brain.handle,'drain':brain.drain,'activity':lambda:care.status(core),'settle_work_round':settle_work_round,'retain_ingress':retain_ingress,'acquire_raw_ingress':acquire_raw_ingress}
     from model_cache import loaded_build
     runtime['build']=loaded_build()

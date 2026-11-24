@@ -22,6 +22,11 @@ def initialize(db):
     return migrate(db)
 
 
+def delete_relation_evidence_events(db,identities):
+    """Owner-only retirement of relation evidence rows for settled events."""
+    db.executemany('DELETE FROM relation_evidence WHERE scope=? AND event=?',identities)
+
+
 def migrate(db):
     """Atomic one-time merge. Preserve the old table in a rollback artifact only."""
     info=db.execute('PRAGMA table_info(relations)').fetchall()

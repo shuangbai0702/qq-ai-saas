@@ -25,21 +25,21 @@ async function collectTsFiles(dir: string, out: string[] = []): Promise<string[]
     if (entry.name === 'node_modules' || entry.name === 'dist') continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) await collectTsFiles(full, out);
-    else if (entry.name.endsWith('.ts') || entry.name.endsWith('.tsx')) out.push(path.resolve(full));
+    else if (entry.name.endsWith('.ts') || entry.name.endsWith('.tsx') || entry.name.endsWith('.mjs')) out.push(path.resolve(full));
   }
   return out;
 }
 
-const IMPORT_RE = /(?:import|export)\s+(?:[^'"]*?\s+from\s+)?['"]([^'"]+)['"]/g;
+const IMPORT_RE = /(?:import|export)\s+(?:[^'"]*?\s+from\s+)?['"]([^'"]+)['"]|(?:import|require)\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
 
 function resolveSpec(src: string, spec: string, known: Set<string>): string | null {
   if (spec.endsWith('.css') || spec.endsWith('.json') || spec.endsWith('.svg') || spec.endsWith('.png')) return null;
   if (spec.startsWith('.')) {
     const base = path.resolve(path.dirname(src), spec);
-    const candidates = [base, `${base}.ts`, `${base}.tsx`, path.join(base, 'index.ts'), path.join(base, 'index.tsx')];
+    const candidates = [base, `${base}.ts`, `${base}.tsx`, `${base}.mjs`, path.join(base, 'index.ts'), path.join(base, 'index.tsx')];
     if (spec.endsWith('.js')) {
       const stem = path.resolve(path.dirname(src), spec.slice(0, -3));
-      candidates.unshift(`${stem}.ts`, `${stem}.tsx`);
+      candidates.unshift(`${stem}.ts`, `${stem}.tsx`, `${stem}.mjs`);
     }
     for (const c of candidates) if (known.has(c)) return c;
   }
@@ -94,7 +94,8 @@ test('TypeScript subsystem boundaries: zero cycles and zero layer inversions', a
     const text = await readFile(file, 'utf8');
     const edges = new Set<string>();
     for (const match of text.matchAll(IMPORT_RE)) {
-      const target = resolveSpec(file, match[1], known);
+      const spec = match[1] || match[2];
+      const target = resolveSpec(file, spec, known);
       if (!target || target === file) continue;
       edges.add(target);
       const targetRel = path.relative(ROOT, target).replace(/\\/g, '/');
@@ -117,11 +118,20 @@ test('TypeScript subsystem boundaries: zero cycles and zero layer inversions', a
       if (rel.startsWith('apps/control-api/') && targetRel.startsWith('apps/node-agent/') && rel !== 'apps/control-api/src/app.ts') {
         violations.push(`control-api->node-agent penetration: ${rel} -> ${targetRel}`);
       }
+      if (rel.startsWith('apps/control-api/') && targetRel.startsWith('adapters/')) {
+        violations.push(`control-api->adapter penetration: ${rel} -> ${targetRel}`);
+      }
+      if (rel.startsWith('apps/node-agent/') && targetRel.startsWith('apps/control-api/')) {
+        violations.push(`node-agent->control-api inversion: ${rel} -> ${targetRel}`);
+      }
+      if (rel.startsWith('apps/web/') && (targetRel.startsWith('apps/control-api/') || targetRel.startsWith('apps/node-agent/') || targetRel.startsWith('adapters/') || targetRel.startsWith('packages/database/'))) {
+        violations.push(`web->backend penetration: ${rel} -> ${targetRel}`);
+      }
     }
     if ((rel.startsWith('adapters/protocol/') || rel.startsWith('adapters/mock/')) && /\b(apiKey|AiRuntimeContext)\b/.test(text)) {
       violations.push(`protocol adapter references AI secret/context: ${rel}`);
     }
-    if (rel === 'apps/node-agent/src/dsh-host.ts' && /\.db\.query\(/.test(text)) {
+    if (rel === 'apps/node-agent/src/dsh-host.ts' && /\.(query|transaction)\(/.test(text)) {
       violations.push(`dsh-host executes raw SQL instead of packages/database/dsh.ts: ${rel}`);
     }
     adj.set(file, edges);
@@ -249,4 +259,112 @@ test('PG migration 021 retires dead autonomy columns cleanly', async t => {
     await db.query("SELECT column_name FROM information_schema.columns WHERE table_name='autonomy_cycles'")
   ).map((r: any) => r.column_name);
   assert.ok(!cycleCols.includes('cycle_seq'), 'autonomy_cycles must not contain retired column cycle_seq');
+});
+
+test('Bilibili configure blocks two-step model baseUrl exfiltration across provider switches', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'fishbot-bili-exfil-'));
+  const { app, db } = await createApp({ root, agent: false });
+  t.after(() => app.close());
+
+  const reg = await app.inject({
+    method: 'POST',
+    url: '/v1/auth/register',
+    payload: { inviteCode: await issueTestInvite(db), email: 'bili-sec@example.com', password: 'test-password-123', name: 'sec' },
+  });
+  const cookie = reg.cookies[0].value;
+  const created = await app.inject({
+    method: 'POST',
+    url: '/v1/bots',
+    cookies: { fish_session: cookie },
+    payload: { name: 'BiliSecBot', protocol: 'mock', config: defaultConfig },
+  });
+  assert.equal(created.statusCode, 201, created.body);
+  const botId = created.json().id;
+
+  const initial = (await app.inject({ method: 'GET', url: `/v1/bots/${botId}/bilibili`, cookies: { fish_session: cookie } })).json();
+  const step1 = await app.inject({
+    method: 'PUT',
+    url: `/v1/bots/${botId}/bilibili`,
+    cookies: { fish_session: cookie },
+    payload: {
+      expectedRevision: initial.revision,
+      config: { ...initial.config, model: { provider: 'openai', baseUrl: 'https://legit.example/v1', model: 'gpt-4o-mini' } },
+      modelKey: 'sk-legit-bili-key',
+    },
+  });
+  assert.equal(step1.statusCode, 200, step1.body);
+  const rev2 = step1.json().revision;
+
+  // Attempt step 1 of two-step exfiltration: switch provider='none' while changing baseUrl without clearing/replacing key
+  const exfilAttempt = await app.inject({
+    method: 'PUT',
+    url: `/v1/bots/${botId}/bilibili`,
+    cookies: { fish_session: cookie },
+    payload: {
+      expectedRevision: rev2,
+      config: { ...initial.config, model: { provider: 'none', baseUrl: 'https://attacker.example/v1', model: 'gpt-4o-mini' } },
+    },
+  });
+  assert.equal(exfilAttempt.statusCode, 400, 'Changing baseUrl while retaining saved model_secret must be blocked regardless of provider');
+
+  // Clearing key explicitly allows changing baseUrl safely
+  const cleared = await app.inject({
+    method: 'PUT',
+    url: `/v1/bots/${botId}/bilibili`,
+    cookies: { fish_session: cookie },
+    payload: {
+      expectedRevision: rev2,
+      config: { ...initial.config, model: { provider: 'none', baseUrl: 'https://other.example/v1', model: 'gpt-4o-mini' } },
+      clearModelKey: true,
+    },
+  });
+  assert.equal(cleared.statusCode, 200, cleared.body);
+});
+
+test('Platform model has_key/hasKey reflects real available credits and personal fallback across API endpoints', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'fishbot-avail-'));
+  const { app, db } = await createApp({ root, agent: false });
+  t.after(() => app.close());
+
+  const reg = await app.inject({
+    method: 'POST',
+    url: '/v1/auth/register',
+    payload: { inviteCode: await issueTestInvite(db), email: 'avail@example.com', password: 'test-password-123', name: 'avail' },
+  });
+  const cookie = reg.cookies[0].value;
+  const [{ tenant_id: tenantId }] = await db.query('SELECT tenant_id FROM memberships WHERE user_id=$1', [reg.json().user.id]);
+
+  // Enable a platform provider and grant expiring campaign credit
+  await db.query("INSERT INTO platform_model_providers(id,name,base_url,model,secret,priority,enabled) VALUES('p-test','P','https://x.invalid/v1','m','cipher',1,true)");
+  await db.query("INSERT INTO platform_model_credits(tenant_id,granted,campaign_granted,campaign_expires_at) VALUES($1,5000,5000,now()+interval '1 hour')", [tenantId]);
+
+  const created = await app.inject({
+    method: 'POST',
+    url: '/v1/bots',
+    cookies: { fish_session: cookie },
+    payload: { name: 'PlatformBot', protocol: 'mock', config: { ...defaultConfig, platformModel: true, model: '' } },
+  });
+  assert.equal(created.statusCode, 201, created.body);
+  const botId = created.json().id;
+
+  let list = (await app.inject({ method: 'GET', url: '/v1/bots', cookies: { fish_session: cookie } })).json();
+  let detail = (await app.inject({ method: 'GET', url: `/v1/bots/${botId}`, cookies: { fish_session: cookie } })).json();
+  assert.equal(list.items[0].has_key, true);
+  assert.equal(detail.hasKey, true);
+
+  // Expire campaign credit -> both list and detail must report false when no personal fallback exists
+  await db.query("UPDATE platform_model_credits SET campaign_expires_at=now()-interval '1 hour' WHERE tenant_id=$1", [tenantId]);
+  list = (await app.inject({ method: 'GET', url: '/v1/bots', cookies: { fish_session: cookie } })).json();
+  detail = (await app.inject({ method: 'GET', url: `/v1/bots/${botId}`, cookies: { fish_session: cookie } })).json();
+  assert.equal(list.items[0].has_key, false);
+  assert.equal(detail.hasKey, false);
+
+  // Creating a new platformModel bot with expired (0 available) credits must be rejected with 403
+  const blocked = await app.inject({
+    method: 'POST',
+    url: '/v1/bots',
+    cookies: { fish_session: cookie },
+    payload: { name: 'BlockedPlatformBot', protocol: 'mock', config: { ...defaultConfig, platformModel: true } },
+  });
+  assert.equal(blocked.statusCode, 403, 'Creating a new platformModel bot when available credits=0 must be rejected');
 });

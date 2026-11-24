@@ -30,21 +30,6 @@
   inherits:false;
   initial-value:0px;
 }
-.spectrum :is(button.dk-primary,a.dk-primary) {--studio-hover:var(--hover-primary);--fx-lift:-2px;--fx-scale:1.026;--fx-tint:#a4c9bb80}
-.spectrum :is(.dk-actions,.interaction-actions,.sample-actions,.sample-media-body,.preview-bot-actions,.sample-pagination,.ref-open-nav) button:not(.dk-primary,.sample-tab),
-.spectrum :is(.dk-search-clear,.sample-icon,.ref-manage) {--studio-hover:var(--hover-small);--fx-scale:1.035;--fx-tint:#9ccbd37c}
-.spectrum .sample-feedback-tools .sample-actions>button {--studio-hover:var(--hover-small);--fx-scale:1.035;--fx-tint:#9ccbd37c}
-.spectrum :is(.dk-filters button,.sample-tab) {--studio-hover:var(--hover-nav);--fx-lift:-1px;--fx-tint:#cfbce992}
-.spectrum :is(.dk-row,.preview-bot-line,.ref-roster-row) {--studio-hover:var(--hover-row);--fx-lift:-1px;--fx-scale:1.008;--fx-tint:#93cbb472}
-.spectrum .dk-search {--studio-hover:var(--hover-search);--fx-lift:-1px;--fx-scale:1.012;--fx-tint:#9accc872}
-.spectrum :is(.dk-inspector input[name=name],.dk-inspector textarea,.sample-input) {--studio-hover:var(--hover-field);--fx-scale:1.009;--fx-tint:#abcfbd66}
-.spectrum .dk-model-field {--studio-hover:var(--hover-select);--fx-scale:1.014;--fx-tint:#b3a9d277}
-.spectrum :is(.sample-toggle-row,.sample-check,.sample-radio label) {--studio-hover:var(--hover-switch);--fx-scale:1.015;--fx-tint:#99c5b474}
-.spectrum .ref-step-list button {--studio-hover:var(--hover-steps);--fx-scale:1.016;--fx-tint:#c8b7dc88}
-.spectrum .sample-details > summary {--studio-hover:var(--hover-advanced);--fx-lift:-1px;--fx-tint:#a2caca78;--fx-scale:1.009}
-.spectrum .ref-quick-links button {--studio-hover:var(--hover-quick);--fx-lift:-2px;--fx-scale:1.022;--fx-tint:#abc8b383}
-.spectrum :is(.sample-index,.ref-index,.preview-companion) a {--studio-hover:var(--hover-link);--fx-lift:-1px;--fx-tint:#8db1c377;display:inline-block}
-
 .paper-spectrum :where(.primary) {--studio-hover:var(--hover-primary);--fx-lift:-2px;--fx-scale:1.026;--fx-tint:#a4c9bb80}
 .paper-spectrum :where(.secondary,.danger,button.icon,.main-nav>a,.save-bar button.primary,.overview-quick-config button.primary) {--studio-hover:var(--hover-small);--fx-scale:1.035;--fx-tint:#9ccbd37c}
 .paper-spectrum :where(.tabs>a,.config-nav nav a,.auth-form .switch>button,.admin-tabs>button,[role=tab]) {--studio-hover:var(--hover-nav);--fx-lift:-1px;--fx-tint:#cfbce992}
@@ -56,21 +41,14 @@
 .paper-spectrum :where(.wizard-steps>div) {--studio-hover:var(--hover-steps);--fx-scale:1.016;--fx-tint:#c8b7dc88}
 .paper-spectrum :where(details.advanced>summary) {--studio-hover:var(--hover-advanced);--fx-lift:-1px;--fx-scale:1.009;--fx-tint:#a2caca78}
 .paper-spectrum :where(.overview-quick-config .form-grid a,.add-row) {--studio-hover:var(--hover-quick);--fx-lift:-2px;--fx-scale:1.022;--fx-tint:#abc8b383}
-.paper-spectrum :where(.preview-toolbar a,.breadcrumb a,.back,.companion-note a,.row-identity a,footer a) {--studio-hover:var(--hover-link);--fx-lift:-1px;--fx-tint:#8db1c377}
+.paper-spectrum :where(.breadcrumb a,.back,.companion-note a,.row-identity a,footer a) {--studio-hover:var(--hover-link);--fx-lift:-1px;--fx-tint:#8db1c377}
 
 @media(hover:hover) and (prefers-reduced-motion:no-preference) {
-  body.paper-app .spectrum[data-legacy-controls] :is(
-    .dk-primary,.dk-actions button,.interaction-actions button,.sample-actions button,.preview-bot-actions button,
-    .sample-media-body button,.sample-pagination button,.ref-open-nav button,.dk-search-clear,.sample-icon,.ref-manage,
-    .dk-filters button,.sample-tab,.dk-row,.preview-bot-line,.ref-roster-row,.dk-search,.dk-inspector input[name=name],
-    .dk-inspector textarea,.sample-input,.dk-model-field,.sample-toggle-row,.sample-check,.sample-radio label,
-    .ref-step-list button,.sample-details > summary,.ref-quick-links button,.sample-index a,.ref-index a,.preview-companion a
-  ):hover:not(:disabled,[aria-disabled=true],:has(>select:disabled,>input:disabled)),
   body.paper-app.paper-spectrum #root :is(
     .primary,.secondary,.danger,button.icon,.main-nav>a,.tabs>a,.config-nav nav a,.auth-form .switch>button,.admin-tabs>button,[role=tab],
     .bot-row,.search,.capability-search-input,.field input:not([type=checkbox],[type=radio],[type=range]),textarea,select,
     .toggle-row,label:has(>input:is([type=checkbox],[type=radio])),.wizard-steps>div,details.advanced>summary,
-    .overview-quick-config .form-grid a,.add-row,.preview-toolbar a,.breadcrumb a,.back,.companion-note a,.row-identity a,footer a
+    .overview-quick-config .form-grid a,.add-row,.breadcrumb a,.back,.companion-note a,.row-identity a,footer a
   ):hover:not(:disabled,[aria-disabled=true],:has(>select:disabled,>input:disabled)) {
     animation:var(--studio-hover) .25s cubic-bezier(.2,.75,.35,1) both!important;
     box-shadow:inset var(--fx-glide) 0 24px -12px var(--fx-wash),inset 0 0 0 1px var(--fx-edge),

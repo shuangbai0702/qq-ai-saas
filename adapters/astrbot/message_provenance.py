@@ -248,6 +248,11 @@ def settle_response(db,scope,event,complete):
         db.commit()
 
 
+def delete_event_rows(db,identities):
+    """Owner-only retirement of all provenance rows for settled events."""
+    db.executemany('DELETE FROM memory_message_sources WHERE scope=? AND event=?',identities)
+
+
 def own_item(db,scope,event,subject,at,text):
     source=get(db,scope,event,'outgoing')
     return {'role':'self','source_scope':scope,'source_event':str(event),'at':at,'text':text,

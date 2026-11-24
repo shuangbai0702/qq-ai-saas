@@ -29,7 +29,7 @@ export class ProcessHost implements ProcessHostLike {
     }).finally(()=>{this.memorySweep=undefined});
     return this.memorySweep;
   }
-  private helper(args:string[],input?:string,script='process_control.py',timeout=15000){return new Promise<string>((resolve,reject)=>{const child=execFile(this.python,['-B',path.resolve('scripts',script),...args],{windowsHide:true,timeout,maxBuffer:1024*1024,env:safeSubprocessEnv({PYTHONIOENCODING:'utf-8'})},(error,stdout)=>error?reject(new Error('进程管理检查或操作失败，请管理员检查服务运行身份及服务日志。')):resolve(stdout));if(input){child.stdin?.on('error',reject);child.stdin?.end(input)}})}
+  private helper(args:string[],input?:string,script='process_control.py',timeout=15000){const extra:NodeJS.ProcessEnv={PYTHONIOENCODING:'utf-8'};if(script==='protocol_process.py'&&process.env.EXTERNAL_AGENT==='true')extra.EXTERNAL_AGENT='true';return new Promise<string>((resolve,reject)=>{const child=execFile(this.python,['-B',path.resolve('scripts',script),...args],{windowsHide:true,timeout,maxBuffer:1024*1024,env:safeSubprocessEnv(extra)},(error,stdout)=>error?reject(new Error('进程管理检查或操作失败，请管理员检查服务运行身份及服务日志。')):resolve(stdout));if(input){child.stdin?.on('error',reject);child.stdin?.end(input)}})}
   // One short-lived interpreter for an entire health sweep, not one per probe.
   // The cache never spans a command, start/stop, or another health sweep.
   async beginInspection(){const records=[];for(const id of await readdir(path.join(this.root,'bots')).catch(()=>[])){for(const kind of ['ai','protocol']){const rec=await this.record(id,kind);if(rec)records.push({id,kind,pid:rec.pid,created:rec.created,root:path.join(this.root,'bots',id)})}}const values=JSON.parse(await this.helper(['batch'],JSON.stringify(records)));await this.maintainMemory(records);this.inspection=new Map(values.map((v:any)=>[`${v.id}:${v.kind}`,v.inspectionError?v:v.valid?{...v,memoryPolicy:this.memoryStatus.get(`${v.id}:${v.kind}`)}:null]))}
@@ -46,7 +46,10 @@ export class ProcessHost implements ProcessHostLike {
     // keys in a host-wide map after the child is gone.
     const childKeys=[...keys];
     const safeEnv:NodeJS.ProcessEnv={};
-    for(const [k,v] of Object.entries(env))if(/^(PATH|PATHEXT|SYSTEMROOT|WINDIR|COMSPEC|HOME|USERPROFILE|LOCALAPPDATA|APPDATA|PROGRAMDATA|TEMP|TMP|TMPDIR|LANG|LC_.*|SSL_CERT_FILE|SSL_CERT_DIR|LD_LIBRARY_PATH|PYTHON.*|ASTRBOT_ROOT|FISHBOT_MODEL_KEY|FISHBOT_ASTRBOT_SLIM|FISHBOT_MODEL_ALLOWED_PRIVATE_ORIGINS|NAPCAT_PLATFORM_MANIFEST|NODE_EXTRA_CA_CERTS)$/i.test(k))safeEnv[k]=v;
+    const allowEnv=kind==='protocol'
+      ?/^(PATH|PATHEXT|SYSTEMROOT|WINDIR|COMSPEC|HOME|USERPROFILE|LOCALAPPDATA|APPDATA|PROGRAMDATA|TEMP|TMP|TMPDIR|LANG|LC_.*|SSL_CERT_FILE|SSL_CERT_DIR|LD_LIBRARY_PATH|PYTHON.*|NAPCAT_PLATFORM_MANIFEST|NODE_EXTRA_CA_CERTS)$/i
+      :/^(PATH|PATHEXT|SYSTEMROOT|WINDIR|COMSPEC|HOME|USERPROFILE|LOCALAPPDATA|APPDATA|PROGRAMDATA|TEMP|TMP|TMPDIR|LANG|LC_.*|SSL_CERT_FILE|SSL_CERT_DIR|LD_LIBRARY_PATH|PYTHON.*|ASTRBOT_ROOT|FISHBOT_MODEL_KEY|FISHBOT_ASTRBOT_SLIM|FISHBOT_MODEL_ALLOWED_PRIVATE_ORIGINS|NODE_EXTRA_CA_CERTS)$/i;
+    for(const [k,v] of Object.entries(env))if(allowEnv.test(k))safeEnv[k]=v;
     if(kind==='protocol'){
       let cgroup;
       if(process.platform==='linux'&&process.env.FISHBOT_CGROUP_ROOT){

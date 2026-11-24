@@ -3,12 +3,6 @@ from core_note import forget_core_notes
 from memory_policy import person_filter,shared_person
 
 
-def bump_epoch(db):
-    tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    if 'memory_reflection_control' in tables:
-        db.execute('UPDATE memory_reflection_control SET epoch=epoch+1 WHERE id=1')
-
-
 def invalidate(db,scope,subject=''):
     forget_core_notes(db,scope,subject)
     tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}

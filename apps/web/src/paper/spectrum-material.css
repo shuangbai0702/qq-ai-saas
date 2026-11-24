@@ -1,6 +1,5 @@
 /* Unified translucent rose-to-mint glass-washi surface across all console stock. */
-:is(.spectrum :is(.dk-list,.dk-inspector,.dk-sample),
-    .paper-spectrum :is(.app-header,.panel,.roster,.companion-note,.stat,.quota-summary,.config-nav,.save-bar,.edit-dialog,.auth-story,.auth-form > div,.more-menu-popover):not(details)) {
+.paper-spectrum :is(.app-header,.panel,.roster,.companion-note,.stat,.quota-summary,.config-nav,.save-bar,.edit-dialog,.auth-story,.auth-form > div,.more-menu-popover):not(details) {
   --surface-edge:linear-gradient(96deg,#d88798 3%,#e8bea7 36%,#a3d0bd 70%,#65b0a5 97%);
   --surface-edge-fade:linear-gradient(90deg,#0000 0%,#000 6%,#000 94%,#0000 100%);
   --surface-tint:
@@ -16,16 +15,14 @@
     rgba(252,252,250,calc(var(--rg-paper-alpha,.72) + .06)) 52%,
     rgba(244,252,250,var(--rg-paper-alpha,.72)) 100%);
 }
-body.paper-app :is(.spectrum :is(.dk-list,.dk-inspector,.dk-sample),
-    .paper-spectrum :is(.app-header,.panel,.roster,.companion-note,.stat,.quota-summary,.config-nav,.save-bar,.edit-dialog,.auth-story,.auth-form > div,.more-menu-popover):not(details)) {
+body.paper-app .paper-spectrum :is(.app-header,.panel,.roster,.companion-note,.stat,.quota-summary,.config-nav,.save-bar,.edit-dialog,.auth-story,.auth-form > div,.more-menu-popover):not(details) {
   isolation:isolate;
   border-radius:0!important;
   background:none!important;
   backdrop-filter:blur(2.6px) saturate(112%)!important;
   -webkit-backdrop-filter:blur(2.6px) saturate(112%)!important;
 }
-body.paper-app :is(.spectrum :is(.dk-list,.dk-inspector,.dk-sample),
-    .paper-spectrum :is(.app-header,.panel,.roster,.companion-note,.stat,.quota-summary,.config-nav,.save-bar,.edit-dialog,.auth-story,.auth-form > div,.more-menu-popover):not(details))::before {
+body.paper-app.paper-spectrum :is(.app-header,.panel,.roster,.companion-note,.stat,.quota-summary,.config-nav,.save-bar,.edit-dialog,.auth-story,.auth-form > div,.more-menu-popover):not(details)::before {
   content:""!important;
   position:absolute;
   pointer-events:none;
@@ -37,8 +34,7 @@ body.paper-app :is(.spectrum :is(.dk-list,.dk-inspector,.dk-sample),
   mask-image:var(--surface-edge-fade),linear-gradient(#000b 0%,#0008 19%,#0003 53%,transparent 100%);
   mask-composite:intersect;
 }
-body.paper-app :is(.spectrum :is(.dk-list,.dk-inspector,.dk-sample),
-    .paper-spectrum :is(.app-header,.panel,.roster,.companion-note,.stat,.quota-summary,.config-nav,.save-bar,.edit-dialog,.auth-story,.auth-form > div,.more-menu-popover):not(details))::after {
+body.paper-app.paper-spectrum :is(.app-header,.panel,.roster,.companion-note,.stat,.quota-summary,.config-nav,.save-bar,.edit-dialog,.auth-story,.auth-form > div,.more-menu-popover):not(details)::after {
   content:""!important;
   position:absolute;
   inset:0;
@@ -53,9 +49,6 @@ body.paper-app :is(.spectrum :is(.dk-list,.dk-inspector,.dk-sample),
 }
 
 /* All console surfaces share square corners, including nested and floating stock. */
-body.paper-app :is(
-  .spectrum :is(.dk-list,.dk-inspector,.dk-sample,.dk-row,.preview-roster,.preview-bot-line,.sample-card,.sample-toast,.sample-details),
-  .paper-spectrum :is(.paper-panel,.panel,.roster,.companion-note,.stat,.quota-summary,.config-nav,.save-bar,.edit-dialog,.auth-story,.auth-form > div,.bot-row,.wizard-steps,.notice,.alert,[role=dialog],[role=alertdialog])
-) {
+body.paper-app.paper-spectrum :is(.paper-panel,.panel,.roster,.companion-note,.stat,.quota-summary,.config-nav,.save-bar,.edit-dialog,.auth-story,.auth-form > div,.bot-row,.wizard-steps,.notice,.alert,[role=dialog],[role=alertdialog]) {
   border-radius:0!important;
 }

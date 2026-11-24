@@ -12,7 +12,7 @@ import {decrypt} from '../../../../packages/shared/security.js';
 import {modelHttp} from '../../../../packages/shared/model-http.js';
 import {boundedJson,BiliError,type BiliWeb,type Credential} from '../../../../packages/bilibili/web-adapter.js';
 import {downloadMedia,managedProcess,mediaAdmission,mediaWorkspace,mediaUrl} from '../media/lifecycle.js';
-import type {Sql} from '../../../../packages/database/index.js';
+import {platformCreditAvailableSql,type Sql} from '../../../../packages/database/index.js';
 import {BilibiliTools} from '../../../../packages/database/bilibili-tools.js';
 import {runtimeStatus} from '../../../../packages/shared/runtime-status.js';
 
@@ -73,8 +73,14 @@ export class VideoEvidence {
   const [botConfig]=await this.db.query('SELECT config FROM bot_config_revisions WHERE bot_id=$1 AND revision=$2',[job.bot_id,job.config_revision]);
   const managed=botConfig?.config?.platformModel===true;
   const independent=settings.config.model.provider==='openai';
-  const [secret]=!independent&&!managed?await this.db.query('SELECT ciphertext FROM secrets WHERE bot_id=$1 AND tenant_id=$2',[job.bot_id,job.tenant_id]):[];
-  if(!bilibiliModelConfigured(settings,botConfig?.config,managed||!!secret?.ciphertext))throw new BiliError('model_not_configured',bilibiliModelRequired);
+  const [secret]=!independent?await this.db.query('SELECT ciphertext FROM secrets WHERE bot_id=$1 AND tenant_id=$2',[job.bot_id,job.tenant_id]):[];
+  let hasBotKey=!!secret?.ciphertext;
+  if(!independent&&managed){
+   const [avail]=await this.db.query(`SELECT (${platformCreditAvailableSql('$1')}) AS ok`,[job.tenant_id]);
+   const personalFallback=!!secret?.ciphertext&&Boolean(botConfig?.config?.baseUrl?.trim()&&botConfig?.config?.model?.trim()&&botConfig?.config?.model!=='platform');
+   hasBotKey=Boolean(avail?.ok||personalFallback);
+  }
+  if(!bilibiliModelConfigured(settings,botConfig?.config,hasBotKey))throw new BiliError('model_not_configured',bilibiliModelRequired);
   const connection=independent?{config:settings.config.model,apiKey:decrypt(this.key,`bilibili:model:${job.tenant_id}:${job.bot_id}`,settings.model_secret)}:
    managed?resolvePlatformModel(BotConfigSchema.parse(botConfig.config),this.key,{id:job.bot_id,tenant_id:job.tenant_id,generation:job.generation,revision:job.config_revision}):
    {config:botConfig.config,apiKey:decrypt(this.key,`${job.tenant_id}:${job.bot_id}`,secret.ciphertext)};

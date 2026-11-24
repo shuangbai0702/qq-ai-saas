@@ -8,6 +8,7 @@ import {modelHttp} from '../../../packages/shared/model-http.js';
 import {platformUpstream} from '../../../packages/shared/platform-model.js';
 import {discoverModels,resolveModelBaseUrl} from '../../../packages/shared/model-catalog.js';
 import {modelBaseCandidates} from '../../../packages/shared/model-url.js';
+import {requireAdmin} from './http-guards.js';
 
 const fields='id,name,base_url,model,priority,enabled,revision,last_status,last_checked_at,last_http_status,updated_at';
 const input=z.object({name:z.string().trim().min(1).max(100),baseUrl:z.string().min(1).max(6000),model:z.string().trim().min(1).max(200),priority:z.number().int().min(0).max(10000),enabled:z.boolean(),apiKey:z.string().trim().max(4096).regex(/^[^\s\x00-\x1f\x7f]*$/,'Key 不能含空格或控制字符').optional()}).strict();
@@ -33,25 +34,24 @@ export async function createPlatformModels(db:Sql,key:Buffer,legacy:{primary:str
  // A receipt from an edited configuration must not overwrite the new status.
  const observe=(p:PlatformProvider,status:string,httpStatus:number|null=null)=>db.query('UPDATE platform_model_providers SET last_status=$3,last_checked_at=now(),last_http_status=$4 WHERE id=$1 AND revision=$2 RETURNING id',[p.id,p.revision,status,httpStatus]);
  function register(app:FastifyInstance){
-  const admin=(req:any)=>{if(!req.user?.is_admin)fail('需要管理员权限',403)};
   app.get('/v1/admin/platform-model-reservations',async req=>{
-   admin(req);
+   requireAdmin(req);
    return {summary:await db.query("SELECT dispatch_state,count(*)::int AS count,sum(tokens)::text AS tokens,min(created_at) AS oldest FROM platform_model_reservations GROUP BY dispatch_state ORDER BY dispatch_state"),items:await db.query("SELECT id,tenant_id,bot_id,tokens,campaign_tokens,created_at,dispatch_state,provider_id,dispatched_at,usage_tokens,diagnostic_code FROM platform_model_reservations ORDER BY created_at LIMIT 200")};
   });
-  app.post('/v1/admin/platform-model-reservations/reconcile',async req=>{admin(req);return {settled:await recoverCreditReceipts(db)}});
+  app.post('/v1/admin/platform-model-reservations/reconcile',async req=>{requireAdmin(req);return {settled:await recoverCreditReceipts(db)}});
   app.post<{Params:{id:string}}>('/v1/admin/platform-model-reservations/:id/waive',async req=>{
-   admin(req);
+   requireAdmin(req);
    const id=z.string().uuid().parse(req.params.id),body=z.object({expectedTokens:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),expectedCreatedAt:z.string().datetime(),reason:z.string().trim().min(10).max(240)}).strict().parse(req.body);
    return waiveLegacyReservation(db,id,{tokens:body.expectedTokens,createdAt:body.expectedCreatedAt},req.user!.id,body.reason);
   });
   app.post<{Params:{id:string}}>('/v1/admin/platform-model-reservations/:id/resolve',async req=>{
-   admin(req);
+   requireAdmin(req);
    const id=z.string().uuid().parse(req.params.id),body=z.object({expectedState:z.enum(['unknown','dispatched','reserved']),expectedTokens:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),expectedCreatedAt:z.string().datetime(),expectedProviderId:z.string().nullable().default(null),reason:z.string().trim().min(10).max(240)}).strict().parse(req.body);
    return resolveStaleReservation(db,id,{state:body.expectedState,tokens:body.expectedTokens,createdAt:body.expectedCreatedAt,providerId:body.expectedProviderId},req.user!.id,body.reason);
   });
-  app.get('/v1/admin/platform-models',async req=>{admin(req);return{items:await db.query(`SELECT ${fields},true AS has_key FROM platform_model_providers ORDER BY priority,id`),priorityOrder:'ascending'}});
+  app.get('/v1/admin/platform-models',async req=>{requireAdmin(req);return{items:await db.query(`SELECT ${fields},true AS has_key FROM platform_model_providers ORDER BY priority,id`),priorityOrder:'ascending'}});
   app.post('/v1/admin/platform-models/discover',{config:{rateLimit:{max:12,timeWindow:'1 minute'}}},async(req,reply)=>{
-   admin(req);const body=z.object({baseUrl:input.shape.baseUrl,apiKey:input.shape.apiKey,providerId:z.string().max(80).optional()}).strict().parse(req.body);
+   requireAdmin(req);const body=z.object({baseUrl:input.shape.baseUrl,apiKey:input.shape.apiKey,providerId:z.string().max(80).optional()}).strict().parse(req.body);
    let base=body.baseUrl,secret=body.apiKey;
    if(!secret&&body.providerId){const [old]=await db.query<PlatformProvider>('SELECT * FROM platform_model_providers WHERE id=$1',[body.providerId]);if(!old)fail('模型不存在',404);if(!modelBaseCandidates(base).includes(old.base_url))fail('接口地址改变时须重新输入 Key');base=old.base_url;secret=credential(old)}
    if(!secret)fail('请输入模型 Key');
@@ -59,7 +59,7 @@ export async function createPlatformModels(db:Sql,key:Buffer,legacy:{primary:str
    try{return await discoverModels(base,secret!,cancel.signal,transport)}finally{req.raw.off('aborted',closed);reply.raw.off('close',closed)}
   });
   async function save(req:any,id?:string){
-   admin(req);
+   requireAdmin(req);
    const body=z.object({...input.shape,...(id?{expectedRevision:z.number().int().min(1)}:{})}).strict().parse(req.body);
    const previous=id?(await db.query<PlatformProvider>('SELECT * FROM platform_model_providers WHERE id=$1',[id]))[0]:undefined;
    if(id&&!previous)fail('模型不存在',404);
@@ -86,7 +86,7 @@ export async function createPlatformModels(db:Sql,key:Buffer,legacy:{primary:str
   app.post('/v1/admin/platform-models',async req=>save(req));
   app.put<{Params:{id:string}}>('/v1/admin/platform-models/:id',async req=>save(req,z.string().min(1).max(80).parse(req.params.id)));
   app.post<{Params:{id:string}}>('/v1/admin/platform-models/:id/probe',{config:{rateLimit:{max:6,timeWindow:'1 minute'}}},async req=>{
-   admin(req);const id=z.string().min(1).max(80).parse(req.params.id),{expectedRevision}=z.object({expectedRevision:z.number().int().min(1)}).strict().parse(req.body);
+   requireAdmin(req);const id=z.string().min(1).max(80).parse(req.params.id),{expectedRevision}=z.object({expectedRevision:z.number().int().min(1)}).strict().parse(req.body);
    const [p]=await db.query<PlatformProvider>('SELECT * FROM platform_model_providers WHERE id=$1',[id]);
    if(!p)fail('模型不存在',404);if(p.revision!==expectedRevision)fail('配置已被修改，请刷新后重试',409);
    let status='unconfirmed',httpStatus:number|null=null;

@@ -300,32 +300,61 @@ class Reflection:
           first_seen REAL,updated REAL,PRIMARY KEY(scope,checkpoint_id,kind))''')
         existing_tables={row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         now_init=time.time()
-        if 'memory_hold_rounds' in existing_tables:
-            cols={row[1] for row in db.execute('PRAGMA table_info(memory_hold_rounds)')}
-            if {'scope','event'}.issubset(cols):
-                reason_expr='reason' if 'reason' in cols else "''"
-                created_expr='created' if 'created' in cols else str(now_init)
-                legacy_holds=db.execute(f'SELECT scope,event,{reason_expr},{created_expr} FROM memory_hold_rounds').fetchall()
-                for hold_scope,hold_event,hold_reason,hold_created in legacy_holds:
-                    detail=json.dumps({'legacy_table':'memory_hold_rounds','event':str(hold_event),'reason':str(hold_reason or '')},ensure_ascii=False,separators=(',',':'))
-                    ts=float(hold_created) if isinstance(hold_created,(int,float)) else now_init
-                    db.execute("INSERT OR IGNORE INTO memory_checkpoint_issues(scope,checkpoint_id,kind,status,detail,first_seen,updated) VALUES(?,0,?,'open',?,?,?)",
-                               (str(hold_scope),'legacy_hold_round:'+str(hold_event),detail,ts,now_init))
-                if legacy_holds:
-                    logging.getLogger('astrbot.memory_reflection').warning('FISHBOT_LEGACY_HOLD_MIGRATED count=%d table=memory_hold_rounds',len(legacy_holds))
-        if 'memory_summary_unresolved' in existing_tables:
-            cols={row[1] for row in db.execute('PRAGMA table_info(memory_summary_unresolved)')}
-            if {'scope','event'}.issubset(cols):
-                legacy_unresolved=db.execute('SELECT scope,event FROM memory_summary_unresolved').fetchall()
-                for u_scope,u_event in legacy_unresolved:
-                    detail=json.dumps({'legacy_table':'memory_summary_unresolved','event':str(u_event)},ensure_ascii=False,separators=(',',':'))
-                    db.execute("INSERT OR IGNORE INTO memory_checkpoint_issues(scope,checkpoint_id,kind,status,detail,first_seen,updated) VALUES(?,0,?,'open',?,?,?)",
-                               (str(u_scope),'legacy_summary_unresolved:'+str(u_event),detail,now_init,now_init))
-                if legacy_unresolved:
-                    logging.getLogger('astrbot.memory_reflection').warning('FISHBOT_LEGACY_HOLD_MIGRATED count=%d table=memory_summary_unresolved',len(legacy_unresolved))
-        db.executescript('''DROP TABLE IF EXISTS memory_hold_rounds;
-        DROP TABLE IF EXISTS memory_web_context_permits;
-        DROP TABLE IF EXISTS memory_summary_unresolved;''')
+        db.execute('SAVEPOINT legacy_hold_migration')
+        try:
+            drop_hold_rounds='memory_hold_rounds' in existing_tables
+            if drop_hold_rounds:
+                cols={row[1] for row in db.execute('PRAGMA table_info(memory_hold_rounds)')}
+                if {'scope','event'}.issubset(cols):
+                    reason_expr='reason' if 'reason' in cols else "''"
+                    created_expr='created' if 'created' in cols else str(now_init)
+                    round_expr='round_id' if 'round_id' in cols else 'NULL'
+                    legacy_holds=db.execute(f'SELECT scope,event,{reason_expr},{created_expr},{round_expr} FROM memory_hold_rounds').fetchall()
+                    for hold_scope,hold_event,hold_reason,hold_created,hold_round_id in legacy_holds:
+                        payload={'legacy_table':'memory_hold_rounds','event':str(hold_event),'reason':str(hold_reason or '')}
+                        if hold_round_id is not None:payload['round_id']=hold_round_id
+                        detail=json.dumps(payload,ensure_ascii=False,separators=(',',':'))
+                        ts=float(hold_created) if isinstance(hold_created,(int,float)) else now_init
+                        db.execute("INSERT OR IGNORE INTO memory_checkpoint_issues(scope,checkpoint_id,kind,status,detail,first_seen,updated) VALUES(?,0,?,'open',?,?,?)",
+                                   (str(hold_scope),'legacy_hold_round:'+str(hold_event),detail,ts,now_init))
+                    if legacy_holds:
+                        logging.getLogger('astrbot.memory_reflection').warning('FISHBOT_LEGACY_HOLD_MIGRATED count=%d table=memory_hold_rounds',len(legacy_holds))
+                else:
+                    row_count=db.execute('SELECT count(*) FROM memory_hold_rounds').fetchone()[0]
+                    if row_count:
+                        drop_hold_rounds=False
+                        logging.getLogger('astrbot.memory_reflection').warning('FISHBOT_LEGACY_HOLD_SKIPPED_UNKNOWN_SCHEMA count=%d table=memory_hold_rounds',row_count)
+            drop_unresolved='memory_summary_unresolved' in existing_tables
+            if drop_unresolved:
+                cols={row[1] for row in db.execute('PRAGMA table_info(memory_summary_unresolved)')}
+                if {'scope','event'}.issubset(cols):
+                    sid_expr='summary_id' if 'summary_id' in cols else 'NULL'
+                    digest_expr='digest' if 'digest' in cols else 'NULL'
+                    legacy_unresolved=db.execute(f'SELECT scope,event,{sid_expr},{digest_expr} FROM memory_summary_unresolved').fetchall()
+                    for u_scope,u_event,u_sid,u_digest in legacy_unresolved:
+                        payload={'legacy_table':'memory_summary_unresolved','event':str(u_event)}
+                        if u_sid is not None:payload['summary_id']=u_sid
+                        if u_digest is not None:payload['digest']=str(u_digest)
+                        cp_id=u_sid if isinstance(u_sid,int) and not isinstance(u_sid,bool) else 0
+                        kind='legacy_summary_unresolved:'+str(u_event)+(':'+str(u_sid) if u_sid is not None else '')
+                        detail=json.dumps(payload,ensure_ascii=False,separators=(',',':'))
+                        db.execute("INSERT OR IGNORE INTO memory_checkpoint_issues(scope,checkpoint_id,kind,status,detail,first_seen,updated) VALUES(?,?,?,'open',?,?,?)",
+                                   (str(u_scope),cp_id,kind,detail,now_init,now_init))
+                    if legacy_unresolved:
+                        logging.getLogger('astrbot.memory_reflection').warning('FISHBOT_LEGACY_HOLD_MIGRATED count=%d table=memory_summary_unresolved',len(legacy_unresolved))
+                else:
+                    row_count=db.execute('SELECT count(*) FROM memory_summary_unresolved').fetchone()[0]
+                    if row_count:
+                        drop_unresolved=False
+                        logging.getLogger('astrbot.memory_reflection').warning('FISHBOT_LEGACY_HOLD_SKIPPED_UNKNOWN_SCHEMA count=%d table=memory_summary_unresolved',row_count)
+            if drop_hold_rounds:db.execute('DROP TABLE IF EXISTS memory_hold_rounds')
+            if 'memory_web_context_permits' in existing_tables:db.execute('DROP TABLE IF EXISTS memory_web_context_permits')
+            if drop_unresolved:db.execute('DROP TABLE IF EXISTS memory_summary_unresolved')
+            db.execute('RELEASE SAVEPOINT legacy_hold_migration')
+        except Exception:
+            db.execute('ROLLBACK TO SAVEPOINT legacy_hold_migration')
+            db.execute('RELEASE SAVEPOINT legacy_hold_migration')
+            raise
         checkpoint_columns={row[1] for row in db.execute('PRAGMA table_info(memory_reconstruction_checkpoints)')}
         if 'summary_id' not in checkpoint_columns:db.execute('ALTER TABLE memory_reconstruction_checkpoints ADD COLUMN summary_id INTEGER')
         if 'pending_events' not in checkpoint_columns:db.execute('ALTER TABLE memory_reconstruction_checkpoints ADD COLUMN pending_events TEXT')
