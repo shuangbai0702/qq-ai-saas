@@ -127,6 +127,7 @@ test('runtime HTTP auth, profile/native proof, worker-only restart and PMHQ fail
  const health=()=>fetch(`http://127.0.0.1:${f.m.management.port}/api/health`,{headers:{Authorization:'Bearer '+f.m.management.token}}).then(r=>r.json());
  assert.equal((await fetch(`http://127.0.0.1:${f.m.management.port}/api/health`)).status,401);
  assert.equal(children.length,2);assert.ok(children[0].args.some(a=>a.includes('--work-dir='+path.join(f.m.root,'llbot/qq'))));assert.ok(children.every(c=>c.options.windowsHide));
+ assert.ok(children.every(c=>c.options.stdio[1]==='pipe'&&c.options.stdio[2]==='pipe'),'native child output must reach the managed runner log instead of Windows NUL handles');
  // Login cannot be accepted from the upstream WebUI alone.
  await run.sample();assert.notEqual((await health()).login.state,'online');
  await writeFile(path.join(f.m.root,'llbot/qq/profile-proof.json'),JSON.stringify({botId:'a',generation:2,pid:501,profile:path.join(f.m.root,'llbot/qq/profile'),network:true,route:'direct'}));

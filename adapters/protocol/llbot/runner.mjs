@@ -63,11 +63,14 @@ export async function startRuntime(file,{spawnChild=spawn,clock=()=>Date.now(),f
   return value;
  }
  const env={...process.env,HOME:home,USERPROFILE:home,APPDATA:path.join(home,'AppData','Roaming'),LOCALAPPDATA:path.join(home,'AppData','Local')};
+ // Windows ProcessHost captures the runner's JS writes; inherited native
+ // handles point at NUL. Pipe each owned child's output through that capture.
+ function forwardOutput(child){child.stdout?.on('data',chunk=>process.stdout.write(chunk));child.stderr?.on('data',chunk=>process.stderr.write(chunk))}
  function launchWorker(){
   if(closing)return;
   relay.disconnectUpstream();const currentEpoch=++epoch;
   workerMemory=undefined;lastMemory=clock();workerStarted=clock();
-  const child=spawnChild(process.execPath,['--expose-gc','--max-old-space-size=640','--import',path.join(directory,'worker-preload.mjs'),path.join(work,'llbot.js'),'--',`--pmhq-port=${m.pmhqPort}`,...(m.expectedUin?['--qq='+m.expectedUin]:[])],{cwd:work,env:{...env,FISHBOT_LLBOT_MANIFEST:path.resolve(file)},windowsHide:true,stdio:['ignore','inherit','inherit','ipc']});worker=child;
+  const child=spawnChild(process.execPath,['--expose-gc','--max-old-space-size=640','--import',path.join(directory,'worker-preload.mjs'),path.join(work,'llbot.js'),'--',`--pmhq-port=${m.pmhqPort}`,...(m.expectedUin?['--qq='+m.expectedUin]:[])],{cwd:work,env:{...env,FISHBOT_LLBOT_MANIFEST:path.resolve(file)},windowsHide:true,stdio:['ignore','pipe','pipe','ipc']});worker=child;forwardOutput(child);
   child.on('error',()=>{if(epoch===currentEpoch)detail='LLBot子进程启动失败'});
   child.on('message',value=>{if(epoch===currentEpoch&&value?.type==='llbot-memory'&&value.pid===child.pid&&[value.rss,value.heapUsed].every(Number.isFinite)){workerMemory=value;lastMemory=clock()}});
   child.on('exit',()=>{if(epoch===currentEpoch&&!closing){worker=undefined;relay.disconnectUpstream();workerRestartAt=clock()+3000;detail='LLBot子进程退出，QQ会话保留，等待局部恢复'}});
@@ -104,7 +107,7 @@ export async function startRuntime(file,{spawnChild=spawn,clock=()=>Date.now(),f
  try{
   if(m.authMode==='local')auth=await localAuth(server,{manifest:m,spawnChild,getProcess:()=>pmhq,onFailure:()=>{pmhqExited=true;detail='LLBot私有本地启动组件失败，等待受控恢复'}});
   const pmhqEnv=auth?{...env,HTTPS_PROXY:auth.proxy,HTTP_PROXY:auth.proxy,ALL_PROXY:auth.proxy,https_proxy:auth.proxy,http_proxy:auth.proxy,all_proxy:auth.proxy,NO_PROXY:'127.0.0.1,localhost',no_proxy:'127.0.0.1,localhost'}:env;
-  pmhq=spawnChild(path.join(m.runtimeDir,'bin/pmhq',process.platform==='win32'?'pmhq.exe':'pmhq'),['--mode=inline',`--config=${path.join(home,'pmhq_config.json')}`,'--host=127.0.0.1',`--port=${m.pmhqPort}`,`--auth-token=${m.authToken}`,`--js-path=${bootstrap}`,`--qq-path=${m.qqPath}`,`--work-dir=${home}`,`--qq-args=--multi-instance --user-data-dir="${path.join(home,'profile')}"`,...(m.resume&&m.expectedUin?[`--qq=${m.expectedUin}`]:[]),'--exit-with-qq-delay=15'],{cwd:home,env:pmhqEnv,windowsHide:true,stdio:['ignore','inherit','inherit']});
+  pmhq=spawnChild(path.join(m.runtimeDir,'bin/pmhq',process.platform==='win32'?'pmhq.exe':'pmhq'),['--mode=inline',`--config=${path.join(home,'pmhq_config.json')}`,'--host=127.0.0.1',`--port=${m.pmhqPort}`,`--auth-token=${m.authToken}`,`--js-path=${bootstrap}`,`--qq-path=${m.qqPath}`,`--work-dir=${home}`,`--qq-args=--multi-instance --user-data-dir="${path.join(home,'profile')}"`,...(m.resume&&m.expectedUin?[`--qq=${m.expectedUin}`]:[]),'--exit-with-qq-delay=15'],{cwd:home,env:pmhqEnv,windowsHide:true,stdio:['ignore','pipe','pipe']});forwardOutput(pmhq);
   pmhq.on('error',()=>{pmhqExited=true;detail='PMHQ启动失败'});pmhq.on('exit',()=>{pmhqExited=true;detail='PMHQ已退出，等待平台受控恢复'});launchWorker();
  }catch{await close();throw Error('LLBot component launch failed')}
  let sampling=false;
