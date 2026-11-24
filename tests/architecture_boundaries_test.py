@@ -246,6 +246,29 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertEqual(db2.execute('SELECT unexpected_col FROM memory_hold_rounds').fetchall(), [('keep-me',)])
         db2.close()
 
+    def test_legacy_hold_migration_rolls_back_copy_and_drop_together(self):
+        import sqlite3
+        sys.path.insert(0, str(ASTRBOT_DIR)) if str(ASTRBOT_DIR) not in sys.path else None
+        from memory_reflection import Reflection
+        db = sqlite3.connect(':memory:')
+        self.addCleanup(db.close)
+        db.execute('CREATE TABLE memory_hold_rounds(scope,event,round_id,reason,created)')
+        db.execute("INSERT INTO memory_hold_rounds VALUES('group:12345','held',9,'pending',1)")
+        db.execute('CREATE TABLE memory_summary_unresolved(scope,event,summary_id,digest)')
+        db.execute("INSERT INTO memory_summary_unresolved VALUES('group:12345','unresolved',3,'digest')")
+        db.commit()
+        def deny_second_drop(action, table, *_):
+            return sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_DROP_TABLE and table == 'memory_summary_unresolved' else sqlite3.SQLITE_OK
+        db.set_authorizer(deny_second_drop)
+        with self.assertRaises(sqlite3.DatabaseError):
+            Reflection(db)
+        db.set_authorizer(None)
+        self.assertEqual(db.execute('SELECT event FROM memory_hold_rounds').fetchall(), [('held',)])
+        self.assertEqual(db.execute('SELECT event FROM memory_summary_unresolved').fetchall(), [('unresolved',)])
+        self.assertEqual(db.execute('SELECT count(*) FROM memory_checkpoint_issues').fetchone()[0], 0)
+        Reflection(db)
+        self.assertEqual(db.execute('SELECT count(*) FROM memory_checkpoint_issues').fetchone()[0], 2)
+
     def test_retired_tables_not_recreated(self):
         violators = []
         for path in sorted(ASTRBOT_DIR.glob('*.py')):

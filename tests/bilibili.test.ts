@@ -312,6 +312,33 @@ test('account refresh saves new credentials before confirming old token, and rec
  await f.db.query("UPDATE bilibili_accounts SET refresh_state='refreshing' WHERE bot_id=$1",[f.id]);await broker.recover();[a]=await f.db.query('SELECT * FROM bilibili_accounts WHERE bot_id=$1',[f.id]);assert.equal(a.refresh_state,'refresh_unknown');assert.equal(a.state,'auth_required');await assert.rejects(()=>broker.credential(f.bot.tenant_id,f.id),/账号未就绪/);
 });
 
+test('account refresh cancellation at the dispatch boundary releases only proven unstarted work',async t=>{
+ const f=await fixture(t);
+ for(const phase of ['checking','refreshing','dispatched']){
+  const controller=new AbortController();let dispatches=0;
+  const web=new BiliWeb(async url=>{
+   const u=String(url);
+   if(u.includes('/cookie/info'))return json({refresh:true,timestamp:Date.now()});
+   if(u.includes('/correspond/'))return new Response('<div id="1-name">refresh-csrf</div>');
+   if(u.includes('/cookie/refresh')){dispatches++;controller.abort();throw controller.signal.reason}
+   throw new Error('unexpected URL');
+  });
+  await f.db.query("UPDATE bilibili_accounts SET state='ready',refresh_state='requested' WHERE bot_id=$1",[f.id]);
+  const [account]=await f.db.query('SELECT * FROM bilibili_accounts WHERE bot_id=$1',[f.id]);
+  const db={...f.db,query:async(sql:string,params?:any[])=>{
+   const rows=await f.db.query(sql,params);
+   if(sql.includes("SET refresh_state='"+phase+"'")&&rows.length)controller.abort();
+   return rows;
+  }};
+  await new BiliAccounts(db,f.key,web).refresh(account,controller.signal);
+  const [saved]=await f.db.query('SELECT * FROM bilibili_accounts WHERE bot_id=$1',[f.id]);
+  assert.equal(dispatches,phase==='dispatched'?1:0);
+  assert.equal(saved.refresh_state,phase==='dispatched'?'refresh_unknown':'requested',phase);
+  assert.equal(saved.state,phase==='dispatched'?'auth_required':'ready');
+  assert.equal(saved.secret,account.secret);assert.equal(saved.revision,account.revision);
+ }
+});
+
 test('unsafe numeric platform ID stays unknown rather than confirming a rounded identifier',async t=>{
  const f=await fixture(t),executor=new BilibiliExecutor(f.db,f.root,f.key,new BiliWeb(async()=>json({rpid:9007199254740996})));
  const row=await f.repo.admit(f.bot,await f.call('comment',{aid:'170001',text:'numeric'}));await executor.execute(await f.repo.claim('writer'),new AbortController().signal);assert.equal((await f.repo.get(f.bot.tenant_id,f.id,row.id)).result.receipt.status,'unknown');

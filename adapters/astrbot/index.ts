@@ -49,7 +49,7 @@ export class AstrBotAdapter {
   async applyCards(ctx:AiRuntimeContext){return this.updateConfig(ctx,()=>this.applyCardsLocked(ctx))}
   private async applyCardsLocked(ctx:AiRuntimeContext){
     if(!ctx.characterCardsEdit||!await this.host.inspect(ctx.botId,'ai'))return false;
-    const r=await fetch(`http://127.0.0.1:${ctx.aiPort+1}/base/character-cards`,{method:'PUT',headers:{Authorization:`Bearer ${ctx.token}`,'Content-Type':'application/json'},body:JSON.stringify({botId:ctx.botId,tenantId:ctx.tenantId,generation:ctx.generation,revision:ctx.revision,config:ctx.config,characterCardsEdit:ctx.characterCardsEdit,systemChangePermitId:ctx.systemChangePermitId,apiKey:ctx.apiKey}),signal:AbortSignal.timeout(5000)});
+    const r=await fetch(`http://127.0.0.1:${ctx.aiPort+1}/base/character-cards`,{method:'PUT',headers:{Authorization:`Bearer ${ctx.token}`,'Content-Type':'application/json'},body:JSON.stringify({botId:ctx.botId,tenantId:ctx.tenantId,generation:ctx.generation,revision:ctx.revision,config:ctx.config,characterCardsEdit:ctx.characterCardsEdit,systemChangePermitId:ctx.systemChangePermitId,apiKey:ctx.apiKey}),redirect:'error',signal:AbortSignal.timeout(5000)});
     if(r.status===404||r.status===409)return false;if(!r.ok)throw Error('Character cards update failed');
     const ack:any=await r.json();if(ack.generation!==ctx.generation||ack.revision!==ctx.revision||ack.target!==ctx.characterCardsEdit.target)throw Error('Character cards acknowledgement mismatch');
     return this.persistAppliedLocked(ctx);
@@ -57,18 +57,18 @@ export class AstrBotAdapter {
   async applyTools(ctx:AiRuntimeContext){return this.updateConfig(ctx,()=>this.applyToolsLocked(ctx))}
   private async applyToolsLocked(ctx:AiRuntimeContext){
     if(!ctx.toolsEdit||!await this.host.inspect(ctx.botId,'ai'))return false;
-    const r=await fetch(`http://127.0.0.1:${ctx.aiPort+1}/base/tools`,{method:'PUT',headers:{Authorization:`Bearer ${ctx.token}`,'Content-Type':'application/json'},body:JSON.stringify({botId:ctx.botId,tenantId:ctx.tenantId,generation:ctx.generation,revision:ctx.revision,config:ctx.config,toolsEdit:ctx.toolsEdit,apiKey:ctx.apiKey}),signal:AbortSignal.timeout(5000)});
+    const r=await fetch(`http://127.0.0.1:${ctx.aiPort+1}/base/tools`,{method:'PUT',headers:{Authorization:`Bearer ${ctx.token}`,'Content-Type':'application/json'},body:JSON.stringify({botId:ctx.botId,tenantId:ctx.tenantId,generation:ctx.generation,revision:ctx.revision,config:ctx.config,toolsEdit:ctx.toolsEdit,apiKey:ctx.apiKey}),redirect:'error',signal:AbortSignal.timeout(5000)});
     if(r.status===404||r.status===409)return false;if(!r.ok)throw Error('Tool update failed');
     return this.persistAppliedLocked(ctx);
   }
   async applyPersona(ctx:AiRuntimeContext){return this.updateConfig(ctx,()=>this.applyPersonaLocked(ctx))}
   private async applyPersonaLocked(ctx:AiRuntimeContext){
     if(!ctx.personaEdit||!await this.host.inspect(ctx.botId,'ai'))return false;
-    const r=await fetch(`http://127.0.0.1:${ctx.aiPort+1}/base/persona`,{method:'PUT',headers:{Authorization:`Bearer ${ctx.token}`,'Content-Type':'application/json'},body:JSON.stringify({botId:ctx.botId,tenantId:ctx.tenantId,generation:ctx.generation,revision:ctx.revision,config:ctx.config,personaEdit:ctx.personaEdit,systemChangePermitId:ctx.systemChangePermitId,apiKey:ctx.apiKey}),signal:AbortSignal.timeout(5000)});
+    const r=await fetch(`http://127.0.0.1:${ctx.aiPort+1}/base/persona`,{method:'PUT',headers:{Authorization:`Bearer ${ctx.token}`,'Content-Type':'application/json'},body:JSON.stringify({botId:ctx.botId,tenantId:ctx.tenantId,generation:ctx.generation,revision:ctx.revision,config:ctx.config,personaEdit:ctx.personaEdit,systemChangePermitId:ctx.systemChangePermitId,apiKey:ctx.apiKey}),redirect:'error',signal:AbortSignal.timeout(5000)});
     if(r.status===404||r.status===409)return false;
     if(!r.ok)throw Error('Persona update failed');
     if(!await this.persistAppliedLocked(ctx))return false;
     await writeFile(path.join(ctx.root,'ai','persona.txt'),ctx.config.systemPrompt,{mode:0o600});return true;
   }
-  async probe(ctx:AiProbeContext):Promise<Health>{const p=await this.host.inspect(ctx.botId,'ai');const h:Health={alive:!!p,ready:false,...(p?{pid:p.pid,rssBytes:p.rssBytes,memoryPolicy:p.memoryPolicy}:{})};if(!h.alive)return h;try{const r=await fetch(`http://127.0.0.1:${ctx.aiPort+1}/health`,{headers:{Authorization:`Bearer ${ctx.token}`},signal:AbortSignal.timeout(1500)});const data:any=await r.json();return {...h,ready:r.ok&&data.generation===ctx.generation&&data.revision===ctx.revision,metrics:data.metrics?.qq,detail:data.modelConfigured?'模型已配置，API可用性需实际对话验证':'尚未配置模型Key'}}catch{return h}}
+  async probe(ctx:AiProbeContext):Promise<Health>{const p=await this.host.inspect(ctx.botId,'ai');const h:Health={alive:!!p,ready:false,...(p?{pid:p.pid,rssBytes:p.rssBytes,memoryPolicy:p.memoryPolicy}:{})};if(!h.alive)return h;try{const r=await fetch(`http://127.0.0.1:${ctx.aiPort+1}/health`,{headers:{Authorization:`Bearer ${ctx.token}`},redirect:'error',signal:AbortSignal.timeout(1500)});const data:any=await r.json();return {...h,ready:r.ok&&data.generation===ctx.generation&&data.revision===ctx.revision,metrics:data.metrics?.qq,detail:data.modelConfigured?'模型已配置，API可用性需实际对话验证':'尚未配置模型Key'}}catch{return h}}
 }

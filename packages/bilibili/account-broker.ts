@@ -58,6 +58,7 @@ export class BiliAccounts {
   let dispatched=false;
   try{
    const claimed=await this.db.query("UPDATE bilibili_accounts SET refresh_state='checking',updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND revision=$3 AND refresh_state='requested' RETURNING bot_id",[b,t,a.revision]);if(!claimed.length)return;
+   signal.throwIfAborted();
    const info=await this.web.request('https://passport.bilibili.com/x/passport-login/web/cookie/info',{csrf:c.cookies.bili_jct},c,signal);
    if(!info.data.refresh){await this.web.self(c,signal);await this.db.query("UPDATE bilibili_accounts SET refresh_state='idle',updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND revision=$3",[b,t,a.revision]);return}
    if(!c.refreshToken||!Number.isFinite(info.data.timestamp))throw new BiliError('auth_required','缺少刷新凭证，请扫码');
@@ -67,13 +68,14 @@ export class BiliAccounts {
    // Bounded text body (not a video or credential returned to the caller).
    const reader=r.body!.getReader();let html='',bytes=0;try{for(;;){const v=await reader.read();if(v.done)break;bytes+=v.value.length;if(bytes>262144)throw new Error('oversize');html+=Buffer.from(v.value).toString('utf8')}}finally{await reader.cancel().catch(()=>{});reader.releaseLock()}
    const csrf=/<div\s+id="1-name">([^<]+)<\/div>/.exec(html)?.[1];if(!csrf)throw new BiliError('auth_required','刷新验证未返回');
-   const armed=await this.db.query("UPDATE bilibili_accounts SET refresh_state='refreshing',updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND revision=$3 AND refresh_state='checking' RETURNING bot_id",[b,t,a.revision]);if(!armed.length||signal.aborted)return;
+   const armed=await this.db.query("UPDATE bilibili_accounts SET refresh_state='refreshing',updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND revision=$3 AND refresh_state='checking' RETURNING bot_id",[b,t,a.revision]);if(!armed.length)return;
+   signal.throwIfAborted();
    dispatched=true;const fresh=await this.web.request('https://passport.bilibili.com/x/passport-login/web/cookie/refresh',{refresh_csrf:csrf,refresh_token:c.refreshToken,source:'main_web'},c,signal,'POST');
    const next=cookieCandidate(fresh.headers,String(fresh.data.refresh_token||''));if(!next.refreshToken||next.cookies.DedeUserID!==a.uid)throw new BiliError('identity_mismatch','刷新身份不匹配');
    await this.web.self(next,signal);
    const saved=await this.db.query("UPDATE bilibili_accounts SET secret=$4,revision=revision+1,refresh_state='confirm_pending',pending_confirm=$5,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND revision=$3 AND refresh_state='refreshing' RETURNING *",[b,t,a.revision,this.seal(t,b,next),this.seal(t,b,{refreshToken:c.refreshToken},'pending')]);
    if(saved[0])await this.refresh(saved[0],signal);
-  }catch{if(signal.aborted&&!dispatched){await this.db.query("UPDATE bilibili_accounts SET refresh_state='requested',updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND revision=$3 AND refresh_state='checking'",[b,t,a.revision]).catch(()=>{});return}await this.db.query("UPDATE bilibili_accounts SET refresh_state=$4,state=CASE WHEN $4='refresh_unknown' THEN 'auth_required' ELSE state END,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND revision=$3 AND refresh_state IN ('checking','refreshing')",[b,t,a.revision,dispatched?'refresh_unknown':'auth_required'])}
+  }catch{if(signal.aborted&&!dispatched){await this.db.query("UPDATE bilibili_accounts SET refresh_state='requested',updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND revision=$3 AND refresh_state IN ('checking','refreshing')",[b,t,a.revision]);return}await this.db.query("UPDATE bilibili_accounts SET refresh_state=$4,state=CASE WHEN $4='refresh_unknown' THEN 'auth_required' ELSE state END,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND revision=$3 AND refresh_state IN ('checking','refreshing')",[b,t,a.revision,dispatched?'refresh_unknown':'auth_required'])}
  }
  async recover(){await this.db.query("UPDATE bilibili_accounts SET refresh_state=CASE WHEN refresh_state='refreshing' THEN 'refresh_unknown' ELSE 'requested' END,state=CASE WHEN refresh_state='refreshing' THEN 'auth_required' ELSE state END WHERE refresh_state IN ('refreshing','checking')")}
 }

@@ -1,7 +1,5 @@
 import {runtimeIpc} from '../../../packages/shared/runtime-ipc.js';
 import {safeSubprocessEnv} from '../../../packages/shared/security.js';
-import lockfile from 'proper-lockfile';
-import {mkdir} from 'node:fs/promises';
 import type {FastifyInstance} from 'fastify';
 import {execFile} from 'node:child_process';
 import path from 'node:path';
@@ -44,20 +42,22 @@ export function registerBehaviorData(app:FastifyInstance,root:string,owned:(req:
   const isWrite=!['list','list_stickers','get_sticker'].includes((input as any)?.action);
   const env=safeSubprocessEnv({PYTHONIOENCODING:'utf-8'});
   if(maintenance>=2)throw httpError('维护请求较多，请稍后重试',429);
-  maintenance++;let data:string;let releaseLock:(()=>Promise<void>)|undefined;try{
-   if(isWrite){
-    const botDir=path.join(root,'bots',id);await mkdir(botDir,{recursive:true});
-    const lockTarget=path.join(botDir,'behavior-maintenance.lock');
-    const {open}=await import('node:fs/promises');const fh=await open(lockTarget,'a');await fh.close();
-    releaseLock=await lockfile.lock(lockTarget,{realpath:false,stale:15000,retries:{retries:10,minTimeout:50,maxTimeout:200}});
-    // Re-verify bot is still stopped with no pending start/restart commands after acquiring lock.
-    const [fresh]=await db.query("SELECT desired_state,observed_state,runtime_mode,group_id,EXISTS(SELECT 1 FROM commands c WHERE c.bot_id=bots.id AND c.status IN ('pending','processing') AND c.kind IN ('start','restart','login')) AS starting FROM bots WHERE id=$1 AND deleted_at IS NULL",[id]);
-    if(!fresh||fresh.desired_state!=='stopped'||fresh.observed_state!=='stopped'||fresh.starting||await runtime.isAiRunning({...bot,...fresh}))throw httpError('机器人正在启动或切换状态，请稍后重试',409);
-   }
-   data=await new Promise<string>((resolve,reject)=>{
+  maintenance++;let data:string;try{
+   const invoke=()=>new Promise<string>((resolve,reject)=>{
     const child=execFile(python,[path.resolve('adapters/astrbot/data_admin.py'),path.join(root,'bots',id,'behavior.sqlite')],{windowsHide:true,timeout:7000,maxBuffer:512*1024,env},(error,out)=>error?reject(Object.assign(new Error('行为数据访问失败'),{statusCode:503})):resolve(out));
     child.stdin?.on('error',()=>{});child.stdin?.end(JSON.stringify(input));
-   });}finally{await releaseLock?.().catch(()=>{});maintenance--}
+   });
+   if(isWrite){
+    if(await runtime.isAiRunning(bot))throw httpError('机器人正在启动或切换状态，请稍后重试',409);
+    data=await db.transaction(async tx=>{
+     // Share the authoritative Bot lifecycle lock with start/login/delete.
+     // The bounded local SQLite helper cannot call back into PG or Worker IPC.
+     const [fresh]=await tx.query("SELECT desired_state,observed_state,EXISTS(SELECT 1 FROM commands c WHERE c.bot_id=bots.id AND c.status IN ('pending','processing') AND c.kind IN ('start','restart','login')) AS starting FROM bots WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL FOR UPDATE",[id,bot.tenant_id]);
+     if(!fresh||fresh.desired_state!=='stopped'||fresh.observed_state!=='stopped'||fresh.starting)throw httpError('机器人正在启动或切换状态，请稍后重试',409);
+     return invoke();
+    });
+   }else data=await invoke();
+  }finally{maintenance--}
   const result=JSON.parse(data);if(result.error)throw Object.assign(new Error(result.error),{statusCode:result.status||400});return {...result,accessMode:'stopped-maintenance'};
  }
  app.get<{Params:{id:string}}>('/v1/bots/:id/behavior-data',async req=>{
