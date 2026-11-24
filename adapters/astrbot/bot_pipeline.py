@@ -824,7 +824,8 @@ class BotPipeline:
                     row=self.db.execute("SELECT data FROM memory_message_sources WHERE scope='bot_shared' AND event=? AND direction='model'",(key,)).fetchone()
                     if row:
                         value=json.loads(row[0]);value['settlement']={'status':'superseded','attempted':0,'confirmed':0,'planned':0,'confirmed_messages':0,'parent_work':model_json([work.scope,work.event_id]),'basis':'main_completed' if seen==1 else 'explicit_no_response' if seen==3 else 'confirmed_reply_coverage'}
-                        self.db.execute("UPDATE memory_message_sources SET data=? WHERE scope='bot_shared' AND event=? AND direction='model'",(model_json(value),key))
+                        import message_provenance
+                        message_provenance.update_shared_model(self.db,key,value)
             if release:self.db.execute('DELETE FROM pipeline_scope_work WHERE scope=? AND event=? AND runtime=?',(work.scope,work.event_id,self.runtime))
         if release:
             self.resume_deferred_mentions()
@@ -890,8 +891,7 @@ class BotPipeline:
             value={**identity,'id':id,'eventId':work.event_id,'scope':'self' if internal else work.scope,'senderId':'0' if internal else work.subject,'at':at,**request,**({'origin':'model'} if model_research or internal else {})}
             self.db.execute("INSERT INTO pipeline_handoffs VALUES(?,?,?,'pending',NULL,?)",(id,identity['epoch'],json.dumps(value,ensure_ascii=False),at/1000))
             if binding:
-                changed=self.db.execute("UPDATE memory_agreements SET handoff_id=?,task_revision=? WHERE id=? AND revision=? AND status='accepted' AND handoff_id IS NULL",(id,binding['revision'],binding['id'],binding['revision']))
-                if changed.rowcount!=1:raise ValueError('agreement_revision_changed')
+                if not agreement_state.bind_handoff(self.db,binding['id'],binding['revision'],id):raise ValueError('agreement_revision_changed')
             # Accepted tasks may be scheduled seven days ahead. Retain their
             # source through the due time plus the seven-day execution window.
             self.db.execute("DELETE FROM pipeline_handoffs WHERE state<>'pending' AND at<?",(time.time()-14*86400,))

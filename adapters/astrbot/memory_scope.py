@@ -114,6 +114,10 @@ def record_correction(db,scope,subject,name,old_value,event,quote='',now=None):
     return revision
 
 
+def block_all_fact(db,scope,subject,name):
+    db.execute("INSERT INTO memory_blocks(scope,subject,name,block_all,rejected_values,revision) VALUES(?,?,?,1,'[]',0) ON CONFLICT(scope,subject,name) DO UPDATE SET block_all=1",(scope,subject,name))
+
+
 def release_value(db,scope,subject,name,value):
     """Sanctioned explicit restore: lift this value's block, keep the rest.
 

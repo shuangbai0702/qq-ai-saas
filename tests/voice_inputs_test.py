@@ -182,7 +182,7 @@ class VoiceTests(unittest.IsolatedAsyncioTestCase):
         first=asyncio.create_task(voice.prepare(st,raw,call));second=asyncio.create_task(voice.prepare(st,raw,call))
         await asyncio.sleep(0);gate.set()
         self.assertEqual(await first,await second);self.assertEqual(len(calls),1)
-        await asyncio.sleep(0);self.assertFalse(st._voice_inflight)
+        await asyncio.sleep(0);self.assertFalse(st.voice_inflight)
 
     async def test_native_live_and_recovery_share_conversion_and_no_sdk_record(self):
         st=self.store();raw=self.raw(st);converted=[];released=[]

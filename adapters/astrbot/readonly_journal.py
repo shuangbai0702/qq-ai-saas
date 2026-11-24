@@ -411,7 +411,12 @@ class ReadonlyJournal:
         self._staged=None
         self._staged_sha=None
         self._last_persist_error=None
+        self.shared_input_window=None
         if db is not None:self._load()
+
+    @property
+    def has_staged(self):
+        return self._staged is not None
 
     @staticmethod
     def _scope_key(scope):

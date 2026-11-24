@@ -512,7 +512,7 @@ def install_runtime(core,settings):
             raise
         if action=='add_custom_face':
             event.set_extra('_hosted_favorite_verifier',lambda proof:st.pipeline.internal_receipt(work,sequence,proof) if stores.get(id) is st else None)
-            st.db.execute('UPDATE qq_favorite_writes SET action=?,sequence=? WHERE account=? AND md5=?',(work.event_id,sequence,str(event.get_self_id()),event.get_extra('_hosted_favorite_md5')));st.db.commit()
+            qq_favorite_tools.bind_action(st.db,event.get_self_id(),event.get_extra('_hosted_favorite_md5'),work.event_id,sequence);st.db.commit()
         if forward_work:forward_dispatch(event,forward_store,forward_work)
         try:result=await action_original(self,action,**params)
         except BaseException:
@@ -1291,7 +1291,7 @@ def install_runtime(core,settings):
         if not notice:
             if contact:
                 m=metrics.setdefault(id,{});m['autonomousGroupSent']=m.get('autonomousGroupSent',0)+1
-                active_store.db.execute("UPDATE companion_motives SET status='contacted' WHERE scope=? AND subject=? AND status='open'",(scope,contact));active_store.db.commit()
+                companion_state.mark_contacted(active_store.db,scope,contact);active_store.db.commit()
             initiative.outgoing(active_store.db,scope,text,time.time(),event=work.event_id if work else None);metrics.setdefault(id,{}).setdefault('replies',0);metrics[id]['replies']+=1
         else:
             m=metrics.setdefault(id,{});m['platformNotices']=m.get('platformNotices',0)+1

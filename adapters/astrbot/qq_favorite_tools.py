@@ -76,6 +76,10 @@ async def prepare_original(row,root,account,current):
     return raw,'qq_download'
 
 
+def bind_action(db,account,md5,action,sequence):
+    db.execute('UPDATE qq_favorite_writes SET action=?,sequence=? WHERE account=? AND md5=?',(action,sequence,str(account),md5))
+
+
 def initialize(db):
     db.execute('CREATE TABLE IF NOT EXISTS qq_favorite_writes(account TEXT,md5 TEXT,scope TEXT,source TEXT,state TEXT,res_id TEXT,at REAL,PRIMARY KEY(account,md5))')
     columns={r[1] for r in db.execute('PRAGMA table_info(qq_favorite_writes)')}

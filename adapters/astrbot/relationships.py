@@ -133,6 +133,24 @@ def latest_speakers(db,scope,current=(),limit=6,self_id=''):
     return people
 
 
+def record_interaction(db,scope,subject,text,event,now,*,directed=True):
+    previous=db.execute('SELECT affinity,emotion,expires FROM relations WHERE subject=?',(subject,)).fetchone()
+    affinity=previous[0] if previous else 0;emotion=previous[1] if previous and previous[2]>now else '平静'
+    expires=previous[2] if previous else 0
+    fresh=False
+    if directed and event and text.strip():
+        fresh=db.execute('INSERT OR IGNORE INTO relation_events VALUES(?,?,?,?)',(scope,subject,str(event),now)).rowcount==1
+    if fresh:
+        # Observation records an interaction, not a cognitive relationship
+        # judgment. The existing semantic checkpoint owns affinity/trust.
+        db.execute('INSERT OR IGNORE INTO relation_evidence VALUES(?,?,?,?,?,?,?)',(scope,subject,str(event),0,'interaction',text[:200],now))
+    db.execute('DELETE FROM relation_events WHERE at<?',(now-7*86400,))
+    db.execute('DELETE FROM relation_evidence WHERE at<?',(now-7*86400,))
+    if text.strip():
+        db.execute('INSERT INTO relations(scope,subject,affinity,emotion,expires,last_seen) VALUES(?,?,?,?,?,?) ON CONFLICT(subject) DO UPDATE SET last_seen=max(relations.last_seen,excluded.last_seen)',(scope,subject,affinity,emotion,expires,now))
+    return affinity,emotion
+
+
 def observe_message(db,scope,person,at):
     """Authenticated protocol activity, independent of semantic revision."""
     import math,re

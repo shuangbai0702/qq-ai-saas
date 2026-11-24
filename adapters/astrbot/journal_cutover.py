@@ -292,9 +292,11 @@ def retire_owner_journals(db,bot_id,grant,backup_sha,cfg,product,*,normalize_leg
         summary=publish_owner_migration_summary(db,payload,product)
         # Shared staging was necessary for validation. No staged raw material is
         # published into the new Journal or the ordinary shared 30-round batch.
-        db.executemany("DELETE FROM memory_round_material WHERE scope='bot_shared' AND event=?",((row['event'],) for row in payload))
-        db.executemany("DELETE FROM memory_pending WHERE scope='bot_shared' AND event=?",((row['event'],) for row in payload))
-        db.executemany("DELETE FROM memory_message_sources WHERE scope='bot_shared' AND event=? AND direction='model'",((row['event'],) for row in payload))
+        import message_provenance,summary_material
+        payload_events=[row['event'] for row in payload]
+        summary_material.delete_events(db,'bot_shared',payload_events)
+        db.executemany("DELETE FROM memory_pending WHERE scope='bot_shared' AND event=?",((ev,) for ev in payload_events))
+        message_provenance.delete_model_events(db,'bot_shared',payload_events)
         for source in sources:
             scope=source['scope'];key=model_json(scope)
             ReadonlyJournal.retire_owner_source(db,scope,source['sha'],grant)

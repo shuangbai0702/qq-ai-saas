@@ -66,8 +66,8 @@ async def prepare(st, raw, call, current=lambda: True):
     if not has_voice(raw):return raw
     from context_protocol import protocol_input_scope
     key=(protocol_input_scope(raw),str(raw['message_id']))
-    running=getattr(st,'_voice_inflight',None)
-    if running is None:running=st._voice_inflight={}
+    running=getattr(st,'voice_inflight',None)
+    if running is None:running=st.voice_inflight={}
     task=running.get(key)
     if task is None:
         task=asyncio.create_task(_prepare(st,raw,call,current));running[key]=task

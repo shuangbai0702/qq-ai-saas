@@ -114,9 +114,10 @@ def discard_failed_service_inputs(db,scope):
                     str(other.get(field,''))!=str(value) for field,value in
                     (('scope',channel),('event_id',identifier),('sender_id',subject))):protected=True
         if protected:continue
+        import message_provenance
         for logical,key in identities:
             removed+=db.execute('DELETE FROM memory_pending WHERE scope=? AND event=?',(logical,key)).rowcount
-            db.execute("DELETE FROM memory_message_sources WHERE scope=? AND event=? AND direction IN ('model','incoming')",(logical,key))
+            message_provenance.delete_event_directions(db,logical,key,('model','incoming'))
     return removed
 
 
@@ -299,7 +300,9 @@ def _purge_members(db,scope,members):
             if table in tables:
                 for logical,key in identities:
                     db.execute('DELETE FROM '+table+' WHERE scope=? AND event=?',(logical,key))
-        if 'memory_message_sources' in tables:db.execute('DELETE FROM memory_message_sources WHERE scope=? AND event=?',(scope,event))
+        if 'memory_message_sources' in tables:
+            import message_provenance
+            message_provenance.delete_event_directions(db,scope,event)
         # Exact source and shared copies, never a TTL sweep.
         for table in ('dialogue_feedback','social_samples','memory_pending','relation_evidence','relation_events','companion_seen'):
             if table in tables:
@@ -321,7 +324,9 @@ def _purge_members(db,scope,members):
                     feedback.pop('quote',None)
                     db.execute("UPDATE companion_signals SET quote=? WHERE scope=? AND event=? AND kind='dialogue_feedback'",(model_json(feedback),logical,signal_event))
                     indexed.setdefault(semantic,[]).append((signal_event,feedback))
-        if 'memory_message_sources' in tables:db.execute('DELETE FROM memory_message_sources WHERE scope=? AND event=?',(channel,identifier))
+        if 'memory_message_sources' in tables:
+            import message_provenance
+            message_provenance.delete_event_directions(db,channel,identifier)
         if 'pipeline_work_inputs' in tables:
             # Minimal identity/status/receipt fencing remains a system ledger;
             # it is not model memory and no longer contains the raw request.

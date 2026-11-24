@@ -150,7 +150,7 @@ class AsyncRetirement(unittest.IsolatedAsyncioTestCase):
                 finally:release.set()
                 await retirement
                 with self.assertRaises(asyncio.CancelledError):await drain
-        self.assertFalse(self.st._local_db_workers)
+        self.assertFalse(self.st.local_db_workers)
         self.assertIs(self.st.model_journals[fixture.SCOPE],old)
 
     async def test_pending_input_persistence_retains_ingress_and_stop_fence(self):

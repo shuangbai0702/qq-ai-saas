@@ -82,10 +82,10 @@ class RuntimeCare:
         for st in self.stores.values():
             if st.root!=Path(root):continue
             st.slot_changed.set()
-            if loop is None or getattr(st,'_compression_wakeup',False):continue
-            st._compression_wakeup=True
+            if loop is None or getattr(st,'compression_wakeup',False):continue
+            st.compression_wakeup=True
             def wake(st=st):
-                st._compression_wakeup=False
+                st.compression_wakeup=False
                 if self.closed or self.stop_requested():return
                 try:
                     if st.reflection.retry():self.track(st,st.reflection.task)

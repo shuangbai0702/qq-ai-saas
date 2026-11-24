@@ -99,7 +99,7 @@ def finish_semantic_batches(st,cfg,scope):
         if journal is None:
             journal=ReadonlyJournal(st.db,scope)
             if journal.last is not None:st.model_journals[scope]=journal
-        if journal.last is None or journal._staged is not None or journal.recovery_error or journal.retired_reason:
+        if journal.last is None or journal.has_staged or journal.recovery_error or journal.retired_reason:
             _issue(st,scope,checkpoint,'journal_busy_or_unavailable');result['pending']+=1;continue
         permit=None
         try:

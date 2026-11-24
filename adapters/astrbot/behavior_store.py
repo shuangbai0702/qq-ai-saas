@@ -67,8 +67,7 @@ class BehaviorStore:
                 restored.add(scope)
                 row=self.db.execute('SELECT last_reply FROM autonomy_groups WHERE scope=?',(scope,)).fetchone()
                 if not row or row[0]<at:
-                    autonomy.note_reply(self.db,scope,subject,at)
-                    self.db.execute('UPDATE autonomy_groups SET interaction=max(interaction,?) WHERE scope=?',(at,scope));self.db.commit()
+                    autonomy.note_reply(self.db,scope,subject,at,touch_interaction=True)
         for scope,subject,at in self.db.execute('SELECT scope,partner,last_reply FROM autonomy_groups WHERE last_reply>? AND last_reply<=? ORDER BY last_reply DESC LIMIT 128',(time.time()-300,time.time())):
             self.participation.scopes.setdefault(scope,{'topic':set(),'sent':[at],'last':at,'subject':subject,'participants':{subject:at} if subject else {},'turns':[]})
         self.presence=autonomy.GroupPresence(self.db)
@@ -83,6 +82,15 @@ class BehaviorStore:
         self.reflection.admission=self.compression_admission
         self.freshness=group_freshness.GroupFreshness()
         self.scope_turns={}
+        self.compression_jobs={}
+        self.model_probe_jobs={}
+        self.model_probe_task=None
+        self.compression_wakeup=False
+        self.local_db_workers=set()
+        self.semantic_worker=None
+        self.voice_inflight={}
+        self.closing=False
+        self._storage_closed=False
 
     def conversation_pending(self):
         if self.active or self.ingress or self.batches or self.waiting or any(s['users'] for s in self.scope_turns.values()):return True
@@ -158,20 +166,7 @@ class BehaviorStore:
     def observe(self,scope,subject,text,event,now=None,memory_enabled=True,directed=True,project_facts=True):
         now=time.time() if now is None else now
         status=self.memory.observe(scope,subject,text,event,now) if memory_enabled else '长期记忆已关闭'
-        previous=self.db.execute('SELECT affinity,emotion,expires FROM relations WHERE subject=?',(subject,)).fetchone()
-        affinity=previous[0] if previous else 0;emotion=previous[1] if previous and previous[2]>now else '平静'
-        expires=previous[2] if previous else 0
-        fresh=False
-        if directed and event and text.strip():
-            fresh=self.db.execute('INSERT OR IGNORE INTO relation_events VALUES(?,?,?,?)',(scope,subject,str(event),now)).rowcount==1
-        if fresh:
-            # Observation records an interaction, not a cognitive relationship
-            # judgment. The existing semantic checkpoint owns affinity/trust.
-            self.db.execute('INSERT OR IGNORE INTO relation_evidence VALUES(?,?,?,?,?,?,?)',(scope,subject,str(event),0,'interaction',text[:200],now))
-        self.db.execute('DELETE FROM relation_events WHERE at<?',(now-7*86400,))
-        self.db.execute('DELETE FROM relation_evidence WHERE at<?',(now-7*86400,))
-        if text.strip():
-            self.db.execute('INSERT INTO relations(scope,subject,affinity,emotion,expires,last_seen) VALUES(?,?,?,?,?,?) ON CONFLICT(subject) DO UPDATE SET last_seen=max(relations.last_seen,excluded.last_seen)',(scope,subject,affinity,emotion,expires,now))
+        affinity,emotion=relationships.record_interaction(self.db,scope,subject,text,event,now,directed=directed)
         self.db.commit()
         facts=self.memory.recall(scope,subject,text,now) if memory_enabled and project_facts else []
         return {'memory_status':status,'facts':facts,'emotion':emotion,'relationship':'熟悉' if affinity>=5 else '初识','affinity':affinity}
@@ -184,21 +179,21 @@ class BehaviorStore:
         self.last[scope]=now;return True
 
     def close(self):
-        if getattr(self,'_closing',False):return
-        self._closing=True
+        if self.closing:return
+        self.closing=True
         self.slot_changed.set()
-        for task in tuple(getattr(self,'_voice_inflight',{}).values()):task.cancel()
-        if getattr(self,'_local_db_workers',None):
+        for task in tuple(self.voice_inflight.values()):task.cancel()
+        if self.local_db_workers:
             # Invalidate publication now, but keep storage and ownership alive
             # until the local transaction has actually stopped.
             self.reflection.closed=True;self.reflection.binding=None
             if self.reflection.task:self.reflection.task.cancel()
             return
-        self._close_storage()
+        self.close_storage()
 
-    def _close_storage(self):
-        if getattr(self,'_storage_closed',False):return
+    def close_storage(self):
+        if self._storage_closed:return
         self._storage_closed=True
-        probe=getattr(self,'_model_probe_task',None)
+        probe=self.model_probe_task
         if probe and not probe.done():probe.cancel()
         self.pipeline.close();self.planner.close();self.memory.close();self.reflection.close();self.social.close();autonomy.recover_unstarted(self.db);self.db.close()

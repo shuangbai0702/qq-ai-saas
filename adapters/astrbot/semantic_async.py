@@ -7,17 +7,17 @@ from types import SimpleNamespace
 
 
 def busy(store):
-    task=getattr(store,'_semantic_worker',None)
+    task=getattr(store,'semantic_worker',None)
     return task is not None and not task.done()
 
 
 def track_worker(store,task):
-    workers=getattr(store,'_local_db_workers',None)
-    if workers is None:workers=store._local_db_workers=set()
+    workers=getattr(store,'local_db_workers',None)
+    if workers is None:workers=store.local_db_workers=set()
     workers.add(task)
     def completed(_):
         workers.discard(task)
-        if getattr(store,'_closing',False) and not workers:store._close_storage()
+        if getattr(store,'closing',False) and not workers:store.close_storage()
     task.add_done_callback(completed)
     return task
 
@@ -28,8 +28,8 @@ async def drain_store(store):
     reflection_task=store.reflection.task
     if reflection_task and not reflection_task.done():reflection_task.cancel()
     async def drain():
-        while getattr(store,'_local_db_workers',None):
-            await asyncio.gather(*tuple(store._local_db_workers),return_exceptions=True)
+        while getattr(store,'local_db_workers',None):
+            await asyncio.gather(*tuple(store.local_db_workers),return_exceptions=True)
         if reflection_task and reflection_task is not asyncio.current_task():
             await asyncio.gather(reflection_task,return_exceptions=True)
     await settled(asyncio.create_task(drain()))
@@ -85,19 +85,19 @@ async def finish(store,cfg,scope,is_current=lambda:True):
     from semantic_runtime import _prune_hot_memory
     if busy(store):raise RuntimeError('semantic_retirement_already_running')
     if store.db.in_transaction:return {'result':'transaction_busy'}
-    if any(j._staged is not None for j in store.model_journals.values()):return {'result':'journal_busy'}
+    if any(j.has_staged for j in store.model_journals.values()):return {'result':'journal_busy'}
     path=store.db.execute('PRAGMA database_list').fetchone()[2]
     if not path:raise ValueError('semantic_retirement_requires_file_database')
     snapshot=_snapshot(store)
     task=track_worker(store,asyncio.create_task(asyncio.to_thread(_finish,snapshot,path,copy.deepcopy(cfg),scope,tuple(store.model_journals))))
-    store._semantic_worker=task
+    store.semantic_worker=task
     cancelled=False
     try:
         try:result,scopes=await settled(task)
         except asyncio.CancelledError:
             cancelled=True
             result,scopes=task.result()
-        if not getattr(store,'_closing',False) and is_current():
+        if not getattr(store,'closing',False) and is_current():
             # The worker's Journal objects retain its now-closed connection.
             # Reload authoritative state onto the owner's connection instead.
             for key in scopes:store.model_journals[key]=ReadonlyJournal(store.db,key)
@@ -106,7 +106,7 @@ async def finish(store,cfg,scope,is_current=lambda:True):
         if cancelled:raise asyncio.CancelledError
         return result
     finally:
-        if getattr(store,'_semantic_worker',None) is task:store._semantic_worker=None
+        if getattr(store,'semantic_worker',None) is task:store.semantic_worker=None
 
 
 def persist_input(path,pipeline,event,lease):

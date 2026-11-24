@@ -3,7 +3,7 @@ Formal thirty-round checkpoints with source/revision fencing.
 Summaries are conversation evidence, never verified profile facts or instructions.
 """
 from model_cache import auxiliary_scope,adopted,discarded as record_discarded
-import asyncio,json,time,hashlib,inspect,re
+import asyncio,json,logging,time,hashlib,inspect,re
 from pathlib import Path
 import message_provenance
 from context_protocol import model_json
@@ -295,6 +295,34 @@ class Reflection:
         END;''')
         db.execute('CREATE TABLE IF NOT EXISTS memory_reflection_retry(scope TEXT PRIMARY KEY,attempts INTEGER,next_at REAL,result TEXT)')
         if 'result' not in {r[1] for r in db.execute('PRAGMA table_info(memory_reflection_retry)')}:db.execute('ALTER TABLE memory_reflection_retry ADD COLUMN result TEXT')
+        db.execute('''CREATE TABLE IF NOT EXISTS memory_checkpoint_issues(
+          scope TEXT,checkpoint_id INTEGER,kind TEXT,status TEXT,detail TEXT,
+          first_seen REAL,updated REAL,PRIMARY KEY(scope,checkpoint_id,kind))''')
+        existing_tables={row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        now_init=time.time()
+        if 'memory_hold_rounds' in existing_tables:
+            cols={row[1] for row in db.execute('PRAGMA table_info(memory_hold_rounds)')}
+            if {'scope','event'}.issubset(cols):
+                reason_expr='reason' if 'reason' in cols else "''"
+                created_expr='created' if 'created' in cols else str(now_init)
+                legacy_holds=db.execute(f'SELECT scope,event,{reason_expr},{created_expr} FROM memory_hold_rounds').fetchall()
+                for hold_scope,hold_event,hold_reason,hold_created in legacy_holds:
+                    detail=json.dumps({'legacy_table':'memory_hold_rounds','event':str(hold_event),'reason':str(hold_reason or '')},ensure_ascii=False,separators=(',',':'))
+                    ts=float(hold_created) if isinstance(hold_created,(int,float)) else now_init
+                    db.execute("INSERT OR IGNORE INTO memory_checkpoint_issues(scope,checkpoint_id,kind,status,detail,first_seen,updated) VALUES(?,0,?,'open',?,?,?)",
+                               (str(hold_scope),'legacy_hold_round:'+str(hold_event),detail,ts,now_init))
+                if legacy_holds:
+                    logging.getLogger('astrbot.memory_reflection').warning('FISHBOT_LEGACY_HOLD_MIGRATED count=%d table=memory_hold_rounds',len(legacy_holds))
+        if 'memory_summary_unresolved' in existing_tables:
+            cols={row[1] for row in db.execute('PRAGMA table_info(memory_summary_unresolved)')}
+            if {'scope','event'}.issubset(cols):
+                legacy_unresolved=db.execute('SELECT scope,event FROM memory_summary_unresolved').fetchall()
+                for u_scope,u_event in legacy_unresolved:
+                    detail=json.dumps({'legacy_table':'memory_summary_unresolved','event':str(u_event)},ensure_ascii=False,separators=(',',':'))
+                    db.execute("INSERT OR IGNORE INTO memory_checkpoint_issues(scope,checkpoint_id,kind,status,detail,first_seen,updated) VALUES(?,0,?,'open',?,?,?)",
+                               (str(u_scope),'legacy_summary_unresolved:'+str(u_event),detail,now_init,now_init))
+                if legacy_unresolved:
+                    logging.getLogger('astrbot.memory_reflection').warning('FISHBOT_LEGACY_HOLD_MIGRATED count=%d table=memory_summary_unresolved',len(legacy_unresolved))
         db.executescript('''DROP TABLE IF EXISTS memory_hold_rounds;
         DROP TABLE IF EXISTS memory_web_context_permits;
         DROP TABLE IF EXISTS memory_summary_unresolved;''')
@@ -303,9 +331,6 @@ class Reflection:
         if 'pending_events' not in checkpoint_columns:db.execute('ALTER TABLE memory_reconstruction_checkpoints ADD COLUMN pending_events TEXT')
         if 'conversation_continuity' not in checkpoint_columns:
             db.execute('ALTER TABLE memory_reconstruction_checkpoints ADD COLUMN conversation_continuity TEXT')
-        db.execute('''CREATE TABLE IF NOT EXISTS memory_checkpoint_issues(
-          scope TEXT,checkpoint_id INTEGER,kind TEXT,status TEXT,detail TEXT,
-          first_seen REAL,updated REAL,PRIMARY KEY(scope,checkpoint_id,kind))''')
         claim_columns={row[1] for row in db.execute('PRAGMA table_info(memory_summaries)')}
         if 'schema_version' not in claim_columns:db.execute('ALTER TABLE memory_summaries ADD COLUMN schema_version INTEGER DEFAULT 1')
         if 'claims' not in claim_columns:db.execute('ALTER TABLE memory_summaries ADD COLUMN claims TEXT')

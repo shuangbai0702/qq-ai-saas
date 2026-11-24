@@ -23,7 +23,7 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
   self.assertEqual(manage(self.st,self.data,self.care,self.run_probe)['state'],'running')
   other={**self.data,'requestId':'22222222-2222-4222-8222-222222222222'}
   self.assertEqual(manage(self.st,other,self.care,self.run_probe)['status'],409)
-  self.gate.set();await self.st._model_probe_task
+  self.gate.set();await self.st.model_probe_task
   status=manage(self.st,{'action':'admin_model_probe_status','requestId':self.data['requestId']},self.care,self.run_probe)
   self.assertEqual(status['state'],'completed');self.assertEqual(self.calls,1)
   self.assertFalse(status['qqSend']);self.assertFalse(status['businessRound']);self.assertFalse(status['toolExecution'])
@@ -32,17 +32,17 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
   self.assertEqual(manage(self.st,self.data,self.care,self.run_probe)['status'],409)
   self.care.busy=lambda st:False
   async def fail(data):raise RuntimeError('private exception must not escape')
-  manage(self.st,self.data,self.care,fail);await self.st._model_probe_task
+  manage(self.st,self.data,self.care,fail);await self.st.model_probe_task
   result=manage(self.st,{'action':'admin_model_probe_status','requestId':self.data['requestId']},self.care,fail)
   self.assertEqual(result['state'],'failed');self.assertEqual(result['reason'],'RuntimeError');self.assertNotIn('private',str(result))
 
  async def test_cancel_before_start_is_terminal(self):
   manage(self.st,self.data,self.care,self.run_probe)
-  self.st._model_probe_task.cancel()
-  try:await self.st._model_probe_task
+  self.st.model_probe_task.cancel()
+  try:await self.st.model_probe_task
   except asyncio.CancelledError:pass
   await asyncio.sleep(0)
-  self.assertEqual(self.st._model_probe_jobs[self.data['requestId']]['state'],'cancelled')
+  self.assertEqual(self.st.model_probe_jobs[self.data['requestId']]['state'],'cancelled')
   self.assertEqual(self.calls,0)
 
  async def test_request_uses_shared_contract_before_provider_hooks(self):

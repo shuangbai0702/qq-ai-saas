@@ -264,6 +264,10 @@ def apply_summary_evidence(db,scope,data,evidence,before,targeted,now):
     return saved
 
 
+def mark_contacted(db,scope,subject):
+    db.execute("UPDATE companion_motives SET status='contacted' WHERE scope=? AND subject=? AND status='open'",(scope,subject))
+
+
 def prune_resolved_topics(db,scope,now):
     # Capacity housekeeping must never erase another Scope's active topic.
     db.execute("DELETE FROM companion_motives WHERE scope=? AND status IN ('resolved','abandoned') AND expires<?",(scope,now))

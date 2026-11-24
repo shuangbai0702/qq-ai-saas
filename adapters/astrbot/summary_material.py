@@ -270,6 +270,10 @@ def remember(db,scope,materials):
         db.execute('INSERT INTO memory_round_material VALUES(?,?,?,?) ON CONFLICT(scope,event) DO UPDATE SET material=excluded.material',(scope,item['event'],item['subject'],encoded));used=available+len(encoded.encode())
 
 
+def delete_events(db,scope,events):
+    db.executemany('DELETE FROM memory_round_material WHERE scope=? AND event=?',((scope,str(event)) for event in events))
+
+
 def recover_archived_materials(db,scope,events):
     """Recapture exact trusted archive blocks into the existing material store.
 

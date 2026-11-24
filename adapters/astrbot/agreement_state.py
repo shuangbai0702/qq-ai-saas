@@ -306,6 +306,10 @@ def task_current(db,binding):
     return bool(row and row[0]==binding.get('revision') and row[1]=='accepted')
 
 
+def bind_handoff(db,agreement_id,revision,handoff_id):
+    return db.execute("UPDATE memory_agreements SET handoff_id=?,task_revision=? WHERE id=? AND revision=? AND status='accepted' AND handoff_id IS NULL",(handoff_id,revision,agreement_id,revision)).rowcount==1
+
+
 def task_states(db):
     """Version fences for the existing PG goals; no chat bodies or scheduler."""
     return [{'id':r[0],'revision':r[1],'status':r[2],'handoffId':r[3],'taskRevision':r[4]}

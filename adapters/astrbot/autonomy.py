@@ -194,9 +194,12 @@ def note_interaction(db, cfg, scope, subject, now, directed=True):
     db.commit()
 
 
-def note_reply(db, scope, subject, now):
+def note_reply(db, scope, subject, now, *, touch_interaction=False):
     if not scope.startswith('group:'):return
-    db.execute('INSERT INTO autonomy_groups(scope,partner,last_reply) VALUES(?,?,?) ON CONFLICT(scope) DO UPDATE SET partner=excluded.partner,last_reply=excluded.last_reply',(scope,str(subject),now));db.commit()
+    db.execute('INSERT INTO autonomy_groups(scope,partner,last_reply) VALUES(?,?,?) ON CONFLICT(scope) DO UPDATE SET partner=excluded.partner,last_reply=excluded.last_reply',(scope,str(subject),now))
+    if touch_interaction:
+        db.execute('UPDATE autonomy_groups SET interaction=max(interaction,?) WHERE scope=?',(now,scope))
+    db.commit()
 
 
 def has_capacity(db,cfg,now):

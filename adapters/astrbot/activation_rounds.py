@@ -21,7 +21,8 @@ def annotate_service(db, scope, event, work, *, source_scope):
     previous=metadata(db,scope,event)
     if previous is not None and previous!=data:raise ValueError('service_dialogue_owner_changed')
     if previous is None and db.execute('SELECT 1 FROM memory_rounds WHERE scope=? AND event=?',(scope,str(event))).fetchone():raise ValueError('service_dialogue_event_collision')
-    db.execute("INSERT OR IGNORE INTO memory_message_sources VALUES(?,?,'activation',?)",(scope,str(event),json.dumps(data,separators=(',',':'))))
+    import message_provenance
+    message_provenance.put_activation(db,scope,event,data)
 
 
 def record(db, scope, event, work, *, source_scope, subject, at=None):
@@ -35,7 +36,8 @@ def record(db, scope, event, work, *, source_scope, subject, at=None):
         raise ValueError('activation_owner_changed')
     if previous is None and db.execute('SELECT 1 FROM memory_rounds WHERE scope=? AND event=?', (scope, str(event))).fetchone():
         raise ValueError('activation_event_collision')
-    db.execute("INSERT OR IGNORE INTO memory_message_sources VALUES(?,?,'activation',?)", (scope, str(event), json.dumps(data, separators=(',', ':'))))
+    import message_provenance
+    message_provenance.put_activation(db, scope, event, data)
     db.execute('INSERT OR IGNORE INTO memory_rounds(scope,subject,event,question,answer,at) VALUES(?,?,?,?,?,?)', (scope, subject, str(event), '', '', time.time() if at is None else at))
 
 

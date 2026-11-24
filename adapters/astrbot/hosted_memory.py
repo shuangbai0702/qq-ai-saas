@@ -88,8 +88,9 @@ class ScopedMemory:
             forget=re.fullmatch(r'忘记[：:]\s*(.{1,40})',text)
             if forget:
                 from memory_invalidation import invalidate
+                from memory_scope import block_all_fact
                 invalidate(self.db,scope,subject)
-                self.db.execute("INSERT INTO memory_blocks(scope,subject,name,block_all,rejected_values,revision) VALUES(?,?,?,1,'[]',0) ON CONFLICT(scope,subject,name) DO UPDATE SET block_all=1",(scope,subject,forget[1].strip()))
+                block_all_fact(self.db,scope,subject,forget[1].strip())
                 where,args=person_filter(scope,subject)
                 self.db.execute('UPDATE facts SET active=0 WHERE '+where+' AND name=?',args+(forget[1].strip(),));status='该事实已标记遗忘'
             # Automatic regex self-report extraction is retired (D package): the
@@ -178,8 +179,9 @@ def edit_by_user(db,data):
     db.execute('UPDATE facts SET active=0 WHERE '+where+' AND name=?',args+(data['name'],))
     if action == 'forget_fact':
         from memory_operation_audit import forget_fact
+        from memory_scope import block_all_fact
         forget_fact(db,data['subject'],data['name'])
-        db.execute("INSERT INTO memory_blocks(scope,subject,name,block_all,rejected_values,revision) VALUES(?,?,?,1,'[]',0) ON CONFLICT(scope,subject,name) DO UPDATE SET block_all=1", key)
+        block_all_fact(db,*key)
         db.execute("INSERT INTO fact_metadata(scope,subject,name,kind,origin,importance) VALUES(?,?,?,'stable','explicit',.8) ON CONFLICT(scope,subject,name) DO NOTHING",key)
         if not proof_column:db.execute('ALTER TABLE fact_metadata ADD COLUMN user_edit TEXT')
         proof={'actorId':data['actorId'],'target':None,'origins':list(dict.fromkeys([*proof.get('origins',[]),*origins]))}

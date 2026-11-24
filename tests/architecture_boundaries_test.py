@@ -129,6 +129,66 @@ class ArchitectureBoundaryTests(unittest.TestCase):
                 violators.append(path.name)
         self.assertEqual(violators, [], f'Only embedding_client.py may own memory_embedding_budget; found: {violators}')
 
+    def test_single_owner_sqlite_tables(self):
+        owners = {
+            'memory_core_notes': 'core_note.py',
+            'memory_embedding_budget': 'embedding_client.py',
+            'qq_favorite_writes': 'qq_favorite_tools.py',
+            'memory_agreements': 'agreement_state.py',
+            'memory_round_material': 'summary_material.py',
+            'companion_motives': 'companion_state.py',
+            'relations': 'relationships.py',
+            'relation_evidence': 'relationships.py',
+            'autonomy_groups': 'autonomy.py',
+            'memory_blocks': 'memory_scope.py',
+            'memory_message_sources': 'message_provenance.py',
+        }
+        violators = []
+        for table, owner in owners.items():
+            write_re = re.compile(rf'(?:CREATE\s+TABLE|INSERT(?:\s+OR\s+\w+)?\s+INTO|UPDATE|DELETE\s+FROM)\b[^\n;]*\b{table}\b', re.I)
+            for path in sorted(ASTRBOT_DIR.glob('*.py')):
+                if path.name == owner:
+                    continue
+                if write_re.search(path.read_text('utf-8')):
+                    violators.append(f'{table}:{path.name} (owner={owner})')
+        self.assertEqual(violators, [], f'Single-owner SQLite table violations: {violators}')
+
+    def test_no_cross_module_private_store_journal_access(self):
+        pat = re.compile(r'\b(store|st|journal|j)\._([a-zA-Z][a-zA-Z0-9_]*)')
+        violators = []
+        for path in sorted(ASTRBOT_DIR.glob('*.py')):
+            for i, line in enumerate(path.read_text('utf-8').splitlines(), 1):
+                if line.lstrip().startswith('#'):
+                    continue
+                for m in pat.finditer(line):
+                    violators.append(f'{path.name}:{i}:{m.group(0)}')
+        self.assertEqual(violators, [], f'Cross-module private store/journal attribute access found: {violators}')
+
+    def test_legacy_hold_rounds_migrated_not_silently_dropped(self):
+        import json, sqlite3, time
+        if str(ASTRBOT_DIR) not in sys.path:
+            sys.path.insert(0, str(ASTRBOT_DIR))
+        from memory_reflection import Reflection
+        db = sqlite3.connect(':memory:')
+        db.execute('CREATE TABLE memory_hold_rounds(scope TEXT,event TEXT,round_id INTEGER,reason TEXT,created REAL,PRIMARY KEY(scope,event))')
+        db.execute("INSERT INTO memory_hold_rounds VALUES('group:12345','ev-old-1',7,'missing_full_original',1700000000.0)")
+        db.execute('CREATE TABLE memory_summary_unresolved(scope TEXT,event TEXT,summary_id INTEGER,digest TEXT)')
+        db.execute("INSERT INTO memory_summary_unresolved VALUES('private:99999','ev-unres-2',3,'abc')")
+        db.commit()
+        Reflection(db)
+        tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertNotIn('memory_hold_rounds', tables)
+        self.assertNotIn('memory_summary_unresolved', tables)
+        issues = db.execute('SELECT scope,kind,status,detail FROM memory_checkpoint_issues ORDER BY kind').fetchall()
+        self.assertEqual(len(issues), 2)
+        self.assertEqual(issues[0][0], 'group:12345')
+        self.assertEqual(issues[0][1], 'legacy_hold_round:ev-old-1')
+        self.assertEqual(issues[0][2], 'open')
+        self.assertEqual(json.loads(issues[0][3])['reason'], 'missing_full_original')
+        self.assertEqual(issues[1][0], 'private:99999')
+        self.assertEqual(issues[1][1], 'legacy_summary_unresolved:ev-unres-2')
+        db.close()
+
     def test_retired_tables_not_recreated(self):
         violators = []
         for path in sorted(ASTRBOT_DIR.glob('*.py')):

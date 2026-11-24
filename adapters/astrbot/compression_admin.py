@@ -34,8 +34,8 @@ def manage(store,data,care):
     if set(data)-allowed or not (allowed-{'discardUnavailable'})<=set(data) or not isinstance(request_id,str) or not re.fullmatch(r'[a-fA-F0-9-]{36}',request_id):
         return {'error':'维护请求无效','status':400}
     scope='bot_shared'
-    jobs=getattr(store,'_compression_jobs',None)
-    if jobs is None:jobs={};store._compression_jobs=jobs
+    jobs=getattr(store,'compression_jobs',None)
+    if jobs is None:jobs={};store.compression_jobs=jobs
     if request_id in jobs:
         if not status_only and jobs[request_id].get('scope','bot_shared')!=scope:
             return {'error':'维护请求已绑定其他会话','status':409}

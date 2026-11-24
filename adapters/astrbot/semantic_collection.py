@@ -309,7 +309,9 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False,source_events
             key=model_json(list(pair))
             old=db.execute("SELECT data FROM memory_message_sources WHERE scope='bot_shared' AND event=? AND direction='model'",(key,)).fetchone()
             if old and json.loads(old[0])!=value:raise ValueError('semantic_collection_binding_conflict')
-            if not old:db.execute("INSERT INTO memory_message_sources VALUES('bot_shared',?,'model',?)",(key,raw))
+            if not old:
+                import message_provenance
+                message_provenance.put_model_if_missing(db,key,raw)
     # Discover material-only/archive-only inputs too, including silent images.
     for messages,container_at in _journals(db,tables):
         # A later timestamped input bounds preceding blocks without inventing

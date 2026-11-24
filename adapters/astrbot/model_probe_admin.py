@@ -11,8 +11,8 @@ def manage(store,data,care,run):
     allowed={'action','requestId'} if status else {'action','requestId','administrator','scope'}
     if set(data)!=allowed or not isinstance(data.get('requestId'),str) or not re.fullmatch(r'[a-fA-F0-9-]{36}',data['requestId']):
         return {'error':'调试请求无效','status':400}
-    jobs=getattr(store,'_model_probe_jobs',None)
-    if jobs is None:jobs={};store._model_probe_jobs=jobs
+    jobs=getattr(store,'model_probe_jobs',None)
+    if jobs is None:jobs={};store.model_probe_jobs=jobs
     key=data['requestId']
     if key in jobs:return dict(jobs[key])
     if status:return {'error':'调试请求不存在或运行实例已更换','status':404}
@@ -21,7 +21,7 @@ def manage(store,data,care,run):
     scope=data['scope']
     if not store.db.execute('SELECT 1 FROM pipeline_events WHERE scope=? LIMIT 1',(scope,)).fetchone():
         return {'error':'只能调试机器人已接触的真实会话','status':400}
-    if not store.shared_context or care.busy(store) or getattr(store,'_model_probe_task',None) and not store._model_probe_task.done():
+    if not store.shared_context or care.busy(store) or getattr(store,'model_probe_task',None) and not store.model_probe_task.done():
         return {'error':'机器人当前不可调试，请稍后重试','status':409}
     if len(jobs)>=16:return {'error':'本次运行调试次数已达上限','status':429}
     job={'ok':True,'requestId':key,'state':'running','startedAt':time.time(),'qqSend':False,'toolExecution':False,'businessRound':False}
@@ -35,7 +35,7 @@ def manage(store,data,care,run):
         except Exception as error:
             job.update(state='failed',reason=type(error).__name__)
         finally:job['finishedAt']=time.time()
-    task=asyncio.create_task(execute());store._model_probe_task=task;care.track(store,task)
+    task=asyncio.create_task(execute());store.model_probe_task=task;care.track(store,task)
     def settled(done):
         if done.cancelled():job.update(state='cancelled',finishedAt=time.time())
     task.add_done_callback(settled)

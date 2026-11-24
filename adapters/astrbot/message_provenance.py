@@ -191,6 +191,30 @@ def put(db,scope,event,direction,source):
         db.execute('INSERT INTO memory_message_sources VALUES(?,?,?,?) ON CONFLICT(scope,event,direction) DO UPDATE SET data=excluded.data',(scope,str(event),direction,raw))
 
 
+def put_activation(db,scope,event,data):
+    db.execute("INSERT OR IGNORE INTO memory_message_sources VALUES(?,?,'activation',?)",(scope,str(event),json.dumps(data,separators=(',',':'))))
+
+
+def put_model_if_missing(db,event,raw):
+    db.execute("INSERT INTO memory_message_sources VALUES('bot_shared',?,'model',?)",(event,raw))
+
+
+def update_shared_model(db,event,value):
+    db.execute("UPDATE memory_message_sources SET data=? WHERE scope='bot_shared' AND event=? AND direction='model'",(model_json(value),event))
+
+
+def delete_model_events(db,scope,events):
+    db.executemany("DELETE FROM memory_message_sources WHERE scope=? AND event=? AND direction='model'",((scope,str(event)) for event in events))
+
+
+def delete_event_directions(db,scope,event,directions=None):
+    if directions is None:
+        db.execute('DELETE FROM memory_message_sources WHERE scope=? AND event=?',(scope,str(event)))
+    else:
+        marks=','.join('?' for _ in directions)
+        db.execute(f'DELETE FROM memory_message_sources WHERE scope=? AND event=? AND direction IN ({marks})',(scope,str(event),*directions))
+
+
 def incoming_item(db,scope,person,event,text,at):
     source=get(db,scope,event)
     # Old rows have no protocol display name; never guess from another member.

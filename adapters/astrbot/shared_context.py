@@ -301,15 +301,15 @@ def queued(db,cfg,journal,group_limit=2,current=None):
             result.append(message)
     # Selection alone grants no deletion. Even a failed prepare must retain
     # every queued resource until this exact window reaches the Journal.
-    journal._shared_input_window=({(scope,event) for _,scope,event,_ in rows},discarded)
+    journal.shared_input_window=({(scope,event) for _,scope,event,_ in rows},discarded)
     return result
 
 
 def settle_inputs(db,journal):
-    if getattr(journal,'_staged',None) is not None:return
+    if journal.has_staged:return
     known=[(o['scope'],str(o['event_id'])) for m in journal.last.base if (o:=source(m))] if journal.last else []
     db.executemany('DELETE FROM fishbot_shared_inputs WHERE scope=? AND event=?',known)
-    window=getattr(journal,'_shared_input_window',None)
+    window=getattr(journal,'shared_input_window',None)
     if window and window[0]<=set(known):
         # A committed background window also releases excluded ambient input
         # custody. Previously only the display queue was erased, leaving an
@@ -341,7 +341,7 @@ def settle_inputs(db,journal):
         db.executemany('DELETE FROM fishbot_shared_inputs WHERE id=?',[(i,) for i in window[1]])
     db.commit()
     if window and window[0]<=set(known):
-        del journal._shared_input_window
+        journal.shared_input_window=None
 
 
 def delivery_view(db,journal=None,limit=8,budget=3000,exclude_scope=None,text_limit=1200,only_scope=None,auxiliary=False):
