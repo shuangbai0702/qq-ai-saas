@@ -227,7 +227,7 @@ def retire_empty_legacy_journals(db, bot_id, grant, backup_sha):
                     raise ValueError('owner_migration_source_requires_history_coverage')
             # A System-only visible snapshot cannot prove that old round,
             # pending or checkpoint material was already summarized elsewhere.
-            for table in ('memory_rounds','memory_pending','memory_hold_rounds','memory_round_material',
+            for table in ('memory_rounds','memory_pending','memory_round_material',
                           'memory_summaries','memory_reconstruction_checkpoints','memory_message_sources'):
                 if table in tables and db.execute('SELECT 1 FROM '+table+' WHERE scope=? LIMIT 1',(scope,)).fetchone():
                     raise ValueError('owner_migration_source_requires_history_coverage:'+table)
@@ -405,7 +405,7 @@ def archive_authorized_scope(db,scope,expected_sha,authorization,release):
             raise ValueError('operator_journal_changed')
         tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         archive={'journal':dict(zip(('scope','version','state','payload','sha','updated'),row)),'evidence':{}}
-        for name in ('memory_rounds','memory_round_material','memory_pending','memory_pending_rounds','memory_hold_rounds','memory_reconstruction_checkpoints','fishbot_system_scope_contract'):
+        for name in ('memory_rounds','memory_round_material','memory_pending','memory_pending_rounds','memory_reconstruction_checkpoints','fishbot_system_scope_contract'):
             if name not in tables:continue
             cursor=db.execute('SELECT * FROM '+name+' WHERE scope=?',(scope,))
             archive['evidence'][name]={'columns':[c[0] for c in cursor.description],'rows':cursor.fetchall()}
@@ -414,7 +414,7 @@ def archive_authorized_scope(db,scope,expected_sha,authorization,release):
         db.execute("INSERT INTO fishbot_operator_session_archives VALUES(?,?,?,?,?,?,'available')",(authorization,key,release,encoded,hashlib.sha256(encoded.encode()).hexdigest(),time.time()))
         # These belong to the explicitly closed conversation, not the new
         # Journal. Archive first; preserve all task/dispatch/unknown evidence.
-        for name in ('memory_hold_rounds','memory_pending_rounds','memory_pending','memory_rounds','memory_round_material','fishbot_system_scope_contract'):
+        for name in ('memory_pending_rounds','memory_pending','memory_rounds','memory_round_material','fishbot_system_scope_contract'):
             if name in tables:db.execute('DELETE FROM '+name+' WHERE scope=?',(scope,))
         if 'memory_reconstruction_checkpoints' in tables:
             db.execute("UPDATE memory_reconstruction_checkpoints SET state='invalidated' WHERE scope=? AND state IN ('available','pending_coverage')",(scope,))

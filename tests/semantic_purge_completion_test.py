@@ -151,7 +151,6 @@ class PurgeCompletion(unittest.TestCase):
         self.db.execute('INSERT INTO companion_signals VALUES(?,?,?,?)',(CHANNEL,'new-feedback','dialogue_feedback',model_json({'reaction_event':'new','quote':'keep'})))
         self.db.execute("INSERT INTO memory_pending VALUES(?,'new')",(CHANNEL,))
         self.db.execute("INSERT INTO pipeline_work_inputs VALUES(?,'owned','owned','keep')",(CHANNEL,))
-        self.db.executemany('INSERT INTO memory_summary_coverage VALUES(?,?)',[(CHANNEL,e) for e in ('old','new','owned','obsolete')])
         self.db.commit();queries=[];self.db.set_trace_callback(queries.append)
         with self.db:batch.purge(self.db,1)
         self.db.set_trace_callback(None)
@@ -159,7 +158,6 @@ class PurgeCompletion(unittest.TestCase):
         for event in events:
             self.assertEqual(feedback['feedback-'+event],{'reaction_event':'semantic:'+batch.event_key(CHANNEL,event),'score':2})
         self.assertEqual(feedback['new-feedback'],{'reaction_event':'new','quote':'keep'})
-        self.assertEqual(set(self.db.execute('SELECT event FROM memory_summary_coverage')),{('new',),('owned',)})
         self.assertEqual(sum(query.startswith('SELECT event,quote,scope FROM companion_signals') for query in queries),1)
         self.assertFalse(any(query.startswith('SELECT 1 FROM memory_pending WHERE') for query in queries))
 

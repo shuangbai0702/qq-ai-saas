@@ -38,7 +38,7 @@ class SemanticSummary(unittest.IsolatedAsyncioTestCase):
   m=summary_material.snapshots([message('29'),{'role':'assistant','content':'完整真实回复'}],SCOPE)
   self.r.record(SCOPE,'12345678','29','看这个','完整真实回复',now=134,materials=m)
   self.assertTrue(await self.run_summary());self.assertEqual(len(self.calls),1)
-  cp=self.checkpoint();self.assertEqual(cp[1:],(30,'available',None));self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summary_coverage').fetchone()[0],0)
+  cp=self.checkpoint();self.assertEqual(cp[1:],(30,'available',None));self.assertIsNone(self.db.execute("SELECT name FROM sqlite_master WHERE name='memory_summary_coverage'").fetchone())
   members=json.loads(self.db.execute('SELECT members FROM memory_semantic_batches').fetchone()[0]);self.assertEqual(len(members),30);self.assertTrue(all(len(x)==64 for x in members))
   permit=self.r.reserve_context_reconstruction(SCOPE,'real-rebuild');self.assertTrue(permit['semanticBatch'])
   self.assertNotIn('retire_media_events',self.calls[0]['system_prompt'])
@@ -112,14 +112,9 @@ class SemanticSummary(unittest.IsolatedAsyncioTestCase):
  async def test_merge_waits_for_committed_batch_journal_retirement(self):
   self.record();await self.run_summary();self.r.binding=None
   checkpoint=self.checkpoint()[0]
-  summary=self.db.execute('SELECT summary_id FROM memory_reconstruction_checkpoints WHERE id=?',(checkpoint,)).fetchone()[0]
-  for event,raw in self.db.execute('SELECT event,material FROM memory_round_material').fetchall():
-   self.db.execute('INSERT INTO memory_summary_coverage VALUES(?,?,?,?,?)',(SCOPE,event,'12345678',summary_material.coverage_digest(json.loads(raw)),summary))
-  # An additional covered input must also survive until real retirement.
   legacy=summary_material.snapshots([message('legacy'),{'role':'assistant','content':'完整真实回复'}],SCOPE)[0]
   self.db.execute('INSERT INTO memory_round_material VALUES(?,?,?,?)',(SCOPE,'legacy','12345678',json.dumps(legacy)))
   self.db.execute('INSERT INTO memory_pending VALUES(?,?,?,?,?,?)',(SCOPE,'12345678','legacy','看这个','完整真实回复',90))
-  self.db.execute('INSERT INTO memory_summary_coverage VALUES(?,?,?,?,?)',(SCOPE,'legacy','12345678',summary_material.coverage_digest(legacy),summary))
   for i in range(2):
    sid=self.db.execute("INSERT INTO memory_summaries(scope,text,sources,updated) VALUES(?,?,'[]',1)",(SCOPE,'此前提炼记忆'+str(i))).lastrowid
    self.db.execute("INSERT INTO memory_summary_levels VALUES(?,'small')",(sid,))

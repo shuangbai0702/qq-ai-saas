@@ -1736,7 +1736,7 @@ def install_runtime(core,settings):
         projected=model_messages(payload.get('messages'))
         from model_images import constrain_messages
         image_event=current_message_event.get()
-        from summary_material import coverage,project_history,source,digest,snapshots
+        from summary_material import source,digest,snapshots
         owned=stores.get(image_event.get_platform_id()) if image_event else None
         work=image_event.get_extra('_hosted_pipeline') if image_event else None
         from model_cache import is_foreground_event
@@ -1749,10 +1749,6 @@ def install_runtime(core,settings):
         if memory_capture:
             native_view=projected
             signatures={str(origin['event_id']):digest(m) for m in projected if (origin:=source(m)) and origin['scope']==work.scope}
-            before_count=len(projected)
-            projected=project_history(projected,coverage(owned.db,work.scope,signatures),work.scope,work.event_id)
-            stats=metrics.setdefault(image_event.get_platform_id(),{})
-            stats['summaryHistoryMessagesOmitted']=stats.get('summaryHistoryMessagesOmitted',0)+before_count-len(projected)
         if foreground and owned and owned.shared_context:
             import shared_context
             projected=shared_context.current_view(projected,work.scope,work.event_id,service=work.source not in ('message','deferred_group'))

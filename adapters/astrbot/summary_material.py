@@ -20,30 +20,6 @@ def checkpoint_round_gate(db,alias='c'):
     return f"({ordinary} OR ({alias}.round_count BETWEEN 1 AND {DEFAULT_SUMMARY_ROUNDS-1} AND EXISTS (SELECT 1 FROM memory_checkpoint_admin_overrides a WHERE a.checkpoint_id={alias}.id AND length(trim(a.administrator))>0 AND length(trim(a.request_id))>0)))"
 
 
-def project_history(messages,covered,scope,current_event,protect_latest=True):
-    """Drop a covered user/assistant/tool block atomically, keeping current turn."""
-    if not isinstance(messages,list) or not covered:return messages
-    latest=max((i for i,m in enumerate(messages) if isinstance(m,dict) and m.get('role')=='user'),default=-1)
-    result=[];dropping=False
-    for i,message in enumerate(messages):
-        if isinstance(message,dict) and message.get('role')=='user':
-            origin=source(message)
-            identifier=model_json([origin['scope'],str(origin['event_id'])]) if origin and scope=='bot_shared' else str(origin['event_id']) if origin else ''
-            proof=covered.get(identifier) if origin else None
-            dropping=bool(origin and proof and (not protect_latest or i!=latest) and identifier!=str(current_event) and (scope=='bot_shared' or origin['scope']==scope) and str(origin['sender_id'])==proof['subject'] and digest(message)==proof['digest'])
-            # A user-material proof does not cover arbitrary intermediate tool
-            # output. Keep the entire block unless that evidence is covered too;
-            # a tool round retires only against its full bound v2 evidence.
-            end=next((j for j in range(i+1,len(messages)) if isinstance(messages[j],dict) and messages[j].get('role')=='user'),len(messages))
-            block=messages[i:end]
-            if not proof or proof.get('reply_digest')!=reply_digest(block):dropping=False
-            elif not supported_block(block):
-                tools=tool_round_block(block)
-                if not tools or proof.get('tools_digest')!=tools_digest(tools):dropping=False
-        if not dropping or isinstance(message,dict) and message.get('role') in ('system','developer'):result.append(message)
-    return result
-
-
 def snapshots(messages,scope,signatures=None,db=None):
     """Capture model-observed material, including quoted text, bounded images
     and this system's own complete tool round-trips (version 2)."""
@@ -154,19 +130,13 @@ def confirmed_reply(materials,event,reply):
 
 def initialize(db):
     db.executescript('''CREATE TABLE IF NOT EXISTS memory_round_material(scope TEXT,event TEXT,subject TEXT,material TEXT NOT NULL,PRIMARY KEY(scope,event));
-    CREATE TABLE IF NOT EXISTS memory_summary_coverage(scope TEXT,event TEXT,subject TEXT,digest TEXT,summary_id INTEGER,PRIMARY KEY(scope,event));
-    CREATE INDEX IF NOT EXISTS summary_coverage_summary ON memory_summary_coverage(summary_id);
-    CREATE TABLE IF NOT EXISTS memory_media_retirement_choices(
-      scope TEXT,event TEXT,digest TEXT,summary_id INTEGER,retire INTEGER NOT NULL,
-      PRIMARY KEY(scope,event));
-    CREATE TABLE IF NOT EXISTS memory_retirement_exceptions(
-      scope TEXT,event TEXT,subject TEXT,digest TEXT,reply_digest TEXT,
-      summary_id INTEGER,checkpoint_id INTEGER,policy TEXT,state TEXT,created REAL,
-      PRIMARY KEY(scope,event,checkpoint_id));
+    DROP TRIGGER IF EXISTS summary_coverage_deleted;
+    DROP INDEX IF EXISTS summary_coverage_summary;
+    DROP TABLE IF EXISTS memory_summary_coverage;
+    DROP TABLE IF EXISTS memory_media_retirement_choices;
+    DROP TABLE IF EXISTS memory_retirement_exceptions;
     CREATE TRIGGER IF NOT EXISTS summary_material_round_deleted AFTER DELETE ON memory_rounds BEGIN
-      DELETE FROM memory_round_material WHERE scope=OLD.scope AND event=OLD.event; END;
-    CREATE TRIGGER IF NOT EXISTS summary_coverage_deleted AFTER DELETE ON memory_summaries BEGIN
-      DELETE FROM memory_summary_coverage WHERE summary_id=OLD.id; END;''')
+      DELETE FROM memory_round_material WHERE scope=OLD.scope AND event=OLD.event; END;''')
 
 
 def valid_material(item,scope):
@@ -218,22 +188,6 @@ def valid_material(item,scope):
                 if not valid_settlement(settlement):return False
     images=item.get('images')
     return isinstance(images,list) and all(isinstance(value,str) and value.startswith('data:image/') for value in images) and sum(len(value) for value in images)<=MAX_IMAGES_BYTES
-
-
-def coverage_eligible(item,scope):
-    """A physical block may contain another Work's draft, never its receipt."""
-    if not valid_material(item,scope) or not item.get('complete'):return False
-    if item.get('version',1)<3:
-        return bool(item.get('reply')) or not item.get('native_reply') or scope=='bot_shared' and item.get('native_reply','').strip()=='[NO_REPLY]'
-    settlement=item.get('input_settlement')
-    if not isinstance(settlement,dict) or settlement.get('status') not in ('sent','silent','superseded','blocked','error','interrupted') or settlement.get('attempted')!=settlement.get('confirmed'):return False
-    if settlement['status']=='sent' and (not settlement['confirmed'] or settlement['planned']!=settlement['confirmed_messages']):return False
-    for output in item['native_outputs']:
-        owner=output['owner'];settlement=owner.get('settlement') if owner else None
-        if not settlement or settlement['status'] not in ('sent','silent','superseded','blocked','error','interrupted'):return False
-        if settlement['attempted']!=settlement['confirmed']:return False
-        if settlement['status']=='sent' and (not settlement['confirmed'] or settlement['planned']!=settlement['confirmed_messages']):return False
-    return True
 
 
 def material_storage_view(material):
@@ -412,117 +366,6 @@ def recover_archived_materials(db,scope,events):
         if valid_material(latest,scope) and latest.get('complete') is True:remember(db,scope,[latest])
     missing=sorted(event for event in initial if not complete(event))
     return {'recovered':len(initial)-len(missing),'missing':missing,'invalid_archives':invalid}
-
-
-# Fixed, explicitly authorized incident cohort. This is not a rolling TTL or
-# normal Coverage and never manufactures input/output settlement evidence.
-LEGACY_CUTOFF=1794254400 # 2026-11-10 04:00 Asia/Shanghai
-LEGACY_POLICY='operator_20261110_legacy_archive_v1'
-
-def legacy_policy_eligible(material):
-    if not valid_material(material,material.get('scope')) or not material.get('complete') or material.get('tools'):return False
-    origin=source({'role':'user','content':material['text']});at=origin.get('at') if origin else None
-    if type(at) not in (int,float) or not 0<at<LEGACY_CUTOFF:return False
-    settlements=[material.get('input_settlement')]+[o.get('owner',{}).get('settlement') if o.get('owner') else None for o in material.get('native_outputs',[])]
-    for value in settlements:
-        if value is not None and (value.get('status') not in ('sent','silent','superseded','blocked','error','interrupted') or value.get('attempted')!=value.get('confirmed') or value.get('status')=='sent' and value.get('planned')!=value.get('confirmed_messages')):return False
-    return True
-
-def legacy_materials(db,scope):
-    # Previously held hot content joins the next legal batch in full. Its
-    # old Coverage/media classification is not a new retention permission.
-    # Missing material aborts the replacement instead of silently omitting it.
-    result={}
-    for event,raw in db.execute("SELECT h.event,m.material FROM memory_hold_rounds h LEFT JOIN memory_round_material m ON m.scope=h.scope AND m.event=h.event WHERE h.scope=? ORDER BY h.created,h.event",(scope,)):
-        if not raw:raise ValueError('semantic_batch_legacy_material_missing')
-        m=json.loads(raw)
-        if not valid_material(m,scope) or not m.get('complete'):raise ValueError('semantic_batch_legacy_material_incomplete')
-        result[event]=m
-    return result
-
-def offer_legacy_retirements(db,scope,materials,events,summary_id,checkpoint_id):
-    selected=set(events) if isinstance(events,list) and all(isinstance(e,str) for e in events) else set()
-    count=0
-    for event,m in materials.items():
-        if event not in selected or not legacy_policy_eligible(m):continue
-        # A known unknown/partial external attempt remains protected. Missing
-        # historical ownership is an explicit authorized risk, not a receipt.
-        if coverage_eligible(m,scope):continue
-        origin=source({'role':'user','content':m['text']})
-        # Recheck current authoritative effects, not an old material snapshot.
-        tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        if 'pipeline_events' in tables and db.execute("SELECT 1 FROM pipeline_events WHERE scope=? AND event=? AND (attempted<>confirmed OR status NOT IN ('sent','silent','superseded','blocked','error','interrupted'))",(origin['scope'],str(origin['event_id']))).fetchone():continue
-        from message_provenance import model_input_settlement
-        fresh=model_input_settlement(db,scope,event)
-        if fresh is not None and not legacy_policy_eligible({**m,'input_settlement':fresh}):continue
-        if db.execute("SELECT 1 FROM memory_retirement_exceptions WHERE scope=? AND event=? AND state='retired'",(scope,event)).fetchone():continue
-        if db.execute("SELECT 1 FROM memory_retirement_exceptions e JOIN memory_reconstruction_checkpoints c ON c.id=e.checkpoint_id JOIN memory_summaries s ON s.id=e.summary_id WHERE e.scope=? AND e.event=? AND e.state='offered' AND c.epoch=(SELECT epoch FROM memory_reflection_control WHERE id=1) AND c.state IN ('pending_merge','pending_coverage','available','reserved','consumed')",(scope,event)).fetchone():continue
-        changed=db.execute('INSERT INTO memory_retirement_exceptions VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(scope,event,checkpoint_id) DO NOTHING',
-          (scope,event,m['subject'],m['digest'],hashlib.sha256((m.get('native_reply') or '').encode()).hexdigest(),summary_id,checkpoint_id,LEGACY_POLICY,'offered',__import__('time').time())).rowcount
-        count+=changed
-    return count
-
-
-def media_retirement_allowed(db,scope,event,material):
-    if not material.get('images'):return True
-    return bool(db.execute("SELECT 1 FROM memory_media_retirement_choices c JOIN memory_summaries s ON s.id=c.summary_id LEFT JOIN memory_summary_levels l ON l.id=s.id WHERE c.scope=? AND c.event=? AND c.digest=? AND c.retire=1 AND coalesce(l.kind,'small')<>'pending_small'",(scope,event,material['digest'])).fetchone())
-
-
-def coverage(db,scope,events=None):
-    query="SELECT c.event,c.subject,c.digest FROM memory_summary_coverage c JOIN memory_summaries s ON s.id=c.summary_id LEFT JOIN memory_summary_levels l ON l.id=s.id WHERE c.scope=? AND coalesce(l.kind,'small')<>'pending_small'"
-    if events is None:rows=db.execute(query,(scope,)).fetchall()
-    else:
-        identifiers=list(dict.fromkeys(str(event) for event in events));rows=[]
-        for start in range(0,len(identifiers),500):
-            batch=identifiers[start:start+500]
-            rows.extend(db.execute(query+' AND c.event IN ('+','.join('?' for _ in batch)+')',(scope,*batch)))
-    result={}
-    for event,subject,signature in rows:
-        # The existing digest column carries a versioned proof. No SQLite
-        # migration and no unverified upgrade of legacy user-only coverage.
-        match=re.fullmatch(r'v1:([0-9a-f]{64}):([0-9a-f]{64})',signature) if isinstance(signature,str) else None
-        match2=re.fullmatch(r'v2:([0-9a-f]{64}):([0-9a-f]{64}):([0-9a-f]{64})',signature) if isinstance(signature,str) else None
-        match3=re.fullmatch(r'v3:([0-9a-f]{64}):([0-9a-f]{64}):(none|[0-9a-f]{64}):([0-9a-f]{64})',signature) if isinstance(signature,str) else None
-        if match3:
-            result[event]={'subject':subject,'digest':match3[1],'reply_digest':match3[2],'version':3,'settlement_digest':match3[4]}
-            if match3[3]!='none':result[event]['tools_digest']=match3[3]
-        elif match2:
-            result[event]={'subject':subject,'digest':match2[1],'reply_digest':match2[2],'tools_digest':match2[3]}
-        elif match:
-            result[event]={'subject':subject,'digest':match[1],'reply_digest':match[2]}
-        else:
-            result[event]={'subject':subject,'digest':signature}
-    # Authorized archival retirement is deliberately distinct from proven
-    # v3 Coverage. It is bound to one actual checkpoint, exact bytes and the
-    # published summary; never treated as a successful delivery.
-    tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    if 'memory_retirement_exceptions' in tables and 'memory_reconstruction_checkpoints' in tables:
-        for event,subject,signature,reply,checkpoint in db.execute(f"""SELECT e.event,e.subject,e.digest,e.reply_digest,e.checkpoint_id
-          FROM memory_retirement_exceptions e JOIN memory_reconstruction_checkpoints c ON c.id=e.checkpoint_id
-          JOIN memory_summaries s ON s.id=e.summary_id LEFT JOIN memory_summary_levels l ON l.id=s.id
-          WHERE e.scope=? AND c.scope=e.scope AND {checkpoint_round_gate(db)} AND c.summary_id=e.summary_id
-          AND c.epoch=(SELECT epoch FROM memory_reflection_control WHERE id=1)
-          AND c.state IN ('pending_coverage','available','reserved','consumed')
-          AND NOT EXISTS (SELECT 1 FROM memory_media_retirement_choices m WHERE m.scope=e.scope AND m.event=e.event AND m.digest=e.digest AND m.retire=0)
-          AND e.policy=? AND e.state='offered' AND coalesce(l.kind,'small')<>'pending_small'""",(scope,LEGACY_POLICY)):
-            if events is not None and event not in events:continue
-            if event not in result:result[event]={'subject':subject,'digest':signature,'reply_digest':reply,'version':4,'policy_checkpoint':checkpoint}
-    return result
-
-
-def coverage_digest(material):
-    if not valid_material(material,material.get('scope')) or not material['complete']:raise ValueError('incomplete_summary_proof')
-    reply=material.get('native_reply')
-    if reply is None:reply=material.get('reply','')
-    if material.get('version',1)>=3:
-        if not coverage_eligible(material,material['scope']):raise ValueError('unsettled_summary_proof')
-        evidence={'input':material['input_settlement'],'outputs':[o['owner'] for o in material['native_outputs']]}
-        return 'v3:'+material['digest']+':'+hashlib.sha256(reply.encode()).hexdigest()+':'+(tools_digest(material['tools']) if material.get('tools') else 'none')+':'+hashlib.sha256(model_json(evidence).encode()).hexdigest()
-    if material.get('version',1)>=2 and material.get('tools'):
-        # The tool round-trip is bound into the proof: a coverage row can only
-        # retire the exact block whose tool calls and results were summarized.
-        return 'v2:'+material['digest']+':'+hashlib.sha256(reply.encode()).hexdigest()+':'+tools_digest(material['tools'])
-    return 'v1:'+material['digest']+':'+hashlib.sha256(reply.encode()).hexdigest()
 
 
 def model_view(materials,turns):
@@ -919,16 +762,6 @@ def govern_claims(db,scope):
     for slot,raw in core:
         items=[c for c in json.loads(raw or '[]') if c.get('visibility')!=scope and c.get('id') not in values]
         db.execute('UPDATE memory_core_notes SET claims=? WHERE slot=?',(model_json(items) if items else None,slot))
-
-
-def uncarried_events(claims,kept_ids):
-    """Events whose protected claims the new summary did not retain; their
-    material and rounds stay until a version proves them (D4.5)."""
-    ids={claim.get('id') if isinstance(claim,dict) else claim for claim in kept_ids};events=set()
-    for claim in claims:
-        if not protected_claim(claim) or claim.get('id') in ids:continue
-        events.update(str(ref.get('event')) for ref in claim.get('sourceRefs',[]) if isinstance(ref,dict) and ref.get('event'))
-    return events
 
 
 def uncarried_sources(rows,kept):

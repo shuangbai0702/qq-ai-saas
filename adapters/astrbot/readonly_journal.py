@@ -560,17 +560,6 @@ class ReadonlyJournal:
             # SELECT length(payload) returns a row whose value may be NULL when an
             # unavailable tombstone already exists; distinguish that from no row.
             next_total=used[0]-((existing[0] or 0) if existing is not None else 0)+len(encoded)+blob_total+sum(len(raw) for _,raw in new_blobs)
-            archive_overflow=False;archive_required=False
-            if consume_permit and prepared.reconstruction_permit.get('kind')=='summary_checkpoint' and not prepared.reconstruction_permit.get('semanticBatch'):
-                has_exceptions=self.db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_retirement_exceptions'").fetchone()
-                if has_exceptions and self.last:
-                    def event_ids(messages):
-                        return {model_json([o['scope'],str(o['event_id'])]) for m in messages if (o:=source(m))}
-                    retiring=event_ids(self.last.base)-event_ids(prepared.base)
-                    archive_required=any(self.db.execute("SELECT 1 FROM memory_retirement_exceptions WHERE scope=? AND event=? AND checkpoint_id<=? AND state='offered'",(json.loads(self.scope_key),event,prepared.reconstruction_permit['id'])).fetchone() for event in retiring)
-                has_archives=self.db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_checkpoint_archives'").fetchone()
-                archive_bytes=self.db.execute('SELECT coalesce(sum(length(cast(payload AS BLOB))),0) FROM memory_checkpoint_archives').fetchone()[0] if has_archives else 0
-                archive_overflow=archive_required and archive_bytes+((existing[0] or 0) if existing else 0)>MAX_CHECKPOINT_ARCHIVE_BYTES
             count=self.db.execute('SELECT count(*) FROM fishbot_readonly_journals').fetchone()[0]
             # Existing snapshots may progress under their actual row/byte
             # limits. Preserve overflow as missing-scope recovery evidence;
@@ -579,7 +568,7 @@ class ReadonlyJournal:
             # A wire-character limit is not its storage-byte limit.
             # The existing per-bot total still bounds every row and all scopes.
             allowed=(next_total<=MAX_PERSISTED_JOURNAL_BYTES and
-                     (existing is not None or (used[1] or 0)<MAX_PERSISTED_JOURNALS) and (existing is not None or count<MAX_JOURNAL_TOMBSTONES) and not archive_overflow)
+                     (existing is not None or (used[1] or 0)<MAX_PERSISTED_JOURNALS) and (existing is not None or count<MAX_JOURNAL_TOMBSTONES))
             if not allowed:
                 if not tombstone:self.db.rollback()
                 else:
@@ -590,18 +579,7 @@ class ReadonlyJournal:
                     else:
                         self.db.execute("INSERT INTO fishbot_readonly_journals(scope,version,state,payload,sha,updated) VALUES(?,1,'unavailable',NULL,NULL,?) ON CONFLICT(scope) DO UPDATE SET version=1,state='unavailable',payload=NULL,sha=NULL,updated=excluded.updated",(self.scope_key,time.time()))
                     self.db.commit()
-                self.recovery_error='checkpoint_archive_capacity' if archive_overflow else 'journal_storage_capacity';self._last_persist_error=self.recovery_error;return False
-            if archive_required:
-                # Immutable recovery archive, not another active history. Blob
-                # references keep their original bytes; no historical rewrite.
-                # Only exceptional legacy retirement needs this full snapshot;
-                # ordinary proven checkpoints must not accumulate another log.
-                self.db.execute('''CREATE TABLE IF NOT EXISTS memory_checkpoint_archives(
-                  checkpoint_id INTEGER PRIMARY KEY,scope TEXT NOT NULL,version INTEGER,
-                  state TEXT,payload TEXT,sha TEXT,archived REAL NOT NULL)''')
-                self.db.execute('''INSERT INTO memory_checkpoint_archives
-                  SELECT ?,scope,version,state,payload,sha,? FROM fishbot_readonly_journals WHERE scope=?''',
-                  (prepared.reconstruction_permit['id'],time.time(),self.scope_key))
+                self.recovery_error='journal_storage_capacity';self._last_persist_error=self.recovery_error;return False
             for digest,raw in new_blobs:
                 self.db.execute('INSERT INTO fishbot_readonly_journal_blobs(scope,sha,data) VALUES(?,?,?)',(self.scope_key,digest,raw))
             self.db.execute("INSERT INTO fishbot_readonly_journals(scope,version,state,payload,sha,updated) VALUES(?,?,?,?,?,?) ON CONFLICT(scope) DO UPDATE SET version=excluded.version,state=excluded.state,payload=excluded.payload,sha=excluded.sha,updated=excluded.updated",
@@ -631,10 +609,6 @@ class ReadonlyJournal:
                      model_json({'count':len(before&after)}) if semantic else model_json(sorted(before&after)),
                      hashlib.sha256(model_json(self.last.wire if self.last else []).encode()).hexdigest(),
                      hashlib.sha256(model_json(prepared.wire).encode()).hexdigest(),time.time()))
-                if not semantic and 'memory_retirement_exceptions' in tables:
-                    for event in before-after:
-                        changed=self.db.execute("UPDATE memory_retirement_exceptions SET state='retired' WHERE scope=? AND event=? AND checkpoint_id<=? AND state='offered'",(json.loads(self.scope_key),event,prepared.reconstruction_permit['id'])).rowcount
-                        if changed:self.db.execute('DELETE FROM memory_hold_rounds WHERE scope=? AND event=?',(json.loads(self.scope_key),event))
                 prepared.reconstruction_authority.checkpoint_issue(json.loads(self.scope_key),prepared.reconstruction_permit['id'],'retirement',
                     {'retired_events':len(before-after),'retained_events':len(before&after),'result':'partial' if before&after and before-after else 'no_history_retired' if not before-after else 'retired',
                      'retirement_evidence':'memory_checkpoint_retirements','request_id':prepared.reconstruction_permit['requestId']},resolved=semantic or not bool(before&after))
@@ -720,17 +694,6 @@ class ReadonlyJournal:
                     raise ContextPrefixViolation('semantic_checkpoint_retained_material_missing')
                 cursor+=1
             return
-        if not permit or not (permit.get('partialRetirement') or scope=='bot_shared' and permit.get('kind')=='summary_checkpoint'):return
-        from summary_material import project_history,coverage
-        proofs={e:p for e,p in coverage(self.db,scope).items() if (p.get('version')==3 or not permit.get('partialRetirement') and p.get('version')!=4) or p.get('version')==4 and 0<p.get('policy_checkpoint',0)<=permit.get('id',0)}
-        retained=project_history(old.base,proofs,scope,'',protect_latest=False) if old else []
-        cursor=0
-        for message in retained:
-            while cursor<len(base) and model_json(base[cursor])!=model_json(message):cursor+=1
-            if cursor==len(base):
-                authority.settle_context_reconstruction(permit,False)
-                raise ContextPrefixViolation('partial_checkpoint_retained_material_missing')
-            cursor+=1
 
     def refusal_evidence(self):
         """Bounded, content-free journal state for typed guard diagnostics."""
@@ -864,44 +827,6 @@ class ReadonlyJournal:
             identity=lambda o:(o['scope'],str(o['event_id'])) if shared else str(o['event_id'])
             known={identity(o):(o,m) for m in old.base if (o:=source(m))}
             projected={model_json(o) for m in base if (o:=source(m))}
-            # A restored SDK window can reintroduce older, already summarized
-            # blocks BETWEEN retained anchors. They were never in old.base;
-            # requiring them in the projection strands an otherwise unchanged
-            # Journal. Recheck full block coverage from this scope's database,
-            # and only exempt blocks before the last committed anchor. This
-            # does not retire or change a single message in old.wire.
-            historical_covered=set()
-            last_anchor=max((i for i,m in enumerate(raw_base) if (o:=source(m)) and identity(o) in known),default=-1)
-            if self.db is not None and reconstruction_scope and any(
-                    i<last_anchor and (o:=source(m)) and identity(o) not in known and model_json(o) not in projected
-                    for i,m in enumerate(raw_base)):
-                from summary_material import coverage,project_history
-                # Coverage fingerprints were captured before image downscaling.
-                # Recheck complete blocks on that original view, paired in order
-                # with the constrained view. Only image URL bytes may differ;
-                # author, text, replies, tools and every other field must agree.
-                proof_base=raw_base
-                if isinstance(coverage_view,list):
-                    original=[]
-                    for m in coverage_view:
-                        c=m.get('content') if isinstance(m,dict) else None
-                        if isinstance(m,dict) and m.get('role')=='user' and isinstance(c,str) and (c.startswith(READONLY_CURRENT+'\n') or c.startswith(EVENT_CONTEXT_CURRENT+'\n')):continue
-                        original.append(m)
-                    original=raw_base[:system_head(raw_base)]+original[system_head(original):]
-                    def without_image_bytes(message):
-                        message=copy.deepcopy(message)
-                        if isinstance(message,dict) and isinstance(message.get('content'),list):
-                            for part in message['content']:
-                                if isinstance(part,dict) and part.get('type')=='image_url' and isinstance(part.get('image_url'),dict):
-                                    part['image_url']['url']='[image bytes compared by provider projection]'
-                        return message
-                    if len(original)==len(raw_base) and all(without_image_bytes(a)==without_image_bytes(b) for a,b in zip(original,raw_base)):
-                        proof_base=original
-                checked=project_history(proof_base,coverage(self.db,reconstruction_scope),reconstruction_scope,
-                                        next((str(o['event_id']) for m in reversed(raw_base) if (o:=source(m))),''))
-                kept={model_json(o) for m in checked if (o:=source(m))}
-                historical_covered={model_json(o) for i,m in enumerate(raw_base)
-                                    if i<last_anchor and (o:=source(m)) and model_json(o) not in kept}
             anchored=False
             for m in raw_base:
                 o=source(m)
@@ -910,7 +835,7 @@ class ReadonlyJournal:
                 if prior is not None:
                     anchored=True
                     if o!=prior[0] or not same_native_message(prior[1],m):valid=False;break
-                elif anchored and model_json(o) not in projected and model_json(o) not in historical_covered:
+                elif anchored and model_json(o) not in projected:
                     valid=False;break
         if valid and old is not None:
             suffix=tail_extension(old.base,base)

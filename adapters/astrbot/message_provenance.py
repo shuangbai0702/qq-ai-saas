@@ -98,7 +98,7 @@ def prune_retired_model_owners(db,logical,messages):
         value=json.loads(raw);settlement=value.get('settlement') or {}
         if event in retained or any(item['anchor'] in retained for item in value.get('outputs',[])):continue
         if settlement.get('status') not in ('sent','silent','superseded','blocked','error','interrupted') or settlement.get('attempted')!=settlement.get('confirmed'):continue
-        if any(db.execute('SELECT 1 FROM '+table+' WHERE scope=? AND event=? LIMIT 1',(logical,event)).fetchone() for table in ('memory_hold_rounds','memory_round_material','memory_pending','memory_rounds')):continue
+        if any(db.execute('SELECT 1 FROM '+table+' WHERE scope=? AND event=? LIMIT 1',(logical,event)).fetchone() for table in ('memory_round_material','memory_pending','memory_rounds')):continue
         db.execute("DELETE FROM memory_message_sources WHERE scope=? AND event=? AND direction='model'",(logical,event))
 
 

@@ -398,7 +398,6 @@ class SharedSummaryIntegration(unittest.IsolatedAsyncioTestCase):
     def test_dependency_ignores_indexes_but_fences_semantic_people(self):
         old=self.populate();before=self.reflection.context_dependency([old],'bot_shared')
         self.db.execute("UPDATE memory_summaries SET sources='[]' WHERE id=?",(old,))
-        self.db.execute('INSERT INTO memory_summary_coverage VALUES(?,?,?,?,?)',('group:55555','event','87654321','digest',old))
         self.assertEqual(self.reflection.context_dependency([old],'bot_shared'),before)
         self.db.execute('INSERT INTO memory_summary_people VALUES(?,?)',(old,'11111111'))
         self.assertNotEqual(self.reflection.context_dependency([old],'bot_shared'),before)

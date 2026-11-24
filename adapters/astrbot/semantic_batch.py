@@ -117,7 +117,7 @@ def discard_failed_service_inputs(db,scope):
                 try:
                     if json.loads(other_binding)!=binding:protected=True
                 except (TypeError,ValueError):protected=True
-            for table in ('memory_rounds','memory_round_material','memory_pending_rounds','memory_hold_rounds','pipeline_scope_work'):
+            for table in ('memory_rounds','memory_round_material','memory_pending_rounds','pipeline_scope_work'):
                 if table in tables and db.execute('SELECT 1 FROM '+table+' WHERE scope=? AND event=?',(logical,key)).fetchone():protected=True
             if db.execute("SELECT 1 FROM pipeline_work_inputs WHERE scope=? AND event=? AND status='owned'",(logical,key)).fetchone():protected=True
             # A real input at either identity must never be removed along with
@@ -253,7 +253,7 @@ def _purge_members(db,scope,members):
     unresolved=unresolved_retirement_inputs(db,tables,ambient)
     contact_columns={r[1] for r in db.execute('PRAGMA table_info(contacts)')} if 'contacts' in tables else set()
     events=set()
-    targets=('memory_pending','memory_round_material','memory_pending_rounds','memory_hold_rounds','memory_summary_coverage','memory_summary_unresolved','memory_media_retirement_choices','memory_rounds','memory_message_sources')
+    targets=('memory_pending','memory_round_material','memory_pending_rounds','memory_rounds','memory_message_sources')
     for table in (*targets,'pipeline_scope_work','pipeline_work_inputs'):
         if table in tables:
             for channel,identifier in db.execute('SELECT scope,event FROM '+table+(' WHERE scope=?' if scope!='bot_shared' else ''),(scope,) if scope!='bot_shared' else ()):
@@ -365,18 +365,6 @@ def _purge_members(db,scope,members):
         if scope=='bot_shared':db.execute("UPDATE memory_summaries SET sources='[]'")
         else:db.execute("UPDATE memory_summaries SET sources='[]' WHERE scope=?",(scope,))
     if 'memory_core_notes' in tables:db.execute("UPDATE memory_core_notes SET sources='[]'")
-    if scope=='bot_shared' and 'memory_summary_coverage' in tables:
-        # Old Coverage rows without any remaining hot input are obsolete source
-        # indexes, not semantic memory or a proof needed by whole-batch retirement.
-        hot=set()
-        for table in ('memory_rounds','memory_pending','memory_round_material','memory_hold_rounds','pipeline_scope_work'):
-            if table in tables:hot.update(db.execute('SELECT scope,event FROM '+table))
-        owned=set(db.execute("SELECT scope,event FROM pipeline_work_inputs WHERE status='owned'")) if 'pipeline_work_inputs' in tables else set()
-        for logical,identifier in db.execute('SELECT scope,event FROM memory_summary_coverage').fetchall():
-            channel,event=origin(logical,identifier)
-            identities={(logical,identifier),(channel,event),('bot_shared',model_json([channel,event]))}
-            if not identities.intersection(hot) and not identities.intersection(owned):
-                db.execute('DELETE FROM memory_summary_coverage WHERE scope=? AND event=?',(logical,identifier))
     # Recovery archives obey the same successful exact-batch retirement.
     # They may keep uncompressed evidence and System, never a retired copy.
     if 'pipeline_events' in tables and 'request' in {r[1] for r in db.execute('PRAGMA table_info(pipeline_events)')}:

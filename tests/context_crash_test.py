@@ -59,7 +59,7 @@ except ContextReconstructionDenied:os._exit(73)
 '''
                 refused=subprocess.run([sys.executable,'-c',refuse,str(ROOT),str(path)],capture_output=True,text=True,timeout=30)
                 self.assertEqual(refused.returncode,73,refused.stderr)
-                self.assertEqual(db.execute('SELECT count(*) FROM memory_web_context_permits').fetchone()[0],0,'a web-config proof never reaches the permit table over committed history')
+                self.assertIsNone(db.execute("SELECT name FROM sqlite_master WHERE name='memory_web_context_permits'").fetchone(),'memory_web_context_permits is retired')
                 # The legitimate pre-crash state: one real completed summary
                 # and its available 30-round checkpoint for this scope.
                 summary_id=db.execute('INSERT INTO memory_summaries(scope,text,sources,updated,schema_version) VALUES(?,?,?,?,?)',(scope,'30轮真实完成摘要','[]',time.time(),2)).lastrowid

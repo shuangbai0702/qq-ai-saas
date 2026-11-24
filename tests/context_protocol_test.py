@@ -20,17 +20,13 @@ class WireTests(unittest.TestCase):
         quoted=message();quoted['content'].insert(0,{'type':'text','text':'quoted: '+quoted['content'][0]['text']})
         self.assertIsNone(protocol.source(quoted))
     def test_unknown_user_reply_or_tool_content_never_proves_a_whole_block(self):
-        from summary_material import snapshots,project_history,digest
+        from summary_material import snapshots
         for extra in ({'type':'input_audio','input_audio':{'data':'unknown'}},{'type':'video','video':'unknown'},'malformed'):
-            old=message();old['content'].append(extra);latest=message(event='new')
+            old=message();old['content'].append(extra)
             self.assertFalse(snapshots([old],'group:55555')[0]['complete'])
-            proof={'event':{'subject':'12345678','digest':digest(old)}}
-            self.assertEqual(project_history([old,latest],proof,'group:55555','new'),[old,latest])
         for tail in ({'role':'assistant','content':[{'type':'audio','data':'unknown'}]},{'role':'assistant','content':'text','audio':{'id':'voice'}},{'role':'function','content':'old API output'},{'role':'tool','tool_call_id':'1','content':'result'},'malformed'):
-            old=message();latest=message(event='new');block=[old,tail]
+            old=message();block=[old,tail]
             self.assertFalse(snapshots(block,'group:55555')[0]['complete'])
-            proof={'event':{'subject':'12345678','digest':digest(old)}}
-            self.assertEqual(project_history(block+[latest],proof,'group:55555','new'),block+[latest])
     def test_json_keeps_meaning_order_strings_and_authority(self):
         data={'note':'保持 空格\n与换行','identity':{'owner':False,'sender_id':'12345678'},'messages':[{'id':'2'},{'id':'1'}]};before=copy.deepcopy(data)
         result=protocol.model_json(data)

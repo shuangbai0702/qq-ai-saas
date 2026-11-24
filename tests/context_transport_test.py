@@ -248,8 +248,8 @@ class SnapshotLayout(unittest.TestCase):
 
     def test_tail_packet_preserves_summary_material_tool_uncertainty_and_current_turn(self):
         from context_transport import request_context_view
-        from summary_material import snapshots,project_history
-        from context_protocol import source,digest
+        from summary_material import snapshots
+        from context_protocol import source
         current=user('当前真实问题')
         tool_history=[current,{'role':'assistant','tool_calls':[{'id':'call-unknown','type':'function','function':{'name':'write','arguments':'{}'}}]},
                       {'role':'tool','tool_call_id':'call-unknown','content':'{"receipt":{"status":"unknown"},"actionId":"stable"}'}]
@@ -261,8 +261,6 @@ class SnapshotLayout(unittest.TestCase):
         self.assertEqual(material['version'],2)
         self.assertEqual(json.loads(material['tools'][0]['result'])['receipt']['status'],'unknown')
         self.assertNotIn('平台本轮',material['text'])
-        proof={'event-1':{'subject':'12345678','digest':digest(current),'reply_digest':'invalid'}}
-        self.assertEqual(project_history(projected,proof,'private:12345678','event-1'),projected)
         self.assertEqual(projected[:-2],tool_history)
         self.assertEqual(source(projected[-1]),None)
 
@@ -349,12 +347,8 @@ class Wiring(unittest.IsolatedAsyncioTestCase):
                 # Exercise the real common hook with an owned store and a
                 # committed summary proof, not just the pure projection helper.
                 from behavior import BehaviorStore
-                from summary_material import digest,coverage_digest
                 owned=BehaviorStore(Path(folder)/'behavior.sqlite');runtime['stores']['fixture']=owned
-                scope='private:12345678';old=model_messages([user()])[0]
-                identifier=owned.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated) VALUES(?,?,?,?)',(scope,'已整理来源','[]',1)).lastrowid
-                proof={'scope':scope,'event':'event-1','subject':'12345678','text':old['content'][0]['text'],'images':[],'complete':True,'digest':digest(old),'reply':'历史回复'}
-                owned.db.execute('INSERT INTO memory_summary_coverage VALUES(?,?,?,?,?)',(scope,'event-1','12345678',coverage_digest(proof),identifier));owned.db.commit()
+                scope='private:12345678'
                 latest=user();latest['content'][0]['text']=latest['content'][0]['text'].replace('event-1','event-2')
                 lease={'config':{'behavior':{'memory':True,'groupParticipationGroups':['55555']}}};settings['fixture']=lease
                 extra={'_hosted_lease':lease,'_hosted_pipeline':NS(source='message',scope=scope,event_id='event-2'),'_hosted_memory_epoch':owned.reflection.epoch()}
@@ -369,8 +363,7 @@ class Wiring(unittest.IsolatedAsyncioTestCase):
                         from readonly_journal import ContextRecoveryUnavailable
                         with self.assertRaises(ContextRecoveryUnavailable):
                             await ProviderOpenAIOfficial._prepare_chat_payload(NS(),contexts=[user(),{'role':'assistant','content':'历史回复'},latest,event_packet])
-                    self.assertEqual(extra['_hosted_summary_materials'][0]['event'],'event-2')
-                    self.assertEqual(runtime['metrics']['fixture']['summaryHistoryMessagesOmitted'],2)
+                    self.assertEqual([m['event'] for m in extra['_hosted_summary_materials']],['event-1','event-2'])
                     # Normal runtime starts with the canonical shared Journal.
                     # The previous store intentionally exercised missing-marker
                     # recovery; it must not be silently migrated by this test.
