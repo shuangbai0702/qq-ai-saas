@@ -200,6 +200,7 @@ def put_model_if_missing(db,event,raw):
 
 
 def update_shared_model(db,event,value):
+    from context_protocol import model_json
     db.execute("UPDATE memory_message_sources SET data=? WHERE scope='bot_shared' AND event=? AND direction='model'",(model_json(value),event))
 
 

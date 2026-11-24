@@ -164,7 +164,7 @@ class AutonomousRuntime:
 
     def foreground_prompt(self,id,event):
         p=self.policies.get(id)
-        if not p or p['config']['mode']!='active' or not event.get_extra('_hosted_handoff_available'):return ''
+        if not p or p['config']['mode']!='active':return ''
         return '\n[后台任务登记]\n主动模式可以把真实请求登记为平台后台任务，到期后由内层按登记内容执行。以下规则适用于本轮决定参与交流之后，不替代群聊的接话判断。先理解真实用户意图：普通闲聊、已有结果解释和连续对话自然回应；本轮即时任务由内层直接使用当前已授权工具完成，工具失败时根据真实结果调整做法。需要跨轮持续推进或延后提醒且你决定接受时，直接调用propose_background_task把完整要求和delay_seconds登记到平台任务账本，不能只记住或提出约定后就停止；若已登记用户的proposed约定，用其真实id/revision并设置accept_agreement=true，在同一事务接受并交接。指定钟点优先用run_at传带时区的ISO时间，程序换算延迟；相对等待使用delay_seconds。以本轮真实时间判断日期，不明确就询问；不要将已完成的即时任务再次登记执行。由模型判断意图，不依赖关键词。延续当前话题的普通聊天不重复建任务；需要变更或停止已登记任务时用cancel_background_task查看并取消原任务，不自造任务ID。只有真实工具回执才能证明登记；pending表示等待后台登记确认，不是保证准点执行。未成功登记时，明确说明尚未安排，不用聊天文字承诺稍后会自动回来。登记、接受请求和完成执行分别表述；没有对应工具结果及目的会话的发送回执，不能声称已在其他会话联系、发言或完成任务。当前私聊回复送达只证明本次回复送达。\n'
 
     def foreground_tools(self,id,event,current):

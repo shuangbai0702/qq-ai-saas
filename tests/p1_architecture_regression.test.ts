@@ -61,7 +61,14 @@ test('P1: bilibiliModelConfigured supports platformModel bots and PLATFORM_CREDI
  t.after(async()=>{await db.close();await rm(root,{recursive:true,force:true})});
  const tenant='00000000-0000-4000-8000-000000000001';
  await db.query("INSERT INTO tenants(id,name) VALUES($1,'t')",[tenant]);
- await db.query("INSERT INTO platform_model_credits(tenant_id,granted,campaign_granted,campaign_expires_at) VALUES($1,5000,5000,now()-interval '1 hour')",[tenant]);
+ await db.query("INSERT INTO platform_model_credits(tenant_id,granted,campaign_granted,campaign_expires_at) VALUES($1,5000,5000,now()+interval '1 hour')",[tenant]);
+ const [noProvider]=await db.query(`SELECT (${platformCreditAvailableSql('$1')}) AS ok`,[tenant]);
+ assert.equal(noProvider.ok,false,'credits without any enabled platform provider must not report available');
+ await db.query("INSERT INTO platform_model_providers(id,name,base_url,model,secret,priority,enabled) VALUES('p1','p1','https://x.invalid/v1','m','s',1,false)");
+ const [disabledProvider]=await db.query(`SELECT (${platformCreditAvailableSql('$1')}) AS ok`,[tenant]);
+ assert.equal(disabledProvider.ok,false,'disabled platform provider must not report available');
+ await db.query("UPDATE platform_model_providers SET enabled=true WHERE id='p1'");
+ await db.query("UPDATE platform_model_credits SET campaign_expires_at=now()-interval '1 hour' WHERE tenant_id=$1",[tenant]);
  const [expired]=await db.query(`SELECT (${platformCreditAvailableSql('$1')}) AS ok`,[tenant]);
  assert.equal(expired.ok,false,'expired campaign-only grant must not report available');
  await db.query("UPDATE platform_model_credits SET campaign_expires_at=now()+interval '1 hour' WHERE tenant_id=$1",[tenant]);

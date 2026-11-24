@@ -94,6 +94,6 @@ export async function hasEncryptedSecrets(db:Sql):Promise<boolean>{
  const rows=await db.query("SELECT 1 FROM secrets UNION ALL SELECT 1 FROM bilibili_accounts UNION ALL SELECT 1 FROM bilibili_settings WHERE model_secret IS NOT NULL UNION ALL SELECT 1 FROM bilibili_logins WHERE secret<>'' UNION ALL SELECT 1 FROM platform_model_providers LIMIT 1");
  return rows.length>0;
 }
-/** SQL expression matching platform-credits.ts creditBalance(): accounts for expired campaign grants. */
-export const platformCreditAvailableSql=(tenantParam='$3')=>`EXISTS(SELECT 1 FROM platform_model_credits c WHERE c.tenant_id=${tenantParam} AND (CASE WHEN c.campaign_expires_at IS NOT NULL AND c.campaign_expires_at<=clock_timestamp() THEN GREATEST(0,(c.granted-c.campaign_granted)-GREATEST(0,c.spent-c.campaign_spent)-GREATEST(0,c.reserved-c.campaign_reserved)) ELSE GREATEST(0,c.granted-c.spent-c.reserved) END)>0)`;
+/** SQL expression matching platform-credits.ts creditBalance() AND enabled platform providers. */
+export const platformCreditAvailableSql=(tenantParam='$3')=>`(EXISTS(SELECT 1 FROM platform_model_providers WHERE enabled=true) AND EXISTS(SELECT 1 FROM platform_model_credits c WHERE c.tenant_id=${tenantParam} AND (CASE WHEN c.campaign_expires_at IS NOT NULL AND c.campaign_expires_at<=clock_timestamp() THEN GREATEST(0,(c.granted-c.campaign_granted)-GREATEST(0,c.spent-c.campaign_spent)-GREATEST(0,c.reserved-c.campaign_reserved)) ELSE GREATEST(0,c.granted-c.spent-c.reserved) END)>0))`;
 export const PLATFORM_CREDIT_AVAILABLE_SQL=platformCreditAvailableSql('$3');

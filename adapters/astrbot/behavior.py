@@ -1346,7 +1346,7 @@ def install_runtime(core,settings):
             is_shared=bool(owner and owner.shared_context)
             bcfg=setting(event)['config'].get('behavior') or {}
             protocol=brain.foreground_prompt(event.get_platform_id(),event)
-            protocol+=reply_voice.hint(reply_voice.load(setting(event))) if not event.get_extra('_hosted_internal_work') else ''
+            protocol+=reply_voice.hint(reply_voice.load(setting(event)))
             if bcfg.get('memeEnabled'):
                 from meme_reactions import SELECTION_RULE
                 protocol+='\n[本轮图片表达规则，以此为准]\n'+SELECTION_RULE+'\n'
@@ -1390,7 +1390,7 @@ def install_runtime(core,settings):
             if foreground:bound.arguments['system_prompt']=setting(event)['config'].get('systemPrompt','')
             platform=foreground_system(setting(event)['config'].get('delegatedCapabilities') or {}) if foreground else None
             bound.arguments['system_prompt'],bound.arguments['contexts']=request_context_view(bound.arguments.get('system_prompt'),bound.arguments.get('contexts'),bound.arguments.get('prompt'),protocol,current_rules,context,bound.arguments.get('tool_calls_result'),incremental_policy=True,platform_system=platform,persona_proof=setting(event).get('personaEdit') if foreground else None,character_cards=setting(event)['config'].get('characterCards') if foreground else None)
-            metrics[event.get_platform_id()]['requests']+=1
+            m=metrics.setdefault(event.get_platform_id(),{});m['requests']=m.get('requests',0)+1
         bound.arguments['request_max_retries']=0
         return bound
     from provider_wire_hooks import install_provider_hooks

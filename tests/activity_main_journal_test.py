@@ -354,6 +354,39 @@ class Activity(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(requests),1)
         finally:await runner.cleanup()
 
+    async def test_autonomous_main_activation_policy_matches_foreground_zero_thrash(self):
+        from astrbot.core.platform.astrbot_message import MessageMember
+        from astrbot.core.platform.astr_message_event import current_message_event
+        from context_protocol import SOURCE
+        from context_transport import EVENT_CONTEXT_CURRENT
+        import hashlib,shared_context
+        s=self.settings['qq'];voice_dir=Path(s['root'])/'reply-voice';voice_dir.mkdir(parents=True,exist_ok=True)
+        vbytes=b'ID3-fixture-voice';(voice_dir/'short.mp3').write_bytes(vbytes)
+        (Path(s['root'])/'reply-voice.json').write_text(json.dumps({'version':1,'botId':s['botId'],'tenantId':s['tenantId'],'promptSha256':hashlib.sha256((s['config'].get('systemPrompt') or '').encode()).hexdigest(),'default':'short','prefix':'！？','suffix':'？！','bodyLengths':[2,3],'assets':{'short':{'file':'short.mp3','sha256':hashlib.sha256(vbytes).hexdigest()}}}),encoding='utf-8')
+        self.brain.install('qq',{'tenantId':'tenant','botId':'bot','generation':1,'revision':1,'epoch':1,'until':time.time()*1000+14000,'cycleId':'c-pol','actionId':'a-pol','config':{'mode':'active','rollout':'live','activityEnabled':True,'maxSleepSeconds':86400}})
+        # Turn 1: ordinary foreground message in active mode with foreground_tools registered
+        scope='private:12345678'
+        fg=self.brain.make_event('qq',{'id':'fg-pol-1'},scope,'你好','90000000')
+        fg.message_obj.sender=MessageMember(user_id='12345678',nickname='User')
+        fg.message_obj.raw_message={'post_type':'message','message_type':'private','message_id':'fg-pol-1','user_id':12345678,'self_id':90000000,'message':[{'type':'text','data':{'text':'你好'}}]}
+        fg.set_extra('_hosted_internal_work',None);fg.set_extra('_hosted_initiative',False)
+        shared_context.observe(self.st.db,fg,self.settings['qq']['config'])
+        self.brain.foreground_tools('qq',fg,lambda:True)
+        work=self.st.pipeline.bind(fg,self.settings['qq'])
+        tok=current_message_event.set(fg)
+        try:await self.provider.text_chat(prompt=SOURCE+model_json({'scope':scope,'sender_id':'12345678','event_id':work.event_id})+'\n你好',system_prompt='Test Persona',contexts=[])
+        finally:current_message_event.reset(tok)
+        fg_policy=next(json.loads(m['content'].split('\n',1)[1])['policy'] for m in self.requests[-1]['messages'] if isinstance(m.get('content'),str) and m['content'].startswith(EVENT_CONTEXT_CURRENT+'\n'))
+        self.assertIn('[后台任务登记]',fg_policy)
+        self.assertIn('[VOICE:',fg_policy)
+        # Turn 2: autonomous main activation on the same Main Journal
+        res=await self.activate()
+        self.assertEqual(res['status'],'completed',res)
+        auto_packets=[json.loads(m['content'].split('\n',1)[1]) for m in self.requests[-1]['messages'] if isinstance(m.get('content'),str) and m['content'].startswith(EVENT_CONTEXT_CURRENT+'\n')]
+        # Policy stayed byte-identical, so incremental_policy must NOT re-emit a second policy block!
+        self.assertEqual(len([p for p in auto_packets if 'policy' in p]),1,'autonomous main activation must reuse foreground policy with zero ~5KB delta thrash')
+        self.assertEqual(auto_packets[0]['policy'],fg_policy)
+
 
 def load_tests(loader, standard_tests, pattern):
     # Discovery must retain the same one-install-per-Worker boundary as direct
