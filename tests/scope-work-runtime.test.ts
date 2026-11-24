@@ -63,22 +63,22 @@ test('real SDK keeps one active Work per Scope, absorbs bursts and hands off onl
    res.end(JSON.stringify({id:'scope-work',model:body.model,choices:[{index:0,message:{role:'assistant',content:answer},finish_reason:'stop'}],usage:{prompt_tokens:1,completion_tokens:1,total_tokens:2}}));
   }catch(error){errors.push(error);res.writeHead(500).end(JSON.stringify({error:'fixture failed'}))}
  });
- await new Promise<void>(r=>model.listen(0,'127.0.0.1',r));permitModelFixture(model);
+ await new Promise<void>(r=>model.listen(0,'127.0.0.1',r));permitModelFixture(model,['scope-work-fixture']);
  const root=await mkdtemp(path.resolve('.local/scope-work-')),current=await createApp({root});
  try{
   const registered=await current.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(current.db),email:'scope-work@test.invalid',name:'scope-work',password:'scope-work-fixture-123'}});
   assert.equal(registered.statusCode,200,registered.body);
   const cookies={fish_session:registered.cookies[0].value};
-  const config={...defaultConfig,baseUrl:`http://127.0.0.1:${(model.address()as any).port}/v1`,model:'scope-work-fixture',proactive:false,
+  const config={...defaultConfig,baseUrl:`http://127.0.0.1:${(model.address()as any).port}/v1`,model:'scope-work-fixture',groups:['778190'],proactive:false,
    behavior:{...defaultConfig.behavior!,ownerUin:'12345678',ownerContactEnabled:false,groupParticipationEnabled:false,groupParticipationGroups:['778190'],naturalConversation:true,
     followupSeconds:0,followupReplyProbability:0,typingSimulation:false,typoEnabled:false,splitMessages:false,burstDebounceMs:0,
     styleLearning:false,memorySummary:false,memeEnabled:false,fatigueEnabled:false}};
-  const created=await current.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'Scope单Work验收',protocol:'mock',runtimeMode:'shared',expectedUin:'90008874',apiKey:'scope-work-fixture',config}});
+  const created=await current.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'Scope单Work验收',protocol:'mock',runtimeMode:'shared',expectedUin:'90008874',apiKey:'scope-work-secret-key',config}});
   assert.equal(created.statusCode,201,created.body);const id=created.json().id;
   // Shared process and unified Journal are distinct. Authorize an empty,
   // never-started test store before launching the actual SDK worker.
   await promisify(execFile)(process.env.FISHBOT_PYTHON||'python',['-B','-c',
-   "import sys,json;sys.path.insert(0,'adapters/astrbot');from behavior import BehaviorStore;from shared_context import activate_authorized;s=BehaviorStore(sys.argv[1]);activate_authorized(s.db,json.loads(sys.argv[2]),{},'fixture-scope-work-shared','a'*40);s.close()",
+   "import sys,json;sys.path.insert(0,'adapters/astrbot');from behavior import BehaviorStore;from shared_context import active,activate_authorized;s=BehaviorStore(sys.argv[1]);(not active(s.db)) and activate_authorized(s.db,json.loads(sys.argv[2]),{},'fixture-scope-work-shared','a'*40);s.close()",
    path.join(root,'bots',id,'behavior.sqlite'),JSON.stringify(config)],{windowsHide:true});
   await current.app.inject({method:'POST',url:`/v1/bots/${id}/actions`,cookies,payload:{action:'start',idempotencyKey:'start'}});
   await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.protocol?.ready,'protocol ready');

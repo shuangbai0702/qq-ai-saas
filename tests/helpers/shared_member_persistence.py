@@ -1,13 +1,21 @@
 """Deterministic per-bot Work/Journal fixture used by shared lifecycle tests."""
-import hashlib,json,sys
+import hashlib,json,sys,time
 from pathlib import Path
 root=Path(__file__).resolve().parents[2]
 sys.path[:0]=[str(root/'adapters/astrbot'),str(root/'tests')]
 from behavior import BehaviorStore
 from bot_pipeline_test import event
-from unified_context_20261108_test import message,request
 from readonly_journal import ReadonlyJournal
-from context_protocol import model_json
+from context_protocol import SOURCE,READONLY_CURRENT,model_json
+from context_transport import EVENT_CONTEXT_CURRENT
+
+def message(scope,event='same',who='12345678',text='hello'):
+    return {'role':'user','content':SOURCE+model_json({'scope':scope,'event_id':event,'sender_id':who,'at':time.time()})+'\n'+text}
+
+def request(m):
+    return [{'role':'system','content':'fixed bot identity'},
+            {'role':'user','content':READONLY_CURRENT+'\n'+model_json({'state':{}})},
+            {'role':'user','content':EVENT_CONTEXT_CURRENT+'\n'+model_json({'authority':{'identity':{'scope':'current'}},'policy':'fixed','currentGuidance':'@ permits NO_REPLY','meaning':'platform'})},m]
 
 file,bot,mode=sys.argv[1:]
 store=BehaviorStore(Path(file));journal=ReadonlyJournal(store.db,'bot_shared')

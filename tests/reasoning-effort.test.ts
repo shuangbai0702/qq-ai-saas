@@ -8,7 +8,7 @@ test('optional per-bot reasoning effort reaches the native SDK without changing 
  assert.equal(BotConfigSchema.parse(defaultConfig).reasoningEffort,undefined);
  assert.equal(BotConfigSchema.safeParse({...defaultConfig,reasoningEffort:'arbitrary'}).success,false);
  const root=await mkdtemp(path.resolve('.local/reasoning-effort-'));
- const config=BotConfigSchema.parse({...defaultConfig,reasoningEffort:'max'});
+ const config=BotConfigSchema.parse({...defaultConfig,model:'fixture-chat',reasoningEffort:'max'});
  const adapter=new AstrBotAdapter({inspect:async()=>null} as any,'','');
  await adapter.applyConfig({root,config,apiKey:'fixture',generation:1,revision:1,token:'fixture',botId:'fixture',tenantId:'fixture',aiPort:1234} as any);
  const file=path.join(root,'ai/data/cmd_config.json');

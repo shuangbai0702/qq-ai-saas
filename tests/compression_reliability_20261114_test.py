@@ -144,7 +144,8 @@ class Reliability(unittest.IsolatedAsyncioTestCase):
         job={'state':'pending_cleanup','result':{'ok':True,'checkpoint':{'id':1}}}
         refresh_completion(self.st,job);self.assertEqual(job['state'],'pending_cleanup')
         db.execute("UPDATE memory_reconstruction_checkpoints SET state='consumed'")
-        db.execute("UPDATE memory_semantic_batches SET state='retired'");db.commit()
+        db.execute("UPDATE memory_semantic_batches SET state='retired'")
+        db.execute("INSERT OR REPLACE INTO memory_semantic_purges VALUES(1,1,0)");db.commit()
         import semantic_media
         semantic_media.initialize(db);db.commit()
         db.execute("INSERT INTO semantic_media_protocol_issues VALUES('ambiguous','unresolved-file','unresolved',0)");db.commit()

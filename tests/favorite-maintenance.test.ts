@@ -238,7 +238,6 @@ from qq_favorites import catalog
 root=sys.argv[1];s=SocialStore(sqlite3.connect(':memory:'),root)
 cfg={'memeEnabled':True,'memePacks':[],'_qqAccount':'90000','memeCooldownSeconds':3600,'dailyMemeLimit':0,'memeProbability':0}
 items=catalog(root,'90000');assert len(items)==1
-s.reserve_image('private:12345',1000)
 clean,image=s.select_image('[MEME:'+items[0]['id']+']','private:12345',cfg,1000,candidates=items)
 assert image and image['id']==items[0]['id']
 assert catalog(root,'90001')==[]

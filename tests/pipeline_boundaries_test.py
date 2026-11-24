@@ -136,7 +136,7 @@ async def run():
     raise asyncio.TimeoutError
    return await original_wait(awaitable,timeout)
   try:
-   with patch('behavior.asyncio.wait_for',held_wait):
+   with patch('behavior_store.asyncio.wait_for',held_wait):
     first=asyncio.create_task(PipelineScheduler.execute(None,event))
     await asyncio.wait_for(entered.wait(),3)
     await PipelineScheduler.execute(None,selected);release.set();await first

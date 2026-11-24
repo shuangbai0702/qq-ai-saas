@@ -30,14 +30,17 @@ test('manual promotion is tenant-bound, once-only, expiring and settles late res
   const get=(cookie=first.cookie)=>app.inject({method:'GET',url:'/v1/activities',headers:{cookie}});
   const claim=(cookie=first.cookie)=>app.inject({method:'POST',url:'/v1/activities/claim',headers:{cookie},payload:{tenantId:other.tenant}});
   assert.equal((await app.inject({url:'/v1/activities'})).statusCode,401);
-  const initial=(await get()).json();assert.equal(initial.id,tokenPromotion.id);assert.equal(initial.claimOpen,true);assert.equal(initial.balance.available,0);
-  const results=await Promise.all([claim(),claim(),claim()]);for(const result of results)assert.equal(result.statusCode,200,result.body);
-  const claimed=(await get()).json();assert.equal(claimed.balance.granted,5_000_000);assert.equal(claimed.balance.available,5_000_000);
-  assert.equal(new Date(claimed.balance.campaign.expiresAt).getTime()-new Date(claimed.balance.campaign.claimedAt).getTime(),7*86400000);
-  assert.equal((await db.query("SELECT * FROM audit_events WHERE event='activity.tokens_claimed'")).length,1);
-  assert.equal((await get(other.cookie)).json().balance.granted,0);
-  const deadline=tokenPromotion.endsAt;
-  try{tokenPromotion.endsAt='2000-01-01T00:00:00.000Z';assert.equal((await claim(other.cookie)).statusCode,409);assert.equal((await claim()).json().alreadyClaimed,true)}finally{tokenPromotion.endsAt=deadline}
+  const originalEndsAt=tokenPromotion.endsAt;
+  try{
+   tokenPromotion.endsAt=new Date(Date.now()+86400000).toISOString();
+   const initial=(await get()).json();assert.equal(initial.id,tokenPromotion.id);assert.equal(initial.claimOpen,true);assert.equal(initial.balance.available,0);
+   const results=await Promise.all([claim(),claim(),claim()]);for(const result of results)assert.equal(result.statusCode,200,result.body);
+   const claimed=(await get()).json();assert.equal(claimed.balance.granted,5_000_000);assert.equal(claimed.balance.available,5_000_000);
+   assert.equal(new Date(claimed.balance.campaign.expiresAt).getTime()-new Date(claimed.balance.campaign.claimedAt).getTime(),7*86400000);
+   assert.equal((await db.query("SELECT * FROM audit_events WHERE event='activity.tokens_claimed'")).length,1);
+   assert.equal((await get(other.cookie)).json().balance.granted,0);
+   tokenPromotion.endsAt='2000-01-01T00:00:00.000Z';assert.equal((await claim(other.cookie)).statusCode,409);assert.equal((await claim()).json().alreadyClaimed,true);
+  }finally{tokenPromotion.endsAt=originalEndsAt}
   assert.equal((await creditBalance(db,other.tenant)).granted,0);
   const created=await app.inject({method:'POST',url:'/v1/bots',headers:{cookie:first.cookie},payload:{name:'controlled fixture',protocol:'mock',config:{...defaultConfig,platformModel:true}}});assert.equal(created.statusCode,201,created.body);
   const [bot]=await db.query('SELECT * FROM bots WHERE id=$1',[created.json().id]);

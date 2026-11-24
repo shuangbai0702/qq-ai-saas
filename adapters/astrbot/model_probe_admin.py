@@ -49,6 +49,7 @@ async def request(brain,id,store,lease,data):
     from model_cache import usage_evidence
     from readonly_journal import ReadonlyJournal
     from shared_context import JOURNAL_SCOPE,main_journal_scope
+    from context_protocol import is_persona_reference
     from system_contract import system_vector_sha
     if brain.settings.get(id) is not lease:raise asyncio.CancelledError('stale_debug_lease')
     prompt='[管理员调试；平台内部事件，不是QQ用户发言]只确认模型请求链路可用，简短回答即可。不执行工具，不发送QQ，不创建任务。'
@@ -73,7 +74,7 @@ async def request(brain,id,store,lease,data):
         if journal is None:journal=ReadonlyJournal(store.db,JOURNAL_SCOPE)
         wire=journal.last.wire if journal.last else []
         return {'text':(response.completion_text or '')[:4000],'usage':usage_evidence(response),'systemSha':system_vector_sha(wire),
-                'quoteRuleInSystem':any('[引用习惯]' in str(m.get('content')) for m in wire if m.get('role')=='system'),
+                'quoteRuleInSystem':any('[引用习惯]' in str(m.get('content')) for m in wire if m.get('role')=='system' or is_persona_reference(m)),
                 'journalCommitted':journal.last is not None,'qqSend':False,'toolExecution':False,'businessRound':False}
     finally:
         store.active-=1;store.slot_changed.set()

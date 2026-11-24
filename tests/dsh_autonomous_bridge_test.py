@@ -64,7 +64,7 @@ class AutonomousBridge(unittest.IsolatedAsyncioTestCase):
         self.control.tool_calls=0;token=tool_action_id.set('tool-call')
         try:result=await tools(self.settings,self.event,lambda:self.live,self.db,self.bridge)[0].call(self.context,goal='research')
         finally:tool_action_id.reset(token)
-        self.assertIn('委托未完成',result)
+        self.assertIn('委托执行未完成',result)
         self.assertFalse(self.acks['tool_budget'].result()['ok']);self.assertEqual(self.control.used_tools,0)
         self.assertTrue(self.control.estimated_usage)
 

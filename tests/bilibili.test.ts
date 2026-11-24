@@ -152,7 +152,7 @@ async function fixture(t:any){
  const cookies=await register('bili-a@example.com'),other=await register('bili-b@example.com');
  const create=await value.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'bili bot',protocol:'mock',apiKey:'fixture-only-key'}});assert.equal(create.statusCode,201,create.body);
  const id=create.json().id,key=Buffer.from((await readFile(path.join(root,'master.key'),'utf8')).trim(),'hex');
- await value.db.query("UPDATE bot_config_revisions SET config=jsonb_set(config,'{behavior,ownerUin}','\"768687099\"') WHERE bot_id=$1",[id]);
+ await value.db.query("UPDATE bot_config_revisions SET config=jsonb_set(jsonb_set(config,'{behavior,ownerUin}','\"768687099\"'),'{model}','\"fixture-chat\"') WHERE bot_id=$1",[id]);
  await value.db.query("UPDATE bots SET desired_state='running',health=$2 WHERE id=$1",[id,JSON.stringify({sampledAt:new Date().toISOString(),protocol:{online:true},ai:{ready:true}})]);
  const [bot]=await value.db.query('SELECT * FROM bots WHERE id=$1',[id]);
  const native=await openToolWork(root,value.db,bot,'fixture-autonomous',1),closeIpc=await attachToolIpc(value.db,bot,native);

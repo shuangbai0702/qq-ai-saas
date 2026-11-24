@@ -21,12 +21,12 @@ test('native SDK: multiple speakers, semantic silence, bounded calls and per-bot
   const reply=input.includes('比赛')?'[NO_REPLY]':input.includes('下班')?'那先坐会儿，今天够忙的。':input.includes('我也')?'给你也留个位子。':'我刚好想聊聊热茶。';
   res.setHeader('Content-Type','application/json');res.end(JSON.stringify({id:'natural-'+requests.length,model:body.model,choices:[{index:0,message:{role:'assistant',content:reply},finish_reason:'stop'}]}));
  });
- await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));permitModelFixture(server);
+ await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));permitModelFixture(server,['natural-fixture']);
  const current=await createApp({root:await mkdtemp(path.resolve('.local/natural-runtime-'))});
  try{
   const auth=await current.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(current.db,2),email:'natural-runtime@test.invalid',name:'自然交流',password:'natural-runtime-123'}});
   const cookies={fish_session:auth.cookies[0].value};
-   const config={...defaultConfig,baseUrl:`http://127.0.0.1:${(server.address() as any).port}/v1`,model:'natural-fixture',proactive:false,behavior:{...defaultConfig.behavior!,groupParticipationEnabled:true,groupParticipationGroups:['778899'],naturalConversation:true,ownerUin:'',hourlyInterjectionLimit:2,followupSeconds:120,followupReplyProbability:.2,randomReplyProbability:0,quietStart:0,quietEnd:0,typingSimulation:false,typoEnabled:false,splitMessages:false,burstDebounceMs:0,styleLearning:false,memorySummary:false,memeEnabled:false,fatigueMaxReplies:1}};
+   const config={...defaultConfig,baseUrl:`http://127.0.0.1:${(server.address() as any).port}/v1`,model:'natural-fixture',groups:['778899'],proactive:false,behavior:{...defaultConfig.behavior!,groupParticipationEnabled:true,groupParticipationGroups:['778899'],naturalConversation:true,ownerUin:'',hourlyInterjectionLimit:2,followupSeconds:120,followupReplyProbability:.2,randomReplyProbability:0,quietStart:0,quietEnd:0,typingSimulation:false,typoEnabled:false,splitMessages:false,burstDebounceMs:0,styleLearning:false,memorySummary:false,memeEnabled:false,fatigueMaxReplies:1}};
   const create=async(name:string,uin:string)=>{
    const r=await current.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name,protocol:'mock',runtimeMode:'shared',expectedUin:uin,apiKey:'natural-runtime-key',config}});assert.equal(r.statusCode,201,r.body);const id=r.json().id;
    await current.app.inject({method:'POST',url:`/v1/bots/${id}/actions`,cookies,payload:{action:'start',idempotencyKey:'start'}});

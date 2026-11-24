@@ -155,6 +155,7 @@ def observe_message(db,scope,person,at):
     """Authenticated protocol activity, independent of semantic revision."""
     import math,re
     if not re.fullmatch(r'(?:private|group):\d{4,20}',str(scope)) or not re.fullmatch(r'\d{5,20}',str(person)) or type(at) not in (int,float) or not math.isfinite(at) or at<=0:return
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='relations'").fetchone():return
     db.execute("INSERT INTO relations(scope,subject,affinity,emotion,expires,last_seen,last_message_at,last_message_scope) VALUES(?,?,0,'平静',0,0,?,?) ON CONFLICT(subject) DO UPDATE SET last_message_scope=CASE WHEN excluded.last_message_at>coalesce(relations.last_message_at,0) THEN excluded.last_message_scope ELSE relations.last_message_scope END,last_message_at=max(coalesce(relations.last_message_at,0),excluded.last_message_at)",(scope,str(person),at,scope))
 
 

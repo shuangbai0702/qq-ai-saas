@@ -11,13 +11,16 @@ import bot_pipeline
 CFG={'groups':[],'behavior':{'groupParticipationGroups':['12345'],'pokeReply':True,'pokeProbability':1}}
 RAW={'post_type':'notice','notice_type':'notify','sub_type':'poke','self_id':'99999','user_id':'11111','target_id':'99999'}
 
-def extract(name,namespace,prefix=False):
-    tree=ast.parse((ROOT/'adapters/astrbot/behavior.py').read_text(encoding='utf8'))
-    node=next(n for n in ast.walk(tree) if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) and n.name==name)
+def extract(name,namespace,prefix=False,file='behavior.py'):
+    for candidate in (file,'behavior_store.py'):
+        tree=ast.parse((ROOT/'adapters/astrbot'/candidate).read_text(encoding='utf8'))
+        node=next((n for n in ast.walk(tree) if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) and n.name==name),None)
+        if node is not None:break
+    else:raise LookupError(name)
     if prefix:
         end=next(i for i,n in enumerate(node.body) if isinstance(n,ast.Assign) and any(isinstance(x,ast.Name) and x.id=='internal' for x in n.targets))
         node.body=node.body[:end]
-    exec(compile(ast.fix_missing_locations(ast.Module(body=[node],type_ignores=[])),'behavior.py','exec'),namespace)
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[node],type_ignores=[])),candidate,'exec'),namespace)
     return namespace[name]
 
 def event(raw):
@@ -73,7 +76,8 @@ class Policy(unittest.IsolatedAsyncioTestCase):
 
     async def test_opt_in_busy_scope_waits_existing_lock_and_is_concise_protocol_event(self):
         cfg={**CFG,'behavior':{**CFG['behavior'],'pokeIntoAiContext':True}}
-        st=NS(scope_turns={},db=self.db)
+        async def wait_compression(*a):return None
+        st=NS(scope_turns={},db=self.db,wait_compression=wait_compression,slot_changed=asyncio.Event())
         st.acquire_scope=extract('acquire_scope',{'asyncio':asyncio}).__get__(st)
         st.release_scope=extract('release_scope',{}).__get__(st)
         self.assertTrue(await st.acquire_scope('group:12345',lambda:True))

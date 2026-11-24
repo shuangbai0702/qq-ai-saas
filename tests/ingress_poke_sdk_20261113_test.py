@@ -31,7 +31,7 @@ class SDK(unittest.IsolatedAsyncioTestCase):
         from native_ingress import admitted,bind
         from aiocqhttp import Event
         from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_platform_adapter import AiocqhttpAdapter
-        import worker_lifecycle
+        import worker_lifecycle,worker_common
         pokes=[];model_inputs=[]
         async def pipeline(_,event):
             # This is the SDK model boundary after hosted observe/admission/context.
@@ -54,8 +54,9 @@ class SDK(unittest.IsolatedAsyncioTestCase):
             member={'uin':'99999','modelConfigured':False,'events':0}
             shared=gate('shared-worker.py',{'id':'qq','member':member,'members':{'qq':member},'core':core,
                 'behavior_settings':settings,'platform':NS(create_event=create),'behavior':runtime,'errors':{},
-                'worker_lifecycle':worker_lifecycle,'stop_fence':NS(quiescing=False),'original':original})
-            dedicated=gate('headless.py',{'manifest':{'expectedUin':'99999','config':cfg},'admitted':admitted,'original':original})
+                'worker_lifecycle':worker_lifecycle,'worker_common':worker_common,'stop_fence':NS(quiescing=False),'original':original})
+            dedicated=gate('headless.py',{'manifest':{'expectedUin':'99999','config':cfg},'admitted':admitted,
+                'platform':NS(create_event=create),'behavior':runtime,'worker_lifecycle':worker_lifecycle,'worker_common':worker_common,'original':original})
             adapter=AiocqhttpAdapter.__new__(AiocqhttpAdapter)
             async def convert(raw):return await AiocqhttpAdapter.convert_message(adapter,raw)
             platform=NS(convert_message=convert)

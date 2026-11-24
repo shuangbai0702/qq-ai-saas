@@ -1,10 +1,11 @@
 // Real control database/lifecycle and adapter provisioning; controlled IPC/QQ
 // handles let membership and drain failures be asserted without paid services.
-import test from 'node:test';import assert from 'node:assert/strict';
+import test from 'node:test';import assert from 'node:assert/strict';import http from 'node:http';
 import {mkdtemp} from 'node:fs/promises';import path from 'node:path';import {execFile} from 'node:child_process';
-import {createApp} from '../apps/control-api/src/app.js';import {issueTestInvite} from './helpers/invitations.js';
+import {createApp} from '../apps/control-api/src/app.js';import {defaultConfig} from '../packages/contracts/index.js';import {issueTestInvite} from './helpers/invitations.js';import {permitModelFixture} from './helpers/model-fixture.js';
 
 test('only online shared accounts fill eight-member groups; unload/restart preserve one per-bot owner and data',{timeout:60000},async t=>{
+ const catalog=http.createServer((_req,res)=>{res.writeHead(404).end()});await new Promise<void>(r=>catalog.listen(0,'127.0.0.1',r));permitModelFixture(catalog,['fixture-model']);t.after(()=>catalog.close());
  const root=await mkdtemp(path.resolve('.local/shared-online-'));const {app,db,agent}=await createApp({root,agent:false});t.after(()=>app.close());
  const states=new Map<string,{alive:boolean;online:boolean}>(),workers=new Map<string,{pid:number;members:Map<string,any>}>();let nextPid=100,failDrain='';const attached:any[]=[];
  agent.host.beginInspection=async()=>{};agent.host.endInspection=()=>{};
@@ -16,7 +17,7 @@ test('only online shared accounts fill eight-member groups; unload/restart prese
   if(route==='/health')return{ready:true,generation:group.generation,members:Object.fromEntries(w.members),metrics:{}};
   const id=route.split('/')[2].split('?')[0];
   if(method==='DELETE'){if(id===failDrain)throw new Error('drain not confirmed');w.members.delete(id);return{removed:id}}
-  assert.equal(method,'PUT');assert.ok(w.members.has(id)||w.members.size<8);w.members.set(id,body);attached.push(body);return{};
+  assert.equal(method,'PUT');assert.ok(w.members.has(id)||w.members.size<8);w.members.set(id,body);attached.push(body);return{generation:body.generation,revision:body.revision};
  };
  agent.protocols.mock.getHealth=async ctx=>{const s=states.get(ctx.botId)||{alive:false,online:false};return{alive:s.alive,ready:s.alive,online:s.online,loginState:s.online?'online':'waiting_scan'}};
  agent.protocols.mock.queryIdentity=async ctx=>states.get(ctx.botId)?.online?ctx.expectedUin:null;
@@ -26,7 +27,7 @@ test('only online shared accounts fill eight-member groups; unload/restart prese
  for(let tenant=0;tenant<2;tenant++){
   const registered=await app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(db,5),email:`shared-online-${tenant}@test.invalid`,name:'tenant'+tenant,password:'shared-online-123'}});cookies.push({fish_session:registered.cookies[0].value});
   for(let n=0;n<5;n++){
-   const i=ids.length,r=await app.inject({method:'POST',url:'/v1/bots',cookies:cookies[tenant],payload:{name:'member'+i,protocol:'mock',expectedUin:String(91000100+i),apiKey:'key-'+i}});assert.equal(r.statusCode,201,r.body);ids.push(r.json().id);
+   const i=ids.length,r=await app.inject({method:'POST',url:'/v1/bots',cookies:cookies[tenant],payload:{name:'member'+i,protocol:'mock',expectedUin:String(91000100+i),apiKey:'key-'+i,config:{...defaultConfig,baseUrl:`http://127.0.0.1:${(catalog.address() as any).port}/v1`,model:'fixture-model'}}});assert.equal(r.statusCode,201,r.body);ids.push(r.json().id);
    const started=await app.inject({method:'POST',url:`/v1/bots/${ids[i]}/actions`,cookies:cookies[tenant],payload:{action:'start',idempotencyKey:'start'}});assert.equal(started.statusCode,200,started.body);
   }
  }

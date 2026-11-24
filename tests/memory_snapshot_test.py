@@ -194,7 +194,7 @@ class SnapshotTest(unittest.TestCase):
             result = self.collect()
             self.assertEqual(len(result['processes']), 1)
             self.assertTrue(result['truncated'])
-        for index in range(30):
+        for index in range(35):
             self.record(owner='bad-' + str(index), pid=10000 + index)
         result = self.collect()
         self.assertEqual(len(result['errors']), 32)

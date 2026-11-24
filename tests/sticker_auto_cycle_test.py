@@ -56,7 +56,8 @@ class Cycle(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(image.startswith(b'\x89PNG'))
         embedded=provider.calls[0]['image_urls'][0]
         self.assertTrue(embedded.startswith('data:image/png;base64,'))
-        self.assertEqual(base64.b64decode(embedded.split(',',1)[1]),png)
+        original=self.db.execute('SELECT bytes FROM sticker_originals').fetchone()[0]
+        self.assertEqual(base64.b64decode(embedded.split(',',1)[1]),original)
 
     async def test_auto_reject_frees_pending_slot_for_new_collection(self):
         provider=FakeProvider(json.dumps({'meaning':'无关内容','suitable':False}))

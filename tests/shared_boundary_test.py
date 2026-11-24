@@ -27,6 +27,7 @@ from aiohttp.web import HTTPBadRequest as BadRequest
 class Request:
     match_info={'id':'bot-A'}
     def __init__(self,value):self.value=value
+    def clone(self,**kw):return self
     async def json(self):return self.value
 async def run():
     calls=[]

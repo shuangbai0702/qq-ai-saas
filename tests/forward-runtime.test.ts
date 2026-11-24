@@ -16,7 +16,7 @@ async function until(fn:()=>Promise<boolean>,label:string){for(let i=0;i<300;i++
 test('real SDK sends attributed ordered forward nodes to Provider wire without changing ingress authority',{timeout:120000},async t=>{
  const requests:any[]=[];
  const model=http.createServer(async(req,res)=>{let raw='';for await(const c of req)raw+=c;const body=JSON.parse(raw);requests.push(body);res.setHeader('Content-Type','application/json');res.end(JSON.stringify({id:'forward-fixture',model:body.model,choices:[{index:0,message:{role:'assistant',content:'forward fixture acknowledgement'},finish_reason:'stop'}]}))});
- await new Promise<void>(r=>model.listen(0,'127.0.0.1',r));permitModelFixture(model);t.after(()=>model.close());
+ await new Promise<void>(r=>model.listen(0,'127.0.0.1',r));permitModelFixture(model,['forward-fixture']);t.after(()=>model.close());
  const root=await mkdtemp(path.resolve('.local/forward-runtime-')),current=await createApp({root});t.after(()=>current.app.close());
  const auth=await current.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(current.db),email:'forward@test.invalid',name:'forward',password:'forward-fixture-123'}}),cookies={fish_session:auth.cookies[0].value};
  const config={...defaultConfig,proactive:false,baseUrl:`http://127.0.0.1:${(model.address()as any).port}/v1`,model:'forward-fixture',behavior:{...defaultConfig.behavior!,ownerUin:'12345678',groupParticipationEnabled:false,ownerContactEnabled:false,autonomousGroupContact:false,proactiveModelSchedule:false,selfDevelopment:false,typingSimulation:false,typoEnabled:false,splitMessages:false,burstDebounceMs:0,styleLearning:false,memorySemantic:false,memeEnabled:false,fatigueEnabled:false}};

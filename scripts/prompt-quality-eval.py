@@ -19,6 +19,11 @@ async def run(args):
         temporary=root/'requests.tmp'
         temporary.write_text(json.dumps(state,ensure_ascii=False,indent=2),encoding='utf-8')
         temporary.replace(ledger)
+    if not args.discover:
+        cases=json.loads(Path(args.cases).read_text(encoding='utf-8'))
+        if not isinstance(cases,list):raise SystemExit('cases must be a list')
+        pending=[case for case in cases if not any(r['id']==case['id'] for r in state['results'])]
+        if pending and state['attempted']>=64:raise RuntimeError('64 attempted completion ceiling reached')
     async with httpx.AsyncClient(timeout=httpx.Timeout(120,connect=15),headers={'Authorization':'Bearer '+key},follow_redirects=False) as client:
         if args.discover:
             response=await client.get(args.base_url.rstrip('/')+'/models')
@@ -27,8 +32,6 @@ async def run(args):
             matches=[m for m in ids if m==args.model or '5.6' in m.lower() and 'luna' in m.lower()]
             print(json.dumps({'modelCandidates':matches,'exactRequestedAvailable':args.model in ids}),flush=True)
             return
-        cases=json.loads(Path(args.cases).read_text(encoding='utf-8'))
-        if not isinstance(cases,list):raise SystemExit('cases must be a list')
         semaphore=asyncio.Semaphore(2)
         async def execute(case):
             identifier=case['id']

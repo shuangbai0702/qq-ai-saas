@@ -1,9 +1,22 @@
 import type {Server} from 'node:http';
 // Production has no implicit localhost exception. Integration tests explicitly
 // trust only their own bound fixture origin via the operator-only setting.
-export function permitModelFixture(server:Server){
+export function permitModelFixture(server:Server,models?:string[]){
  const address=server.address();if(!address||typeof address==='string'||address.address!=='127.0.0.1')throw new Error('Expected a local model fixture');
  const origin='http://127.0.0.1:'+address.port,key='FISHBOT_MODEL_ALLOWED_PRIVATE_ORIGINS';const before=process.env[key];process.env[key]=[before,origin].filter(Boolean).join(',');
+ if(models?.length){
+  const existing=server.listeners('request');
+  server.removeAllListeners('request');
+  server.on('request',(req,res)=>{
+   const pathname=(req.url||'').split('?')[0];
+   if(req.method==='GET'&&(pathname==='/models'||pathname.endsWith('/models'))){
+    res.setHeader('Content-Type','application/json');
+    res.end(JSON.stringify({object:'list',data:models.map(id=>({id,object:'model'}))}));
+    return;
+   }
+   for(const fn of existing)(fn as any).call(server,req,res);
+  });
+ }
  server.once('close',()=>{const remaining=(process.env[key]||'').split(',').filter(x=>x!==origin);if(remaining.length)process.env[key]=remaining.join(',');else delete process.env[key]});
 }
 

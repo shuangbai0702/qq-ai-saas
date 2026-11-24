@@ -1,5 +1,6 @@
 import {issueTestInvite} from './helpers/invitations.js';
-import test from 'node:test';import assert from 'node:assert/strict';import {mkdtemp,readFile,writeFile,mkdir} from 'node:fs/promises';import path from 'node:path';
+import {permitModelFixture} from './helpers/model-fixture.js';
+import test from 'node:test';import assert from 'node:assert/strict';import http from 'node:http';import {mkdtemp,readFile,writeFile,mkdir} from 'node:fs/promises';import path from 'node:path';
 import {createApp} from '../apps/control-api/src/app.js';import {defaultConfig} from '../packages/contracts/index.js';
 const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));
 async function until(fn:()=>Promise<boolean>,message:string,timeout=90000){const end=Date.now()+timeout;while(Date.now()<end){if(await fn())return;await sleep(1000)}throw new Error('Timeout: '+message)}
@@ -21,7 +22,8 @@ test('four real AstrBot processes with mock QQ, configuration, QR and lifecycle 
  await call('POST',`/v1/bots/${ids[0]}/mock-transition`,{state:'online',uin:'90001000'});await until(async()=>(await call('GET',`/v1/login-sessions/${sid}`)).json().state==='online','mock online binding');
  const other=ids[1];const sid2=(await call('POST',`/v1/bots/${other}/login-sessions`,{})).json().id;await until(async()=>(await call('GET',`/v1/login-sessions/${sid2}`)).json().hasQr,'second QR');
  await call('POST',`/v1/bots/${other}/mock-transition`,{state:'online',uin:'90001000'});await until(async()=>(await call('GET',`/v1/login-sessions/${sid2}`)).json().state==='failed','duplicate or unexpected QQ rejected');
- const save=await call('PUT',`/v1/bots/${ids[0]}/config`,{expectedRevision:1,name:'更新后的实例',expectedUin:'90001000',config:{...defaultConfig,systemPrompt:'更新后只属于0的人格'},apiKey:'synthetic-runtime-key'});assert.equal(save.statusCode,200,save.body);
+ const catalog=http.createServer((_req,res)=>{res.writeHead(404).end()});await new Promise<void>(r=>catalog.listen(0,'127.0.0.1',r));permitModelFixture(catalog,['runtime-fixture']);t.after(()=>catalog.close());
+ const save=await call('PUT',`/v1/bots/${ids[0]}/config`,{expectedRevision:1,name:'更新后的实例',expectedUin:'90001000',config:{...defaultConfig,baseUrl:`http://127.0.0.1:${(catalog.address() as any).port}/v1`,model:'runtime-fixture',systemPrompt:'更新后只属于0的人格'},apiKey:'synthetic-runtime-key'});assert.equal(save.statusCode,200,save.body);
  await until(async()=>(await call('GET',`/v1/bots/${ids[0]}`)).json().bot.applied_revision===2,'revision acknowledged');
  const generated=await readFile(path.join(root,'bots',ids[0],'ai/data/cmd_config.json'),'utf8');assert.ok(generated.includes('$FISHBOT_MODEL_KEY'));assert.ok(!generated.includes('synthetic-runtime-key'));
  const siblingPid=(await call('GET',`/v1/bots/${ids[2]}`)).json().bot.health.ai.pid;

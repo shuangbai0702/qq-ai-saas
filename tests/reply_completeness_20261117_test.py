@@ -1,6 +1,6 @@
 import sys,unittest
 from pathlib import Path
-sys.path.insert(0,str(Path('adapters/astrbot').resolve()))
+sys.path[:0]=[str(Path('adapters/astrbot').resolve()),str(Path(__file__).resolve().parent)]
 from message_layout import transport_parts
 from qq_diagnostics import failure_notice
 class Reply(unittest.TestCase):
@@ -18,6 +18,7 @@ class SendCompleteness(unittest.IsolatedAsyncioTestCase):
  asyncSetUp=Regeneration.asyncSetUp
  asyncTearDown=Regeneration.asyncTearDown
  activate=Regeneration.activate
+ activation_request=Regeneration.activation_request
  scenario=Regeneration.scenario
  async def test_actual_send_preserves_tail_and_confirms_each_chunk(self):
   text='第一段。'+('完整回复内容。'*550)+'结束证据。'

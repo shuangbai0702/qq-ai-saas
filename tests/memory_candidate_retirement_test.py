@@ -32,7 +32,8 @@ class CandidateIndexRetirement(unittest.TestCase):
                         CREATE TRIGGER search_fact_changed AFTER UPDATE ON facts BEGIN DELETE FROM memory_search; END;
                         CREATE TRIGGER search_fact_deleted AFTER DELETE ON facts BEGIN DELETE FROM memory_search; END;''')
                     db.execute('PRAGMA secure_delete=OFF')
-                    original_reflection=behavior.Reflection
+                    import behavior_store
+                    original_reflection=behavior_store.Reflection
                     def reflection(connection):
                         value=original_reflection(connection)
                         # Semantic batch initialization currently enables this
@@ -42,7 +43,7 @@ class CandidateIndexRetirement(unittest.TestCase):
                     if deny_drop:
                         db.set_authorizer(lambda action,name,*_:sqlite3.SQLITE_DENY
                             if action==sqlite3.SQLITE_DROP_VTABLE and name=='memory_search' else sqlite3.SQLITE_OK)
-                    with patch('behavior.sqlite3.connect',return_value=db),patch('behavior.Reflection',side_effect=reflection):
+                    with patch('behavior_store.sqlite3.connect',return_value=db),patch('behavior_store.Reflection',side_effect=reflection):
                         if deny_drop:
                             with self.assertRaises(sqlite3.DatabaseError):BehaviorStore(path)
                         else:st=BehaviorStore(path)
@@ -58,6 +59,8 @@ class CandidateIndexRetirement(unittest.TestCase):
             st=BehaviorStore(path)
             try:
                 st.memory.remember(SCOPE,'12345','饮料','乌龙茶','fact',time.time())
+                import relationships
+                relationships.observe_message(st.db,SCOPE,'12345',time.time())
                 st.memory.remember('private:54321','54321','饮料','other person','other',time.time())
                 st.db.commit()
                 facts=st.db.execute('SELECT * FROM facts ORDER BY subject').fetchall()

@@ -6,9 +6,9 @@ from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
 import model_cache as m
 
-PHASES=('private_freshness','group_freshness','group_presence','owner_contact','companion_plan')
+PHASES=('private_freshness','group_freshness','group_presence','owner_contact')
 def lease(bot='one',model='aux-model'):
-    return {'tenantId':'tenant-'+bot,'botId':bot,'config':{'model':'main-model','auxiliaryModel':model}}
+    return {'tenantId':'tenant-'+bot,'botId':bot,'config':{'model':'main-model','auxiliaryModel':model,'summaryModel':'sum-model','favoriteModel':'fav-model'}}
 def event(owner):
     return NS(get_extra=lambda key,default=None:owner if key=='_hosted_lease' else default,get_platform_id=lambda:'fixture')
 
@@ -38,10 +38,10 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(m.auxiliary_model(event({**b,'tenantId':'wrong-tenant'}),provider))
                 self.assertEqual(m.auxiliary_model(event(b),provider),'aux-b')
                 self.assertEqual(m.auxiliary_model(event({**b,'config':a['config']}),provider),'aux-b')
-                with m.decision_scope(provider,a,'planning'):
+                with m.decision_scope(provider,a,'group_freshness'):
                     self.assertIsNone(m.auxiliary_model(None,provider))
             finally:m.unbind_system_contract(provider)
-            with m.decision_scope(provider,b,'planning'):
+            with m.decision_scope(provider,b,'group_freshness'):
                 self.assertIsNone(m.auxiliary_model(event(a),provider))
                 self.assertEqual(m.auxiliary_model(event(b),provider),'aux-b')
 
@@ -49,19 +49,19 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
         provider=NS();a=lease('a','aux-a');b=lease('b','aux-b')
         ready=asyncio.Event();release=asyncio.Event()
         async def first():
-            with m.auxiliary_scope(provider,'owner_contact'),m.decision_scope(provider,a,'planning'):
+            with m.auxiliary_scope(provider,'owner_contact'),m.decision_scope(provider,a,'group_freshness'):
                 ready.set();await release.wait()
                 self.assertEqual(m.auxiliary_model(None,provider),'aux-a')
                 with m.auxiliary_scope(provider,'summary'):self.assertIsNone(m.auxiliary_model(None,provider))
                 try:
-                    with m.auxiliary_scope(provider,'companion_plan'):raise asyncio.CancelledError()
+                    with m.auxiliary_scope(provider,'small_summary'):raise asyncio.CancelledError()
                 except asyncio.CancelledError:pass
                 self.assertEqual(m.auxiliary_model(None,provider),'aux-a')
             self.assertIsNone(m.auxiliary_model(None,provider))
         async def second():
             await ready.wait()
             self.assertIsNone(m.auxiliary_model(None,provider))
-            with m.auxiliary_scope(provider,'group_presence'),m.decision_scope(provider,b,'planning'):
+            with m.auxiliary_scope(provider,'group_presence'),m.decision_scope(provider,b,'group_freshness'):
                 self.assertEqual(m.auxiliary_model(None,provider),'aux-b');release.set()
                 await asyncio.sleep(0)
                 self.assertEqual(m.auxiliary_model(None,provider),'aux-b')
@@ -71,16 +71,20 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
         provider=NS();owner=lease()
         m.bind_system_contract(provider,object(),owner)
         try:
-            with m.auxiliary_scope(provider,'companion_plan'):
+            with m.auxiliary_scope(provider,'group_presence'):
                 self.assertEqual(m.auxiliary_model(None,provider),'aux-model')
                 owner['config'].pop('auxiliaryModel')
                 self.assertIsNone(m.auxiliary_model(None,provider))
+            with m.auxiliary_scope(provider,'small_summary'):
+                self.assertEqual(m.auxiliary_model(None,provider),'sum-model')
+            with m.auxiliary_scope(provider,'sticker_caption'):
+                self.assertEqual(m.auxiliary_model(None,provider),'fav-model')
         finally:m.unbind_system_contract(provider)
 
     async def test_real_payload_boundary_and_final_custom_body_merge(self):
         # Execute the actual installed wrapper functions, isolating unrelated
         # Journal machinery by stopping at the original SDK preparation call.
-        source=Path(__file__).resolve().parents[1]/'adapters/astrbot/behavior.py'
+        source=Path(__file__).resolve().parents[1]/'adapters/astrbot/provider_wire_hooks.py'
         tree=ast.parse(source.read_text(encoding='utf-8'))
         functions={n.name:n for n in ast.walk(tree) if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))}
         cv=contextvars.ContextVar('route-event',default=event(lease()))

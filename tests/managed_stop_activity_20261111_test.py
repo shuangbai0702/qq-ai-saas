@@ -56,7 +56,8 @@ class ManagedStop(unittest.IsolatedAsyncioTestCase):
         shutdown = next(n for n in main.body if isinstance(n, ast.Try) and n.finalbody)
         fn = ast.AsyncFunctionDef(name='owner_cleanup', args=ast.arguments(posonlyargs=[], args=[ast.arg(arg=n) for n in ('core','task','runner','behavior')], kwonlyargs=[], kw_defaults=[], defaults=[]), body=shutdown.finalbody, decorator_list=[])
         code = ast.fix_missing_locations(ast.Module(body=[fn], type_ignores=[]))
-        namespace = {}
+        import worker_common
+        namespace = {'stop_fence': SimpleNamespace(quiescing=False), 'members': {}, 'worker_common': worker_common}
         exec(compile(code, 'shared-worker-owner-cleanup', 'exec'), namespace)
         pending = {}
         queue = asyncio.Queue()
@@ -65,7 +66,7 @@ class ManagedStop(unittest.IsolatedAsyncioTestCase):
         closed = []
         class Core:
             event_queue = queue
-            event_bus = SimpleNamespace(_pending_tasks=pending)
+            event_bus = SimpleNamespace(_pending_tasks=pending, stopped_platforms=set())
             async def stop(self):
                 # SDK teardown cancels native pipeline owners.
                 for task in pending:
@@ -88,7 +89,7 @@ class ManagedStop(unittest.IsolatedAsyncioTestCase):
         core_task = asyncio.create_task(asyncio.Event().wait())
         async def cleanup():
             closed.append('http')
-        await namespace['owner_cleanup'](core, core_task, SimpleNamespace(cleanup=cleanup), {'close': lambda: closed.append('behavior')})
+        await namespace['owner_cleanup'](core, core_task, SimpleNamespace(cleanup=cleanup), {'stores': {}, 'close': lambda: closed.append('behavior')})
         await asyncio.gather(core_task, return_exceptions=True)
         self.assertTrue(cancelled.is_set())
         self.assertEqual(closed, ['http', 'behavior'])

@@ -1,7 +1,7 @@
 import {useEffect,useId,useLayoutEffect,useRef,useState,type ComponentType} from 'react';
 import {createPortal} from 'react-dom';
 import {ArrowUpRight,Bell,ChevronRight,X} from 'lucide-react';
-import memoryDefaults from '../../../packages/contracts/memory-defaults.json';
+import memoryDefaults from '../../../packages/contracts/memory-defaults.json' with {type:'json'};
 import './announcements.css';
 
 function CharacterCardDetails(){

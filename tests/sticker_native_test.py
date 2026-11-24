@@ -32,9 +32,9 @@ async def run():
  async def no_model(self,event):raise AssertionError('unmentioned collection must not call model')
  AiocqhttpMessageEvent.send=transport;PipelineScheduler.execute=no_model
  async def fetch(url,max_bytes=1048576):return (root/'templates/reactions/laugh.png').read_bytes()
- original_download=sticker_collection._download
- sticker_collection._download=fetch
- settings={name:{'botId':name,'generation':1,'root':str(Path(tmp.name)/name),'config':{'trigger':'mention','behavior':{'qqFaces':False,'naturalConversation':False,'followupSeconds':0,'stickerCollect':True,'stickerGroups':['12345'],'memeEnabled':True,'memeProbability':1,'galleryEnabled':True,'dailyMemeLimit':20,'memeCooldownSeconds':20}}} for name in ['a','b']}
+ original_download=sticker_collection.download
+ sticker_collection.download=fetch
+ settings={name:{'botId':name,'generation':1,'root':str(Path(tmp.name)/name),'config':{'trigger':'mention','groups':['12345'],'behavior':{'qqFaces':False,'naturalConversation':False,'followupSeconds':0,'groupParticipationGroups':['12345'],'stickerCollect':True,'stickerGroups':['12345'],'memeEnabled':True,'memeProbability':1,'galleryEnabled':True,'dailyMemeLimit':20,'memeCooldownSeconds':20}}} for name in ['a','b']}
  runtime=install_runtime(SimpleNamespace(event_bus=SimpleNamespace(stopped_platforms=set())),settings)
  # Run the pinned native OneBot converter, including nested quoted messages.
  # URL normalization must preserve segment order, identity and raw evidence.
@@ -77,7 +77,7 @@ async def run():
   items=runtime['manage']('a',{'action':'list_stickers'})['items'];assert len(items)==1 and items[0]['status']=='pending'
   assert runtime['manage']('b',{'action':'list_stickers'})['items']==[]
   item=items[0];runtime['manage']('a',{'action':'review_sticker','id':item['id'],'status':'approved','meaning':'轻松玩笑','expectedVersion':1})
-  await AiocqhttpMessageEvent.send(e,MessageChain(chain=[Plain('哈哈[MEME:'+item['id']+']')]))
+  await AiocqhttpMessageEvent.send(event('a',text='回表情'),MessageChain(chain=[Plain('哈哈[MEME:'+item['id']+']')]))
   assert any(isinstance(x,Image) for x in sent[-1][1].chain)
   for ev in [event('a','54321'),event('b')]:
    await AiocqhttpMessageEvent.send(ev,MessageChain(chain=[Plain('回复[MEME:'+item['id']+']')]))

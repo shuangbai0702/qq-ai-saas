@@ -6,11 +6,11 @@ async function until(fn:()=>Promise<boolean>,what:string){for(let i=0;i<150;i++)
 test('real shared AstrBot sees unmentioned group atmosphere without extra inference and cleans upstream internal tags',{timeout:120000},async()=>{
  let releaseModel!:()=>void;const heldModel=new Promise<void>(resolve=>{releaseModel=resolve});
  const requests:any[]=[];const server=http.createServer(async(req,res)=>{let raw='';for await(const chunk of req)raw+=chunk;const body=JSON.parse(raw);requests.push(body);await heldModel;res.setHeader('content-type','application/json');res.end(JSON.stringify({id:'ambient-fixture',model:body.model,choices:[{index:0,message:{role:'assistant',content:'鱼鱼明白啦。<system_reminder>User ID: 123, Nickname: 内部</system_reminder><｜DSML｜function_calls>PRIVATE_TOOL_MARKER</｜DSML｜function_calls>'},finish_reason:'stop'}],usage:{total_tokens:20}}))});
- await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));permitModelFixture(server);
+ await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));permitModelFixture(server,['ambient-fixture']);
  const current=await createApp({root:await mkdtemp(path.resolve('.local/ambient-runtime-'))});
  try{
   const registered=await current.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(current.db),email:'ambient@test.invalid',password:'ambient-test-123',name:'群聊上下文'}});const cookies={fish_session:registered.cookies[0].value};
-   const config={...defaultConfig,baseUrl:`http://127.0.0.1:${(server.address() as any).port}/v1`,model:'ambient-fixture',groups:['777777','888888'],behavior:{...defaultConfig.behavior,groupParticipationEnabled:true,groupParticipationGroups:['777777'],followupSeconds:0,randomReplyProbability:0,burstDebounceMs:0,socialAwareness:true,styleLearning:false}};
+   const config={...defaultConfig,baseUrl:`http://127.0.0.1:${(server.address() as any).port}/v1`,model:'ambient-fixture',groups:['777777','888888'],behavior:{...defaultConfig.behavior,groupParticipationEnabled:false,groupParticipationGroups:['777777'],followupSeconds:0,randomReplyProbability:0,burstDebounceMs:0,socialAwareness:true,styleLearning:false}};
   const r=await current.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'群聊氛围',runtimeMode:'shared',protocol:'mock',config,apiKey:'synthetic-ambient-key'}});assert.equal(r.statusCode,201,r.body);const id=r.json().id;
   await current.app.inject({method:'POST',url:`/v1/bots/${id}/actions`,cookies,payload:{action:'start',idempotencyKey:'ambient-start'}});
   await until(async()=>{const[b]=await current.db.query('SELECT * FROM bots WHERE id=$1',[id]);return !!b.health?.protocol?.ready},'protocol ready');

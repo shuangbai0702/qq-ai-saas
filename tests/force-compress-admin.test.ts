@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import Fastify from 'fastify';
 import {registerBehaviorData} from '../apps/control-api/src/behavior-data.js';
+import {createEmbeddedRuntimeControl} from '../apps/control-api/src/bot-runtime-reader.js';
 
 test('compression requires server administrator role and forwards only server actor through runtime fencing',async t=>{
  const app=Fastify();t.after(()=>app.close());
@@ -14,7 +15,7 @@ test('compression requires server administrator role and forwards only server ac
  const audits:any[]=[];
  const db={query:async(sql:string,args:any[])=>{if(sql.startsWith('SELECT'))return[{id,tenant_id:'target-tenant',desired_state:'running',runtime_mode:'shared',group_id:'group',generation:3,applied_revision:9}];audits.push({sql,args});return[]}};
  const agent={host:{inspect:async()=>inspected},context:async()=>({aiPort:100,token:'member-token'}),shared:{group:async()=>({health_port:12345,token:'group-token',generation:5})}};
- registerBehaviorData(app,'.',async()=>({id}),agent as any,db as any);
+ registerBehaviorData(app,'.',async()=>({id}),createEmbeddedRuntimeControl(agent as any),db as any);
  const url=`/v1/admin/bots/${id}/force-compress`,payload={requestId,allowPartial:true};
  assert.equal((await app.inject({method:'POST',url,payload:{...payload,is_admin:true}})).statusCode,403);
  assert.equal((await app.inject({method:'POST',url,headers:{'x-test-role':'admin'},payload:{...payload,administrator:'forged'}})).statusCode,400);

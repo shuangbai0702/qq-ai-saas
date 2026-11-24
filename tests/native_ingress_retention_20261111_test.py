@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'adapters/astrbot'))
-import bot_pipeline,worker_lifecycle
+import bot_pipeline,worker_common,worker_lifecycle
 from runtime_care import RuntimeCare
 
 
@@ -42,7 +42,7 @@ class Ingress(unittest.IsolatedAsyncioTestCase):
         self.namespace={'id':'qq','member':self.member,'members':{'qq':self.member},
             'core':NS(event_bus=NS(stopped_platforms=set()),provider_manager=NS(inst_map={'provider-qq':object()})),
             'platform':NS(create_event=create),'behavior':{'retain_ingress':self.retain},'behavior_settings':{'qq':{'config':self.lease['config']}},'errors':self.errors,
-            'worker_lifecycle':worker_lifecycle,'stop_fence':self.fence,'original':original}
+            'worker_lifecycle':worker_lifecycle,'worker_common':worker_common,'stop_fence':self.fence,'original':original}
         self.gate=extract(Path('adapters/astrbot/shared-worker.py'),'gated',self.namespace)
     def tearDown(self):self.db.close()
     async def test_real_gate_retains_before_sdk_and_suppresses_identical_redelivery(self):
@@ -124,7 +124,7 @@ class Ingress(unittest.IsolatedAsyncioTestCase):
             def __init__(self,reason=''):super().__init__(reason)
         lock=asyncio.Lock()
         ns={'stop_fence':self.fence,'lock':lock,'web':NS(HTTPConflict=Conflict,json_response=lambda value:value),
-            'os':NS(getpid=lambda:123),'behavior':{'activity':lambda:{'idle':True},'metrics':{}},
+            'os':NS(getpid=lambda:123),'behavior':{'activity':lambda:{'idle':True},'metrics':{},'stores':{}},
             'manifest':{'generation':1,'capacity':1},'members':{},'errors':{},'started':0}
         prepare=extract(Path('adapters/astrbot/shared-worker.py'),'prepare_stop',ns)
         health=extract(Path('adapters/astrbot/shared-worker.py'),'health',ns)

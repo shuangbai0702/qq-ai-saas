@@ -1,5 +1,5 @@
 """Deterministic follow-up boundary through the actual AstrBot event wrapper."""
-import asyncio,json,os,sys,tempfile,time
+import asyncio,json,os,random,sys,tempfile,time
 from pathlib import Path
 from types import SimpleNamespace
 root=Path(__file__).resolve().parents[1];sys.path[:0]=[str(root/'references/astrbot'),str(root/'adapters/astrbot')]
@@ -21,25 +21,25 @@ async def run():
  calls=[]
  async def execute(self,event):calls.append(json.loads(event.get_extra('_hosted_context')))
  PipelineScheduler.execute=execute
- cfg={'trigger':'mention','behavior':{'followupSeconds':120,'followupReplyProbability':.8,'randomReplyProbability':.02,'quietStart':0,'quietEnd':0,'memeEnabled':False}}
+ cfg={'trigger':'mention','groups':['12345'],'behavior':{'groupParticipationGroups':['12345'],'followupSeconds':120,'followupReplyProbability':.8,'randomReplyProbability':.02,'quietStart':0,'quietEnd':0,'memeEnabled':False}}
  settings={'a':{'botId':'a','generation':1,'root':str(Path(tmp.name)/'a'),'config':cfg}}
  runtime=install_runtime(SimpleNamespace(event_bus=SimpleNamespace(stopped_platforms=set())),settings)
  def event(mention=False):
   msg=AstrBotMessage();msg.type=MessageType.GROUP_MESSAGE;msg.self_id='90000';msg.session_id='12345';msg.message_id=str(time.time_ns());msg.group=Group(group_id='12345');msg.sender=MessageMember('123456','群友');msg.message=[Plain('接着聊')]+([At(qq='90000')] if mention else []);msg.message_str='接着聊';msg.raw_message={}
   e=AiocqhttpMessageEvent('接着聊',msg,PlatformMetadata('aiocqhttp','fixture','a'),'12345',bot=None);e.set_extra('_hosted_lease',settings['a']);e.set_extra('_hosted_generation',1);return e
- old_random=behavior.random.random;old_quiet=initiative.quiet
+ old_random=random.random;old_quiet=initiative.quiet
  try:
   await PipelineScheduler.execute(None,event(True));assert len(calls)==1
   db=runtime['stores']['a'].db;db.execute('UPDATE contacts SET last_bot=?',(time.time(),));db.commit()
   runtime['stores']['a'].participation.outgoing('group:12345','真实已发回复',time.time(),subject='123456',request='接着聊')
-  behavior.random.random=lambda:.8
+  random.random=lambda:.8
   await PipelineScheduler.execute(None,event());assert len(calls)==2,'nonzero followup admits contextual judgment without a random silence gate'
-  behavior.random.random=lambda:.79
+  random.random=lambda:.79
   await PipelineScheduler.execute(None,event());assert len(calls)==3,'contextual continuation is admitted independently of random sampling'
   initiative.quiet=lambda cfg,now:True
   await PipelineScheduler.execute(None,event());assert len(calls)==4,'quiet hours govern proactive outreach, not an ongoing real conversation'
   await PipelineScheduler.execute(None,event(True));assert len(calls)==5,'explicit mention still works'
   assert calls[-1]['identity']['directed_to_bot'] is True
   print('PASS SDK contextual follow-up admission, quiet ongoing conversation and explicit mention')
- finally:behavior.random.random=old_random;initiative.quiet=old_quiet;runtime['close']()
+ finally:random.random=old_random;initiative.quiet=old_quiet;runtime['close']()
 asyncio.run(run());tmp.cleanup()

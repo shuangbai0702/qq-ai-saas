@@ -39,7 +39,8 @@ async def main():
    assert st.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0]==before
    wire=runtime['stores']['probe'].model_journals[JOURNAL_SCOPE].last.wire
    assert '[管理员调试' in json.dumps(wire,ensure_ascii=False)
-   assert any(m.get('role')=='system' and '[引用习惯]' in str(m.get('content')) for m in bodies[0]['messages'])
+   from context_protocol import is_persona_reference
+   assert any((m.get('role')=='system' or is_persona_reference(m)) and '[引用习惯]' in str(m.get('content')) for m in bodies[0]['messages'])
    assert not st.active
    # A completed draft with a silent settlement must be distinguished from
    # delivered speech in the NEXT real SDK/HTTP request, without rewriting it.

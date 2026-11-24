@@ -12,11 +12,11 @@ test('real SDK sees same-bot private/group references, retains owner attention a
   let raw='';for await(const chunk of req)raw+=chunk;const body=JSON.parse(raw);calls.push(body);
   const content=calls.length===2?'[NO_REPLY]':'fixture reply '+calls.length;
   res.setHeader('Content-Type','application/json');res.end(JSON.stringify({id:'sync-fixture',model:body.model,choices:[{index:0,message:{role:'assistant',content},finish_reason:'stop'}]}));
- });await new Promise<void>(r=>model.listen(0,'127.0.0.1',r));permitModelFixture(model);
+ });await new Promise<void>(r=>model.listen(0,'127.0.0.1',r));permitModelFixture(model,['sync-fixture']);
  const root=await mkdtemp(path.resolve('.local/cross-scope-runtime-')),current=await createApp({root});
  try{
   const auth=await current.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(current.db),email:'sync@test.invalid',name:'sync',password:'sync-fixture-123'}}),cookies={fish_session:auth.cookies[0].value};
-  const config={...defaultConfig,proactive:false,baseUrl:`http://127.0.0.1:${(model.address()as any).port}/v1`,model:'sync-fixture',behavior:{...defaultConfig.behavior!,ownerUin:'12345678',groupParticipationEnabled:false,groupParticipationGroups:['778180','778181'],ownerContactEnabled:false,autonomousGroupContact:false,proactiveModelSchedule:false,selfDevelopment:false,followupSeconds:0,typingSimulation:false,typoEnabled:false,splitMessages:false,burstDebounceMs:0,styleLearning:false,memorySummary:false,memorySemantic:false,memeEnabled:false,fatigueEnabled:false}};
+  const config={...defaultConfig,proactive:false,baseUrl:`http://127.0.0.1:${(model.address()as any).port}/v1`,model:'sync-fixture',groups:['778180','778181'],behavior:{...defaultConfig.behavior!,ownerUin:'12345678',groupParticipationEnabled:false,groupParticipationGroups:['778180','778181'],ownerContactEnabled:false,autonomousGroupContact:false,proactiveModelSchedule:false,selfDevelopment:false,followupSeconds:0,typingSimulation:false,typoEnabled:false,splitMessages:false,burstDebounceMs:0,styleLearning:false,memorySummary:false,memorySemantic:false,memeEnabled:false,fatigueEnabled:false}};
   const created=await current.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'跨Scope验收',protocol:'mock',runtimeMode:'shared',expectedUin:'90008874',apiKey:'sync-local-fixture',config}});assert.equal(created.statusCode,201,created.body);const id=created.json().id;
   await current.app.inject({method:'POST',url:`/v1/bots/${id}/actions`,cookies,payload:{action:'start',idempotencyKey:'start'}});
   await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.protocol?.ready,'protocol ready');

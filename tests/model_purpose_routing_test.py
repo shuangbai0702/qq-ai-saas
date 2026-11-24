@@ -8,7 +8,7 @@ class Purpose(unittest.TestCase):
   provider=NS();lease={'tenantId':'t','botId':'b','config':{'model':'main','summaryModel':'summary','favoriteModel':'vision','auxiliaryModel':'judge'}}
   m.bind_system_contract(provider,object(),lease)
   try:
-   for phase,field in [('small_summary','summaryModel'),('big_merge','summaryModel'),('sticker_caption','favoriteModel'),('companion_plan','auxiliaryModel')]:
+   for phase,field in [('small_summary','summaryModel'),('big_merge','summaryModel'),('sticker_caption','favoriteModel'),('group_presence','auxiliaryModel')]:
     with m.auxiliary_scope(provider,phase):
      self.assertEqual(m.auxiliary_model(None,provider),lease['config'][field])
      model=lease['config'].pop(field)

@@ -30,13 +30,13 @@ for(const privateChat of [false,true])test((privateChat?'private replace':'group
   }else{mainCalls++;entered=true;await new Promise<void>(r=>release=r);content='这是原问题的合适回答。'}
   res.setHeader('Content-Type','application/json');res.end(JSON.stringify({id:'suitable',model:body.model,choices:[{index:0,message:{role:'assistant',content},finish_reason:'stop'}],usage:{prompt_tokens:100,completion_tokens:10,total_tokens:110}}));
  });
- await new Promise<void>(r=>model.listen(0,'127.0.0.1',r));permitModelFixture(model);
+ await new Promise<void>(r=>model.listen(0,'127.0.0.1',r));permitModelFixture(model,['suitable-fixture']);
  const root=await mkdtemp(path.resolve('.local/suitable-backlog-'));
  let current!:Awaited<ReturnType<typeof createApp>>;
  try{
   current=await createApp({root});
   const registered=await current.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(current.db),email:'suitable@fixture.invalid',password:'fixture-suitable-123',name:'fixture'}}),cookies={fish_session:registered.cookies[0].value};
-  const config={...defaultConfig,baseUrl:`http://127.0.0.1:${(model.address()as any).port}/v1`,model:'suitable-fixture',proactive:false,behavior:{...defaultConfig.behavior!,groupParticipationEnabled:false,groupParticipationGroups:privateChat?[]:['778101'],followupSeconds:0,randomReplyProbability:0,quietStart:0,quietEnd:0,ownerContactEnabled:false,typingSimulation:false,typoEnabled:false,splitMessages:false,sendIntervalMs:0,burstDebounceMs:0,styleLearning:false,memorySummary:false,memeEnabled:false,fatigueEnabled:false}};
+  const config={...defaultConfig,baseUrl:`http://127.0.0.1:${(model.address()as any).port}/v1`,model:'suitable-fixture',groups:privateChat?[]:['778101'],proactive:false,behavior:{...defaultConfig.behavior!,groupParticipationEnabled:false,groupParticipationGroups:privateChat?[]:['778101'],followupSeconds:0,randomReplyProbability:0,quietStart:0,quietEnd:0,ownerContactEnabled:false,typingSimulation:false,typoEnabled:false,splitMessages:false,sendIntervalMs:0,burstDebounceMs:0,styleLearning:false,memorySummary:false,memeEnabled:false,fatigueEnabled:false}};
   const created=await current.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'suitable fixture',protocol:'mock',runtimeMode:'shared',expectedUin:'90008773',apiKey:'fixture-key',config}});
   assert.equal(created.statusCode,201,created.body);const id=created.json().id;
   await current.app.inject({method:'POST',url:`/v1/bots/${id}/actions`,cookies,payload:{action:'start',idempotencyKey:'start'}});

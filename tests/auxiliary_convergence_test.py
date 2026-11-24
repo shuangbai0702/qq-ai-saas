@@ -27,7 +27,7 @@ class Relationships(unittest.TestCase):
                 self.assertEqual(result['after'],1)
                 current=relationships.state(db,'10001')
                 self.assertEqual((current['affinity'],current['impression'],current['last_seen']),(8,'当前综合印象',200))
-                with self.assertRaises(sqlite3.IntegrityError):db.execute('INSERT INTO relations VALUES(?,?,?,?,?,?,?,?,?)',rows[0])
+                with self.assertRaises(sqlite3.IntegrityError):db.execute('INSERT INTO relations(scope,subject,affinity,emotion,expires,last_seen,trust,impression,semantic_updated) VALUES(?,?,?,?,?,?,?,?,?)',rows[0])
                 self.assertIsNone(relationships.migrate(db))
             with closing(sqlite3.connect(str(path)+'.relations-before-global.sqlite')) as saved:
                 self.assertEqual(saved.execute('SELECT * FROM relations').fetchall(),rows)

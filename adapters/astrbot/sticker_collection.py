@@ -60,7 +60,8 @@ class StickerCollector:
     def __init__(self,db):
         self.db=db;self.task=None;self.backfill_task=None;self.closed=False;initialize(db)
 
-    def observe(self,raw,scope,subject,self_id,cfg,is_current,metrics,fetch=download,provider=None,event_var=None):
+    def observe(self,raw,scope,subject,self_id,cfg,is_current,metrics,fetch=None,provider=None,event_var=None):
+        fetcher=download if fetch is None else fetch
         if self.closed or not cfg.get('stickerCollect') or not scope.startswith('group:') or (not cfg.get('stickerAllGroups') and scope[6:] not in cfg.get('stickerGroups',[])) or subject==self_id:return
         if self.task and not self.task.done():return
         if not isinstance(raw,dict):return
@@ -78,7 +79,7 @@ class StickerCollector:
             with auxiliary_scope(provider,'sticker_caption',event,scope):
                 token=event_var.set(None) if event_var else None
                 try:
-                    raw=await fetch(url)
+                    raw=await fetcher(url)
                     if self.closed or not is_current():return
                     data=png_thumbnail(raw)
                     from PIL import Image

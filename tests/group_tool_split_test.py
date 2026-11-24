@@ -112,7 +112,7 @@ class GroupToolSplit(continuity.GroupActions):
         social=NS(image_status=lambda *a,**k:{'reason':'available'},reserve_image=lambda *a:calls.append('reserve'),image_sent=lambda *a:calls.append('sent'))
         await self.dispatch(include_prepared_image=True,social=social)
         self.assertEqual([[x['type'] for x in s['message']] for s in self.sent],[['at','text'],['text','image']])
-        self.assertEqual(calls,['reserve','sent'])
+        self.assertEqual(calls,['sent'])
 
     async def test_matching_work_counts_each_protocol_receipt(self):
         work=Work('bot','group:55555','12345678','90000000','real-request','message',0,{})

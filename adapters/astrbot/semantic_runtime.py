@@ -62,7 +62,7 @@ def _issue(st,scope,checkpoint,reason,resolved=False):
 def _journals_busy(st):
     # A staged candidate is the provider's durable, possibly submitted wire.
     # Its owner must settle it before any all-scope physical projection.
-    return any(getattr(journal,'db',None) is st.db and getattr(journal,'_staged',None) is not None
+    return any(getattr(journal,'db',None) is st.db and getattr(journal,'has_staged',False)
                for journal in st.model_journals.values())
 
 

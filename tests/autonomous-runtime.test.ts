@@ -26,5 +26,5 @@ test('unified main activation preserves shared Journal, identity, tools, restart
  // was retired. Receipt/unknown/hot-switch behavior also has dedicated native
  // send_lifecycle and shared-lifecycle fixtures rather than a second executor.
  const result=await promisify(execFile)(python,['-X','utf8','-B','-m','unittest','activity_main_journal_test.Activity'],{env:{...process.env,PYTHONPATH:path.resolve('tests')},windowsHide:true,timeout:100000,maxBuffer:4*1024*1024});
- assert.match(result.stderr,/Ran 13 tests/);assert.match(result.stderr,/\bOK\b/);
+ assert.match(result.stderr,/Ran 14 tests/);assert.match(result.stderr,/\bOK\b/);
 });

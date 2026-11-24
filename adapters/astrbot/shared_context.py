@@ -280,7 +280,7 @@ def queued(db,cfg,journal,group_limit=2,current=None):
     if has_inputs:
         # Queue ids follow SDK preparation, not original arrival (voice may
         # finish after text). Only NEW additions are ordered; never the base.
-        order={(s,e):(at,rid) for s,e,at,rid in db.execute('SELECT i.scope,i.event,i.created,i.rowid FROM pipeline_work_inputs i JOIN fishbot_shared_inputs q ON q.scope=i.scope AND q.event=i.event')}
+        order={(s,e):(at if isinstance(at,(int,float)) else float('inf'),rid) for s,e,at,rid in db.execute('SELECT i.scope,i.event,i.created,i.rowid FROM pipeline_work_inputs i JOIN fishbot_shared_inputs q ON q.scope=i.scope AND q.event=i.event')}
         rows.sort(key=lambda row:order.get((row[1],row[2]),(float('inf'),row[0])))
     result=[]
     for _,scope,event,raw in rows:
@@ -306,7 +306,7 @@ def queued(db,cfg,journal,group_limit=2,current=None):
 
 
 def settle_inputs(db,journal):
-    if journal.has_staged:return
+    if getattr(journal,'has_staged',getattr(journal,'_staged',None) is not None):return
     known=[(o['scope'],str(o['event_id'])) for m in journal.last.base if (o:=source(m))] if journal.last else []
     db.executemany('DELETE FROM fishbot_shared_inputs WHERE scope=? AND event=?',known)
     window=getattr(journal,'shared_input_window',None)

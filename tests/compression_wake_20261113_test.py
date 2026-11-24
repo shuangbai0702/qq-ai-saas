@@ -97,6 +97,7 @@ class CompressionWake(unittest.IsolatedAsyncioTestCase):
             with patch.object(case.st.pipeline,'resume_compression_inputs',side_effect=RuntimeError('simulated crash after durable retirement')):
                 with self.assertRaises(RuntimeError):finish_semantic_batches(case.st,{},fixture.SCOPE)
             self.assertEqual(case.st.db.execute('SELECT state FROM memory_semantic_batches').fetchone()[0],'retired')
+            case.st.db.execute('DELETE FROM memory_semantic_purges');case.st.db.commit()
             with patch('semantic_runtime.semantic_batch.purge',side_effect=ValueError('cleanup_failed')):
                 result=finish_semantic_batches(case.st,{},fixture.SCOPE)
             self.assertEqual(result['pending'],1)

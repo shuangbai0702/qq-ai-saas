@@ -27,11 +27,11 @@ test('real SDK queues adjacent Work through confirmed settlement and skips only 
    answer=label==='FIRST_A'?'已回答甲的原问题和补充。':'这是乙的独立答案。';
   }
   res.setHeader('Content-Type','application/json');res.end(JSON.stringify({id:'coordination',model:body.model,choices:[{index:0,message:{role:'assistant',content:answer},finish_reason:'stop'}]}));
- });await new Promise<void>(r=>model.listen(0,'127.0.0.1',r));permitModelFixture(model);
+ });await new Promise<void>(r=>model.listen(0,'127.0.0.1',r));permitModelFixture(model,['coordination']);
  const root=await mkdtemp(path.resolve('.local/group-coordination-')),current=await createApp({root});
  try{
   const auth=await current.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(current.db),email:'coordination@test.invalid',name:'coordination',password:'coordination-123'}}),cookies={fish_session:auth.cookies[0].value};
-  const config={...defaultConfig,baseUrl:`http://127.0.0.1:${(model.address()as any).port}/v1`,model:'coordination',proactive:false,behavior:{...defaultConfig.behavior!,ownerUin:'12345678',groupParticipationEnabled:false,groupParticipationGroups:['778180','778181'],naturalConversation:true,followupSeconds:0,followupReplyProbability:0,typingSimulation:false,typoEnabled:false,splitMessages:false,burstDebounceMs:0,styleLearning:false,memorySummary:false,memeEnabled:false,fatigueEnabled:false}};
+  const config={...defaultConfig,baseUrl:`http://127.0.0.1:${(model.address()as any).port}/v1`,model:'coordination',groups:['778180','778181'],proactive:false,behavior:{...defaultConfig.behavior!,ownerUin:'12345678',groupParticipationEnabled:false,groupParticipationGroups:['778180','778181'],naturalConversation:true,followupSeconds:0,followupReplyProbability:0,typingSimulation:false,typoEnabled:false,splitMessages:false,burstDebounceMs:0,styleLearning:false,memorySummary:false,memeEnabled:false,fatigueEnabled:false}};
   const created=await current.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'协调验收',protocol:'mock',runtimeMode:'shared',expectedUin:'90008873',apiKey:'coordination-fixture',config}});assert.equal(created.statusCode,201,created.body);const id=created.json().id;
   await current.app.inject({method:'POST',url:`/v1/bots/${id}/actions`,cookies,payload:{action:'start',idempotencyKey:'start'}});
   await until(async()=>!!(await current.db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health?.protocol?.ready,'protocol ready');

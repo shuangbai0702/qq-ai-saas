@@ -29,7 +29,7 @@ test('replacement coverage survives the unchanged final check and avoids a secon
    res.setHeader('Content-Type','application/json');res.end(JSON.stringify({id:'coverage',model:body.model,choices:[{index:0,message:{role:'assistant',content:answer},finish_reason:'stop'}],usage:{prompt_tokens:1,completion_tokens:1,total_tokens:2}}));
   }catch(e){errors.push(e);console.error('MODEL_FIXTURE_ERROR',e);res.writeHead(500).end('{}')}
  });
- await new Promise<void>(r=>model.listen(0,'127.0.0.1',r));permitModelFixture(model);
+ await new Promise<void>(r=>model.listen(0,'127.0.0.1',r));permitModelFixture(model,['coverage']);
  const root=await mkdtemp(path.resolve('.local/replacement-coverage-')),current=await createApp({root});
  const python=path.resolve('references/astrbot/.venv/'+(process.platform==='win32'?'Scripts/python.exe':'bin/python'));
  async function until(check:()=>Promise<boolean>,why:string){for(let i=0;i<250;i++){if(await check())return;await new Promise(r=>setTimeout(r,100))}throw Error(why)}
