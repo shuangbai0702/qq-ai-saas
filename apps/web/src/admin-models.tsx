@@ -43,8 +43,10 @@ export function AdminModels(){
  </>;
 }
 
+type Reservation={id:string;bot_id:string;tokens:number;created_at:string;dispatch_state:string;diagnostic_code:string|null;provider_id:string|null;dispatched_at:string|null;usage_tokens:number|null};
+
 function CreditReservations(){
- const {data,error,refresh}=useLiveResource<{summary:{dispatch_state:string;count:number;tokens:string;oldest:string}[];items:{id:string;bot_id:string;tokens:number;created_at:string;dispatch_state:string;diagnostic_code:string|null}[]}>('/admin/platform-model-reservations',0);
+ const {data,error,refresh}=useLiveResource<{summary:{dispatch_state:string;count:number;tokens:string;oldest:string}[];items:Reservation[]}>('/admin/platform-model-reservations',0);
  const owner=useLifetime(),pending=useRef(false);const [busy,setBusy]=useState(false),[result,setResult]=useState('');
  const labels:Record<string,string>={reserved:'尚未派发',dispatched:'已派发，等待回执',unknown:'消耗无法确认',receipt:'已有用量回执，待结算'};
  async function reconcile(){
@@ -53,7 +55,14 @@ function CreditReservations(){
   try{const r=await api('/admin/platform-model-reservations/reconcile',{},'POST',page.signal);if(!page.signal.aborted){setResult(`已结算 ${r.settled} 笔真实回执。`);await refresh()}}
   catch(e){if(!page.signal.aborted)setResult((e as Error).message)}finally{pending.current=false;if(!page.signal.aborted)setBusy(false)}
  }
- return <><h2>额度预留与对账</h2><p>仅结算已经保存的用量回执。未知消耗保留预留，不按时间自动退款，也不重新请求模型。</p><div className="button-row"><button className="secondary" disabled={busy} onClick={()=>void refresh()}>刷新预留</button><button className="secondary" disabled={busy||!data} onClick={()=>void reconcile()}>结算已有回执</button></div>{error&&<p role="alert">{error}</p>}{result&&<p role="status">{result}</p>}{data&&<><ul>{data.summary.map(r=><li key={r.dispatch_state}>{labels[r.dispatch_state]||r.dispatch_state}：{r.count} 笔，{Number(r.tokens).toLocaleString()} Token；最早 {date(r.oldest)}</li>)}</ul><div className="table-wrap"><table><thead><tr><th>预留 / Bot</th><th>状态</th><th>Token</th><th>时间</th></tr></thead><tbody>{data.items.map(r=><tr key={r.id}><td>{r.id}<div>{r.bot_id}</div></td><td>{labels[r.dispatch_state]||r.dispatch_state}{r.diagnostic_code&&<div>{r.diagnostic_code}</div>}</td><td>{Number(r.tokens).toLocaleString()}</td><td>{date(r.created_at)}</td></tr>)}</tbody></table></div><p className="muted">明细按时间显示最早 200 笔；汇总覆盖全部预留。</p></>}</>;
+ async function waive(row:Reservation){
+  const page=owner.current;if(!page||page.signal.aborted||pending.current)return;
+  if(!window.confirm(`由平台承担这笔无法核实的历史消耗，解除 ${Number(row.tokens).toLocaleString()} Token 预留？原始 unknown 证据会保留，过期活动额度不会复活。`))return;
+  pending.current=true;setBusy(true);setResult('');
+  try{const r=await api('/admin/platform-model-reservations/'+encodeURIComponent(row.id)+'/waive',{expectedTokens:Number(row.tokens),expectedCreatedAt:new Date(row.created_at).toISOString(),reason:'管理员明确决定由平台承担无法核实的历史成本'},'POST',page.signal);if(!page.signal.aborted){setResult(r.released?'已解除历史预留并保存承担决定。':'该笔已处理，未重复解除。');await refresh()}}
+  catch(e){if(!page.signal.aborted)setResult((e as Error).message)}finally{pending.current=false;if(!page.signal.aborted)setBusy(false)}
+ }
+ return <><h2>额度预留与对账</h2><p>仅结算已经保存的用量回执。未知消耗保留预留，不按时间自动退款，也不重新请求模型。只有管理员明确决定平台承担时，才可解除无派发记录的历史 unknown；原始证据留在审计中。</p><div className="button-row"><button className="secondary" disabled={busy} onClick={()=>void refresh()}>刷新预留</button><button className="secondary" disabled={busy||!data} onClick={()=>void reconcile()}>结算已有回执</button></div>{error&&<p role="alert">{error}</p>}{result&&<p role="status">{result}</p>}{data&&<><ul>{data.summary.map(r=><li key={r.dispatch_state}>{labels[r.dispatch_state]||r.dispatch_state}：{r.count} 笔，{Number(r.tokens).toLocaleString()} Token；最早 {date(r.oldest)}</li>)}</ul><div className="table-wrap"><table><thead><tr><th>预留 / Bot</th><th>状态</th><th>Token</th><th>时间</th><th>处理</th></tr></thead><tbody>{data.items.map(r=><tr key={r.id}><td>{r.id}<div>{r.bot_id}</div></td><td>{labels[r.dispatch_state]||r.dispatch_state}{r.diagnostic_code&&<div>{r.diagnostic_code}</div>}</td><td>{Number(r.tokens).toLocaleString()}</td><td>{date(r.created_at)}</td><td>{r.dispatch_state==='unknown'&&r.provider_id===null&&r.dispatched_at===null&&r.usage_tokens===null&&<button className="secondary" disabled={busy} onClick={()=>void waive(r)}>平台承担并解除</button>}</td></tr>)}</tbody></table></div><p className="muted">明细按时间显示最早 200 笔；汇总覆盖全部预留。</p></>}</>;
 }
 
 function ModelEditor({model,onCancel,onSaved}:{model:Model|'new';onCancel:()=>void;onSaved:()=>Promise<void>}){

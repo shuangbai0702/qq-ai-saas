@@ -33,8 +33,10 @@ test('different pasted URLs auto-select the working explicit address and cancele
  assert.equal((await discoverModels('https://api.example/v1','fixture-key',undefined,async()=>new Response(stream))).ok,false);assert.equal(released,true);
 });
 
-test('Loomy token adaptation is constrained to its exact HTTPS API origin',()=>{
+test('provider-specific token injection is disabled without changing bearer authentication',()=>{
  const headers={Authorization:'Bearer fixture-secret'};
- assert.equal(modelRequestHeaders(new URL('https://loomyad.xunfei.cn/api/v1/chat/completions'),headers).get('token'),'fixture-secret');
- for(const url of ['https://loomyad.xunfei.cn.evil.example/api/v1/models','http://loomyad.xunfei.cn/api/v1/models','https://loomyad.xunfei.cn/other','https://other.example/v1/models'])assert.equal(modelRequestHeaders(new URL(url),headers).has('token'),false);
+ for(const url of ['https://loomyad.xunfei.cn/api/v1/chat/completions','https://loomyad.xunfei.cn.evil.example/api/v1/models','http://loomyad.xunfei.cn/api/v1/models','https://loomyad.xunfei.cn/other','https://other.example/v1/models']){
+  const result=modelRequestHeaders(new URL(url),headers);
+  assert.equal(result.has('token'),false);assert.equal(result.get('Authorization'),headers.Authorization);
+ }
 });

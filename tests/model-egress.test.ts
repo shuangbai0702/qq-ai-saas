@@ -13,3 +13,10 @@ test('model egress rejects private/encoded/reserved destinations, credentials an
 test('AstrBot SDK checks actual socket destinations and pins validated DNS answers',async()=>{
  const result=await new Promise<string>((resolve,reject)=>execFile(path.resolve(`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`),['experiments/docker-audit-20261029/model_egress_test.py'],{windowsHide:true},(error,out,err)=>error?reject(new Error(err)):resolve(out)));assert.match(result,/PASS actual SDK backend/);
 });
+test('AstrBot final SDK headers preserve serialized context and match Node identity',async()=>{
+ const python=path.resolve(`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`);
+ await new Promise<void>((resolve,reject)=>execFile(python,['tests/model_headers_test.py'],{windowsHide:true},(error,out,err)=>error?reject(new Error(out+err)):resolve()));
+ const {dshClientHeaders}=await import('../packages/shared/model-attribution.js');
+ const actual=await new Promise<string>((resolve,reject)=>execFile(python,['-c',"import sys;sys.path.insert(0,'adapters/astrbot');from model_egress import dsh_user_agent;print(dsh_user_agent())"],{windowsHide:true},(error,out,err)=>error?reject(new Error(err)):resolve(out.trim())));
+ assert.equal(actual,dshClientHeaders()['user-agent']);
+});

@@ -1,9 +1,16 @@
 """Guard the actual SDK socket, not just the saved Base URL. Trusted plugins only."""
-import asyncio,ipaddress,os,socket,time
+import asyncio,ipaddress,os,re,socket,time
 from urllib.parse import urlsplit
 import httpx,httpcore
 
 MAX_RESPONSE_BYTES=1024*1024
+
+def dsh_user_agent():
+    # Keep the identity contract in sync with packages/shared/model-attribution.ts.
+    version=os.getenv('FISHBOT_DSH_HARNESS_VERSION','').strip()
+    if len(version)>64 or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?',version):
+        version='0.2.0-rc.2'
+    return f'deepseek-harness/{version} (+https://github.com/deepseek-ai/deepseek-harness)'
 
 class LimitedStream(httpx.AsyncByteStream):
     def __init__(self,stream,wire=None,status=None):self.stream=stream;self.closed=False;self.wire=wire;self.status=status
@@ -33,6 +40,9 @@ class LimitedStream(httpx.AsyncByteStream):
 
 class GuardedTransport(httpx.AsyncHTTPTransport):
     async def handle_async_request(self,request):
+        # Apply after SDK/default/extra headers, before observation and capture.
+        # Retries use the same identity without touching serialized context.
+        request.headers['User-Agent']=dsh_user_agent()
         from model_cache import observe_wire_request,transport_started,transport_result
         observe_wire_request(request)
         from model_request_capture import begin,CaptureStream
