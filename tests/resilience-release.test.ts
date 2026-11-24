@@ -6,8 +6,6 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {pathToFileURL} from 'node:url';
 import {atomicJson,renameAtomic} from '../packages/shared/fs-atomic.js';
-import {NodeAgent,HeartbeatWriter} from '../apps/node-agent/src/agent.js';
-import {installResilienceRuntime} from '../apps/node-agent/src/maintenance.js';
 import {createApp} from '../apps/control-api/src/app.js';
 import {issueTestInvite} from './helpers/invitations.js';
 import {randomUUID} from 'node:crypto';
@@ -71,16 +69,4 @@ test('release admission checks compiled artifacts and Python without requiring D
  await writeFile(path.join(root,'runtime.py'),'drift');await assert.rejects(verifyProduction(root),/drift/);
  await writeFile(path.join(root,'runtime.py'),'original');await writeFile(path.join(root,'dist-server/main.js'),'drift');await assert.rejects(verifyProduction(root),/drift/);
  manifest.gitDirty=true;await save();await assert.rejects(verifyProduction(root),/uncommitted/);
-});
-
-test('resilience maintenance retains Agent, children, heartbeat queue and refuses active control',()=>{
- const agent:any=new NodeAgent({} as any,'unused',Buffer.alloc(32));
- const children=agent.host.children,prototype=Object.getPrototypeOf(agent),old=prototype.execute;
- const heartbeatPrototype={writeOnce(){}};
- try{
-  agent.busy=true;assert.throws(()=>installResilienceRuntime(agent,'a'.repeat(64),heartbeatPrototype),/boundary/);
-  agent.busy=false;const result=installResilienceRuntime(agent,'a'.repeat(64),heartbeatPrototype);
-  assert.equal(result.heartbeatQueuePreserved,true);assert.equal(agent.host.children,children);
-  assert.equal(Object.getOwnPropertyDescriptor(heartbeatPrototype,'writeOnce')?.value,Object.getOwnPropertyDescriptor(HeartbeatWriter.prototype,'writeOnce')?.value);
- }finally{prototype.execute=old}
 });

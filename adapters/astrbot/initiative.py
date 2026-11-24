@@ -22,9 +22,9 @@ def quiet(cfg,now):
 def initialize(db):
     companion_state.initialize(db)
     autonomy.initialize(db)
-    db.executescript('''CREATE TABLE IF NOT EXISTS initiative_checks(scope TEXT PRIMARY KEY,checked REAL,chance REAL,allowed INTEGER);''')
+    db.executescript('''DROP TABLE IF EXISTS initiative_checks;
+    DROP TABLE IF EXISTS initiative_schedule;''')
     db.execute('CREATE TABLE IF NOT EXISTS initiative_pauses(scope TEXT PRIMARY KEY,until REAL)')
-    db.execute('CREATE TABLE IF NOT EXISTS initiative_schedule(scope TEXT PRIMARY KEY,anchor REAL,minimum INTEGER,maximum INTEGER,due REAL)')
     db.executescript('''CREATE TABLE IF NOT EXISTS contacts(scope TEXT PRIMARY KEY,subject TEXT,self_id TEXT,last_user REAL,last_bot REAL DEFAULT 0,last_attempt REAL DEFAULT 0,unanswered INTEGER DEFAULT 0,opted_out INTEGER DEFAULT 0,last_text TEXT DEFAULT '',last_output TEXT DEFAULT '');''')
     columns={r[1] for r in db.execute('PRAGMA table_info(contacts)')}
     for column in ('last_user_event','last_bot_event'):
@@ -296,7 +296,6 @@ def start(core,settings,store,metrics):
                     if getattr(getattr(core,'_hosted_stop_fence',None),'quiescing',False):break
                     if not st.active and await resume_completion(core,id,s,st,settings):continue
                     if getattr(getattr(core,'_hosted_stop_fence',None),'quiescing',False):break
-                    if brain and brain.owns(id):continue
                     cfg=s['config']
                     b=cfg.get('behavior') or {}
                     if not (cfg.get('proactive') or b.get('groupParticipationEnabled',autonomy.BEHAVIOR_DEFAULTS['groupParticipationEnabled']) or b.get('ownerContactEnabled',autonomy.BEHAVIOR_DEFAULTS['ownerContactEnabled'])):continue

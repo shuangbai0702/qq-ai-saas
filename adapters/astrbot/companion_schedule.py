@@ -13,14 +13,10 @@ from datetime import datetime,timezone,timedelta
 class Planner:
     def __init__(self,db):
         self.db=db;self.closed=False;self.task=None
-        db.executescript('''CREATE TABLE IF NOT EXISTS companion_plans(scope TEXT PRIMARY KEY,anchor REAL,due REAL,topic TEXT,allowed INTEGER);
-        CREATE TABLE IF NOT EXISTS companion_plan_members(scope TEXT PRIMARY KEY,anchor REAL,subject TEXT,seen REAL);
-        CREATE TABLE IF NOT EXISTS companion_plan_budget(day INTEGER PRIMARY KEY,count INTEGER);''')
+        db.executescript('''DROP TABLE IF EXISTS companion_plans;
+        DROP TABLE IF EXISTS companion_plan_members;
+        DROP TABLE IF EXISTS companion_plan_budget;''')
         db.execute("UPDATE autonomy_owner_checks SET status='interrupted' WHERE status='pending'");db.commit()
-    def plan(self,scope,anchor):
-        if self.closed:return None
-        row=self.db.execute('SELECT due,topic,allowed FROM companion_plans WHERE scope=? AND anchor=?',(scope,anchor)).fetchone()
-        return {'due':row[0],'topic':row[1],'allowed':bool(row[2])} if row else None
     def maybe_start(self,cfg,provider,current,event_var,metrics,now=None,lease=None):
         b=cfg.get('behavior') or {};now=time.time() if now is None else now
         if self.closed or not current() or b.get('enabled',True) is False or not (cfg.get('proactive') or b.get('ownerContactEnabled',autonomy.BEHAVIOR_DEFAULTS['ownerContactEnabled'])) or not provider:return

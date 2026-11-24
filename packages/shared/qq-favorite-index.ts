@@ -1,8 +1,7 @@
 import {atomicJson} from './fs-atomic.js';
 /** One index authority, shared by HTTP edits and Agent maintenance. */
-import {mkdir,readFile,writeFile,rename,rm} from 'node:fs/promises';
+import {mkdir,readFile} from 'node:fs/promises';
 import path from 'node:path';
-import {randomUUID} from 'node:crypto';
 import lockfile from 'proper-lockfile';
 export const favoriteDirectory=(root:string,id:string)=>path.join(root,'bots',id,'qq-favorites');
 export async function withFavoriteIndex<T>(root:string,id:string,run:()=>Promise<T>){

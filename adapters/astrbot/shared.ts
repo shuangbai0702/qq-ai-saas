@@ -20,7 +20,6 @@ async function availableHealthPort(db:Sql,preferred?:number,groupId=''){
 export class SharedAstrBotAdapter {
  private ipcStalls=new Map<string,{pid:number;created:number;since:number}>();
  private recentBusyLoop(group:any,owner:any){
-  this.ipcStalls??=new Map(); // Existing live adapters may receive this prototype without reconstruction.
   const now=Date.now();let episode=this.ipcStalls.get(group.id);
   if(!episode||episode.pid!==owner.pid||episode.created!==owner.created){episode={pid:owner.pid,created:owner.created,since:now};this.ipcStalls.set(group.id,episode)}
   const activity=owner.loopActivity;

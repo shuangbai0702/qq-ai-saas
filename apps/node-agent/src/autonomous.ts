@@ -187,12 +187,12 @@ export class AutonomyCoordinator {
   const c=active.claim,config=c.config,tokenBudget=cycleTokens(c),usage=emptyUsage();let deadline=this.deadline(c,usage);
   let reason='no_due_work',sleep=0,feedback:any=null,faultContext:any=undefined;
   try{
-   while(!this.closed){
-    if(!await this.repo.renew(c)){reason='ownership_changed';break}
+   step: if(!this.closed){
+    if(!await this.repo.renew(c)){reason='ownership_changed';break step}
     deadline=this.deadline(c,usage);
     active.actionId=undefined;await this.call(c,'policy',await this.policy(c,c.cycleId),2000);
     const fresh=await this.freshSnapshot(c);
-    if(fresh.foregroundBusy){reason='foreground_work_busy';sleep=15;break}
+    if(fresh.foregroundBusy){reason='foreground_work_busy';sleep=15;break step}
     active.feedbackVersion=Number(fresh.feedbackVersion||0);
     const completed=await this.tools.completion(c,'autonomous',c.epoch,c.cycleId);
     let continuation:any;
@@ -200,7 +200,7 @@ export class AutonomyCoordinator {
     catch(error){if(completed)await this.tools.acknowledgeCompletion(c,completed.id,completed.owner,'pending',c.cycleId);throw error}
     if(completed&&!continuation)await this.tools.acknowledgeCompletion(c,completed.id,completed.owner,'pending',c.cycleId);
     if(continuation){
-     if(!await this.repo.markExecuting(c,continuation.id,deadline)){await this.settleToolContinuation(c,continuation,'pending');reason='continuation_invalidated';break}
+     if(!await this.repo.markExecuting(c,continuation.id,deadline)){await this.settleToolContinuation(c,continuation,'pending');reason='continuation_invalidated';break step}
      active.actionId=continuation.id;
      const work=this.work(active,usage,continuation.id,deadline);
      let result:any,executeStarted=false;
@@ -228,15 +228,15 @@ export class AutonomyCoordinator {
      }
      if(!result.usage||['tokens','modelCalls','toolCalls'].some(name=>!Number.isSafeInteger(result.usage[name])||result.usage[name]<0))result={...result,usage:{tokens:work.budget.tokens,modelCalls:work.budget.modelCalls,toolCalls:work.budget.toolCalls,estimated:true}};
      this.charge(usage,continuation.id,'execute',result);usage.externalActions=await externalCount(this.db,c.cycleId);await this.repo.feedback(c,continuation.id,result);
-     reason='tool_continuation_'+result.status;break;
+     reason='tool_continuation_'+result.status;break step;
     }
-    if(fresh.dshBusy){reason='dsh_work_busy';sleep=15;break}
-    if(fresh.proactiveEnabled===false){reason='autonomy_disabled';sleep=300;break}
+    if(fresh.dshBusy){reason='dsh_work_busy';sleep=15;break step}
+    if(fresh.proactiveEnabled===false){reason='autonomy_disabled';sleep=300;break step}
     const trigger=c.wakes.find((w:any)=>(w.reason==='activity'&&config.activityEnabled)||w.reason==='handoff-due'||w.reason==='operator-wake');
     if(trigger&&usage.modelCalls===0){
       c.activationWake=trigger;
       const action=await this.repo.planActivity(c,usage);
-      if(!await this.repo.markExecuting(c,action.id,deadline)){await this.repo.cancelPlanned(c,action.id,'自主时刻身份变化');reason='action_invalidated';break}
+      if(!await this.repo.markExecuting(c,action.id,deadline)){await this.repo.cancelPlanned(c,action.id,'自主时刻身份变化');reason='action_invalidated';break step}
       active.actionId=action.id;
       const work=this.work(active,usage,action.id,deadline);
       work.budget.modelCalls=Math.min(work.budget.modelCalls,config.activityModelCalls);
@@ -270,7 +270,6 @@ export class AutonomyCoordinator {
       reason=faultContext?.reason||(feedback.status==='completed'?'activity_completed':feedback.status==='canceled'?'activity_canceled':'activity_'+feedback.status);
       sleep=feedback.stopReason==='not_started'||feedback.continuationAccepted===false?30:Number.isSafeInteger(feedback.restSeconds)?Math.max(300,Math.min(config.maxSleepSeconds,feedback.restSeconds)):config.activityIntervalMinutes*60;
     }
-    break;
    }
    // An unknown execution may reserve the full ceiling. That accounting is
    // not evidence that budget exhaustion caused the execution failure.

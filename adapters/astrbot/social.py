@@ -130,8 +130,8 @@ class SocialStore:
         CREATE TABLE IF NOT EXISTS social_patterns(scope TEXT,expression TEXT,situation TEXT,sources TEXT,weight INTEGER,updated REAL,PRIMARY KEY(scope,expression));
         CREATE TABLE IF NOT EXISTS social_learning(scope TEXT,started REAL,watermark INTEGER);
         CREATE TABLE IF NOT EXISTS expression_reinforcement(scope TEXT,expression TEXT,kind TEXT,at REAL,event TEXT,PRIMARY KEY(scope,expression,kind));
-        CREATE TABLE IF NOT EXISTS social_images(scope TEXT,day TEXT,count INTEGER,last_sent REAL,PRIMARY KEY(scope,day));
-        CREATE TABLE IF NOT EXISTS expression_usage(scope TEXT,expression TEXT,at REAL,PRIMARY KEY(scope,expression));
+        DROP TABLE IF EXISTS social_images;
+        DROP TABLE IF EXISTS expression_usage;
         CREATE TABLE IF NOT EXISTS meme_usage(scope TEXT,id TEXT,at REAL,PRIMARY KEY(scope,id));
         ''')
         # SQLite reuses rowids after pruning an INTEGER PRIMARY KEY table. The
@@ -162,26 +162,6 @@ class SocialStore:
         self.db.execute('DELETE FROM social_samples WHERE created<? OR id NOT IN (SELECT id FROM social_samples ORDER BY id DESC LIMIT 2000)', (now-7*86400,))
         self.db.commit()
 
-    def learning_batch(self, scope, now=None):
-        now = time.time() if now is None else now
-        recent = self.db.execute('SELECT max(started),coalesce(max(watermark),0) FROM social_learning WHERE scope=?', (scope,)).fetchone()
-        if recent[0] is not None and now-recent[0] < 1800:
-            return []
-        rows = self.db.execute('SELECT id,subject,text FROM social_samples WHERE scope=? AND id>? AND created>=? ORDER BY id DESC LIMIT 24', (scope,recent[1],now-7*86400)).fetchall()
-        if len(rows) < 12 or len({r[1] for r in rows}) < 2:
-            return []
-        return [{'id':r[0],'sender':r[1],'text':r[2]} for r in reversed(rows)]
-
-    def reserve_learning(self, scope, batch, now=None):
-        now = time.time() if now is None else now
-        # Reserve the cooldown, not the samples. Failed/cancelled calls keep
-        # watermark=0 so the next eligible request can retry after a restart.
-        attempt=self.db.execute('INSERT INTO social_learning VALUES(?,?,?)', (scope,now,0)).lastrowid
-        self.db.execute('DELETE FROM social_learning WHERE started<?', (now-8*86400,))
-        self.db.commit()
-
-        return attempt
-
     def accept_learning(self, scope, batch, raw, now=None,attempt=None,commit=True):
         now = time.time() if now is None else now
         try:
@@ -208,38 +188,6 @@ class SocialStore:
         self.db.execute('DELETE FROM social_patterns WHERE rowid NOT IN (SELECT rowid FROM social_patterns ORDER BY weight DESC,updated DESC LIMIT 200)')
         if commit:self.db.commit()
         return count
-
-    def expressions(self, scope, text, share_groups=None, sharing=None):
-        scopes=[scope]
-        # Only explicitly linked groups of this bot share expression hints.
-        # Samples, facts, private chats and stickers retain their original scope.
-        linked=list(dict.fromkeys('group:'+x for x in (share_groups or [])[:50] if isinstance(x,str) and re.fullmatch(r'\d{4,20}',x)))
-        sharing=sharing or ('selected' if linked else 'local')
-        if sharing=='selected' and scope in linked:scopes=linked
-        slots=','.join('?' for _ in scopes)
-        predicate=f'scope IN ({slots})';args=scopes
-        if sharing=='bot' and scope.startswith('group:'):predicate="scope LIKE 'group:%'";args=[]
-        rows = self.db.execute(f'SELECT expression,situation,weight,scope,updated FROM social_patterns WHERE {predicate} AND NOT EXISTS (SELECT 1 FROM social_pattern_blocks b WHERE b.scope IN (social_patterns.scope,?) AND b.expression=social_patterns.expression) ORDER BY updated DESC LIMIT 200', (*args,scope)).fetchall()
-        # Prefer situation overlap; keep only three small hints, never overwrite persona.
-        query=tokens(text)
-        used={r[0] for r in self.db.execute('SELECT expression FROM expression_usage WHERE scope=? AND at>?',(scope,time.time()-300))}
-        rows.sort(key=lambda r:(relevance(r[0]+' '+r[1],text),decay(r[2],r[4],time.time(),EXPRESSION_HALF_LIFE),r[3]==scope),reverse=True)
-        selected={}
-        for row in rows:
-            if relevance(row[0]+' '+row[1],text)<=0:continue
-            if row[0] not in selected and (row[0] not in used or row[0] in text):selected[row[0]]={'expression':row[0],'situation':row[1]}
-        return list(selected.values())[:3]
-
-    def expression_sent(self,scope,text,now=None,request=''):
-        now=time.time() if now is None else now
-        # Use and recognition are separate ledgers (D6.6): the bot using its own
-        # expression records frequency only. Automatic weight gain would treat
-        # self-use as a positive user evaluation; a real evaluation must come
-        # from actual user feedback evidence (the effects flow).
-        for expression, in self.db.execute('SELECT DISTINCT expression FROM social_patterns LIMIT 200'):
-            if expression in text:
-                self.db.execute('INSERT OR REPLACE INTO expression_usage VALUES(?,?,?)',(scope,expression,now))
-        self.db.execute('DELETE FROM expression_usage WHERE at<?',(now-86400,));self.db.commit()
 
     def catalog(self, scope='', gallery=False, packs=None, favorite_account=None):
         result = {}
@@ -396,15 +344,6 @@ class SocialStore:
         if not cfg.get('galleryEnabled') or not re.search(r'(?:发|给|看看|看下|来).{0,12}(?:图片|照片|图)',request):return None
         ids=re.findall(r'\[IMAGE:([a-z0-9_-]{1,32})\]',text)
         return next((x for x in self.catalog(gallery=True) if ids and x['id']==ids[0]),None)
-
-    def reserve_image(self, scope, now=None):
-        # Record attempts before awaiting transport; these statistics do not
-        # impose a daily quota or cooldown. A failed attempt is not imagesSent.
-        now = time.time() if now is None else now
-        day=time.strftime('%Y-%m-%d',time.gmtime(now))
-        self.db.execute('INSERT INTO social_images VALUES(?,?,1,?) ON CONFLICT(scope,day) DO UPDATE SET count=count+1,last_sent=excluded.last_sent', (scope,day,now))
-        self.db.execute('DELETE FROM social_images WHERE last_sent<?', (now-8*86400,))
-        self.db.commit()
 
     def close(self):
         self.closed = True

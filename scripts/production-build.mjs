@@ -11,9 +11,6 @@ for(const dir of ['apps/control-api','apps/node-agent','packages','adapters'])aw
 entries.push(path.resolve('scripts/migrate-pglite-postgres.ts'));
 await build({entryPoints:entries,outbase:'.',outdir:'dist-server',platform:'node',target:'node22',format:'esm',bundle:false,sourcemap:true,logLevel:'info'});
 await copyFile('packages/contracts/memory-defaults.json','dist-server/packages/contracts/memory-defaults.json');
-// A maintenance import must contain the changed canonical methods even when
-// the running Agent has already cached their ordinary ESM modules.
-await build({entryPoints:['apps/node-agent/src/maintenance.ts'],outfile:'dist-server/apps/node-agent/src/maintenance.js',platform:'node',target:'node22',format:'esm',bundle:true,packages:'external',sourcemap:true,logLevel:'info'});
 await mkdir('dist-server/packages/database/migrations',{recursive:true});
 for(const file of await readdir('packages/database/migrations'))if(file.endsWith('.sql'))await copyFile(`packages/database/migrations/${file}`,`dist-server/packages/database/migrations/${file}`);
 const vite=spawnSync(process.execPath,['node_modules/vite/bin/vite.js','build','--config','apps/web/vite.config.ts'],{stdio:'inherit',windowsHide:true});

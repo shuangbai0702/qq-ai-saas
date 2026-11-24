@@ -35,7 +35,7 @@ def loaded_build():
     rows={}
     for name,function in (('context_transport','request_context_view'),('model_egress','GuardedTransport.handle_async_request'),('model_cache','begin_attempt'),
                           ('qq_actions','execute'),('tool_outcome','project'),('bot_pipeline','operation_source'),
-                          ('decision_history','AppendHistory.prepare'),('behavior','install_runtime'),
+                          ('decision_history','changes'),('behavior','install_runtime'),
                             ('autonomous_runtime','AutonomousRuntime.snapshot'),('readonly_journal','ReadonlyJournal.prepare'),
                             ('output_clean','without_analysis'),('behavior','sanitize_new_response'),
                             ('tool_outcome','structured'),('group_freshness','response_coverage'),
@@ -43,7 +43,7 @@ def loaded_build():
                             ('agreement_state','context_view'),('bot_pipeline','conversation_context'),
                             ('memory_reflection','Reflection.recent'),('memory_reflection','Reflection.retry'),('summary_material','register_nonround_images'),('shared_context','compose'),
                             ('shared_context','Writer.acquire'),('readonly_journal','ReadonlyJournal.append_completion'),
-                            ('activity_context','tail_service'),('activity_context','canonical_main'),
+                            ('activity_context','tail_service'),
                             ('activation_rounds','record'),('model_request_budget','bind')):
         module=sys.modules.get(name);target=module
         for part in function.split('.'):target=getattr(target,part,None)
@@ -640,7 +640,7 @@ def decision_scope(provider,lease,phase,work_id=None,request_phase=None):
     No credential, messages or stale snapshot is cached here.
     """
     value=None
-    if phase in ('orientation','planning','deliberation','group_freshness') and isinstance(lease,dict) and lease.get('tenantId') and lease.get('botId'):
+    if phase=='group_freshness' and isinstance(lease,dict) and lease.get('tenantId') and lease.get('botId'):
         value=(provider,lease['tenantId'],lease['botId'],'autonomy:'+phase,lease,work_id,request_phase)
     token=_decision.set(value)
     try:yield

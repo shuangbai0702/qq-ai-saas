@@ -5,17 +5,9 @@ import path from 'node:path';
 import os from 'node:os';
 import {initialEgress,nextEgress,observeEgress,proxyPort,withNapcatSettings} from '../adapters/protocol/napcat/egress.js';
 import {NapCatAdapter} from '../adapters/protocol/napcat/index.js';
-import {installNapcatEgressRuntime} from '../apps/node-agent/src/maintenance.js';
 import {defaultConfig,type RuntimeContext} from '../packages/contracts/index.js';
 
 const identity={pid:123,created:456,generation:7};
-test('egress hot install retains protocol, AI and existing adapter state',async()=>{
- const adapter=new NapCatAdapter({}as any,'fixture'),host={},ai={},shared={};
- const agent:any={closed:false,controlIdle:()=>true,protocols:{napcat:adapter},host,ai,shared};
- const result=await installNapcatEgressRuntime(agent,'a'.repeat(64));
- assert.equal(result.processOwnersPreserved,true);assert.equal(agent.host,host);assert.equal(agent.ai,ai);assert.equal(agent.shared,shared);assert.equal(agent.protocols.napcat,adapter);
- assert.equal(adapter.beginLogin,NapCatAdapter.prototype.beginLogin);
-});
 test('egress preserves random choice and switches after 1,1,2,2,4,4 distinct offline episodes',()=>{
  assert.equal(initialEgress(()=>0).route,'direct');assert.equal(initialEgress(()=>1).route,'huawei');
  let state=initialEgress(()=>0);

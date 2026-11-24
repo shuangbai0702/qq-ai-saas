@@ -179,10 +179,7 @@ export class AutonomyRepository {
    // This one bounded observation is lifecycle progress, not a second history
    // store. Source identity comes from the authenticated member, never an LLM.
    const observation={at,eventId:String(event.eventId||'').slice(0,100),scope:String(event.scope||'').slice(0,100),senderId:String(event.senderId||'').slice(0,20),owner:event.owner===true,directed:event.directed===true,text:String(event.text||'').slice(0,1000),phase:event.phase||'incoming',result:event.result||null};
-   const rows=await tx.query("UPDATE autonomy_settings SET last_event_at=$4,observation=$5::jsonb||jsonb_build_object('latestFeedback',observation->'latestFeedback') WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND (last_event_at IS NULL OR last_event_at<$4) RETURNING epoch",[bot.bot_id,bot.tenant_id,bot.epoch,new Date(at),JSON.stringify(observation)]);
-   const [current]=await tx.query('SELECT wait FROM autonomy_settings WHERE bot_id=$1 AND tenant_id=$2',[bot.bot_id,bot.tenant_id]);
-   const wanted=current?.wait?.scope;
-   if(rows.length&&(!wanted||wanted===event.scope||event.directed))await this.wake(bot.tenant_id,bot.bot_id,bot.epoch,'real-event',event.directed?15:Math.max(60,seconds),String(event.scope||'').slice(0,100),tx);
+   await tx.query("UPDATE autonomy_settings SET last_event_at=$4,observation=$5::jsonb||jsonb_build_object('latestFeedback',observation->'latestFeedback') WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND (last_event_at IS NULL OR last_event_at<$4)",[bot.bot_id,bot.tenant_id,bot.epoch,new Date(at),JSON.stringify(observation)]);
   });
  }
  async reconcileCancellations(bot:any,requests:any[]){
@@ -332,9 +329,6 @@ export class AutonomyRepository {
  async receiptChecked(bot:any,pending:any){
   const attempts=Math.min(10,Number(pending.result?.receiptCheck?.attempts||0)+1);
   await this.db.query("UPDATE autonomy_cycles SET decision=jsonb_set(coalesce(decision,'{}'),'{receiptCheck}',$4::jsonb,true) WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND finished_at IS NOT NULL AND work_expires_at IS NOT NULL AND (reason='lease_expired' OR decision->>'receiptPending'='true')",[pending.id,bot.bot_id,bot.tenant_id,JSON.stringify({attempts,nextAt:Date.now()/1000+Math.min(300,30*2**Math.min(4,attempts-1))})]);
- }
- async otherDue(claim:any){
-  const rows=await this.db.query(`SELECT 1 FROM autonomy_settings s JOIN bots b ON b.id=s.bot_id AND b.tenant_id=s.tenant_id WHERE s.bot_id<>$1 AND s.config->>'mode'='active' AND s.runtime_epoch=s.epoch AND ${onlineSql} AND (s.lease_until IS NULL OR s.lease_until<now()) AND EXISTS(SELECT 1 FROM autonomy_wakes w WHERE w.bot_id=s.bot_id AND w.tenant_id=s.tenant_id AND w.epoch=s.epoch AND w.due_at<=now()) LIMIT 1`,[claim.bot_id]);return rows.length>0;
  }
  private async waitForDailyBudget(tx:Sql,bot:any,message:string){
   await tx.query("UPDATE autonomy_wakes SET due_at=(date_trunc('day',now() AT TIME ZONE 'Asia/Shanghai')+interval '1 day') AT TIME ZONE 'Asia/Shanghai' WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND due_at<=now()",[bot.bot_id,bot.tenant_id,bot.epoch]);

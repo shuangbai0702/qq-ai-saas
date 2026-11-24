@@ -7,8 +7,6 @@ ROOT=Path(__file__).resolve().parents[1];sys.path[:0]=[str(ROOT/'references/astr
 from behavior import BehaviorStore
 import quote_reply,qq_favorite_tools,sticker_collection,group_actions,base64
 from data_admin import run as admin
-from embedding_turn import EmbeddingTurn
-import embedding_turn
 
 class SocialContract(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -373,7 +371,6 @@ class SocialContract(unittest.IsolatedAsyncioTestCase):
         for event_id in ('image-one','image-two'):
             self.extra.clear();self.event.message_obj.message_id=event_id
             self.extra['_hosted_tool_sticker']={'id':'qf_test','bytes':self.raw}
-            self.st.social.reserve_image('group:55555')
             result=json.loads(await group_actions.send(self.event,cfg,self.st.db,'55555','', '',lambda:True,lambda *args:None,True,self.st.social))
             self.assertEqual(result['status'],'confirmed');self.assertTrue(result['image'])
         self.assertEqual(len(self.sent),2)
@@ -478,30 +475,6 @@ class SocialContract(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('rhythm',self.st.participation.context('group:55555',now=now))
         self.assertTrue(self.st.participation.continuing('group:55555','接话','12345678',now,120))
         self.assertFalse(self.st.participation.continuing('group:66666','接话','12345678',now,120))
-    async def test_fact_embedding_remains_available_without_summary_embedding_calls(self):
-        now=time.time();calls=[]
-        self.st.memory.remember('private:12345678','12345678','饮料','红茶','fact',now)
-        self.st.db.execute("INSERT INTO memory_summaries(scope,text,sources,updated) VALUES('private:12345678','喝茶的真实对话','[]',?)",(now,));self.st.db.commit()
-        async def create(**kw):calls.append(kw['input']);return NS(data=[NS(index=i,embedding=[1.,0.]) for i,_ in enumerate(kw['input'])])
-        client=NS(base_url='https://embedding.example/v1',embeddings=NS(create=create));client.with_options=lambda **_:client;provider=NS(client=client)
-        cfg={'memory':True,'memorySemantic':True,'embeddingModel':'fixture','dailyEmbeddingLimit':100}
-        async with EmbeddingTurn():
-            await self.st.memory.semantic_recall('private:12345678','12345678','茶',now,cfg,provider,lambda:True)
-            summaries=await self.st.reflection.semantic_recall('private:12345678','茶',cfg,provider,lambda:True,{},subject='12345678')
-        self.assertEqual(sum(x=='茶' for inputs in calls for x in inputs),1);self.assertEqual(len(calls),1)
-        self.assertEqual(summaries,self.st.reflection.foundation('private:12345678'))
-        self.assertNotIn('喝茶的真实对话',[x for inputs in calls for x in inputs])
-        self.assertEqual(self.st.reflection.foundation('private:12345678')[0]['summary'],'喝茶的真实对话')
-
-    async def test_embedding_queue_expiry_does_not_charge_a_remote_request(self):
-        provider=NS(client=NS(base_url='https://embedding.example/v1'));metrics={}
-        with patch.object(embedding_turn,'slots',asyncio.Semaphore(0)):
-            async with EmbeddingTurn(.01):
-                with self.assertRaises(TimeoutError):
-                    await embedding_turn.request(provider,'','fixture','query',[],self.st.db,{'dailyEmbeddingLimit':100},metrics)
-        self.assertEqual(metrics,{})
-        self.assertEqual(self.st.db.execute('SELECT coalesce(sum(count),0) FROM memory_embedding_budget').fetchone()[0],0)
-
     async def test_full_answer_replaces_confirmed_prefix_and_summary_delete_keeps_new_debt(self):
         r=self.st.reflection;scope='private:12345678'
         r.incoming(scope,'12345678','old','原问题');r.confirmed_prefix(scope,'12345678','old','第一条',r.epoch())

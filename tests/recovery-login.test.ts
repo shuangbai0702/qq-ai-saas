@@ -5,7 +5,6 @@ import os from 'node:os';
 import path from 'node:path';
 import {createApp} from '../apps/control-api/src/app.js';
 import {issueTestInvite} from './helpers/invitations.js';
-import {installQrSessionRuntime} from '../apps/node-agent/src/maintenance.js';
 
 test('native QR recovery publishes once per process, honors lifecycle ownership, and uses protected normal API',async t=>{
  const {app,db,agent}=await createApp({root:await mkdtemp(path.join(os.tmpdir(),'fish-recovery-login-')),agent:false});t.after(()=>app.close());
@@ -33,11 +32,6 @@ test('native QR recovery publishes once per process, honors lifecycle ownership,
  await db.query('UPDATE bots SET generation=7 WHERE id=$1',[id]);
  agent.protocols.napcat.getLoginState=async()=>{record={pid:125,created:458};return snapshot};await agent.recoverLoginSession(ctx,nextHealth);assert.equal((await db.query('SELECT * FROM login_sessions')).length,1,'process replacement rejects old QR');
  agent.protocols.napcat.getLoginState=async()=>snapshot;await agent.recoverLoginSession(ctx,{...health,pid:125});assert.equal((await db.query('SELECT * FROM login_sessions')).length,2,'new process gets a fresh observation window');
- const owners={host:agent.host,shared:agent.shared,ai:agent.ai,autonomy:agent.autonomy,tick:agent.tick,shutdown:agent.shutdown};
- // Simulate an older live instance that lacks the new prototype method.
- Object.defineProperty(agent,'recoverLoginSession',{value:undefined,configurable:true,writable:true});
- await installQrSessionRuntime(agent,'a'.repeat(64));assert.equal(typeof agent.recoverLoginSession,'function');
- for(const [name,owner] of Object.entries(owners))assert.equal((agent as any)[name],owner,'maintenance preserves '+name);
 });
 
 test('native recovery QR expiry preserves the established offline grace and cannot expire a newer generation',async t=>{

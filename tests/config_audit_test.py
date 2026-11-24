@@ -22,7 +22,7 @@ class ConfigurationTests(unittest.TestCase):
   for now in range(200,260,5):self.assertEqual(candidates(self.store.db,self.cfg,now,rng),[])
   self.assertEqual(len(calls),0)
   candidates(self.store.db,self.cfg,260,rng);self.assertEqual(len(calls),0)
-  self.assertEqual(self.store.db.execute('SELECT count(*) FROM initiative_checks').fetchone()[0],0)
+  self.assertIsNone(self.store.db.execute("SELECT name FROM sqlite_master WHERE name='initiative_checks'").fetchone())
  def test_failed_probability_window_survives_restart(self):
   candidates(self.store.db,self.cfg,200,lambda:.8);self.store.close();self.store=BehaviorStore(self.file)
   self.assertEqual(candidates(self.store.db,self.cfg,205,lambda:0),[])
@@ -32,11 +32,11 @@ class ConfigurationTests(unittest.TestCase):
   self.assertEqual(candidates(self.store.db,self.cfg,205,lambda:0),[])
  def test_model_plan_is_not_filtered_by_old_random_delay_or_probability(self):
   self.cfg['behavior'].update(proactiveModelSchedule=True,proactiveChance=0,proactiveRandomInterval=True,proactiveMinMinutes=600,proactiveMaxMinutes=600)
-  self.store.db.execute('INSERT INTO companion_plans VALUES(?,?,?,?,?)',('private:12345678',100,150,'共同兴趣',1));self.store.db.commit()
-  self.assertEqual(candidates(self.store.db,self.cfg,200,lambda:.99),[],'legacy companion plan is not an owner decision')
+  self.assertIsNone(self.store.db.execute("SELECT name FROM sqlite_master WHERE name='companion_plans'").fetchone())
+  self.assertEqual(candidates(self.store.db,self.cfg,200,lambda:.99),[],'unjudged contact is not an owner decision')
   self.approve_owner()
   self.assertEqual(len(candidates(self.store.db,self.cfg,200,lambda:.99)),1)
-  self.assertEqual(self.store.db.execute('SELECT count(*) FROM initiative_schedule').fetchone()[0],0)
+  self.assertIsNone(self.store.db.execute("SELECT name FROM sqlite_master WHERE name='initiative_schedule'").fetchone())
  def test_accepted_window_stays_available_during_reconnection(self):
   self.approve_owner()
   self.assertEqual(len(candidates(self.store.db,self.cfg,200,lambda:0)),1)
@@ -58,10 +58,12 @@ class ConfigurationTests(unittest.TestCase):
  def test_enabling_proactive_does_not_implicitly_enable_interjections(self):
   self.assertFalse(self.store.eligible({'proactive':True,'behavior':{'randomReplyProbability':0}},'group:12345','12345',False,'聊天',200))
  def test_clear_learning_allows_learning_from_new_samples(self):
+  from social import summary_learning_batches
   scope='group:12345';self.store.db.execute('INSERT INTO social_patterns VALUES(?,?,?,?,?,?)',(scope,'有节目效果','轻松玩笑','[1,2]',1,time.time()));self.store.db.execute('INSERT INTO social_pattern_blocks VALUES(?,?)',(scope,'有节目效果'));self.store.db.commit()
   run(self.file,{'action':'clear_learning','actorId':'test-web-user','expectedEpoch':run(self.file,{'action':'list'})['epoch'],'scope':scope})
   for i in range(12):self.store.social.observe(scope,str(i%2),'真是有节目效果',str(i))
-  batch=self.store.social.learning_batch(scope)
+  batches=summary_learning_batches(self.store.db,scope,[str(i) for i in range(12)])
+  batch=batches[0]['samples']
   result={'patterns':[{'expression':'有节目效果','situation':'轻松玩笑','source_ids':[batch[0]['id'],batch[1]['id']]}]}
   self.assertEqual(self.store.social.accept_learning(scope,batch,json.dumps(result)),1)
  def test_person_filter_also_filters_relationships(self):

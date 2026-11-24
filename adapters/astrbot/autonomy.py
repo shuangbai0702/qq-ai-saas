@@ -115,7 +115,6 @@ def send_capacity(db,cfg,now=None):
     now=time.time() if now is None else now
     limit=(cfg.get('behavior') or {}).get('hourlyInterjectionLimit',20)
     used=db.execute("SELECT count(*) FROM autonomy_sends WHERE at>? AND state!='released'",(now-3600,)).fetchone()[0]
-    used+=db.execute('SELECT count(*) FROM group_interjections WHERE at>?',(now-3600,)).fetchone()[0]
     return {'available':used<limit,'reason':'ok' if used<limit else 'hourly_budget_exhausted','used':int(used),'limit':limit}
 
 
@@ -179,7 +178,6 @@ def note_reply(db, scope, subject, now):
 def has_capacity(db,cfg,now):
     limit=(cfg.get('behavior') or {}).get('hourlyInterjectionLimit',20)
     used=db.execute("SELECT count(*) FROM autonomy_sends WHERE at>? AND state!='released'",(now-3600,)).fetchone()[0]
-    used+=db.execute('SELECT count(*) FROM group_interjections WHERE at>?',(now-3600,)).fetchone()[0]
     return used<limit
 
 
@@ -191,8 +189,6 @@ def reserve_send(db, scope, event, cfg, now=None):
         if existing:
             return False
         count = db.execute("SELECT count(*) FROM autonomy_sends WHERE at>? AND state!='released'", (now-3600,)).fetchone()[0]
-        # Old attempts age out naturally; a rollout must not reset the live cap.
-        count += db.execute('SELECT count(*) FROM group_interjections WHERE at>?', (now-3600,)).fetchone()[0]
         if count >= (cfg.get('behavior') or {}).get('hourlyInterjectionLimit', 20):
             return False
         db.execute('INSERT INTO autonomy_sends VALUES(?,?,?,?)', (event, scope, now, 'pending'))

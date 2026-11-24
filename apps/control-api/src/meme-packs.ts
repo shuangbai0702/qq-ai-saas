@@ -1,5 +1,5 @@
 import {atomicJson} from '../../../packages/shared/fs-atomic.js';
-import type {FastifyInstance} from 'fastify';import {readFile,mkdir,writeFile,rename,rm} from 'node:fs/promises';import path from 'node:path';import {createHash,randomUUID} from 'node:crypto';import {z} from 'zod';
+import type {FastifyInstance} from 'fastify';import {readFile} from 'node:fs/promises';import path from 'node:path';import {createHash} from 'node:crypto';import {z} from 'zod';
 const packRoot=path.resolve('templates/meme-packs/blue-fat-fish');
 export async function installedFishPack(){
  try{const pack=JSON.parse(await readFile(path.join(packRoot,'index.json'),'utf8'));return {...pack,items:pack.items.filter((i:any)=>/^bf_[a-f0-9]{16}$/.test(i.id)&&i.file===i.id+'.gif').slice(0,200)}}catch(e:any){if(e.code==='ENOENT')return {id:'blue-fat-fish',name:'蓝色大肥鱼表情包',items:[]};throw e}

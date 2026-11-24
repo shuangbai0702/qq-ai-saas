@@ -1,7 +1,7 @@
 // Finite operator rollout; never prints prompts, QQ sessions, model keys or DB URL.
 import pg from 'pg';import {isDeepStrictEqual} from 'node:util';import {randomUUID} from 'node:crypto';import path from 'node:path';import {writeFile,readFile} from 'node:fs/promises';
 import {configuredDatabaseUrl} from '../dist-server/packages/database/index.js';
-import {disableNativeQQFaces} from '../dist-server/packages/shared/native-face-policy.js';
+import {disableNativeQQFaces} from './native-face-policy.ts';
 const action=process.argv[2]||'inspect';if(!['inspect','apply','rollback'].includes(action))throw new Error('Expected inspect, apply or rollback');
 const backup=path.resolve(process.argv[3]||path.join(process.env.DATA_ROOT||'.local','native-face-policy-backup-'+Date.now()+'.json'));
 const url=await configuredDatabaseUrl();if(!url)throw new Error('Explicit PostgreSQL configuration required');

@@ -26,12 +26,6 @@ import message_provenance
 import group_freshness
 from contextlib import asynccontextmanager
 
-def emotional_phrase(text,pattern):
-    for match in re.finditer(pattern,text):
-        prefix=text[max(0,match.start()-4):match.start()]
-        if not re.search(r'(?:不(?:太|怎么|是|用)?|没(?:有)?|并非|别)\s*$',prefix):return True
-    return False
-
 class BehaviorStore:
     def __init__(self,path,*,runtime_config=None):
         self.root=Path(path).parent
@@ -50,11 +44,9 @@ class BehaviorStore:
         CREATE TABLE IF NOT EXISTS facts(scope TEXT,subject TEXT,name TEXT,value TEXT,event TEXT,updated REAL,version INTEGER,active INTEGER,PRIMARY KEY(scope,subject,name,version));
         CREATE TABLE IF NOT EXISTS relations(scope TEXT,subject TEXT PRIMARY KEY NOT NULL,affinity INTEGER,emotion TEXT,expires REAL,last_seen REAL);
         CREATE TABLE IF NOT EXISTS deliveries(scope TEXT,day TEXT,count INTEGER,last_sent REAL,PRIMARY KEY(scope,day));
-        CREATE TABLE IF NOT EXISTS group_interjections(scope TEXT,at REAL);
-        CREATE INDEX IF NOT EXISTS group_interjections_scope_at ON group_interjections(scope,at);
+        DROP TABLE IF EXISTS relation_progress;
         CREATE TABLE IF NOT EXISTS relation_events(scope TEXT,subject TEXT,event TEXT,at REAL,PRIMARY KEY(scope,subject,event));
-        CREATE TABLE IF NOT EXISTS relation_evidence(scope TEXT,subject TEXT,event TEXT,delta INTEGER,reason TEXT,quote TEXT,at REAL,PRIMARY KEY(scope,subject,event));
-        CREATE TABLE IF NOT EXISTS relation_progress(scope TEXT,subject TEXT,last_gain REAL,day INTEGER,gains INTEGER,PRIMARY KEY(scope,subject));''')
+        CREATE TABLE IF NOT EXISTS relation_evidence(scope TEXT,subject TEXT,event TEXT,delta INTEGER,reason TEXT,quote TEXT,at REAL,PRIMARY KEY(scope,subject,event));''')
         relation_columns={row[1] for row in self.db.execute('PRAGMA table_info(relations)')}
         for name,definition in (('trust','REAL NOT NULL DEFAULT 0'),('impression',"TEXT NOT NULL DEFAULT ''"),('semantic_updated','REAL NOT NULL DEFAULT 0')):
             if name not in relation_columns:self.db.execute('ALTER TABLE relations ADD COLUMN '+name+' '+definition)
@@ -336,9 +328,7 @@ def install_runtime(core,settings):
         if event.get_extra('_hosted_tool_completion'):return True
         internal_work=event.get_extra('_hosted_internal_work')
         if internal_work:return brain.valid(event.get_platform_id(),internal_work)
-        if event.get_extra('_hosted_initiative',False) and brain.owns(event.get_platform_id()):return False
         group_decision=event.get_extra('_hosted_group_decision')
-        if group_decision and brain.owns(event.get_platform_id()):return False
         if group_decision and (st is None or not st.presence.current(group_decision['scope'],setting(event)['config'],group_decision['checked'],group_decision['version'],lambda:current(event))):return False
         if event.get_extra('_hosted_owner_contact'):
             if st is None or not autonomy.owner_delivery_current(st.db,setting(event)['config'],event.get_extra('_hosted_owner_contact'),time.time()):return False
@@ -613,7 +603,6 @@ def install_runtime(core,settings):
             gate=st.social.image_status(scope,social_cfg,request=objective)
             social_cfg['memeEnabled']=gate['reason']=='available'
             social=st.social.context(scope,objective,social_cfg)
-            social.pop('expression_hints',None)
             social['image_expression']={'available':gate['reason']=='available','reason':gate['reason']}
             assembly.contribute('social',{'social':social})
             event.set_extra('_hosted_meme_gate',gate)
@@ -1107,8 +1096,6 @@ def install_runtime(core,settings):
         if group and not internal and (other_target or not (mentioned or continuing or contextual or command)):
             if not autonomy.group_allowed(cfg,scope):
                 bot_pipeline.stop(event,'group_participation_not_allowed','silent');return
-            if brain.owns(id):
-                bot_pipeline.stop(event,'autonomous_owner_observing','waiting');return
             provider=provider_for(id);decision_at=time.time();event_id=str(getattr(event.message_obj,'message_id',''))
             if not deferred:st.presence.defer(scope,cfg,event_id,getattr(event.message_obj,'raw_message',{}),subject,str(event.get_self_id()),incoming,decision_at)
             if st.active>=1:
@@ -1167,7 +1154,6 @@ def install_runtime(core,settings):
             gate=st.social.image_status(scope,social_cfg,request=event.get_message_str())
             social_cfg['memeEnabled']=gate['reason']=='available'
             social_context=st.social.context(scope,event.get_message_str(),social_cfg)
-            social_context.pop('expression_hints',None) # checkpoint foundation owns learned styles
             meme_allowed=social_cfg['memeEnabled']
             candidates_offered=bool(social_context.get('meme_candidates'))
             if meme_allowed:gate={'reason':'offered' if candidates_offered else 'no_candidates','candidates':len(social_context.get('meme_candidates',[]))}
@@ -1207,7 +1193,6 @@ def install_runtime(core,settings):
             if social_cfg.get('memeEnabled') and social_cfg.get('memeSemantic'):
                 provider=provider_for(id)
                 social_context=await st.social.context_semantic(scope,event.get_message_str(),social_cfg,provider,lambda:current(event))
-                social_context.pop('expression_hints',None)
                 if not current(event):return
                 assembly.contribute('social',{'social':social_context})
             event.set_extra('_hosted_group_round_history',bool(shared.get('group_round_history')))
@@ -1461,7 +1446,6 @@ def install_runtime(core,settings):
             self.set_extra('_hosted_protocol_blocked',False)
             before_confirmed=work.confirmed if work else 0
             if any(isinstance(c,Image) for c in outgoing.chain):
-                if image or gallery:social.reserve_image(scope)
                 self.set_extra('_hosted_meme_sent',True)
                 # Consume the prepared bytes before I/O; the sent/unknown
                 # fence stays set even when the attachment is released.
@@ -1552,7 +1536,6 @@ def install_runtime(core,settings):
                 active_store.db.execute('UPDATE companion_members SET directed=?,unanswered=0 WHERE scope=? AND subject=?',(time.time(),scope,str(self.get_sender_id())))
                 active_store.db.execute('UPDATE contacts SET unanswered=0 WHERE scope=?',(scope,));active_store.db.commit()
         if not notice:
-            companion_state.outgoing(active_store.db,s['config'],scope,str(self.get_sender_id()),text,getattr(self.message_obj,'message_id',''),time.time(),internal=self.get_extra('_hosted_initiative',False),request=self.get_message_str())
             if contact:
                 m=metrics.setdefault(id,{});m['autonomousGroupSent']=m.get('autonomousGroupSent',0)+1
                 active_store.db.execute("UPDATE companion_motives SET status='contacted' WHERE scope=? AND subject=? AND status='open'",(scope,contact));active_store.db.commit()

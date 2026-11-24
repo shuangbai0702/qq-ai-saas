@@ -5,7 +5,6 @@ import os from 'node:os';
 import path from 'node:path';
 import {NodeAgent} from '../apps/node-agent/src/agent.js';
 import {ProcessHost} from '../apps/node-agent/src/process-host.js';
-import {installFavoriteRuntime} from '../apps/node-agent/src/maintenance.js';
 
 test('slow lifecycle leaves tick, other bot and health runnable; same bot stays serialized',async()=>{
  const root=await mkdtemp(path.join(os.tmpdir(),'fishbot-operation-'));
@@ -114,20 +113,18 @@ for(const boundary of ['commands','sessions'])test(`shutdown during ${boundary} 
 });
 
 
-test('maintenance preserves canonical shutdown and closes admission before waiting for a slow owner',async()=>{
- const root=await mkdtemp(path.join(os.tmpdir(),'fishbot-maintenance-shutdown-'));
+test('shutdown closes admission before waiting for a slow owner',async()=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'fishbot-shutdown-admission-'));
  const agent:any=new NodeAgent({query:async()=>[]} as any,root,Buffer.alloc(32));
  let bilibiliStopped=0,autonomyStopped=0,released=0,commands=0,queries=0;
- const canonical=agent.shutdown;let release!:()=>void,entered!:()=>void;
+ let release!:()=>void,entered!:()=>void;
  const gate=new Promise<void>(resolve=>release=resolve),started=new Promise<void>(resolve=>entered=resolve);
- agent.favorites.stop=async()=>{};agent.bilibili.stop=async()=>{bilibiliStopped++};agent.autonomy.stop=async()=>{autonomyStopped++};
+ agent.favorites.stop=async()=>{entered();await gate;throw new Error('favorite stop failed')};
+ agent.bilibili.stop=async()=>{bilibiliStopped++};agent.autonomy.stop=async()=>{autonomyStopped++};
  agent.releaseLease=async()=>{released++};
  try{
-  await installFavoriteRuntime(agent,'a'.repeat(64));
-  assert.equal(agent.shutdown,canonical);
   agent.db.query=async()=>{queries++;return []};agent.execute=async()=>{commands++};
-  agent.favorites.stop=async()=>{entered();await gate;throw new Error('maintenance fixture stop failed')};
-  const shutdown=agent.shutdown(),settled=assert.rejects(shutdown,/maintenance fixture stop failed/);await started;
+  const shutdown=agent.shutdown(),settled=assert.rejects(shutdown,/favorite stop failed/);await started;
   assert.equal(agent.closed,true);await agent.tick();assert.equal(queries,0);assert.equal(commands,0);
   assert.equal(agent.launch('late',false,async()=>{commands++}),false);
   release();await settled;

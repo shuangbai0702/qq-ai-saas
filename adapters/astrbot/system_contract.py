@@ -54,11 +54,7 @@ class SystemContract:
     def __init__(self, db):
         self.db = db
         db.executescript('''
-            CREATE TABLE IF NOT EXISTS fishbot_system_contract (
-                id INTEGER PRIMARY KEY CHECK(id=1),
-                system_sha TEXT NOT NULL,
-                updated_at REAL NOT NULL
-            );
+            DROP TABLE IF EXISTS fishbot_system_contract;
             CREATE TABLE IF NOT EXISTS fishbot_system_scope_contract (
                 scope TEXT PRIMARY KEY,
                 system_sha TEXT NOT NULL,

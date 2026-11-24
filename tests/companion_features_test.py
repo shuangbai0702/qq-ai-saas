@@ -14,72 +14,6 @@ class Companion(unittest.IsolatedAsyncioTestCase):
   self.cfg={'proactive':True,'behavior':{'memory':False,'proactiveTargets':['private:12345'],'proactiveModelSchedule':True,'quietStart':0,'quietEnd':0,'proactiveIntervalSeconds':60,'silenceSeconds':60,'proactiveChance':1}}
   self.db.execute('CREATE TABLE deliveries(scope TEXT,day TEXT,count INTEGER,last_sent REAL,PRIMARY KEY(scope,day))')
  def tearDown(self):self.p.close();self.db.close()
- async def test_model_plan_and_due(self):
-  async def chat(**kw):return NS(completion_text=json.dumps({'contact':True,'delay_minutes':30,'topic':'最近喝的茶'}))
-  self.p.maybe_start(self.cfg,NS(text_chat=chat),lambda:True,self.var,{},self.now);await self.p.task
-  plan=self.p.plan('private:12345',self.now-400);self.assertTrue(plan['allowed'])
-  self.assertEqual(initiative.candidates(self.db,self.cfg,plan['due']-1),[])
-  # A persisted plan is evidence for the unified main activation, never a
-  # second scheduler permitted to send independently when its due time passes.
-  self.assertEqual(plan['topic'],'最近喝的茶')
-  self.assertEqual(initiative.candidates(self.db,self.cfg,plan['due']+1),[])
-  initiative.incoming(self.db,'private:12345','12345','99999','新的消息',self.now)
-  self.assertEqual(initiative.candidates(self.db,self.cfg,plan['due']+1),[])
- async def test_plan_receives_configured_persona(self):
-  captured=[]
-  async def chat(**kw):captured.append(kw);return NS(completion_text='{"contact":false,"delay_minutes":30,"topic":""}')
-  self.cfg['systemPrompt']='角色有稳定的个人兴趣。'
-  self.p.maybe_start(self.cfg,NS(text_chat=chat),lambda:True,self.var,{},self.now);await self.p.task
-  self.assertEqual(json.loads(captured[0]['system_prompt'].split('\n',2)[1])['persona'],self.cfg['systemPrompt'])
-  self.assertNotIn('persona',json.loads(captured[0]['prompt']))
- async def test_unlimited_planning_does_not_inherit_old_six_checks_cap(self):
-  day=int((self.now+8*3600)//86400);self.db.execute('INSERT INTO companion_plan_budget VALUES(?,100)',(day,));calls=[]
-  async def chat(**kw):calls.append(kw);return NS(completion_text='{"contact":false,"delay_minutes":30,"topic":""}')
-  self.cfg['behavior']['dailyPlanLimit']=-1
-  self.p.maybe_start(self.cfg,NS(text_chat=chat),lambda:True,self.var,{},self.now);await self.p.task
-  self.assertEqual(len(calls),1);self.assertEqual(self.db.execute('SELECT count FROM companion_plan_budget WHERE day=?',(day,)).fetchone()[0],101)
- async def test_actual_daily_send_cap_prevents_wasted_planning(self):
-  day=datetime.fromtimestamp(self.now,timezone(timedelta(hours=8))).date().isoformat()
-  self.db.execute('INSERT INTO deliveries VALUES(?,?,10,?)',('private:12345',day,self.now-300))
-  async def chat(**kw):raise AssertionError('No remaining send budget')
-  self.p.maybe_start(self.cfg,NS(text_chat=chat),lambda:True,self.var,{},self.now)
-  self.assertIsNone(self.p.task);self.assertEqual(self.db.execute('SELECT count(*) FROM companion_plan_budget').fetchone()[0],0)
- async def test_planning_budget_rolls_over_at_beijing_midnight(self):
-  before=datetime(2026,11,1,15,59,30,tzinfo=timezone.utc).timestamp();after=before+60
-  old_day=int((before+8*3600)//86400);new_day=int((after+8*3600)//86400)
-  self.assertNotEqual(old_day,new_day)
-  self.cfg['behavior']['dailyPlanLimit']=1;self.db.execute('INSERT INTO companion_plan_budget VALUES(?,1)',(old_day,))
-  initiative.incoming(self.db,'private:12345','12345','99999','边界前的真实互动',before-400)
-  async def chat(**kw):return NS(completion_text='{"contact":false,"delay_minutes":30,"topic":""}')
-  provider=NS(text_chat=chat);self.p.maybe_start(self.cfg,provider,lambda:True,self.var,{},before);self.assertIsNone(self.p.task)
-  self.p.maybe_start(self.cfg,provider,lambda:True,self.var,{},after);await self.p.task
-  self.assertEqual(self.db.execute('SELECT count FROM companion_plan_budget WHERE day=?',(new_day,)).fetchone()[0],1)
- async def test_authorized_plan_target_is_not_hidden_by_other_contacts(self):
-  for i in range(80):initiative.incoming(self.db,'private:'+str(50000000+i),str(50000000+i),'99999','普通聊天',self.now-350)
-  async def chat(**kw):return NS(completion_text='{"contact":true,"delay_minutes":30,"topic":"继续聊茶"}')
-  self.p.maybe_start(self.cfg,NS(text_chat=chat),lambda:True,self.var,{},self.now)
-  self.assertIsNotNone(self.p.task);await self.p.task
-  self.assertIsNotNone(self.p.plan('private:12345',self.now-400))
- async def test_stale_plan_not_saved(self):
-  entered=asyncio.Event();release=asyncio.Event()
-  async def chat(**kw):entered.set();await release.wait();return NS(completion_text='{"contact":true,"delay_minutes":30,"topic":"茶"}')
-  self.p.maybe_start(self.cfg,NS(text_chat=chat),lambda:True,self.var,{},self.now);await entered.wait()
-  initiative.incoming(self.db,'private:12345','12345','99999','晚安',self.now)
-  release.set();await self.p.task;self.assertIsNone(self.p.plan('private:12345',self.now-400))
- async def test_model_plan_motive_is_never_recorded_as_user_agreement(self):
-  async def chat(**kw):return NS(completion_text=json.dumps({'contact':True,'delay_minutes':30,'topic':'最近喝的茶'}))
-  self.p.maybe_start(self.cfg,NS(text_chat=chat),lambda:True,self.var,{},self.now);await self.p.task
-  row=self.db.execute('SELECT evidence FROM companion_motives WHERE scope=?',('private:12345',)).fetchone()
-  self.assertIsNotNone(row)
-  from companion_state import motive_evidence
-  evidence=motive_evidence(row[0])[0]
-  self.assertEqual(evidence['author'],'model_plan')
-  self.assertEqual(evidence['acceptance'],'none')
-  self.assertEqual(evidence['event'],'model_plan:'+str(self.now-400))
- async def test_invalid_plan_pauses_anchor(self):
-  async def chat(**kw):return NS(completion_text='invalid')
-  self.p.maybe_start(self.cfg,NS(text_chat=chat),lambda:True,self.var,{},self.now);await self.p.task
-  self.assertFalse(self.p.plan('private:12345',self.now-400)['allowed'])
  async def test_signature_owner_mood_budget_and_dedup(self):
   calls=[]
   async def identity():return {'user_id':99999}
@@ -126,21 +60,7 @@ class Companion(unittest.IsolatedAsyncioTestCase):
   self.p.maybe_start(self.cfg,provider,lambda:True,self.var,{},self.now);self.assertIsNone(self.p.task)
   self.cfg['behavior']['enabled']=True
   self.p.maybe_start(self.cfg,provider,lambda:False,self.var,{},self.now);self.assertIsNone(self.p.task)
-  self.assertEqual(self.db.execute('SELECT count(*) FROM companion_plan_budget').fetchone()[0],0)
- async def test_closed_or_replaced_plan_never_saves(self):
-  for close in (False,True):
-   entered=asyncio.Event();release=asyncio.Event();lease=[True]
-   async def chat(**kw):
-    entered.set()
-    try:await release.wait()
-    except asyncio.CancelledError:pass
-    return NS(completion_text='{"contact":true,"delay_minutes":30,"topic":"茶"}')
-   self.p=Planner(self.db)
-   self.p.maybe_start(self.cfg,NS(text_chat=chat),lambda:lease[0],self.var,{},self.now);await entered.wait()
-   if close:self.p.close()
-   else:lease[0]=False
-   release.set();await self.p.task
-   self.assertEqual(self.db.execute('SELECT count(*) FROM companion_plans').fetchone()[0],0)
+  self.assertIsNone(self.db.execute("SELECT name FROM sqlite_master WHERE name='companion_plan_budget'").fetchone())
  async def test_profile_publish_and_stale_receipt(self):
   calls=[];lease=[True]
   async def identity():return {'user_id':99999}

@@ -62,16 +62,6 @@ export interface InternalWork {
  expiresAt:number;budget:{modelCalls:number;toolCalls:number;tokens:number;seconds:number;externalActions:number};
 }
 
-export interface TaskFeedback {
- actionUnitVersion?:2;
- status:'completed'|'blocked'|'unknown'|'partial'|'canceled'|'budget_exhausted';
- summary:string;evidence:Array<{source:string;reference:string}>;
- response?:string; // Conversation content; delivery certainty comes from effects.
- evidenceLimits?:string[];
- effects:Array<{id:string;logicalActionId?:string;status:string;receipt?:string}>;
- unfinished:string[];
-}
-
 // Identity is built by the authenticated runtime, never exposed as model args.
 export const AutonomousGoalAudienceSchema=z.object({
  scope:z.string().regex(/^(self|(?:private|group):[0-9]{1,20})$/),senderId:z.string().regex(/^[0-9]{1,20}$/),

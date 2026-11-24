@@ -1,4 +1,4 @@
-import {nativeFacePolicy,casualChatPolicy} from '../contracts/fish-persona.js';
+import {nativeFacePolicy,casualChatPolicy} from '../packages/contracts/fish-persona.js';
 const oldInstruction='可偶尔用一个已支持标记：[QQ_FACE:14]微笑、[QQ_FACE:4]得意、[QQ_FACE:5]流泪、[QQ_FACE:32]疑问；平台会转换为QQ表情，不能捏造其他控制标签。';
 export function disableNativeQQFaces(config:Record<string,any>){
  const next=structuredClone(config);next.behavior={...next.behavior,qqFaces:false};

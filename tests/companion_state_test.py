@@ -15,28 +15,8 @@ class CompanionState(unittest.IsolatedAsyncioTestCase):
   now=self.now-400 if now is None else now
   cs.observe(self.db,self.cfg,scope,subject,text,event,now,directed)
   initiative.incoming(self.db,scope,subject,'99999',text,now,directed)
- def selected(self,now):
-  # The main AI chooses an eligible member; the outer timer never chooses one.
-  member=cs.select_member(self.db,self.cfg,'group:77777',now,allow_without_topic=True)
-  if not member:return None
-  last=self.db.execute("SELECT last_user FROM contacts WHERE scope='group:77777'").fetchone()[0]
-  return {'scope':'group:77777','last_user':last,'contact_subject':member['subject'],'contact_seen':member['seen']}
- def test_choose_real_interacting_member_and_persist(self):
-  self.seen();self.assertEqual(initiative.candidates(self.db,self.cfg,self.now),[])
-  item=self.selected(self.now)
-  self.assertEqual(item['contact_subject'],'12345');self.assertTrue(initiative.reserve(self.db,self.cfg,item,self.now))
-  self.s.close();self.s=BehaviorStore(self.path);self.db=self.s.db
-  self.assertEqual(self.db.execute('SELECT unanswered FROM companion_members').fetchone()[0],1)
-  # The common default now stops after four unanswered attempts. Restart must
-  # retain the first attempt, while allowing the remaining three at interval.
-  for index in range(1,4):
-   at=self.now+90*index;item=self.selected(at)
-   self.assertEqual(item['contact_subject'],'12345');self.assertTrue(initiative.reserve(self.db,self.cfg,item,at))
-  self.assertEqual(self.db.execute('SELECT unanswered FROM companion_members').fetchone()[0],4)
-  self.assertIsNone(self.selected(self.now+450))
  def test_no_stranger_no_cross_group_no_private_leak(self):
   self.seen(directed=False);self.assertEqual(initiative.candidates(self.db,self.cfg,self.now),[])
-  cs.outgoing(self.db,self.cfg,'private:12345','12345','我喜欢乌龙茶','bot1',self.now)
   self.assertNotIn('乌龙茶',json.dumps(cs.context(self.db,self.cfg,'group:other',self.now),ensure_ascii=False))
   self.assertNotIn('private:12345',cs.targets(self.db,self.cfg,self.now))
  def test_own_research_interest_has_explicit_bot_attribution(self):
@@ -46,14 +26,11 @@ class CompanionState(unittest.IsolatedAsyncioTestCase):
   self.assertEqual(interest['attribution'],'bot_self_interest_not_user_statement')
   self.assertEqual(interest['source_scope'],'self')
  def test_chat_is_model_evidence_and_cooldown_is_scope_local(self):
-  self.seen();item=self.selected(self.now)
+  self.seen()
   self.seen(text='不要艾特我',now=self.now,event='two')
-  self.assertFalse(initiative.reserve(self.db,self.cfg,item,self.now));self.assertIsNotNone(self.selected(self.now+90))
   self.assertEqual(self.db.execute('SELECT refused,pause FROM companion_members').fetchone(),(0,0))
   with self.db:autonomy.record_decision(self.db,self.cfg,'group:77777','cooldown',{'cooldown_intervals':1,'cooldown_reason':'social_distance'},False,self.now,'group')
   self.assertEqual(initiative.candidates(self.db,self.cfg,self.now+90),[])
-  self.seen(text='可以主动找我',now=self.now+100,event='three');self.assertIsNotNone(self.selected(self.now+200))
-  self.seen(text='晚安',now=self.now+210,event='four');self.assertIsNotNone(self.selected(self.now+300))
  def test_whitelist_disabled_and_daily_budget(self):
   self.seen();self.cfg['groups']=['88888'];self.assertEqual(initiative.candidates(self.db,self.cfg,self.now),[])
   self.cfg['groups']=[];self.cfg['behavior']['autonomousGroupContact']=False;self.assertEqual(initiative.candidates(self.db,self.cfg,self.now),[])
@@ -71,8 +48,6 @@ class CompanionState(unittest.IsolatedAsyncioTestCase):
  def test_own_preferences_and_motives_are_evidenced_and_scoped(self):
   self.seen(text='我喜欢吃火锅');ctx=cs.context(self.db,self.cfg,'group:77777',self.now)
   self.assertFalse(any(x['topic']=='火锅' for x in ctx['interests']))
-  cs.outgoing(self.db,self.cfg,'group:77777','12345','我喜欢乌龙茶。下次再聊茶叶烘焙。','reply1',self.now)
-  ctx=cs.context(self.db,self.cfg,'group:77777',self.now)
   self.assertFalse(ctx['interests']);self.assertFalse(ctx['unfinished_topics'],'ordinary output is not a cognitive writer')
   from companion_insights import snapshot,apply
   payload=[{'event':'reply1','sender_id':'12345','user':'聊点茶叶吧','bot':'我喜欢乌龙茶。下次再聊茶叶烘焙。'}]
@@ -81,15 +56,6 @@ class CompanionState(unittest.IsolatedAsyncioTestCase):
   ctx=cs.context(self.db,self.cfg,'group:77777',self.now)
   self.assertTrue(any(x['topic']=='乌龙茶' for x in ctx['interests']));self.assertTrue(ctx['unfinished_topics'])
   self.assertFalse(cs.context(self.db,self.cfg,'group:88888',self.now)['unfinished_topics'])
- def test_emotion_targeting_repair_and_neutral_release(self):
-  import emotion_state as es
-  es.observe(self.db,'g','我真笨，余额不足',self.now,False);self.assertEqual(es.context(self.db,'g',self.now)['kind'],'calm')
-  es.observe(self.db,'g','你真蠢',self.now,True);self.assertEqual(es.context(self.db,'g',self.now)['kind'],'angry')
-  es.observe(self.db,'g','谢谢你',self.now+1,False);self.assertEqual(es.context(self.db,'g',self.now+1)['kind'],'angry')
-  es.observe(self.db,'g','抱歉，刚才不是说你',self.now+2,True);self.assertEqual(es.context(self.db,'g',self.now+2)['kind'],'calm')
-  es.observe(self.db,'g','闭嘴',self.now+3,True)
-  for i in range(4):es.observe(self.db,'g','我们接着聊',self.now+4+i,True)
-  self.assertEqual(es.context(self.db,'g',self.now+8)['kind'],'calm')
  def test_bootstrap_uses_only_successful_replied_history_and_never_overwrites_refusal(self):
   self.db.execute("DELETE FROM companion_migrations WHERE name='replied_members_v1'")
   self.s.reflection.record('group:77777','12345','real1','一起喝茶','喝茶好呀',self.now-100)

@@ -255,7 +255,6 @@ async def send(event,cfg,db,group,text,mention,current,on_sent,include_prepared_
             wire=([{'type':'at','data':{'qq':mention}}] if mention and index==0 else [])+([{'type':'text','data':{'text':part}}] if part else [])
             has_image=bool(prepared and index==len(parts)-1)
             if has_image:
-                social.reserve_image(scope)
                 wire.append({'type':'image','data':{'file':'base64://'+base64.b64encode(prepared['bytes']).decode(),'sub_type':1}})
                 event.set_extra('_hosted_tool_sticker',None);event.set_extra('_hosted_meme_sent',True)
             if reply_work:

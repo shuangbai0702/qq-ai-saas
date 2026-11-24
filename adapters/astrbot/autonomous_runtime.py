@@ -34,13 +34,6 @@ class AutonomousRuntime:
         self.metrics=metrics;self.care=care;self.prepare_context=prepare_context
         self.policies={};self.running={};self.events={};self.feedbacks={};self.pending_ambient={};self.interrupted={};self.tasks={};self.closed=False
 
-    def owns(self,id):
-        # The outer planning loop is gone, so autonomous ownership no longer
-        # suppresses anything: the legacy initiative sweep, ambient group
-        # participation and pending proactive deliveries run in every mode.
-        # Due handoff work is owned by the PG ledger, not by this flag.
-        return False
-
     def install(self,id,value):
         s=self.settings.get(id)
         if not s or not s.get('tenantId'):raise ValueError('member_identity_unavailable')
@@ -360,7 +353,7 @@ class AutonomousRuntime:
                 subject=scope[8:] if scope.startswith('private:') else '0' if scope=='self' else ''
                 enabled=(s['config'].get('behavior') or {}).get('memory',True)
                 facts=st.memory.recall(scope,subject,query,time.time(),limit=5,budget=1000) if enabled else []
-                summaries=st.reflection.recall(scope,query,limit=2,subject=subject) if enabled else []
+                summaries=st.reflection.foundation(scope) if enabled else []
                 runtime.running[id].evidence.append({'source':'existing_memory','reference':scope})
                 return json.dumps({'facts':facts,'summaries':summaries,'meaning':'已有记忆材料，不是网络检索或新的经历'},ensure_ascii=False)
         tools=[companion_state.inspect_tool(st.db,s['config'],scope,lambda:runtime.valid(id,identity),on_read=lambda receipt:runtime.running[id].evidence.append({'source':receipt['source'],'reference':scope+':'+str(receipt['at'])})),Recall(name='recall_memory',description='在当前任务会话范围内查询现有长期记忆和摘要；非网络搜索',parameters={'type':'object','properties':{'query':{'type':'string','maxLength':160}},'required':['query'],'additionalProperties':False})]

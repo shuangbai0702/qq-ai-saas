@@ -34,7 +34,8 @@ class Ownership(unittest.TestCase):
   epoch=self.db.execute('SELECT epoch FROM social_control WHERE id=1').fetchone()[0]
   result=run(self.path,{'action':'set_pattern','actorId':'test-web-user','scope':self.scope,'expression':'好耶','disabled':True,'expectedUpdated':self.now,'expectedEpoch':epoch},self.db)
   self.assertTrue(result['ok']);self.assertEqual(self.snapshot(tables),before)
-  self.assertEqual(self.store.social.expressions(self.scope,'红茶'),[])
+  import social
+  self.assertEqual(social.foundation_view(self.db),[])
  def test_agreement_user_edit_is_cas_local_and_cannot_forge_linked_work_completion(self):
   import agreement_state
   row,error=agreement_state.apply_update(self.db,'propose','明天见面','12345678',['12345678','bot'],self.scope,'original-event')
@@ -95,13 +96,12 @@ class Ownership(unittest.TestCase):
   self.db.execute("INSERT INTO relations(scope,subject,affinity,last_seen) VALUES(?,?,?,?)",(self.scope,'87654321',9,11))
   for scope in (self.scope,'group:23456789'):
    for person in ('12345678','87654321'):
-    self.db.execute('INSERT INTO relation_progress VALUES(?,?,?,?,?)',(scope,person,1,1,1))
     self.db.execute('INSERT INTO relation_evidence VALUES(?,?,?,?,?,?,?)',(scope,person,'e',1,'reason','quote',1))
   self.db.commit()
   before=self.snapshot(['facts','memory_core_notes','memory_summaries','memory_rounds','autonomy_decisions'])
   result=run(self.path,{'action':'reset_relation','scope':self.scope,'subject':'12345678','expectedLastSeen':10,'expectedVersion':next(r['version'] for r in run(self.path,{'action':'list'},self.db)['relations'] if r['subject']=='12345678')},self.db)
   self.assertTrue(result['ok']);self.assertEqual(self.snapshot(list(before)),before)
-  for table in ('relations','relation_progress','relation_evidence'):
+  for table in ('relations','relation_evidence'):
    self.assertFalse(self.db.execute('SELECT 1 FROM '+table+' WHERE subject=?',('12345678',)).fetchone())
    self.assertTrue(self.db.execute('SELECT 1 FROM '+table+' WHERE subject=?',('87654321',)).fetchone())
 

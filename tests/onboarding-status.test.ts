@@ -18,7 +18,7 @@ test('HTTP errors are actionable, mutation failures are not retried, caller canc
  }finally{globalThis.fetch=original}
 });
 
-import {disableNativeQQFaces} from '../packages/shared/native-face-policy.js';
+import {disableNativeQQFaces} from '../scripts/native-face-policy.js';
 test('native-face policy preserves custom persona, memories/media switches and original object',()=>{
  const config={systemPrompt:'自定义角色，保持原样。',provider:'custom',behavior:{qqFaces:true,memeEnabled:true,stickerCollect:true,galleryEnabled:true,ownerUin:'90123456',memory:true},extra:'preserve'};
  const changed=disableNativeQQFaces(config);assert.equal(changed.behavior.qqFaces,false);assert.equal(config.behavior.qqFaces,true);assert.equal(changed.behavior.memeEnabled,true);assert.equal(changed.behavior.stickerCollect,true);assert.equal(changed.behavior.galleryEnabled,true);assert.equal(changed.extra,'preserve');assert.ok(changed.systemPrompt.startsWith(config.systemPrompt));assert.ok(changed.systemPrompt.includes('[闲聊表达]'));assert.ok(defaultConfig.systemPrompt.includes('[闲聊表达]'));assert.deepEqual(disableNativeQQFaces(changed),changed,'repeated rollout must be idempotent');const updated=disableNativeQQFaces({...config,systemPrompt:config.systemPrompt+'\n[闲聊表达]旧的托管规则\n保留自定义后文。'});assert.ok(!updated.systemPrompt.includes('旧的托管规则'));assert.ok(updated.systemPrompt.includes('保留自定义后文。'));assert.equal(updated.systemPrompt.match(/\[闲聊表达\]/g)?.length,1);

@@ -148,8 +148,9 @@ class ModelCooldown(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.p.calls,[])
         self.assertIsNone(self.s.planner.task)
         self.assertEqual(self.db.total_changes,before,'no retired plan or cognitive write')
-        for table in ['companion_plans','companion_plan_members','companion_plan_budget','companion_motives']:
-            self.assertEqual(self.db.execute('SELECT count(*) FROM '+table).fetchone()[0],0)
+        for table in ['companion_plans','companion_plan_members','companion_plan_budget']:
+            self.assertIsNone(self.db.execute("SELECT name FROM sqlite_master WHERE name=?",(table,)).fetchone())
+        self.assertEqual(self.db.execute('SELECT count(*) FROM companion_motives').fetchone()[0],0)
         self.assertEqual(initiative.candidates(self.db,self.cfg,self.now+1800),[])
 
     async def test_owner_check_is_independent_of_proactive_switch(self):
@@ -176,7 +177,7 @@ class ModelCooldown(unittest.IsolatedAsyncioTestCase):
         initiative.incoming(self.db,'group:12345','22222222','99999999','新的公开话题',self.now+1,directed=False)
         await self.plan(self.now+301);await self.plan(self.now+1800)
         self.assertEqual(len(self.p.calls),1,'only the actual group admission judgment')
-        self.assertEqual(self.db.execute('SELECT count(*) FROM companion_plan_budget').fetchone()[0],0)
+        self.assertIsNone(self.db.execute("SELECT name FROM sqlite_master WHERE name='companion_plan_budget'").fetchone())
         self.assertIsNone(await self.group('two',self.now+899))
         self.assertIsNotNone(await self.group('two',self.now+2700))
 

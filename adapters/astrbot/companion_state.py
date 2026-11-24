@@ -114,13 +114,6 @@ def observe(db,cfg,scope,subject,text,event,now,directed=False):
     db.commit()
 
 
-def outgoing(db,cfg,scope,subject,text,event,now,internal=False,request=''):
-    # Delivered text is evidence for compression, never automatic proof of a
-    # lasting preference, a new motive, or the resolution of a cognitive state.
-    # The original output/receipt pipeline already retains that evidence.
-    return
-
-
 def context(db,cfg,scope,now,query=''):
     if not enabled(cfg):return {}
     # Persona is already authoritative input, not learned evidence. Legacy
@@ -141,29 +134,6 @@ def targets(db,cfg,now):
     for scope, in db.execute('SELECT DISTINCT scope FROM companion_members WHERE directed>0 AND seen>? AND refused=0 AND pause<=? ORDER BY seen DESC LIMIT 32',(now-86400,now)):
         if (not allowed or scope[6:] in allowed) and scope not in result:result.append(scope)
     return result[:82]
-
-
-def select_members(db,cfg,scope,now,allow_without_topic=False):
-    if not scope.startswith('group:') or not (cfg.get('behavior') or {}).get('autonomousGroupContact',True):return []
-    b=cfg.get('behavior') or {}
-    rows=db.execute('SELECT subject,seen,directed FROM companion_members WHERE scope=? AND seen>? AND directed>? AND refused=0 AND pause<=? AND unanswered<? AND attempt<? ORDER BY directed DESC LIMIT 32',(scope,now-86400,now-7*86400,now,b.get('maxUnanswered',4),now-b.get('proactiveIntervalSeconds',3600))).fetchall()
-    scored=[]
-    for subject,seen,directed in rows:
-        check=db.execute('SELECT checked FROM companion_membership_checks WHERE scope=? AND subject=?',(scope,subject)).fetchone()
-        if check and now-check[0]<300:continue
-        relation=db.execute('SELECT affinity FROM relations WHERE subject=?',(subject,)).fetchone()
-        motive=db.execute("SELECT topic FROM companion_motives WHERE scope=? AND subject=? AND status='open' AND due<=? AND expires>? LIMIT 1",(scope,subject,now,now)).fetchone()
-        interests=db.execute("SELECT topic,weight,hits,updated,source FROM companion_interests WHERE scope IN (?, '*') AND source!='persona' AND hits>=2 LIMIT 512",(scope,)).fetchall()
-        interest=max(interests,key=lambda r:interest_strength(r[1],r[2],r[3],now,r[4]),default=None)
-        if not motive and not interest and not allow_without_topic:continue
-        score=(10 if motive else 0)+(relation[0]/20 if relation else 0)+max(0,1-(now-seen)/86400)
-        scored.append((score,subject,seen,motive[0] if motive else interest[0] if interest else ''))
-    return [{'subject':subject,'seen':seen,'topic':topic} for _,subject,seen,topic in sorted(scored,reverse=True)[:8]]
-
-
-def select_member(db,cfg,scope,now,allow_without_topic=False):
-    members=select_members(db,cfg,scope,now,allow_without_topic)
-    return members[0] if members else None
 
 
 def member_current(db,scope,subject,seen,now):

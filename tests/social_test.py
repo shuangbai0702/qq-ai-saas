@@ -1,7 +1,8 @@
 import asyncio,json,sqlite3,sys,tempfile,unittest,time
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
-from social import SocialStore
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+from social import SocialStore,summary_learning_batches,foundation_view
 from style_learning_summary_fixture import SummaryLearningFixture
 FISH_ID=json.loads(Path('templates/meme-packs/blue-fat-fish/index.json').read_text(encoding='utf8'))['items'][0]['id']
 
@@ -11,15 +12,10 @@ class SocialTests(unittest.TestCase):
  def tearDown(self):self.s.close();self.db.close();self.temp.cleanup()
  def batch(self,scope='group:1'):
   for i in range(12):self.s.observe(scope,'u'+str(i%2),'这波真有节目效果啊',str(i),now=1000+i)
-  return self.s.learning_batch(scope,now=1100)
+  batches=summary_learning_batches(self.db,scope,[str(i) for i in range(12)])
+  return batches[0]['samples'] if batches else []
  def learned(self,scope='group:1',now=None):
   batch=self.batch(scope);raw=json.dumps({'patterns':[{'expression':'有节目效果','situation':'轻松开玩笑','source_ids':[batch[0]['id'],batch[1]['id']]}]});return self.s.accept_learning(scope,batch,raw,now=time.time() if now is None else now)
- def test_cold_expression_can_return_for_related_context(self):self.learned(now=1200);self.assertEqual(self.s.expressions('group:1','开玩笑')[0]['expression'],'有节目效果')
- def test_expired_samples_never_enter_new_learning(self):self.batch();self.assertEqual(self.s.learning_batch('group:1',now=1000000),[])
- def test_pruned_samples_do_not_reuse_learning_ids(self):
-  batch=self.batch();self.s.reserve_learning('group:1',batch,1100);self.db.execute('DELETE FROM social_samples');self.db.commit()
-  for i in range(12):self.s.observe('group:1',str(i%2),'新的一波有节目效果',str(i+50),now=3000+i)
-  fresh=self.s.learning_batch('group:1',now=3100);self.assertEqual(len(fresh),12);self.assertGreater(min(x['id'] for x in fresh),max(x['id'] for x in batch))
  def test_group_batch_threshold(self):self.assertEqual(len(self.batch()),12)
  def test_legacy_migration_preserves_samples_and_watermark(self):
   db=sqlite3.connect(':memory:');db.executescript("CREATE TABLE social_samples(id INTEGER PRIMARY KEY,scope TEXT,event TEXT,subject TEXT,text TEXT,created REAL,UNIQUE(scope,event));INSERT INTO social_samples VALUES(5,'group:1','old','u1','有效的旧表达',1000);CREATE TABLE social_learning(scope TEXT,started REAL,watermark INTEGER);INSERT INTO social_learning VALUES('group:1',1000,99);")
@@ -41,27 +37,14 @@ class SocialTests(unittest.TestCase):
   db.fail=False;migrated=SocialStore(db,self.root);migrated.close();db.close()
  def test_private_never_learned(self):self.assertEqual(self.batch('private:1'),[])
  def test_duplicate_events_ignored(self):self.batch();self.batch();self.assertEqual(self.db.execute('SELECT count(*) FROM social_samples').fetchone()[0],12)
- def test_repeated_expression_with_evidence(self):self.assertEqual(self.learned(),1);self.assertEqual(self.s.expressions('group:1','开玩笑')[0]['expression'],'有节目效果')
- def test_no_cross_group(self):self.learned();self.assertEqual(self.s.expressions('group:2','开玩笑'),[])
+ def test_repeated_expression_with_evidence(self):self.assertEqual(self.learned(),1);self.assertEqual(foundation_view(self.db)[0]['expression'],'有节目效果')
  def test_invented_evidence_denied(self):batch=self.batch();self.assertEqual(self.s.accept_learning('group:1',batch,json.dumps({'patterns':[{'expression':'哈哈','situation':'轻松聊天','source_ids':[999,998]}]})),0)
  def test_one_sender_cannot_teach_shared_expression(self):
   for i in range(12):self.s.observe('group:1','same','有节目效果',str(i),1000+i)
-  self.assertEqual(self.s.learning_batch('group:1',1100),[])
- def test_learning_retry_and_success_watermark(self):
-  batch=self.batch();attempt=self.s.reserve_learning('group:1',batch,1100);self.assertEqual(self.s.learning_batch('group:1',1200),[])
-  self.assertEqual(len(self.s.learning_batch('group:1',3000)),12,'an uncompleted attempt must retain its samples')
-  self.s.accept_learning('group:1',batch,'{"patterns":[]}',now=3000,attempt=attempt)
-  self.assertEqual(self.s.learning_batch('group:1',3000),[],'a valid empty result still consumes the batch')
- def test_learning_has_no_global_daily_quota(self):
-  batch=self.batch()
-  for i in range(5):self.s.reserve_learning('group:other',batch,1100+i)
-  self.assertEqual(len(self.s.learning_batch('group:1',3000)),12)
- def test_bad_learning_response_does_not_consume_samples(self):
-  batch=self.batch();attempt=self.s.reserve_learning('group:1',batch,1100)
-  self.s.accept_learning('group:1',batch,'invalid',now=1101,attempt=attempt)
-  self.assertEqual(len(self.s.learning_batch('group:1',3000)),12)
- def test_learning_survives_restart(self):self.learned();second=SocialStore(self.db,self.root);self.assertEqual(len(second.expressions('group:1','开玩笑')),1);second.close()
- def test_no_config_no_context(self):self.learned();self.assertEqual(self.s.context('group:1','你好',{}),{})
+  batch=summary_learning_batches(self.db,'group:1',[str(i) for i in range(12)])[0]['samples']
+  self.assertEqual(self.s.accept_learning('group:1',batch,json.dumps({'patterns':[{'expression':'有节目效果','situation':'轻松玩笑','source_ids':[batch[0]['id'],batch[1]['id']]}]})),0)
+ def test_learning_survives_restart(self):self.learned();second=SocialStore(self.db,self.root);self.assertEqual(len(foundation_view(self.db)),1);second.close()
+ def test_no_config_no_context(self):self.learned();self.assertEqual(self.s.context('group:1','你好',{'socialAwareness':False}),{})
  def test_no_filesystem_paths_in_prompt(self):self.assertNotIn('path',json.dumps(self.s.context('group:1','你好',{'memeEnabled':True})))
  def test_group_platform_image_available_without_native_qq_faces(self):
   cfg={'memeEnabled':True,'memeProbability':.7,'qqFaces':False,'memePacks':['blue-fat-fish']}
@@ -110,7 +93,6 @@ class SocialTests(unittest.TestCase):
   self.assertTrue(self.s.image_available('group:1',cfg,1000,'普通聊天'))
   self.assertEqual(self.s.image_status('group:1',cfg,1000,'家人重病了')['reason'],'sensitive')
   self.assertEqual(self.s.image_status('group:1',{**cfg,'memeEnabled':False},1000)['reason'],'disabled')
-  self.s.reserve_image('group:1',1000)
   self.assertEqual(self.s.image_status('group:1',{**cfg,'memeCooldownSeconds':3600},1001),{'reason':'available'})
   self.assertTrue(self.s.image_available('group:2',cfg,1001))
   self.assertTrue(self.s.image_available('group:1',cfg,1020))
@@ -129,12 +111,10 @@ class SocialTests(unittest.TestCase):
  def test_valid_image_and_internal_tag_removed(self):text,img=self.s.select_image('哈哈[MEME:'+FISH_ID+']','private:1',{'memeEnabled':True,'memeProbability':1},1000);self.assertEqual(text,'哈哈');self.assertTrue(Path(img['path']).is_file());self.assertEqual(Path(img['path']).suffix,'.gif')
  def test_invalid_id_cannot_read_path(self):text,img=self.s.select_image('你好[MEME:../../master.key]','p',{'memeEnabled':True,'memeProbability':1},1000);self.assertEqual(text,'你好');self.assertIsNone(img)
  def test_disabled_always_strips_marker(self):self.assertEqual(self.s.select_image('[MEME:laugh]','p',{},1000),('',None))
- def test_attempt_statistics_do_not_block_immediate_image_selection(self):self.s.reserve_image('p',1000);self.assertIsNotNone(self.s.select_image('[MEME:'+FISH_ID+']','p',{'memeEnabled':True,'memeCooldownSeconds':3600},1000)[1]);self.assertIsNotNone(self.s.select_image('[MEME:'+FISH_ID+']','p',{'memeEnabled':True},1001)[1])
- def test_old_daily_cap_and_zero_probability_do_not_block_or_erase_stats(self):
-  for i in range(80):self.s.reserve_image('p',1000+i*20)
+ def test_old_daily_cap_and_zero_probability_do_not_block(self):
   self.assertIsNotNone(self.s.select_image('[MEME:'+FISH_ID+']','other',{'memeEnabled':True,'dailyMemeLimit':0,'memeProbability':0},3000)[1])
   self.assertIsNotNone(self.s.select_image('[MEME:'+FISH_ID+']','p',{'memeEnabled':True,'dailyMemeLimit':50,'memeProbability':0},3000)[1])
-  self.assertEqual(self.db.execute('SELECT sum(count) FROM social_images').fetchone()[0],80)
+  self.assertIsNone(self.db.execute("SELECT name FROM sqlite_master WHERE name='social_images'").fetchone())
  def test_retired_reactions_never_return_or_send_even_with_legacy_override(self):
   folder=self.root/'reactions';folder.mkdir()
   for identifier in ('hug','laugh','thinking'):
