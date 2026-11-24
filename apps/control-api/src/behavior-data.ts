@@ -6,7 +6,8 @@ import type {FastifyInstance} from 'fastify';
 import {execFile} from 'node:child_process';
 import path from 'node:path';
 import {z} from 'zod';
-import type {NodeAgent} from '../../node-agent/src/agent.js';
+import type {RuntimeControlPort} from './bot-runtime-reader.js';
+import {httpError,requireAdmin} from './http-guards.js';
 import type {Sql} from '../../../packages/database/index.js';
 
 const scope=z.string().regex(/^(group|private):\d{4,20}$/);
@@ -29,29 +30,27 @@ const mutation=z.discriminatedUnion('action',[
  z.object({action:z.literal('reset_relation'),scope:cognitiveScope,subject:person,expectedLastSeen:z.number().finite(),expectedVersion:z.string().regex(/^[a-f0-9]{64}$/)}),
 ]);
 
-export function registerBehaviorData(app:FastifyInstance,root:string,owned:(req:any,id:string)=>Promise<any>,agent:NodeAgent,db:Sql){
+export function registerBehaviorData(app:FastifyInstance,root:string,owned:(req:any,id:string)=>Promise<any>,runtime:Pick<RuntimeControlPort,'isAiRunning'|'aiIpcTarget'|'pythonExecutable'>,db:Sql){
  let maintenance=0;
- const python=path.resolve(process.env.ASTRBOT_PYTHON||`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`);
+ const python=runtime.pythonExecutable;
  async function access(bot:any,input:unknown,runtimeOnly=false){
   const id=bot.id;
-  const processId=bot.runtime_mode==='shared'?bot.group_id:id;
-  if(!(bot.desired_state==='stopped'&&bot.observed_state==='stopped')&&processId&&await agent.host.inspect(processId,'ai')){
-   const ctx=await agent.context(bot);let port=ctx.aiPort+1,route='/behavior-data',token=ctx.token,groupGeneration='';
-   if(bot.runtime_mode==='shared'){const group=await agent.shared.group(id);if(!group)throw Object.assign(new Error('运行组尚未就绪'),{statusCode:409});port=group.health_port;token=group.token;groupGeneration=String(group.generation);route=`/members/${id}/behavior-data`}
+  if(!(bot.desired_state==='stopped'&&bot.observed_state==='stopped')&&await runtime.isAiRunning(bot)){
+   const {port,route,token,groupGeneration}=await runtime.aiIpcTarget(bot);
    const response=await runtimeIpc(port,route,{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json','X-Group-Generation':groupGeneration,'X-Member-Generation':String(bot.generation),'X-Member-Revision':String(bot.applied_revision)},body:input,timeoutMs:4000});
-   if(!response.ok)throw Object.assign(new Error('机器人正在切换状态，请稍后重试'),{statusCode:409});const result:any=await response.json();if(result.error)throw Object.assign(new Error(result.error),{statusCode:result.status||400});return {...result,accessMode:'runtime-owner'};
+   if(!response.ok)throw httpError('机器人正在切换状态，请稍后重试',409);const result:any=await response.json();if(result.error)throw httpError(result.error,result.status||400);return {...result,accessMode:'runtime-owner'};
   }
-  if(runtimeOnly||bot.desired_state==='running')throw Object.assign(new Error('运行实例尚未就绪，请稍后重试'),{statusCode:409});
+  if(runtimeOnly||bot.desired_state==='running')throw httpError('运行实例尚未就绪，请稍后重试',409);
   const isWrite=!['list','list_stickers','get_sticker'].includes((input as any)?.action);
   const env=safeSubprocessEnv({PYTHONIOENCODING:'utf-8'});
-  if(maintenance>=2)throw Object.assign(new Error('维护请求较多，请稍后重试'),{statusCode:429});
+  if(maintenance>=2)throw httpError('维护请求较多，请稍后重试',429);
   maintenance++;let data:string;let releaseLock:(()=>Promise<void>)|undefined;try{
    if(isWrite){
     const botDir=path.join(root,'bots',id);await mkdir(botDir,{recursive:true});
     releaseLock=await lockfile.lock(botDir,{realpath:false,stale:15000,retries:{retries:10,minTimeout:50,maxTimeout:200}});
     // Re-verify bot is still stopped with no pending start/restart commands after acquiring lock.
-    const [fresh]=await db.query("SELECT desired_state,observed_state,EXISTS(SELECT 1 FROM commands c WHERE c.bot_id=bots.id AND c.status IN ('queued','running') AND c.kind IN ('start','restart','login')) AS starting FROM bots WHERE id=$1 AND deleted_at IS NULL",[id]);
-    if(!fresh||fresh.desired_state!=='stopped'||fresh.observed_state!=='stopped'||fresh.starting||processId&&await agent.host.inspect(processId,'ai'))throw Object.assign(new Error('机器人正在启动或切换状态，请稍后重试'),{statusCode:409});
+    const [fresh]=await db.query("SELECT desired_state,observed_state,runtime_mode,group_id,EXISTS(SELECT 1 FROM commands c WHERE c.bot_id=bots.id AND c.status IN ('queued','running') AND c.kind IN ('start','restart','login')) AS starting FROM bots WHERE id=$1 AND deleted_at IS NULL",[id]);
+    if(!fresh||fresh.desired_state!=='stopped'||fresh.observed_state!=='stopped'||fresh.starting||await runtime.isAiRunning({...bot,...fresh}))throw httpError('机器人正在启动或切换状态，请稍后重试',409);
    }
    data=await new Promise<string>((resolve,reject)=>{
     const child=execFile(python,[path.resolve('adapters/astrbot/data_admin.py'),path.join(root,'bots',id,'behavior.sqlite')],{windowsHide:true,timeout:7000,maxBuffer:512*1024,env},(error,out)=>error?reject(Object.assign(new Error('行为数据访问失败'),{statusCode:503})):resolve(out));
@@ -70,7 +69,7 @@ export function registerBehaviorData(app:FastifyInstance,root:string,owned:(req:
   return access(bot,{...input,actorId:req.user!.id});
  });
  async function adminBot(req:any){
-  if(!req.user?.is_admin)throw Object.assign(new Error('需要管理员权限'),{statusCode:403});
+  requireAdmin(req);
   const id=z.uuid().parse(req.params.id);
   const [bot]=await db.query('SELECT * FROM bots WHERE id=$1 AND deleted_at IS NULL',[id]);
   if(!bot)throw Object.assign(new Error('机器人不存在'),{statusCode:404});

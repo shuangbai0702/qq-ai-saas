@@ -1,9 +1,8 @@
 import {atomicJson} from '../../packages/shared/fs-atomic.js';
 import path from 'node:path';import {mkdir,readFile,writeFile,rename} from 'node:fs/promises';
-import {BotConfigSchema,type RuntimeContext,type Health} from '../../packages/contracts/index.js';
-import {ProcessHost} from '../../apps/node-agent/src/process-host.js';
+import {BotConfigSchema,type RuntimeContext,type Health,type ProcessHostLike} from '../../packages/contracts/index.js';
 export class AstrBotAdapter {
-  constructor(private host:ProcessHost,private source:string,private python:string){}
+  constructor(private host:ProcessHostLike,private source:string,private python:string){}
   async provision(ctx:RuntimeContext){
     BotConfigSchema.parse(ctx.config);
     for(const dir of ['data','tmp','data/plugins','data/plugin_data','data/temp','data/config'])await mkdir(path.join(ctx.root,'ai',dir),{recursive:true});

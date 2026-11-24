@@ -3,9 +3,10 @@ import {redact,safeSubprocessEnv} from '../../../packages/shared/security.js';
 import {atomicJson} from '../../../packages/shared/fs-atomic.js';
 import {StringDecoder} from 'node:string_decoder';
 import {AsyncLocalStorage} from 'node:async_hooks';
+import type {ProcessHostLike} from '../../../packages/contracts/process-host.js';
 const stopIntents=new WeakMap<ChildProcess,string>();
 const protocolHelperTimeout=25000;
-export class ProcessHost {
+export class ProcessHost implements ProcessHostLike {
   children=new Map<string,ChildProcess>(); logWrites=new Map<string,Promise<void>>();
   constructor(public root:string,public python:string){}
   private inspectionContext=new AsyncLocalStorage<{snapshot?:Map<string,any>}>();

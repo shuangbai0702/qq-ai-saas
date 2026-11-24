@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
+import {MediaError as BiliError,type ExternalFailureSource as BiliFailureSource} from '../media/error.js';
+export {BiliError,type BiliFailureSource};
 export type Credential={cookies:Record<string,string>;refreshToken:string};
-export type BiliFailureSource={endpoint:string;method:'GET'|'POST';httpStatus?:number;platformCode?:number};
-export class BiliError extends Error {constructor(public code:string,message:string,public ambiguous=false,public source?:BiliFailureSource,public usage?:Record<string,unknown>){super(message)}}
 export async function boundedJson(response:Response,max=2*1024*1024){
  if(!response.body)throw new BiliError('invalid_response','平台返回空响应');
  const chunks:Uint8Array[]=[];let size=0;const reader=response.body.getReader();

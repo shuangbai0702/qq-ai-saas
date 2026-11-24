@@ -1,5 +1,5 @@
 import {behaviorDefaults} from './behavior-defaults.js';
-import type {BotConfig} from './index.js';
+import type {BotConfig} from './bot-config.js';
 // zexuanw958-svg/dafeiyu-config-pack settings/pack.json,
 // commit 8c01b0361b8a4baff5be3d2bc67ed55108953086. Platform-only additions
 // retain bounded collection, scoped memory and explicit proactive recipients.

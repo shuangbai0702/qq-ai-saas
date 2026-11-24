@@ -114,7 +114,7 @@ export class AutonomyRepository {
    const [s]=await tx.query('SELECT * FROM autonomy_settings WHERE bot_id=$1 AND tenant_id=$2 FOR UPDATE',[botId,tenantId]);
    if(s.epoch!==expectedEpoch)throw new AutonomyConflict('自主配置已更新，请刷新');
    const epoch=s.epoch+1;
-   await tx.query("UPDATE autonomy_settings SET epoch=$3,config=$4,state=$5,wait='{}',lease_owner=NULL,lease_until=NULL,next_wake_at=NULL,last_error=NULL,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2",[botId,tenantId,epoch,JSON.stringify(config),config.mode==='active'?'ready':'disabled']);
+   await tx.query("UPDATE autonomy_settings SET epoch=$3,config=$4,state=$5,lease_owner=NULL,lease_until=NULL,next_wake_at=NULL,last_error=NULL,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2",[botId,tenantId,epoch,JSON.stringify(config),config.mode==='active'?'ready':'disabled']);
    await tx.query('DELETE FROM autonomy_wakes WHERE bot_id=$1 AND tenant_id=$2',[botId,tenantId]);
    await tx.query("UPDATE autonomy_goals SET status=$3,revision=revision+1,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2 AND status=$4",[botId,tenantId,config.mode==='active'?'active':'paused_mode',config.mode==='active'?'paused_mode':'active']);
    if(config.mode==='active'){

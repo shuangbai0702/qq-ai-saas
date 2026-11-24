@@ -121,12 +121,9 @@ export class NodeAgent {
  async applyUserPersona(id:string,tenantId:string,expectedRevision?:number){
    const [bot]=await this.db.query("SELECT * FROM bots WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL AND desired_state='running'"+(expectedRevision!==undefined?" AND revision=$3":""),expectedRevision!==undefined?[id,tenantId,expectedRevision]:[id,tenantId]);
    if(!bot)return false;
-   const group=bot.runtime_mode==='shared'?await this.shared.group(id):undefined;
-   if(!await this.host.inspect(group?.id||id,'ai'))return false;
    const ctx=await this.context(bot);if(!ctx.personaEdit)return false;
    let applied=false;
-   if(group){try{await this.shared.attach(group,ctx,true);applied=true}catch{applied=false}}
-   else applied=await this.ai.applyPersona(ctx);
+   try{applied=await this.aiFor(bot).applyPersona(ctx)}catch{applied=false}
    if(!applied)return false;
    const [current]=await this.db.query("SELECT id FROM bots WHERE id=$1 AND generation=$2 AND revision=$3 AND desired_state='running' AND deleted_at IS NULL",[bot.id,ctx.generation,ctx.revision]);
    if(!current)return false;
@@ -143,7 +140,7 @@ export class NodeAgent {
  async applyUserTools(id:string,tenantId:string,expectedRevision?:number){
   const [bot]=await this.db.query("SELECT * FROM bots WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL AND desired_state='running'"+(expectedRevision!==undefined?" AND revision=$3":""),expectedRevision!==undefined?[id,tenantId,expectedRevision]:[id,tenantId]);
   if(!bot)return false;const ctx=await this.context(bot);if(!ctx.toolsEdit)return false;
-  const applied=bot.runtime_mode==='shared'?await this.shared.applyTools(ctx):await this.ai.applyTools(ctx);
+  const applied=await this.aiFor(bot).applyTools(ctx);
   if(!applied)return false;
   const [current]=await this.db.query("SELECT id FROM bots WHERE id=$1 AND generation=$2 AND revision=$3 AND desired_state='running' AND deleted_at IS NULL",[bot.id,ctx.generation,ctx.revision]);
   if(!current)return false;
@@ -264,7 +261,7 @@ export class NodeAgent {
      const superseded=()=>Object.assign(new Error('命令已被新的生命周期或配置替代'),{superseded:true});
      if(!await current())throw superseded();
      const recovering=command.kind==='restart'&&command.idempotency_key.startsWith('recover-');
-     const baseApplied=command.kind==='apply'&&(await this.aiFor(bot).applyCards(ctx)||(bot.runtime_mode==='shared'?await this.shared.applyTools(ctx):await this.ai.applyTools(ctx)||await this.ai.applyPersona(ctx)));
+     const baseApplied=command.kind==='apply'&&(await this.aiFor(bot).applyCards(ctx)||await this.aiFor(bot).applyTools(ctx)||await this.aiFor(bot).applyPersona(ctx));
      if(command.kind==='apply'&&!baseApplied){
        const [cardSave]=await this.db.query("SELECT id FROM audit_events WHERE bot_id=$1 AND event='config.saved' AND detail->>'revision'=$2 AND detail->>'changedRegion'='character_cards'",[bot.id,String(ctx.revision)]);
        const group=bot.runtime_mode==='shared'?await this.shared.group(bot.id):undefined;

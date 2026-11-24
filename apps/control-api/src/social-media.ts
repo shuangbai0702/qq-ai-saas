@@ -1,4 +1,5 @@
 import {atomicJson} from '../../../packages/shared/fs-atomic.js';
+import lockfile from 'proper-lockfile';
 import type {FastifyInstance} from 'fastify';
 import {z} from 'zod';
 import path from 'node:path';
@@ -18,7 +19,7 @@ export function registerSocialMedia(app:FastifyInstance,root:string,owned:(req:a
  const directory=(id:string)=>path.join(root,'bots',id,kind);
  const invalid=(message:string,code=400)=>Object.assign(new Error(message),{statusCode:code});
  async function files(id:string){try{return(await readdir(directory(id))).filter(n=>n.endsWith('.json')&&pattern.test(n.slice(0,-5)))}catch(e:any){if(e.code==='ENOENT')return[];throw e}}
- async function locked<T>(id:string,fn:()=>Promise<T>):Promise<T>{const before=locks.get(id)||Promise.resolve();const task=before.catch(()=>{}).then(fn);locks.set(id,task);try{return await task}finally{if(locks.get(id)===task)locks.delete(id)}}
+ async function locked<T>(id:string,fn:()=>Promise<T>):Promise<T>{const before=locks.get(id)||Promise.resolve();const task=before.catch(()=>{}).then(async()=>{const dir=directory(id);await mkdir(dir,{recursive:true});const release=await lockfile.lock(dir,{realpath:false,stale:15000,retries:{retries:10,minTimeout:50,maxTimeout:200}});try{return await fn()}finally{await release().catch(()=>{})}});locks.set(id,task);try{return await task}finally{if(locks.get(id)===task)locks.delete(id)}}
  const version=(raw:string)=>createHash('sha256').update(raw).digest('hex');
  async function metadata(bot:string,id:string){return readFile(path.join(directory(bot),id+'.json'),'utf8')}
  app.get<{Params:{id:string}}>(`/v1/bots/:id/${kind}`,async req=>{await owned(req,req.params.id);return locked(req.params.id,async()=>{const items=[];const ids=(await files(req.params.id)).map(n=>n.slice(0,-5));for(const id of ids){const raw=await metadata(req.params.id,id),item=JSON.parse(raw);items.push({id:item.id,meaning:item.meaning,avoid:item.avoid,enabled:item.enabled!==false,version:version(raw)})}return{items,limit}})});

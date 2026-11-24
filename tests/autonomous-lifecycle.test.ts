@@ -53,6 +53,7 @@ test('shared-policy migration preserves goals and receipts, replaces old default
   const oldUsage=await db.query('SELECT * FROM autonomy_daily_usage ORDER BY bot_id');
   const historic=await readFile(new URL('../packages/database/migrations/006_autonomous_lifecycle.sql',import.meta.url),'utf8');
   await db.query(historic.slice(historic.indexOf('CREATE TABLE autonomy_actions('),historic.indexOf('CREATE TABLE autonomy_wakes(')));
+  await db.query("ALTER TABLE autonomy_settings ADD COLUMN IF NOT EXISTS wait JSONB NOT NULL DEFAULT '{}'");
   const sql=await readFile(new URL('../packages/database/migrations/007_shared_autonomous_policy.sql',import.meta.url),'utf8');
   await db.transaction(async tx=>{await tx.query(sql)});
   const a=await repo.view('ta','a'),b=await repo.view('tb','b');
@@ -334,6 +335,7 @@ test('inner-owned capability migration removes outer grants once and preserves m
   const goals=await db.query('SELECT * FROM autonomy_goals'),usage=await db.query('SELECT * FROM autonomy_daily_usage');
   const historic=await readFile(new URL('../packages/database/migrations/006_autonomous_lifecycle.sql',import.meta.url),'utf8');
   await db.query(historic.slice(historic.indexOf('CREATE TABLE autonomy_actions('),historic.indexOf('CREATE TABLE autonomy_wakes(')));
+  await db.query("ALTER TABLE autonomy_settings ADD COLUMN IF NOT EXISTS wait JSONB NOT NULL DEFAULT '{}'");
   const sql=await readFile(new URL('../packages/database/migrations/008_inner_owned_capabilities.sql',import.meta.url),'utf8');
   await db.transaction(async tx=>{await tx.query(sql)});
   const after=await db.query('SELECT * FROM autonomy_settings ORDER BY bot_id');

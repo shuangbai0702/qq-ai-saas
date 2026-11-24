@@ -1,7 +1,7 @@
 import {runtimeIpc} from '../../packages/shared/runtime-ipc.js';
 import path from 'node:path';import {mkdir,readFile,writeFile} from 'node:fs/promises';import {randomUUID,randomBytes} from 'node:crypto';
 import net from 'node:net';
-import type {RuntimeContext,Health} from '../../packages/contracts/index.js';import type {Sql} from '../../packages/database/index.js';import {ProcessHost} from '../../apps/node-agent/src/process-host.js';import {AstrBotAdapter} from './index.js';
+import type {RuntimeContext,Health,ProcessHostLike} from '../../packages/contracts/index.js';import type {Sql} from '../../packages/database/index.js';import {AstrBotAdapter} from './index.js';
 async function bindHealthPort(port:number):Promise<number|undefined>{
  return new Promise((resolve,reject)=>{const server=net.createServer();server.once('error',(error:NodeJS.ErrnoException)=>{if(error.code==='EADDRINUSE'||error.code==='EACCES')resolve(undefined);else reject(error)});server.listen({host:'127.0.0.1',port,exclusive:true},()=>{const address=server.address() as net.AddressInfo;server.close(error=>error?reject(error):resolve(address.port))})});
 }
@@ -27,7 +27,7 @@ export class SharedAstrBotAdapter {
   // Even continuously refreshed busy telemetry cannot defer a stuck IPC forever.
   return now-episode.since<300000&&activity?.active===true&&Number.isFinite(activity.at)&&activity.at*1000<=now+5000&&now-activity.at*1000<=120000;
  }
- constructor(private db:Sql,private host:ProcessHost,private dedicated:AstrBotAdapter,private source:string,private python:string,private canAttach?:(ctx:RuntimeContext)=>Promise<boolean>){}
+ constructor(private db:Sql,private host:ProcessHostLike,private dedicated:AstrBotAdapter,private source:string,private python:string,private canAttach?:(ctx:RuntimeContext)=>Promise<boolean>){}
  async assign(id:string){return this.db.transaction(async tx=>{await tx.query('SELECT id FROM bots WHERE id=$1 FOR UPDATE',[id]);const [bot]=await tx.query('SELECT group_id FROM bots WHERE id=$1',[id]);if(bot.group_id)return(await tx.query('SELECT * FROM runtime_groups WHERE id=$1',[bot.group_id]))[0];
   // Single-node Agent serializes assignment. Lock the chosen group for PG too.
   let [group]=await tx.query("SELECT g.* FROM runtime_groups g WHERE (SELECT count(*) FROM group_members m WHERE m.group_id=g.id)<g.capacity ORDER BY (g.desired_state='running') DESC,(SELECT count(*) FROM group_members m WHERE m.group_id=g.id) DESC,g.created_at,g.id LIMIT 1 FOR UPDATE");
@@ -41,7 +41,11 @@ export class SharedAstrBotAdapter {
  }
  async applyTools(ctx:RuntimeContext){
   if(!ctx.toolsEdit)return false;const group=await this.group(ctx.botId);if(!group||!await this.host.inspect(group.id,'ai'))return false;
-  try{await this.attach(group,ctx,true);return true}catch(error){if(String(error).includes('HTTP 409'))return false;throw error}
+  try{await this.attach(group,ctx,true);return await this.dedicated.persistApplied(ctx)}catch(error){if(String(error).includes('HTTP 409'))return false;throw error}
+ }
+ async applyPersona(ctx:RuntimeContext){
+  if(!ctx.personaEdit)return false;const group=await this.group(ctx.botId);if(!group||!await this.host.inspect(group.id,'ai'))return false;
+  try{await this.attach(group,ctx,true);if(!await this.dedicated.persistApplied(ctx))return false;await writeFile(path.join(ctx.root,'ai','persona.txt'),ctx.config.systemPrompt,{mode:0o600});return true}catch(error){if(String(error).includes('HTTP 409'))return false;throw error}
  }
  async attach(group:any,ctx:RuntimeContext,baseOnly=false){if(!baseOnly)await this.dedicated.provision(ctx);const config=JSON.parse(await readFile(path.join(ctx.root,'ai/data/cmd_config.json'),'utf8'));if(this.canAttach&&!await this.canAttach(ctx))throw Object.assign(new Error('共享成员已离线或生命周期变化'),{superseded:true});const ack=await this.request(group,'/members/'+ctx.botId+(baseOnly?'?baseOnly=1':''),'PUT',{generation:ctx.generation,revision:ctx.revision,systemChangePermitId:ctx.systemChangePermitId,personaEdit:ctx.personaEdit,characterCardsEdit:ctx.characterCardsEdit,toolsEdit:ctx.toolsEdit,prompt:ctx.config.systemPrompt,key:config.provider.length?ctx.apiKey:'',config,groups:ctx.config.groups,uin:ctx.expectedUin,platform:config.platform[0],runtimeRoot:ctx.root,behaviorConfig:ctx.config,botId:ctx.botId,tenantId:ctx.tenantId});if(ack.generation!==ctx.generation||ack.revision!==ctx.revision)throw Object.assign(new Error('共享成员应用回执不匹配'),{superseded:true});const updated=await this.db.query("UPDATE group_members SET generation=$2,applied_revision=$3,desired_state='running',observed_state='ready' WHERE bot_id=$1 AND group_id=$4 AND EXISTS(SELECT 1 FROM bots WHERE id=$1 AND generation=$2 AND revision=$3 AND desired_state='running' AND deleted_at IS NULL) RETURNING bot_id",[ctx.botId,ctx.generation,ctx.revision,group.id]);if(!updated.length)throw Object.assign(new Error('共享成员应用回执已过期'),{superseded:true});}
  async start(ctx:RuntimeContext){let group=await this.assign(ctx.botId);await this.db.query("UPDATE group_members SET desired_state='running',generation=$2 WHERE bot_id=$1",[ctx.botId,ctx.generation]);
@@ -58,7 +62,9 @@ export class SharedAstrBotAdapter {
    });
    if(launch){const root=path.join(this.host.root,'bots',group.id,'ai');await mkdir(path.join(root,'data'),{recursive:true});
    await writeFile(path.join(root,'data/cmd_config.json'),JSON.stringify({config_version:5,dashboard:{enable:false},platform:[],provider:[],provider_sources:[],plugin_set:[],disable_builtin_commands:true}),{mode:0o600});await writeFile(path.join(root,'group.json'),JSON.stringify({token:group.token,healthPort:group.health_port,generation:group.generation,capacity:group.capacity}),{mode:0o600});
-   await this.host.start(group.id,'ai',this.python,[path.resolve('adapters/astrbot/shared-worker.py'),this.source,root],root,{...process.env,PYTHONIOENCODING:'utf-8',PYTHONUNBUFFERED:'1'},[group.token]);
+   const env:NodeJS.ProcessEnv={...process.env,PYTHONIOENCODING:'utf-8',PYTHONUNBUFFERED:'1'};
+   delete env.MASTER_KEY;delete env.DATABASE_URL;
+   await this.host.start(group.id,'ai',this.python,[path.resolve('adapters/astrbot/shared-worker.py'),this.source,root],root,env,[group.token]);
    const deadline=Date.now()+110000;let ready=false;while(Date.now()<deadline){try{const h:any=await this.request(group,'/health','GET',undefined,undefined,Math.min(1500,Math.max(1,deadline-Date.now())));if(h.ready&&h.generation===group.generation){ready=true;break}}catch{}await new Promise(r=>setTimeout(r,100));}if(!ready)throw new Error('共享AstrBot启动超时');
    }
   }

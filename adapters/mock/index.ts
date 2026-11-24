@@ -1,6 +1,6 @@
-import path from 'node:path';import {mkdir,writeFile} from 'node:fs/promises';import type {ProtocolAdapter,RuntimeContext,LoginSnapshot} from '../../packages/contracts/index.js';import {ProcessHost} from '../../apps/node-agent/src/process-host.js';
+import path from 'node:path';import {mkdir,writeFile} from 'node:fs/promises';import type {ProtocolAdapter,RuntimeContext,LoginSnapshot,ProcessHostLike} from '../../packages/contracts/index.js';
 export class MockProtocolAdapter implements ProtocolAdapter{
- constructor(private host:ProcessHost){}
+ constructor(private host:ProcessHostLike){}
  async provision(ctx:RuntimeContext){await mkdir(ctx.root,{recursive:true});await writeFile(path.join(ctx.root,'protocol.json'),JSON.stringify({botId:ctx.botId,aiPort:ctx.aiPort,protocolPort:ctx.protocolPort,token:ctx.token,expectedUin:ctx.expectedUin}),{mode:0o600})}
  async beginLogin(ctx:RuntimeContext){await this.provision(ctx);await this.host.start(ctx.botId,'protocol',process.execPath,[path.resolve('adapters/mock/protocol-worker.mjs'),ctx.root],ctx.root,{...process.env},[ctx.token])}
  async call(ctx:RuntimeContext,route:string,body?:unknown){const r=await fetch(`http://127.0.0.1:${ctx.protocolPort}${route}`,{method:body?'POST':'GET',headers:{Authorization:`Bearer ${ctx.token}`,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(2000)});if(!r.ok)throw new Error('模拟协议尚未就绪');return r.json()}

@@ -1,10 +1,18 @@
 import {createHash,randomBytes} from 'node:crypto';import path from 'node:path';import {readFile,writeFile,mkdir,access} from 'node:fs/promises';
-import type {ProtocolAdapter,RuntimeContext,LoginSnapshot,Health} from '../../../packages/contracts/index.js';import {ProcessHost} from '../../../apps/node-agent/src/process-host.js';
+import {atomicJson} from '../../../packages/shared/fs-atomic.js';
+import type {ProtocolAdapter,RuntimeContext,LoginSnapshot,Health,ProcessHostLike} from '../../../packages/contracts/index.js';
 import {withNapcatSettings,proxyPort,initialEgress,nextEgress,observeEgress,type NapcatSettings} from './egress.js';
+
+function hasQuickLoginUin(list:unknown,uin:string):boolean{
+ const items=Array.isArray(list)?list:Array.isArray((list as any)?.data)?(list as any).data:Array.isArray((list as any)?.list)?(list as any).list:[];
+ return items.some((entry:any)=>typeof entry==='string'?entry===uin:entry&&typeof entry==='object'&&(String(entry.uin||'')===uin||String(entry.account||'')===uin));
+}
+
 export class NapCatAdapter implements ProtocolAdapter{
  resumeAttempts=new Map<string,number>();
  credentials=new Map<string,{credential:string;until:number}>();
- constructor(private host:ProcessHost,private settingsRoot:string){}
+ savedIdentities=new Map<string,string>();
+ constructor(private host:ProcessHostLike,private settingsRoot:string){}
  async settings(ctx:RuntimeContext):Promise<NapcatSettings>{
   const file=path.join(this.settingsRoot,`${ctx.botId}.json`);
   return withNapcatSettings(file,async existing=>{let s=existing;if(!s){
@@ -42,11 +50,11 @@ export class NapCatAdapter implements ProtocolAdapter{
 
  async getLoginState(ctx:RuntimeContext):Promise<LoginSnapshot>{
   const s=await this.request(ctx,'/QQLogin/CheckLoginStatus');
-  if(s.isLogin&&s.coreReady){const info=await this.request(ctx,'/QQLogin/GetQQLoginInfo');const uin=String(info.uin||info.selfInfo?.uin||'');if(/^\d{5,20}$/.test(uin)&&(!ctx.expectedUin||ctx.expectedUin===uin)){await mkdir(path.join(ctx.root,'qq'),{recursive:true});await writeFile(path.join(ctx.root,'qq/identity.json'),JSON.stringify({uin}),{mode:0o600})}return{state:'online',uin}}
+  if(s.isLogin&&s.coreReady){const info=await this.request(ctx,'/QQLogin/GetQQLoginInfo');const uin=String(info.uin||info.selfInfo?.uin||'');if(/^\d{5,20}$/.test(uin)&&(!ctx.expectedUin||ctx.expectedUin===uin)&&this.savedIdentities.get(ctx.botId)!==uin){await atomicJson(path.join(ctx.root,'qq/identity.json'),{uin});this.savedIdentities.set(ctx.botId,uin)}return{state:'online',uin}}
   if(s.restartRequested===true)return{state:'starting',restartRequested:true,message:'QQ登录服务等待协议托管器恢复'};
   // The native quick login can race network readiness. Once per process, retry
   // the saved account after QR readiness; explicit QR refresh never uses this.
-  if(s.loginPhase==='waiting_qrcode')try{const manifest=JSON.parse(await readFile(path.join(ctx.root,'napcat-platform.json'),'utf8'));const p=await this.host.inspect(ctx.botId,'protocol');if(manifest.resume&&p&&this.resumeAttempts.get(ctx.botId)!==p.pid){this.resumeAttempts.set(ctx.botId,p.pid);const saved=JSON.parse(await readFile(path.join(ctx.root,'qq/identity.json'),'utf8'));if(/^\d{5,20}$/.test(String(saved.uin))&&(!ctx.expectedUin||ctx.expectedUin===String(saved.uin))){const list=await this.request(ctx,'/QQLogin/GetQuickLoginList');if(JSON.stringify(list).includes(String(saved.uin))){await this.request(ctx,'/QQLogin/SetQuickLogin',{uin:String(saved.uin)});return{state:'authenticating',message:'正在恢复已保存的QQ会话'};}}}}catch{/* No retry loop; QR remains available to the user. */}
+  if(s.loginPhase==='waiting_qrcode')try{const manifest=JSON.parse(await readFile(path.join(ctx.root,'napcat-platform.json'),'utf8'));const p=await this.host.inspect(ctx.botId,'protocol');if(manifest.resume&&p&&this.resumeAttempts.get(ctx.botId)!==p.pid){this.resumeAttempts.set(ctx.botId,p.pid);const saved=JSON.parse(await readFile(path.join(ctx.root,'qq/identity.json'),'utf8'));if(/^\d{5,20}$/.test(String(saved.uin))&&(!ctx.expectedUin||ctx.expectedUin===String(saved.uin))){const list=await this.request(ctx,'/QQLogin/GetQuickLoginList');if(hasQuickLoginUin(list,String(saved.uin))){await this.request(ctx,'/QQLogin/SetQuickLogin',{uin:String(saved.uin)});return{state:'authenticating',message:'正在恢复已保存的QQ会话'};}}}}catch{/* No retry loop; QR remains available to the user. */}
   if(s.loginError){const message=typeof s.loginError==='string'?s.loginError:'QQ需要额外验证';if(/过期|expired/i.test(message))return{state:'expired',message};if(/登录失败|failed|无法重复登录/i.test(message))return{state:'failed',message};return{state:'verification_required',message}}
   // Core starts offline and may retain that flag while a new QR is generated.
   // Only a terminal phase (or legacy response without progress) is a failure.
@@ -65,12 +73,13 @@ export class NapCatAdapter implements ProtocolAdapter{
    let egress,restart=false;
    const record=p&&await this.host.record(ctx.botId,'protocol');
    if(record?.pid===p?.pid&&record?.created){
+    const pid=record.pid,created=record.created;
     await withNapcatSettings(path.join(this.settingsRoot,`${ctx.botId}.json`),async settings=>{
      if(!settings)throw new Error('NapCat配置不存在');
      if(settings.egress){
       const current=await this.host.record(ctx.botId,'protocol');
-      if(current?.pid===record.pid&&current?.created===record.created){
-       settings.egress=observeEgress(settings.egress,{pid:record.pid,created:record.created,generation:ctx.generation},s.state==='online',s.restartRequested===true||s.state==='failed'&&s.message==='QQ已掉线');
+      if(current?.pid===pid&&current?.created===created){
+       settings.egress=observeEgress(settings.egress,{pid,created,generation:ctx.generation},s.state==='online',s.restartRequested===true||s.state==='failed'&&s.message==='QQ已掉线');
        egress={route:settings.egress.route,switches:settings.egress.switches,failures:settings.egress.failures,pending:settings.egress.pending};
        restart=settings.egress.pending&&s.state==='failed'&&s.message==='QQ已掉线';
       }
@@ -82,5 +91,5 @@ export class NapCatAdapter implements ProtocolAdapter{
   }catch(e){return{alive:!!p,ready:false,online:false,pid:p?.pid,rssBytes:p?.rssBytes,memoryPolicy:p?.memoryPolicy,mode:'real',detail:(e as Error).message}}
  }
 
- async stop(id:string){this.credentials.delete(id);this.resumeAttempts.delete(id);await this.host.stop(id,'protocol')}
+ async stop(id:string){this.credentials.delete(id);this.resumeAttempts.delete(id);this.savedIdentities.delete(id);await this.host.stop(id,'protocol')}
 }
