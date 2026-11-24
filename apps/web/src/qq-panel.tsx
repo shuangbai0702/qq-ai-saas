@@ -11,15 +11,16 @@ export function QQPanel({id,mock,online,offline=false,blocked=false,onError}:{id
  const ended=terminal.includes(session?.state);
  const scanned=!online&&['waiting_confirm','authenticating'].includes(session?.state);
  const guidance=session?.state==='waiting_confirm'?'服务器已收到扫码回执。请在手机 QQ 确认登录；如果已经确认但仍停在这里，表示协议端尚未收到登录成功回执，请勿反复扫码。':session?.state==='authenticating'?'正在等待 QQ 登录完成和协议初始化，请稍候。':session?.state==='waiting_scan'?'当前未能自动登录，请使用手机 QQ 扫码并确认登录。':session?.message;
+ const hasQrRef=useRef(false);hasQrRef.current=!!session?.hasQr;
  useEffect(()=>{if(!session?.id||ended)return;const sid=session.id;let active=true;const controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined;const apply=(next:any)=>{if(!active||next?.id!==sid)return;setSession((old:any)=>old?.id===sid&&Number(next.sequence)>=Number(old.sequence)?next:old)};
   const events=new EventSource('/v1/login-sessions/'+sid+'/events',{withCredentials:true});setReconnecting(false);
   events.onopen=()=>{if(active)setReconnecting(false)};
   events.onerror=()=>{if(active)setReconnecting(true)};
   events.onmessage=e=>{if(!active)return;try{apply(JSON.parse(e.data))}catch{setReconnecting(true)}};
   // A reconnecting stream must not leave a newly generated QR hidden until reload.
-  const poll=async()=>{try{if(events.readyState!==EventSource.OPEN||!session.hasQr)apply(await api('/login-sessions/'+sid,undefined,undefined,controller.signal))}catch{if(active)setReconnecting(true)}finally{if(active)timer=setTimeout(()=>void poll(),2000)}};void poll();
+  const poll=async()=>{try{if(events.readyState!==EventSource.OPEN||!hasQrRef.current)apply(await api('/login-sessions/'+sid,undefined,undefined,controller.signal))}catch{if(active)setReconnecting(true)}finally{if(active)timer=setTimeout(()=>void poll(),2000)}};void poll();
   return()=>{active=false;controller.abort();if(timer)clearTimeout(timer);events.close()};
- },[session?.id,session?.hasQr,ended]);
+ },[session?.id,ended]);
  async function command(kind:'begin'|'cancel'|'transition',state?:string){const page=owner.current;if(!page||page.signal.aborted||pending.current||blocked)return;pending.current=true;setBusy(true);const order=++sequence.current;const current=()=>!page.signal.aborted&&order===sequence.current;try{
   if(kind==='begin'){if(online)return;if(!session&&!mock){const started=await api('/bots/'+id+'/actions',{action:'start',idempotencyKey:crypto.randomUUID()});if(!current())return;const next=started.loginSessionId?await api('/login-sessions/'+started.loginSessionId):await api('/bots/'+id+'/login-session');if(current())setSession(next);return}if(scanned&&!confirm('当前二维码已被扫描。重新获取会中断这次登录，确认重新登录？'))return;const d=await api('/bots/'+id+'/login-sessions',{refresh:!!session});if(!current())return;const next=await api('/login-sessions/'+d.id);if(current())setSession(next)}
   else if(kind==='cancel'&&session){await api('/login-sessions/'+session.id,undefined,'DELETE');if(!current())return;const next=await api('/login-sessions/'+session.id);if(current())setSession(next)}

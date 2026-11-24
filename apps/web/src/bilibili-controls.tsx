@@ -13,21 +13,23 @@ function ListInput({values,onChange}:{values:string[];onChange:(values:string[])
 }
 const states:Record<string,string>={created:'正在申请二维码',waiting_scan:'等待扫码',waiting_confirm:'已扫码，请在手机确认',ready:'已验证登录身份',expired:'二维码已过期',canceled:'已取消',failed:'登录失败，请重试',risk_control:'平台风控，请在B站处理后重试',identity_mismatch:'账号不一致，请先解除旧绑定',queued:'排队中',claimed:'执行中',dispatching:'已开始平台请求',unknown:'结果待确认，禁止重发',finished:'已结束',idle:'正常',requested:'等待检查',checking:'正在检查',refreshing:'正在轮换凭证',confirm_pending:'新凭证已保存，等待确认旧凭证',refresh_unknown:'刷新结果不明，请重新扫码',auth_required:'需要重新扫码'};
 export function BilibiliControls({id,onError,onDirtyChange,searchSection,searchAttempt}:{id:string;searchSection?:string;searchAttempt:number;onError:(s:string)=>void;onDirtyChange:(v:boolean)=>void}){
- const [view,setView]=useState<any>(),[draft,setDraft]=useState<BilibiliConfig>(BilibiliConfigSchema.parse({})),[dirty,setDirty]=useState(false),[busy,setBusy]=useState(false),[modelKey,setModelKey]=useState(''),[message,setMessage]=useState(''),[loadError,setLoadError]=useState('');
+ const [view,setView]=useState<any>(),[draft,setDraft]=useState<BilibiliConfig>(BilibiliConfigSchema.parse({})),[dirty,setDirty]=useState(false),[baseRevision,setBaseRevision]=useState<number|null>(null),[busy,setBusy]=useState(false),[modelKey,setModelKey]=useState(''),[message,setMessage]=useState(''),[loadError,setLoadError]=useState('');
  const [section,setSection]=useState('overview');
  useEffect(()=>{if(searchSection==='model'||searchSection==='permissions')setSection(searchSection)},[searchSection,searchAttempt]);
  const owner=useRef<{signal:AbortSignal;seq:number}|undefined>(undefined),dirtyRef=useRef(false),writing=useRef(false);
  useEffect(()=>{onDirtyChange(dirty);return()=>onDirtyChange(false)},[dirty,onDirtyChange]);
  useEffect(()=>{
-  const ctrl=new AbortController(),lease={signal:ctrl.signal,seq:0};owner.current=lease;let polling=false;setView(undefined);setBusy(false);setModelKey('');setMessage('');setLoadError('');dirtyRef.current=false;setDirty(false);writing.current=false;
-  const load=async()=>{if(polling||writing.current)return;polling=true;const seq=++lease.seq;try{const next=await api('/bots/'+id+'/bilibili',undefined,undefined,lease.signal);if(owner.current===lease&&!lease.signal.aborted&&seq===lease.seq){const config=BilibiliConfigSchema.parse(next.config);setView({...next,config});setLoadError('');if(!dirtyRef.current)setDraft(config)}}catch(e){if(owner.current===lease&&!lease.signal.aborted&&seq===lease.seq)setLoadError(readError(e))}finally{polling=false}};
+  const ctrl=new AbortController(),lease={signal:ctrl.signal,seq:0};owner.current=lease;let polling=false;setView(undefined);setBaseRevision(null);setBusy(false);setModelKey('');setMessage('');setLoadError('');dirtyRef.current=false;setDirty(false);writing.current=false;
+  const load=async()=>{if(polling||writing.current)return;polling=true;const seq=++lease.seq;try{const next=await api('/bots/'+id+'/bilibili',undefined,undefined,lease.signal);if(owner.current===lease&&!lease.signal.aborted&&seq===lease.seq){const config=BilibiliConfigSchema.parse(next.config);setView({...next,config});setLoadError('');if(!dirtyRef.current){setDraft(config);setBaseRevision(next.revision)}}}catch(e){if(owner.current===lease&&!lease.signal.aborted&&seq===lease.seq)setLoadError(readError(e))}finally{polling=false}};
   void load();const timer=setInterval(()=>void load(),5000);return()=>{ctrl.abort();clearInterval(timer);if(owner.current===lease)owner.current=undefined};
  },[id]);
  const change=(value:BilibiliConfig)=>{setDraft(value);dirtyRef.current=true;setDirty(true)};
- async function mutate(kind:string,job?:string){const lease=owner.current;if(!lease||lease.signal.aborted||writing.current||!view)return;writing.current=true;lease.seq++;setBusy(true);setMessage('');
+ async function mutate(kind:string,job?:string){const lease=owner.current;if(!lease||lease.signal.aborted||writing.current||!view)return;
+  if(kind==='save'){const parsed=BilibiliConfigSchema.safeParse(draft);if(!parsed.success){const issue=parsed.error.issues[0];onError('B站配置未通过检查（'+String(issue.path.join('.')||'config')+'）：'+issue.message);return}}
+  writing.current=true;lease.seq++;setBusy(true);setMessage('');
   try{
    const base='/bots/'+id+'/bilibili';
-   if(kind==='save')await api(base,{expectedRevision:view.revision,config:BilibiliConfigSchema.parse(draft),...(modelKey?{modelKey}:{})},'PUT',lease.signal);
+   if(kind==='save')await api(base,{expectedRevision:baseRevision??view.revision,config:BilibiliConfigSchema.parse(draft),...(modelKey?{modelKey}:{})},'PUT',lease.signal);
    else if(kind==='login')await api(base+'/login',{},'POST',lease.signal);
    else if(kind==='refresh')await api(base+'/refresh',{},'POST',lease.signal);
    else if(kind==='unlink'){if(!confirm('解除本地B站绑定？不会退出QQ，不会删除聊天记忆；已发生的B站操作保留审计。'))return;await api(base+'/account',{expectedRevision:view.account.revision},'DELETE',lease.signal)}
@@ -35,10 +37,11 @@ export function BilibiliControls({id,onError,onDirtyChange,searchSection,searchA
    else if(kind==='cancel')await api(base+'/jobs/'+job+'/cancel',{},'POST',lease.signal);
    if(lease.signal.aborted||owner.current!==lease)return;
    const next=await api(base,undefined,undefined,lease.signal);if(lease.signal.aborted||owner.current!==lease)return;const config=BilibiliConfigSchema.parse(next.config);setView({...next,config});
-   if(kind==='save'){dirtyRef.current=false;setDirty(false);setModelKey('');setDraft(BilibiliConfigSchema.parse(next.config));setMessage('B站配置已保存，不会重启QQ。运行工具入口将在Agent下次同步后更新。')}
-   else setMessage(kind==='unlink'?'本地绑定已解除；未宣称远端会话已注销。':'操作已提交，以实际状态和回执为准。');
+   if(kind==='save'){dirtyRef.current=false;setDirty(false);setModelKey('');setDraft(config);setBaseRevision(next.revision);setMessage('B站配置已保存，不会重启QQ。运行工具入口将在Agent下次同步后更新。')}
+   else {if(!dirtyRef.current)setBaseRevision(next.revision);setMessage(kind==='unlink'?'本地绑定已解除；未宣称远端会话已注销。':'操作已提交，以实际状态和回执为准。')}
   }catch(e){if(!lease.signal.aborted&&owner.current===lease)onError(readError(e))}finally{if(!lease.signal.aborted&&owner.current===lease){writing.current=false;setBusy(false)}}
  }
+ const conflict=dirty&&baseRevision!==null&&view?.revision>baseRevision;
  const refreshPage=()=>{if((dirty||modelKey)&&!confirm('有未保存的编辑，刷新页面将丢弃这些内容。确定刷新吗？'))return;window.location.reload()};
  if(!view)return <section className="panel"><div className="section-heading"><span className="eyebrow">BILIBILI</span><h2>B站能力</h2><p>{loadError||'正在加载B站能力…'}</p>{loadError&&<button type="button" className="secondary" onClick={refreshPage}>刷新页面</button>}</div></section>;
  const accountReady=view.account?.state==='ready'&&['idle','confirm_pending'].includes(view.account?.refresh_state??'idle');
@@ -56,8 +59,9 @@ export function BilibiliControls({id,onError,onDirtyChange,searchSection,searchA
   {id:'activity',label:'执行记录',group:'运行记录'},
  ]}>
   {loadError&&<p role="alert" className="notice">{loadError} 当前显示上次成功读取的状态。<button type="button" className="secondary" onClick={refreshPage}>刷新页面</button></p>}
+  {conflict&&<div className="notice conflict" role="alert"><div><b>服务器已有新版本 v{view.revision}</b><p>当前编辑基于 v{baseRevision}。请先载入最新配置再修改，避免覆盖其他页面保存的内容。</p></div><button type="button" className="secondary" disabled={busy} onClick={()=>{setDraft(BilibiliConfigSchema.parse(view.config));setBaseRevision(view.revision);setModelKey('');dirtyRef.current=false;setDirty(false)}}>载入最新配置</button></div>}
   {message&&<p role="status" className="notice">{message}</p>}
-  <div className="save-bar"><div><b>B站配置 · {dirty?'有未保存的修改':'已保存 v'+view.revision}</b><small>主动与被动模式共用，保存不会重启QQ。</small></div><div className="button-row"><button type="button" className="secondary" disabled={!dirty||busy} onClick={()=>{setDraft(BilibiliConfigSchema.parse(view.config));setModelKey('');dirtyRef.current=false;setDirty(false)}}>撤销编辑</button><button type="button" className="primary" disabled={!dirty||busy} onClick={()=>void mutate('save')}>{busy?'正在提交…':'保存B站配置'}</button></div></div>
+  <div className="save-bar"><div><b>B站配置 · {dirty?'有未保存的修改':'已保存 v'+view.revision}</b><small>主动与被动模式共用，保存不会重启QQ。</small></div><div className="button-row"><button type="button" className="secondary" disabled={!dirty||busy} onClick={()=>{setDraft(BilibiliConfigSchema.parse(view.config));setBaseRevision(view.revision);setModelKey('');dirtyRef.current=false;setDirty(false)}}>撤销编辑</button><button type="button" className="primary" disabled={!dirty||busy||conflict} onClick={()=>void mutate('save')}>{busy?'正在提交…':'保存B站配置'}</button></div></div>
   <section className="panel" hidden={section!=='overview'}>
    <div className="section-heading"><span className="eyebrow">BILIBILI / OVERVIEW</span><h2>B站能力</h2><p>发现视频、查看合集，按需理解内容并执行已授权的互动。与QQ聊天共用内层工具和真实回执。</p></div>
    <div className="memory-cards"><div className="memory-card"><span>账号</span><strong>{view.account?.label||'未绑定'}</strong><small>{view.account?'UID '+view.account.uid:'未登录，匿名访问默认关闭'}</small></div><div className="memory-card"><span>工具状态</span><strong>{view.config.enabled&&(accountReady||!view.account&&view.config.allowAnonymous)?'已启用':view.config.enabled?'需要登录或开启匿名':'未启用'}</strong><small>以已保存配置和实际工具回执为准</small></div><div className="memory-card"><span>视频理解</span><strong>{view.mediaReady?'媒体服务就绪':'暂不可用'}</strong><small>采样帧与字幕，不包含声音理解</small></div></div>

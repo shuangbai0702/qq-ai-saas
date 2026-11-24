@@ -101,7 +101,13 @@ class PaperRuntime{
  resize(){prepare(this.ground,innerWidth,innerHeight);this.renderer.resize();this.backgroundDrawn=false;}
  decorate(target){
   if((own(target)&&target!==this.motion)||this.surfaces.has(target)||!target.isConnected||target.matches('.skip-link'))return;
-  if(this.lightweight&&target.matches(PANEL))return;
+  const spectrum=document.body.classList.contains('paper-spectrum');
+  if((this.lightweight||spectrum)&&target.matches(PANEL)){
+   if(spectrum&&target.matches('details'))target.classList.add('paper-panel');
+   if(target.matches('.companion-note,.auth-story')&&!this.stamps.has(target))this.addStamp(target);
+   return;
+  }
+  if(spectrum&&target.matches(BADGE))return;
   let surface;
   if(target.matches(INPUT))surface=new NativeControl(target,this.renderer);
   else{

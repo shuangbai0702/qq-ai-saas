@@ -1,4 +1,5 @@
 import {useEffect,useRef,useState} from 'react';
+import {api} from './api';
 import type {BotConfig} from '../../../packages/contracts/index';
 type Item={id:string;meaning:string;enabled:boolean;frames:number};
 type Pack={id:'blue-fat-fish';name:string;ref:string;installed:boolean;source:string;version:string;items:Item[]};
@@ -6,12 +7,14 @@ export function MemePacks({botId,config,onChange}:{botId:string;config:BotConfig
  const [pack,setPack]=useState<Pack|null>(null),[page,setPage]=useState(0),[notice,setNotice]=useState(''),[busy,setBusy]=useState(false);
  const owner=useRef<AbortController|null>(null),pending=useRef(false);
  useEffect(()=>{const controller=new AbortController();owner.current=controller;pending.current=false;setPack(null);setPage(0);setNotice('');setBusy(false);
-  fetch(`/v1/bots/${botId}/meme-packs`,{signal:controller.signal}).then(async r=>{if(!r.ok)throw new Error('表情图包加载失败');return r.json()}).then(data=>{if(!controller.signal.aborted)setPack(data.packs[0])}).catch(e=>{if(!controller.signal.aborted)setNotice(e.message)});
+  void api(`/bots/${botId}/meme-packs`,undefined,'GET',controller.signal).then(data=>{if(!controller.signal.aborted)setPack(data.packs[0])}).catch(e=>{if(!controller.signal.aborted)setNotice((e as Error).message)});
   return()=>controller.abort();
  },[botId]);
  async function toggle(item:Item){const controller=owner.current;if(!pack||!controller||controller.signal.aborted||pending.current)return;pending.current=true;setBusy(true);setNotice('');
-  try{const r=await fetch(`/v1/bots/${botId}/meme-packs/blue-fat-fish/${item.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!item.enabled,expectedVersion:pack.version}),signal:controller.signal});const result=await r.json();
-   const fresh=await fetch(`/v1/bots/${botId}/meme-packs`,{signal:controller.signal});if(!fresh.ok)throw new Error('操作可能已提交，请刷新确认图包状态');const data=await fresh.json();if(!controller.signal.aborted){setPack(data.packs[0]);setNotice(r.ok?'已更新，无需重启。':result.error||'状态已变更，请重试')}
+  try{
+   let err='';
+   try{await api(`/bots/${botId}/meme-packs/blue-fat-fish/${item.id}`,{enabled:!item.enabled,expectedVersion:pack.version},'PATCH',controller.signal)}catch(e){err=(e as Error).message}
+   const data=await api(`/bots/${botId}/meme-packs`,undefined,'GET',controller.signal);if(!controller.signal.aborted){setPack(data.packs[0]);setNotice(err||'已更新，无需重启。')}
   }catch(e){if(!controller.signal.aborted)setNotice((e as Error).message)}finally{if(!controller.signal.aborted){pending.current=false;setBusy(false)}}
  }
  const selected=(config.behavior?.memePacks||[]).includes('blue-fat-fish'),pages=Math.ceil((pack?.items.length||0)/12);

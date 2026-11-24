@@ -2,7 +2,7 @@ export class ApiError extends Error{
  constructor(message:string,public status:number){super(message);this.name='ApiError'}
 }
 export async function api(url:string,body?:unknown,method?:string,signal?:AbortSignal){
- const verb=method||(body?'POST':'GET'),writing=!['GET','HEAD'].includes(verb);
+ const verb=method||(body!==undefined?'POST':'GET'),writing=!['GET','HEAD'].includes(verb);
  const controller=new AbortController();let timedOut=false;
  const cancel=()=>controller.abort();
  if(signal?.aborted)cancel();else signal?.addEventListener('abort',cancel,{once:true});

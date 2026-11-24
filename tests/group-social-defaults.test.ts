@@ -9,7 +9,7 @@ test('group social limits and platform images agree in schema, new bot and prese
  const schema=BotConfigSchema.parse({...defaultConfig,behavior:{}});
  for(const cfg of [schema,defaultConfig,applyFishSocialPreset({...defaultConfig,behavior:{...defaultConfig.behavior!,hourlyInterjectionLimit:1,memeEnabled:false,attentionEnabled:false}})]){
   assert.equal(cfg.behavior?.hourlyInterjectionLimit,20);
-  assert.equal(cfg.behavior?.randomReplyProbability,.03);
+  assert.equal(Object.hasOwn(cfg.behavior!,'randomReplyProbability'),false);
   assert.equal(cfg.behavior?.attentionEnabled,true);
   assert.equal(cfg.behavior?.memeEnabled,true);
   assert.equal(Object.hasOwn(cfg.behavior!,'memeProbability'),false);
@@ -26,8 +26,11 @@ test('default persona keeps image preferences while platform owns the image prot
 
 
 test('legacy daily limits and probability are removed when loading or saving configuration',()=>{
- const parsed=BotConfigSchema.parse({...defaultConfig,behavior:{...defaultConfig.behavior,memeProbability:0,dailyMemeLimit:0,memeCooldownSeconds:3600}});
+ const parsed=BotConfigSchema.parse({...defaultConfig,behavior:{...defaultConfig.behavior,memeProbability:0,dailyMemeLimit:0,memeCooldownSeconds:3600,proactiveModelSchedule:true,dailyPlanLimit:-1,proactiveRandomInterval:true,proactiveMinMinutes:30,proactiveMaxMinutes:600,proactiveChance:0.5,randomReplyProbability:0.1,silenceSeconds:1800,maxReplyChars:500}});
  assert.equal(parsed.behavior?.memeEnabled,true);assert.equal(Object.hasOwn(parsed.behavior!,'memeCooldownSeconds'),false);
+ for(const retired of ['proactiveModelSchedule','dailyPlanLimit','proactiveRandomInterval','proactiveMinMinutes','proactiveMaxMinutes','proactiveChance','randomReplyProbability','silenceSeconds','maxReplyChars']){
+  assert.equal(Object.hasOwn(parsed.behavior!,retired),false);
+ }
  for(const key of ['memeProbability','dailyMemeLimit','memeCooldownSeconds'])assert.equal(Object.hasOwn(parsed.behavior!,key),false);
 });
 

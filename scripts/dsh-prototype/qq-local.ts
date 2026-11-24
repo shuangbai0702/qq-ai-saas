@@ -24,7 +24,7 @@ const status=JSON.parse(await readFile(path.join(root,'status.json'),'utf8'));
 if(status.state!=='online'||!/^\d{5,20}$/.test(status.uin))throw Error('Local QQ must already be online');
 const config=structuredClone(defaultConfig);config.baseUrl='https://nai.lunarbyte.pw/v1';config.model='deepseek-v4.1-flash';config.provider='custom';config.proactive=false;
 config.behavior.groupParticipationGroups=[];config.behavior.groupParticipationEnabled=false;config.behavior.ownerContactEnabled=false;config.behavior.autonomousGroupContact=false;
-config.behavior.proactiveModelSchedule=false;config.behavior.selfDevelopment=false;
+config.behavior.selfDevelopment=false;
 const db=await openDatabase(root,''),key=await loadKey(root,{createIfMissing:true});
 await db.query('INSERT INTO tenants(id,name) VALUES($1,$2) ON CONFLICT DO NOTHING',[identity.tenantId,'本地DSH验收']);
 await db.query("INSERT INTO bots(id,tenant_id,name,protocol,generation,revision,runtime_mode,expected_uin,desired_state) VALUES($1,$2,'本地小双白','napcat',1,1,'dedicated',$3,'running') ON CONFLICT DO NOTHING",[identity.botId,identity.tenantId,status.uin]);

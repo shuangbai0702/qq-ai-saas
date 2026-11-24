@@ -2,6 +2,7 @@ import {EditDialog} from './edit-dialog';
 import {MemePacks} from './meme-packs';
 import {QQFavorites} from './qq-favorites';
 import {useEffect,useRef,useState} from 'react';
+import {api} from './api';
 import type {BotConfig} from '../../../packages/contracts/index';
 type Reaction={id:string;meaning:string;avoid:string;enabled:boolean;version:string};
 type MemeDecision={reason:string;at:number;retryAfterSeconds?:number};
@@ -17,12 +18,12 @@ export function SocialControls({botId,config,onChange,gallery=false,decision}:{b
  const owner=useRef<AbortController|null>(null);
  const sequence=useRef(0),pending=useRef(false);
  const update=(value:Partial<NonNullable<BotConfig['behavior']>>)=>onChange({...config,behavior:{...config.behavior,...value} as NonNullable<BotConfig['behavior']>});
- useEffect(()=>{const controller=new AbortController(),operation=++sequence.current;owner.current=controller;pending.current=false;setItems([]);setBusy(false);setNotice('');setFile(null);setMeaning('');if(botId)fetch(`/v1/bots/${botId}/${category}`,{signal:controller.signal}).then(async r=>{if(!r.ok)throw new Error('图库加载失败');return r.json()}).then(d=>{if(!controller.signal.aborted&&sequence.current===operation)setItems(d.items)}).catch(e=>{if(!controller.signal.aborted&&sequence.current===operation)setNotice(e.message)});return()=>controller.abort()},[botId,gallery]);
+ useEffect(()=>{const controller=new AbortController(),operation=++sequence.current;owner.current=controller;pending.current=false;setItems([]);setBusy(false);setNotice('');setFile(null);setMeaning('');if(botId)void api(`/bots/${botId}/${category}`,undefined,'GET',controller.signal).then(d=>{if(!controller.signal.aborted&&sequence.current===operation)setItems(d.items)}).catch(e=>{if(!controller.signal.aborted&&sequence.current===operation)setNotice((e as Error).message)});return()=>controller.abort()},[botId,gallery]);
  async function mutate(image?:string,patch?:{meaning:string;avoid:string;enabled:boolean;expectedVersion:string}){const controller=owner.current;if(!botId||!controller||controller.signal.aborted||pending.current)return '操作正在进行，请稍后重试';pending.current=true;const operation=++sequence.current;const current=()=>!controller.signal.aborted&&sequence.current===operation;setBusy(true);setNotice('');try{let body:unknown=patch;
   if(!image){if(!file||file.type!=='image/png'||file.size>262144||meaning.trim().length<2)throw new Error('请选择256KiB以内的PNG，并填写使用场景');const bytes=new Uint8Array(await file.arrayBuffer());let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);body={png:btoa(binary),meaning:meaning.trim()}}
   if(!current())return;
-  const response=await fetch(`/v1/bots/${botId}/${category}${image?'/'+image:''}`,{method:patch?'PATCH':image?'DELETE':'POST',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined,signal:controller.signal});const result=await response.json();if(!response.ok)throw new Error(result.error||'图库操作失败');
-  const fresh=await fetch(`/v1/bots/${botId}/${category}`,{signal:controller.signal});if(!fresh.ok)throw new Error('操作已提交，但图库刷新失败。请关闭编辑并刷新页面，以服务器内容为准。');const data=await fresh.json();if(current()){setItems(data.items);setNotice('图片已更新，无需重启。发送开关需保存并应用。')}
+  await api(`/bots/${botId}/${category}${image?'/'+image:''}`,body,patch?'PATCH':image?'DELETE':'POST',controller.signal);
+  const data=await api(`/bots/${botId}/${category}`,undefined,'GET',controller.signal);if(current()){setItems(data.items);setNotice('图片已更新，无需重启。发送开关需保存并应用。')}
  }catch(e){if(current()){setNotice((e as Error).message);return (e as Error).message}}finally{if(current()){pending.current=false;setBusy(false)}}}
  return <div className="gallery-controls">
  {botId&&!gallery&&<MemePacks botId={botId} config={config} onChange={onChange}/>}
