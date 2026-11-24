@@ -1,6 +1,6 @@
 /** Read-only Linux probe: current test bot image model, anonymous Bili source. */
 import {createRequire} from 'node:module';import {readFile,mkdtemp,copyFile,rm} from 'node:fs/promises';import path from 'node:path';import os from 'node:os';import {randomUUID} from 'node:crypto';
-import {loadKey} from '../packages/shared/security.js';import {BiliWeb} from '../apps/node-agent/src/bilibili/web-adapter.js';import {VideoEvidence} from '../apps/node-agent/src/bilibili/video-evidence.js';import {BilibiliConfigSchema} from '../packages/contracts/bilibili.js';
+import {loadKey} from '../packages/shared/security.js';import {BiliWeb} from '../packages/bilibili/web-adapter.js';import {VideoEvidence} from '../apps/node-agent/src/bilibili/video-evidence.js';import {BilibiliConfigSchema} from '../packages/contracts/bilibili.js';
 const require=createRequire('/app/package.json'),{Pool}=require('pg'),password=process.env.PGPASSWORD_FILE?(await readFile(process.env.PGPASSWORD_FILE,'utf8')).trim():process.env.PGPASSWORD;
 const pool=new Pool(process.env.DATABASE_URL?{connectionString:process.env.DATABASE_URL,max:1}:{host:process.env.PGHOST,port:Number(process.env.PGPORT||5432),user:process.env.PGUSER,database:process.env.PGDATABASE,password,max:1});
 const db:any={query:async(sql:string,args?:any[])=>(await pool.query(sql,args)).rows},root=await mkdtemp(path.join(os.tmpdir(),'fishbot-real-video-'));

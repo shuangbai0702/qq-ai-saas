@@ -2,7 +2,7 @@ import test from 'node:test';import assert from 'node:assert/strict';
 import {mkdtemp,mkdir,writeFile,readFile,copyFile,readdir,rm} from 'node:fs/promises';import os from 'node:os';import path from 'node:path';
 import {execFile} from 'node:child_process';import {promisify} from 'node:util';import {createServer} from 'node:http';import {randomBytes} from 'node:crypto';
 import {modelImageTargetEdge} from '../packages/shared/model-media.js';
-import {VideoEvidence,recoverMedia} from '../apps/node-agent/src/bilibili/video-evidence.js';import {BiliWeb} from '../apps/node-agent/src/bilibili/web-adapter.js';import {managedProcess} from '../apps/node-agent/src/media/lifecycle.js';
+import {VideoEvidence,recoverMedia} from '../apps/node-agent/src/bilibili/video-evidence.js';import {BiliWeb} from '../packages/bilibili/web-adapter.js';import {managedProcess} from '../apps/node-agent/src/media/lifecycle.js';
 import {encrypt} from '../packages/shared/security.js';import {modelHttp} from '../packages/shared/model-http.js';import {BilibiliConfigSchema} from '../packages/contracts/bilibili.js';
 function jpegSize(data:Buffer){
  let at=2;while(at+8<data.length){if(data[at++]!==0xff)continue;const marker=data[at++];if(marker===0xd8||marker===0xd9)continue;const size=data.readUInt16BE(at);if([0xc0,0xc1,0xc2].includes(marker))return{width:data.readUInt16BE(at+5),height:data.readUInt16BE(at+3)};if(size<2)break;at+=size}throw new Error('JPEG dimensions missing');

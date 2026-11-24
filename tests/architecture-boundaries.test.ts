@@ -114,12 +114,15 @@ test('TypeScript subsystem boundaries: zero cycles and zero layer inversions', a
       if (rel === 'apps/node-agent/src/dsh-host.ts' && targetRel === 'apps/node-agent/src/agent.ts') {
         violations.push(`dsh-host->NodeAgent coupling: ${rel} -> ${targetRel}`);
       }
-      if (
-        (rel === 'apps/control-api/src/behavior-data.ts' || rel === 'apps/control-api/src/model-catalog.ts') &&
-        targetRel === 'apps/node-agent/src/agent.ts'
-      ) {
-        violations.push(`control-api route->NodeAgent coupling: ${rel} -> ${targetRel}`);
+      if (rel.startsWith('apps/control-api/') && targetRel.startsWith('apps/node-agent/') && rel !== 'apps/control-api/src/app.ts') {
+        violations.push(`control-api->node-agent penetration: ${rel} -> ${targetRel}`);
       }
+    }
+    if ((rel.startsWith('adapters/protocol/') || rel.startsWith('adapters/mock/')) && /\b(apiKey|AiRuntimeContext)\b/.test(text)) {
+      violations.push(`protocol adapter references AI secret/context: ${rel}`);
+    }
+    if (rel === 'apps/node-agent/src/dsh-host.ts' && /\.db\.query\(/.test(text)) {
+      violations.push(`dsh-host executes raw SQL instead of packages/database/dsh.ts: ${rel}`);
     }
     adj.set(file, edges);
   }
@@ -173,6 +176,35 @@ test('Control API in externalAgent mode owns zero NodeAgent instances', async t 
   const [botRow] = await db.query('SELECT * FROM bots WHERE id=$1', [botId]);
   const secrets = await createExternalRuntimeControl(db, root, key).logSecrets(botRow);
   assert.match(secrets.apiKey, /^fish-platform\./, 'externalAgent logSecrets must resolve platform model key for redaction');
+});
+
+test('ProtocolContext isolates QQ protocol adapters from LLM apiKey and BotConfig', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'fishbot-pctx-'));
+  const { app, db, agent } = await createApp({ root, agent: false });
+  t.after(() => app.close());
+  const reg = await app.inject({
+    method: 'POST',
+    url: '/v1/auth/register',
+    payload: { inviteCode: await issueTestInvite(db), email: 'pctx@example.com', password: 'test-password-123', name: 'pctx' },
+  });
+  const cookie = reg.cookies[0].value;
+  const created = await app.inject({
+    method: 'POST',
+    url: '/v1/bots',
+    cookies: { fish_session: cookie },
+    payload: { name: 'ProtoIsolationBot', protocol: 'mock', apiKey: 'sk-super-secret-llm-key', config: defaultConfig },
+  });
+  assert.equal(created.statusCode, 201, created.body);
+  const botId = created.json().id;
+  await db.query('UPDATE bot_config_revisions SET config=$2 WHERE bot_id=$1 AND revision=1', [botId, JSON.stringify({ ...defaultConfig, model: 'deepseek-chat' })]);
+  const [botRow] = await db.query('SELECT * FROM bots WHERE id=$1', [botId]);
+  const pctx = await agent.protocolContext(botRow);
+  assert.equal('apiKey' in pctx, false, 'ProtocolContext must never carry LLM apiKey');
+  assert.equal('config' in pctx, false, 'ProtocolContext must never carry BotConfig');
+  assert.equal('personaEdit' in pctx, false, 'ProtocolContext must never carry AI edit permits');
+  assert.equal(pctx.botId, botRow.id);
+  const aictx = await agent.context(botRow);
+  assert.equal(aictx.apiKey, 'sk-super-secret-llm-key');
 });
 
 test('Mock protocol is blocked in production unless explicitly enabled', () => {

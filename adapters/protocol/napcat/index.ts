@@ -1,6 +1,6 @@
 import {createHash,randomBytes} from 'node:crypto';import path from 'node:path';import {readFile,writeFile,mkdir,access} from 'node:fs/promises';
 import {atomicJson} from '../../../packages/shared/fs-atomic.js';
-import type {ProtocolAdapter,RuntimeContext,LoginSnapshot,Health,ProcessHostLike} from '../../../packages/contracts/index.js';
+import type {ProtocolAdapter,ProtocolContext,LoginSnapshot,Health,ProcessHostLike} from '../../../packages/contracts/index.js';
 import {withNapcatSettings,proxyPort,initialEgress,nextEgress,observeEgress,type NapcatSettings} from './egress.js';
 
 function hasQuickLoginUin(list:unknown,uin:string):boolean{
@@ -13,7 +13,7 @@ export class NapCatAdapter implements ProtocolAdapter{
  credentials=new Map<string,{credential:string;until:number}>();
  savedIdentities=new Map<string,string>();
  constructor(private host:ProcessHostLike,private settingsRoot:string){}
- async settings(ctx:RuntimeContext):Promise<NapcatSettings>{
+ async settings(ctx:ProtocolContext):Promise<NapcatSettings>{
   const file=path.join(this.settingsRoot,`${ctx.botId}.json`);
   return withNapcatSettings(file,async existing=>{let s=existing;if(!s){
    const runtimeDir=path.resolve(process.env.NAPCAT_RUNTIME_DIR||(process.platform==='win32'?'references/napcat-windows-node':'references/napcat-linux-node'));
@@ -23,16 +23,16 @@ export class NapCatAdapter implements ProtocolAdapter{
   }
   const u=new URL(s.url);if(u.hostname!=='127.0.0.1'||u.protocol!=='http:')throw new Error('NapCat管理端点仅允许本机HTTP');return{settings:s,result:s}})
  }
- async request(ctx:RuntimeContext,action:string,body:unknown={},retry=true):Promise<any>{const s=await this.settings(ctx);let credential=this.credentials.get(ctx.botId);if(!credential||credential.until<Date.now()){const r=await fetch(s.url+'/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({hash:createHash('sha256').update(s.webuiToken+'.napcat').digest('hex')}),signal:AbortSignal.timeout(4000)});const data:any=await r.json();if(!data.data?.Credential)throw new Error('NapCat管理认证失败');credential={credential:data.data.Credential,until:Date.now()+3000000};this.credentials.set(ctx.botId,credential)}
+ async request(ctx:ProtocolContext,action:string,body:unknown={},retry=true):Promise<any>{const s=await this.settings(ctx);let credential=this.credentials.get(ctx.botId);if(!credential||credential.until<Date.now()){const r=await fetch(s.url+'/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({hash:createHash('sha256').update(s.webuiToken+'.napcat').digest('hex')}),signal:AbortSignal.timeout(4000)});const data:any=await r.json();if(!data.data?.Credential)throw new Error('NapCat管理认证失败');credential={credential:data.data.Credential,until:Date.now()+3000000};this.credentials.set(ctx.botId,credential)}
  const r=await fetch(s.url+action,{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${credential.credential}`},body:JSON.stringify(body),signal:AbortSignal.timeout(4000)});const data:any=await r.json();if(data.code!==0){if(retry&&String(data.message).includes('Unauthorized')){this.credentials.delete(ctx.botId);return this.request(ctx,action,body,false)}throw new Error('NapCat管理请求失败：'+(data.message||'unknown'))}return data.data}
- async provision(ctx:RuntimeContext){await this.writeManifest(ctx,await this.settings(ctx))}
- private async writeManifest(ctx:RuntimeContext,s:NapcatSettings){
+ async provision(ctx:ProtocolContext){await this.writeManifest(ctx,await this.settings(ctx))}
+ private async writeManifest(ctx:ProtocolContext,s:NapcatSettings){
   const port=proxyPort();
   if(s.egress?.route==='huawei'&&!port)throw new Error('华为云出口的本机 SOCKS5 端口未配置');
   await mkdir(path.join(ctx.root,'qq'),{recursive:true});const u=new URL(s.url);
   await writeFile(path.join(ctx.root,'napcat-platform.json'),JSON.stringify({botId:ctx.botId,resume:ctx.loginIntent!=='qr',expectedUin:ctx.expectedUin,dataDir:path.join(ctx.root,'qq'),runtimeDir:s.runtimeDir,network:s.egress?.route==='huawei'?{mode:'socks5',host:'127.0.0.1',port}:{mode:'direct'},reverseWs:{url:`ws://127.0.0.1:${ctx.aiPort}/ws`,token:ctx.token},management:{host:'127.0.0.1',port:Number(u.port),token:s.webuiToken}}),{mode:0o600});
  }
- async beginLogin(ctx:RuntimeContext){
+ async beginLogin(ctx:ProtocolContext){
   await this.settings(ctx);
   await withNapcatSettings(path.join(this.settingsRoot,`${ctx.botId}.json`),async(settings,save)=>{
    if(!settings)throw new Error('NapCat配置不存在');
@@ -42,13 +42,15 @@ export class NapCatAdapter implements ProtocolAdapter{
    if(proxyPort()||settings.egress)settings.egress=nextEgress(settings.egress||initialEgress());
    if(settings.egress)delete settings.egress.process;
    await save(settings);await this.writeManifest(ctx,settings);this.credentials.delete(ctx.botId);
-   await this.host.start(ctx.botId,'protocol',settings.launcher,[...(settings.args||[]),path.join(ctx.root,'napcat-platform.json')],ctx.root,{...process.env,NAPCAT_PLATFORM_MANIFEST:path.join(ctx.root,'napcat-platform.json'),LD_LIBRARY_PATH:settings.runtimeDir},[settings.webuiToken,ctx.token]);
+   const childEnv:NodeJS.ProcessEnv={...process.env,NAPCAT_PLATFORM_MANIFEST:path.join(ctx.root,'napcat-platform.json'),LD_LIBRARY_PATH:settings.runtimeDir};
+   delete childEnv.MASTER_KEY;delete childEnv.DATABASE_URL;delete childEnv.EULER_SIGNER_TOKEN;
+   await this.host.start(ctx.botId,'protocol',settings.launcher,[...(settings.args||[]),path.join(ctx.root,'napcat-platform.json')],ctx.root,childEnv,[settings.webuiToken,ctx.token]);
    if(settings.egress){const process=await this.host.record(ctx.botId,'protocol');if(!process?.created)throw new Error('无法确认QQ出口的进程身份');settings.egress.process={pid:process.pid,created:process.created,generation:ctx.generation,online:false,counted:false}}
    return{settings,result:undefined};
   });
  }
 
- async getLoginState(ctx:RuntimeContext):Promise<LoginSnapshot>{
+ async getLoginState(ctx:ProtocolContext):Promise<LoginSnapshot>{
   const s=await this.request(ctx,'/QQLogin/CheckLoginStatus');
   if(s.isLogin&&s.coreReady){const info=await this.request(ctx,'/QQLogin/GetQQLoginInfo');const uin=String(info.uin||info.selfInfo?.uin||'');if(/^\d{5,20}$/.test(uin)&&(!ctx.expectedUin||ctx.expectedUin===uin)&&this.savedIdentities.get(ctx.botId)!==uin){await atomicJson(path.join(ctx.root,'qq/identity.json'),{uin});this.savedIdentities.set(ctx.botId,uin)}return{state:'online',uin}}
   if(s.restartRequested===true)return{state:'starting',restartRequested:true,message:'QQ登录服务等待协议托管器恢复'};
@@ -63,10 +65,10 @@ export class NapCatAdapter implements ProtocolAdapter{
   const state=s.qrLoginAccepted||s.loginPhase==='initializing'||s.isLogin?'authenticating':s.loginPhase==='qrcode_scanned'?'waiting_confirm':s.qrcodeurl?'waiting_scan':'starting';
   return{state,qr:s.qrcodeurl||undefined}
  }
- async cancelLogin(ctx:RuntimeContext){const s=await this.settings(ctx);if(!s.launcher)throw new Error('外部NapCat实例不受进程管理；无法保证撤销二维码，请管理员配置launcher');await this.stop(ctx.botId)}
- async queryIdentity(ctx:RuntimeContext){const s=await this.getLoginState(ctx);return s.state==='online'?s.uin||null:null}
+ async cancelLogin(ctx:ProtocolContext){const s=await this.settings(ctx);if(!s.launcher)throw new Error('外部NapCat实例不受进程管理；无法保证撤销二维码，请管理员配置launcher');await this.stop(ctx.botId)}
+ async queryIdentity(ctx:ProtocolContext){const s=await this.getLoginState(ctx);return s.state==='online'?s.uin||null:null}
  getCapabilities(){return ['qr','text','image','record','onebot-reverse-ws','private-management-api']}
- async getHealth(ctx:RuntimeContext):Promise<Health>{
+ async getHealth(ctx:ProtocolContext):Promise<Health>{
   const p=await this.host.inspect(ctx.botId,'protocol');
   try{
    const s=await this.getLoginState(ctx);

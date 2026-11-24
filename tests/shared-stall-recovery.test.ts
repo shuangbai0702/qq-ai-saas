@@ -1,7 +1,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {SharedAstrBotAdapter} from '../adapters/astrbot/shared.js';
-import {defaultConfig,type RuntimeContext} from '../packages/contracts/index.js';
-const ctx:RuntimeContext={botId:'member',tenantId:'tenant',root:'unused',generation:7,revision:2,aiPort:1,protocolPort:2,token:'',apiKey:'',config:defaultConfig,expectedUin:''};
+import {defaultConfig,type AiRuntimeContext} from '../packages/contracts/index.js';
+const ctx:AiRuntimeContext={botId:'member',tenantId:'tenant',root:'unused',generation:7,revision:2,aiPort:1,protocolPort:2,token:'',apiKey:'',config:defaultConfig,expectedUin:''};
 function fixture(){
  const calls:string[]=[];const owner:any={pid:123,created:456,loopActivity:{at:Date.now()/1000,pid:124,created:457,active:true}};
  const db:any={query:async(sql:string)=>sql.startsWith('SELECT generation,revision')?[{generation:7,revision:2,desired_state:'running'}]:[]};

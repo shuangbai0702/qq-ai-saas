@@ -1,9 +1,9 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {SharedAstrBotAdapter} from '../adapters/astrbot/shared.js';
 import {ProcessHost} from '../apps/node-agent/src/process-host.js';
-import {defaultConfig,type RuntimeContext} from '../packages/contracts/index.js';
+import {defaultConfig,type AiRuntimeContext} from '../packages/contracts/index.js';
 
-const ctx:RuntimeContext={botId:'member',tenantId:'tenant',root:'unused',generation:7,revision:2,aiPort:24000,protocolPort:24002,token:'fixture',apiKey:'fixture',config:defaultConfig,expectedUin:''};
+const ctx:AiRuntimeContext={botId:'member',tenantId:'tenant',root:'unused',generation:7,revision:2,aiPort:24000,protocolPort:24002,token:'fixture',apiKey:'fixture',config:defaultConfig,expectedUin:''};
 function fixture(){
  const group={id:'group-fixture',generation:3};let process:any={pid:123,created:456};const calls:any[]=[];
  const db:any={query:async(sql:string)=>sql.startsWith('SELECT generation,revision')?[{generation:7,revision:2,desired_state:'running'}]:[],transaction:async(fn:any)=>fn(db)};

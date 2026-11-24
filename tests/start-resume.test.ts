@@ -1,7 +1,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {mkdtemp,mkdir,writeFile,readFile} from 'node:fs/promises';import path from 'node:path';import os from 'node:os';
 import {createApp} from '../apps/control-api/src/app.js';import {issueTestInvite} from './helpers/invitations.js';
-import type {LoginSnapshot,RuntimeContext} from '../packages/contracts/index.js';
+import type {LoginSnapshot,ProtocolContext} from '../packages/contracts/index.js';
 
 test('start observes saved NapCat resume, reuses pending start and exposes QR fallback without relaunch',async t=>{
  const root=await mkdtemp(path.join(os.tmpdir(),'fish-resume-'));const {app,db,agent}=await createApp({root,agent:false});t.after(()=>app.close());
@@ -10,7 +10,7 @@ test('start observes saved NapCat resume, reuses pending start and exposes QR fa
  const id=(await call('POST','/v1/bots',{name:'saved',protocol:'napcat',runtimeMode:'dedicated',expectedUin:'90123456',apiKey:'keep-key'})).json().id;
  const qq=path.join(root,'bots',id,'qq');await mkdir(qq,{recursive:true});await writeFile(path.join(qq,'identity.json'),JSON.stringify({uin:'90123456'}));await writeFile(path.join(qq,'session.bin'),'preserved-session');
  await db.query("UPDATE bots SET desired_state='offline',observed_state='offline' WHERE id=$1",[id]);
- let launches=0,stops=0,alive=false,login:LoginSnapshot={state:'waiting_scan',qr:'fallback-qr'};let launched:RuntimeContext|undefined;
+ let launches=0,stops=0,alive=false,login:LoginSnapshot={state:'waiting_scan',qr:'fallback-qr'};let launched:ProtocolContext|undefined;
  agent.ai.start=async()=>{};agent.ai.stop=async()=>{};
  agent.host.record=async()=>({pid:12345,created:1000} as any);
  agent.protocols.napcat.beginLogin=async ctx=>{launches++;alive=true;launched=ctx};agent.protocols.napcat.stop=async()=>{stops++;alive=false};

@@ -7,7 +7,7 @@ import {randomBytes} from 'node:crypto';
 import {pipeline} from 'node:stream/promises';
 import {Transform} from 'node:stream';
 import {mediaUrl,publicAddress} from './lifecycle.js';
-import {MediaError as BiliError} from './error.js';
+import {MediaError as BiliError} from '../../../../packages/shared/media-error.js';
 
 export async function rangeSource<T>(source:string,budget:{remaining:number;received:number},signal:AbortSignal,run:(url:string)=>Promise<T>,io:{lookup?:typeof lookup;request?:typeof request}={}):Promise<T>{
  const route='/'+randomBytes(24).toString('hex');let failure:unknown;

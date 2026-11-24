@@ -1,15 +1,15 @@
 import {atomicJson} from '../../packages/shared/fs-atomic.js';
 import path from 'node:path';import {mkdir,readFile,writeFile,rename} from 'node:fs/promises';
-import {BotConfigSchema,type RuntimeContext,type Health,type ProcessHostLike} from '../../packages/contracts/index.js';
+import {BotConfigSchema,type AiProbeContext,type AiRuntimeContext,type Health,type ProcessHostLike} from '../../packages/contracts/index.js';
 export class AstrBotAdapter {
   constructor(private host:ProcessHostLike,private source:string,private python:string){}
-  async provision(ctx:RuntimeContext){
+  async provision(ctx:AiRuntimeContext){
     BotConfigSchema.parse(ctx.config);
     for(const dir of ['data','tmp','data/plugins','data/plugin_data','data/temp','data/config'])await mkdir(path.join(ctx.root,'ai',dir),{recursive:true});
     await this.applyConfig(ctx);
   }
-  async applyConfig(ctx:RuntimeContext){return this.updateConfig(ctx,()=>this.applyConfigLocked(ctx))}
-  private async applyConfigLocked(ctx:RuntimeContext){
+  async applyConfig(ctx:AiRuntimeContext){return this.updateConfig(ctx,()=>this.applyConfigLocked(ctx))}
+  private async applyConfigLocked(ctx:AiRuntimeContext){
     try{const prior=JSON.parse(await readFile(path.join(ctx.root,'ai/runtime.json'),'utf8'));if(prior.generation>ctx.generation||prior.generation===ctx.generation&&prior.revision>ctx.revision)throw Object.assign(Error('Runtime configuration superseded'),{superseded:true})}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error}
     const cfg=ctx.config,modelConfigured=!!ctx.apiKey&&!!cfg.model.trim();
     const value={config_version:5,dashboard:{enable:false,host:'127.0.0.1'},admins_id:[],wake_prefix:[''],
@@ -27,42 +27,42 @@ export class AstrBotAdapter {
     await atomicJson(path.join(root,'runtime.json'),{generation:ctx.generation,revision:ctx.revision,systemChangePermitId:ctx.systemChangePermitId,personaEdit:ctx.personaEdit,characterCardsEdit:ctx.characterCardsEdit,token:ctx.token,aiPort:ctx.aiPort,expectedUin:ctx.expectedUin,groups:cfg.groups,botId:ctx.botId,tenantId:ctx.tenantId,config:cfg});
     return {appliedRevision:ctx.revision,restartRequired:!!(await this.host.inspect(ctx.botId,'ai'))};
   }
-  async start(ctx:RuntimeContext){await this.provision(ctx);const root=path.join(ctx.root,'ai');
+  async start(ctx:AiRuntimeContext){await this.provision(ctx);const root=path.join(ctx.root,'ai');
     const env:NodeJS.ProcessEnv={...process.env,ASTRBOT_ROOT:root,TMP: path.join(root,'tmp'),TEMP:path.join(root,'tmp'),TMPDIR:path.join(root,'tmp'),FISHBOT_MODEL_KEY:ctx.apiKey,PYTHONUNBUFFERED:'1',PYTHONIOENCODING:'utf-8'};
     delete env.MASTER_KEY;delete env.DATABASE_URL;
     await this.host.start(ctx.botId,'ai',this.python,[path.resolve('adapters/astrbot/headless.py'),this.source,root],root,env,[ctx.apiKey,ctx.token]);
   }
   async stop(botId:string){await this.host.stop(botId,'ai')}
   private configUpdates=new Map<string,Promise<unknown>>();
-  private async updateConfig<T>(ctx:RuntimeContext,run:()=>Promise<T>):Promise<T>{
+  private async updateConfig<T>(ctx:AiRuntimeContext,run:()=>Promise<T>):Promise<T>{
     const previous=this.configUpdates.get(ctx.botId);
     const update=(async()=>{if(previous)await previous.catch(()=>{});return run()})();
     this.configUpdates.set(ctx.botId,update);try{return await update}finally{if(this.configUpdates.get(ctx.botId)===update)this.configUpdates.delete(ctx.botId)}
   }
-  async persistApplied(ctx:RuntimeContext){return this.updateConfig(ctx,()=>this.persistAppliedLocked(ctx))}
-  private async persistAppliedLocked(ctx:RuntimeContext){
+  async persistApplied(ctx:AiRuntimeContext){return this.updateConfig(ctx,()=>this.persistAppliedLocked(ctx))}
+  private async persistAppliedLocked(ctx:AiRuntimeContext){
     const file=path.join(ctx.root,'ai','runtime.json'),prior=JSON.parse(await readFile(file,'utf8'));
     if(prior.generation!==ctx.generation||prior.revision>ctx.revision)return false;
     const value={...prior,revision:ctx.revision,config:ctx.config,characterCardsEdit:ctx.characterCardsEdit,personaEdit:ctx.personaEdit,toolsEdit:ctx.toolsEdit,systemChangePermitId:ctx.systemChangePermitId};
     await atomicJson(file,value);return true;
   }
-  async applyCards(ctx:RuntimeContext){return this.updateConfig(ctx,()=>this.applyCardsLocked(ctx))}
-  private async applyCardsLocked(ctx:RuntimeContext){
+  async applyCards(ctx:AiRuntimeContext){return this.updateConfig(ctx,()=>this.applyCardsLocked(ctx))}
+  private async applyCardsLocked(ctx:AiRuntimeContext){
     if(!ctx.characterCardsEdit||!await this.host.inspect(ctx.botId,'ai'))return false;
     const r=await fetch(`http://127.0.0.1:${ctx.aiPort+1}/base/character-cards`,{method:'PUT',headers:{Authorization:`Bearer ${ctx.token}`,'Content-Type':'application/json'},body:JSON.stringify({botId:ctx.botId,tenantId:ctx.tenantId,generation:ctx.generation,revision:ctx.revision,config:ctx.config,characterCardsEdit:ctx.characterCardsEdit,systemChangePermitId:ctx.systemChangePermitId,apiKey:ctx.apiKey}),signal:AbortSignal.timeout(5000)});
     if(r.status===404||r.status===409)return false;if(!r.ok)throw Error('Character cards update failed');
     const ack:any=await r.json();if(ack.generation!==ctx.generation||ack.revision!==ctx.revision||ack.target!==ctx.characterCardsEdit.target)throw Error('Character cards acknowledgement mismatch');
     return this.persistAppliedLocked(ctx);
   }
-  async applyTools(ctx:RuntimeContext){return this.updateConfig(ctx,()=>this.applyToolsLocked(ctx))}
-  private async applyToolsLocked(ctx:RuntimeContext){
+  async applyTools(ctx:AiRuntimeContext){return this.updateConfig(ctx,()=>this.applyToolsLocked(ctx))}
+  private async applyToolsLocked(ctx:AiRuntimeContext){
     if(!ctx.toolsEdit||!await this.host.inspect(ctx.botId,'ai'))return false;
     const r=await fetch(`http://127.0.0.1:${ctx.aiPort+1}/base/tools`,{method:'PUT',headers:{Authorization:`Bearer ${ctx.token}`,'Content-Type':'application/json'},body:JSON.stringify({botId:ctx.botId,tenantId:ctx.tenantId,generation:ctx.generation,revision:ctx.revision,config:ctx.config,toolsEdit:ctx.toolsEdit,apiKey:ctx.apiKey}),signal:AbortSignal.timeout(5000)});
     if(r.status===404||r.status===409)return false;if(!r.ok)throw Error('Tool update failed');
     return this.persistAppliedLocked(ctx);
   }
-  async applyPersona(ctx:RuntimeContext){return this.updateConfig(ctx,()=>this.applyPersonaLocked(ctx))}
-  private async applyPersonaLocked(ctx:RuntimeContext){
+  async applyPersona(ctx:AiRuntimeContext){return this.updateConfig(ctx,()=>this.applyPersonaLocked(ctx))}
+  private async applyPersonaLocked(ctx:AiRuntimeContext){
     if(!ctx.personaEdit||!await this.host.inspect(ctx.botId,'ai'))return false;
     const r=await fetch(`http://127.0.0.1:${ctx.aiPort+1}/base/persona`,{method:'PUT',headers:{Authorization:`Bearer ${ctx.token}`,'Content-Type':'application/json'},body:JSON.stringify({botId:ctx.botId,tenantId:ctx.tenantId,generation:ctx.generation,revision:ctx.revision,config:ctx.config,personaEdit:ctx.personaEdit,systemChangePermitId:ctx.systemChangePermitId,apiKey:ctx.apiKey}),signal:AbortSignal.timeout(5000)});
     if(r.status===404||r.status===409)return false;
@@ -70,5 +70,5 @@ export class AstrBotAdapter {
     if(!await this.persistAppliedLocked(ctx))return false;
     await writeFile(path.join(ctx.root,'ai','persona.txt'),ctx.config.systemPrompt,{mode:0o600});return true;
   }
-  async probe(ctx:RuntimeContext):Promise<Health>{const p=await this.host.inspect(ctx.botId,'ai');const h:Health={alive:!!p,ready:false,...(p?{pid:p.pid,rssBytes:p.rssBytes,memoryPolicy:p.memoryPolicy}:{})};if(!h.alive)return h;try{const r=await fetch(`http://127.0.0.1:${ctx.aiPort+1}/health`,{headers:{Authorization:`Bearer ${ctx.token}`},signal:AbortSignal.timeout(1500)});const data:any=await r.json();return {...h,ready:r.ok&&data.generation===ctx.generation&&data.revision===ctx.revision,metrics:data.metrics?.qq,detail:data.modelConfigured?'模型已配置，API可用性需实际对话验证':'尚未配置模型Key'}}catch{return h}}
+  async probe(ctx:AiProbeContext):Promise<Health>{const p=await this.host.inspect(ctx.botId,'ai');const h:Health={alive:!!p,ready:false,...(p?{pid:p.pid,rssBytes:p.rssBytes,memoryPolicy:p.memoryPolicy}:{})};if(!h.alive)return h;try{const r=await fetch(`http://127.0.0.1:${ctx.aiPort+1}/health`,{headers:{Authorization:`Bearer ${ctx.token}`},signal:AbortSignal.timeout(1500)});const data:any=await r.json();return {...h,ready:r.ok&&data.generation===ctx.generation&&data.revision===ctx.revision,metrics:data.metrics?.qq,detail:data.modelConfigured?'模型已配置，API可用性需实际对话验证':'尚未配置模型Key'}}catch{return h}}
 }

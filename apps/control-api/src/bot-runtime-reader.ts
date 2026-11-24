@@ -1,12 +1,23 @@
 import path from 'node:path';
-import type { BotConfig, ProtocolKind } from '../../../packages/contracts/index.js';
+import type { AiRuntimeContext, BotConfig, ProtocolAdapter, ProtocolContext, ProtocolKind } from '../../../packages/contracts/index.js';
 import { BotConfigSchema } from '../../../packages/contracts/index.js';
 import type { Sql } from '../../../packages/database/index.js';
 import { decrypt } from '../../../packages/shared/security.js';
 import { resolvePlatformModel } from '../../../packages/shared/platform-model.js';
 import { runtimeIpc } from '../../../packages/shared/runtime-ipc.js';
-import type { NodeAgent } from '../../node-agent/src/agent.js';
 import type { MockProtocolAdapter } from '../../../adapters/mock/index.js';
+
+export interface EmbeddedAgentPort {
+  host: { python: string; inspect(id: string, role: 'ai' | 'protocol'): Promise<unknown> };
+  protocols: Record<string, ProtocolAdapter>;
+  shared: { group(id: string): Promise<{ health_port: number; token: string; generation: number } | undefined> };
+  personalModelConnection(bot: { id: string; tenant_id: string }): Promise<{ baseUrl: string; apiKey: string }>;
+  protocolContext(bot: any, loginIntent?: ProtocolContext['loginIntent']): Promise<ProtocolContext>;
+  context(bot: any): Promise<AiRuntimeContext>;
+  applyUserCards(botId: string, tenantId: string, expectedRevision: number): Promise<boolean>;
+  applyUserPersona(botId: string, tenantId: string): Promise<boolean>;
+  applyUserTools(botId: string, tenantId: string): Promise<boolean>;
+}
 
 const PROTOCOL_CAPABILITIES: Record<ProtocolKind, string[]> = {
   mock: ['mock', 'qr', 'cancel', 'text', 'onebot-reverse-ws'],
@@ -178,7 +189,7 @@ export function createExternalRuntimeControl(db: Sql, _root: string, key: Buffer
 }
 
 /** Embedded single-process control port backed by an in-process NodeAgent. */
-export function createEmbeddedRuntimeControl(agent: NodeAgent): RuntimeControlPort {
+export function createEmbeddedRuntimeControl(agent: EmbeddedAgentPort): RuntimeControlPort {
   return {
     pythonExecutable: agent.host.python,
     protocolCapabilities(protocol) {
@@ -231,7 +242,7 @@ export function createEmbeddedRuntimeControl(agent: NodeAgent): RuntimeControlPo
     },
     async mockTransition(bot, body) {
       const adapter = agent.protocols.mock as MockProtocolAdapter;
-      return adapter.call(await agent.context(bot), '/transition', body);
+      return adapter.call(await agent.protocolContext(bot), '/transition', body);
     },
   };
 }

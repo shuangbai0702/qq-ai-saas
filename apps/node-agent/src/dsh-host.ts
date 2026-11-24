@@ -10,7 +10,8 @@ import {modelHttp} from '../../../packages/shared/model-http.js';
 import {redact} from '../../../packages/shared/security.js';
 import {atomicJson} from '../../../packages/shared/fs-atomic.js';
 import type {Sql} from '../../../packages/database/index.js';
-import type {RuntimeContext} from '../../../packages/contracts/index.js';
+import {findActingAutonomyCycleDecision,findActiveBotForDsh,listActiveBotIdentitiesForDsh,listRunningBotsForDsh} from '../../../packages/database/dsh.js';
+import type {AiRuntimeContext} from '../../../packages/contracts/index.js';
 import type {BilibiliTools} from '../../../packages/database/bilibili-tools.js';
 
 export interface DshHostDeps {
@@ -18,11 +19,16 @@ export interface DshHostDeps {
   readonly root: string;
   readonly key: Buffer;
   readonly closed: boolean;
-  context(bot: any): Promise<RuntimeContext>;
+  context(bot: any): Promise<AiRuntimeContext>;
   readonly bilibili: {
     readonly repo: BilibiliTools;
     catalog(bot: any): any[];
   };
+}
+
+export interface DshHostOptions {
+  port?: number;
+  searchMcpUrl?: string;
 }
 
 function bearerEqual(header: string | undefined, expected: string): boolean {
@@ -97,13 +103,17 @@ export class DshHost{
  private modelRoutes=new Map<string,{baseUrl:string;apiKey:string;token:string;signal:AbortSignal;assertCurrent:()=>Promise<void>}>();
  // Per-connection RPC waiters only; original tools/Work remain the authority.
  private callbacks=new Map<string,{task:string;token:string;operation:string;resolve:(value:any)=>void;reject:(error:Error)=>void}>();
- private port=Number(process.env.FISHBOT_DSH_PORT||24878);
+ private port:number;
+ private searchMcpUrl:string;
  private stopping?:Promise<void>;
- constructor(private agent:DshHostDeps,private connectSearch=mcpSource){}
+ constructor(private agent:DshHostDeps,private connectSearch=mcpSource,options:DshHostOptions={}){
+  this.port=options.port??24878;
+  this.searchMcpUrl=options.searchMcpUrl??'https://mcp.exa.ai/mcp';
+ }
  /** Cold boot only, after the canonical Agent lease is held. A failed MCP
   * connection must not leave last process's bridge hiding working native tools. */
  async clearPreviousBridges(){
-  for(const bot of await this.agent.db.query("SELECT id,tenant_id FROM bots WHERE deleted_at IS NULL")){
+  for(const bot of await listActiveBotIdentitiesForDsh(this.agent.db)){
    const file=path.join(this.agent.root,'bots',bot.id,'ai/dsh-bridge.json');
    let value:any;try{value=JSON.parse(await readFile(file,'utf8'))}catch(error:any){if(error.code==='ENOENT')continue;throw error}
    if(value.mode==='production'&&value.botId===bot.id&&value.tenantId===bot.tenant_id)await rm(file);
@@ -112,7 +122,7 @@ export class DshHost{
  async start(){
   if(this.server)return;
   await installedDsh();
-  try{this.search=await this.connectSearch({serverName:'exa',url:process.env.FISHBOT_DSH_SEARCH_MCP_URL||'https://mcp.exa.ai/mcp',allowedReadTools:['mcp__exa__web_search_exa','mcp__exa__web_fetch_exa']})}
+  try{this.search=await this.connectSearch({serverName:'exa',url:this.searchMcpUrl,allowedReadTools:['mcp__exa__web_search_exa','mcp__exa__web_fetch_exa']})}
   catch(error){this.search=undefined;console.error('DSH search MCP unavailable; local DSH capabilities remain active:',redact(String(error)))}
   try{this.server=http.createServer((req,res)=>{void this.request(req,res).catch(()=>{if(!res.headersSent)res.writeHead(500);res.end('{}')})});
    await new Promise<void>((resolve,reject)=>{this.server!.once('error',reject);this.server!.listen(this.port,'127.0.0.1',()=>{this.server!.removeListener('error',reject);resolve()})});
@@ -123,7 +133,7 @@ export class DshHost{
  async publish(botId?:string){
   if(this.closing||!this.server)return;
   const activeIds=new Set<string>();
-  for(const bot of await this.agent.db.query("SELECT * FROM bots WHERE deleted_at IS NULL AND desired_state='running'"+(botId?" AND id=$1":""),botId?[botId]:[])){
+  for(const bot of await listRunningBotsForDsh(this.agent.db,botId)){
    const ctx=await this.agent.context(bot);
    // Reuse each Bot's existing credential/provider. Unsupported providers retain their original tools.
    if(!ctx.apiKey){
@@ -154,7 +164,7 @@ export class DshHost{
    let raw='';for await(const chunk of req){raw+=chunk;if(Buffer.byteLength(raw)>65536)throw Error('request_too_large')}
    const body=JSON.parse(raw),parent=body.parent;
    if(!parent||typeof parent.bot_id!=='string')throw Error('trusted_parent_required');
-   const [storedBot]=await this.agent.db.query('SELECT * FROM bots WHERE id=$1 AND deleted_at IS NULL',[parent.bot_id]);
+   const storedBot=await findActiveBotForDsh(this.agent.db,parent.bot_id);
    const bot=storedBot?{...storedBot}:undefined;
    if(!bot||!runtimeStatus(bot).online||!this.snapshots.has(bot.id))throw Error('stale_parent');
    if(!dshParentMatches(bot,parent)&&!(dshParentMatches({...bot,revision:parent.config_revision},parent)&&await allowsInFlightBaseRevision(this.agent.db,bot.id,bot.tenant_id,parent.config_revision,bot.revision)))throw Error('stale_parent');
@@ -173,8 +183,8 @@ export class DshHost{
     if(parent.authority==='autonomous'){
      // The original scheduler already admitted this receipt to the CURRENT
      // cycle. A persisted Session locates computation; it grants no old rights.
-     const [cycle]=await this.agent.db.query("SELECT decision FROM autonomy_cycles WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND epoch=$4 AND finished_at IS NULL AND state='acting'",[parent.work_id,bot.id,bot.tenant_id,parent.mode_epoch]);
-     const source=cycle?.decision?.continuation;
+     const decision=await findActingAutonomyCycleDecision(this.agent.db,parent.work_id,bot.id,bot.tenant_id,parent.mode_epoch);
+     const source=decision?.continuation;
      if(completedMedia.mode_epoch!==parent.mode_epoch||source?.id!==completedMedia.id||source.owner!==body.completion.owner||source.parentWorkId!==completedMedia.work_id||!/^fishbot-[a-f0-9]{64}$/.test(completedMedia.continuation.dsh.sessionId))throw Error('autonomous_media_not_admitted');
      task=completedMedia.continuation.dsh.sessionId;bound.sessionId=task;
      if(this.running.has(task!))throw Error('already_running');

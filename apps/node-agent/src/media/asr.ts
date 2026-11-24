@@ -1,4 +1,4 @@
-import {MediaError} from './error.js';
+import {MediaError} from '../../../../packages/shared/media-error.js';
 
 /** ASR timestamps are clip-relative estimates, never speaker/sample alignment. */
 export function asrSegments(value:unknown,duration:number):{start:number;end:number;text:string}[]{

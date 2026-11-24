@@ -3,7 +3,7 @@ import os from 'node:os';import path from 'node:path';import {randomBytes} from 
 import {mkdtemp,mkdir,writeFile,rm,readdir,utimes,readFile} from 'node:fs/promises';
 import {mediaAdmission,managedProcess} from '../apps/node-agent/src/media/lifecycle.js';
 import {VideoEvidence,mediaAvailable} from '../apps/node-agent/src/bilibili/video-evidence.js';
-import {encrypt} from '../packages/shared/security.js';import {BiliWeb} from '../apps/node-agent/src/bilibili/web-adapter.js';import {BilibiliConfigSchema} from '../packages/contracts/bilibili.js';
+import {encrypt} from '../packages/shared/security.js';import {BiliWeb} from '../packages/bilibili/web-adapter.js';import {BilibiliConfigSchema} from '../packages/contracts/bilibili.js';
 
 async function guardFixture(t:any){const root=await mkdtemp(path.join(os.tmpdir(),'media-guard-'));t.after(()=>rm(root,{recursive:true,force:true}));const guard=path.join(root,'guard'),cgroup=path.join(root,'delegated');await mkdir(guard);await mkdir(cgroup);await writeFile(path.join(cgroup,'cgroup.procs'),'');return{root,guard,cgroup}}
 async function arm(guard:string){await writeFile(path.join(guard,'guard-heartbeat'),'');await writeFile(path.join(guard,'armed'),'')}

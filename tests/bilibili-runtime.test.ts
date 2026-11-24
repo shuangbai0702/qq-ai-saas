@@ -7,7 +7,7 @@ import {issueTestInvite} from './helpers/invitations.js';
 import {permitModelFixture} from './helpers/model-fixture.js';
 import {defaultConfig} from '../packages/contracts/index.js';
 import {MockProtocolAdapter} from '../adapters/mock/index.js';
-import {BiliWeb} from '../apps/node-agent/src/bilibili/web-adapter.js';
+import {BiliWeb} from '../packages/bilibili/web-adapter.js';
 import {BilibiliTools} from '../packages/database/bilibili-tools.js';
 import {execFileSync} from 'node:child_process';
 

@@ -1,6 +1,6 @@
 import {constants,publicEncrypt} from 'node:crypto';
-import type {Sql} from '../../../../packages/database/index.js';
-import {encrypt,decrypt} from '../../../../packages/shared/security.js';
+import type {Sql} from '../database/index.js';
+import {encrypt,decrypt} from '../shared/security.js';
 import {BiliWeb,BiliError,cookieCandidate,type Credential} from './web-adapter.js';
 // Platform public key, also documented by Iseenope/bilibili-mcp-server
 // 20eedd09862aea2c160163007f45221c544651b2 (MIT). No SDK/global cookie store.

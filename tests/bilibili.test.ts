@@ -9,9 +9,9 @@ import {BilibiliTools} from '../packages/database/bilibili-tools.js';
 import {openToolWork,attachToolIpc} from './helpers/tool-work.js';
 import {createHash} from 'node:crypto';
 import {BilibiliExecutor} from '../apps/node-agent/src/bilibili/executor.js';
-import {BiliWeb,boundedJson,cookieCandidate,BiliError} from '../apps/node-agent/src/bilibili/web-adapter.js';
+import {BiliWeb,boundedJson,cookieCandidate,BiliError} from '../packages/bilibili/web-adapter.js';
 import {bridgeToken} from '../packages/shared/tool-bridge.js';
-import {BiliAccounts} from '../apps/node-agent/src/bilibili/account-broker.js';
+import {BiliAccounts} from '../packages/bilibili/account-broker.js';
 import {BilibiliConfigSchema} from '../packages/contracts/bilibili.js';
 
 const json=(data:any,headers?:HeadersInit)=>new Response(JSON.stringify({code:0,data}),{headers});

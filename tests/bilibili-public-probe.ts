@@ -1,6 +1,6 @@
 // Anonymous, single-request diagnostic. Never authenticates or writes.
 import {readFileSync} from 'node:fs';
-import {BiliWeb,BiliError} from '../apps/node-agent/src/bilibili/web-adapter.js';
+import {BiliWeb,BiliError} from '../packages/bilibili/web-adapter.js';
 const read=(p:string)=>{try{return readFileSync(p,'utf8')}catch{return null}};
 const before={memory:process.memoryUsage(),usage:process.resourceUsage(),host:read('/proc/meminfo'),psi:read('/proc/pressure/memory')};
 const started=performance.now();let outcome:any;

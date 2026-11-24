@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {MediaError as BiliError,type ExternalFailureSource as BiliFailureSource} from '../media/error.js';
+import {MediaError as BiliError,type ExternalFailureSource as BiliFailureSource} from '../shared/media-error.js';
 export {BiliError,type BiliFailureSource};
 export type Credential={cookies:Record<string,string>;refreshToken:string};
 export async function boundedJson(response:Response,max=2*1024*1024){

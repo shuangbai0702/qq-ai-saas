@@ -10,7 +10,7 @@ import {BotConfigSchema} from '../../../../packages/contracts/index.js';
 import {mkdir,readFile,readdir,stat,statfs,access,writeFile,rmdir,rm} from 'node:fs/promises';
 import {decrypt} from '../../../../packages/shared/security.js';
 import {modelHttp} from '../../../../packages/shared/model-http.js';
-import {boundedJson,BiliError,type BiliWeb,type Credential} from './web-adapter.js';
+import {boundedJson,BiliError,type BiliWeb,type Credential} from '../../../../packages/bilibili/web-adapter.js';
 import {downloadMedia,managedProcess,mediaAdmission,mediaWorkspace,mediaUrl} from '../media/lifecycle.js';
 import type {Sql} from '../../../../packages/database/index.js';
 import {BilibiliTools} from '../../../../packages/database/bilibili-tools.js';

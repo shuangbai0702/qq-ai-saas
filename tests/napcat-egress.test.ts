@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {initialEgress,nextEgress,observeEgress,proxyPort,withNapcatSettings} from '../adapters/protocol/napcat/egress.js';
 import {NapCatAdapter} from '../adapters/protocol/napcat/index.js';
-import {defaultConfig,type RuntimeContext} from '../packages/contracts/index.js';
+import {type ProtocolContext} from '../packages/contracts/index.js';
 
 const identity={pid:123,created:456,generation:7};
 test('egress preserves random choice and switches after 1,1,2,2,4,4 distinct offline episodes',()=>{
@@ -39,7 +39,7 @@ test('settings serialize concurrent receipts and retain exact data after parse f
 test('native proxy admission and real offline receipts reuse existing recovery ownership',async()=>{
  const dir=await mkdtemp(path.join(os.tmpdir(),'fish-egress-adapter-')),settingsFile=path.join(dir,'bot.json');
  const original=process.env.NAPCAT_EGRESS_PROXY_PORT;process.env.NAPCAT_EGRESS_PROXY_PORT='11973';
- const ctx:RuntimeContext={botId:'bot',tenantId:'tenant',root:dir,generation:7,revision:1,aiPort:24000,protocolPort:24002,token:'a'.repeat(64),config:defaultConfig,apiKey:'',expectedUin:''};
+ const ctx:ProtocolContext={botId:'bot',tenantId:'tenant',root:dir,generation:7,aiPort:24000,protocolPort:24002,token:'a'.repeat(64),expectedUin:''};
  let processRecord:any=null,starts=0,online=true,failedStart=false,nativeRestart=false;
  const host:any={inspect:async()=>processRecord?{...processRecord,valid:true}:null,record:async()=>processRecord,start:async()=>{starts++;const manifest=JSON.parse(await readFile(path.join(dir,'napcat-platform.json'),'utf8'));assert.equal(manifest.network.mode,failedStart?'direct':'socks5');if(!failedStart)assert.equal(manifest.network.port,11973);assert.equal(JSON.parse(await readFile(settingsFile,'utf8')).egress.route,failedStart?'direct':'huawei','route is durable before process starts');if(failedStart)throw new Error('spawn failed');processRecord={...identity};}};
  const adapter=new NapCatAdapter(host,dir);

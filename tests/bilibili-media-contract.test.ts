@@ -1,6 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {biliOperations} from '../packages/contracts/bilibili.js';
-import {BiliWeb} from '../apps/node-agent/src/bilibili/web-adapter.js';
+import {BiliWeb} from '../packages/bilibili/web-adapter.js';
 import {mediaReadiness} from '../apps/node-agent/src/bilibili/video-evidence.js';
 import {mkdtemp,rm} from 'node:fs/promises';import os from 'node:os';import path from 'node:path';
 const bvid='BV1xx411c7mD';

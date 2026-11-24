@@ -1,5 +1,5 @@
 import test from'node:test';import assert from'node:assert/strict';import{mkdtemp,mkdir,writeFile,readFile}from'node:fs/promises';import path from'node:path';import os from'node:os';import{pathToFileURL}from'node:url';
-import{NapCatAdapter}from'../adapters/protocol/napcat/index.js';import{defaultConfig,type RuntimeContext}from'../packages/contracts/index.js';
+import{NapCatAdapter}from'../adapters/protocol/napcat/index.js';import{type ProtocolContext}from'../packages/contracts/index.js';
 const runner=await import(pathToFileURL(path.resolve('adapters/protocol/napcat/runner.mjs')).href);
 test('NapCat runner isolates QQ native profile, writable config and OneBot destinations',async()=>{
  const root=await mkdtemp(path.join(os.tmpdir(),'fish-napcat-runner-'));const runtime=path.join(root,'binaries');await mkdir(path.join(runtime,'napcat'),{recursive:true});for(const file of ['wrapper.node','config.json','package.json','napcat/napcat.mjs','node_addon.node'])await writeFile(path.join(runtime,file),'fixture');
@@ -19,7 +19,7 @@ test('NapCat runner isolates QQ native profile, writable config and OneBot desti
  await writeFile(manifestPath,JSON.stringify({...prepared[0].manifest,network:{mode:'socks5',host:'external.test',port:11973}}));assert.throws(()=>runner.prepareRuntime(manifestPath),/SOCKS5/);
 });
 test('NapCat startup remains alive without API readiness; no premature QR or online',async()=>{
- const root=await mkdtemp(path.join(os.tmpdir(),'fish-napcat-state-'));const adapter=new NapCatAdapter({inspect:async()=>({pid:123,rssBytes:100}),record:async()=>null}as any,root);const ctx:RuntimeContext={botId:'a',tenantId:'a',root,generation:1,revision:1,aiPort:24000,protocolPort:24002,token:'a',config:defaultConfig,apiKey:'',expectedUin:''};
+ const root=await mkdtemp(path.join(os.tmpdir(),'fish-napcat-state-'));const adapter=new NapCatAdapter({inspect:async()=>({pid:123,rssBytes:100}),record:async()=>null}as any,root);const ctx:ProtocolContext={botId:'a',tenantId:'a',root,generation:1,aiPort:24000,protocolPort:24002,token:'a',expectedUin:''};
  (adapter as any).request=async()=>{throw new Error('ECONNREFUSED')};const startup=await adapter.getHealth(ctx);assert.equal(startup.alive,true);assert.equal(startup.ready,false);assert.equal(startup.online,false);
  (adapter as any).request=async()=>({isLogin:false,coreReady:false,qrcodeurl:''});assert.equal((await adapter.getLoginState(ctx)).state,'starting');
  for(const phase of ['generating_qrcode','waiting_qrcode','reconnecting']){
@@ -43,7 +43,7 @@ test('native profile facade handles non-configurable getter without touching des
 
 test('saved QQ resume is tried once per process; failure and explicit QR remain scannable',async()=>{
  const root=await mkdtemp(path.join(os.tmpdir(),'fish-napcat-resume-'));await mkdir(path.join(root,'qq'));await writeFile(path.join(root,'qq/identity.json'),JSON.stringify({uin:'90123456'}));
- const adapter=new NapCatAdapter({inspect:async()=>({pid:123})}as any,root);const ctx:RuntimeContext={botId:'saved',tenantId:'a',root,generation:1,revision:1,aiPort:24000,protocolPort:24002,token:'a',config:defaultConfig,apiKey:'',expectedUin:'90123456'};
+ const adapter=new NapCatAdapter({inspect:async()=>({pid:123})}as any,root);const ctx:ProtocolContext={botId:'saved',tenantId:'a',root,generation:1,aiPort:24000,protocolPort:24002,token:'a',expectedUin:'90123456'};
  let restores=0,fail=false;
  (adapter as any).request=async(_ctx:any,action:string)=>{
   if(action==='/QQLogin/GetQuickLoginList')return[{uin:'90123456'}];

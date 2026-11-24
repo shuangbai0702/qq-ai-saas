@@ -1,6 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {mkdtemp,readFile} from 'node:fs/promises';import os from 'node:os';import path from 'node:path';import {createHash} from 'node:crypto';
 import {createApp} from '../apps/control-api/src/app.js';import {issueTestInvite} from './helpers/invitations.js';import {openToolWork,attachToolIpc} from './helpers/tool-work.js';
-import {BilibiliExecutor} from '../apps/node-agent/src/bilibili/executor.js';import {BiliWeb} from '../apps/node-agent/src/bilibili/web-adapter.js';
+import {BilibiliExecutor} from '../apps/node-agent/src/bilibili/executor.js';import {BiliWeb} from '../packages/bilibili/web-adapter.js';
 import {biliOperations} from '../packages/contracts/bilibili.js';
 import {bilibiliSource} from '../packages/dsh/bilibili-source.js';
 // @ts-ignore explicit local mjs prototype

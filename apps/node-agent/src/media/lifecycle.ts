@@ -9,7 +9,7 @@ import {request} from 'node:https';
 import {lookup} from 'node:dns/promises';
 import {isIP} from 'node:net';
 import path from 'node:path';
-import {MediaError as BiliError} from './error.js';
+import {MediaError as BiliError} from '../../../../packages/shared/media-error.js';
 
 export function publicAddress(ip:string){
  if(isIP(ip)===6)return /^[23][0-9a-f]{3}:/i.test(ip)&&!/^2001:db8:/i.test(ip);

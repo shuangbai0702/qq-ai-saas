@@ -3,7 +3,7 @@ import path from 'node:path';
 import {readFile,writeFile} from 'node:fs/promises';import {createHash} from 'node:crypto';
 import {openDatabase} from '../../packages/database/index.js';
 import {loadKey} from '../../packages/shared/security.js';
-import {defaultConfig,type RuntimeContext} from '../../packages/contracts/index.js';
+import {defaultConfig,type AiRuntimeContext} from '../../packages/contracts/index.js';
 import {ProcessHost} from '../../apps/node-agent/src/process-host.js';
 import {AstrBotAdapter} from '../../adapters/astrbot/index.js';
 import {BilibiliTools} from '../../packages/database/bilibili-tools.js';
@@ -46,7 +46,7 @@ if(owner){
   });
  }
 }
-const ctx:RuntimeContext={...identity,root:path.join(root,'bots',identity.botId),generation:bot.generation,revision:bot.revision,aiPort:24872,protocolPort:24874,config,apiKey:process.env.FISHBOT_DSH_TEST_API_KEY,expectedUin:status.uin,runtimeMode:'dedicated'};
+const ctx:AiRuntimeContext={...identity,root:path.join(root,'bots',identity.botId),generation:bot.generation,revision:bot.revision,aiPort:24872,protocolPort:24874,config,apiKey:process.env.FISHBOT_DSH_TEST_API_KEY,expectedUin:status.uin,runtimeMode:'dedicated'};
 const processHost=new ProcessHost(root,path.resolve('references/astrbot/.venv/Scripts/python.exe'));
 const astrbot=new AstrBotAdapter(processHost,path.resolve('references/astrbot'),path.resolve('references/astrbot/.venv/Scripts/python.exe'));
 const repo=new BilibiliTools(db),executor=new BilibiliExecutor(db,root,key);

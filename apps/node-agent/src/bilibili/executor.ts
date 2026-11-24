@@ -8,8 +8,8 @@ import path from 'node:path';
 import type {Sql} from '../../../../packages/database/index.js';
 import {BilibiliTools} from '../../../../packages/database/bilibili-tools.js';
 import {biliOperations,biliOperationAllowed,type ToolResult} from '../../../../packages/contracts/bilibili.js';
-import {BiliAccounts} from './account-broker.js';
-import {BiliWeb,BiliError,type Credential} from './web-adapter.js';
+import {BiliAccounts} from '../../../../packages/bilibili/account-broker.js';
+import {BiliWeb,BiliError,type Credential} from '../../../../packages/bilibili/web-adapter.js';
 import {VideoEvidence,mediaReadiness,recoverMedia} from './video-evidence.js';
 import {bridgeToken} from '../../../../packages/shared/tool-bridge.js';
 
