@@ -27,7 +27,7 @@ async function fixture(){
  for(const name of ['llbot.js','fishbot-actions.mjs','fishbot-lifecycle.mjs','package.json','sign-proxy.win-x64.node','sign-proxy.package.json','ffmpeg.exe','ffprobe.exe'])await writeFile(path.join(runtime,'bin/llbot',name),name==='package.json'?'{}':'// inert fixture');
  await writeFile(path.join(runtime,'bin/pmhq/pmhq_loader.js'),'// inert fixture');
  const qq=path.join(root,'qq-assets'),app=path.join(qq,'versions/9.9.37-54395/resources/app');await mkdir(path.join(app,'assets'),{recursive:true});
- await writeFile(path.join(qq,'QQ.exe'),'inert native fixture');await writeFile(path.join(qq,'versions/config.json'),JSON.stringify({curVersion:'9.9.37-54395'}));await writeFile(path.join(app,'package.json'),JSON.stringify({main:'./main.cjs'}));await writeFile(path.join(app,'main.cjs'),'// inert QQ main');
+ await writeFile(path.join(qq,'QQ.exe'),'inert native fixture');await writeFile(path.join(qq,'versions/config.json'),JSON.stringify({curVersion:'9.9.37-54395'}));await writeFile(path.join(app,'package.json'),JSON.stringify({main:'./application.asar/app_launcher/index.js'}));await writeFile(path.join(app,'application.asar'),'inert QQ archive');
  await writeFile(path.join(runtime,'fishbot-upstream.json'),JSON.stringify({version:'8.3.2-test',platform:process.platform,sha256:{'bin/llbot/llbot.js':hash('// inert fixture')}}));
  const socketServer=createServer(),port=await listen(socketServer);await new Promise(r=>socketServer.close(r));
  const bot=path.join(root,'bot');await mkdir(bot);
@@ -45,7 +45,7 @@ test('managed runtime validates private ports, version, hashes and per-Bot data 
  const bot2=path.join(f.root,'bot2');await mkdir(bot2);const file2=path.join(bot2,'llbot-platform.json');await writeFile(file2,JSON.stringify({...f.m,root:bot2,botId:'b',management:{...f.m.management,token:'c'.repeat(64)}}));
  const b=await prepareRuntime(file2);assert.notEqual(a.home,b.home);assert.notEqual(a.work,b.work);
  assert.notEqual(a.qqPath,b.qqPath);const app='versions/9.9.37-54395/resources/app';
- assert.equal(JSON.parse(await readFile(path.join(path.dirname(f.m.qqPath),app,'package.json'),'utf8')).main,'./main.cjs','shared QQ metadata stays immutable');
+ assert.equal(JSON.parse(await readFile(path.join(path.dirname(f.m.qqPath),app,'package.json'),'utf8')).main,'./application.asar/app_launcher/index.js','shared QQ metadata stays immutable');
  assert.equal(JSON.parse(await readFile(path.join(path.dirname(a.qqPath),app,'package.json'),'utf8')).main,'./fishbot-entry.cjs');
  assert.ok((await readFile(path.join(path.dirname(a.qqPath),app,'fishbot-entry.cjs'),'utf8')).includes(JSON.stringify(a.bootstrap)));assert.equal((await prepareRuntime(f.file)).qqPath,a.qqPath,'same Bot reuses only its own launcher');
  await writeFile(path.join(f.runtime,'bin/llbot/llbot.js'),'changed');await assert.rejects(prepareRuntime(f.file),/integrity/);

@@ -145,4 +145,4 @@ export async function startRuntime(file,{spawnChild=spawn,clock=()=>Date.now(),f
  async function close(){if(closing)return;closing=true;clearInterval(timer);relay.close();for(const client of ws.clients)client.terminate();ws.close();auth?.close();worker?.kill();pmhq?.kill();await new Promise(resolve=>server.close(resolve))}
  return{server,relay,close,sample};
 }
-if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))startRuntime(process.argv[2]).then(runtime=>{for(const signal of ['SIGTERM','SIGINT'])process.once(signal,()=>{void runtime.close().finally(()=>process.exit(0))})}).catch(()=>{console.error('LLBot managed startup failed; check runtime installation and private configuration');process.exit(1)});
+if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))startRuntime(process.argv[2]).then(runtime=>{for(const signal of ['SIGTERM','SIGINT'])process.once(signal,()=>{void runtime.close().finally(()=>process.exit(0))})}).catch(error=>{console.error('LLBot managed startup failed:',error?.stack||String(error));process.exit(1)});

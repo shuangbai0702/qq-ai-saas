@@ -11,7 +11,9 @@ export async function prepareQqAssets(sourceExe,home,bootstrap){
  const metadata=JSON.parse(await readFile(path.join(source,app,'package.json'),'utf8'));
  const main=metadata.main;
  if(typeof main!=='string'||path.isAbsolute(main)||main.split(/[\\/]/).includes('..'))throw Error('Unsupported QQNT main entry');
- await access(path.join(source,app,main));
+ const entry=main.split(/[\\/]/).filter(part=>part!=='.'),archive=entry.findIndex(part=>part.endsWith('.asar'));
+ // Ordinary Node cannot traverse Electron's virtual ASAR filesystem.
+ await access(path.join(source,app,...entry.slice(0,archive<0?entry.length:archive+1)));
  const marker={source,version,main,bootstrap};
  const markerFile=path.join(root,'fishbot-assets.json');
  try{if(JSON.stringify(JSON.parse(await readFile(markerFile,'utf8')))!==JSON.stringify(marker))throw Error('QQNT private asset ownership changed');return path.join(root,'QQ.exe')}catch(e){if(e.code!=='ENOENT')throw e}
