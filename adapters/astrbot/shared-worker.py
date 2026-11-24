@@ -4,6 +4,7 @@ Uses pinned AstrBot's native profiles, UMO routing, event draining and providers
 import os,sys,json,copy,asyncio,signal,logging,time
 from pathlib import Path
 import worker_lifecycle
+import worker_common
 worker_lifecycle.initialize()
 def validate_member(id,body):
     """Validate authenticated IPC before changing a live member; not a sandbox."""
@@ -61,14 +62,8 @@ def validate_member(id,body):
     require(text(platform.get('ws_reverse_token'),256,False))
     require('behavior' not in behavior or isinstance(behavior['behavior'],dict))
 
-source,root=sys.argv[1],Path(sys.argv[2]).resolve()
-sys.path.insert(0,source);os.environ['ASTRBOT_ROOT']=str(root)
+root=worker_common.prepare_environment(sys.argv[1],sys.argv[2])
 manifest=json.loads((root/'group.json').read_text(encoding='utf8'))
-import runtime_bootstrap
-runtime_bootstrap.initialize_runtime_bootstrap()
-if os.getenv('FISHBOT_ASTRBOT_SLIM','1')!='0':
-    from slim_bootstrap import install
-    install()
 from astrbot.core import db_helper,LogBroker,LogManager,logger
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
 from aiohttp import web
@@ -134,8 +129,7 @@ async def main():
         cfg['agent_runner']['config']['persona']['persona_id']='persona-'+id
         cfg['agent_runner']['config']['model']['provider_id']='provider-'+id if body.get('key') else ''
         prompt=body['prompt'];persona='persona-'+id
-        if await db_helper.get_persona_by_id(persona):await db_helper.update_persona(persona,system_prompt=prompt,tools=[],skills=[])
-        else:await db_helper.insert_persona(persona,prompt,tools=[],skills=[])
+        await worker_common.upsert_persona(db_helper,persona,prompt)
         await core.persona_mgr.initialize()
         conf_id=await core.astrbot_config_mgr.create_conf(cfg,name=id)
         member={k:v for k,v in body.items() if k not in ('key','config','prompt')}
@@ -171,9 +165,7 @@ async def main():
             if not admitted(raw,behavior_settings[id]['config']):return
             if m['modelConfigured'] and 'provider-'+id not in core.provider_manager.inst_map:return
             try:
-                retained=raw.get('post_type','message')!='message' or getattr(message,'_hosted_ingress_retained',False) or behavior['retain_ingress'](id,platform.create_event(message))
-                import inspect
-                if inspect.isawaitable(retained):retained=await retained
+                retained=await worker_common.retain_platform_ingress(behavior,id,platform,message)
             except Exception as error:
                 errors[id]='Ingress retention failed'
                 worker_lifecycle.record('ingress_retention_failed',member=id,reason=type(error).__name__)
@@ -196,7 +188,7 @@ async def main():
         errors.pop(id,None)
     @web.middleware
     async def auth(request,handler):
-        if request.headers.get('Authorization')!='Bearer '+manifest['token']:raise web.HTTPUnauthorized()
+        worker_common.verify_bearer(request,manifest['token'])
         if request.method!='GET' and request.headers.get('X-Group-Generation')!=str(manifest['generation']):raise web.HTTPConflict()
         return await handler(request)
     async def health(request):
@@ -252,12 +244,9 @@ async def main():
                 and current.get('_baseShape')==member_shape(body)):
                 old=behavior_settings[id]
                 persona='persona-'+id
-                await db_helper.update_persona(persona,system_prompt=body['prompt'])
-                record=await db_helper.get_persona_by_id(persona)
-                if record is None:raise web.HTTPConflict(reason='Persona projection missing')
+                await worker_common.apply_persona_db_update(db_helper,core.persona_mgr,persona,body['prompt'])
                 replacement={**old,'config':copy.deepcopy(body['behaviorConfig']),'revision':body['revision'],
                     'systemChangePermitId':body.get('systemChangePermitId'),'personaEdit':copy.deepcopy(body['personaEdit'])}
-                replace_cached_persona(core.persona_mgr,persona,record)
                 behavior_settings[id]=replacement
                 current.update(revision=body['revision'],systemChangePermitId=body.get('systemChangePermitId'),
                     personaEdit=copy.deepcopy(body['personaEdit']),behaviorConfig=copy.deepcopy(body['behaviorConfig']),_toolsShape=tool_member_shape(body))
@@ -318,10 +307,7 @@ async def main():
         # Join actual thread I/O before asyncio.run can cancel its wrapper
         # Tasks on process shutdown. Cancellation of a wrapper is not proof
         # that the underlying SQLite transaction has stopped.
-        from semantic_async import drain_store,settled
-        async def drain_local_databases():
-            for store in list(behavior['stores'].values()):await drain_store(store)
-        try:await settled(asyncio.create_task(drain_local_databases()))
+        try:await worker_common.drain_behavior_stores(behavior)
         finally:
             await core.stop();task.cancel();await runner.cleanup();behavior['close']()
 asyncio.run(main())

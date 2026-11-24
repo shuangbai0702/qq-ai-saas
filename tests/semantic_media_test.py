@@ -241,7 +241,7 @@ class CaptureAdmission(unittest.IsolatedAsyncioTestCase):
         from types import SimpleNamespace as NS
         from context_protocol import SOURCE
         from summary_material import snapshots
-        tree=ast.parse((ROOT/'adapters/astrbot/behavior.py').read_text(encoding='utf-8'))
+        tree=ast.parse((ROOT/'adapters/astrbot/provider_wire_hooks.py').read_text(encoding='utf-8'))
         prepare=next(n for n in ast.walk(tree) if isinstance(n,ast.AsyncFunctionDef) and n.name=='prepare_chat_payload')
         index=next(i for i,n in enumerate(prepare.body) if isinstance(n,ast.Assign) and isinstance(n.value,ast.Await) and isinstance(n.value.value,ast.Call) and isinstance(n.value.value.func,ast.Name) and n.value.value.func.id=='constrain_messages')
         # Execute the production admission block and its actual following await.
@@ -346,7 +346,7 @@ class ProtocolOwnership(unittest.IsolatedAsyncioTestCase):
         entered=asyncio.Event();finish=asyncio.Event()
         resized='data:image/png;base64,cmVzaXplZA=='
         async def resize(value):entered.set();await finish.wait();return resized
-        with patch('model_images._limited',side_effect=resize):
+        with patch('image_codec._limited',side_effect=resize):
             task=asyncio.create_task(media.collect_protocol_originals(self.event,lambda:True,self.db,shared=True))
             try:
                 await asyncio.wait_for(entered.wait(),3);self.assertFalse(self.db.in_transaction)

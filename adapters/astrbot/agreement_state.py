@@ -325,7 +325,6 @@ def tools(settings,event,db,scope,current):
     """The one constrained state tool. The model judges meaning and supplies
     the update; this module owns identity, participants, revision CAS and the
     program-side audience filter. No extraction model, no keyword engine."""
-    import bot_pipeline
     work=event.get_extra('_hosted_pipeline') if hasattr(event,'get_extra') else None
     config=settings.get('config') or {}
     cfg={**(config.get('behavior') or {}),'groups':config.get('groups') or []}
@@ -336,7 +335,7 @@ def tools(settings,event,db,scope,current):
     class UpdateAgreement(FunctionTool):
         async def call(self,context,action='',topic='',detail='',due='',speakerRole='user',participants=None,audiences=None,quote='',revision=None,agreement_id=''):
             if not current():raise asyncio.CancelledError('stale agreement update')
-            if context.context.event is not event or not isinstance(work,bot_pipeline.Work) or work.source not in ('message','deferred_group') or event.get_extra('_hosted_tool_completion'):
+            if context.context.event is not event or work is None or getattr(work,'source',None) not in ('message','deferred_group') or not hasattr(work,'subject') or event.get_extra('_hosted_tool_completion'):
                 return json.dumps({'ok':False,'error':'real_message_work_required'})
             if work.subject!=owner:return json.dumps({'ok':False,'error':'owner_agreement_required'})
             if not isinstance(agreement_id,str) or agreement_id and not re.fullmatch(r'[a-f0-9]{24}',agreement_id):

@@ -4,9 +4,8 @@ The existing Journal owns wire history; this module only selects its logical
 key, serializes writers, and prepares new, never-submitted inputs.
 """
 import asyncio,copy,json,re,time,hashlib
-from context_protocol import SOURCE,source,model_json,event_message,scoped_event
-
-JOURNAL_SCOPE='bot_shared'
+from context_protocol import JOURNAL_SCOPE,SOURCE,source,model_json,event_message,scoped_event,ContextRecoveryUnavailable
+from journal_storage import shared_context_active as active,shared_recent as recent
 
 
 def group_whitelist(cfg,group_limit=2):
@@ -51,11 +50,6 @@ class Writer:
         self.owner=None;self.lock.release();return True
 
 
-def active(db):
-    if not db.execute("SELECT 1 FROM sqlite_master WHERE name='fishbot_shared_context'").fetchone():return False
-    return db.execute("SELECT 1 FROM fishbot_shared_context WHERE id=1 AND state='active'").fetchone() is not None
-
-
 def initialize(db):
     # An ingress staging queue, NOT a second submitted-message history. Rows
     # leave after Journal adoption, or after its adopted group window proves
@@ -67,7 +61,6 @@ def initialize(db):
 
 def main_journal_scope(db):
     """Runtime routing has one legal key; migration is an offline operation."""
-    from readonly_journal import ContextRecoveryUnavailable
     if not active(db):
         raise ContextRecoveryUnavailable('owner_migration_required_for_shared_journal')
     if db.execute("SELECT 1 FROM fishbot_readonly_journals WHERE scope<>? AND state='ready' LIMIT 1",
@@ -349,61 +342,6 @@ def settle_inputs(db,journal):
     db.commit()
     if window and window[0]<=set(known):
         del journal._shared_input_window
-
-
-def recent(db,limit=12,budget=3000,scope=None,auxiliary=False):
-    """Bounded auxiliary judgment view of the ONE committed Journal."""
-    from journal_storage import read_snapshot
-    snapshot=read_snapshot(db,model_json(JOURNAL_SCOPE))
-    if snapshot is None:return []
-    messages=snapshot.get('base',[]);result=[];selection=[]
-    if auxiliary:
-        from message_provenance import model_output_owners,incoming_item
-        owners=model_output_owners(db,JOURNAL_SCOPE,messages)
-    anchor=None;anchor_index=0
-    for index,message in enumerate(messages):
-        origin=source(message)
-        if origin:
-            anchor=event_key(origin);anchor_index=index
-            if scope is not None and origin['scope']!=scope:continue
-            content=message.get('content');text=content if isinstance(content,str) else '\n'.join(p.get('text','') for p in content if p.get('type')=='text')
-            result.append({'source_scope':origin['scope'],'sender_id':origin['sender_id'],'at':origin.get('at'),
-                           'source_event':origin['event_id'],'text':text.split('\n',1)[-1][:600],
-                           **({'attention':'[important]'} if origin.get('attention')=='[important]' else {})})
-            selection.append(copy.deepcopy(result[-1]))
-            if auxiliary:
-                row=result[-1]
-                evidence=incoming_item(db,origin['scope'],origin['sender_id'],origin['event_id'],row['text'],row['at'])
-                row.update(evidence)
-                # Correct a request view from retained protocol data, never the
-                # committed Journal. Retired payloads are not reconstructed.
-                raw=db.execute('SELECT payload FROM pipeline_work_inputs WHERE scope=? AND event=?',(origin['scope'],str(origin['event_id']))).fetchone()
-                if raw and raw[0]:
-                    payload=json.loads(raw[0])
-                    if str(payload.get('user_id'))==str(origin['sender_id']) and str(payload.get('message_id'))==str(origin['event_id']) and isinstance(payload.get('time'),(int,float)):
-                        row.update(at=float(payload['time']),time_source='protocol')
-                content=message.get('content')
-                if isinstance(content,list) and not row.get('media'):
-                    media=[{'type':part.get('type'),'representation':'journal','source_event':str(origin['event_id'])} for part in content if isinstance(part,dict) and part.get('type')!='text']
-                    if media:row['media']=media
-        elif scope is None and message.get('role')=='assistant' and isinstance(message.get('content'),str) and message['content'].strip() not in ('','[NO_REPLY]'):
-            item={'role':'self','text':message['content'][:600],'delivery':'model_output_not_send_receipt'}
-            selection.append(copy.deepcopy(item))
-            if auxiliary:
-                owner=owners.get((anchor,index-anchor_index))
-                if owner:
-                    item.update(source_scope=owner['source_scope'],source_event=owner['event_id'])
-                    # A draft's identity is its exact existing binding; the
-                    # following receipt view owns actual destination and sends.
-                    at=db.execute('SELECT at FROM pipeline_events WHERE scope=? AND event=?',(owner['source_scope'],owner['event_id'])).fetchone()
-                    if at:item['at']=at[0]
-                else:item['identity_status']='unproven'
-            result.append(item)
-    result=result[-limit:];selection=selection[-limit:]
-    # Enrich selected events without reducing their former coverage merely
-    # because correct provenance uses more bytes than an anonymous draft.
-    while result and len(model_json(selection))>budget:result.pop(0);selection.pop(0)
-    return result
 
 
 def delivery_view(db,journal=None,limit=8,budget=3000,exclude_scope=None,text_limit=1200,only_scope=None,auxiliary=False):

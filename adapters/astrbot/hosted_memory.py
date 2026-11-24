@@ -6,17 +6,11 @@ This is an independent SQLite implementation, not those frameworks' plugin API.
 Optional bounded semantic recall uses only active, attributed facts.
 """
 import asyncio,json,hashlib,math,re,collections,time
+from memory_policy import STOP_WORDS as STOP,tokens,FACT_NAME_CHARS,FACT_VALUE_CHARS
 
-STOP={'什么','么了','是什','我的','你的','记得','记住','一下','这个','那个','你好','知道','告诉','最近','现在','还是','之前','我们','可以','是不是','有什'}
 ALIASES={'生日':('生日','生辰','出生日期'), '称呼':('名字','称呼','怎么叫','叫什么'),
          '饮料偏好':('喝什么','喝的','饮料','爱喝'), '食物偏好':('吃什么','爱吃','食物'),
          '居住城市':('住哪','住在','城市'), '职业':('工作','职业')}
-
-def tokens(text):
-    result=set(re.findall(r'[a-z0-9_]{2,}',text.lower()))
-    for run in re.findall(r'[\u4e00-\u9fff]+',text):
-        result.update(run[i:i+2] for i in range(len(run)-1))
-    return result-STOP
 
 
 from memory_scope import initialize_controls
@@ -30,7 +24,8 @@ class ScopedMemory:
         self.db=db;self.closed=False;self.embedding_lock=asyncio.Lock()
         initialize_controls(db)
         initialize_metadata(db)
-        db.executescript('''CREATE INDEX IF NOT EXISTS facts_active_person ON facts(scope,subject,active);
+        db.executescript('''CREATE TABLE IF NOT EXISTS facts(scope TEXT,subject TEXT,name TEXT,value TEXT,event TEXT,updated REAL,version INTEGER,active INTEGER,PRIMARY KEY(scope,subject,name,version));
+        CREATE INDEX IF NOT EXISTS facts_active_person ON facts(scope,subject,active);
         CREATE INDEX IF NOT EXISTS facts_shared_person ON facts(subject,active,updated);
         CREATE TABLE IF NOT EXISTS memory_capture_budget(scope TEXT,subject TEXT,day INTEGER,count INTEGER,PRIMARY KEY(scope,subject,day));
         DROP TRIGGER IF EXISTS fact_vectors_insert;
@@ -80,7 +75,7 @@ class ScopedMemory:
         m=re.fullmatch(r'(记住|更正记忆|记住事件)[：:]\s*([^=＝\n]{1,40})[=＝](.{1,300})',text)
         if m:
             if m[1]=='更正记忆':
-                from memory_reflection import invalidate
+                from memory_invalidation import invalidate
                 invalidate(self.db,scope,subject)
                 # Record what this explicit correction replaced so a later
                 # asynchronous extraction cannot quietly write the old value.
@@ -92,7 +87,7 @@ class ScopedMemory:
         else:
             forget=re.fullmatch(r'忘记[：:]\s*(.{1,40})',text)
             if forget:
-                from memory_reflection import invalidate
+                from memory_invalidation import invalidate
                 invalidate(self.db,scope,subject)
                 self.db.execute("INSERT INTO memory_blocks(scope,subject,name,block_all,rejected_values,revision) VALUES(?,?,?,1,'[]',0) ON CONFLICT(scope,subject,name) DO UPDATE SET block_all=1",(scope,subject,forget[1].strip()))
                 where,args=person_filter(scope,subject)
@@ -228,10 +223,8 @@ def project_user_edits(snapshot,edits):
     """Replace exact user-authorized foundation facts, never dynamic packets."""
     if snapshot is None or not edits:return snapshot
     import copy
-    from context_foundation import FOUNDATION_CURRENT
-    from readonly_journal import ContextPrefixViolation
-    from person_memory import expand
-    from memory_model_view import memory_json
+    from context_protocol import FOUNDATION_CURRENT,ContextPrefixViolation
+    from memory_model_view import expand,memory_json
     changes={}
     for change in edits:
         proof=change['proof'];current=change['fact']

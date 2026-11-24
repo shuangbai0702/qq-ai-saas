@@ -4,24 +4,11 @@ Members are opaque scoped hashes. They prove which transport blocks may leave,
 not which facts a model must remember. No model-authored retirement whitelist.
 """
 import copy,hashlib,json,time
-from context_protocol import model_json
-from memory_policy import DEFAULT_SUMMARY_ROUNDS
+from context_protocol import model_json,scoped_event_hash as event_key
+from journal_storage import retired_members
+from memory_policy import DEFAULT_SUMMARY_ROUNDS,origin
 
 PURGE_VERSION=3
-
-from context_protocol import scoped_event_hash as event_key
-
-
-def retired_members(db):
-    """Exact identities retired by ordinary checkpoints or an owner switch."""
-    from journal_cutover import owner_members
-    result={}
-    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_semantic_batches'").fetchone():
-        for scope,raw in db.execute("SELECT scope,members FROM memory_semantic_batches WHERE state='retired'"):
-            result.setdefault(scope,set()).update(json.loads(raw))
-    owners=owner_members(db)
-    if owners:result.setdefault('bot_shared',set()).update(owners)
-    return result
 
 
 def initialize(db):
@@ -37,7 +24,7 @@ def initialize(db):
 
 
 def owner_cleanup_stamp(db):
-    from journal_cutover import owner_members
+    from journal_storage import owner_members
     members=owner_members(db)
     return hashlib.sha256(model_json(sorted(members)).encode()).hexdigest() if members else None
 
@@ -53,9 +40,8 @@ def owner_cleanup_pending(db):
 
 def purge_owner_history(db):
     """Reuse proven owner retirement, without changing the active Journal."""
-    from journal_cutover import owner_members
     import journal_storage
-    members=owner_members(db)
+    members=journal_storage.owner_members(db)
     if not members:return
     if not db.in_transaction:db.execute('BEGIN')
     db.execute('SAVEPOINT owner_hot_cleanup')
@@ -156,15 +142,6 @@ def load(db,scope,payload,*,allow_empty=False):
             key=hashlib.sha256(image.encode()).hexdigest();images.setdefault(key,image);bindings.setdefault(key,[]).append(event)
     if not materials and not allow_empty:raise ValueError('semantic_batch_empty')
     return materials,list(images.values()),[{'id':key,'position':i+1,'events':bindings[key]} for i,key in enumerate(images)]
-
-
-def origin(scope,event):
-    if scope=='bot_shared':
-        try:
-            channel,identifier=json.loads(event)
-            if isinstance(channel,str) and (channel=='self' or channel.startswith(('private:','group:'))):return channel,str(identifier)
-        except (ValueError,TypeError):pass
-    return scope,str(event)
 
 
 def verify(db,scope,materials):
@@ -364,7 +341,8 @@ def _purge_members(db,scope,members):
     if 'memory_summaries' in tables:
         if scope=='bot_shared':db.execute("UPDATE memory_summaries SET sources='[]'")
         else:db.execute("UPDATE memory_summaries SET sources='[]' WHERE scope=?",(scope,))
-    if 'memory_core_notes' in tables:db.execute("UPDATE memory_core_notes SET sources='[]'")
+    import core_note as core_note_store
+    core_note_store.clear_sources(db)
     # Recovery archives obey the same successful exact-batch retirement.
     # They may keep uncompressed evidence and System, never a retired copy.
     if 'pipeline_events' in tables and 'request' in {r[1] for r in db.execute('PRAGMA table_info(pipeline_events)')}:

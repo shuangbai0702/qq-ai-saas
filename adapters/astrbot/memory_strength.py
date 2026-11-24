@@ -16,7 +16,7 @@ def interest_strength(weight,hits,updated,now,source=''):
     return decay(weight,updated,now,LONG_INTEREST_HALF_LIFE if hits>=CONSOLIDATED_HITS or source=='persona' else INTEREST_HALF_LIFE)
 
 def relevance(topic,query):
-    from hosted_memory import tokens
+    from memory_policy import tokens
     return len(tokens(topic)&tokens(query))+(3 if topic and topic in query else 0)
 
 def fact_strength(kind,updated,now,importance=.5):

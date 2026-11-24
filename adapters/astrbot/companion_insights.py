@@ -90,7 +90,7 @@ def apply_semantic_memory(db,memory,scope,cfg,payload,data,before,now=None,audit
     saved=apply_summary_facts(db,scope,cfg,data,state,people,event,now,audit)
     saved+=apply_summary_relations(db,scope,cfg,data,state,people,now,audit)
     from memory_products import apply as apply_products
-    from semantic_batch import origin
+    from memory_policy import origin
     source_scopes={origin(scope,str(row.get('event','')))[0] for row in payload}
     return saved+apply_products(db,scope,cfg,data,before,now,audit,source_scopes=source_scopes)
 

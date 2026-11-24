@@ -53,11 +53,123 @@ def retire_archived_members(db,checkpoint_id,*,verify_active=True):
     return retire_member_copies(db,scope,members,checkpoint_id=checkpoint_id,verify_active=verify_active)
 
 
+def semantic_retire_projection(messages,permit):
+    """Remove exact batch member blocks; never infer membership from time."""
+    from context_protocol import source,model_json,ContextPrefixViolation,scoped_event_hash as event_key
+    if not permit or permit.get('semanticBatch') is not True:return copy.deepcopy(messages)
+    members=set(permit.get('batchMembers',[]));scope=permit.get('scope')
+    if not isinstance(scope,str) or not members:raise ContextPrefixViolation('semantic_batch_members_missing')
+    result=[];dropping=False
+    for message in messages:
+        if isinstance(message,dict) and message.get('role')=='user':
+            origin=source(message)
+            event=model_json([origin['scope'],str(origin['event_id'])]) if origin and scope=='bot_shared' else str(origin['event_id']) if origin else None
+            dropping=bool(origin and (scope=='bot_shared' or origin['scope']==scope) and event_key(scope,event) in members)
+        if not dropping or isinstance(message,dict) and message.get('role') in ('system','developer'):
+            result.append(copy.deepcopy(message))
+    return result
+
+
+def _owner_receipts(db):
+    from context_protocol import OWNER_EARLY_MIGRATION
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fishbot_journal_owner_migrations'").fetchone():return
+    for identifier,raw,sha in db.execute('SELECT authorization,receipt,sha FROM fishbot_journal_owner_migrations'):
+        if hashlib.sha256(raw.encode()).hexdigest()!=sha:raise ValueError('owner_migration_receipt_integrity')
+        receipt=json.loads(raw)
+        if receipt['grant']['id']!=identifier or receipt['grant']['type']!=OWNER_EARLY_MIGRATION:
+            raise ValueError('owner_migration_receipt_identity')
+        yield receipt
+
+
+def retired_source_receipt(db,scope,sha):
+    return any(receipt['grant']['sources'].get(scope)==sha and
+               any(s['scope']==scope and s['state']=='retired' for s in receipt['sources'])
+               for receipt in _owner_receipts(db))
+
+
+def reserved_destination_receipt(db,sha):
+    for receipt in _owner_receipts(db):
+        if receipt.get('newBaseline') is not True or receipt['destinationSha']!=sha:continue
+        row=db.execute('SELECT authorization FROM fishbot_shared_context WHERE id=1 AND state=?',('active',)).fetchone()
+        return bool(row and row[0]==receipt['grant']['id'])
+    return False
+
+
+def owner_members(db):
+    members=set()
+    for receipt in _owner_receipts(db):
+        members.update(receipt.get('members',()))
+    return members
+
+
+def retired_members(db):
+    """Exact identities retired by ordinary checkpoints or an owner switch."""
+    result={}
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_semantic_batches'").fetchone():
+        for scope,raw in db.execute("SELECT scope,members FROM memory_semantic_batches WHERE state='retired'"):
+            result.setdefault(scope,set()).update(json.loads(raw))
+    owners=owner_members(db)
+    if owners:result.setdefault('bot_shared',set()).update(owners)
+    return result
+
+
+def shared_context_active(db):
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE name='fishbot_shared_context'").fetchone():return False
+    return db.execute("SELECT 1 FROM fishbot_shared_context WHERE id=1 AND state='active'").fetchone() is not None
+
+
+def shared_recent(db,limit=12,budget=3000,scope=None,auxiliary=False):
+    """Bounded auxiliary judgment view of the ONE committed Journal."""
+    from context_protocol import JOURNAL_SCOPE,source,model_json,scoped_event
+    snapshot=read_snapshot(db,model_json(JOURNAL_SCOPE))
+    if snapshot is None:return []
+    messages=snapshot.get('base',[]);result=[];selection=[]
+    if auxiliary:
+        from message_provenance import model_output_owners,incoming_item
+        owners=model_output_owners(db,JOURNAL_SCOPE,messages)
+    anchor=None;anchor_index=0
+    for index,message in enumerate(messages):
+        origin=source(message)
+        if origin:
+            anchor=scoped_event(origin['scope'],origin['event_id']);anchor_index=index
+            if scope is not None and origin['scope']!=scope:continue
+            content=message.get('content');text=content if isinstance(content,str) else '\n'.join(p.get('text','') for p in content if p.get('type')=='text')
+            result.append({'source_scope':origin['scope'],'sender_id':origin['sender_id'],'at':origin.get('at'),
+                           'source_event':origin['event_id'],'text':text.split('\n',1)[-1][:600],
+                           **({'attention':'[important]'} if origin.get('attention')=='[important]' else {})})
+            selection.append(copy.deepcopy(result[-1]))
+            if auxiliary:
+                row=result[-1]
+                evidence=incoming_item(db,origin['scope'],origin['sender_id'],origin['event_id'],row['text'],row['at'])
+                row.update(evidence)
+                raw=db.execute('SELECT payload FROM pipeline_work_inputs WHERE scope=? AND event=?',(origin['scope'],str(origin['event_id']))).fetchone()
+                if raw and raw[0]:
+                    payload=json.loads(raw[0])
+                    if str(payload.get('user_id'))==str(origin['sender_id']) and str(payload.get('message_id'))==str(origin['event_id']) and isinstance(payload.get('time'),(int,float)):
+                        row.update(at=float(payload['time']),time_source='protocol')
+                content=message.get('content')
+                if isinstance(content,list) and not row.get('media'):
+                    media=[{'type':part.get('type'),'representation':'journal','source_event':str(origin['event_id'])} for part in content if isinstance(part,dict) and part.get('type')!='text']
+                    if media:row['media']=media
+        elif scope is None and message.get('role')=='assistant' and isinstance(message.get('content'),str) and message['content'].strip() not in ('','[NO_REPLY]'):
+            item={'role':'self','text':message['content'][:600],'delivery':'model_output_not_send_receipt'}
+            selection.append(copy.deepcopy(item))
+            if auxiliary:
+                owner=owners.get((anchor,index-anchor_index))
+                if owner:
+                    item.update(source_scope=owner['source_scope'],source_event=owner['event_id'])
+                    at=db.execute('SELECT at FROM pipeline_events WHERE scope=? AND event=?',(owner['source_scope'],owner['event_id'])).fetchone()
+                    if at:item['at']=at[0]
+                else:item['identity_status']='unproven'
+            result.append(item)
+    result=result[-limit:];selection=selection[-limit:]
+    while result and len(model_json(selection))>budget:result.pop(0);selection.pop(0)
+    return result
+
+
 def retire_member_copies(db,scope,members,*,checkpoint_id=None,verify_active=True):
     """Apply exact retirement membership to disposable recovery copies."""
-    from context_protocol import model_json
-    from semantic_batch import event_key
-    from readonly_journal import semantic_retire_projection
+    from context_protocol import model_json,scoped_event_hash as event_key
     permit={'semanticBatch':True,'scope':scope,'batchMembers':list(members)}
     tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     touched=set();changed=0
@@ -121,7 +233,7 @@ def retire_member_copies(db,scope,members,*,checkpoint_id=None,verify_active=Tru
             # original nonmember messages and filtered state remain authoritative.
             from context_protocol import READONLY_CURRENT
             from context_transport import EVENT_CONTEXT_CURRENT
-            from context_foundation import FOUNDATION_CURRENT
+            from context_protocol import FOUNDATION_CURRENT
             prefixes=tuple(header+'\n' for header in (READONLY_CURRENT,EVENT_CONTEXT_CURRENT,FOUNDATION_CURRENT))
             for field in ('base','wire'):
                 value[field]=[message for message in value[field] if not (

@@ -7,22 +7,7 @@ Hashes refer to the existing configuration revisions, never a second history.
 import copy
 import hashlib
 import json
-from contextvars import ContextVar
-
-_request_lease=ContextVar('fishbot_web_base_request_lease',default=None)
-
-
-def request_lease(event):
-    snapshot=_request_lease.get()
-    return snapshot[1] if snapshot and event and snapshot[0]==event.get_platform_id() else None
-
-
-def pin_request(event,lease):
-    return _request_lease.set((event.get_platform_id(),lease))
-
-
-def release_request(token):
-    if token is not None:_request_lease.reset(token)
+from context_protocol import request_lease,pin_request,release_request,system_head,ContextPrefixViolation,AUTHORITY_GUIDANCE
 
 
 def same_owner(left,right):
@@ -92,7 +77,6 @@ def legacy_sdk_persona(text,origins,persona,*,replace=False):
 
 
 def persona_view(previous, incoming, proof, persona):
-    from readonly_journal import system_head, ContextPrefixViolation
     from context_protocol import is_persona_reference, persona_reference, persona_prompt
     if not proof:return incoming
     if not isinstance(proof,dict) or proof.get('target')!=sha(persona):
@@ -115,7 +99,6 @@ def persona_view(previous, incoming, proof, persona):
         # Old layouts put the Persona before the exact platform guidance. Use
         # configuration provenance AND an exact rendered prefix, not role or
         # arbitrary text matching. Everything after that prefix stays byte-faithful.
-        from context_transport import AUTHORITY_GUIDANCE
         content=message['content'];prefix,separator,tail=content.partition('\n'+AUTHORITY_GUIDANCE)
         sdk_replacement=legacy_sdk_persona(prefix,origins,persona,replace=True)
         if sdk_replacement is not None:

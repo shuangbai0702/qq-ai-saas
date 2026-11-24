@@ -13,10 +13,7 @@ from astrbot.core.agent.tool_executor import BaseFunctionToolExecutor
 from astrbot.core.agent.hooks import BaseAgentRunHooks
 from astrbot.core.provider.entities import ProviderRequest
 from mcp.types import CallToolResult,TextContent
-
-
-class WorkStopped(Exception):pass
-class WorkBudgetExceeded(Exception):pass
+from tool_outcome import WorkStopped,WorkBudgetExceeded
 
 
 @dataclass

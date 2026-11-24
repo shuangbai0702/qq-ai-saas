@@ -23,7 +23,7 @@ def state(db,scope):
 
 
 def user_version(row):
-    from memory_products import version
+    from memory_policy import version
     return version({k:row.get(k) for k in ('kind','intensity','updated','expires','neutral')})
 
 

@@ -29,7 +29,7 @@ async def main():
         async def avatar(**kwargs):calls.append(kwargs);return {}
         event=NS(get_group_id=lambda:'',get_extra=lambda k,d=None:extras.get(k,d),set_extra=lambda k,v:extras.__setitem__(k,v),get_sender_id=lambda:'0',get_self_id=lambda:'90000000',get_messages=lambda:[],message_obj=NS(message_id='stable-work-1'),bot=NS(get_login_info=login,set_qq_avatar=avatar))
         context=NS(context=NS(event=event));bridge={'settingsRevision':1,'allowAutonomous':True,'operations':[{'operation':'search'}]}
-        with patch('bilibili_tools.manifest',side_effect=lambda _:json.loads(json.dumps(bridge))):
+        with patch('bilibili_images.manifest',side_effect=lambda _:json.loads(json.dumps(bridge))):
             import bilibili_tools
             future={**bridge,'operations':[{'operation':'future_feature','scope':'public.read','args':{'type':'object','properties':{}}}]}
             with patch('bilibili_tools.manifest',return_value=future):

@@ -99,7 +99,8 @@ def parent(db,settings,record):
         return candidate[0]
     scope,event,sender=record.get('origin_scope'),record.get('origin_event'),record.get('sender_id')
     candidate=db.execute("SELECT status FROM pipeline_events WHERE scope=? AND subject=? AND event=? AND source IN ('message','deferred_group','owner_contact','group_participation')",(scope,sender,event)).fetchone()
-    expected='foreground:'+hashlib.sha256(json.dumps([settings['botId'],scope,sender,event],ensure_ascii=False).encode()).hexdigest()
+    from tool_outcome import foreground_work_id
+    expected=foreground_work_id(settings['botId'],scope,sender,event)
     if record['work_id']!=expected or not candidate or candidate[0] not in ('received','sending'):raise ValueError('tool_parent_stale')
     return scope
 

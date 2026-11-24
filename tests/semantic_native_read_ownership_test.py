@@ -7,7 +7,7 @@ from types import SimpleNamespace as NS
 import unittest
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
-from semantic_runtime import install_native_retirement_guard
+from semantic_async import install_native_retirement_guard
 
 
 class NativeReadOwnership(unittest.IsolatedAsyncioTestCase):

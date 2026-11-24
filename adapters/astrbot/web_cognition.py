@@ -3,6 +3,8 @@ import copy
 import hashlib
 import json
 import time
+import core_note as core_note_store
+from context_protocol import FOUNDATION_CURRENT,ContextPrefixViolation,system_head,is_card,is_persona_reference
 
 
 def fingerprint(note):
@@ -10,8 +12,7 @@ def fingerprint(note):
 
 
 def note(db):
-    row=db.execute('SELECT text,scopes,people,updated,source_verification FROM memory_core_notes WHERE slot=1').fetchone()
-    return {'text':row[0],'source_scopes':json.loads(row[1]),'subjects':json.loads(row[2]),'updated':row[3],'source_verification':row[4]} if row else {'text':'','source_scopes':[],'subjects':[],'updated':0}
+    return core_note_store.read(db)
 
 
 def edit(db,data):
@@ -22,10 +23,8 @@ def edit(db,data):
     before=note(db)
     if data.get('expectedVersion')!=fingerprint(before):return {'error':'核心记忆已变化，请刷新后重试','status':409}
     if value==before['text']:return {'ok':True,'unchanged':True}
-    columns={r[1] for r in db.execute('PRAGMA table_info(memory_core_notes)')}
-    if 'user_edit' not in columns:db.execute('ALTER TABLE memory_core_notes ADD COLUMN user_edit TEXT')
-    previous=db.execute('SELECT user_edit FROM memory_core_notes WHERE slot=1').fetchone()
-    proof=json.loads(previous[0]) if previous and previous[0] else {}
+    previous_raw=core_note_store.read_user_edit_raw(db)
+    proof=json.loads(previous_raw) if previous_raw else {}
     origins=list(dict.fromkeys([*proof.get('origins',[]),fingerprint(before)]))
     updated=max(time.time(),before['updated']+0.000001)
     # This replacement comes from the Bot's authenticated editor, not the
@@ -35,7 +34,6 @@ def edit(db,data):
     if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fishbot_readonly_journals'").fetchone():
         from journal_storage import read_snapshot
         from types import SimpleNamespace
-        from readonly_journal import ContextPrefixViolation
         snapshot=read_snapshot(db,json.dumps('bot_shared'))
         if snapshot:
             state=snapshot.get('state',{})
@@ -48,19 +46,14 @@ def edit(db,data):
                 proof['origins']=list(dict.fromkeys(origins))
             try:project(SimpleNamespace(**snapshot),{'proof':proof,'note':after})
             except ContextPrefixViolation as error:return {'error':'当前核心记忆区域无法精确定位：'+str(error),'status':409}
-    db.execute("INSERT INTO memory_core_notes(slot,text,scopes,people,sources,updated,schema_version,source_verification,user_edit) VALUES(1,?,?,?,'[]',?,2,'user_edited',?) ON CONFLICT(slot) DO UPDATE SET text=excluded.text,scopes=excluded.scopes,people=excluded.people,updated=excluded.updated,source_verification=excluded.source_verification,sources='[]',user_edit=excluded.user_edit",
-        (value,json.dumps(after['source_scopes']),json.dumps(after['subjects']),updated,json.dumps(proof,separators=(',',':'))))
-    # Old AI claims supported the previous text. Keep their authoritative
-    # records, but never attach them to a user's replacement as evidence.
-    if 'claims' in columns:db.execute("UPDATE memory_core_notes SET claims='[]' WHERE slot=1")
+    core_note_store.write_user_edit(db,value,after['source_scopes'],after['subjects'],updated,proof)
     return {'ok':True,'updatedRegion':'core_note','version':fingerprint(after)}
 
 
 def read_core(db):
-    if 'user_edit' not in {r[1] for r in db.execute('PRAGMA table_info(memory_core_notes)')}:return None
-    row=db.execute('SELECT user_edit FROM memory_core_notes WHERE slot=1').fetchone()
-    if not row or not row[0]:return None
-    proof=json.loads(row[0]);current=note(db)
+    raw=core_note_store.read_user_edit_raw(db)
+    if not raw:return None
+    proof=json.loads(raw);current=note(db)
     if not proof.get('actorId') or proof.get('target')!=fingerprint(current):raise ValueError('web_core_note_provenance_mismatch')
     return {'proof':proof,'note':current}
 
@@ -70,8 +63,6 @@ def project_core(snapshot,change):
     # The initialized empty shell has never submitted a prefix. Its first
     # ordinary request constructs the foundation from the authoritative row.
     if getattr(snapshot,'turns',None)==0 and not snapshot.base and not snapshot.wire:return snapshot
-    from context_foundation import FOUNDATION_CURRENT
-    from readonly_journal import ContextPrefixViolation
     current=change['note'];proof=change['proof']
     if not proof.get('actorId') or proof.get('target')!=fingerprint(current):raise ContextPrefixViolation('web_core_note_provenance_mismatch')
     state=copy.deepcopy(snapshot.state)
@@ -94,11 +85,8 @@ def project_core(snapshot,change):
             result[index]={**message,'content':FOUNDATION_CURRENT+'\n'+memory_json(packet)}
         if not matches and not previous.get('text'):
             from context_foundation import arrange
-            from readonly_journal import system_head
             packets=arrange([],{'memory_foundation':{},'foundation_core_note':current})
             if packets:
-                from context_protocol import is_persona_reference
-                from character_cards import is_card
                 position=next((i for i,m in enumerate(result[:system_head(result)]) if is_card(m) or is_persona_reference(m)),system_head(result));result[position:position]=packets
                 matches.append(position)
         if len(matches)>1 or required and len(matches)!=1:raise ContextPrefixViolation('web_core_note_region_missing_or_ambiguous')

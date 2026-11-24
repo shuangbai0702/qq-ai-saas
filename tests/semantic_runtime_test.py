@@ -8,7 +8,8 @@ from behavior import BehaviorStore
 from context_protocol import SOURCE,model_json
 from readonly_journal import ReadonlyJournal,Prepared
 from semantic_batch import event_key,initialize
-from semantic_runtime import finish_semantic_batches,clean_native_history,install_native_retirement_guard,filter_retired_context
+from semantic_runtime import finish_semantic_batches,clean_native_history,filter_retired_context
+from semantic_async import install_native_retirement_guard
 
 SCOPE='private:12345678'
 def message(event):return {'role':'user','content':SOURCE+model_json({'scope':SCOPE,'sender_id':'12345678','event_id':event})+'\noriginal '+event}

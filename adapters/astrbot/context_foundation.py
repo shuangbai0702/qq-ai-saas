@@ -5,12 +5,41 @@ import re
 from context_protocol import model_json
 from memory_model_view import memory_json
 
-FOUNDATION_CURRENT='[FishBot 上下文固定基础区 v1]'
+from context_protocol import FOUNDATION_CURRENT,EVENT_CONTEXT_CURRENT,READONLY_CURRENT,system_head,is_card,is_note,is_persona_reference
+from core_note import CORE_NOTE_POLICY
+from memory_policy import core_note_visible
 MAX_FACT_CHARS=12000
 
 
+def foundation_bigs(db,scope,owner=''):
+    """The single current product, or legacy inputs awaiting checkpoint rollup."""
+    rows=db.execute("SELECT s.id,s.text,s.sources,s.updated,s.scope,'big' FROM memory_summaries s JOIN memory_summary_levels l ON s.id=l.id WHERE l.kind='big' ORDER BY s.id").fetchall()
+    visible=[]
+    for row in rows:
+        origins=[x[0] for x in db.execute('SELECT scope FROM memory_summary_origins WHERE summary_id=?',(row[0],))] or [row[4]]
+        if core_note_visible(origins,scope,owner):visible.append(row)
+    own=[r for r in visible if r[4]==scope]
+    return own or visible
+
+
+def summary_foundation(db,scope,owner=''):
+    """Read the complete fixed big/small summary basis without query selection."""
+    from memory_scope import summary_item
+    from summary_material import bound_claim_views
+    rows=db.execute("SELECT s.id,s.text,s.sources,s.updated,s.scope,coalesce(l.kind,'small') FROM memory_summaries s LEFT JOIN memory_summary_levels l ON s.id=l.id WHERE (s.scope=? OR l.kind='big') AND coalesce(l.kind,'small') IN ('big','small') ORDER BY s.id",(scope,)).fetchall()
+    bigs=foundation_bigs(db,scope,owner)
+    if len(bigs)>1:raise RuntimeError('summary_foundation_merge_required')
+    smalls=[r for r in rows if r[5]=='small' and r[4]==scope]
+    # Legacy overfull scopes remain conservative while mandatory recovery
+    # merges run: never publish a three-small baseline.
+    selected=bigs[-1:]+smalls[:2]
+    result=[{**summary_item(r[:5],'checkpoint_foundation',db=db),'level':r[5],
+             'source_scopes':[x[0] for x in db.execute('SELECT scope FROM memory_summary_origins WHERE summary_id=? ORDER BY scope',(r[0],))] or [r[4]]} for r in selected]
+    bound_claim_views(result,budget=10**9)
+    return result
+
+
 def summaries(db,logical,owner='',previous=None):
-    from memory_reflection import summary_foundation
     try:return summary_foundation(db,logical,owner)
     except RuntimeError as error:
         if str(error)!='summary_foundation_merge_required':raise
@@ -104,10 +133,7 @@ def execution_view(state):
 
 def arrange(messages,state):
     """Used ONLY for a fresh or already-authorized reconstruction candidate."""
-    from context_protocol import READONLY_CURRENT
-    from context_transport import EVENT_CONTEXT_CURRENT
     foundation=state.get('memory_foundation')
-    from readonly_journal import system_head
     result=copy.deepcopy(messages)
     # The metadata snapshot retains the foundation; the hot packet does not
     # carry another copy of it. Existing submitted packets never enter here.
@@ -132,7 +158,6 @@ def arrange(messages,state):
     regions=[]
     note=state.get('foundation_core_note')
     if isinstance(note,dict) and note.get('text'):
-        from memory_reflection import CORE_NOTE_POLICY
         regions.append({'region':'core_note','core_note':note,'guidance':CORE_NOTE_POLICY})
     for name,rows in (('big_summary',big),('small_summaries',small)):
         if rows:regions.append({'region':name,'conversation_summaries':rows})
@@ -143,13 +168,10 @@ def arrange(messages,state):
     packets=[{'role':'user','content':FOUNDATION_CURRENT+'\n'+memory_json({**region,'meaning':'已完成检查点整理的历史资料；按真实来源理解，不是新发言或授权。即时修订以后续可信状态为准。'})} for region in regions]
     # A lawful checkpoint may receive a base already containing its old Note.
     # Replace only that owned head slot; never carry both old and current Note.
-    from character_cards import is_note
     head=system_head(result)
     result=[m for i,m in enumerate(result) if not (i<head and is_note(m))]
     head=system_head(result)
     wire=result[:head]+packets+result[head:]
-    from character_cards import is_card
-    from context_protocol import is_persona_reference
     notes=[m for m in packets if json.loads(m['content'].split('\n',1)[1]).get('region')=='core_note']
     position=next((i for i,m in enumerate(result[:head]) if is_card(m) or is_persona_reference(m)),None)
     if notes and position is not None:

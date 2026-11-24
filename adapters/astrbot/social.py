@@ -11,9 +11,9 @@ import time
 import hashlib
 import math
 from collections import OrderedDict
-from memory_reflection import embedding_request, reserve_embedding
+from embedding_client import embedding_request, reserve_embedding
 from pathlib import Path
-from hosted_memory import tokens
+from memory_policy import tokens
 from meme_reactions import categories as reaction_categories, relevance as meme_relevance, SERIOUS
 from sticker_collection import StickerCollector
 from meme_packs import catalog as pack_catalog
@@ -52,7 +52,7 @@ def summary_learning_batches(db,scope,events):
     Keep original group ownership when the summary audience is bot_shared;
     private input and samples outside the batch can never become style data.
     """
-    from semantic_batch import origin
+    from memory_policy import origin
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='social_samples'").fetchone():return []
     grouped={}
     for event in dict.fromkeys(str(event) for event in events):
@@ -359,7 +359,7 @@ def edit_learning_by_user(db,data):
     before=product_rows(db,'expression') if data['action']=='clear_learning' else [read_product(db,'expression',{'scope':scope,'expression':data['expression']})]
     before=[row for row in before if row and row['scope']==scope]
     if data['action']=='edit_pattern':
-        from memory_products import version
+        from memory_policy import version
         row=read_product(db,'expression',{'scope':scope,'expression':data['expression']})
         if not row or data.get('expectedVersion')!=version(row) or db.execute('SELECT epoch FROM social_control WHERE id=1').fetchone()[0]!=data['expectedEpoch']:return {'error':'表达已变化，请刷新后重试','status':409}
         situation,weight=data.get('situation'),data.get('weight')
@@ -409,7 +409,7 @@ def _proof_key(scope,expression):return json.dumps([scope,expression],ensure_asc
 def _record_user_edit(db,data,rows):
     """Content-free user provenance in the existing product control row."""
     if not rows or not data.get('actorId'):return
-    from memory_products import version
+    from memory_policy import version
     if 'user_edits' not in {r[1] for r in db.execute('PRAGMA table_info(social_control)')}:db.execute('ALTER TABLE social_control ADD COLUMN user_edits TEXT')
     raw=db.execute('SELECT user_edits FROM social_control WHERE id=1').fetchone()[0]
     proofs=json.loads(raw) if raw else {}
@@ -422,7 +422,7 @@ def _record_user_edit(db,data,rows):
 
 
 def user_edits(db):
-    from memory_products import version
+    from memory_policy import version
     if 'user_edits' not in {r[1] for r in db.execute('PRAGMA table_info(social_control)')}:return []
     raw=db.execute('SELECT user_edits FROM social_control WHERE id=1').fetchone()
     proofs=json.loads(raw[0]) if raw and raw[0] else {};result=[]
@@ -437,11 +437,9 @@ def user_edits(db):
 def project_user_edits(snapshot,edits):
     if snapshot is None or not edits:return snapshot
     import copy
-    from memory_products import version
-    from context_foundation import FOUNDATION_CURRENT
-    from person_memory import expand
-    from memory_model_view import memory_json
-    from readonly_journal import ContextPrefixViolation
+    from memory_policy import version
+    from context_protocol import FOUNDATION_CURRENT,ContextPrefixViolation
+    from memory_model_view import expand,memory_json
     changes={}
     for edit in edits:
         proof=edit['proof'];row=edit['row'];blocked=edit['blocked']
@@ -483,7 +481,7 @@ def product_blocked(db,target):return bool(db.execute('SELECT 1 FROM social_patt
 def validate_product(kind,op,value,now):
  if kind!='expression':return 'invalid_expression_kind'
  if op=='delete':return None
- from memory_products import safe
+ from memory_policy import safe
  weight=value.get('weight') if isinstance(value,dict) else None
  return None if isinstance(value,dict) and set(value)=={'situation','weight'} and safe(value['situation'],120) and type(weight) in (int,float) and math.isfinite(weight) and 0<=weight<=5 else 'invalid_value'
 

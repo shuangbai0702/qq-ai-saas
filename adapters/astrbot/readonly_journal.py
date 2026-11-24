@@ -7,7 +7,13 @@ their own business authority; this Journal owns the exact submitted sequence.
 import copy,hashlib,json,os,time
 import journal_storage
 from dataclasses import dataclass,replace
-from context_protocol import READONLY_CURRENT,model_json,source
+from context_protocol import (
+    EVENT_CONTEXT_CURRENT,FOUNDATION_CURRENT,JOURNAL_SCOPE,OWNER_EARLY_MIGRATION,
+    READONLY_CURRENT,READONLY_JOURNAL_GUIDANCE as GUIDANCE,
+    ContextPrefixViolation,ContextRecoveryUnavailable,
+    model_json,source,system_head,
+)
+from journal_storage import semantic_retire_projection
 from memory_model_view import memory_json
 from decision_history import changes,apply_changes,summaries,history_usage,history_boundary,MAX_RETAINED_WIRE_CHARS,MAX_RETAINED_TEXT_CHARS
 
@@ -22,8 +28,6 @@ class ContextCapacityExceeded(RuntimeError):
     def __init__(self,message,*,usage=None):
         self.capacity=capacity_evidence(usage) if usage else {}
         super().__init__(message+((' capacity='+model_json(self.capacity)) if self.capacity else ''))
-class ContextRecoveryUnavailable(RuntimeError):pass
-class ContextPrefixViolation(RuntimeError):pass
 
 
 def capacity_evidence(usage):
@@ -69,29 +73,6 @@ def same_native_message(before,after):
 def same_native_prefix(before,after):
     return len(before)==len(after) and all(same_native_message(a,b) for a,b in zip(before,after))
 
-def system_head(messages):
-    from context_protocol import is_persona_reference
-    from character_cards import head_note
-    head=0
-    while head<len(messages) and isinstance(messages[head],dict) and (messages[head].get('role') in ('system','developer') or head>0 and (is_persona_reference(messages[head]) or head_note(messages,head))):head+=1
-    return head
-
-def semantic_retire_projection(messages,permit):
-    """Remove exact batch member blocks; never infer membership from time."""
-    if not permit or permit.get('semanticBatch') is not True:return copy.deepcopy(messages)
-    from semantic_batch import event_key
-    members=set(permit.get('batchMembers',[]));scope=permit.get('scope')
-    if not isinstance(scope,str) or not members:raise ContextPrefixViolation('semantic_batch_members_missing')
-    result=[];dropping=False
-    for message in messages:
-        if isinstance(message,dict) and message.get('role')=='user':
-            origin=source(message)
-            event=model_json([origin['scope'],str(origin['event_id'])]) if origin and scope=='bot_shared' else str(origin['event_id']) if origin else None
-            dropping=bool(origin and (scope=='bot_shared' or origin['scope']==scope) and event_key(scope,event) in members)
-        if not dropping or isinstance(message,dict) and message.get('role') in ('system','developer'):
-            result.append(copy.deepcopy(message))
-    return result
-
 def semantic_checkpoint_view(base,messages,permit,old,suffix,packet_indexes):
     if old is None or suffix is None:
         return semantic_retire_projection(base,permit),semantic_retire_projection(messages,permit)
@@ -128,8 +109,6 @@ def tail_extension(old_base,new_messages):
     tail_old=old_base[head:];tail_new=new_messages[new_head:]
     if not same_native_prefix(tail_new[:len(tail_old)],tail_old):return None
     return tail_new[len(tail_old):]
-
-GUIDANCE='只读资料包首次提供完整对象；后续标为readonlyChanges的资料包是该对象的增量，按顺序应用[set,path,value]或[remove,path]，新值覆盖旧值，remove后不能恢复旧值。只有最新合并资料是当前状态；旧资料包是当时记录，不是新的用户发言、当前身份或权限。每次仍回应最新真实消息，工具结果以真实回执为准。'
 
 def reading_b_enabled():
     # Rollback affects only future packets. Committed B definitions and wire
@@ -456,8 +435,7 @@ class ReadonlyJournal:
         if row:
             version,state,payload,sha=row
             if state=='retired' and payload is None:
-                from journal_cutover import retired_source_receipt
-                if retired_source_receipt(self.db,json.loads(self.scope_key),sha):
+                if journal_storage.retired_source_receipt(self.db,json.loads(self.scope_key),sha):
                     self.retired_reason='owner_authorized_early_migration';return
             if version not in (1,journal_storage.VERSION) or state not in ('ready','retired') or not isinstance(payload,str) or not isinstance(sha,str) or hashlib.sha256(payload.encode()).hexdigest()!=sha or len(payload.encode())>MAX_PERSISTED_JOURNAL_BYTES:
                 self.recovery_error='journal_snapshot_integrity'
@@ -478,7 +456,6 @@ class ReadonlyJournal:
                 self.recovery_error='journal_snapshot_invalid';return
             authority=value['authority']
             if authority is not None:
-                from context_transport import EVENT_CONTEXT_CURRENT
                 try:
                     if not isinstance(authority,dict) or authority.get('role')!='user' or not isinstance(authority.get('content'),str) or not authority['content'].startswith(EVENT_CONTEXT_CURRENT+'\n'):raise ValueError()
                     event=json.loads(authority['content'].split('\n',1)[1])
@@ -488,12 +465,10 @@ class ReadonlyJournal:
             except (TypeError,ValueError,KeyError,IndexError):
                 self.recovery_error='journal_reading_definition_invalid';return
             if value['turns']==0 and not value['base'] and not value['wire']:
-                from shared_context import JOURNAL_SCOPE,active
-                from journal_cutover import reserved_destination_receipt
-                if (json.loads(self.scope_key)!=JOURNAL_SCOPE or state!='ready' or not active(self.db)
+                if (json.loads(self.scope_key)!=JOURNAL_SCOPE or state!='ready' or not journal_storage.shared_context_active(self.db)
                     or value['state'] or value['usage'] or value['detail']
                     or value['base_chars']!=0 or group_turn is not None or authority is not None
-                    or value['retirement'] is not None or self._scope_has_completed_history() and not reserved_destination_receipt(self.db,sha)):
+                    or value['retirement'] is not None or self._scope_has_completed_history() and not journal_storage.reserved_destination_receipt(self.db,sha)):
                     self.recovery_error='journal_empty_reservation_invalid'
                 return
             self.last=Prepared(0,None,value['base'],value['wire'],value['state'],value['turns'],value['at'],'restored',group_turn,value['base_chars'],value['detail'],value['usage'],authority,value['retirement'])
@@ -1076,7 +1051,6 @@ class ReadonlyJournal:
     @staticmethod
     def retire_owner_source(db,scope,sha,grant):
         """Transition an exactly authorized source inside the switch transaction."""
-        from journal_cutover import OWNER_EARLY_MIGRATION
         if (not db.in_transaction or grant['type']!=OWNER_EARLY_MIGRATION
             or grant['destination']!='bot_shared' or scope=='bot_shared' or grant['sources'].get(scope)!=sha):
             raise PermissionError('journal_owner_retirement_invalid')

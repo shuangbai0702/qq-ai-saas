@@ -14,6 +14,31 @@ from datetime import datetime, timezone, timedelta
 from persona_presence_core import ParticipationDecision, normalize_decision_payload
 
 BEHAVIOR_DEFAULTS=json.loads((Path(__file__).resolve().parents[2]/'packages/contracts/behavior-runtime-defaults.json').read_text(encoding='utf-8'))
+ZONE=timezone(timedelta(hours=8))
+
+
+def quiet(cfg,now):
+    b=cfg.get('behavior') or {};hour=datetime.fromtimestamp(now,ZONE).hour
+    start,end=b.get('quietStart',BEHAVIOR_DEFAULTS['quietStart']),b.get('quietEnd',BEHAVIOR_DEFAULTS['quietEnd'])
+    return start<=hour<end if start<end else (hour>=start or hour<end) if start!=end else False
+
+
+def paused(db,scope,now):
+    row=db.execute('SELECT until FROM initiative_pauses WHERE scope=?',(scope,)).fetchone()
+    return bool(row and row[0]>now)
+
+
+def release_unstarted(db,item,key):
+    """Refund only a timer proven not to have reached protocol dispatch."""
+    at=item.get('reserved_at');scope=item.get('scope')
+    if at is None or not scope or not key:return
+    day=datetime.fromtimestamp(at,ZONE).date().isoformat()
+    with db:
+        if not db.execute("UPDATE autonomy_sends SET state='released' WHERE event=? AND state='pending'",(key,)).rowcount:return
+        changed=db.execute('UPDATE contacts SET unanswered=max(0,unanswered-1) WHERE scope=? AND last_attempt=?',(scope,at)).rowcount
+        if changed:
+            db.execute('UPDATE deliveries SET count=max(0,count-1) WHERE scope=? AND day=? AND last_sent=?',(scope,day,at))
+            if item.get('contact_subject'):db.execute('UPDATE companion_members SET unanswered=max(0,unanswered-1) WHERE scope=? AND subject=? AND attempt=?',(scope,item['contact_subject'],at))
 
 # Pinned AstrBot ignores per-call max_tokens in text_chat's **kwargs. The
 # hosted payload hook reads this task-local limit without mutating a provider
@@ -144,7 +169,6 @@ def group_allowed(cfg, scope):
 
 
 def group_muted(db, scope, now):
-    from initiative import paused
     row = db.execute('SELECT opted_out FROM contacts WHERE scope=?', (scope,)).fetchone()
     return bool((row and row[0]) or paused(db, scope, now))
 
@@ -212,7 +236,6 @@ def recover_unstarted(db):
     Dispatch durably marks unknown before the network call. Pending entries
     therefore never reached the protocol and can be refunded after cancellation.
     """
-    from initiative import release_unstarted
     for event, scope, at in db.execute("SELECT event,scope,at FROM autonomy_sends WHERE state='pending'").fetchall():
         if '/timer/' in event:
             member=db.execute('SELECT subject FROM companion_members WHERE scope=? AND attempt=?',(scope,at)).fetchone()
@@ -300,13 +323,11 @@ class GroupPresence:
         return (0,0,0,'')
 
     def current(self, scope, cfg, checked, version, live):
-        from initiative import quiet
         row = self.snapshot(scope)
         now = time.time()
         return bool(live() and group_allowed(cfg, scope) and not quiet(cfg, now) and row[0] == checked and row[2] == version and not group_muted(self.db, scope, now))
 
     def ready(self, scope, cfg, event_id, provider, live, now):
-        from initiative import quiet
         if not provider or not live() or not group_allowed(cfg,scope) or quiet(cfg,now):return False
         row=self.snapshot(scope);interval=cooldown_base(cfg,scope,'group')
         return bool(row[3]!=str(event_id) and (not max(row[:2]) or now-max(row[:2])>=interval) and not group_muted(self.db,scope,now) and has_capacity(self.db,cfg,now))
@@ -329,7 +350,6 @@ class GroupPresence:
         return events
 
     async def evaluate(self, scope, cfg, event_id, provider, messages, companion, dialogue, live, metrics, event_var, now=None, addressing=None, lease=None, on_silence=None):
-        from initiative import quiet
         now = time.time() if now is None else now
         b = cfg.get('behavior') or {}
         # Ambient history cannot stand in for the current event. Non-text
@@ -437,7 +457,6 @@ def owner_state(db, cfg, now, *, readonly=False):
 
 
 def owner_check_candidate(db, cfg, now):
-    from initiative import paused, quiet
     b = cfg.get('behavior') or {}; data = owner_state(db, cfg, now)
     if not data or b.get('enabled', True) is False or quiet(cfg, now) or not has_capacity(db,cfg,now):
         return None
@@ -459,7 +478,6 @@ def owner_check_candidate(db, cfg, now):
 
 
 def owner_delivery_candidate(db, cfg, now):
-    from initiative import paused
     b = cfg.get('behavior') or {}; data = owner_state(db, cfg, now, readonly=True)
     if not data:
         return None
@@ -471,7 +489,6 @@ def owner_delivery_candidate(db, cfg, now):
 
 
 def owner_delivery_current(db, cfg, item, now):
-    from initiative import quiet, paused
     b=cfg.get('behavior') or {}
     if not b.get('ownerContactEnabled',BEHAVIOR_DEFAULTS['ownerContactEnabled']) or not b.get('enabled',True) or quiet(cfg,now):return False
     owner=str(b.get('ownerUin') or '')

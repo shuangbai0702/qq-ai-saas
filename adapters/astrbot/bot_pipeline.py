@@ -193,7 +193,7 @@ def conversation_context(store,cfg,scope,subject,query,now,state=None):
     """Read the existing compressed and pending memory; never copy its storage."""
     from memory_scope import pending_messages
     from message_provenance import timeline
-    from semantic_runtime import filter_retired_context
+    from input_reconciliation import filter_retired_context
     enabled=cfg.get('memory',True)
     state=dict(state or {})
     # Ordinary memory belongs to a checkpoint foundation, not query-selected

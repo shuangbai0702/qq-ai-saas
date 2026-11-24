@@ -278,7 +278,7 @@ def recover_archived_materials(db,scope,events):
     remain authoritative. No archive, Journal or transaction is committed here.
     """
     import journal_storage
-    from semantic_batch import event_key
+    from context_protocol import scoped_event_hash as event_key
     wanted=set(str(event) for event in events);invalid=0
     tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     retired=set()
@@ -443,7 +443,7 @@ def batch_corrections(db,scope,events):
     Claims and memory_blocks.rejected_values reference each other by value
     hash and event (D3/D4.9); whole-name forget rows contribute nothing."""
     if not events or not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_blocks'").fetchone():return []
-    from memory_scope import person_filter
+    from memory_policy import person_filter
     where,args=person_filter(scope,scope[8:],'b') if isinstance(scope,str) and scope.startswith('private:') else ('b.scope=?',(scope,))
     wanted={str(event) for event in events};result=[]
     for row_scope,subject,name,raw in db.execute("SELECT b.scope,b.subject,b.name,b.rejected_values FROM memory_blocks b WHERE "+where+" AND b.block_all=0",args):

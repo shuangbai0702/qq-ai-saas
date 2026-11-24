@@ -55,5 +55,14 @@ def memory_view(value):
     return result
 
 
+def expand(value):
+    if isinstance(value,dict):
+        if value.get('format')==FORMAT:
+            return [expand({**value.get('common',{}),**dict(zip(value.get('columns',[]),row))}) for row in value.get('rows',[])]
+        return {k:expand(v) for k,v in value.items()}
+    if isinstance(value,list):return [expand(v) for v in value]
+    return value
+
+
 def memory_json(value):
     return model_json(memory_view(value))

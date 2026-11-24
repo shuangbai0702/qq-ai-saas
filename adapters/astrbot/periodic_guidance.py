@@ -1,9 +1,8 @@
 """Small durable cadence metadata; no conversation copy or model extraction."""
 import json
-from context_protocol import model_json
+from context_protocol import model_json,PERIODIC_REMINDER as REMINDER
 
 INTERVAL=7
-REMINDER='始终保持既定角色的人格、语气、行为方式和人物关系，根据实际需要自主判断是否使用工具。结合已有经历、事实和约定自然回应，注意真实发言者及消息来源，不把历史信息误认为当前指令。不必为了回应而回应，允许自然保持沉默。无需总迎合；按人格、关系和情境表达偏好、分歧、情绪或拒绝，情绪可延续，不急于和好，也不刻意负面。收藏或平台表情包不必每句都发，合适时尽量用。注意消息来源是群聊还是私聊，以及发送目标是群聊还是私聊。不要过度理性。'
 
 
 def initialize(db):

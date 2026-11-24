@@ -46,17 +46,7 @@ DESCRIPTIONS={
  'profile_signature':'修改自己B站账号签名',
 }
 
-def manifest(settings):
-    try:
-        p=Path(settings['root'])/'ai'/'bilibili-bridge.json'
-        if p.stat().st_size>65536:return None
-        value=json.loads(p.read_text(encoding='utf-8'))
-        if value.get('version')!=1 or value.get('botId')!=settings.get('botId') or any(value.get(k)!=settings.get(k) for k in ('generation','revision')):return None
-        from urllib.parse import urlparse
-        url=urlparse(value['url'])
-        if url.scheme not in ('http','https') or url.username or url.password or url.query or url.fragment:return None
-        return value
-    except (OSError,ValueError,KeyError,TypeError):return None
+from bilibili_images import manifest
 
 def tools(settings,event,current,evidence,identity=None,db=None):
     bridge=manifest(settings)
@@ -85,7 +75,8 @@ def tools(settings,event,current,evidence,identity=None,db=None):
             else:
                 work=event.get_extra('_hosted_pipeline')
                 if work is None:return json.dumps({'error':'missing_trusted_work','receipt':{'status':'rejected'}})
-                work_id='foreground:'+hashlib.sha256(json.dumps([work.bot_id,work.scope,work.subject,work.event_id],ensure_ascii=False).encode()).hexdigest()
+                from tool_outcome import foreground_work_id
+                work_id=foreground_work_id(work.bot_id,work.scope,work.subject,work.event_id)
                 authority='foreground';sender=str(event.get_sender_id());epoch=None
                 if continuation:
                     if not isinstance(continuation,dict) or continuation.get('senderId')!=sender or continuation.get('scope')!=work.scope or not continuation.get('workId') or not continuation.get('owner'):return json.dumps({'error':'invalid_continuation','receipt':{'status':'rejected'}})

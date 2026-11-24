@@ -4,7 +4,7 @@ Interest heat follows DSH's bounded decay; identity is kept separate from user f
 import hashlib,json,math,re,time,uuid
 import emotion_state
 from memory_strength import interest_strength,relevance,INTEREST_REINFORCE_INTERVAL
-from hosted_memory import tokens
+from memory_policy import tokens,scrub
 
 
 def initialize(db):
@@ -82,7 +82,6 @@ def reflect_interest(db,topic,operation,reason,action,evidence,now):
     allowed={'existing_companion_state','existing_memory','bilibili_public_search'}
     sources=[{'source':e['source'],'referenceSha256':hashlib.sha256(e['reference'].encode()).hexdigest()} for e in evidence if isinstance(e,dict) and e.get('source') in allowed and isinstance(e.get('reference'),str) and e['reference']]
     if not sources:raise ValueError('interest_requires_actual_read')
-    from memory_reflection import scrub
     reason=scrub(reason.strip());sources=sources[:3]
     fingerprint=hashlib.sha256(json.dumps([topic,operation,reason],ensure_ascii=False).encode()).hexdigest()
     previous=db.execute('SELECT fingerprint,result FROM companion_reflections WHERE action=? AND topic=?',(action,topic)).fetchone()
@@ -158,14 +157,14 @@ def inspect_tool(db,cfg,scope,current,*,event=None,on_read=None):
 
 
 def editable_version(db,kind,target):
-    from memory_products import version
+    from memory_policy import version
     row=read_product(db,kind,target)
     return version(row) if row else None
 
 
 def edit_by_user(db,data):
     """Update existing cognition only. Never manufacture evidence or task receipts."""
-    from memory_products import version
+    from memory_policy import version
     if not isinstance(data.get('actorId'),str) or not data['actorId']:return {'error':'缺少真实用户操作来源','status':403}
     kind=data['kind']
     if kind not in ('interest','motive'):return {'error':'不支持的认知类型','status':400}
@@ -222,7 +221,7 @@ def apply_product(db,kind,op,target,value,now):
 
 
 def _summary_target_current(db,kind,target,before):
-    from memory_products import version
+    from memory_policy import version
     offered=next((r for r in before.get("memory_state",{}).get("products",{}).get(kind,[]) if r["target"]==target),None)
     current=read_product(db,kind,target)
     return (version(current) if current else None)==(offered["version"] if offered else None)

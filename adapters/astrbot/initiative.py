@@ -7,23 +7,20 @@ import companion_state
 import autonomy
 from message_layout import split_messages
 from datetime import datetime,timezone,timedelta
-ZONE=timezone(timedelta(hours=8))
+from autonomy import ZONE,quiet,paused,release_unstarted
 # Internal proactive anchor: a clearly platform-authored event, never the
 # recipient's words and never a "say something" order. Silence ([NO_REPLY])
 # is the default when nothing is genuinely worth sharing.
 PROACTIVE_ANCHOR='[平台内部主动时刻]'
 PROACTIVE_PROMPT=PROACTIVE_ANCHOR+'\n{"kind":"proactive_moment","meaning":"平台调度的一次主动机会；没有用户新消息，本条不是对方发言。有真实值得分享或对方会感兴趣的内容时，才简短自然地说一两句；话题若来自自己的研究或兴趣，以自己的新想法自然分享，不能改称对方曾提出；只有真实对方原话才能归于对方。没有合适内容就只输出[NO_REPLY]，不为找话题打扰对方。"}'
 
-def quiet(cfg,now):
-    b=cfg.get('behavior') or {};hour=datetime.fromtimestamp(now,ZONE).hour
-    start,end=b.get('quietStart',autonomy.BEHAVIOR_DEFAULTS['quietStart']),b.get('quietEnd',autonomy.BEHAVIOR_DEFAULTS['quietEnd'])
-    return start<=hour<end if start<end else (hour>=start or hour<end) if start!=end else False
 
 def initialize(db):
     companion_state.initialize(db)
     autonomy.initialize(db)
     db.executescript('''DROP TABLE IF EXISTS initiative_checks;
-    DROP TABLE IF EXISTS initiative_schedule;''')
+    DROP TABLE IF EXISTS initiative_schedule;
+    CREATE TABLE IF NOT EXISTS deliveries(scope TEXT,day TEXT,count INTEGER,last_sent REAL,PRIMARY KEY(scope,day));''')
     db.execute('CREATE TABLE IF NOT EXISTS initiative_pauses(scope TEXT PRIMARY KEY,until REAL)')
     db.executescript('''CREATE TABLE IF NOT EXISTS contacts(scope TEXT PRIMARY KEY,subject TEXT,self_id TEXT,last_user REAL,last_bot REAL DEFAULT 0,last_attempt REAL DEFAULT 0,unanswered INTEGER DEFAULT 0,opted_out INTEGER DEFAULT 0,last_text TEXT DEFAULT '',last_output TEXT DEFAULT '');''')
     columns={r[1] for r in db.execute('PRAGMA table_info(contacts)')}
@@ -39,10 +36,6 @@ def incoming(db,scope,subject,self_id,text,now,directed=True,*,event=None):
         db.execute('DELETE FROM initiative_pauses WHERE scope=?',(scope,))
     db.execute('DELETE FROM initiative_pauses WHERE until<=?',(now,))
     db.commit()
-
-def paused(db,scope,now):
-    row=db.execute('SELECT until FROM initiative_pauses WHERE scope=?',(scope,)).fetchone()
-    return bool(row and row[0]>now)
 
 def outgoing(db,scope,text,now,*,event=None):
     db.execute('UPDATE contacts SET last_bot=?,last_output=?,last_bot_event=? WHERE scope=?',(now,text[:500],str(event) if event is not None else None,scope));db.commit()
@@ -100,19 +93,6 @@ def reserve(db,cfg,item,now):
         db.execute('UPDATE contacts SET last_attempt=?,unanswered=unanswered+1 WHERE scope=?',(now,item['scope']))
         db.execute('INSERT INTO deliveries VALUES(?,?,1,?) ON CONFLICT(scope,day) DO UPDATE SET count=count+1,last_sent=excluded.last_sent',(item['scope'],day,now))
     return True
-
-
-def release_unstarted(db,item,key):
-    """Refund only a timer proven not to have reached protocol dispatch."""
-    at=item.get('reserved_at');scope=item.get('scope')
-    if at is None or not scope or not key:return
-    day=datetime.fromtimestamp(at,ZONE).date().isoformat()
-    with db:
-        if not db.execute("UPDATE autonomy_sends SET state='released' WHERE event=? AND state='pending'",(key,)).rowcount:return
-        changed=db.execute('UPDATE contacts SET unanswered=max(0,unanswered-1) WHERE scope=? AND last_attempt=?',(scope,at)).rowcount
-        if changed:
-            db.execute('UPDATE deliveries SET count=max(0,count-1) WHERE scope=? AND day=? AND last_sent=?',(scope,day,at))
-            if item.get('contact_subject'):db.execute('UPDATE companion_members SET unanswered=max(0,unanswered-1) WHERE scope=? AND subject=? AND attempt=?',(scope,item['contact_subject'],at))
 
 
 def event_was_queued(platform,event):

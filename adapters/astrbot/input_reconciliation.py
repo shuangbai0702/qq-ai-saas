@@ -7,7 +7,7 @@ def ambient_retirement_candidates(db,tables,*,recovery=False):
     """Group observations with no live inbox or outstanding response owner."""
     required={'pipeline_work_inputs','pipeline_scope_work','pipeline_events','pipeline_action_effects'}
     if not required<=tables:return set()
-    from bot_pipeline import RECOVERABLE_ADMISSION_REASONS
+    from context_protocol import RECOVERABLE_ADMISSION_REASONS
     reasons=','.join('?' for _ in RECOVERABLE_ADMISSION_REASONS)
     status=("i.status='blocked_recovery' AND i.payload IS NULL AND i.retry_count=0"
             if recovery else "i.status='deferred'")
@@ -84,3 +84,39 @@ def reconcile(db,reflection):
             if row is None:continue # Missing evidence is still visible, never success.
             reflection.checkpoint_issue(scope,checkpoint,'input_recovery:'+detail['scope'],{'scope':detail['scope']})
             db.execute("UPDATE memory_checkpoint_issues SET status='resolved' WHERE scope=? AND checkpoint_id=? AND kind=? AND status='open'",(scope,checkpoint,kind))
+
+
+def retired_row(row,default_scope,members,event_field=None):
+    from context_protocol import model_json,scoped_event_hash as event_key
+    if not isinstance(row,dict):return False
+    event=row.get(event_field) if event_field else row.get('source_event',row.get('event_id'))
+    if event is None:return False
+    scope=row.get('source_scope',row.get('sourceScope',row.get('scope',default_scope)))
+    if event_key(scope,event) in members.get(scope,set()):return True
+    shared_event=str(event) if scope=='bot_shared' else model_json([scope,str(event)])
+    return event_key('bot_shared',shared_event) in members.get('bot_shared',set())
+
+
+def filter_retired_context(st,scope,value):
+    """Filter hot transcript windows only; derived semantic products survive."""
+    from journal_storage import retired_members
+    members=retired_members(st.db)
+    if not members:return value
+    result=dict(value)
+    for field in ('recent_messages','recent_cross_session_messages','conversation_timeline','ambient_group_messages'):
+        if isinstance(result.get(field),list):result[field]=[row for row in result[field] if not retired_row(row,scope,members)]
+    if isinstance(result.get('dialogue'),dict):
+        result['dialogue']=dict(result['dialogue'])
+        for field in ('recent_own_turns','feedback','deliveries'):
+            if isinstance(result['dialogue'].get(field),list):result['dialogue'][field]=[row for row in result['dialogue'][field] if not retired_row(row,scope,members)]
+    if isinstance(result.get('group_round_history'),list):
+        rounds=[]
+        for original in result['group_round_history']:
+            row=dict(original);origin=row.get('source_scope',scope)
+            row['messages']=[message for message in row.get('messages',[]) if not retired_row(message,origin,members)]
+            if retired_row(row,scope,members,'round_event'):
+                if not row['messages']:continue
+                row['round_event']=None;row['reply']=None
+            rounds.append(row)
+        result['group_round_history']=rounds
+    return result

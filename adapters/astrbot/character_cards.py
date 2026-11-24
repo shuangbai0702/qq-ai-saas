@@ -3,8 +3,8 @@
 Config revisions own cards; this module owns no database or second history.
 """
 import copy,hashlib,json,re
+from context_protocol import CHARACTER_CARD_MARKER as MARKER,FOUNDATION_CURRENT,is_card,is_note,head_note,system_head,ContextPrefixViolation,is_persona_reference
 
-MARKER='[FishBot 角色卡] '
 JS_WHITESPACE='\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff'
 def encoded(value):return json.dumps(value,ensure_ascii=False,separators=(',',':'))
 def sha(value):return hashlib.sha256(encoded(value).encode()).hexdigest()
@@ -23,21 +23,8 @@ def validate(cards):
 def messages(cards):
     return [{'role':'system','content':MARKER+c['name']+'\n'+c['content']} for c in validate(cards) if c['enabled']]
 def identity(cards):return sha([[c[k] for k in ('id','name','kind','content','enabled')] for c in validate(cards)])
-def is_card(m):return m.get('role')=='system' and isinstance(m.get('content'),str) and m['content'].startswith(MARKER)
-def is_note(m):
-    from context_foundation import FOUNDATION_CURRENT
-    content=m.get('content')
-    if m.get('role')!='user' or not isinstance(content,str) or not content.startswith(FOUNDATION_CURRENT+'\n'):return False
-    try:return json.loads(content.split('\n',1)[1]).get('region')=='core_note'
-    except (ValueError,AttributeError):return False
-def head_note(messages,index):
-    from context_protocol import is_persona_reference
-    # Structural parsing only; edit authority is checked separately in layout.
-    # A preserved SDK Persona may still own a complete System physical slot.
-    return is_note(messages[index]) and index+1<len(messages) and (messages[index+1].get('role') in ('system','developer') or is_persona_reference(messages[index+1]))
 
 def retain_note_head(head,previous):
-    from context_protocol import is_persona_reference
     result=copy.deepcopy(head)
     notes=[m for m in previous if is_note(m)]
     if notes and not any(is_note(m) for m in head):
@@ -47,8 +34,6 @@ def retain_note_head(head,previous):
 
 def layout(wire,cards,*,expected_note=None,origins=None,require_note=False,persona=None,persona_proof=None):
     """Move only proven base Note/cards/Persona. Every other message is exact."""
-    from context_protocol import is_persona_reference
-    from readonly_journal import system_head,ContextPrefixViolation
     result=wire;end=system_head(result)
     # Legacy Note is immediately after the fixed head; never search history.
     if end<len(result) and is_note(result[end]):end+=1
@@ -93,13 +78,11 @@ def layout(wire,cards,*,expected_note=None,origins=None,require_note=False,perso
 
 def project(snapshot,change):
     if snapshot is None or change is None or not snapshot.base:return snapshot
-    from readonly_journal import ContextPrefixViolation
     cards=validate(change['cards']);proof=change['proof']
     if not str(proof.get('permitId','')).isdecimal() or proof.get('target')!=identity(cards):raise ContextPrefixViolation('character_cards_proof_invalid')
     origins=proof.get('origins',[])
     if not isinstance(origins,list) or not origins or any(not isinstance(x,str) or not re.fullmatch(r'[0-9a-f]{64}',x) for x in origins):raise ContextPrefixViolation('character_cards_origins_invalid')
     note=snapshot.state.get('foundation_core_note',snapshot.state.get('memory_foundation',{}).get('core_note'))
-    from readonly_journal import system_head
     if not isinstance(note,dict) and any(is_note(m) for m in snapshot.wire[:system_head(snapshot.wire)+1]):raise ContextPrefixViolation('character_cards_note_owner_missing')
     current=copy.copy(snapshot)
     current.base=layout(snapshot.base,cards,expected_note=note,origins=origins,persona=change.get('persona'),persona_proof=change.get('persona_proof'))

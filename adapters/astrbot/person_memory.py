@@ -1,26 +1,11 @@
 """Request-local person views from committed Journal visibility, never a ledger."""
 import copy,json,re
 from context_protocol import source,model_json
-from context_foundation import FOUNDATION_CURRENT
-from memory_model_view import memory_json,FORMAT
+from context_protocol import FOUNDATION_CURRENT
+from memory_model_view import memory_json,FORMAT,expand
 from decision_history import apply_changes
+from relationships import relation_view
 PERSON_CURRENT='[FishBot 人物记忆资料 v1]'
-
-
-def expand(value):
-    if isinstance(value,dict):
-        if value.get('format')==FORMAT:
-            return [expand({**value.get('common',{}),**dict(zip(value.get('columns',[]),row))}) for row in value.get('rows',[])]
-        return {k:expand(v) for k,v in value.items()}
-    if isinstance(value,list):return [expand(v) for v in value]
-    return value
-
-
-def relation_view(db,person):
-    from relationships import state
-    row=state(db,person)
-    if row is None:return None
-    return {'source_scope':row['scope'],'subject':str(person),**{k:row[k] for k in ('affinity','emotion','trust','impression','semantic_updated')},'emotion_expires':row['expires']}
 
 
 def profile(db,scope,person):

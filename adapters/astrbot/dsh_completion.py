@@ -1,7 +1,7 @@
 """Resume a claimed original media completion in its existing DSH session."""
 import asyncio,json
 import aiohttp
-from dsh_tools import manifest
+from dsh_bridge import manifest,bridge_current
 from pipeline_tools import validate_parent
 
 
@@ -27,7 +27,7 @@ async def resume(settings,item,current,db):
         **{key:item.get(key) for key in ('settings_revision','account_revision','account_uid')}}
     def check():
         if not current():raise asyncio.CancelledError('stale DSH completion')
-        if manifest(settings)!=bridge:raise ValueError('dsh_configuration_changed')
+        if not bridge_current(settings,bridge):raise ValueError('dsh_configuration_changed')
         validate_parent(db,settings,parent)
     check()
     payload={'protocol':2,'parent':parent,'delegationId':dsh['delegationId'],

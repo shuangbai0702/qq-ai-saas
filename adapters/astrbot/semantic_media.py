@@ -87,7 +87,7 @@ def _delegation_paths(db,owner,images):
 
 
 def _read_delegation_images(paths):
-    from model_images import POLICY
+    from image_codec import POLICY
     from PIL import Image
     output=[]
     bytes_left=4*1024*1024
@@ -128,7 +128,7 @@ def _read_delegation_images(paths):
 async def delegation_originals(db,journal_scope,scope,event_id,positions):
     """Resolve a visible same-scope event and offload only proven, live files."""
     from context_protocol import model_json
-    from model_images import _run_codec
+    from image_codec import _run_codec
     if journal_scope not in (scope,'bot_shared'):return None
     tables={row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if not {'fishbot_readonly_journals','semantic_media_owned','semantic_media_refs','semantic_media_retired_events'}<=tables:return None
@@ -185,7 +185,7 @@ async def collect_protocol_originals(event,live,db=None,*,shared=False):
     account_data=profile/account/'nt_qq'/'nt_data'
     roots=[account_data/'Pic',account_data/'Emoji'/'emoji-recv',profile/'NapCat'/'temp']
     originals=list(event.get_extra('_hosted_media_originals') or []);issues=[];seen=set()
-    from model_images import POLICY,_limited
+    from image_codec import POLICY,_limited
     from PIL import Image
     for segment in raw['message']:
         if not isinstance(segment,dict) or segment.get('type') not in ('image','mface'):continue

@@ -141,8 +141,8 @@ class DecisionTests(unittest.IsolatedAsyncioTestCase):
  async def test_request_phase_does_not_change_shared_routing(self):
   import model_cache
   provider=NS(provider_config={'api_base':'https://aiapi.codes/v1'});lease={'tenantId':'tenant','botId':'bot'};keys=[]
-  for phase in ['orientation','planning']:
-   with decision_scope(provider,lease,'deliberation','work-1',phase):
+  for phase in ['group_freshness','freshness_check']:
+   with decision_scope(provider,lease,'group_freshness','work-1',phase):
     keys.append(routing_key(None,provider,'gpt-6-luna'));token=model_cache.begin_attempt(None,provider)
     try:self.assertEqual(model_cache._attempt.get()['phase'],phase);self.assertEqual(model_cache._attempt.get()['workId'],'work-1')
     finally:model_cache.reset_attempt(token)
@@ -151,16 +151,13 @@ class DecisionTests(unittest.IsolatedAsyncioTestCase):
   provider=NS(provider_config={'api_base':'https://aiapi.codes/v1'});other=NS(provider_config=provider.provider_config)
   lease={'tenantId':'tenant','botId':'bot'}
   self.assertIsNone(routing_key(None,provider,'gpt-6-luna'))
-  with decision_scope(provider,lease,'planning'):
+  with decision_scope(provider,lease,'group_freshness'):
    first=routing_key(None,provider,'gpt-6-luna');self.assertTrue(first.startswith('fb-v1-'))
    self.assertIsNone(routing_key(None,other,'gpt-6-luna'))
-   with decision_scope(provider,lease,'orientation'):self.assertNotEqual(first,routing_key(None,provider,'gpt-6-luna'))
-   with decision_scope(provider,lease,'group_freshness'):self.assertNotEqual(first,routing_key(None,provider,'gpt-6-luna'))
-   with decision_scope(provider,lease,'deliberation'):
-    shared=routing_key(None,provider,'gpt-6-luna');self.assertIsNotNone(shared);self.assertNotEqual(first,shared)
-    with decision_scope(provider,dict(lease,botId='other'),'deliberation'):self.assertNotEqual(shared,routing_key(None,provider,'gpt-6-luna'))
-    with decision_scope(other,lease,'deliberation'):self.assertIsNone(routing_key(None,provider,'gpt-6-luna'))
-   with decision_scope(provider,dict(lease,tenantId='other'),'planning'):self.assertNotEqual(first,routing_key(None,provider,'gpt-6-luna'))
+   with decision_scope(provider,lease,'unsupported'):self.assertIsNone(routing_key(None,provider,'gpt-6-luna'))
+   with decision_scope(provider,dict(lease,botId='other'),'group_freshness'):self.assertNotEqual(first,routing_key(None,provider,'gpt-6-luna'))
+   with decision_scope(other,lease,'group_freshness'):self.assertIsNone(routing_key(None,provider,'gpt-6-luna'))
+   with decision_scope(provider,dict(lease,tenantId='other'),'group_freshness'):self.assertNotEqual(first,routing_key(None,provider,'gpt-6-luna'))
    self.assertEqual(first,routing_key(None,provider,'gpt-6-luna'))
   self.assertIsNone(routing_key(None,provider,'gpt-6-luna'))
 
@@ -168,7 +165,7 @@ class DecisionTests(unittest.IsolatedAsyncioTestCase):
   provider=NS(provider_config={'api_base':'https://aiapi.codes/v1'});ready=asyncio.Event();release=asyncio.Event();observed=[]
   async def worker():
    try:
-    with decision_scope(provider,{'tenantId':'a','botId':'a'},'planning'):
+    with decision_scope(provider,{'tenantId':'a','botId':'a'},'group_freshness'):
      observed.append(routing_key(None,provider,'gpt-6-luna'));ready.set();await release.wait()
    finally:observed.append(routing_key(None,provider,'gpt-6-luna'))
   task=asyncio.create_task(worker());await ready.wait()

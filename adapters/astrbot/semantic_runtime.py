@@ -6,45 +6,12 @@ from pathlib import Path
 from types import SimpleNamespace
 import semantic_batch
 from context_protocol import model_json
+from input_reconciliation import filter_retired_context,retired_row as _retired_row
 from readonly_journal import ReadonlyJournal,semantic_retire_projection
 
 
 def _retired_members(db):
     return semantic_batch.retired_members(db)
-
-
-def _retired_row(row,default_scope,members,event_field=None):
-    if not isinstance(row,dict):return False
-    event=row.get(event_field) if event_field else row.get('source_event',row.get('event_id'))
-    if event is None:return False
-    scope=row.get('source_scope',row.get('sourceScope',row.get('scope',default_scope)))
-    if semantic_batch.event_key(scope,event) in members.get(scope,set()):return True
-    shared_event=str(event) if scope=='bot_shared' else model_json([scope,str(event)])
-    return semantic_batch.event_key('bot_shared',shared_event) in members.get('bot_shared',set())
-
-
-def filter_retired_context(st,scope,value):
-    """Filter hot transcript windows only; derived semantic products survive."""
-    members=_retired_members(st.db)
-    if not members:return value
-    result=dict(value)
-    for field in ('recent_messages','recent_cross_session_messages','conversation_timeline','ambient_group_messages'):
-        if isinstance(result.get(field),list):result[field]=[row for row in result[field] if not _retired_row(row,scope,members)]
-    if isinstance(result.get('dialogue'),dict):
-        result['dialogue']=dict(result['dialogue'])
-        for field in ('recent_own_turns','feedback','deliveries'):
-            if isinstance(result['dialogue'].get(field),list):result['dialogue'][field]=[row for row in result['dialogue'][field] if not _retired_row(row,scope,members)]
-    if isinstance(result.get('group_round_history'),list):
-        rounds=[]
-        for original in result['group_round_history']:
-            row=dict(original);origin=row.get('source_scope',scope)
-            row['messages']=[message for message in row.get('messages',[]) if not _retired_row(message,origin,members)]
-            if _retired_row(row,scope,members,'round_event'):
-                if not row['messages']:continue
-                row['round_event']=None;row['reply']=None
-            rounds.append(row)
-        result['group_round_history']=rounds
-    return result
 
 
 def _prune_hot_memory(st):
@@ -262,94 +229,3 @@ def _native_source(content):
     scope=value.get('scope');event=value.get('event_id')
     if not isinstance(scope,str) or not scope.startswith(('private:','group:')) or not isinstance(event,str) or not event:return None
     return {'scope':scope,'event_id':event}
-
-
-def install_native_retirement_guard(manager,stores,settings):
-    """Fence actual SDK commits and reads against the existing retired batches.
-
-    The SDK and Journal use different databases: the post-await read fence is
-    mandatory even when physical deletion fails. No second retirement ledger.
-    """
-    db=getattr(manager,'db',None)
-    if db is None or getattr(db,'_semantic_retirement_guard',False):return
-    def owner(platform):
-        st=stores.get(platform)
-        return st if manager.db is db and st is not None and platform in settings and not getattr(st.reflection,'closed',False) else None
-    async def cleanup(platform,st,cid=None):
-        from semantic_async import clean_native
-        lease=settings.get(platform)
-        # This may be the accepted conversation's final SDK save while a
-        # compression boundary waits for it to drain. Native cleanup has its
-        # own thread/connection; waiting for admission here would deadlock.
-        if owner(platform) is not st or settings.get(platform) is not lease:return {'result':'pending','reason':'stale_native_owner'}
-        try:status=await clean_native(st,manager,platform,cid)
-        except (OSError,sqlite3.Error,ValueError,TypeError) as error:status={'result':'pending','reason':type(error).__name__}
-        if owner(platform) is not st or settings.get(platform) is not lease:return {'result':'pending','reason':'stale_native_owner'}
-        st.semantic_native_status=status
-        return status
-    if hasattr(db,'update_conversation'):
-        original=db.update_conversation
-        async def update(*args,**kwargs):
-            value=await original(*args,**kwargs)
-            platform=getattr(value,'platform_id',None);st=owner(platform)
-            if st is not None:await cleanup(platform,st,getattr(value,'conversation_id',None))
-            return value
-        db.update_conversation=update
-    if hasattr(db,'insert_platform_message_history'):
-        original_insert=db.insert_platform_message_history
-        async def insert(*args,**kwargs):
-            platform=kwargs.get('platform_id',args[0] if args else None);st=owner(platform)
-            content=kwargs.get('content',args[2] if len(args)>2 else None)
-            if st is not None and isinstance(content,dict):
-                # The pinned SDK binds this ContextVar around real pipeline/hook
-                # execution. Metadata supplied by a caller is never authority.
-                content=dict(content);content.pop('_fishbot_source',None)
-                from astrbot.core.platform.astr_message_event import current_message_event
-                event=current_message_event.get()
-                user=kwargs.get('user_id',args[1] if len(args)>1 else None)
-                if event is not None and event.get_platform_id()==platform and event.unified_msg_origin==user:
-                    work=event.get_extra('_hosted_pipeline') if content.get('type')=='bot' else None
-                    scope=getattr(work,'scope',None) or ('group:'+str(event.get_group_id()) if event.get_group_id() else 'private:'+str(event.get_sender_id()))
-                    identifier=getattr(work,'event_id',None) or getattr(event.message_obj,'message_id',None)
-                    if identifier is not None:content['_fishbot_source']={'scope':scope,'event_id':str(identifier)}
-                if 'content' in kwargs:kwargs={**kwargs,'content':content}
-                elif len(args)>2:args=(*args[:2],content,*args[3:])
-            source=_native_source(content)
-            if st is not None and _retired_members(st.db):
-                if source is None:
-                    st.semantic_native_status={'result':'pending','reason':'native_history_source_unproven'}
-                    raise ValueError('native_history_source_unproven')
-                if _retired_row(source,source['scope'],_retired_members(st.db)):return None
-            value=await original_insert(*args,**kwargs)
-            # Retirement can commit while the asynchronous insert is in flight.
-            st=owner(platform)
-            if st is not None:
-                status=await cleanup(platform,st)
-                if owner(platform) is not st:return None
-                if source and _retired_row(source,source['scope'],_retired_members(st.db)):
-                    if status.get('result')!='clean':raise ValueError('native_history_cleanup_pending')
-                    return None
-            return value
-        db.insert_platform_message_history=insert
-    if hasattr(db,'get_platform_message_history'):
-        original_get=db.get_platform_message_history
-        async def get(*args,**kwargs):
-            platform=kwargs.get('platform_id',args[0] if args else None)
-            st=owner(platform);lease=settings.get(platform)
-            rows=await original_get(*args,**kwargs)
-            # A late SDK read belongs to the store/configuration that began it.
-            # Never reinterpret its rows under a replacement tenant binding or
-            # return them unfiltered after the original owner has been released.
-            if owner(platform) is not st or settings.get(platform) is not lease:return []
-            if st is None:return rows
-            members=_retired_members(st.db)
-            if not members:return rows
-            result=[]
-            for row in rows:
-                source=_native_source(getattr(row,'content',None))
-                if source is None:
-                    st.semantic_native_status={'result':'pending','reason':'native_history_source_unproven'}
-                elif not _retired_row(source,source['scope'],members):result.append(row)
-            return result
-        db.get_platform_message_history=get
-    db._semantic_retirement_guard=True

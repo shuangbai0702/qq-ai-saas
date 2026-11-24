@@ -12,7 +12,7 @@ def _validate(settings,event,current,db,context):
     if not current():raise asyncio.CancelledError('stale DSH read Work')
     if getattr(getattr(context,'context',None),'event',None) is not event:
         raise ValueError('dsh_read_event_mismatch')
-    from dsh_tools import parent_record
+    from dsh_bridge import parent_record
     return parent_record(settings,event,current,db,context)['origin_scope']
 
 

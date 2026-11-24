@@ -97,28 +97,7 @@ def _operator_archives(db):
     db.execute('''CREATE TRIGGER IF NOT EXISTS operator_session_archive_no_delete BEFORE DELETE ON fishbot_operator_session_archives BEGIN SELECT RAISE(ABORT,'operator archive is immutable'); END''')
 
 
-def _owner_receipts(db):
-    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fishbot_journal_owner_migrations'").fetchone():return
-    for identifier,raw,sha in db.execute('SELECT authorization,receipt,sha FROM fishbot_journal_owner_migrations'):
-        if hashlib.sha256(raw.encode()).hexdigest()!=sha:raise ValueError('owner_migration_receipt_integrity')
-        receipt=json.loads(raw)
-        if receipt['grant']['id']!=identifier or receipt['grant']['type']!=OWNER_EARLY_MIGRATION:
-            raise ValueError('owner_migration_receipt_identity')
-        yield receipt
-
-
-def retired_source_receipt(db,scope,sha):
-    return any(receipt['grant']['sources'].get(scope)==sha and
-               any(s['scope']==scope and s['state']=='retired' for s in receipt['sources'])
-               for receipt in _owner_receipts(db))
-
-
-def reserved_destination_receipt(db,sha):
-    for receipt in _owner_receipts(db):
-        if receipt.get('newBaseline') is not True or receipt['destinationSha']!=sha:continue
-        row=db.execute('SELECT authorization FROM fishbot_shared_context WHERE id=1 AND state=?',('active',)).fetchone()
-        return bool(row and row[0]==receipt['grant']['id'])
-    return False
+from journal_storage import _owner_receipts,retired_source_receipt,reserved_destination_receipt,owner_members
 
 
 def _record_receipt(db,receipt):
@@ -131,13 +110,6 @@ def _record_receipt(db,receipt):
     encoded=json.dumps(receipt,ensure_ascii=False,separators=(',',':'))
     db.execute('INSERT INTO fishbot_journal_owner_migrations VALUES(?,?,?,?)',
                (receipt['grant']['id'],encoded,hashlib.sha256(encoded.encode()).hexdigest(),time.time()))
-
-
-def owner_members(db):
-    members=set()
-    for receipt in _owner_receipts(db):
-        members.update(receipt.get('members',()))
-    return members
 
 
 def _verify_grant(db,bot_id,grant,backup_sha):

@@ -68,7 +68,7 @@ class GroupReadBridge:
         validate_parent(self.db,self.settings,self.parent)
         if work is not None and (work.scope,work.subject,work.event_id)!=(self.parent.get('origin_scope'),self.parent.get('sender_id'),self.parent.get('origin_event')):
             raise ValueError('dsh_group_work_mismatch')
-        from dsh_tools import parent_record
+        from dsh_bridge import parent_record
         if parent_record(self.settings,event,self.current,self.db,self.context)!=self.parent:raise ValueError('dsh_group_work_mismatch')
         group=str(event.get_group_id() or '')
         if group and work.scope!='group:'+group:

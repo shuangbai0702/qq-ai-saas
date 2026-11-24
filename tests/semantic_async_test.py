@@ -184,7 +184,7 @@ class AsyncRetirement(unittest.IsolatedAsyncioTestCase):
 
     async def test_sdk_tail_cleanup_does_not_wait_on_its_own_compression_boundary(self):
         from types import SimpleNamespace as NS
-        from semantic_runtime import install_native_retirement_guard
+        from semantic_async import install_native_retirement_guard
         path=self.fixture.native();manager=self.fixture.manager
         async with self.st.compression_admission():
             self.assertEqual((await semantic_async.finish(self.st,{},fixture.SCOPE))['retired'],1)

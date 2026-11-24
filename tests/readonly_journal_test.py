@@ -3,7 +3,8 @@ from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
 from readonly_journal import ReadonlyJournal,ContextReconstructionDenied,ContextCapacityExceeded,ContextRecoveryUnavailable,ContextPrefixViolation
 from context_protocol import READONLY_CURRENT,model_json,SOURCE
-from decision_history import apply_changes,MAX_APPEND_IDLE_SECONDS
+from decision_history import apply_changes
+MAX_APPEND_IDLE_SECONDS=7200
 
 def packet(state):return {'role':'user','content':READONLY_CURRENT+'\n'+model_json(state)}
 def event_packet(identity,policy='fixed-policy',guidance='current-guidance'):

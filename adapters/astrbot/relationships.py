@@ -11,6 +11,17 @@ FIELDS='scope,subject,affinity,emotion,expires,last_seen,trust,impression,semant
 SCHEMA='relations(scope TEXT,subject TEXT PRIMARY KEY NOT NULL,affinity INTEGER,emotion TEXT,expires REAL,last_seen REAL,trust REAL NOT NULL DEFAULT 0,impression TEXT NOT NULL DEFAULT \'\',semantic_updated REAL NOT NULL DEFAULT 0)'
 
 
+def initialize(db):
+    db.executescript('''CREATE TABLE IF NOT EXISTS relations(scope TEXT,subject TEXT PRIMARY KEY NOT NULL,affinity INTEGER,emotion TEXT,expires REAL,last_seen REAL);
+    DROP TABLE IF EXISTS relation_progress;
+    CREATE TABLE IF NOT EXISTS relation_events(scope TEXT,subject TEXT,event TEXT,at REAL,PRIMARY KEY(scope,subject,event));
+    CREATE TABLE IF NOT EXISTS relation_evidence(scope TEXT,subject TEXT,event TEXT,delta INTEGER,reason TEXT,quote TEXT,at REAL,PRIMARY KEY(scope,subject,event));''')
+    relation_columns={row[1] for row in db.execute('PRAGMA table_info(relations)')}
+    for name,definition in (('trust','REAL NOT NULL DEFAULT 0'),('impression',"TEXT NOT NULL DEFAULT ''"),('semantic_updated','REAL NOT NULL DEFAULT 0')):
+        if name not in relation_columns:db.execute('ALTER TABLE relations ADD COLUMN '+name+' '+definition)
+    return migrate(db)
+
+
 def migrate(db):
     """Atomic one-time merge. Preserve the old table in a rollback artifact only."""
     info=db.execute('PRAGMA table_info(relations)').fetchall()
@@ -216,7 +227,6 @@ def edit_by_user(db,data):
         or not isinstance(impression,str) or len(impression)>1000):return {'error':'人物关系内容格式不正确','status':400}
     now=max(time.time(),before['semantic_updated']+0.000001)
     import json
-    from person_memory import relation_view
     origin=relation_fingerprint(relation_view(db,data['subject']))
     has_proof='user_edit' in {r[1] for r in db.execute('PRAGMA table_info(relations)')}
     prior=db.execute('SELECT user_edit FROM relations WHERE subject=?',(data['subject'],)).fetchone() if has_proof else None
@@ -229,15 +239,20 @@ def edit_by_user(db,data):
     return {'ok':True,'updatedRegion':'relation','version':user_version(state(db,data['subject']))}
 
 
+def relation_view(db,person):
+    row=state(db,person)
+    if row is None:return None
+    return {'source_scope':row['scope'],'subject':str(person),**{k:row[k] for k in ('affinity','emotion','trust','impression','semantic_updated')},'emotion_expires':row['expires']}
+
+
 def relation_fingerprint(row):
-    from memory_products import version
+    from memory_policy import version
     return version(row)
 
 
 def user_edits(db):
     """Read only still-current authenticated edits; semantic updates revoke them."""
     import json
-    from person_memory import relation_view
     if 'user_edit' not in {r[1] for r in db.execute('PRAGMA table_info(relations)')}:return []
     result=[]
     for subject,raw in db.execute('SELECT subject,user_edit FROM relations WHERE user_edit IS NOT NULL'):
@@ -251,10 +266,8 @@ def project_user_edits(snapshot,edits):
     """Only exact foundation relations are editable; dynamic history is untouched."""
     if snapshot is None or not edits:return snapshot
     import copy,json
-    from context_foundation import FOUNDATION_CURRENT
-    from readonly_journal import ContextPrefixViolation
-    from person_memory import expand
-    from memory_model_view import memory_json
+    from context_protocol import FOUNDATION_CURRENT,ContextPrefixViolation
+    from memory_model_view import expand,memory_json
     replacements={}
     for change in edits:
         proof=change['proof'];current=change['relation']
@@ -279,7 +292,7 @@ def project_user_edits(snapshot,edits):
     return result
 
 
-IMPRESSION_CHARS=1000
+from memory_policy import IMPRESSION_CHARS
 
 def apply_summary_relations(db,scope,cfg,data,memory_state,people,now,audit=None):
     """Relationship-owned semantic updates preserve protocol activity."""

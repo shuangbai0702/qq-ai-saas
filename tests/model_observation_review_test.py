@@ -46,7 +46,8 @@ class ObservationTests(unittest.IsolatedAsyncioTestCase):
                     response=await transport.handle_async_request(request);await response.aread();await response.aclose()
                 return NS(usage={'prompt_tokens':11},data=[])
             finally:await transport.aclose()
-        with patch.object(memory_reflection,'_embedding_request',embedding):
+        import embedding_client
+        with patch.object(embedding_client,'_embedding_request',embedding):
             await memory_reflection.embedding_request(self.provider,'','embedding-fixture',['private embedding input'])
         rows=self.rows();result=next(r for r in rows if r['kind']=='request_result')
         self.assertEqual(result['phase'],'embedding');self.assertEqual(result['inputTokens'],11)

@@ -79,8 +79,21 @@ def avatar_file(db,handle,revision):
     return 'base64://'+base64.b64encode(row[0]).decode('ascii')
 
 
+def manifest(settings):
+    try:
+        from pathlib import Path
+        p=Path(settings['root'])/'ai'/'bilibili-bridge.json'
+        if p.stat().st_size>65536:return None
+        value=json.loads(p.read_text(encoding='utf-8'))
+        if value.get('version')!=1 or value.get('botId')!=settings.get('botId') or any(value.get(k)!=settings.get(k) for k in ('generation','revision')):return None
+        from urllib.parse import urlparse
+        url=urlparse(value['url'])
+        if url.scheme not in ('http','https') or url.username or url.password or url.query or url.fragment:return None
+        return value
+    except (OSError,ValueError,KeyError,TypeError):return None
+
+
 def tools(settings,event,db,current,identity=None):
-    from bilibili_tools import manifest
     bridge=manifest(settings)
     if not bridge or (identity and not bridge.get('allowAutonomous')):return []
     if not any(s.get('operation') in PUBLIC_OPERATIONS for s in bridge.get('operations',[])):return []
@@ -91,7 +104,8 @@ def tools(settings,event,db,current,identity=None):
     else:
         bound=event.get_extra('_hosted_pipeline')
         if bound is None:return []
-        work='foreground:'+hashlib.sha256(json.dumps([bound.bot_id,bound.scope,bound.subject,bound.event_id],ensure_ascii=False).encode()).hexdigest()
+        from tool_outcome import foreground_work_id
+        work=foreground_work_id(bound.bot_id,bound.scope,bound.subject,bound.event_id)
     class Images(FunctionTool):
         async def call(self,context,operation,handle=''):
             if context.context.event is not event or not current():raise asyncio.CancelledError('stale_image_work')

@@ -64,7 +64,7 @@ def render(value):
 
 async def prepare(st, raw, call, current=lambda: True):
     if not has_voice(raw):return raw
-    from bot_pipeline import protocol_input_scope
+    from context_protocol import protocol_input_scope
     key=(protocol_input_scope(raw),str(raw['message_id']))
     running=getattr(st,'_voice_inflight',None)
     if running is None:running=st._voice_inflight={}
@@ -109,7 +109,7 @@ async def _prepare(st, raw, call, current):
     """One bounded attempt; interrupted attempts recover as unknown, not replay."""
     if not has_voice(raw):
         return raw
-    from bot_pipeline import protocol_input_scope
+    from context_protocol import protocol_input_scope
     scope = protocol_input_scope(raw)
     identifier = str(raw['message_id'])
     value = load(st.db, scope, identifier)

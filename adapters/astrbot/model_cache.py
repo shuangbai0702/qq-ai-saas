@@ -37,7 +37,7 @@ def loaded_build():
                           ('qq_actions','execute'),('tool_outcome','project'),('bot_pipeline','operation_source'),
                           ('decision_history','changes'),('behavior','install_runtime'),
                             ('autonomous_runtime','AutonomousRuntime.snapshot'),('readonly_journal','ReadonlyJournal.prepare'),
-                            ('output_clean','without_analysis'),('behavior','sanitize_new_response'),
+                            ('output_clean','without_analysis'),('output_sanitize','sanitize_new_response'),
                             ('tool_outcome','structured'),('group_freshness','response_coverage'),
                             ('memory_scope','pending_messages'),('memory_scope','retained_context_visible'),
                             ('agreement_state','context_view'),('bot_pipeline','conversation_context'),
@@ -176,7 +176,7 @@ def message_shape(messages,previous=()):
                   'messagesSha':hashlib.sha256(json.dumps(shape).encode()).hexdigest()[:24]}
 
 def current_lease(event,provider):
-    from web_base import request_lease
+    from context_protocol import request_lease
     snapshot=request_lease(event)
     if snapshot is not None:return snapshot
     lease=event.get_extra('_hosted_lease') if event else None
@@ -218,7 +218,7 @@ def auxiliary_model(event,provider):
     """
     owner=_auxiliary.get()
     if not owner or owner['provider'] is not provider or owner['phase'] not in (
-        'private_freshness','group_freshness','group_presence','owner_contact','companion_plan','small_summary','big_merge','sticker_caption'):
+        'private_freshness','group_freshness','group_presence','owner_contact','small_summary','big_merge','sticker_caption'):
         return None
     # An ambient event can belong to another bot. Select the provider-bound
     # lease first, then validate the event's tenant/bot identity against it.
@@ -287,7 +287,7 @@ def begin_attempt(event,provider,system_contract=None,system_permit_id=None):
     work=event.get_extra('_hosted_pipeline') if event else None
     attempt_id=str(uuid.uuid4())
     if foreground and system_contract is not None:
-        from system_contract import request_identity
+        from context_protocol import request_identity
         attempt_id=request_identity()
     auxiliary=_auxiliary.get()
     if auxiliary and auxiliary['provider'] is not provider:auxiliary=None
@@ -428,7 +428,7 @@ def observe_wire_request(request):
                 # An unchanged pinned System is not the newly saved config.
                 # Keep its audit permit available until the legal checkpoint
                 # actually adopts the new vector; direct reserve semantics stay strict.
-                from system_contract import system_vector_sha
+                from context_protocol import system_vector_sha
                 scope=value.get('scope') or ''
                 baseline=contract.db.execute('SELECT system_sha FROM fishbot_system_scope_contract WHERE scope=?',(scope,)).fetchone()
                 permit=value.get('systemPermitId') if baseline and baseline[0]!=system_vector_sha(payload['messages']) else None
@@ -438,7 +438,7 @@ def observe_wire_request(request):
                 record_diagnostic(lease,{'kind':'wire_request','attemptId':value['attemptId'],'phase':value['phase'],
                     'workId':value['workId'],'systemSha':reservation.get('systemSha'),'systemContractStatus':'authorized' if reservation.get('changed') else 'stable'})
             except Exception as error:
-                from system_contract import SystemContractViolation
+                from context_protocol import SystemContractViolation
                 if not isinstance(error,SystemContractViolation):raise
                 record_diagnostic(lease,{'kind':'wire_request','attemptId':value['attemptId'],'phase':value['phase'],
                     'workId':value['workId'],'systemSha':__import__('system_contract').system_vector_sha(payload['messages']),

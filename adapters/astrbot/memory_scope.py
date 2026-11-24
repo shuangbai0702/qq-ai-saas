@@ -5,18 +5,7 @@ database or infers a person from chat text, nicknames, or model output.
 """
 import hashlib,json,re,time
 import message_provenance
-
-
-def shared_person(scope,subject):
-    return bool(re.fullmatch(r'\d{5,20}',str(subject)) and
-                (scope=='bot_shared' or scope=='private:'+str(subject) or re.fullmatch(r'group:\d{4,20}',scope)))
-
-
-def person_filter(scope,subject,alias=''):
-    prefix=alias+'.' if alias else ''
-    if shared_person(scope,subject):
-        return prefix+"subject=? AND ("+prefix+"scope LIKE 'group:%' OR "+prefix+"scope='bot_shared' OR "+prefix+"scope=?)",(subject,'private:'+subject)
-    return prefix+'scope=? AND '+prefix+'subject=?',(scope,subject)
+from memory_policy import shared_person,person_filter,valid_scope,core_note_visible,core_note_legacy
 
 
 def value_hash(value):
@@ -36,26 +25,6 @@ def memory_audience(context,record):
     return valid_scope(origin) and valid_scope(context.get('scope'))
 
 
-def valid_scope(scope):
-    return isinstance(scope,str) and bool(re.fullmatch(r'(?:self|bot_shared|private:\d{5,20}|group:\d{4,20})',scope))
-
-
-def core_note_visible(scopes,scope,owner=''):
-    """Internal read of the single core-note region, with known sources.
-
-    Unknown provenance cannot establish trusted reference data. Such rows remain
-    available to the internal/admin path and the owner's private briefing.
-    """
-    private_owner=bool(owner) and scope=='private:'+str(owner)
-    if not isinstance(scopes,list) or not scopes or '*' in scopes:return scope=='self' or private_owner
-    if scopes==[scope] and isinstance(scope,str) and scope:return True
-    return valid_scope(scope) and all(valid_scope(x) for x in scopes)
-
-
-def core_note_legacy(scopes):
-    return not isinstance(scopes,list) or not scopes or '*' in scopes
-
-
 def retained_context_visible(db,messages,scope,owner=''):
     """Validate platform provenance without reclassifying internal reads.
 
@@ -66,7 +35,7 @@ def retained_context_visible(db,messages,scope,owner=''):
     """
     from context_protocol import READONLY_CURRENT
     from context_transport import EVENT_CONTEXT_CURRENT
-    from context_foundation import FOUNDATION_CURRENT
+    from context_protocol import FOUNDATION_CURRENT
     def visit(value):
         if isinstance(value,list):return all(visit(x) for x in value)
         if not isinstance(value,dict):return True
@@ -238,7 +207,7 @@ def pending_messages(db,scope,subject,now,limit=16,budget=3000,cross_scope=True,
     """
     if not shared_person(scope,subject):return []
     if cross_scope:
-        from shared_context import active,recent
+        from journal_storage import shared_context_active as active,shared_recent as recent
         if active(db):return recent(db,limit,budget)
     if not cross_scope:
         where,args='scope=? AND subject=?',(scope,subject)

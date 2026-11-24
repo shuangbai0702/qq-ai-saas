@@ -1,5 +1,12 @@
 """Shared model-facing outcomes; producers retain authorization and receipts."""
-import json
+import hashlib,json
+
+class WorkBudgetExceeded(RuntimeError):pass
+class WorkStopped(RuntimeError):pass
+
+def foreground_work_id(bot_id,scope,subject,event_id):
+    return 'foreground:'+hashlib.sha256(json.dumps([bot_id,scope,subject,event_id],ensure_ascii=False).encode()).hexdigest()
+
 STATES={'confirmed','rejected','partial','unknown','not_applicable'}
 EXECUTIONS={'completed','failed','canceled','pending'}
 REJECTED={'blocked','unavailable','invalid_favorite','disabled_favorite','not_sent','invalid_reference','invalid_source'}
@@ -75,7 +82,6 @@ def structured(tool):
                     return value.model_copy(update={'content':[TextContent(type='text',text=json.dumps(outcome,ensure_ascii=False))]+[part for part in value.content if not isinstance(part,TextContent)],'structuredContent':outcome})
                 return json.dumps(project(value,write=write),ensure_ascii=False)
             except Exception as error:
-                from native_internal import WorkStopped,WorkBudgetExceeded
                 if isinstance(error,(WorkStopped,WorkBudgetExceeded)):raise
                 return json.dumps({'execution':'failed','receipt':{'status':'unknown' if write else 'rejected'},'code':'tool_exception','error_type':type(error).__name__,'evidence':[],'meaning':'执行未完成；未知写入先核对原账本与平台状态，不得盲目重发。'},ensure_ascii=False)
     return ReceiptTool(name=tool.name,description=tool.description,parameters=tool.parameters,active=tool.active,is_background_task=tool.is_background_task)

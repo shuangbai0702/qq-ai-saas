@@ -196,7 +196,7 @@ class Requests(unittest.IsolatedAsyncioTestCase):
             if value=='one':entered.set();release.wait(5)
             else:second.set()
             return value
-        with patch('model_images.limit_data_url',block):
+        with patch('image_codec.limit_data_url',block):
             first=asyncio.create_task(images._limited('one'));await asyncio.to_thread(entered.wait,2);self.assertTrue(entered.is_set())
             first.cancel();other=asyncio.create_task(images._limited('two'));await asyncio.sleep(.02);self.assertFalse(second.is_set());self.assertFalse(first.done())
             first.cancel();release.set()
