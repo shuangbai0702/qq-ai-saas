@@ -1,7 +1,7 @@
 import {SingleFlight} from '../../../../packages/shared/single-flight.js';
 import {runtimeStatus} from '../../../../packages/shared/runtime-status.js';
 import {randomUUID} from 'node:crypto';
-import {cycleModelBudget,cycleModelBudgetInTransaction,type ModelRequestBudget} from '../../../../packages/database/model-request-budget.js';
+import {cycleModelBudget,type ModelRequestBudget} from '../../../../packages/database/model-request-budget.js';
 import {mkdir,writeFile,rename} from 'node:fs/promises';
 import {atomicJson} from '../../../../packages/shared/fs-atomic.js';
 import path from 'node:path';

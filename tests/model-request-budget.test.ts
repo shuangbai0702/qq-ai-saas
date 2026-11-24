@@ -4,14 +4,14 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import path from 'node:path';
 import {openDatabase} from '../packages/database/index.js';
 import {AutonomyRepository} from '../packages/database/autonomous.js';
-import {cycleModelBudgetInTransaction,type ModelRequestBudget} from '../packages/database/model-request-budget.js';
+import {cycleModelBudget as requestModelBudget,type ModelRequestBudget} from '../packages/database/model-request-budget.js';
 import {openToolWork} from './helpers/tool-work.js';
 import {qqExternalBudget,externalCount} from '../packages/database/external-action-budget.js';
 
 const cycleId='00000000-0000-4000-8000-000000000011',actionId=cycleId,effectId='299786bd-5764-5ef8-9201-8e90440a52e6';
 const NATIVE=Symbol('isolated-original-tool-work');
 const original=(db:any)=>db[NATIVE] as Awaited<ReturnType<typeof openToolWork>>;
-const cycleModelBudget=(db:any,bot:any,v:ModelRequestBudget)=>db.transaction((tx:any)=>cycleModelBudgetInTransaction(tx,bot,v,original(db).transport));
+const cycleModelBudget=(db:any,bot:any,v:ModelRequestBudget)=>requestModelBudget(db,bot,v,original(db).transport);
 async function fixture(t:any){
  const root=await mkdtemp(path.resolve('.local/model-request-'));let db=await openDatabase(root);
  await db.query("INSERT INTO tenants(id,name) VALUES('tenant','tenant')");
@@ -29,6 +29,28 @@ async function fixture(t:any){
 }
 const main={workId:actionId,epoch:2,requestId:'main:1',phase:'reserve' as const,source:'main' as const,tokens:200};
 const media={...main,requestId:'media:1',source:'media' as const,effectId,owner:'worker'};
+
+test('media receipt is fetched outside the budget transaction and ownership is rechecked after IPC',async t=>{
+ const {db,bot,native}=await fixture(t);let inTransaction=false,calls=0;
+ const observed=Object.create(db);
+ observed.query=db.query.bind(db);
+ observed.transaction=(body:any)=>db.transaction(async tx=>{inTransaction=true;try{return await body(tx)}finally{inTransaction=false}});
+ const transport:typeof native.transport=async(...args)=>{
+  assert.equal(inTransaction,false,'worker IPC must not hold the budget transaction');calls++;
+  return native.transport(...args);
+ };
+ await requestModelBudget(observed,bot,media,transport);
+ assert.equal(calls,1);
+ await requestModelBudget(observed,bot,{...media,phase:'released'},transport);
+ assert.equal(calls,1,'settlement does not fetch a second worker receipt');
+ await assert.rejects(()=>requestModelBudget(observed,bot,{...media,requestId:'media:stale'},async(...args)=>{
+  const receipt=await transport(...args);
+  await db.query("UPDATE bots SET revision=revision+1 WHERE id='bot'");
+  return receipt;
+ }),/model_budget_owner_expired/);
+ const [cycle]=await db.query('SELECT budget FROM autonomy_cycles WHERE id=$1',[cycleId]);
+ assert.equal(cycle.budget.modelRequests['media:stale'],undefined);
+});
 
 for(const order of ['main','media'])test('shared cycle admits one concurrent '+order+' and other-source request before dispatch',async t=>{
  const {db,bot}=await fixture(t);

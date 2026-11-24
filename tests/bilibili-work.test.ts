@@ -7,7 +7,7 @@ import path from 'node:path';
 import {openDatabase} from '../packages/database/index.js';
 import {AutonomyRepository} from '../packages/database/autonomous.js';
 import {BilibiliTools} from '../packages/database/bilibili-tools.js';
-import {cycleModelBudgetInTransaction,type ModelRequestBudget} from '../packages/database/model-request-budget.js';
+import {cycleModelBudget,type ModelRequestBudget} from '../packages/database/model-request-budget.js';
 import type {RuntimeCall} from '../packages/shared/runtime-client.js';
 
 test('B站准入/幂等/完成仅使用原SQLite Work，不依赖PG ToolEffects表',async t=>{
@@ -34,7 +34,7 @@ test('B站准入/幂等/完成仅使用原SQLite Work，不依赖PG ToolEffects�
  await assert.rejects(()=>tools.admit(bot,{...request,args:{...request.args,bvid:'BV2222222222'}}),/identity_conflict/);
  const running=await tools.claim('original-executor');assert.equal(running.id,first.id);
  await tools.checkpoint(running,{modelRequests:1});
- const budget=(v:ModelRequestBudget)=>db.transaction(tx=>cycleModelBudgetInTransaction(tx,bot,v,transport));
+ const budget=(v:ModelRequestBudget)=>cycleModelBudget(db,bot,v,transport);
  await db.query("UPDATE autonomy_cycles SET budget=budget||'{\"cycleModelCalls\":1}'::jsonb WHERE id=$1",[claim.cycleId]);
  const main:ModelRequestBudget={workId:claim.cycleId,epoch:claim.epoch,requestId:'main-concurrent',source:'main',phase:'reserve',tokens:60};
  const media:ModelRequestBudget={...main,requestId:'media-concurrent',source:'media',effectId:running.id,owner:running.lease_owner};
