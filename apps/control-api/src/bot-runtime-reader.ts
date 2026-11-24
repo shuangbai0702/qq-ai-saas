@@ -24,6 +24,7 @@ export interface EmbeddedAgentPort {
 
 const PROTOCOL_CAPABILITIES: Record<ProtocolKind, string[]> = {
   mock: ['mock', 'qr', 'cancel', 'text', 'onebot-reverse-ws'],
+  llbot: ['qr','cancel','text','image','record','onebot-reverse-ws','private-management-api','qq-profile','qq-favorites','qzone'],
   napcat: ['qr', 'text', 'image', 'record', 'onebot-reverse-ws', 'private-management-api'],
   euler: ['qr', 'cancel', 'requires-uin', 'requires-signer', 'onebot-reverse-ws', 'text', 'image', 'record'],
 };

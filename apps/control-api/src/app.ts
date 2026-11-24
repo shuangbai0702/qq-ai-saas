@@ -20,6 +20,7 @@ import {getBotQuota} from './bot-quota.js';
 import {probeModel} from '../../../packages/shared/model-probe.js';
 import {modelSelectionChanged,validateModelSelection} from '../../../packages/shared/model-catalog.js';
 import {registerSocialMedia} from './social-media.js';
+import {registerProtocolSettings} from './protocol-settings.js';
 import {registerQQFavorites} from './qq-favorites.js';
 import {createFavoriteCaptioner} from '../../../packages/shared/qq-favorite-semantics.js';
 import {registerInvitations} from './invitations.js';
@@ -31,7 +32,7 @@ import {modelCredentialDestination} from '../../../packages/shared/model-http.js
 import {platformModelPath} from '../../../packages/shared/platform-model.js';
 import Fastify from 'fastify';import cookie from '@fastify/cookie';import rateLimit from '@fastify/rate-limit';import serveStatic from '@fastify/static';import {z} from 'zod';
 import {randomBytes,randomUUID} from 'node:crypto';import path from 'node:path';import os from 'node:os';import {mkdir,access,open,readFile,rm} from 'node:fs/promises';import QRCode from 'qrcode';
-import {openDatabase,configuredDatabaseUrl,hasEncryptedSecrets,platformCreditAvailableSql,type Sql} from '../../../packages/database/index.js';import {hashPassword,verifyPassword,digest,loadKey,encrypt,redact,safeSubprocessEnv} from '../../../packages/shared/security.js';import {defaultConfig,BotConfigSchema,ProtocolSchema,personas,terminalLogin} from '../../../packages/contracts/index.js';import type {NodeAgent} from '../../node-agent/src/agent.js';
+import {openDatabase,configuredDatabaseUrl,hasEncryptedSecrets,platformCreditAvailableSql,type Sql} from '../../../packages/database/index.js';import {hashPassword,verifyPassword,digest,loadKey,encrypt,redact,safeSubprocessEnv} from '../../../packages/shared/security.js';import {defaultConfig,BotConfigSchema,ProtocolSchema,personas,terminalLogin,hasManagedQQLogin} from '../../../packages/contracts/index.js';import type {NodeAgent} from '../../node-agent/src/agent.js';
 import {createEmbeddedRuntimeControl,createExternalRuntimeControl} from './bot-runtime-reader.js';
 import {httpError,mockProtocolAllowed,requireAdmin} from './http-guards.js';
 declare module 'fastify'{interface FastifyRequest{user?:{id:string;email:string;name:string;is_admin:boolean;tenant_id:string}}}
@@ -211,6 +212,7 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
  app.post<{Params:{id:string}}>('/v1/bots/:id/model-probe',{config:{rateLimit:{max:2,timeWindow:'1 minute'}}},async req=>{const value=z.object({extended:z.boolean().default(false)}).parse(req.body??{});const bot=await owned(req,req.params.id);const ctx=await runtime.modelProbeContext(bot);if(!ctx.apiKey)fail('请先保存模型Key');if(ctx.config.platformModel)return{platform:true,configured:await platformModels.available(),...await creditBalance(db,bot.tenant_id)};return probeModel(ctx.config.baseUrl,ctx.config.model,ctx.apiKey,value.extended,{root,botId:bot.id,tenantId:bot.tenant_id,generation:bot.generation,revision:bot.revision})});
  app.post<{Params:{id:string}}>('/v1/bots/:id/actions',async req=>{const v=z.object({action:z.enum(['start','stop','restart']),idempotencyKey:z.string().min(1).max(150)}).parse(req.body);return db.transaction(async tx=>{const bot=await owned(req,req.params.id,tx);await tx.query('SELECT id FROM bots WHERE id=$1 FOR UPDATE',[bot.id]);const [old]=await tx.query('SELECT id,status FROM commands WHERE bot_id=$1 AND idempotency_key=$2',[bot.id,v.idempotencyKey]);if(old)return old;
     const [fresh]=await tx.query('SELECT * FROM bots WHERE id=$1',[bot.id]);if(fresh.deleted_at||fresh.desired_state==='deleting')fail('机器人正在删除',409);
+    if((await tx.query("SELECT id FROM commands WHERE bot_id=$1 AND kind='switch-protocol' AND status IN ('pending','processing')",[bot.id])).length)fail('QQ协议切换尚未完成，请等待完成后再操作',409);
     if(v.action==='start'&&fresh.desired_state==='running'){
       const [pending]=await tx.query("SELECT id,status FROM commands WHERE bot_id=$1 AND generation=$2 AND status IN ('pending','processing') ORDER BY created_at DESC LIMIT 1",[bot.id,fresh.generation]);
       const [login]=await tx.query("SELECT id FROM login_sessions WHERE bot_id=$1 AND generation=$2 AND state NOT IN ('online','expired','canceled','failed')",[bot.id,fresh.generation]);
@@ -220,12 +222,13 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
     // Observe the normal resume launch; a separate 'login' command would stop it
     // and force QR login, discarding the chance to reuse the saved QQ session.
     let loginSessionId:string|undefined;
-    if(v.action==='start'&&fresh.protocol==='napcat'){
+    if(v.action==='start'&&hasManagedQQLogin(fresh.protocol)){
       loginSessionId=randomUUID();await tx.query("INSERT INTO login_sessions(id,bot_id,generation,state,expires_at,message) VALUES($1,$2,$3,'starting',$4,$5)",[loginSessionId,bot.id,generation,new Date(Date.now()+180000),'正在尝试恢复已保存的QQ会话；如无法恢复，请扫码登录']);
     }
     return{id,status:'pending',loginSessionId};})});
  app.delete<{Params:{id:string}}>('/v1/bots/:id',async req=>{return db.transaction(async tx=>{const bot=await lockOwnedBot(tx,owned,req,req.params.id);if(bot.desired_state==='deleting'){const [retry]=await tx.query("UPDATE commands SET status='pending',error=NULL,finished_at=NULL WHERE bot_id=$1 AND kind='delete' AND generation=$2 AND status='failed' RETURNING id",[bot.id,bot.generation]);if(retry)return retry;fail('机器人正在删除',409)}const id=randomUUID();await tx.query("UPDATE bots SET desired_state='deleting',generation=generation+1 WHERE id=$1",[bot.id]);await revokeLoginSessions(tx,{botId:bot.id});await tx.query("INSERT INTO commands(id,bot_id,idempotency_key,generation,kind) VALUES($1,$2,$1,$3,'delete')",[id,bot.id,bot.generation+1]);return{id}})});
  app.post<{Params:{id:string}}>('/v1/bots/:id/login-sessions',async req=>{const value=z.object({refresh:z.boolean().default(false)}).parse(req.body??{});return db.transaction(async tx=>{const bot=await lockOwnedBot(tx,owned,req,req.params.id);if(bot.desired_state==='deleting')fail('机器人正在删除');
+   if((await tx.query("SELECT id FROM commands WHERE bot_id=$1 AND kind='switch-protocol' AND status IN ('pending','processing')",[bot.id])).length)fail('QQ协议切换尚未完成，请稍后连接',409);
    if(runtimeStatus(bot).online)fail('QQ已在线，无需重新扫码。此机器人不支持切换QQ；如需换号，请删除后重新创建。',409);
    const [old]=await tx.query("SELECT id FROM login_sessions WHERE bot_id=$1 AND generation=$2 AND state NOT IN ('online','expired','canceled','failed')",[bot.id,bot.generation]);if(old&&!value.refresh){
      await tx.query("UPDATE bots SET desired_state='running',observed_state='starting' WHERE id=$1 AND desired_state IN ('stopped','offline')",[bot.id]);return{id:old.id};
@@ -237,6 +240,7 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
    bot.generation=resumed.generation;
    const id=randomUUID();await tx.query("INSERT INTO login_sessions(id,bot_id,generation,state,expires_at) VALUES($1,$2,$3,'created',$4)",[id,bot.id,bot.generation,new Date(Date.now()+120000)]);await tx.query("INSERT INTO commands(id,bot_id,idempotency_key,generation,kind) VALUES($1,$2,$3,$4,'login')",[randomUUID(),bot.id,`login-${id}`,bot.generation]);return{id};})});
  async function loginOwned(req:any){if(!z.uuid().safeParse(req.params.id).success)fail('登录会话不存在',404);const [s]=await db.query('SELECT * FROM login_sessions WHERE id=$1',[req.params.id]);if(!s)fail('登录会话不存在',404);await owned(req,s.bot_id);return s}
+ registerProtocolSettings(app,db,owned);
  registerSocialMedia(app,root,owned);
  registerQQFavorites(app,root,owned,{caption:createFavoriteCaptioner(db,key,root)});
  registerBehaviorData(app,root,owned,runtime,db);

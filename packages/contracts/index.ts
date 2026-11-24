@@ -10,7 +10,9 @@ import { z } from 'zod';
 export const LoginStates = ['created','starting','qr_ready','waiting_scan','waiting_confirm','verification_required','authenticating','online','expired','canceled','failed'] as const;
 export type LoginState = typeof LoginStates[number];
 export const terminalLogin = new Set<LoginState>(['online','expired','canceled','failed']);
-export const ProtocolSchema=z.enum(['mock','napcat','euler']);
+export const ProtocolSchema=z.enum(['mock','napcat','llbot','euler']);
+export const supportsQQFavorites=(protocol:string)=>protocol==='napcat'||protocol==='llbot';
+export const hasManagedQQLogin=(protocol:string)=>protocol==='napcat'||protocol==='llbot';
 export type ProtocolKind=z.infer<typeof ProtocolSchema>;
 export interface ProtocolContext {botId:string;tenantId:string;root:string;generation:number;aiPort:number;protocolPort:number;token:string;expectedUin:string;loginIntent?:'qr'|'resume'}
 export interface AiProbeContext {botId:string;generation:number;revision:number;aiPort:number;token:string}

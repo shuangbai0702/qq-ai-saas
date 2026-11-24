@@ -194,7 +194,10 @@ def sweep(rows, enabled=True):
             now = time.time()
             seen, busy = activity(root, now)
             mem = psutil.virtual_memory()
-            sample = dict(at=now, created=process.create_time(), cpu=sum(process.cpu_times()[:2]), activity=seen, busy=busy, available=mem.available, total=mem.total, platform=sys.platform)
+            llbot = row['kind'] == 'protocol' and any('llbot' in arg.lower() for arg in process.cmdline())
+            tree = owned_tree(row) if llbot else [(process, process.create_time())]
+            cpu = sum(sum(item.cpu_times()[:2]) for item, created in tree if abs(item.create_time()-created) < .01)
+            sample = dict(at=now, created=process.create_time(), cpu=cpu, activity=seen, busy=busy, available=mem.available, total=mem.total, platform=sys.platform)
             action = decision(state, sample)
             if not enabled: action = 'disabled'
             if action == 'reclaim' and acted: action = 'staggered'

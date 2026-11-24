@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {mkdtemp,readFile,writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import {initialEgress,nextEgress,observeEgress,proxyPort,withNapcatSettings} from '../adapters/protocol/napcat/egress.js';
+import {initialEgress,nextEgress,observeEgress,proxyPort} from '../adapters/protocol/egress.js';
+import {withNapcatSettings} from '../adapters/protocol/napcat/egress.js';
 import {NapCatAdapter} from '../adapters/protocol/napcat/index.js';
 import {type ProtocolContext} from '../packages/contracts/index.js';
 

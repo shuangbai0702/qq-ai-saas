@@ -26,7 +26,7 @@ export function botStatus(bot:any){
  if(!r.fresh)return 'stale';return 'degraded';
 }
 export const labels:Record<string,string>={deleting:'删除中',stale:'状态过期',offline:'离线（资源已释放）',stopped:'已停止',stopping:'停止中',starting:'启动中',online:'运行中',degraded:'等待QQ连接',failed:'异常',running:'运行',created:'已创建',qr_ready:'二维码已生成',waiting_scan:'等待扫码',waiting_confirm:'等待手机确认',verification_required:'需要额外验证',authenticating:'正在登录',expired:'二维码已过期',canceled:'已取消',provisioning:'准备中'};
-const commandLabels:Record<string,string>={start:'启动机器人',stop:'停止机器人',restart:'重启实例',delete:'删除机器人',config_apply:'应用配置',apply_config:'应用配置',apply:'应用配置',qq_login:'登录 QQ',qq_logout:'退出 QQ',qq_resume:'恢复 QQ 会话',login:'登录 QQ',logout:'退出 QQ',mode:'切换运行模式',runtime:'切换运行模式',reconcile:'状态巡检'};
+const commandLabels:Record<string,string>={'switch-protocol':'切换QQ协议',start:'启动机器人',stop:'停止机器人',restart:'重启实例',delete:'删除机器人',config_apply:'应用配置',apply_config:'应用配置',apply:'应用配置',qq_login:'登录 QQ',qq_logout:'退出 QQ',qq_resume:'恢复 QQ 会话',login:'登录 QQ',logout:'退出 QQ',mode:'切换运行模式',runtime:'切换运行模式',reconcile:'状态巡检'};
 const commandStatusLabels:Record<string,string>={succeeded:'已完成',done:'已完成',completed:'已完成',applied:'已生效',running:'执行中',in_progress:'执行中',pending:'等待执行',queued:'排队中',failed:'失败',error:'失败',canceled:'已取消',cancelled:'已取消'};
 export const commandLabel=(kind?:string)=>kind?commandLabels[kind]||kind:'操作';
 export const commandStatusLabel=(status?:string)=>status?commandStatusLabels[status]||status:'未知';

@@ -25,7 +25,7 @@ const runtimeScripts={};
 await mkdir('dist-server/packages/dsh',{recursive:true});
 for(const file of await readdir('packages/dsh'))if(file.endsWith('.mjs')){const name='packages/dsh/'+file;runtimeScripts[name]=sha(await readFile(name));await copyFile(name,'dist-server/'+name);}
 for(const file of await readdir('scripts'))if(file.endsWith('.py')||file.endsWith('.mjs')||file.startsWith('media-')||file==='media-asr-requirements.txt')runtimeScripts['scripts/'+file]=sha(await readFile('scripts/'+file));
-for(const runner of ['adapters/protocol/napcat/runner.mjs','adapters/protocol/euler/bridge.py','adapters/mock/protocol-worker.mjs'])runtimeScripts[runner]=sha(await readFile(runner));
+for(const runner of ['adapters/protocol/napcat/runner.mjs','adapters/protocol/llbot/runner.mjs','adapters/protocol/llbot/relay.mjs','adapters/protocol/llbot/actions.mjs','adapters/protocol/llbot/lifecycle.mjs','adapters/protocol/llbot/patch-runtime.mjs','adapters/protocol/llbot/resource-policy.mjs','adapters/protocol/llbot/worker-preload.mjs','adapters/protocol/llbot/qq-bootstrap.cjs','adapters/protocol/euler/bridge.py','adapters/mock/protocol-worker.mjs'])runtimeScripts[runner]=sha(await readFile(runner));
 for(const file of await readdir('adapters/astrbot'))if(file.endsWith('.py'))pythonSources['adapters/astrbot/'+file]=sha(await readFile('adapters/astrbot/'+file));
 for(const file of await readdir('packages/contracts'))if(file.endsWith('.json'))contracts['packages/contracts/'+file]=sha(await readFile('packages/contracts/'+file));
 await mkdir('dist-server/packages/contracts',{recursive:true});

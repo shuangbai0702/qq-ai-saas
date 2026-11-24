@@ -1,3 +1,4 @@
+import {hasManagedQQLogin} from '../../../packages/contracts/index.js';
 import {cardsIdentity,cardMessages} from '../../../packages/contracts/character-cards.js';
 import {resolvePlatformModel} from '../../../packages/shared/platform-model.js';
 import {renameAtomic} from '../../../packages/shared/fs-atomic.js';
@@ -48,7 +49,7 @@ import {SharedAstrBotAdapter} from '../../../adapters/astrbot/shared.js';
 import {AutonomyCoordinator} from './autonomous.js';
 import {runtimeClient} from '../../../packages/shared/runtime-client.js';
 import {BilibiliExecutor} from './bilibili/executor.js';
-import {ProcessHost} from './process-host.js';import {AstrBotAdapter} from '../../../adapters/astrbot/index.js';import {MockProtocolAdapter} from '../../../adapters/mock/index.js';import {NapCatAdapter} from '../../../adapters/protocol/napcat/index.js';import {EulerAdapter} from '../../../adapters/protocol/euler/index.js';
+import {ProcessHost} from './process-host.js';import {AstrBotAdapter} from '../../../adapters/astrbot/index.js';import {MockProtocolAdapter} from '../../../adapters/mock/index.js';import {LLBotAdapter} from '../../../adapters/protocol/llbot/index.js';import {NapCatAdapter} from '../../../adapters/protocol/napcat/index.js';import {EulerAdapter} from '../../../adapters/protocol/euler/index.js';
 export class NodeAgent {
  host:ProcessHost;ai:AstrBotAdapter;shared:SharedAstrBotAdapter;protocols:Record<string,ProtocolAdapter>;busy=false;closed=false;timer?:NodeJS.Timeout;lastHealth=0;
  private releaseLease?:(()=>Promise<void>);
@@ -75,7 +76,7 @@ export class NodeAgent {
  constructor(public db:Sql,public root:string,public key:Buffer){
    const source=path.resolve(process.env.ASTRBOT_SOURCE||'references/astrbot');const python=path.resolve(process.env.ASTRBOT_PYTHON||`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`);
    this.host=new ProcessHost(root,python);this.ai=new AstrBotAdapter(this.host,source,python);this.shared=new SharedAstrBotAdapter(db,this.host,this.ai,source,python,ctx=>this.sharedEligible(ctx));
-   this.protocols={mock:new MockProtocolAdapter(this.host),napcat:new NapCatAdapter(this.host,path.join(root,'napcat')),euler:new EulerAdapter(this.host,path.resolve(process.env.EULER_SOURCE||'references/euler'),path.resolve(process.env.EULER_PYTHON||`references/euler/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`))};
+   this.protocols={llbot:new LLBotAdapter(this.host,path.join(root,'llbot')),mock:new MockProtocolAdapter(this.host),napcat:new NapCatAdapter(this.host,path.join(root,'napcat')),euler:new EulerAdapter(this.host,path.resolve(process.env.EULER_SOURCE||'references/euler'),path.resolve(process.env.EULER_PYTHON||`references/euler/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`))};
    this.autonomy=new AutonomyCoordinator(db,runtimeClient(db));
    this.bilibili=new BilibiliExecutor(db,root,key);
    this.favorites=new FavoriteMaintenance(db,root,key);
@@ -208,6 +209,20 @@ export class NodeAgent {
    await this.log(bot,`lifecycle command=${command.id} kind=${command.kind} key=${command.idempotency_key} generation=${command.generation} mode=${bot.runtime_mode} group=${bot.group_id||'dedicated'}`);
    if(command.idempotency_key.startsWith('recover-')&&(await ai.probe(probeCtx)).ready&&(await protocol.getHealth(pctx)).ready){await this.db.query("UPDATE commands SET status='superseded',finished_at=now() WHERE id=$1",[command.id]);return;}
    if(!command.idempotency_key.startsWith('recover-'))this.recovery.delete(bot.id);
+   if(command.kind==='switch-protocol'){
+     const target=/^switch-protocol-(napcat|llbot):/.exec(command.idempotency_key)?.[1];
+     if(!target)throw new Error('无效的协议切换目标');
+     await this.db.transaction(async tx=>{
+       const [owner]=await tx.query('SELECT * FROM bots WHERE id=$1 FOR UPDATE',[bot.id]);
+       if(!owner||owner.deleted_at||owner.generation!==command.generation||owner.desired_state!=='stopped')throw Object.assign(new Error('协议切换已被新操作替代'),{superseded:true});
+       if(bot.runtime_mode==='shared')await this.shared.stop(bot.id,false,tx);else await ai.stop(bot.id);
+       await protocol.stop(bot.id);
+       if(await this.host.inspect(bot.id,'protocol'))throw new Error('旧协议仍在运行，未切换后端');
+       await tx.query("UPDATE bots SET protocol=$2,observed_state='stopped',health='{}',last_error=NULL WHERE id=$1",[bot.id,target]);
+       await tx.query("UPDATE commands SET status='completed',finished_at=now() WHERE id=$1",[command.id]);
+       await tx.query("INSERT INTO audit_events(tenant_id,event,bot_id,detail) VALUES($1,'protocol.switched',$2,$3)",[bot.tenant_id,bot.id,JSON.stringify({from:bot.protocol,to:target,generation:command.generation})]);
+     });return;
+   }
    if(command.kind==='evict-offline'){
      // The bot row lock serializes process destruction against user start/login.
      // Only runtime handles are released; never call the delete path.
@@ -311,7 +326,8 @@ export class NodeAgent {
    if(!health.alive||health.online||!['waiting_scan','waiting_confirm'].includes(health.loginState||''))return;
    const record=await this.host.record(ctx.botId,'protocol');
    if(!record||record.pid!==health.pid||!Number.isFinite(record.created))return;
-   const snapshot=await this.protocols.napcat.getLoginState(ctx);
+   const [ownerProtocol]=await this.db.query('SELECT protocol FROM bots WHERE id=$1',[ctx.botId]);
+   if(!ownerProtocol)return;const snapshot=await this.protocols[ownerProtocol.protocol].getLoginState(ctx);
    if(!snapshot.qr||!['waiting_scan','waiting_confirm'].includes(snapshot.state))return;
    const id=recoveryLoginSessionId(ctx.botId,ctx.generation,record);
    await this.db.transaction(async tx=>{
@@ -331,7 +347,7 @@ export class NodeAgent {
     await this.db.transaction(async tx=>{
      const [owner]=await tx.query('SELECT generation,deleted_at FROM bots WHERE id=$1 FOR UPDATE',[bot.id]);
      if(!owner||owner.deleted_at||owner.generation!==session.generation)return;
-     const process=bot.protocol==='napcat'?await this.host.record(bot.id,'protocol'):undefined;
+     const process=hasManagedQQLogin(bot.protocol)?await this.host.record(bot.id,'protocol'):undefined;
      const recovery=process&&session.id===recoveryLoginSessionId(bot.id,session.generation,process);
      const updated=await tx.query("UPDATE login_sessions SET state='expired',qr=NULL,message='二维码已过期',sequence=sequence+1 WHERE id=$1 AND generation=$2 AND state NOT IN ('online','expired','canceled','failed') RETURNING id",[session.id,session.generation]);
      // Native recovery QR expiry does not cancel an established account's
@@ -339,8 +355,8 @@ export class NodeAgent {
      if(updated.length&&!recovery)await tx.query("INSERT INTO commands(id,bot_id,idempotency_key,generation,kind) VALUES($1,$2,$3,$4,'cancel-login') ON CONFLICT DO NOTHING",[randomUUID(),bot.id,`cancel-${session.id}`,session.generation]);
     });return;
    }
-   try{const ctx=await this.protocolContext(bot),process=bot.protocol==='napcat'?await this.host.record(bot.id,'protocol'):undefined,s=await this.protocols[bot.protocol].getLoginState(ctx);
-     if(bot.protocol==='napcat'){const current=await this.host.record(bot.id,'protocol');if(!process||!current||current.pid!==process.pid||current.created!==process.created)return;}
+   try{const ctx=await this.protocolContext(bot),process=hasManagedQQLogin(bot.protocol)?await this.host.record(bot.id,'protocol'):undefined,s=await this.protocols[bot.protocol].getLoginState(ctx);
+     if(hasManagedQQLogin(bot.protocol)){const current=await this.host.record(bot.id,'protocol');if(!process||!current||current.pid!==process.pid||current.created!==process.created)return;}
      if(terminalLogin.has(s.state)&&s.state==='online'){
       if(!s.uin||!/^\d{5,20}$/.test(s.uin))throw new Error('协议未返回可信QQ身份');if(ctx.expectedUin&&ctx.expectedUin!==s.uin)throw new Error('扫码QQ（'+s.uin+'）与预填QQ号（'+ctx.expectedUin+'）不一致，请使用原QQ重新登录；换号需删除机器人后重新创建');
       const h=await this.protocols[bot.protocol].getHealth(ctx);if(!h.online)return;
@@ -371,7 +387,7 @@ export class NodeAgent {
        if(bot.desired_state==='offline'){await this.db.query("UPDATE commands SET status='pending',error=NULL WHERE bot_id=$1 AND generation=$2 AND kind='evict-offline' AND status='failed' AND finished_at<now()-interval '30 seconds'",[bot.id,bot.generation]);continue}
        const pctx=await this.protocolContext(bot),probeCtx:AiProbeContext={botId:pctx.botId,generation:pctx.generation,revision:bot.revision,aiPort:pctx.aiPort,token:pctx.token};const protocol=await this.protocols[bot.protocol].getHealth(pctx);
        if(protocol.online){try{const uin=await this.protocols[bot.protocol].queryIdentity(pctx);const [identityOwner]=await this.db.query('SELECT generation,deleted_at FROM bots WHERE id=$1',[bot.id]);if(!identityOwner||identityOwner.deleted_at||identityOwner.generation!==bot.generation)continue;if(!uin||!/^\d{5,20}$/.test(uin)||(pctx.expectedUin&&pctx.expectedUin!==uin))throw Object.assign(new Error('恢复会话的QQ身份不匹配'),{identityConflict:true});await this.db.transaction(async tx=>{const [owner]=await tx.query('SELECT generation,deleted_at,desired_state,expected_uin FROM bots WHERE id=$1 FOR UPDATE',[bot.id]);if(!owner||owner.deleted_at||owner.desired_state==='deleting'||owner.generation!==bot.generation)return;const [binding]=await tx.query('SELECT qq_uin FROM qq_bindings WHERE bot_id=$1',[bot.id]);const pinned=binding?.qq_uin||owner.expected_uin;if(pinned&&pinned!==uin)throw Object.assign(new Error('QQ身份不一致，换号需删除机器人后重新创建'),{identityConflict:true});await tx.query("INSERT INTO qq_bindings(bot_id,qq_uin,binding_kind) VALUES($1,$2,$3) ON CONFLICT(bot_id) DO UPDATE SET qq_uin=$2,binding_kind=$3",[bot.id,uin,bot.protocol==='mock'?'mock':'real'])})}catch(e){if(!(e as any).identityConflict&&(e as any).code!=='23505')throw e;const [identityOwner]=await this.db.query('SELECT generation,deleted_at FROM bots WHERE id=$1',[bot.id]);if(!identityOwner||identityOwner.deleted_at||identityOwner.generation!==bot.generation)continue;await this.protocols[bot.protocol].stop(bot.id);protocol.online=false;protocol.alive=false;protocol.ready=false;protocol.detail='QQ身份冲突，已停止协议进程';await this.log(bot,protocol.detail)}}
-       if(bot.protocol==='napcat')await this.recoverLoginSession(pctx,protocol);
+       if(hasManagedQQLogin(bot.protocol))await this.recoverLoginSession(pctx,protocol);
        const aiNeeded=bot.runtime_mode!=='shared'||!!protocol.online;
        if(bot.runtime_mode==='shared'&&(bot.desired_state!=='running'||!aiNeeded)){if(this.sharedOperation)continue;this.sharedOperation=true;try{await this.shared.stop(bot.id)}finally{this.sharedOperation=false}}
        const ai=aiNeeded?await this.aiFor(bot).probe(probeCtx):{alive:false,ready:false,detail:'QQ离线，未占用共享SDK成员位'};

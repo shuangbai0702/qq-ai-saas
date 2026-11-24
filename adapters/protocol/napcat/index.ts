@@ -1,7 +1,8 @@
 import {createHash,randomBytes} from 'node:crypto';import path from 'node:path';import {readFile,writeFile,mkdir,access} from 'node:fs/promises';
 import {atomicJson} from '../../../packages/shared/fs-atomic.js';
 import type {ProtocolAdapter,ProtocolContext,LoginSnapshot,Health,ProcessHostLike} from '../../../packages/contracts/index.js';
-import {withNapcatSettings,proxyPort,initialEgress,nextEgress,observeEgress,type NapcatSettings} from './egress.js';
+import {withNapcatSettings,type NapcatSettings} from './egress.js';
+import {proxyPort,initialEgress,nextEgress,observeEgress} from '../egress.js';
 
 function hasQuickLoginUin(list:unknown,uin:string):boolean{
  const items=Array.isArray(list)?list:Array.isArray((list as any)?.data)?(list as any).data:Array.isArray((list as any)?.list)?(list as any).list:[];
