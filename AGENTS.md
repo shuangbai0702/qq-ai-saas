@@ -77,3 +77,13 @@
 - 辅助判断优先采用「稳定 System → 独立稳定 Reference → 独立动态资料」。小双白中转的真实实验支持拆分，不据此假定其他 Provider 支持或不支持消息内部部分前缀缓存；具体实验数字保留在调查/实施报告。
 - Reference 中不放本轮人物筛选 Facts、时间、Work 或动态状态；事实、关系和约定发生真实变化时必须及时提供，不得冻结旧值换缓存。
 - 缓存路由提示、物理缓存边界、Work ID、HTTP 请求 ID 是不同概念；缺失缓存字段记为未知，不能当零，也不能把客户端结构改进等同于上游必然命中。
+
+## 大型子系统边界与长期架构不变量
+
+- **单向依赖 DAG（零循环、零层反转）**：TypeScript 模块依赖图保持 0 循环、`adapters/*` 不得导入 `apps/node-agent/*`（统一通过 `packages/contracts/process-host.ts` 的 `ProcessHostLike` 交互）、`apps/node-agent/src/media/*` 不得反向导入 `bilibili/*`（公共异常由 `media/error.ts` 的 `MediaError` 定义）。Python `adapters/astrbot/` 模块保持顶层导入与全量导入均为 0 强连通分量（0 SCC），`context_protocol.py` 保持 Layer-0 纯合同模块。
+- **单一运行时与持久化所有权**：
+  - `EXTERNAL_AGENT=true` 时 Control API 不实例化 `NodeAgent`，所有运行态只读/命令派发通过 `apps/control-api/src/bot-runtime-reader.ts` 的 `RuntimeControlPort` 端口执行；`NODE_ENV=production` 默认禁止 `protocol='mock'`（除非显式设置 `FISHBOT_ALLOW_MOCK_PROTOCOL=true`）。
+  - DSH 宿主管线通过 `DshHostDeps` 最小接口与 `NodeAgent` 协作，禁止持有整个 `NodeAgent` 实例。
+  - `memory_core_notes` 由 `adapters/astrbot/core_note.py` 唯一拥有，`memory_embedding_budget` 由 `adapters/astrbot/embedding_client.py` 唯一拥有；已退役表（如 `fact_vectors`、`memory_hold_rounds`、`memory_summary_coverage`、`memory_vectors` 等）与死列禁止重新引入。
+  - QQ 协议/账号（NapCat/Euler）、IP 与网络出口、FishBot AI 认知核彼此通过最小合同交互，AI 认知模块不得侵入 NapCat 内部状态或代理出口实现。
+- **架构守护自动化测试**：提交前须保证 `tests/architecture-boundaries.test.ts`、`tests/architecture_boundaries_test.py` 与 `tests/wire_cleanliness_test.py` 全部通过，防止循环依赖、层反转、双重运行时所有权、已退役表复活或 Wire 载荷冗余回流。

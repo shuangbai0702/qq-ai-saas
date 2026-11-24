@@ -10,7 +10,6 @@ async function collect(dir){for(const item of await readdir(dir,{withFileTypes:t
 for(const dir of ['apps/control-api','apps/node-agent','packages','adapters'])await collect(dir);
 entries.push(path.resolve('scripts/migrate-pglite-postgres.ts'));
 await build({entryPoints:entries,outbase:'.',outdir:'dist-server',platform:'node',target:'node22',format:'esm',bundle:false,sourcemap:true,logLevel:'info'});
-await copyFile('packages/contracts/memory-defaults.json','dist-server/packages/contracts/memory-defaults.json');
 await mkdir('dist-server/packages/database/migrations',{recursive:true});
 for(const file of await readdir('packages/database/migrations'))if(file.endsWith('.sql'))await copyFile(`packages/database/migrations/${file}`,`dist-server/packages/database/migrations/${file}`);
 const vite=spawnSync(process.execPath,['node_modules/vite/bin/vite.js','build','--config','apps/web/vite.config.ts'],{stdio:'inherit',windowsHide:true});
@@ -26,6 +25,7 @@ const runtimeScripts={};
 await mkdir('dist-server/packages/dsh',{recursive:true});
 for(const file of await readdir('packages/dsh'))if(file.endsWith('.mjs')){const name='packages/dsh/'+file;runtimeScripts[name]=sha(await readFile(name));await copyFile(name,'dist-server/'+name);}
 for(const file of await readdir('scripts'))if(file.endsWith('.py')||file.endsWith('.mjs')||file.startsWith('media-')||file==='media-asr-requirements.txt')runtimeScripts['scripts/'+file]=sha(await readFile('scripts/'+file));
+for(const runner of ['adapters/protocol/napcat/runner.mjs','adapters/protocol/euler/bridge.py','adapters/mock/protocol-worker.mjs'])runtimeScripts[runner]=sha(await readFile(runner));
 for(const file of await readdir('adapters/astrbot'))if(file.endsWith('.py'))pythonSources['adapters/astrbot/'+file]=sha(await readFile('adapters/astrbot/'+file));
 for(const file of await readdir('packages/contracts'))if(file.endsWith('.json'))contracts['packages/contracts/'+file]=sha(await readFile('packages/contracts/'+file));
 await mkdir('dist-server/packages/contracts',{recursive:true});

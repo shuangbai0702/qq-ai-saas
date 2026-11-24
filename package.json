@@ -11,6 +11,7 @@
     "build": "tsc --noEmit && vite build --config apps/web/vite.config.ts",
     "start": "tsx apps/control-api/src/main.ts",
     "test": "tsx --test --test-concurrency=1 tests/*.test.ts",
+    "test:arch": "tsx --test tests/architecture-boundaries.test.ts",
     "test:web": "tsx tests/browser.ts",
     "setup:astrbot": "python scripts/setup_astrbot.py",
     "db:migrate": "tsx packages/database/migrate.ts",
