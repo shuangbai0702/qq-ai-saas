@@ -32,6 +32,12 @@ and removed from its QQ child; it is independent of the QQ network egress policy
 With LLBOT_AUTH_TOKEN configured, official authentication remains available.
 The PMHQ mode is explicitly inline, avoiding its default proxy mode's global QQ
 proxy-file changes. A matching Linux native distribution has not been integrated.
+PMHQ 9 ignores the retired `--js-path` argument. `qq-assets.mjs` projects the
+versioned Windows QQNT installation into each Bot's program directory: native
+assets are linked, while version and Electron main metadata are private. That
+main executes the Bot's profile/network bootstrap before QQ's original entry.
+The shared QQ installation is not edited. Profile proof must match PMHQ's real
+QQ PID before admission. Child output is piped through ProcessHost logging.
 
 ## Ownership and transport
 

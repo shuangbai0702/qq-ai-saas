@@ -26,10 +26,12 @@ async function fixture(){
  await mkdir(path.join(runtime,'bin/llbot/node_modules'),{recursive:true});await mkdir(path.join(runtime,'bin/llbot/webui'),{recursive:true});await mkdir(path.join(runtime,'bin/pmhq'),{recursive:true});
  for(const name of ['llbot.js','fishbot-actions.mjs','fishbot-lifecycle.mjs','package.json','sign-proxy.win-x64.node','sign-proxy.package.json','ffmpeg.exe','ffprobe.exe'])await writeFile(path.join(runtime,'bin/llbot',name),name==='package.json'?'{}':'// inert fixture');
  await writeFile(path.join(runtime,'bin/pmhq/pmhq_loader.js'),'// inert fixture');
+ const qq=path.join(root,'qq-assets'),app=path.join(qq,'versions/9.9.37-54395/resources/app');await mkdir(path.join(app,'assets'),{recursive:true});
+ await writeFile(path.join(qq,'QQ.exe'),'inert native fixture');await writeFile(path.join(qq,'versions/config.json'),JSON.stringify({curVersion:'9.9.37-54395'}));await writeFile(path.join(app,'package.json'),JSON.stringify({main:'./main.cjs'}));await writeFile(path.join(app,'main.cjs'),'// inert QQ main');
  await writeFile(path.join(runtime,'fishbot-upstream.json'),JSON.stringify({version:'8.3.2-test',platform:process.platform,sha256:{'bin/llbot/llbot.js':hash('// inert fixture')}}));
  const socketServer=createServer(),port=await listen(socketServer);await new Promise(r=>socketServer.close(r));
  const bot=path.join(root,'bot');await mkdir(bot);
- const m={botId:'a',tenantId:'t',root:bot,generation:2,expectedUin:'90000',authMode:'token',authToken:'synthetic-pmhq',runtimeDir:runtime,qqPath:path.join(root,'QQ.exe'),egress:{route:'direct'},management:{host:'127.0.0.1',port,token:'a'.repeat(64)},reverseWs:{url:`ws://127.0.0.1:${port-3}/ws`,token:'b'.repeat(64)},pmhqPort:port-2,webuiPort:port-1};
+ const m={botId:'a',tenantId:'t',root:bot,generation:2,expectedUin:'90000',authMode:'token',authToken:'synthetic-pmhq',runtimeDir:runtime,qqPath:path.join(qq,'QQ.exe'),egress:{route:'direct'},management:{host:'127.0.0.1',port,token:'a'.repeat(64)},reverseWs:{url:`ws://127.0.0.1:${port-3}/ws`,token:'b'.repeat(64)},pmhqPort:port-2,webuiPort:port-1};
  const file=path.join(bot,'llbot-platform.json');await writeFile(file,JSON.stringify(m));return{root,runtime,m,file};
 }
 
@@ -42,6 +44,10 @@ test('managed runtime validates private ports, version, hashes and per-Bot data 
  assert.throws(()=>validateManifest({...f.m,expectedUin:'other'},f.file));
  const bot2=path.join(f.root,'bot2');await mkdir(bot2);const file2=path.join(bot2,'llbot-platform.json');await writeFile(file2,JSON.stringify({...f.m,root:bot2,botId:'b',management:{...f.m.management,token:'c'.repeat(64)}}));
  const b=await prepareRuntime(file2);assert.notEqual(a.home,b.home);assert.notEqual(a.work,b.work);
+ assert.notEqual(a.qqPath,b.qqPath);const app='versions/9.9.37-54395/resources/app';
+ assert.equal(JSON.parse(await readFile(path.join(path.dirname(f.m.qqPath),app,'package.json'),'utf8')).main,'./main.cjs','shared QQ metadata stays immutable');
+ assert.equal(JSON.parse(await readFile(path.join(path.dirname(a.qqPath),app,'package.json'),'utf8')).main,'./fishbot-entry.cjs');
+ assert.ok((await readFile(path.join(path.dirname(a.qqPath),app,'fishbot-entry.cjs'),'utf8')).includes(JSON.stringify(a.bootstrap)));assert.equal((await prepareRuntime(f.file)).qqPath,a.qqPath,'same Bot reuses only its own launcher');
  await writeFile(path.join(f.runtime,'bin/llbot/llbot.js'),'changed');await assert.rejects(prepareRuntime(f.file),/integrity/);
 });
 
@@ -122,12 +128,13 @@ test('LLBot memory policy protects active work, reclaims only JS, resets for rep
 test('runtime HTTP auth, profile/native proof, worker-only restart and PMHQ failure are isolated without executing QQ',async t=>{
  const f=await fixture(),children=[];let at=Date.now(),online=true,reachable=true;
  const spawnChild=(exe,args,options)=>{const child=new EventEmitter();Object.assign(child,{pid:500+children.length,connected:true,kill(){child.emit('exit',0)},send(){}});children.push({child,exe,args,options});return child};
- const fetcher=async url=>{if(String(url).endsWith('/health')&&!reachable)throw Error('unreachable');return new Response(JSON.stringify(String(url).endsWith('/health')?{uin:online?'90000':'',uid:online?'u_fixture':'',memory:{qq_using:12345,total:99999},cpu:{qq_using:1,total:100}}:String(url).endsWith('/api/login-info')?{success:true,data:{online,uin:'90000'}}:{success:true,data:{qrcodeUrl:'https://fixture.invalid/qr'}}))};
+ const fetcher=async url=>{if(String(url).endsWith('/health')&&!reachable)throw Error('unreachable');return new Response(JSON.stringify(String(url).endsWith('/health')?{uin:online?'90000':'',uid:online?'u_fixture':'',qq_pid:501,memory:{qq_using:12345,total:99999},cpu:{qq_using:1,total:100}}:String(url).endsWith('/api/login-info')?{success:true,data:{online,uin:'90000'}}:{success:true,data:{qrcodeUrl:'https://fixture.invalid/qr'}}))};
  const run=await startRuntime(f.file,{spawnChild,clock:()=>at,fetcher});t.after(()=>run.close());
  const health=()=>fetch(`http://127.0.0.1:${f.m.management.port}/api/health`,{headers:{Authorization:'Bearer '+f.m.management.token}}).then(r=>r.json());
  assert.equal((await fetch(`http://127.0.0.1:${f.m.management.port}/api/health`)).status,401);
  assert.equal(children.length,2);assert.ok(children[0].args.some(a=>a.includes('--work-dir='+path.join(f.m.root,'llbot/qq'))));assert.ok(children.every(c=>c.options.windowsHide));
  assert.ok(children.every(c=>c.options.stdio[1]==='pipe'&&c.options.stdio[2]==='pipe'),'native child output must reach the managed runner log instead of Windows NUL handles');
+ assert.equal(new URL(children[1].args[children[1].args.indexOf('--import')+1]).protocol,'file:','Node --import requires a file URL for Windows drive paths');
  // Login cannot be accepted from the upstream WebUI alone.
  await run.sample();assert.notEqual((await health()).login.state,'online');
  await writeFile(path.join(f.m.root,'llbot/qq/profile-proof.json'),JSON.stringify({botId:'a',generation:2,pid:501,profile:path.join(f.m.root,'llbot/qq/profile'),network:true,route:'direct'}));

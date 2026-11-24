@@ -1,7 +1,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath,pathToFileURL} from 'node:url';
 import {spawn} from 'node:child_process';
 import {mkdir,readFile,writeFile,copyFile,symlink,realpath,rm} from 'node:fs/promises';
 import {createHash,timingSafeEqual} from 'node:crypto';
@@ -9,6 +9,7 @@ import {WebSocketServer} from 'ws';
 import {LLBotRelay} from './relay.mjs';
 import {resourceDecision} from './resource-policy.mjs';
 import {localAuth} from './local-auth.mjs';
+import {prepareQqAssets} from './qq-assets.mjs';
 
 const directory=path.dirname(fileURLToPath(import.meta.url));
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
@@ -40,24 +41,28 @@ export async function prepareRuntime(file){
  if(m.expectedUin)await writeFile(path.join(work,'data',`config_${m.expectedUin}.json`),JSON.stringify(config),{mode:0o600});
  await writeFile(path.join(work,'data','webui_token.txt'),m.management.token,{mode:0o600});
  const bootstrap=path.join(m.root,'llbot','qq-bootstrap.cjs');
- await writeFile(bootstrap,`require(${JSON.stringify(path.join(directory,'qq-bootstrap.cjs'))})(${JSON.stringify(path.resolve(file))});\nrequire(${JSON.stringify(path.join(m.runtimeDir,'bin/pmhq/pmhq_loader.js'))});\n`,{mode:0o600});
+ await writeFile(bootstrap,`require(${JSON.stringify(path.join(directory,'qq-bootstrap.cjs'))})(${JSON.stringify(path.resolve(file))});\n`,{mode:0o600});
+ // PMHQ 9 no longer executes --js-path. Install the profile hook through this
+ // Bot's private Electron main metadata, before the original QQ entry runs.
+ const qqPath=await prepareQqAssets(m.qqPath,home,bootstrap);
  await writeFile(path.join(home,'pmhq_config.json'),JSON.stringify({default_host:'127.0.0.1',default_port:m.pmhqPort,debug:false,debug_pb:false,qq_console:false,headless:false}),{mode:0o600});
  await rm(path.join(home,'profile-proof.json'),{force:true});
- return{manifest:m,work,home,bootstrap};
+ return{manifest:m,work,home,bootstrap,qqPath};
 }
 const authorized=(request,token)=>{const received=Buffer.from(request.headers.authorization||''),wanted=Buffer.from('Bearer '+token);return received.length===wanted.length&&timingSafeEqual(received,wanted)};
 async function jsonBody(request){const chunks=[];let size=0;for await(const chunk of request){size+=chunk.length;if(size>1048576)throw Error('Request too large');chunks.push(chunk)}return JSON.parse(Buffer.concat(chunks).toString('utf8')||'{}')}
 export async function startRuntime(file,{spawnChild=spawn,clock=()=>Date.now(),fetcher=fetch}={}){
- const {manifest:m,work,home,bootstrap}=await prepareRuntime(file);
+ const {manifest:m,work,home,qqPath}=await prepareRuntime(file);
  let timer,auth;let closing=false,worker,pmhq,epoch=0,workerMemory,lastMemory=0,workerStarted=0,workerRestartAt=0,workerRestarts=[],pmhqExited=false,detail='LLBot正在启动',qqResources={},qqDisconnected=false,wasOnline=false,nativeOnline=false,offlineAt=0;
- let lastNativeHealth=clock(),nativeSeen=false;
+ let lastNativeHealth=clock(),nativeSeen=false,qqPid;
  const policy={};let resourceStatus={decision:'starting'};let login={state:'starting'};
  const relay=new LLBotRelay({expectedUin:m.expectedUin,url:m.reverseWs.url,token:m.reverseWs.token,onIdentity:async uin=>{await nativeHealth();await profileProof();if(!closing)detail=''}});
- async function profileProof(){const proof=JSON.parse(await readFile(path.join(home,'profile-proof.json'),'utf8'));if(proof.botId!==m.botId||proof.generation!==m.generation||proof.profile!==path.join(home,'profile')||!Number.isInteger(proof.pid)||proof.network!==true||proof.route!==m.egress.route)throw Error('Private QQ profile proof unavailable');return proof}
+ async function profileProof(){const proof=JSON.parse(await readFile(path.join(home,'profile-proof.json'),'utf8'));if(proof.botId!==m.botId||proof.generation!==m.generation||proof.profile!==path.join(home,'profile')||!Number.isInteger(proof.pid)||proof.pid!==qqPid||proof.network!==true||proof.route!==m.egress.route)throw Error('Private QQ profile proof unavailable');return proof}
  async function nativeHealth(){
   const response=await fetcher(`http://127.0.0.1:${m.pmhqPort}/health`,{signal:AbortSignal.timeout(3000)});
   if(!response.ok)throw Error('PMHQ health unavailable');const value=await response.json();lastNativeHealth=clock();nativeSeen=true;
   nativeOnline=!!value.uin&&!!value.uid&&(!m.expectedUin||String(value.uin)===m.expectedUin);
+  qqPid=Number.isInteger(value.qq_pid)?value.qq_pid:undefined;
   qqResources={rssBytes:Number.isFinite(value.memory?.qq_using)?value.memory.qq_using:undefined,cpuPercent:value.cpu?.total>0?Math.max(0,Math.min(100,value.cpu.qq_using/value.cpu.total*100)):undefined};
   if(!nativeOnline)throw Error('Native QQ not online');
   return value;
@@ -70,7 +75,7 @@ export async function startRuntime(file,{spawnChild=spawn,clock=()=>Date.now(),f
   if(closing)return;
   relay.disconnectUpstream();const currentEpoch=++epoch;
   workerMemory=undefined;lastMemory=clock();workerStarted=clock();
-  const child=spawnChild(process.execPath,['--expose-gc','--max-old-space-size=640','--import',path.join(directory,'worker-preload.mjs'),path.join(work,'llbot.js'),'--',`--pmhq-port=${m.pmhqPort}`,...(m.expectedUin?['--qq='+m.expectedUin]:[])],{cwd:work,env:{...env,FISHBOT_LLBOT_MANIFEST:path.resolve(file)},windowsHide:true,stdio:['ignore','pipe','pipe','ipc']});worker=child;forwardOutput(child);
+  const child=spawnChild(process.execPath,['--expose-gc','--max-old-space-size=640','--import',pathToFileURL(path.join(directory,'worker-preload.mjs')).href,path.join(work,'llbot.js'),'--',`--pmhq-port=${m.pmhqPort}`,...(m.expectedUin?['--qq='+m.expectedUin]:[])],{cwd:work,env:{...env,FISHBOT_LLBOT_MANIFEST:path.resolve(file)},windowsHide:true,stdio:['ignore','pipe','pipe','ipc']});worker=child;forwardOutput(child);
   child.on('error',()=>{if(epoch===currentEpoch)detail='LLBot子进程启动失败'});
   child.on('message',value=>{if(epoch===currentEpoch&&value?.type==='llbot-memory'&&value.pid===child.pid&&[value.rss,value.heapUsed].every(Number.isFinite)){workerMemory=value;lastMemory=clock()}});
   child.on('exit',()=>{if(epoch===currentEpoch&&!closing){worker=undefined;relay.disconnectUpstream();workerRestartAt=clock()+3000;detail='LLBot子进程退出，QQ会话保留，等待局部恢复'}});
@@ -107,7 +112,7 @@ export async function startRuntime(file,{spawnChild=spawn,clock=()=>Date.now(),f
  try{
   if(m.authMode==='local')auth=await localAuth(server,{manifest:m,spawnChild,getProcess:()=>pmhq,onFailure:()=>{pmhqExited=true;detail='LLBot私有本地启动组件失败，等待受控恢复'}});
   const pmhqEnv=auth?{...env,HTTPS_PROXY:auth.proxy,HTTP_PROXY:auth.proxy,ALL_PROXY:auth.proxy,https_proxy:auth.proxy,http_proxy:auth.proxy,all_proxy:auth.proxy,NO_PROXY:'127.0.0.1,localhost',no_proxy:'127.0.0.1,localhost'}:env;
-  pmhq=spawnChild(path.join(m.runtimeDir,'bin/pmhq',process.platform==='win32'?'pmhq.exe':'pmhq'),['--mode=inline',`--config=${path.join(home,'pmhq_config.json')}`,'--host=127.0.0.1',`--port=${m.pmhqPort}`,`--auth-token=${m.authToken}`,`--js-path=${bootstrap}`,`--qq-path=${m.qqPath}`,`--work-dir=${home}`,`--qq-args=--multi-instance --user-data-dir="${path.join(home,'profile')}"`,...(m.resume&&m.expectedUin?[`--qq=${m.expectedUin}`]:[]),'--exit-with-qq-delay=15'],{cwd:home,env:pmhqEnv,windowsHide:true,stdio:['ignore','pipe','pipe']});forwardOutput(pmhq);
+  pmhq=spawnChild(path.join(m.runtimeDir,'bin/pmhq',process.platform==='win32'?'pmhq.exe':'pmhq'),['--mode=inline',`--config=${path.join(home,'pmhq_config.json')}`,'--host=127.0.0.1',`--port=${m.pmhqPort}`,`--auth-token=${m.authToken}`,`--qq-path=${qqPath}`,`--work-dir=${home}`,`--qq-args=--multi-instance --user-data-dir="${path.join(home,'profile')}"`,...(m.resume&&m.expectedUin?[`--qq=${m.expectedUin}`]:[]),'--exit-with-qq-delay=15'],{cwd:home,env:pmhqEnv,windowsHide:true,stdio:['ignore','pipe','pipe']});forwardOutput(pmhq);
   pmhq.on('error',()=>{pmhqExited=true;detail='PMHQ启动失败'});pmhq.on('exit',()=>{pmhqExited=true;detail='PMHQ已退出，等待平台受控恢复'});launchWorker();
  }catch{await close();throw Error('LLBot component launch failed')}
  let sampling=false;
