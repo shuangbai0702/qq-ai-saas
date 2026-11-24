@@ -213,8 +213,6 @@ def conversation_context(store,cfg,scope,subject,query,now,state=None):
                 # available through explicit recall. Work authorization remains
                 # bound to the current event, without another history projection.
                 'memory_foundation':foundation,'state':state,'dialogue':delivery_context(store.db,store.model_journals.get(JOURNAL_SCOPE)),
-                'group_round_history':[],'conversation_timeline':[],'recent_messages':[],
-                'recent_cross_session_messages':[],'ambient_group_messages':[],
                 'active_agreements':agreement_state.context_view(store.db,scope,owner=str(cfg.get('ownerUin') or '')) if enabled else [],
                 'cross_scope_guidance':CROSS_SCOPE_GUIDANCE})
     dialogue=store.participation.context(scope,now=now,cfg=cfg)

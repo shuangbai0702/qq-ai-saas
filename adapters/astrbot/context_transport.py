@@ -274,29 +274,42 @@ def request_context_view(system,contexts,prompt,policy,current_rules,context,too
     if readonly:
         history.insert(position,{'role':'user','content':READONLY_CURRENT+'\n'+model_json(readonly)})
     if platform_system is not None:
-        from context_protocol import persona_reference
+        from context_protocol import persona_reference,is_card,is_note,is_persona_reference
         from web_base import without_sdk_persona,legacy_sdk_persona,sha
-        # The SDK embeds the selected Persona in its preamble as well. Keep
-        # its non-empty residual instructions, but provide the Persona once
-        # and never emit phantom empty Persona reference slots.
-        leading_end=0
-        residuals=[]
-        for message in history:
-            if message.get('role')!='system':break
-            leading_end+=1
-            content=without_sdk_persona(message['content'],system)
-            # An event can wait for the Writer after the SDK selected its old
-            # Persona. The authenticated request snapshot owns the newer base.
-            if persona_proof and persona_proof.get('target')==sha(system):
-                prior=legacy_sdk_persona(content,persona_proof['origins'],system)
-                if prior is not None:content=prior
-            if system:
-                if content==system:content=''
-                elif content.startswith(system+'\n'):content=content[len(system)+1:]
-            if content.strip():
-                residuals.append(persona_reference(content))
-        leading=([persona_reference(system)] if system else [])+residuals
-        history[:leading_end]=leading
+        # If history already starts with a committed Journal head (e.g. during
+        # output-guard regeneration), preserve its normalized base without
+        # re-wrapping platform_system or duplicating persona_reference.
+        already_normalized=bool(history and isinstance(history[0],dict) and history[0].get('role')=='system' and isinstance(history[0].get('content'),str) and history[0]['content'].startswith('[FishBot 平台基础规则]\n'))
+        if already_normalized:
+            head_end=0
+            while head_end<len(history) and isinstance(history[head_end],dict) and (history[head_end].get('role') in ('system','developer') or head_end>0 and (is_persona_reference(history[head_end]) or is_note(history[head_end]))):
+                head_end+=1
+            # Keep committed head tail (core_note, cards, persona_reference),
+            # dropping only the leading platform_system because stable carries it.
+            history=history[1:]
+        else:
+            # The SDK embeds the selected Persona in its preamble as well. Keep
+            # its non-empty residual instructions, but provide the Persona once
+            # and never emit phantom empty Persona reference slots.
+            leading_end=0
+            residuals=[]
+            for message in history:
+                if message.get('role')!='system':break
+                leading_end+=1
+                if is_card(message):continue
+                content=without_sdk_persona(message['content'],system)
+                # An event can wait for the Writer after the SDK selected its old
+                # Persona. The authenticated request snapshot owns the newer base.
+                if persona_proof and persona_proof.get('target')==sha(system):
+                    prior=legacy_sdk_persona(content,persona_proof['origins'],system)
+                    if prior is not None:content=prior
+                if system:
+                    if content==system:content=''
+                    elif content.startswith(system+'\n'):content=content[len(system)+1:]
+                if content.strip():
+                    residuals.append(persona_reference(content))
+            leading=([persona_reference(system)] if system else [])+residuals
+            history[:leading_end]=leading
     if platform_system is not None and character_cards:
         from character_cards import layout
         history=layout([{'role':'system','content':stable}]+history,character_cards)[1:]

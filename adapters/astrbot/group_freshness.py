@@ -138,9 +138,8 @@ class GroupFreshness:
             if not valid():return {'action':'drop','cursor':version,'reason':'stale_work','checked':True}
             # Never let a late reviewer bless messages it did not observe.
             if self.cursor(scope)!=version:return {'action':'retry','cursor':cursor,'reason':'changed_during_review','checked':True}
-            raw=raw.strip()
-            if raw.startswith('```') and raw.endswith('```'):raw=re.sub(r'^```(?:json)?\s*','',raw,flags=re.I)[:-3].strip()
-            value=json.loads(raw)
+            from autonomy import parse_object
+            value=parse_object(raw)
             if not isinstance(value,dict) or value.get('action') not in ('keep','replace','drop'):raise ValueError('invalid_decision')
             action=value['action'];text=value.get('text','')
             if action=='replace' and (confirmed or not isinstance(text,str) or not text.strip() or len(text)>2400):raise ValueError('invalid_replacement')

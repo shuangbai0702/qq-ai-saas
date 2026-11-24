@@ -49,6 +49,7 @@ class Admission(unittest.TestCase):
 class Regeneration(unittest.IsolatedAsyncioTestCase):
     asyncSetUp=fixture.Activity.asyncSetUp
     asyncTearDown=fixture.Activity.asyncTearDown
+    activation_request=fixture.Activity.activation_request
     activate=fixture.Activity.activate
 
     async def scenario(self,answers,forward=False,pending=False,correction=REGENERATE):

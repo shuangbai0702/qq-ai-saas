@@ -467,7 +467,7 @@ def observe_wire_request(request):
                 **{name.removesuffix('Sha')+'Changed':signatures[name]!=previous[name] if previous is not None else None
                    for name in signatures}},separators=(',',':'))
             fields.update(model=value.get('model'),outputLimit=payload.get('max_completion_tokens',payload.get('max_tokens')) if type(payload.get('max_completion_tokens',payload.get('max_tokens'))) is int else None)
-            if value['phase'] in ('private_freshness','group_freshness','group_presence','owner_contact','companion_plan','small_summary','big_merge'):
+            if value['phase'] in ('private_freshness','group_freshness','group_presence','owner_contact','small_summary','big_merge'):
                 fields.update(decision_prefix_fields(key,payload['messages']))
             record_diagnostic(lease,{'kind':'wire_request','attemptId':value['attemptId'],'phase':value['phase'],'workId':value['workId'],**value['origin'],**fields})
     except Exception:
@@ -479,26 +479,36 @@ def observe_wire_request(request):
 def decision_prefix_fields(key,messages):
     """Actual User common prefix, without recording bodies or freezing state.
 
-    Eight last requests only, in this interpreter; plaintext is never written
-    to diagnostics. Oversized requests have hashes/lengths but no prefix cache.
+    Supports both single-user payloads and decision_request() split reference
+    user messages. Eight last requests only, in this interpreter; plaintext is
+    never written to diagnostics.
     """
-    text=next((m.get('content') for m in reversed(messages) if m.get('role')=='user'),None)
-    if not isinstance(text,str):return {}
+    users=[m.get('content') for m in messages if isinstance(m,dict) and m.get('role')=='user' and isinstance(m.get('content'),str)]
+    if not users:return {}
+    combined='\n'.join(users)
     previous=_decision_prefixes.pop(key,None);common=0
     if previous is not None:
-        for a,b in zip(previous,text):
+        for a,b in zip(previous,combined):
             if a!=b:break
             common+=1
-    if len(text)<=131072:
-        _decision_prefixes[key]=text
+    if len(combined)<=131072:
+        _decision_prefixes[key]=combined
         while len(_decision_prefixes)>8:_decision_prefixes.popitem(last=False)
-    fields={'userChars':len(text),'userPrefixKnown':previous is not None,'userPrefixChars':common}
-    try:
-        reference=json.loads(text).get('reference')
-        if reference is not None:
-            raw=json.dumps(reference,ensure_ascii=False,separators=(',',':'))
-            fields.update(referenceChars=len(raw),referenceSha=hashlib.sha256(raw.encode()).hexdigest()[:24])
-    except (ValueError,AttributeError):pass
+    fields={'userChars':len(combined),'userPrefixKnown':previous is not None,'userPrefixChars':common}
+    merged_ref={}
+    for text in users:
+        try:
+            parsed=json.loads(text)
+            ref=parsed.get('reference') if isinstance(parsed,dict) else None
+            if isinstance(ref,dict):
+                for rk,rv in ref.items():
+                    if isinstance(rv,dict) and isinstance(merged_ref.get(rk),dict):
+                        merged_ref[rk]={**merged_ref[rk],**rv}
+                    else:merged_ref[rk]=rv
+        except (ValueError,AttributeError):pass
+    if merged_ref:
+        raw=json.dumps(merged_ref,ensure_ascii=False,separators=(',',':'))
+        fields.update(referenceChars=len(raw),referenceSha=hashlib.sha256(raw.encode()).hexdigest()[:24])
     return fields
 
 
