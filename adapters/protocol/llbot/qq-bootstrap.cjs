@@ -6,6 +6,7 @@ module.exports=function prepareQQ(manifestPath){
  const home=path.join(manifest.root,'llbot','qq'),profile=path.join(home,'profile');
  for(const dir of [home,profile,path.join(home,'AppData','Roaming'),path.join(home,'AppData','Local')])fs.mkdirSync(dir,{recursive:true});
  Object.assign(process.env,{HOME:home,USERPROFILE:home,APPDATA:path.join(home,'AppData','Roaming'),LOCALAPPDATA:path.join(home,'AppData','Local')});
+ if(manifest.authMode==='local')for(const key of ['HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy','NO_PROXY','no_proxy'])delete process.env[key];
  // The PMHQ loader prefers these native-discovered Windows paths over HOME.
  // Keep its account/global metadata and downloads inside the same Bot too.
  if(globalThis.PMHQ){globalThis.PMHQ.windowsDocumentPath=path.join(home,'Documents');globalThis.PMHQ.windowsDownloadPath=path.join(home,'Downloads')}

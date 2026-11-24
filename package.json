@@ -27,7 +27,7 @@
     "db:prepare-template": "tsx scripts/prepare-db-template.ts",
     "docker:prepare": "node scripts/prepare-docker-context.mjs",
     "setup:llbot": "node scripts/llbot-setup.mjs",
-    "test:llbot": "tsx --test --test-concurrency=1 tests/llbot-api.test.ts tests/llbot-adapter.test.ts tests/llbot-runtime.test.mjs",
+    "test:llbot": "tsx --test --test-concurrency=1 tests/llbot-api.test.ts tests/llbot-adapter.test.ts tests/llbot-runtime.test.mjs tests/llbot-local-auth.test.mjs",
     "test:llbot:web": "tsx tests/llbot-browser.ts"
   },
   "dependencies": {

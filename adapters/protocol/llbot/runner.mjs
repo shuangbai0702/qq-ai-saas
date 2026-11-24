@@ -8,6 +8,7 @@ import {createHash,timingSafeEqual} from 'node:crypto';
 import {WebSocketServer} from 'ws';
 import {LLBotRelay} from './relay.mjs';
 import {resourceDecision} from './resource-policy.mjs';
+import {localAuth} from './local-auth.mjs';
 
 const directory=path.dirname(fileURLToPath(import.meta.url));
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
@@ -15,6 +16,7 @@ export function validateManifest(m,file){
  const root=path.dirname(path.resolve(file));
  const ai=/^ws:\/\/127\.0\.0\.1:([1-9]\d{0,4})\/ws$/.exec(m.reverseWs?.url||'');
  const ports=[Number(ai?.[1]),m.pmhqPort,m.management?.port,m.webuiPort];
+ if(!['local','token'].includes(m.authMode)||m.authMode==='local'&&(!path.isAbsolute(m.python||'')||process.platform!=='win32'))throw Error('Invalid private LLBot auth mode');
  if(m.root!==root||!m.botId||!Number.isInteger(m.generation)||!ai||!ports.every(p=>Number.isInteger(p)&&p>1024&&p<65536)||new Set(ports).size!==4||m.management?.host!=='127.0.0.1'||!/^\d{5,20}$|^$/.test(m.expectedUin)||!m.authToken||typeof m.runtimeDir!=='string'||typeof m.qqPath!=='string'||!['direct','huawei'].includes(m.egress?.route)||m.egress.route==='huawei'&&(!Number.isInteger(m.egress.proxyPort)||m.egress.proxyPort<1||m.egress.proxyPort>65535)||!/^[a-f0-9]{64}$/i.test(m.management?.token||'')||!/^[a-f0-9]{64}$/i.test(m.reverseWs?.token||''))throw Error('Invalid private LLBot manifest');
  return m;
 }
@@ -47,7 +49,7 @@ const authorized=(request,token)=>{const received=Buffer.from(request.headers.au
 async function jsonBody(request){const chunks=[];let size=0;for await(const chunk of request){size+=chunk.length;if(size>1048576)throw Error('Request too large');chunks.push(chunk)}return JSON.parse(Buffer.concat(chunks).toString('utf8')||'{}')}
 export async function startRuntime(file,{spawnChild=spawn,clock=()=>Date.now(),fetcher=fetch}={}){
  const {manifest:m,work,home,bootstrap}=await prepareRuntime(file);
- let timer;let closing=false,worker,pmhq,epoch=0,workerMemory,lastMemory=0,workerStarted=0,workerRestartAt=0,workerRestarts=[],pmhqExited=false,detail='LLBot正在启动',qqResources={},qqDisconnected=false,wasOnline=false,nativeOnline=false,offlineAt=0;
+ let timer,auth;let closing=false,worker,pmhq,epoch=0,workerMemory,lastMemory=0,workerStarted=0,workerRestartAt=0,workerRestarts=[],pmhqExited=false,detail='LLBot正在启动',qqResources={},qqDisconnected=false,wasOnline=false,nativeOnline=false,offlineAt=0;
  let lastNativeHealth=clock(),nativeSeen=false;
  const policy={};let resourceStatus={decision:'starting'};let login={state:'starting'};
  const relay=new LLBotRelay({expectedUin:m.expectedUin,url:m.reverseWs.url,token:m.reverseWs.token,onIdentity:async uin=>{await nativeHealth();await profileProof();if(!closing)detail=''}});
@@ -100,7 +102,9 @@ export async function startRuntime(file,{spawnChild=spawn,clock=()=>Date.now(),f
  });
  await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(m.management.port,'127.0.0.1',resolve)});
  try{
-  pmhq=spawnChild(path.join(m.runtimeDir,'bin/pmhq',process.platform==='win32'?'pmhq.exe':'pmhq'),[`--port=${m.pmhqPort}`,`--auth-token=${m.authToken}`,`--js-path=${bootstrap}`,`--qq-path=${m.qqPath}`,`--work-dir=${home}`,`--qq-args=--multi-instance --user-data-dir="${path.join(home,'profile')}"`,...(m.resume&&m.expectedUin?[`--qq=${m.expectedUin}`]:[]),'--exit-with-qq-delay=15'],{cwd:home,env,windowsHide:true,stdio:['ignore','inherit','inherit']});
+  if(m.authMode==='local')auth=await localAuth(server,{manifest:m,spawnChild,getProcess:()=>pmhq,onFailure:()=>{pmhqExited=true;detail='LLBot私有本地启动组件失败，等待受控恢复'}});
+  const pmhqEnv=auth?{...env,HTTPS_PROXY:auth.proxy,HTTP_PROXY:auth.proxy,ALL_PROXY:auth.proxy,https_proxy:auth.proxy,http_proxy:auth.proxy,all_proxy:auth.proxy,NO_PROXY:'127.0.0.1,localhost',no_proxy:'127.0.0.1,localhost'}:env;
+  pmhq=spawnChild(path.join(m.runtimeDir,'bin/pmhq',process.platform==='win32'?'pmhq.exe':'pmhq'),['--mode=inline',`--config=${path.join(home,'pmhq_config.json')}`,'--host=127.0.0.1',`--port=${m.pmhqPort}`,`--auth-token=${m.authToken}`,`--js-path=${bootstrap}`,`--qq-path=${m.qqPath}`,`--work-dir=${home}`,`--qq-args=--multi-instance --user-data-dir="${path.join(home,'profile')}"`,...(m.resume&&m.expectedUin?[`--qq=${m.expectedUin}`]:[]),'--exit-with-qq-delay=15'],{cwd:home,env:pmhqEnv,windowsHide:true,stdio:['ignore','inherit','inherit']});
   pmhq.on('error',()=>{pmhqExited=true;detail='PMHQ启动失败'});pmhq.on('exit',()=>{pmhqExited=true;detail='PMHQ已退出，等待平台受控恢复'});launchWorker();
  }catch{await close();throw Error('LLBot component launch failed')}
  let sampling=false;
@@ -130,7 +134,7 @@ export async function startRuntime(file,{spawnChild=spawn,clock=()=>Date.now(),f
    }
   }catch{login=qqDisconnected?{state:'failed',message:'QQ已掉线'}:{state:'starting'};detail||='LLBot正在等待可验证的QQ登录、私有目录和协议连接'}
  }
- async function close(){if(closing)return;closing=true;clearInterval(timer);relay.close();for(const client of ws.clients)client.terminate();ws.close();worker?.kill();pmhq?.kill();await new Promise(resolve=>server.close(resolve))}
+ async function close(){if(closing)return;closing=true;clearInterval(timer);relay.close();for(const client of ws.clients)client.terminate();ws.close();auth?.close();worker?.kill();pmhq?.kill();await new Promise(resolve=>server.close(resolve))}
  return{server,relay,close,sample};
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))startRuntime(process.argv[2]).then(runtime=>{for(const signal of ['SIGTERM','SIGINT'])process.once(signal,()=>{void runtime.close().finally(()=>process.exit(0))})}).catch(()=>{console.error('LLBot managed startup failed; check runtime installation and private configuration');process.exit(1)});

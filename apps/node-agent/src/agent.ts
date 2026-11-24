@@ -76,7 +76,7 @@ export class NodeAgent {
  constructor(public db:Sql,public root:string,public key:Buffer){
    const source=path.resolve(process.env.ASTRBOT_SOURCE||'references/astrbot');const python=path.resolve(process.env.ASTRBOT_PYTHON||`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`);
    this.host=new ProcessHost(root,python);this.ai=new AstrBotAdapter(this.host,source,python);this.shared=new SharedAstrBotAdapter(db,this.host,this.ai,source,python,ctx=>this.sharedEligible(ctx));
-   this.protocols={llbot:new LLBotAdapter(this.host,path.join(root,'llbot')),mock:new MockProtocolAdapter(this.host),napcat:new NapCatAdapter(this.host,path.join(root,'napcat')),euler:new EulerAdapter(this.host,path.resolve(process.env.EULER_SOURCE||'references/euler'),path.resolve(process.env.EULER_PYTHON||`references/euler/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`))};
+   this.protocols={llbot:new LLBotAdapter(this.host,path.join(root,'llbot'),python),mock:new MockProtocolAdapter(this.host),napcat:new NapCatAdapter(this.host,path.join(root,'napcat')),euler:new EulerAdapter(this.host,path.resolve(process.env.EULER_SOURCE||'references/euler'),path.resolve(process.env.EULER_PYTHON||`references/euler/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`))};
    this.autonomy=new AutonomyCoordinator(db,runtimeClient(db));
    this.bilibili=new BilibiliExecutor(db,root,key);
    this.favorites=new FavoriteMaintenance(db,root,key);

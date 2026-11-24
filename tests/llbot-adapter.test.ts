@@ -15,4 +15,5 @@ test('LLBot admission serializes a Bot, omits model credentials, adopts existing
  assert.equal((await adapter.getHealth(ctx)).online,true);await adapter.beginLogin({...ctx,generation:2});assert.equal(starts,1,'Agent generation change adopts QQ');
  hold=true;const entered=new Promise<void>(resolve=>waiting=resolve),pending=adapter.getHealth(ctx);await entered;record={pid:101,created:201,rssBytes:1024};send();assert.equal((await pending).online,false,'late old process health cannot become online');hold=false;
  uin='80000';await assert.rejects(adapter.queryIdentity(ctx),/绑定账号不一致/);await adapter.stop('a');assert.equal(record,null);
+ await writeFile(path.join(settings,'a.json'),JSON.stringify({runtimeDir:runtime,qqPath:qq,token:'a'.repeat(64),authToken:''}));await mkdir(path.join(runtime,'bin/pmhq/auth-local'),{recursive:true});await writeFile(path.join(runtime,'bin/pmhq/auth-local/sign-info.json'),'{}');await adapter.provision(ctx);const local=JSON.parse(await readFile(path.join(botRoot,'llbot-platform.json'),'utf8'));assert.equal(local.authMode,'local');assert.equal(local.authToken,'local-no-token');assert.equal('apiKey' in local,false);
 });

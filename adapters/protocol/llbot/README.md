@@ -15,17 +15,23 @@ running its launchers:
 npm run setup:llbot -- --archive "path/to/91拉拉逼8.3.2测试.zip"
 $env:LLBOT_RUNTIME_DIR = "absolute/path/to/references/llbot-8.3.2"
 $env:LLBOT_QQ_PATH = "absolute/path/to/a/matching/QQ.exe"
-$env:LLBOT_AUTH_TOKEN = "valid PMHQ authentication"
+# Optional: set LLBOT_AUTH_TOKEN only when using official token authentication.
 ```
 
 The setup command requires a new destination. It checks the complete ZIP and
 executed JS hashes, applies exact single-occurrence patches, bundles our action
 extensions, checks JS syntax and records runtime hashes. An unfamiliar version
 fails installation. It never executes the bundled Node/PMHQ/native modules.
-Original launchers, hosts edits and shared authentication memory patchers are
-excluded. This adapter requires valid PMHQ authentication; it does not implement
-the archive's global authentication bypass. A matching Linux native distribution
-has not been integrated.
+Original launchers, hosts edits and global process-scanning scripts are excluded.
+The reviewed package's local authentication material is installed separately.
+Without LLBOT_AUTH_TOKEN, each managed PMHQ uses our private CONNECT endpoint and
+native helper. The helper verifies its exact parent, PID, birth time and executable
+and holds that process handle; it never enumerates or opens another Bot's PMHQ.
+No hosts edits or port 443 are needed. The proxy environment is set only for PMHQ
+and removed from its QQ child; it is independent of the QQ network egress policy.
+With LLBOT_AUTH_TOKEN configured, official authentication remains available.
+The PMHQ mode is explicitly inline, avoiding its default proxy mode's global QQ
+proxy-file changes. A matching Linux native distribution has not been integrated.
 
 ## Ownership and transport
 
@@ -69,7 +75,10 @@ registry/reverse class, API permissions/CAS, dedicated/shared switching, process
 replacement, receipts and resource decisions. `npm run test:llbot:web` serves a
 private local API and verifies real browser creation/queued switching and mobile
 layout. The runtime/patch probes require the reviewed research archive extract;
-when absent, those two probes explicitly skip. Native QQ is never run by tests.
+when absent, those probes explicitly skip. Native QQ is never run by tests.
+The native PMHQ local-auth preflight was additionally run with an inert QQ file:
+it returned `auth_token OK`, then failed to start that deliberately invalid file.
+That proves the local authentication exchange, not QQ login or injection.
 
 This is implemented/offline-verified, **not real-QQ certified**. QQNT profile and
 job membership, license compatibility, true proxy routing/fallback, captcha/

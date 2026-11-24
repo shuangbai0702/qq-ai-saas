@@ -19,7 +19,7 @@ await build({entryPoints:['adapters/protocol/llbot/actions.mjs'],outfile:path.jo
 await copyFile('adapters/protocol/llbot/lifecycle.mjs',path.join(runtime,'fishbot-lifecycle.mjs'));
 for(const file of ['llbot.js','fishbot-actions.mjs','fishbot-lifecycle.mjs']){const checked=spawnSync(process.execPath,['--check',path.join(runtime,file)],{encoding:'utf8',windowsHide:true});if(checked.status!==0)throw Error('Patched LLBot syntax check failed: '+file)}
 const sha256={};
-for(const file of ['bin/llbot/llbot.js','bin/llbot/fishbot-actions.mjs','bin/llbot/fishbot-lifecycle.mjs','bin/llbot/node.exe','bin/llbot/sign-proxy.win-x64.node','bin/pmhq/pmhq.exe','bin/pmhq/pmhq.dll','bin/pmhq/pmhq_loader.js'])sha256[file]=createHash('sha256').update(await readFile(path.join(stage,file))).digest('hex');
+for(const file of ['bin/llbot/llbot.js','bin/llbot/fishbot-actions.mjs','bin/llbot/fishbot-lifecycle.mjs','bin/llbot/node.exe','bin/llbot/sign-proxy.win-x64.node','bin/pmhq/pmhq.exe','bin/pmhq/pmhq.dll','bin/pmhq/pmhq_loader.js',...['leaf.pem','leaf-key.pem','isrg-spki-pattern.bin','spki-inner-546.der','sign-info.json'].map(name=>'bin/pmhq/auth-local/'+name)])sha256[file]=createHash('sha256').update(await readFile(path.join(stage,file))).digest('hex');
 await writeFile(path.join(stage,'fishbot-upstream.json'),JSON.stringify({version:'8.3.2-test',platform:process.platform,archiveSHA256:'cd13e20c8790fff02029153560a5467db333e10f7bec63bf77052c20cce4786c',sha256},null,2));
 await mkdir(path.dirname(destination),{recursive:true});await rename(stage,destination);
 console.log('LLBot private runtime installed at '+destination+'; no bundled native program was executed.');

@@ -9,7 +9,7 @@ import {atomicJson} from '../../../packages/shared/fs-atomic.js';
 type Settings={runtimeDir:string;qqPath:string;token:string;authToken:string;egress?:QQEgress};
 
 export class LLBotAdapter implements ProtocolAdapter {
- constructor(private host:ProcessHostLike,private settingsRoot:string){}
+ constructor(private host:ProcessHostLike,private settingsRoot:string,private python=path.resolve(process.env.ASTRBOT_PYTHON||`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`)){}
  private async withSettings<T>(ctx:ProtocolContext,edit:(s:Settings,save:()=>Promise<void>)=>Promise<T>){
   await mkdir(this.settingsRoot,{recursive:true});
   const file=path.join(this.settingsRoot,ctx.botId+'.json');
@@ -31,9 +31,10 @@ export class LLBotAdapter implements ProtocolAdapter {
  private async writeManifest(ctx:ProtocolContext,settings:Settings){
   await access(path.join(settings.runtimeDir,'fishbot-upstream.json')).catch(()=>{throw new Error('LLBot运行环境未安装，请运行 npm run setup:llbot -- --archive <8.3.2测试版ZIP>')});
   await access(settings.qqPath).catch(()=>{throw new Error('LLBot独立QQNT运行环境未配置，请设置LLBOT_QQ_PATH')});
-  if(!settings.authToken)throw new Error('LLBot PMHQ认证未配置，请设置LLBOT_AUTH_TOKEN；不会运行原包的全局认证修改器');
+  const authMode=settings.authToken?'token':'local';
+  if(authMode==='local')await access(path.join(settings.runtimeDir,'bin/pmhq/auth-local/sign-info.json')).catch(()=>{throw new Error('LLBot本地启动组件未安装，请重新运行 setup:llbot')});
   await mkdir(path.join(ctx.root,'llbot'),{recursive:true});
-  await atomicJson(path.join(ctx.root,'llbot-platform.json'),{botId:ctx.botId,tenantId:ctx.tenantId,generation:ctx.generation,expectedUin:ctx.expectedUin,resume:ctx.loginIntent!=='qr',runtimeDir:settings.runtimeDir,qqPath:settings.qqPath,authToken:settings.authToken,root:ctx.root,egress:{route:settings.egress?.route||'direct',proxyPort:settings.egress?.route==='huawei'?proxyPort():undefined},management:{host:'127.0.0.1',port:ctx.protocolPort,token:settings.token},pmhqPort:ctx.aiPort+1,webuiPort:ctx.protocolPort+1,reverseWs:{url:`ws://127.0.0.1:${ctx.aiPort}/ws`,token:ctx.token}});
+  await atomicJson(path.join(ctx.root,'llbot-platform.json'),{botId:ctx.botId,tenantId:ctx.tenantId,generation:ctx.generation,expectedUin:ctx.expectedUin,resume:ctx.loginIntent!=='qr',runtimeDir:settings.runtimeDir,qqPath:settings.qqPath,authMode,authToken:settings.authToken||'local-no-token',python:this.python,root:ctx.root,egress:{route:settings.egress?.route||'direct',proxyPort:settings.egress?.route==='huawei'?proxyPort():undefined},management:{host:'127.0.0.1',port:ctx.protocolPort,token:settings.token},pmhqPort:ctx.aiPort+1,webuiPort:ctx.protocolPort+1,reverseWs:{url:`ws://127.0.0.1:${ctx.aiPort}/ws`,token:ctx.token}});
  }
  async beginLogin(ctx:ProtocolContext){
   return this.withSettings(ctx,async(s,save)=>{

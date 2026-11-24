@@ -29,7 +29,7 @@ async function fixture(){
  await writeFile(path.join(runtime,'fishbot-upstream.json'),JSON.stringify({version:'8.3.2-test',platform:process.platform,sha256:{'bin/llbot/llbot.js':hash('// inert fixture')}}));
  const socketServer=createServer(),port=await listen(socketServer);await new Promise(r=>socketServer.close(r));
  const bot=path.join(root,'bot');await mkdir(bot);
- const m={botId:'a',tenantId:'t',root:bot,generation:2,expectedUin:'90000',authToken:'synthetic-pmhq',runtimeDir:runtime,qqPath:path.join(root,'QQ.exe'),egress:{route:'direct'},management:{host:'127.0.0.1',port,token:'a'.repeat(64)},reverseWs:{url:`ws://127.0.0.1:${port-3}/ws`,token:'b'.repeat(64)},pmhqPort:port-2,webuiPort:port-1};
+ const m={botId:'a',tenantId:'t',root:bot,generation:2,expectedUin:'90000',authMode:'token',authToken:'synthetic-pmhq',runtimeDir:runtime,qqPath:path.join(root,'QQ.exe'),egress:{route:'direct'},management:{host:'127.0.0.1',port,token:'a'.repeat(64)},reverseWs:{url:`ws://127.0.0.1:${port-3}/ws`,token:'b'.repeat(64)},pmhqPort:port-2,webuiPort:port-1};
  const file=path.join(bot,'llbot-platform.json');await writeFile(file,JSON.stringify(m));return{root,runtime,m,file};
 }
 

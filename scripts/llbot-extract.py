@@ -27,6 +27,9 @@ def extract(archive, destination):
             allowed = str(relative).startswith('bin/llbot/') or str(relative) in {
                 'bin/pmhq/pmhq.exe', 'bin/pmhq/pmhq.dll',
                 'bin/pmhq/pmhq_loader.js', 'bin/pmhq/pmhq_config.json',
+                'bin/pmhq/auth-local/leaf.pem', 'bin/pmhq/auth-local/leaf-key.pem',
+                'bin/pmhq/auth-local/isrg-spki-pattern.bin', 'bin/pmhq/auth-local/spki-inner-546.der',
+                'bin/pmhq/auth-local/sign-info.json',
             }
             if allowed:
                 selected.append((entry, relative))
