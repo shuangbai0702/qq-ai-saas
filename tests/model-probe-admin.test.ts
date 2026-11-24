@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import Fastify from 'fastify';
 import {registerBehaviorData} from '../apps/control-api/src/behavior-data.js';
+import {createEmbeddedRuntimeControl} from '../apps/control-api/src/bot-runtime-reader.js';
 test('model probe is admin-only, strict, audited and runtime-owner fenced',async t=>{
  const app=Fastify();t.after(()=>app.close());app.setErrorHandler((e:any,_r,reply)=>reply.code(e.statusCode||400).send({error:e.message}));
  app.addHook('onRequest',async req=>{req.user={id:'session-admin',email:'test',name:'test',tenant_id:'tenant',is_admin:req.headers['x-role']==='admin'}});
@@ -10,7 +11,7 @@ test('model probe is admin-only, strict, audited and runtime-owner fenced',async
  globalThis.fetch=(async(url:any,init:any)=>{calls.push({url,headers:init.headers,body:JSON.parse(init.body)});return new Response(JSON.stringify({ok:true,state:'running'}))}) as typeof fetch;
  const db={query:async(sql:string,args:any[])=>{if(sql.startsWith('SELECT'))return [{id,tenant_id:'tenant',desired_state:'running',runtime_mode:'shared',group_id:'group',generation:3,applied_revision:40}];audits.push(args);return[]}};
  const agent={host:{inspect:async()=>alive},context:async()=>({aiPort:100,token:'member'}),shared:{group:async()=>({health_port:12345,token:'group',generation:5})}};
- registerBehaviorData(app,'.',async()=>({id}),agent as any,db as any);
+ registerBehaviorData(app,'.',async()=>({id}),createEmbeddedRuntimeControl(agent as any),db as any);
  const url=`/v1/admin/bots/${id}/model-probe`,payload={requestId,scope:'private:12345678'};
  assert.equal((await app.inject({method:'POST',url,payload})).statusCode,403);
  assert.equal((await app.inject({method:'POST',url,headers:{'x-role':'admin'},payload:{...payload,administrator:'fake'}})).statusCode,400);

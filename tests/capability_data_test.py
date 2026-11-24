@@ -9,7 +9,7 @@ import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/astrbot'))
 from behavior import BehaviorStore
 from data_admin import run
-from social import summary_learning_batches,accept_summary_learning
+from social import summary_learning_batches,accept_summary_learning,foundation_view
 from contextvars import ContextVar
 
 
@@ -79,14 +79,14 @@ class ManagementTests(unittest.TestCase):
         p=self.data()['patterns'][0]
         body={'action':'set_pattern','actorId':'test-web-user','scope':p['scope'],'expression':p['expression'],'expectedUpdated':p['updated'],'expectedEpoch':0,'disabled':True}
         self.assertTrue(run(self.file,body)['ok'])
-        self.assertEqual(self.store.social.expressions(p['scope'],'开玩笑'),[])
+        self.assertEqual([x for x in foundation_view(self.store.db) if x['source_scope']==p['scope']], [])
         batch=[{'id':1,'sender':'a','text':'有节目效果'},{'id':2,'sender':'b','text':'有节目效果'}]
         raw=json.dumps({'patterns':[{'expression':'有节目效果','situation':'轻松开玩笑','source_ids':[1,2]}]})
         self.assertEqual(self.store.social.accept_learning(p['scope'],batch,raw),0)
         self.assertEqual(run(self.file,body)['status'],409)
         body.update(expectedEpoch=1,disabled=False)
         self.assertTrue(run(self.file,body)['ok'])
-        self.assertEqual(len(self.store.social.expressions(p['scope'],'开玩笑')),1)
+        self.assertEqual(len([x for x in foundation_view(self.store.db) if x['source_scope']==p['scope']]), 1)
 
     def test_clear_keeps_facts_and_other_scope(self):
         self.store.social.observe('group:12345','1','好有节目效果','1')
