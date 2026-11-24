@@ -164,6 +164,15 @@ test('Control API in externalAgent mode owns zero NodeAgent instances', async t 
   });
   assert.equal(detail.statusCode, 200, detail.body);
   assert.ok(detail.json().capabilities.includes('onebot-reverse-ws'));
+
+  // Verify externalAgent logSecrets resolves platform model key for log redaction
+  const { createExternalRuntimeControl } = await import('../apps/control-api/src/bot-runtime-reader.js');
+  const { loadKey } = await import('../packages/shared/security.js');
+  const key = await loadKey(root, { createIfMissing: false });
+  await db.query('UPDATE bot_config_revisions SET config=$2 WHERE bot_id=$1 AND revision=1', [botId, JSON.stringify({ ...defaultConfig, platformModel: true })]);
+  const [botRow] = await db.query('SELECT * FROM bots WHERE id=$1', [botId]);
+  const secrets = await createExternalRuntimeControl(db, root, key).logSecrets(botRow);
+  assert.match(secrets.apiKey, /^fish-platform\./, 'externalAgent logSecrets must resolve platform model key for redaction');
 });
 
 test('Mock protocol is blocked in production unless explicitly enabled', () => {

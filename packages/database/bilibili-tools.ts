@@ -131,6 +131,10 @@ export class BilibiliTools {
     const [bot]=await tx.query('SELECT id,tenant_id,generation,revision,desired_state,deleted_at,health FROM bots WHERE id=$1 AND tenant_id=$2 FOR UPDATE',[job.bot_id,job.tenant_id]);
     const s=await this.settings(job.tenant_id,job.bot_id,tx);
     if(!runtimeStatus(bot).online||bot.generation!==job.generation||bot.revision!==job.config_revision||s.revision!==job.settings_revision||job.cancel_requested||+new Date(job.deadline_at)<=Date.now())throw toolConflict('工作或配置已失效，QQ必须真实在线');
+    if(job.account_uid){
+     const [account]=await tx.query('SELECT uid,state,refresh_state,revision FROM bilibili_accounts WHERE bot_id=$1 AND tenant_id=$2',[job.bot_id,job.tenant_id]);
+     if(!account||account.uid!==job.account_uid||account.state!=='ready'||!['idle','confirm_pending'].includes(account.refresh_state)||account.revision!==job.account_revision)throw toolConflict('B站账号状态已变化，请重新核验');
+    }
     if(signal.aborted)return false;
     await qqExternalBudgetInTransaction(tx,{id:job.bot_id,tenant_id:job.tenant_id},{workId:job.work_id,epoch:job.mode_epoch,logicalActionId:'bilibili:'+job.id,phase:'reserve'});
     return true;

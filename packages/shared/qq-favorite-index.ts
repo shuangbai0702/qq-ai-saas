@@ -7,7 +7,7 @@ export const favoriteDirectory=(root:string,id:string)=>path.join(root,'bots',id
 export async function withFavoriteIndex<T>(root:string,id:string,run:()=>Promise<T>){
  const directory=favoriteDirectory(root,id);await mkdir(directory,{recursive:true});
  const release=await lockfile.lock(directory,{realpath:false,stale:30000,update:10000,retries:{retries:12,minTimeout:25,maxTimeout:250}});
- try{return await run()}finally{await release()}
+ try{return await run()}finally{await release().catch(()=>{})}
 }
 export async function readFavoriteIndex(root:string,id:string):Promise<any>{
  try{const value=JSON.parse(await readFile(path.join(favoriteDirectory(root,id),'index.json'),'utf8'));return{...value,enabled:value.enabled??true}}catch(e:any){if(e.code==='ENOENT')return{account:'',enabled:true,items:[]};throw e}

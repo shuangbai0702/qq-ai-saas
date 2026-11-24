@@ -19,7 +19,7 @@ def prepare_environment(source,root):
 def verify_bearer(request,expected_token):
     header=request.headers.get('Authorization') or ''
     expected='Bearer '+str(expected_token or '')
-    if not expected_token or not hmac.compare_digest(header,expected):
+    if not expected_token or not hmac.compare_digest(header.encode('utf-8'),expected.encode('utf-8')):
         raise web.HTTPUnauthorized()
 
 

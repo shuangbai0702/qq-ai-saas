@@ -22,9 +22,9 @@ export function registerSocialMedia(app:FastifyInstance,root:string,owned:(req:a
  async function locked<T>(id:string,fn:()=>Promise<T>):Promise<T>{const before=locks.get(id)||Promise.resolve();const task=before.catch(()=>{}).then(async()=>{const dir=directory(id);await mkdir(dir,{recursive:true});const release=await lockfile.lock(dir,{realpath:false,stale:15000,retries:{retries:10,minTimeout:50,maxTimeout:200}});try{return await fn()}finally{await release().catch(()=>{})}});locks.set(id,task);try{return await task}finally{if(locks.get(id)===task)locks.delete(id)}}
  const version=(raw:string)=>createHash('sha256').update(raw).digest('hex');
  async function metadata(bot:string,id:string){return readFile(path.join(directory(bot),id+'.json'),'utf8')}
- app.get<{Params:{id:string}}>(`/v1/bots/:id/${kind}`,async req=>{await owned(req,req.params.id);return locked(req.params.id,async()=>{const items=[];const ids=(await files(req.params.id)).map(n=>n.slice(0,-5));for(const id of ids){const raw=await metadata(req.params.id,id),item=JSON.parse(raw);items.push({id:item.id,meaning:item.meaning,avoid:item.avoid,enabled:item.enabled!==false,version:version(raw)})}return{items,limit}})});
+ app.get<{Params:{id:string}}>(`/v1/bots/:id/${kind}`,async req=>{await owned(req,req.params.id);const items=[];const ids=(await files(req.params.id)).map(n=>n.slice(0,-5));for(const id of ids){try{const raw=await metadata(req.params.id,id),item=JSON.parse(raw);items.push({id:item.id,meaning:item.meaning,avoid:item.avoid,enabled:item.enabled!==false,version:version(raw)})}catch(e:any){if(e.code!=='ENOENT')throw e}}return{items,limit}});
  app.patch<{Params:{id:string;image:string}}>(`/v1/bots/:id/${kind}/:image`,async req=>{
-  await owned(req,req.params.id);if(!pattern.test(req.params.image))throw invalid('图片不存在',404);
+  const bot=await owned(req,req.params.id);if(bot.desired_state==='deleting')throw invalid('机器人正在删除中',409);if(!pattern.test(req.params.image))throw invalid('图片不存在',404);
   const value=z.object({expectedVersion:z.string().length(64),meaning:z.string().trim().min(2).max(100),avoid:z.string().max(100),enabled:z.boolean()}).parse(req.body);
   return locked(req.params.id,async()=>{const file=path.join(directory(req.params.id),req.params.image+'.json');let raw:string;try{raw=await metadata(req.params.id,req.params.image)}catch(e:any){if(e.code==='ENOENT')throw invalid('图片不存在',404);throw e}
    if(version(raw)!==value.expectedVersion)throw invalid('图片说明已更新，请刷新后重试',409);
@@ -33,7 +33,7 @@ export function registerSocialMedia(app:FastifyInstance,root:string,owned:(req:a
   });
  });
  app.post<{Params:{id:string}}>(`/v1/bots/:id/${kind}`,{bodyLimit:360000,config:{rateLimit:{max:10,timeWindow:'1 minute'}}},async req=>{
-  await owned(req,req.params.id);const data=z.object({png:z.string().regex(/^[A-Za-z0-9+/]+={0,2}$/).max(350000),meaning:z.string().trim().min(2).max(100),avoid:z.string().max(100).default('')}).parse(req.body);
+  const bot=await owned(req,req.params.id);if(bot.desired_state==='deleting')throw invalid('机器人正在删除中',409);const data=z.object({png:z.string().regex(/^[A-Za-z0-9+/]+={0,2}$/).max(350000),meaning:z.string().trim().min(2).max(100),avoid:z.string().max(100).default('')}).parse(req.body);
   const bytes=Buffer.from(data.png,'base64');await validatePng(bytes);
   const id=prefix+createHash('sha256').update(bytes).digest('hex').slice(0,16),dir=directory(req.params.id);
   return locked(req.params.id,async()=>{const list=await files(req.params.id);if(!list.includes(id+'.json')&&list.length>=limit)throw invalid('本分类最多'+limit+'张图片，请先删除旧图');await mkdir(dir,{recursive:true});
@@ -42,6 +42,6 @@ export function registerSocialMedia(app:FastifyInstance,root:string,owned:(req:a
    catch(e){if(installed)await rm(image,{force:true});throw e}finally{await rm(temporary,{force:true})}});
  });
  app.get<{Params:{id:string;image:string}}>(`/v1/bots/:id/${kind}/:image`,async(req,reply)=>{await owned(req,req.params.id);if(!pattern.test(req.params.image))throw invalid('图片不存在',404);const dir=directory(req.params.id);try{await metadata(req.params.id,req.params.image);return reply.header('Cache-Control','private, no-store').type('image/png').send(await readFile(path.join(dir,req.params.image+'.png')))}catch(e:any){if(e.code==='ENOENT')throw invalid('图片不存在',404);throw e}});
- app.delete<{Params:{id:string;image:string}}>(`/v1/bots/:id/${kind}/:image`,async req=>{await owned(req,req.params.id);if(!pattern.test(req.params.image))throw invalid('图片不存在',404);return locked(req.params.id,async()=>{for(const ext of ['json','png'])await rm(path.join(directory(req.params.id),req.params.image+'.'+ext),{force:true});return{ok:true}})});
+ app.delete<{Params:{id:string;image:string}}>(`/v1/bots/:id/${kind}/:image`,async req=>{const bot=await owned(req,req.params.id);if(bot.desired_state==='deleting')throw invalid('机器人正在删除中',409);if(!pattern.test(req.params.image))throw invalid('图片不存在',404);return locked(req.params.id,async()=>{for(const ext of ['json','png'])await rm(path.join(directory(req.params.id),req.params.image+'.'+ext),{force:true});return{ok:true}})});
 }
 }

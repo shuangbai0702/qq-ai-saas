@@ -124,7 +124,8 @@ class SocialStore:
         initialize_controls(db)
         self.meme_vectors = OrderedDict()
         self.meme_embedding_lock = asyncio.Lock()
-        db.execute('CREATE TABLE IF NOT EXISTS memory_embedding_budget(day INTEGER PRIMARY KEY,count INTEGER)')
+        from embedding_client import initialize as initialize_embedding_budget
+        initialize_embedding_budget(db)
         db.executescript('''
         CREATE TABLE IF NOT EXISTS social_samples(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT,event TEXT,subject TEXT,text TEXT,created REAL,UNIQUE(scope,event));
         CREATE TABLE IF NOT EXISTS social_patterns(scope TEXT,expression TEXT,situation TEXT,sources TEXT,weight INTEGER,updated REAL,PRIMARY KEY(scope,expression));

@@ -36,12 +36,17 @@ def loaded_build():
     for name,function in (('context_transport','request_context_view'),('model_egress','GuardedTransport.handle_async_request'),('model_cache','begin_attempt'),
                           ('qq_actions','execute'),('tool_outcome','project'),('bot_pipeline','operation_source'),
                           ('decision_history','changes'),('behavior','install_runtime'),
+                          ('provider_wire_hooks','install_provider_hooks'),('behavior_store','BehaviorStore.__init__'),
                             ('autonomous_runtime','AutonomousRuntime.snapshot'),('readonly_journal','ReadonlyJournal.prepare'),
                             ('output_clean','without_analysis'),('output_sanitize','sanitize_new_response'),
                             ('tool_outcome','structured'),('group_freshness','response_coverage'),
                             ('memory_scope','pending_messages'),('memory_scope','retained_context_visible'),
                             ('agreement_state','context_view'),('bot_pipeline','conversation_context'),
-                            ('memory_reflection','Reflection.recent'),('memory_reflection','Reflection.retry'),('summary_material','register_nonround_images'),('shared_context','compose'),
+                            ('memory_reflection','Reflection.recent'),('memory_reflection','Reflection.retry'),
+                            ('memory_reflection','Reflection._select_due_job'),('memory_reflection','Reflection._build_big_merge_request'),
+                            ('memory_reflection','Reflection._build_summary_request'),('memory_reflection','Reflection._run_memory_review_pages'),
+                            ('memory_reflection','Reflection._commit_big_merge'),('memory_reflection','Reflection._commit_summary_batch'),
+                            ('summary_material','register_nonround_images'),('shared_context','compose'),
                             ('shared_context','Writer.acquire'),('readonly_journal','ReadonlyJournal.append_completion'),
                             ('activity_context','tail_service'),
                             ('activation_rounds','record'),('model_request_budget','bind')):
@@ -430,18 +435,18 @@ def observe_wire_request(request):
                 # actually adopts the new vector; direct reserve semantics stay strict.
                 from context_protocol import system_vector_sha
                 scope=value.get('scope') or ''
-                baseline=contract.db.execute('SELECT system_sha FROM fishbot_system_scope_contract WHERE scope=?',(scope,)).fetchone()
-                permit=value.get('systemPermitId') if baseline and baseline[0]!=system_vector_sha(payload['messages']) else None
+                baseline_sha=contract.scope_sha(scope) if hasattr(contract,'scope_sha') else None
+                permit=value.get('systemPermitId') if baseline_sha is not None and baseline_sha!=system_vector_sha(payload['messages']) else None
                 reservation=contract.reserve(payload['messages'],permit,value['attemptId'],time.time(),scope=scope)
                 value['systemReservation']=reservation
                 value['systemValidationStarted']=False
                 record_diagnostic(lease,{'kind':'wire_request','attemptId':value['attemptId'],'phase':value['phase'],
                     'workId':value['workId'],'systemSha':reservation.get('systemSha'),'systemContractStatus':'authorized' if reservation.get('changed') else 'stable'})
             except Exception as error:
-                from context_protocol import SystemContractViolation
+                from context_protocol import SystemContractViolation,system_vector_sha
                 if not isinstance(error,SystemContractViolation):raise
                 record_diagnostic(lease,{'kind':'wire_request','attemptId':value['attemptId'],'phase':value['phase'],
-                    'workId':value['workId'],'systemSha':__import__('system_contract').system_vector_sha(payload['messages']),
+                    'workId':value['workId'],'systemSha':system_vector_sha(payload['messages']),
                     'systemContractStatus':'blocked'})
                 raise
         if isinstance(lease,dict):

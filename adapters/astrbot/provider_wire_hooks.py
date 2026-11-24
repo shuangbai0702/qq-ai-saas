@@ -168,7 +168,7 @@ def install_provider_hooks(ProviderOpenAIOfficial,current_message_event,settings
                         projected=layout(projected,setting(image_event)['config'].get('characterCards',[]),origins=setting(image_event)['characterCardsEdit']['origins'],persona=setting(image_event)['config'].get('systemPrompt',''))
                 system_adoption=bool(setting(image_event).get('personaEdit')) and owned.system_contract.transition_available(
                     projected,setting(image_event).get('systemChangePermitId'),request_identity(),scope=key)
-                projected,tools_seen=shared_context.compose(journal,projected,work.scope,work.event_id,additions,image_event.get_extra('_hosted_shared_tools'),service=work.source not in ('message','deferred_group'),self_id=image_event.get_self_id(),input_digest=image_event.get_extra('_hosted_shared_input_digest'),system_transition_authorized=system_adoption,web_base_authorized=bool(setting(image_event).get('personaEdit')),cognition_edit=cognition_edit)
+                projected,tools_seen=shared_context.compose(journal,projected,work.scope,work.event_id,additions,image_event.get_extra('_hosted_shared_tools'),service=work.source not in ('message','deferred_group'),self_id=image_event.get_self_id(),input_digest=image_event.get_extra('_hosted_shared_input_digest'),system_transition_authorized=system_adoption,web_base_authorized=bool(setting(image_event).get('personaEdit')),cognition_edit=cognition_edit,regeneration=bool(image_event.get_extra('_hosted_output_regeneration',False)))
                 image_event.set_extra('_hosted_shared_tools',tools_seen)
                 native_shared=[m for m in projected if not (m.get('role')=='user' and isinstance(m.get('content'),str) and m['content'].startswith((READONLY_CURRENT+'\n',EVENT_CONTEXT_CURRENT+'\n')))]
                 new_tools=shared_context.native_tail(projected,work.scope,work.event_id)[1:] if work.source in ('message','deferred_group') else []
@@ -223,7 +223,7 @@ def install_provider_hooks(ProviderOpenAIOfficial,current_message_event,settings
                                          retirement=owned.reflection.reconstruction_stamp(key) if foreground else dependency,
                                          strict=foreground,compact_policy=foreground,guarded=foreground,
                                          retained_validator=(lambda wire:retained_context_visible(owned.db,wire,work.scope,str((lease['config'].get('behavior') or {}).get('ownerUin') or ''))) if foreground else None,
-                                         unprojected=unprojected_for_journal,coverage_view=native_view,
+                                         unprojected=unprojected_for_journal,
                                          system_transition_authorized=system_transition_authorized,web_base_authorized=bool(lease.get('personaEdit')),cognition_edit=cognition_edit)
                 if prepared:prepared.validation_dependency=dependency
                 if prepared and main_activation:
@@ -338,7 +338,7 @@ def install_provider_hooks(ProviderOpenAIOfficial,current_message_event,settings
             event.set_extra('_hosted_journal_scope',JOURNAL_SCOPE)
         return st.model_writer
 
-    def record_shared_completion(st,event,response):
+    def record_shared_completion(provider,st,event,response):
         if not event:return
         event.set_extra('_hosted_model_tools_pending',bool(getattr(response,'tools_call_name',None)))
         if not st:return
@@ -351,7 +351,19 @@ def install_provider_hooks(ProviderOpenAIOfficial,current_message_event,settings
         if journal and journal.last:
             work=event.get_extra('_hosted_pipeline')
             if not getattr(response,'tools_call_name',None) and response.completion_text:
-                journal.append_completion({'role':'assistant','content':response.completion_text or ''},model_origin=(work.scope,work.event_id,work.subject))
+                message={'role':'assistant','content':response.completion_text or ''}
+                # Keep assistant history wire-compatible with reasoning providers
+                # (e.g. DeepSeek V4 / MiMo) that require reasoning_content on Turn 2+.
+                convert=getattr(provider,'_finally_convert_payload',None)
+                if callable(convert):
+                    try:
+                        model_name=(getattr(provider,'model_name',None) or (getattr(provider,'provider_config',None) or {}).get('model') or '')
+                        converted={'model':model_name,'messages':[copy.deepcopy(message)]}
+                        convert(converted)
+                        if isinstance(converted.get('messages'),list) and converted['messages'] and isinstance(converted['messages'][0],dict):
+                            message=converted['messages'][0]
+                    except Exception:pass
+                journal.append_completion(message,model_origin=(work.scope,work.event_id,work.subject))
             if not main_activation:st.pipeline.seen_inputs(work,journal.last.base)
             from summary_material import snapshots,remember
             current_id=event_key({'scope':work.scope,'event_id':work.event_id})
@@ -379,16 +391,23 @@ def install_provider_hooks(ProviderOpenAIOfficial,current_message_event,settings
     async def prepare_foreground_turn(event,system_store,foreground):
         writer=await writer_enter(system_store,event,foreground)
         config_token=None;pinned_lease=None
-        if foreground:
-            from web_base import pin_request
-            from model_cache import pin_request_configuration
-            pinned_lease=settings[event.get_platform_id()]
-            config_token=pin_request(event,pinned_lease)
-            pin_request_configuration(pinned_lease)
-        if foreground and system_store:
-            import periodic_guidance
-            await periodic_guidance.prepare_goals(system_store,event,setting(event),lambda:current(event) and delivery_current(event))
-        return writer,config_token,pinned_lease
+        try:
+            if foreground:
+                from web_base import pin_request
+                from model_cache import pin_request_configuration
+                pinned_lease=settings.get(event.get_platform_id()) if event else None
+                if pinned_lease is None:raise asyncio.CancelledError('stale_member_lease')
+                config_token=pin_request(event,pinned_lease)
+                pin_request_configuration(pinned_lease)
+            if foreground and system_store:
+                import periodic_guidance
+                await periodic_guidance.prepare_goals(system_store,event,setting(event),lambda:current(event) and delivery_current(event))
+            return writer,config_token,pinned_lease
+        except BaseException:
+            from web_base import release_request
+            release_request(config_token)
+            if writer:writer.release()
+            raise
 
     def record_provider_failure(error,*,settle=True):
         from model_cache import finish_attempt,record_error_site,AppendOnlyWireViolation
@@ -435,7 +454,7 @@ def install_provider_hooks(ProviderOpenAIOfficial,current_message_event,settings
             finish_attempt('completed',response)
             response_finished=time.monotonic()
             settle_journal(e,True)
-            record_shared_completion(system_store,e,response)
+            record_shared_completion(self,system_store,e,response)
             record_foreground_metrics(e,response,started,b.arguments.get('system_prompt',''))
             if e:
                 record_diagnostic(lease,{'kind':'provider_handoff','phase':'foreground' if foreground else 'inner_execution',
@@ -478,17 +497,23 @@ def install_provider_hooks(ProviderOpenAIOfficial,current_message_event,settings
                     if system_store and system_store.shared_context and foreground and not completion_done:
                         finish_attempt('completed',response)
                         settle_journal(event,True)
-                        record_shared_completion(system_store,event,response)
+                        record_shared_completion(self,system_store,event,response)
                         completion_done=True
-                        if writer:writer.release()
+                        if writer:writer.release();writer=None
                     yield response
             if last_response is None:raise RuntimeError('incomplete_model_stream')
             if not completion_done:
                 finish_attempt('completed',last_response)
                 settle_journal(current_message_event.get(),True)
-                record_shared_completion(system_store,current_message_event.get(),last_response)
+                record_shared_completion(self,system_store,current_message_event.get(),last_response)
         except Exception as error:
             record_provider_failure(error,settle=False)
+            raise
+        except asyncio.CancelledError as error:
+            from model_cache import record_error_site
+            finish_attempt('canceled',reason='cancelled')
+            record_error_site(error)
+            settle_journal(current_message_event.get(),False)
             raise
         finally:
             finish_attempt('canceled',reason='stream_not_exhausted')

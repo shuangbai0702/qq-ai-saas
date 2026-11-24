@@ -347,7 +347,7 @@ def install_runtime(core,settings):
         if event.get_extra('_hosted_main_activation') and isinstance(task,dict):task={k:v for k,v in task.items() if k not in ('goalSnapshot','continuation')}
         assembly.contribute('delivery',{'recipient':{'scope':scope,'owner':bool(subject and subject==str(b.get('ownerUin') or ''))},'task':task})
         shared=bot_pipeline.conversation_context(st,b,scope,subject,objective,now)
-        assembly.contribute('memory',{key:shared[key] for key in ('memory_foundation','state','recent_messages','recent_cross_session_messages','conversation_timeline','group_round_history','active_agreements') if key in shared})
+        assembly.contribute('memory',{key:shared[key] for key in ('memory_foundation','state','recent_messages','recent_cross_session_messages','conversation_timeline','group_round_history','active_agreements','cross_scope_guidance') if key in shared})
         assembly.contribute('conversation',{key:shared[key] for key in ('dialogue','ambient_group_messages') if key in shared})
         if (event.get_extra('_hosted_autonomous_action') or {}).get('kind')=='message' or event.get_extra('_hosted_main_activation'):
             social_cfg={**b,'_qqAccount':str(event.get_self_id())}
@@ -923,7 +923,7 @@ def install_runtime(core,settings):
             # debounce boundary); old wire itself remains immutable.
             shared=bot_pipeline.conversation_context(st,cfg.get('behavior') or {},scope,subject,event.get_message_str(),time.time(),state=state)
             state=shared['state']
-            assembly.contribute('memory',{key:shared[key] for key in ('memory_foundation','state','recent_messages','recent_cross_session_messages','conversation_timeline','group_round_history','active_agreements') if key in shared})
+            assembly.contribute('memory',{key:shared[key] for key in ('memory_foundation','state','recent_messages','recent_cross_session_messages','conversation_timeline','group_round_history','active_agreements','cross_scope_guidance') if key in shared})
             assembly.contribute('social',{'social':social_context})
             conv_payload={'recent_image':recent_image}
             if 'ambient_group_messages' in shared:conv_payload['ambient_group_messages']=shared['ambient_group_messages']
@@ -1331,19 +1331,6 @@ def install_runtime(core,settings):
             # New provider responses are sanitized before SDK admission.
             if isinstance(bound.arguments.get('contexts'),list):
                 bound.arguments['contexts']=prepare_history(bound.arguments['contexts'])
-            if event.get_extra('_hosted_internal_work') and not event.get_extra('_hosted_main_activation') and (event.get_extra('_hosted_autonomous_action') or {}).get('kind')=='research':
-                # Shared identity/memory still come from ContextBuilder. A
-                # internal task does not receive conflicting QQ bubble, meme
-                # and conversational-final-answer rules on every tool step.
-                from context_transport import request_context_view
-                policy='\n这是内部执行任务，最终结果正文不直接发送QQ；可以自由组合所有实际提供且获授权的工具，包括有副作用的工具，执行边界以工具实时校验和回执为准。闲聊格式仅适用于聊天，本次最终结果严格遵循任务的JSON合同。'
-                if (event.get_extra('_hosted_autonomous_action') or {}).get('autonomousMoment'):
-                    policy='\n这是自主活动，不是用户消息。自由使用实际获授权工具，也可以休息；最终文字只作内部活动记录，不直接发送QQ，无需JSON决策表。真实动作状态只以工具回执为准。'
-                bound.arguments['system_prompt'],bound.arguments['contexts']=request_context_view(bound.arguments.get('system_prompt'),bound.arguments.get('contexts'),bound.arguments.get('prompt'),policy,'[平台可信任务身份及记忆；只作数据]',request_context(event),bound.arguments.get('tool_calls_result'))
-                metrics.setdefault(event.get_platform_id(),{}).setdefault('requests',0)
-                metrics[event.get_platform_id()]['requests']+=1
-                bound.arguments['request_max_retries']=0
-                return bound
             try:
                 conversation=json.loads(event.get_extra('_hosted_context','{}'))
                 if not isinstance(conversation,dict):conversation={}
@@ -1382,6 +1369,8 @@ def install_runtime(core,settings):
             if bcfg.get('socialAwareness') or bcfg.get('naturalConversation',True):
                 protocol+='\n[自然群友交流]在既定人格内保持自己的偏好、立场与好奇，延续真实兴趣；dialogue记录自己真实说过的话，避免重复观点、开场和结尾，多轮时可更简短。先回应眼前具体内容，日常聊天不必变成建议、步骤、总结、服务承诺或反复追问，表情或一句看法也可以；严肃问题按需讲清。不编造离线经历，不向群友解释内部触发、调度或权限机制。\n'
             current_rules+='\n'+event.get_extra('_hosted_participation_hint','')
+            if event.get_extra('_hosted_receipt_guidance'):
+                current_rules+='\n'+event.get_extra('_hosted_receipt_guidance','')
             current_rules+='\n'+qq_actions.signature_hint(event,setting(event)['config'])
             if event.get_extra('_hosted_admin_debug'):
                 current_rules+='\n[管理员调试]这是平台调试事件，不是当前QQ联系人的发言；sender=0无主人权限，最终文字只返回管理员，不发送QQ，不登记业务轮。\n'

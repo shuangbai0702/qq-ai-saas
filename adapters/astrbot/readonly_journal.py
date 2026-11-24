@@ -699,7 +699,7 @@ class ReadonlyJournal:
 
     def prepare(self,messages,stamp,now=None,group_turn=None,reconstruction_authority=None,reconstruction_scope=None,
                 retirement=None,strict=False,compact_policy=False,guarded=True,retained_validator=None,
-                unprojected=None,coverage_view=None,system_transition_authorized=False,web_base_authorized=False,cognition_edit=None):
+                unprojected=None,system_transition_authorized=False,web_base_authorized=False,cognition_edit=None):
         from context_transport import READONLY_FIELDS,EVENT_CONTEXT_CURRENT
         now=time.time() if now is None else now
         # SDK native windows can rehydrate a retired batch after restart.
@@ -716,7 +716,6 @@ class ReadonlyJournal:
                 retired={'semanticBatch':True,'scope':batch_scope,'batchMembers':sorted(members)}
                 messages=semantic_retire_projection(messages,retired)
                 if isinstance(unprojected,list):unprojected=semantic_retire_projection(unprojected,retired)
-                if isinstance(coverage_view,list):coverage_view=semantic_retire_projection(coverage_view,retired)
         found=[];malformed=False
         for i,m in enumerate(messages):
             if not isinstance(m,dict):

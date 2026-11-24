@@ -72,7 +72,8 @@ def run(file, data, connection=None):
                 relation['version']=user_version(relation)
                 relation.pop('user_edit',None)
             stats = {name: db.execute('SELECT count(*) FROM ' + name).fetchone()[0] for name in ['social_samples', 'social_patterns', 'social_learning'] if name in tables}
-            epoch=db.execute('SELECT epoch FROM social_control WHERE id=1').fetchone()[0] if 'social_control' in tables else 0
+            epoch_row=db.execute('SELECT epoch FROM social_control WHERE id=1').fetchone() if 'social_control' in tables else None
+            epoch=epoch_row[0] if epoch_row else 0
             summaries=[]
             if 'memory_summaries' in tables and not subject:
                 conditions=[];summary_args=[]
@@ -154,7 +155,7 @@ def run(file, data, connection=None):
         elif action == 'pause_contact':
             # Explicit operator controls remain hard fences. Conversation text
             # cannot grant or revoke platform permission.
-            db.execute('UPDATE contacts SET opted_out=1 WHERE scope=?', (scope,))
+            if 'contacts' in tables:db.execute('UPDATE contacts SET opted_out=1 WHERE scope=?', (scope,))
             if 'autonomy_decisions' in tables:
                 at=time.time();db.execute("INSERT INTO autonomy_decisions(scope,event,at,kind,reply,extra_intervals,base_seconds,cooldown_until,reason) VALUES(?,?,?,'operator',0,0,0,0,'manual_pause')",(scope,'operator:'+str(at),at))
         else:

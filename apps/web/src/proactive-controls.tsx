@@ -12,7 +12,7 @@ export function ProactiveControls({id,botConfig,onError,onDirtyChange,searchSect
  const [view,setView]=useState<any>(),[config,setConfig]=useState<AutonomyConfig>(defaultAutonomyConfig),[dirty,setDirty]=useState(false),[baseEpoch,setBaseEpoch]=useState<number|null>(null),[busy,setBusy]=useState(false),[notice,setNotice]=useState('');
  const [loadError,setLoadError]=useState('');
  const [section,setSection]=useState('overview');
- useEffect(()=>{if(searchSection==='settings')setSection(searchSection)},[searchSection,searchAttempt]);
+ useEffect(()=>{if(searchSection==='settings')setSection(searchSection);else if(searchSection==='find')setSection('overview')},[searchSection,searchAttempt]);
  const commonGroups=(botConfig.behavior?.groupParticipationGroups||[]).filter(group=>botConfig.groups.includes(group));
  const owner=useRef<{signal:AbortSignal;seq:number}|undefined>(undefined);const dirtyRef=useRef(false),writing=useRef(false);
  useEffect(()=>{dirtyRef.current=dirty},[dirty]);
@@ -36,7 +36,7 @@ export function ProactiveControls({id,botConfig,onError,onDirtyChange,searchSect
    if(owner.current!==lease||lease.signal.aborted)return;
    dirtyRef.current=keepDraft;setDirty(keepDraft);if(keepDraft)setConfig(c=>({...c,mode:'passive'}));setNotice(kind==='wake'?'已加入唤醒队列；离线时不会启动 QQ。':kind==='resume'?'主动模式已恢复，等待运行实例确认。QQ 连接保持运行。':keepDraft?'主动模式已暂停，其余未保存编辑仍保留在页面。':kind==='stop'?'主动模式已暂停；可在运行控制中恢复。QQ 连接保持运行。':'已保存，等待运行实例确认。QQ 连接保持运行。');
    const next=await api('/bots/'+id+'/autonomous',undefined,undefined,lease.signal);
-   if(owner.current===lease&&!lease.signal.aborted){setView(next);setLoadError('');if(!keepDraft){const saved=AutonomyConfigSchema.parse(next.settings.config);setConfig(next.canConfigureShadow?saved:{...saved,rollout:'live'});setBaseEpoch(next.settings.epoch)}else setBaseEpoch(next.settings.epoch)}
+   if(owner.current===lease&&!lease.signal.aborted){setView(next);setLoadError('');if(!keepDraft){const saved=AutonomyConfigSchema.parse(next.settings.config);setConfig(next.canConfigureShadow?saved:{...saved,rollout:'live'});setBaseEpoch(next.settings.epoch)}else if(baseEpoch===view.settings.epoch&&next.settings.epoch===view.settings.epoch+1){setBaseEpoch(next.settings.epoch)}}
   }catch(e){if(owner.current===lease&&!lease.signal.aborted)onError((e as Error).message)}finally{if(owner.current===lease&&!lease.signal.aborted){writing.current=false;setBusy(false)}}
  }
  const conflict=dirty&&baseEpoch!==null&&view?.settings?.epoch>baseEpoch;

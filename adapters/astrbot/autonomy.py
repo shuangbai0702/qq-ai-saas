@@ -249,15 +249,15 @@ def parse_object(text):
     # explicit reasoning-control boundary; do not infer decisions from prose.
     # Strip leading control blocks only: JSON field values are ordinary data.
     value = str(text or '').strip().lstrip('\ufeff').strip()
-    while re.match(r'<\s*(?:thinking|think)\s*>',value,re.I):
+    while re.match(r'<\s*(?:thinking|think|thought)\s*>',value,re.I):
         depth=0
-        for marker in re.finditer(r'<\s*(/?)\s*(?:thinking|think)\s*>',value,re.I):
+        for marker in re.finditer(r'<\s*(/?)\s*(?:thinking|think|thought)\s*>',value,re.I):
             depth+=-1 if marker[1] else 1
             if not depth:
                 value=value[marker.end():].strip()
                 break
         else:raise ValueError('Unterminated decision reasoning block')
-    fenced = re.fullmatch(r'(`{3,}|~{3,})[ \t]*(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n?\1',value,re.I)
+    fenced = re.fullmatch(r'(`{3,}|~{3,})[ \t]*(?:json)?[ \t]*(?:\r?\n)?([\s\S]*?)\r?\n?\1',value,re.I)
     if fenced:value=fenced[2].strip()
     # Some compatible providers JSON-encode the JSON object as a string.
     # Decode at most one transport wrapper; never repair partial syntax or

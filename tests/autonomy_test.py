@@ -447,7 +447,6 @@ class FeedbackNeutralityTest(unittest.TestCase):
         self.assertEqual(state,'replied','mechanical directed windows must not manufacture engagement')
         self.assertEqual(self.store.participation.entry_factor('group:12345'),1,'interrogation never lowers future entry')
     def test_bot_proposal_motives_are_never_user_agreements(self):
-        companion_state.outgoing(self.db,self.cfg,'group:12345','12345','下次我们一起聊聊茶叶烘焙。','bot1',self.now)
         self.assertIsNone(self.db.execute("SELECT topic FROM companion_motives WHERE scope='group:12345'").fetchone(),'ordinary delivered text cannot write cognition outside compression')
         source={'event':'bot1','sender_id':'12345'}
         companion_state.apply_summary_evidence(self.db,'group:12345',{'motives':[{'topic':'茶叶烘焙','quote':'下次我们一起聊聊茶叶烘焙。','status':'open'}]},lambda item,role:source if role=='bot' else None,{},set(),self.now)

@@ -281,9 +281,6 @@ def request_context_view(system,contexts,prompt,policy,current_rules,context,too
         # re-wrapping platform_system or duplicating persona_reference.
         already_normalized=bool(history and isinstance(history[0],dict) and history[0].get('role')=='system' and isinstance(history[0].get('content'),str) and history[0]['content'].startswith('[FishBot 平台基础规则]\n'))
         if already_normalized:
-            head_end=0
-            while head_end<len(history) and isinstance(history[head_end],dict) and (history[head_end].get('role') in ('system','developer') or head_end>0 and (is_persona_reference(history[head_end]) or is_note(history[head_end]))):
-                head_end+=1
             # Keep committed head tail (core_note, cards, persona_reference),
             # dropping only the leading platform_system because stable carries it.
             history=history[1:]
@@ -310,9 +307,9 @@ def request_context_view(system,contexts,prompt,policy,current_rules,context,too
                     residuals.append(persona_reference(content))
             leading=([persona_reference(system)] if system else [])+residuals
             history[:leading_end]=leading
-    if platform_system is not None and character_cards:
+    if platform_system is not None and character_cards and (system or any(is_persona_reference(m) for m in history)):
         from character_cards import layout
-        history=layout([{'role':'system','content':stable}]+history,character_cards)[1:]
+        history=layout([{'role':'system','content':stable}]+history,character_cards,persona=system,persona_proof=persona_proof)[1:]
     return stable,history
 _REMINDER=re.compile(r'<system_reminder>User ID: (\d+), Nickname: ([^\n]*)\nCurrent datetime: ([^\n]+), Weekday: [A-Za-z]+</system_reminder>')
 REFERENCE_GUIDANCE='text_ref/reply_ref 是本上下文中的正文位置；同一真实事件只提供一份正文，其他记录保留各自对象、时间与反馈。引用不表示新发言或新回执。'

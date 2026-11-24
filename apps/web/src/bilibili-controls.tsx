@@ -15,7 +15,7 @@ const states:Record<string,string>={created:'正在申请二维码',waiting_scan
 export function BilibiliControls({id,onError,onDirtyChange,searchSection,searchAttempt}:{id:string;searchSection?:string;searchAttempt:number;onError:(s:string)=>void;onDirtyChange:(v:boolean)=>void}){
  const [view,setView]=useState<any>(),[draft,setDraft]=useState<BilibiliConfig>(BilibiliConfigSchema.parse({})),[dirty,setDirty]=useState(false),[baseRevision,setBaseRevision]=useState<number|null>(null),[busy,setBusy]=useState(false),[modelKey,setModelKey]=useState(''),[message,setMessage]=useState(''),[loadError,setLoadError]=useState('');
  const [section,setSection]=useState('overview');
- useEffect(()=>{if(searchSection==='model'||searchSection==='permissions')setSection(searchSection)},[searchSection,searchAttempt]);
+ useEffect(()=>{if(searchSection==='model'||searchSection==='permissions')setSection(searchSection);else if(searchSection==='find')setSection('overview')},[searchSection,searchAttempt]);
  const owner=useRef<{signal:AbortSignal;seq:number}|undefined>(undefined),dirtyRef=useRef(false),writing=useRef(false);
  useEffect(()=>{onDirtyChange(dirty);return()=>onDirtyChange(false)},[dirty,onDirtyChange]);
  useEffect(()=>{
@@ -38,7 +38,7 @@ export function BilibiliControls({id,onError,onDirtyChange,searchSection,searchA
    if(lease.signal.aborted||owner.current!==lease)return;
    const next=await api(base,undefined,undefined,lease.signal);if(lease.signal.aborted||owner.current!==lease)return;const config=BilibiliConfigSchema.parse(next.config);setView({...next,config});
    if(kind==='save'){dirtyRef.current=false;setDirty(false);setModelKey('');setDraft(config);setBaseRevision(next.revision);setMessage('B站配置已保存，不会重启QQ。运行工具入口将在Agent下次同步后更新。')}
-   else {if(!dirtyRef.current)setBaseRevision(next.revision);setMessage(kind==='unlink'?'本地绑定已解除；未宣称远端会话已注销。':'操作已提交，以实际状态和回执为准。')}
+   else {if(!dirtyRef.current){setDraft(config);setBaseRevision(next.revision)}setMessage(kind==='unlink'?'本地绑定已解除；未宣称远端会话已注销。':'操作已提交，以实际状态和回执为准。')}
   }catch(e){if(!lease.signal.aborted&&owner.current===lease)onError(readError(e))}finally{if(!lease.signal.aborted&&owner.current===lease){writing.current=false;setBusy(false)}}
  }
  const conflict=dirty&&baseRevision!==null&&view?.revision>baseRevision;

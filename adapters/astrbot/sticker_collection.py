@@ -147,24 +147,29 @@ class StickerCollector:
         self.backfill_task=asyncio.create_task(self._backfill_work(provider,is_current,metrics))
 
     async def _backfill_work(self,provider,is_current,metrics):
+        from astrbot.core.platform.astr_message_event import current_message_event
+        token=current_message_event.set(None)
         seen=set();handled=0
-        while handled<3 and not self.closed and is_current():
-            used=self.db.execute('SELECT count FROM sticker_caption_budget WHERE day=?',(time.strftime('%Y-%m-%d',time.gmtime()),)).fetchone()
-            if used and used[0]>=3:break
-            clause=' AND id NOT IN (%s)'%','.join('?'*len(seen)) if seen else ''
-            row=self.db.execute("SELECT id,scope,png FROM sticker_inbox WHERE status='pending' AND version=1"+clause+" ORDER BY created LIMIT 1",tuple(seen)).fetchone()
-            if not row:break
-            identifier,scope,data=row;seen.add(identifier)
-            if data is None:
-                original=self.db.execute('SELECT bytes FROM sticker_originals WHERE id=?',(identifier,)).fetchone()
-                if original:
-                    try:data=png_thumbnail(original[0])
-                    except Exception:data=None
-            if data is None:
-                metrics['stickerBackfillSkipped']=metrics.get('stickerBackfillSkipped',0)+1;continue
-            handled+=1
-            with auxiliary_scope(provider,'sticker_caption',identifier,scope):
-                await self._caption_and_apply(identifier,scope,data,provider,is_current,metrics)
+        try:
+            while handled<3 and not self.closed and is_current():
+                used=self.db.execute('SELECT count FROM sticker_caption_budget WHERE day=?',(time.strftime('%Y-%m-%d',time.gmtime()),)).fetchone()
+                if used and used[0]>=3:break
+                clause=' AND id NOT IN (%s)'%','.join('?'*len(seen)) if seen else ''
+                row=self.db.execute("SELECT id,scope,png FROM sticker_inbox WHERE status='pending' AND version=1"+clause+" ORDER BY created LIMIT 1",tuple(seen)).fetchone()
+                if not row:break
+                identifier,scope,data=row;seen.add(identifier)
+                if data is None:
+                    original=self.db.execute('SELECT bytes FROM sticker_originals WHERE id=?',(identifier,)).fetchone()
+                    if original:
+                        try:data=png_thumbnail(original[0])
+                        except Exception:data=None
+                if data is None:
+                    metrics['stickerBackfillSkipped']=metrics.get('stickerBackfillSkipped',0)+1;continue
+                handled+=1
+                with auxiliary_scope(provider,'sticker_caption',identifier,scope):
+                    await self._caption_and_apply(identifier,scope,data,provider,is_current,metrics)
+        finally:
+            current_message_event.reset(token)
 
     def catalog(self,scope):
         return [{'id':r[0],'meaning':r[1],'avoid':'仅在来源群使用','sticker':True} for r in self.db.execute("SELECT id,meaning FROM sticker_inbox WHERE scope=? AND status='approved' ORDER BY created DESC LIMIT 20",(scope,))]

@@ -484,7 +484,7 @@ def current_view(messages,scope,event,service=False):
     return copy.deepcopy(head)+native_tail(messages,scope,event,service)
 
 
-def compose(journal,messages,scope,event,inputs=None,previous_tools=None,service=False,self_id='',input_digest=None,system_transition_authorized=False,web_base_authorized=False,cognition_edit=None):
+def compose(journal,messages,scope,event,inputs=None,previous_tools=None,service=False,self_id='',input_digest=None,system_transition_authorized=False,web_base_authorized=False,cognition_edit=None,regeneration=False):
     """Keep the exact canonical native prefix; append this event's new tail.
 
     Never overlap-match another SDK conversation or copy its old history.
@@ -494,6 +494,15 @@ def compose(journal,messages,scope,event,inputs=None,previous_tools=None,service
     from context_transport import READONLY_CURRENT,EVENT_CONTEXT_CURRENT
     packets=[copy.deepcopy(m) for m in messages if m.get('role')=='user' and isinstance(m.get('content'),str)
              and m['content'].startswith((READONLY_CURRENT+'\n',EVENT_CONTEXT_CURRENT+'\n'))]
+    from web_cognition import project as project_cognition
+    current=project_cognition(journal.last,cognition_edit)
+    if regeneration and current is not None:
+        # Output-guard regeneration already has the committed rejected assistant
+        # turn at the tail of current.base; never re-append it from native_tail.
+        old=current.base
+        if system_transition_authorized and (web_base_authorized or journal.checkpoint_system_boundary(JOURNAL_SCOPE)):
+            old=messages[:system_head(messages)]+old[system_head(old):]
+        return copy.deepcopy(old)+packets,copy.deepcopy(previous_tools or [])
     native=native_tail(messages,scope,event,service)
     if not service:
         committed=next((m for m in (journal.last.base if journal.last else []) if (o:=source(m)) and o['scope']==scope and str(o['event_id'])==str(event)),None)
@@ -518,8 +527,6 @@ def compose(journal,messages,scope,event,inputs=None,previous_tools=None,service
         else:raise ValueError('shared_context_service_input_shape')
         service_input=[{'role':'user','content':content}]
     tail=copy.deepcopy(inputs or [])+service_input+tools[len(previous_tools):]
-    from web_cognition import project as project_cognition
-    current=project_cognition(journal.last,cognition_edit)
     old=current.base if current else messages[:system_head(messages)]
     if system_transition_authorized and (web_base_authorized or journal.checkpoint_system_boundary(JOURNAL_SCOPE)):
         old=messages[:system_head(messages)]+old[system_head(old):]

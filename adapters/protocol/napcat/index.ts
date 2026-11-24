@@ -5,11 +5,11 @@ import {withNapcatSettings,proxyPort,initialEgress,nextEgress,observeEgress,type
 
 function hasQuickLoginUin(list:unknown,uin:string):boolean{
  const items=Array.isArray(list)?list:Array.isArray((list as any)?.data)?(list as any).data:Array.isArray((list as any)?.list)?(list as any).list:[];
- return items.some((entry:any)=>typeof entry==='string'?entry===uin:entry&&typeof entry==='object'&&(String(entry.uin||'')===uin||String(entry.account||'')===uin));
+ return items.some((entry:any)=>typeof entry==='string'||typeof entry==='number'?String(entry)===uin:entry&&typeof entry==='object'&&(String(entry.uin||'')===uin||String(entry.account||'')===uin));
 }
 
 export class NapCatAdapter implements ProtocolAdapter{
- resumeAttempts=new Map<string,number>();
+ resumeAttempts=new Map<string,string>();
  credentials=new Map<string,{credential:string;until:number}>();
  savedIdentities=new Map<string,string>();
  constructor(private host:ProcessHostLike,private settingsRoot:string){}
@@ -54,7 +54,7 @@ export class NapCatAdapter implements ProtocolAdapter{
   if(s.restartRequested===true)return{state:'starting',restartRequested:true,message:'QQ登录服务等待协议托管器恢复'};
   // The native quick login can race network readiness. Once per process, retry
   // the saved account after QR readiness; explicit QR refresh never uses this.
-  if(s.loginPhase==='waiting_qrcode')try{const manifest=JSON.parse(await readFile(path.join(ctx.root,'napcat-platform.json'),'utf8'));const p=await this.host.inspect(ctx.botId,'protocol');if(manifest.resume&&p&&this.resumeAttempts.get(ctx.botId)!==p.pid){this.resumeAttempts.set(ctx.botId,p.pid);const saved=JSON.parse(await readFile(path.join(ctx.root,'qq/identity.json'),'utf8'));if(/^\d{5,20}$/.test(String(saved.uin))&&(!ctx.expectedUin||ctx.expectedUin===String(saved.uin))){const list=await this.request(ctx,'/QQLogin/GetQuickLoginList');if(hasQuickLoginUin(list,String(saved.uin))){await this.request(ctx,'/QQLogin/SetQuickLogin',{uin:String(saved.uin)});return{state:'authenticating',message:'正在恢复已保存的QQ会话'};}}}}catch{/* No retry loop; QR remains available to the user. */}
+  if(s.loginPhase==='waiting_qrcode')try{const manifest=JSON.parse(await readFile(path.join(ctx.root,'napcat-platform.json'),'utf8'));const p=await this.host.inspect(ctx.botId,'protocol');const pKey=p?`${p.pid}:${p.created}`:'';if(manifest.resume&&p&&this.resumeAttempts.get(ctx.botId)!==pKey){this.resumeAttempts.set(ctx.botId,pKey);const saved=JSON.parse(await readFile(path.join(ctx.root,'qq/identity.json'),'utf8'));if(/^\d{5,20}$/.test(String(saved.uin))&&(!ctx.expectedUin||ctx.expectedUin===String(saved.uin))){const list=await this.request(ctx,'/QQLogin/GetQuickLoginList');if(hasQuickLoginUin(list,String(saved.uin))){await this.request(ctx,'/QQLogin/SetQuickLogin',{uin:String(saved.uin)});return{state:'authenticating',message:'正在恢复已保存的QQ会话'};}}}}catch{/* No retry loop; QR remains available to the user. */}
   if(s.loginError){const message=typeof s.loginError==='string'?s.loginError:'QQ需要额外验证';if(/过期|expired/i.test(message))return{state:'expired',message};if(/登录失败|failed|无法重复登录/i.test(message))return{state:'failed',message};return{state:'verification_required',message}}
   // Core starts offline and may retain that flag while a new QR is generated.
   // Only a terminal phase (or legacy response without progress) is a failure.

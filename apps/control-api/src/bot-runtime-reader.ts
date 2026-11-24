@@ -70,6 +70,7 @@ export function createExternalRuntimeControl(db: Sql, _root: string, key: Buffer
        WHERE b.id=$1 AND b.tenant_id=$3`,
       [bot.id, bot.revision, bot.tenant_id],
     );
+    if (!revision) throw Object.assign(new Error('配置版本不存在'), { statusCode: 404 });
     const config = BotConfigSchema.parse(revision.config);
     const model = config.platformModel
       ? resolvePlatformModel(config, key, bot)
@@ -87,8 +88,19 @@ export function createExternalRuntimeControl(db: Sql, _root: string, key: Buffer
 
   async function logSecrets(bot: any) {
     const [instance] = await db.query('SELECT token FROM instances WHERE bot_id=$1', [bot.id]);
-    const conn = await personalModelConnection(bot);
-    return { apiKey: conn.apiKey, token: instance?.token || '' };
+    const [row] = await db.query(
+      `SELECT r.config,s.ciphertext FROM bots b
+       JOIN bot_config_revisions r ON r.bot_id=b.id AND r.revision=b.revision
+       LEFT JOIN secrets s ON s.bot_id=b.id AND s.tenant_id=b.tenant_id
+       WHERE b.id=$1 AND b.tenant_id=$2 AND b.deleted_at IS NULL`,
+      [bot.id, bot.tenant_id],
+    );
+    let apiKey = row?.ciphertext ? decrypt(key, bot.tenant_id + ':' + bot.id, row.ciphertext) : '';
+    if (row?.config) {
+      const config = BotConfigSchema.parse(row.config);
+      if (config.platformModel) apiKey = resolvePlatformModel(config, key, bot).apiKey;
+    }
+    return { apiKey, token: instance?.token || '' };
   }
 
   async function aiIpcTarget(bot: any): Promise<AiIpcTarget> {
@@ -184,6 +196,7 @@ export function createEmbeddedRuntimeControl(agent: NodeAgent): RuntimeControlPo
       return { apiKey: ctx.apiKey, token: ctx.token };
     },
     async isAiRunning(bot) {
+      if (bot.desired_state === 'stopped' && bot.observed_state === 'stopped') return false;
       const processId = bot.runtime_mode === 'shared' ? bot.group_id : bot.id;
       if (!processId) return false;
       return Boolean(await agent.host.inspect(processId, 'ai'));

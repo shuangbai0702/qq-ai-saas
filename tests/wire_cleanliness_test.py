@@ -155,6 +155,34 @@ class WireCleanlinessTest(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_worker_common_verify_bearer_rejects_non_ascii_with_401(self):
+        import worker_common
+        from aiohttp import web
+        req=NS(headers={'Authorization':'Bearer 非ASCII密钥'})
+        with self.assertRaises(web.HTTPUnauthorized):
+            worker_common.verify_bearer(req,'secret-token')
+
+    def test_core_note_read_handles_legacy_readonly_db_without_source_verification(self):
+        import core_note
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path=Path(tmp)/'legacy.sqlite'
+            w=sqlite3.connect(str(db_path))
+            w.execute("CREATE TABLE memory_core_notes(slot INTEGER PRIMARY KEY CHECK(slot=1),text TEXT NOT NULL,scopes TEXT NOT NULL,people TEXT NOT NULL,sources TEXT NOT NULL,updated REAL NOT NULL)")
+            w.execute("INSERT INTO memory_core_notes VALUES(1,'旧核心记忆','[\"*\"]','[\"10001\"]','[]',1234.0)")
+            w.commit();w.close()
+            ro=sqlite3.connect(f'file:{db_path}?mode=ro',uri=True)
+            try:
+                note=core_note.read(ro)
+                self.assertEqual(note['text'],'旧核心记忆')
+                self.assertEqual(note['source_verification'],'unknown')
+            finally:
+                ro.close()
+
+    def test_autonomy_parse_object_handles_thought_and_single_line_fence(self):
+        import autonomy
+        parsed=autonomy.parse_object('<thought>reasoning</thought>```json{"action":"keep"}```')
+        self.assertEqual(parsed,{'action':'keep'})
+
 
 if __name__=='__main__':
     unittest.main()

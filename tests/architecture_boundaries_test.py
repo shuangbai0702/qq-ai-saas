@@ -22,6 +22,8 @@ RETIRED_TABLES = (
     'companion_plans',
     'social_images',
     'expression_usage',
+    'initiative_checks',
+    'initiative_schedule',
 )
 
 
@@ -106,16 +108,26 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
     def test_core_note_single_writer_ownership(self):
-        write_re = re.compile(r'(?:INSERT|UPDATE|DELETE)\s+(?:OR\s+\w+\s+)?(?:INTO\s+|FROM\s+)?memory_core_notes\b', re.I)
+        write_re = re.compile(r'(?:CREATE\s+TABLE|INSERT|UPDATE|DELETE)\b[^\n;]*\bmemory_core_notes\b', re.I)
         violators = []
         for path in sorted(ASTRBOT_DIR.glob('*.py')):
-            if path.name in ('core_note.py', 'summary_material.py'):
-                # summary_material.py only migrates/clears legacy claim payloads on memory_core_notes
+            if path.name == 'core_note.py':
                 continue
             text = path.read_text('utf-8')
             if write_re.search(text):
                 violators.append(path.name)
         self.assertEqual(violators, [], f'Only core_note.py may write to memory_core_notes; found: {violators}')
+
+    def test_embedding_budget_single_owner(self):
+        write_re = re.compile(r'(?:CREATE\s+TABLE|INSERT|UPDATE|DELETE)\b[^\n;]*\bmemory_embedding_budget\b', re.I)
+        violators = []
+        for path in sorted(ASTRBOT_DIR.glob('*.py')):
+            if path.name == 'embedding_client.py':
+                continue
+            text = path.read_text('utf-8')
+            if write_re.search(text):
+                violators.append(path.name)
+        self.assertEqual(violators, [], f'Only embedding_client.py may own memory_embedding_budget; found: {violators}')
 
     def test_retired_tables_not_recreated(self):
         violators = []

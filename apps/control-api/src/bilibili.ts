@@ -72,7 +72,7 @@ export function registerBilibili(app:FastifyInstance,db:Sql,key:Buffer,owned:(re
  });
  app.post<{Params:{id:string;job:string}}>('/v1/bots/:id/bilibili/jobs/:job/cancel',async req=>{const b=await owned(req,req.params.id);const job=await repo.get(b.tenant_id,b.id,req.params.job);if(!job||!['queued','claimed','dispatching'].includes(job.state))throw toolConflict('任务已结束或不存在',404);await repo.cancel(b,job.id);return{requested:true,mayHaveDispatched:job.state==='dispatching'}});
  // Separate audience from user sessions and Agent->worker group credentials.
- const runtime=async(req:any)=>{const [b]=await db.query('SELECT * FROM bots WHERE id=$1 AND deleted_at IS NULL',[req.params.id]);const token=String(req.headers.authorization||'').replace(/^Bearer /,'');if(!b||!verifyBridge(key,b,token))throw toolConflict('工具运行身份无效',401);return b};
+ const runtime=async(req:any)=>{const [b]=await db.query('SELECT * FROM bots WHERE id=$1 AND deleted_at IS NULL',[req.params.id]);const auth=String(req.headers.authorization||'');const token=auth.startsWith('Bearer ')?auth.slice(7):'';if(!b||!token||!verifyBridge(key,b,token))throw toolConflict('工具运行身份无效',401);return b};
  registerExecutionMemory(app,db,runtime);
  registerAutonomousGoals(app,db,runtime);
  app.post<{Params:{id:string}}>('/internal/v1/bots/:id/model-request-budget',async req=>{const b=await runtime(req),v=z.object({workId:z.string().min(1).max(200),epoch:z.number().int().positive(),requestId:z.string().min(1).max(300),phase:z.enum(['reserve','settled','released','unknown']),source:z.literal('main'),tokens:z.number().int().nonnegative().optional()}).strict().parse(req.body);return cycleModelBudget(db,b,v)});

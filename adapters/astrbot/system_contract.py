@@ -84,6 +84,10 @@ class SystemContract:
             ''')
         db.commit()
 
+    def scope_sha(self,scope=''):
+        row=self.db.execute('SELECT system_sha FROM fishbot_system_scope_contract WHERE scope=?',(str(scope or ''),)).fetchone()
+        return row[0] if row else None
+
     def transition_available(self,messages,permit_id,request_id,scope=''):
         """Read-only preflight; a Journal checkpoint is not a System permit."""
         scope=str(scope or '');target=system_vector_sha(messages)

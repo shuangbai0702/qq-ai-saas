@@ -1,7 +1,7 @@
 import {useEffect,useRef,useState} from 'react';
 import {Search,X} from 'lucide-react';
 const entries=[
- ['群聊白名单','config/chat','自主参与白名单群号','群号 群参与 自动搭话 旁听'],
+ ['群聊白名单','config/chat','允许服务的群','群号 群参与 自动搭话 旁听'],
  ['主动模式群白名单','autonomous/settings','共用群参与白名单','外层 自主 群号'],
  ['机器人改名','config/profile','机器人名称','名字 名称 改名'],
  ['QQ昵称管理','config/plugins','QQ资料管理','改名字 QQ昵称 昵称 头像 资料'],
@@ -24,7 +24,7 @@ const entries=[
  ['QQ内置表情','config/faces','允许QQ内置表情','小黄脸 原生表情'],
  ['标准模式主动联系','config/proactive','定时关心主人','找主人 主动私聊 定时'],
  ['群判断间隔','config/chat','群判断最短间隔（分钟）','冷却 群聊 判定'],
- ['主动模式','autonomous','开启主动模式','自主 外层 目标 休眠 唤醒'],
+ ['主动模式','autonomous','主动模式运行控制','自主 外层 目标 休眠 唤醒'],
  ['自主思考间隔','autonomous/settings','自主活动间隔（分钟）','主动模式 定时 休眠'],
  ['B站账号与工具','bilibili','启用B站工具','bilibili 登录 扫码 绑定'],
  ['B站合集与系列','bilibili/permissions','公开视频、搜索与字幕','视频 分P 合集'],

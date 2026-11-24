@@ -628,8 +628,13 @@ def settle_commitments(db,scope,claims,previous):
             if not isinstance(old.get('occurredAt'),(int,float)) or not isinstance(claim.get('occurredAt'),(int,float)) or claim['occurredAt']<=old['occurredAt']:continue
             changes[identifier]=claim['id']
     if not changes:return
-    for table,key in (('memory_summaries','id'),('memory_core_notes','slot')):
-        for identifier,raw in db.execute('SELECT '+key+',claims FROM '+table+' WHERE claims IS NOT NULL').fetchall():
+    import core_note as core_note_store
+    sources=[
+        ('summary',db.execute('SELECT id,claims FROM memory_summaries WHERE claims IS NOT NULL').fetchall()),
+        ('core',core_note_store.read_claims(db)),
+    ]
+    for kind,rows in sources:
+        for identifier,raw in rows:
             try:stored=json.loads(raw)
             except (ValueError,TypeError):continue
             if not isinstance(stored,list):continue
@@ -643,7 +648,9 @@ def settle_commitments(db,scope,claims,previous):
                 import time
                 revision=old.get('revision',0)
                 old.update(status='superseded',protected=False,supersededBy=changes[old['id']],updatedAt=max(time.time(),claim_order(old)[0]+.000001),revision=(revision if type(revision) is int and revision>=0 else 0)+1);changed=True
-            if changed:db.execute('UPDATE '+table+' SET claims=? WHERE '+key+'=?',(json.dumps(stored,ensure_ascii=False,separators=(',',':')),identifier))
+            if changed:
+                if kind=='core':core_note_store.write_claims(db,identifier,stored)
+                else:db.execute('UPDATE memory_summaries SET claims=? WHERE id=?',(json.dumps(stored,ensure_ascii=False,separators=(',',':')),identifier))
 
 
 def bound_claim_views(items,budget=1200,query=''):
@@ -739,7 +746,8 @@ def govern_claims(db,scope):
             old=values.get(claim['id'])
             if old is None or (claim_order(claim),identifier)>(claim_order(old),owners[claim['id']]):
                 values[claim['id']]=dict(claim);owners[claim['id']]=identifier
-    core=db.execute('SELECT slot,claims FROM memory_core_notes WHERE claims IS NOT NULL').fetchall()
+    import core_note as core_note_store
+    core=core_note_store.read_claims(db)
     for _,raw in core:
         for claim in json.loads(raw or '[]'):
             if valid_claim(claim) and claim.get('visibility')==scope and (claim['id'] not in values or claim_order(claim)>claim_order(values[claim['id']])):
@@ -761,7 +769,7 @@ def govern_claims(db,scope):
         db.execute('UPDATE memory_summaries SET claims=? WHERE id=?',(model_json(items) if items else None,identifier))
     for slot,raw in core:
         items=[c for c in json.loads(raw or '[]') if c.get('visibility')!=scope and c.get('id') not in values]
-        db.execute('UPDATE memory_core_notes SET claims=? WHERE slot=?',(model_json(items) if items else None,slot))
+        core_note_store.write_claims(db,slot,items)
 
 
 def uncarried_sources(rows,kept):

@@ -45,7 +45,7 @@ def valid(db, scope, row):
         return bool(isinstance(row[1], str) and row[1] and isinstance(row[2], str) and row[2] and isinstance(row[3], str) and row[3].strip() and isinstance(row[4], str) and row[4].strip() and isinstance(row[5], (int, float)))
     sources = ("'autonomous'",) if data.get('round_kind') == 'autonomous_activation' else ("'autonomous'", "'owner_contact'", "'scheduled_contact'")
     owner = db.execute(f"SELECT scope FROM pipeline_events WHERE scope=? AND event=? AND source IN ({','.join(sources)})", (data.get('source_scope'), data['owner_work'])).fetchone()
-    return bool(data.get('round_kind') in ('autonomous_activation','service_dialogue') and owner and owner[0] == data['source_scope'] and isinstance(row[5], (int, float)) and (data['round_kind']=='autonomous_activation' or bool(row[3].strip() and row[4].strip())))
+    return bool(data.get('round_kind') in ('autonomous_activation','service_dialogue') and owner and owner[0] == data['source_scope'] and isinstance(row[5], (int, float)) and (data['round_kind']=='autonomous_activation' or bool(isinstance(row[3], str) and row[3].strip() and isinstance(row[4], str) and row[4].strip())))
 
 
 def settled(db, scope, rows):

@@ -77,8 +77,8 @@ export class AutonomyRepository {
    }
    const rows=await tx.query("UPDATE autonomy_goals SET status=$4,revision=revision+1,updated_at=now() WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND revision=$5 AND status NOT IN ('completed','abandoned','canceled') RETURNING id,revision",[body.id,botId,tenantId,status,body.expectedRevision]);
    if(!rows.length)throw new AutonomyConflict('目标已更新，请刷新');
-   const nextState=s.config.mode==='active'?'ready':'paused';
-   await tx.query('UPDATE autonomy_settings SET epoch=epoch+1,goal_revision=goal_revision+1,state=$3,lease_owner=NULL,lease_until=NULL,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2',[botId,tenantId,nextState]);
+   const nextState=s.config.mode==='active'?'ready':'disabled';
+   await tx.query('UPDATE autonomy_settings SET epoch=epoch+1,goal_revision=goal_revision+1,state=$3,next_wake_at=CASE WHEN $3=\'disabled\' THEN NULL ELSE next_wake_at END,lease_owner=NULL,lease_until=NULL,updated_at=now() WHERE bot_id=$1 AND tenant_id=$2',[botId,tenantId,nextState]);
    await tx.query('DELETE FROM autonomy_wakes WHERE bot_id=$1 AND tenant_id=$2',[botId,tenantId]);
    await tx.query("INSERT INTO audit_events(tenant_id,event,bot_id,detail) VALUES($1,'autonomous.goal.controlled',$2,$3)",[tenantId,botId,JSON.stringify({actorId,goalId:body.id,operation:body.operation,previousStatus:existing.status,status,previousRevision:existing.revision,revision:rows[0].revision})]);
    if(s.config.mode==='active'){

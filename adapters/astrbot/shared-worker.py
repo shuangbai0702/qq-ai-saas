@@ -226,7 +226,7 @@ async def main():
                 from tool_config import member_shape as tool_member_shape
                 current.update(revision=body['revision'],behaviorConfig=copy.deepcopy(body['behaviorConfig']),characterCardsEdit=copy.deepcopy(body['characterCardsEdit']),systemChangePermitId=body.get('systemChangePermitId'),_baseShape=member_shape(body),_toolsShape=tool_member_shape(body))
                 behavior['refresh_base'](id)
-                return web.json_response({'generation':stamp[0],'revision':stamp[1],'updatedRegion':'character_cards'})
+                return web.json_response({'generation':stamp[0],'revision':stamp[1],'updatedRegion':'character_cards','target':body['characterCardsEdit']['target']})
             from tool_config import member_shape as tool_member_shape,apply_user_tools
             if (current and body.get('toolsEdit') and current['generation']==body['generation']
                 and current.get('_toolsShape')==tool_member_shape(body)):
@@ -239,7 +239,7 @@ async def main():
                 current['_cardsShape']=cards_member_shape(body)
                 behavior['refresh_base'](id)
                 return web.json_response({'generation':stamp[0],'revision':stamp[1],'updatedRegion':'tools'})
-            from web_base import member_shape,replace_cached_persona
+            from web_base import member_shape
             if (current and body.get('personaEdit') and current['generation']==body['generation']
                 and current.get('_baseShape')==member_shape(body)):
                 old=behavior_settings[id]

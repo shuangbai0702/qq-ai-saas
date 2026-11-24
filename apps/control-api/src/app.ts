@@ -31,7 +31,7 @@ import {modelCredentialDestination} from '../../../packages/shared/model-http.js
 import {platformModelPath} from '../../../packages/shared/platform-model.js';
 import Fastify from 'fastify';import cookie from '@fastify/cookie';import rateLimit from '@fastify/rate-limit';import serveStatic from '@fastify/static';import {z} from 'zod';
 import {randomBytes,randomUUID} from 'node:crypto';import path from 'node:path';import os from 'node:os';import {mkdir,access,open,readFile,rm} from 'node:fs/promises';import QRCode from 'qrcode';
-import {openDatabase,configuredDatabaseUrl,hasEncryptedSecrets,type Sql} from '../../../packages/database/index.js';import {hashPassword,verifyPassword,digest,loadKey,encrypt,redact,safeSubprocessEnv} from '../../../packages/shared/security.js';import {defaultConfig,BotConfigSchema,ProtocolSchema,personas,terminalLogin} from '../../../packages/contracts/index.js';import {NodeAgent} from '../../node-agent/src/agent.js';
+import {openDatabase,configuredDatabaseUrl,hasEncryptedSecrets,type Sql} from '../../../packages/database/index.js';import {hashPassword,verifyPassword,digest,loadKey,encrypt,redact,safeSubprocessEnv} from '../../../packages/shared/security.js';import {defaultConfig,BotConfigSchema,ProtocolSchema,personas,terminalLogin} from '../../../packages/contracts/index.js';import type {NodeAgent} from '../../node-agent/src/agent.js';
 import {createEmbeddedRuntimeControl,createExternalRuntimeControl} from './bot-runtime-reader.js';
 import {httpError,mockProtocolAllowed,requireAdmin} from './http-guards.js';
 declare module 'fastify'{interface FastifyRequest{user?:{id:string;email:string;name:string;is_admin:boolean;tenant_id:string}}}
@@ -41,7 +41,7 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
  const root=path.resolve(options.root||process.env.DATA_ROOT||'.local');await mkdir(root,{recursive:true});
  const databaseUrl=options.databaseUrl??await configuredDatabaseUrl();const db=await openDatabase(root,databaseUrl);let key:Buffer;try{key=await loadKey(root,{createIfMissing:!(await hasEncryptedSecrets(db))})}catch(error){await db.close();throw error}
  const externalAgent=options.externalAgent??false;
- const agent=externalAgent?(null as unknown as NodeAgent):new NodeAgent(db,root,key);
+ const agent=externalAgent?(null as unknown as NodeAgent):new (await import('../../node-agent/src/agent.js')).NodeAgent(db,root,key);
  const runtime=externalAgent?createExternalRuntimeControl(db,root,key):createEmbeddedRuntimeControl(agent);
  const streams=new Set<import('node:http').ServerResponse>();const streamOwners=new Map<string,number>();
  const proxySecret=process.env.FISHBOT_PROXY_SECRET||await readFile(path.join(root,'proxy-client.key'),'utf8').then(s=>s.trim()).catch(error=>{if(error.code==='ENOENT')return undefined;throw error});

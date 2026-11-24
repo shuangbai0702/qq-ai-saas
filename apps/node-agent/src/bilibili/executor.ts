@@ -102,7 +102,7 @@ export class BilibiliExecutor {
     try{
      if(job.authority==='autonomous'){
       const request:ModelRequestBudget={workId:job.work_id,epoch:job.mode_epoch,requestId:'media:'+job.id+':'+randomUUID(),phase:'reserve',source:'media',tokens:estimatedTokens,effectId:job.id,owner:job.lease_owner};
-      await this.db.transaction(tx=>cycleModelBudgetInTransaction(tx,{id:job.bot_id,tenant_id:job.tenant_id},request));reserved=request;
+      await cycleModelBudget(this.db,{id:job.bot_id,tenant_id:job.tenant_id},request);reserved=request;
      }
      // The database wait can outlive the original execution lease. Verify the
      // same native owner again before allowing the Provider request to start.

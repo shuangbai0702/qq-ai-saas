@@ -47,9 +47,11 @@ export function registerBehaviorData(app:FastifyInstance,root:string,owned:(req:
   maintenance++;let data:string;let releaseLock:(()=>Promise<void>)|undefined;try{
    if(isWrite){
     const botDir=path.join(root,'bots',id);await mkdir(botDir,{recursive:true});
-    releaseLock=await lockfile.lock(botDir,{realpath:false,stale:15000,retries:{retries:10,minTimeout:50,maxTimeout:200}});
+    const lockTarget=path.join(botDir,'behavior-maintenance.lock');
+    const {open}=await import('node:fs/promises');const fh=await open(lockTarget,'a');await fh.close();
+    releaseLock=await lockfile.lock(lockTarget,{realpath:false,stale:15000,retries:{retries:10,minTimeout:50,maxTimeout:200}});
     // Re-verify bot is still stopped with no pending start/restart commands after acquiring lock.
-    const [fresh]=await db.query("SELECT desired_state,observed_state,runtime_mode,group_id,EXISTS(SELECT 1 FROM commands c WHERE c.bot_id=bots.id AND c.status IN ('queued','running') AND c.kind IN ('start','restart','login')) AS starting FROM bots WHERE id=$1 AND deleted_at IS NULL",[id]);
+    const [fresh]=await db.query("SELECT desired_state,observed_state,runtime_mode,group_id,EXISTS(SELECT 1 FROM commands c WHERE c.bot_id=bots.id AND c.status IN ('pending','processing') AND c.kind IN ('start','restart','login')) AS starting FROM bots WHERE id=$1 AND deleted_at IS NULL",[id]);
     if(!fresh||fresh.desired_state!=='stopped'||fresh.observed_state!=='stopped'||fresh.starting||await runtime.isAiRunning({...bot,...fresh}))throw httpError('机器人正在启动或切换状态，请稍后重试',409);
    }
    data=await new Promise<string>((resolve,reject)=>{

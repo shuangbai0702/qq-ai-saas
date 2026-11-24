@@ -58,7 +58,8 @@ export function applyFavoriteAnnotation(item:any,result:FavoriteAnnotation|undef
 
 async function preview(file:string,output:string,signal:AbortSignal){
  const python=path.resolve(process.env.ASTRBOT_PYTHON||`references/astrbot/.venv/${process.platform==='win32'?'Scripts/python.exe':'bin/python'}`);
- await new Promise<void>((resolve,reject)=>execFile(python,[path.resolve('adapters/astrbot/favorite_media.py'),'--preview',file,output],{signal,timeout:10000,maxBuffer:8192,windowsHide:true},error=>error?reject(new Error('favorite_preview_failed')):resolve()));
+ const {safeSubprocessEnv}=await import('./security.js');
+ await new Promise<void>((resolve,reject)=>execFile(python,[path.resolve('adapters/astrbot/favorite_media.py'),'--preview',file,output],{signal,timeout:10000,maxBuffer:8192,windowsHide:true,env:safeSubprocessEnv({PYTHONIOENCODING:'utf-8'})},error=>error?reject(new Error('favorite_preview_failed')):resolve()));
 }
 
 export function createFavoriteCaptioner(db:Sql,key:Buffer,root:string,transport= modelHttp){

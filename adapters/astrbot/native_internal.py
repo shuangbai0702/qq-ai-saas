@@ -117,7 +117,13 @@ async def run(provider,control,prompt,system,tools=(),handlers=None,context=None
     # Borrow the current budget owner for trusted nested model requests.
     if context is not None:context.hosted_run_control=control
     from tool_outcome import RECEIPT_GUIDANCE
-    system=(system+'\n'+RECEIPT_GUIDANCE) if system else RECEIPT_GUIDANCE
+    event=getattr(context,'event',None) if context is not None else None
+    if event is not None and event.get_extra('_hosted_main_activation'):
+        # Keep main_activation System head identical to foreground turns; deliver
+        # receipt guidance in per-turn currentGuidance instead of system_prompt.
+        event.set_extra('_hosted_receipt_guidance',RECEIPT_GUIDANCE)
+    else:
+        system=(system+'\n'+RECEIPT_GUIDANCE) if system else RECEIPT_GUIDANCE
     handlers=handlers or {};allowed={tool.name:tool for tool in tools}
     tool_set=ToolSet(tools=list(tools)) if tools else None
     cooling={}

@@ -325,13 +325,17 @@ class Reflection:
         agreement_state.initialize(db)
         self.embedding_lock=asyncio.Lock()
 
-    def run_housekeeping(self):
-        """Explicit post-commit maintenance; never invoked implicitly by __init__."""
-        self.prune_pending()
+    def prune_summaries(self):
+        """Enforce 1,000-row retention cap on retired memory_summaries."""
         self.db.execute('''DELETE FROM memory_summaries WHERE id NOT IN (SELECT id FROM memory_summaries ORDER BY id DESC LIMIT 1000)
           AND id NOT IN (SELECT summary_id FROM memory_reconstruction_checkpoints WHERE summary_id IS NOT NULL)
           AND (claims IS NULL OR json_array_length(claims)=0)''')
         self.db.commit()
+
+    def run_housekeeping(self):
+        """Explicit post-commit maintenance; never invoked implicitly by __init__."""
+        self.prune_pending()
+        self.prune_summaries()
     def epoch(self):return self.db.execute('SELECT epoch FROM memory_reflection_control WHERE id=1').fetchone()[0]
     def reconstruction_stamp(self,scope):
         """Only a real forget epoch or this scope's completed checkpoint retires wire.
@@ -1264,6 +1268,8 @@ class Reflection:
                         if self.closed or not is_current():return
                     adopted('merge_committed' if job=='big' else 'summary_committed')
                     self.checkpoint_issue(merge_scope or scope,0,'failure_'+job,{},resolved=True);self.db.commit()
+                    try:self.prune_summaries()
+                    except Exception:pass
                     if _manual is not None:
                         if job!='big':_manual['summary_done']=True
                         if (job!='big' and pending_merge) or (job=='big' and not _manual['summary_done']):

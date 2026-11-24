@@ -109,6 +109,10 @@ class Regeneration(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('tools',payload)
             self.assertEqual(payload['messages'][:len(self.wire_before)],self.wire_before)
             self.assertTrue(any(correction in str(m.get('content','')) for m in payload['messages']))
+            # Never emit consecutive duplicate assistant turns on regeneration.
+            tail_msgs=payload['messages'][len(self.wire_before):]
+            for prev_m,curr_m in zip(tail_msgs,tail_msgs[1:]):
+                self.assertFalse(prev_m.get('role')=='assistant' and curr_m.get('role')=='assistant',tail_msgs)
         self.assertEqual(self.st.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],rounds)
         self.st.pipeline.finish(work,self.runtime['metrics'].setdefault('qq',{}))
         return event,new_requests

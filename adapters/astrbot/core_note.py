@@ -28,13 +28,28 @@ def _ensure_user_edit_column(db):
 def read(db,scope='',owner=''):
     """Read slot=1 core note, optionally gated by scope visibility."""
     if not _table_exists(db):return {'text':'','source_scopes':[],'subjects':[],'updated':0}
-    row=db.execute('SELECT text,scopes,people,updated,source_verification FROM memory_core_notes WHERE slot=1').fetchone()
+    columns={r[1] for r in db.execute('PRAGMA table_info(memory_core_notes)')}
+    verification_col='source_verification' if 'source_verification' in columns else "'unknown'"
+    row=db.execute('SELECT text,scopes,people,updated,'+verification_col+' FROM memory_core_notes WHERE slot=1').fetchone()
     if not row:return {'text':'','source_scopes':[],'subjects':[],'updated':0}
     scopes=json.loads(row[1])
     if scope and not core_note_visible(scopes,scope,owner):return {'text':'','source_scopes':[],'subjects':[],'updated':0}
     result={'text':row[0],'source_scopes':scopes,'subjects':json.loads(row[2]),'updated':row[3],'source_verification':row[4]}
     if scope and core_note_legacy(scopes):result['legacy_unverified']=True
     return result
+
+
+def read_claims(db):
+    if not _table_exists(db):return []
+    columns={r[1] for r in db.execute('PRAGMA table_info(memory_core_notes)')}
+    if 'claims' not in columns:return []
+    return db.execute('SELECT slot,claims FROM memory_core_notes WHERE claims IS NOT NULL').fetchall()
+
+
+def write_claims(db,slot,claims):
+    if not _table_exists(db):return
+    encoded=json.dumps(claims,ensure_ascii=False,separators=(',',':')) if claims else None
+    db.execute('UPDATE memory_core_notes SET claims=? WHERE slot=?',(encoded,slot))
 
 
 def write_semantic(db,text,scopes,people,now,verification,claims=None):

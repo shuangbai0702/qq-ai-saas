@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {EventEmitter} from 'node:events';import pg from 'pg';
-import {openDatabase,postgresPoolOptions} from '../packages/database/index.js';
+import {openDatabase,postgresPoolOptions} from '../packages/database/index.js';import {expectedSchemaVersions} from '../packages/database/transfer.js';
 
 test('PostgreSQL pool uses bounded server statement and lock cancellation',()=>{
  const names=['PG_POOL_MAX','PG_STATEMENT_TIMEOUT_MS','PG_LOCK_TIMEOUT_MS','PG_IDLE_TRANSACTION_TIMEOUT_MS'];const previous=Object.fromEntries(names.map(name=>[name,process.env[name]]));
@@ -16,7 +16,7 @@ test('statement failure rolls back; broken rollback discards connection and pres
  class FixturePool extends EventEmitter{
   operations:string[]=[];released:boolean[]=[];rollbackFailure=false;ended=false;
   constructor(public options:any){super();pool=this}
-  async query(){return{rows:Array.from({length:19},(_,i)=>({version:String(i+1).padStart(3,'0')}))}}
+  async query(){return{rows:expectedSchemaVersions.map(version=>({version}))}}
   async connect(){return{query:async(sql:string)=>{this.operations.push(sql);if(sql==='ROLLBACK'&&this.rollbackFailure)throw new Error('broken socket');return{rows:[]}},release:(discard:boolean)=>this.released.push(discard)}}
   async end(){this.ended=true}
  }
