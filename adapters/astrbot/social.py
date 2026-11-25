@@ -106,12 +106,12 @@ def accept_summary_learning(db,batches,products,now=None,edited=()):
     store=SocialStore.__new__(SocialStore);store.db=db
     return sum(store.accept_learning(product['scope'],offered[product['scope']],json.dumps({'patterns':[p for p in product['patterns'] if (product['scope'],p.get('expression')) not in edited]},ensure_ascii=False),now=now,commit=False) for product in products)
 
-def apply_summary_feedback(db,scope,text,result,event,now):
+def apply_summary_feedback(db,scope,text,result,event,now,*,edited=()):
     """Feedback may reinforce only this product's actual used expressions."""
     if result not in ('engaged','rejected','corrected'):return
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='expression_reinforcement'").fetchone():return
     for expression, in db.execute('SELECT expression FROM social_patterns WHERE scope=? LIMIT 200',(scope,)).fetchall():
-        if expression in text:reinforce_expression(db,scope,expression,'positive' if result=='engaged' else 'negative',event,now)
+        if (scope,expression) not in edited and expression in text:reinforce_expression(db,scope,expression,'positive' if result=='engaged' else 'negative',event,now)
 
 
 def requests_meme(text):

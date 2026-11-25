@@ -43,6 +43,7 @@ def history_boundary(chars,base_chars,wire_chars=0,*,growth_limit=True):
     return ''
 
 def changes(before,after,path=()):
+    """Send changed fields, never repeat a parent merely to shorten JSON."""
     replace=[['set',list(path),after]]
     if type(before)!=type(after):return replace
     if not isinstance(before,(dict,list)):return [] if before==after else replace
@@ -56,7 +57,7 @@ def changes(before,after,path=()):
         result=_index_changes(before,after,path)
         matched=_list_changes(before,after,path)
         if matched is not None and len(encode(matched))<len(encode(result)):result=matched
-    return result if len(encode(result))<len(encode(replace)) else replace
+    return result
 
 def _index_changes(before,after,path):
     result=[]
@@ -103,7 +104,7 @@ def _list_changes(before,after,path):
     if not inserted and not any(index not in kept_before for index in range(len(before))):return None
     result=[]
     for index in sorted(kept_before):
-        if before[index]!=after[kept_before[index]]:result.append(['set',list(path)+[index],after[kept_before[index]]])
+        if before[index]!=after[kept_before[index]]:result.extend(changes(before[index],after[kept_before[index]],(*path,index)))
     for index in sorted((index for index in range(len(before)) if index not in kept_before),reverse=True):
         result.append(['remove',list(path)+[index]])
     kept=len(kept_before)

@@ -110,6 +110,22 @@ class Quality(unittest.TestCase):
   self.assertIn('有节目效果',[r['expression'] for r in social.foundation_view(self.db)])
   self.db.execute("INSERT INTO social_pattern_blocks VALUES('group:12345','有节目效果')")
   self.assertNotIn('有节目效果',[r['expression'] for r in social.foundation_view(self.db)])
+ def test_model_expression_edit_wins_over_same_batch_automatic_feedback(self):
+  from companion_insights import apply
+  self.db.execute('INSERT INTO social_patterns VALUES(?,?,?,?,?,?)',(SCOPE,'有节目效果','意外展开','[]',3,1))
+  self.db.execute('INSERT INTO dialogue_feedback(scope,event,at,state) VALUES(?,?,?,?)',(SCOPE,'original',1,'unknown'))
+  before=snapshot(self.db,SCOPE,{'12345678'},CFG)
+  row=before['memory_state']['products']['expression'][0]
+  data={'memory_operations':[{'kind':'expression','op':'replace','target':row['target'],'expected_version':row['version'],'value':{'weight':0,'situation':'暂不使用'}}],
+        'effects':[{'event':'original','reaction_event':'reaction','result':'engaged','quote':'这个说法挺有意思'}]}
+  payload=[{'event':'original','sender_id':'12345678','user':'说点什么','bot':'有节目效果'},
+           {'event':'reaction','sender_id':'12345678','user':'这个说法挺有意思','bot':'好'}]
+  with self.db:
+   apply_semantic_memory(self.db,self.store.memory,SCOPE,CFG,payload,data,before,self.now)
+   apply(self.db,self.store.memory,SCOPE,CFG,payload,data,before,self.now)
+  self.assertEqual(self.db.execute('SELECT weight FROM social_patterns').fetchone()[0],0)
+  self.assertEqual(self.db.execute('SELECT state FROM dialogue_feedback').fetchone()[0],'engaged','real feedback remains recorded')
+  self.assertEqual(self.db.execute('SELECT count(*) FROM expression_reinforcement').fetchone()[0],0)
  def test_observer_keeps_version_and_real_outcome_without_prose(self):
   value={'at':123,'eventId':'one','scope':SCOPE,'text':'旧原话','result':{'status':'partial','protocolAttempts':2,'protocolConfirmed':1,'response':'旧回复','toolResults':[{'text':'工具原文'}]}}
   metadata=observation_metadata(value)
@@ -203,6 +219,35 @@ class QualityProviderWire(unittest.IsolatedAsyncioTestCase):
    for original in f.originals+f.events+[f.image]:self.assertNotIn(original,wire)
    self.assertIn(f.system,requests[1]['messages']);self.assertIn(f.new,requests[1]['messages'])
   finally:await f.asyncTearDown()
+
+
+class ContextDelta(unittest.TestCase):
+ def test_short_parent_and_shared_record_changes_never_replay_unchanged_fields(self):
+  from decision_history import changes,apply_changes
+  for before,after in [({'deep':{'unchanged':'yes','x':0}},{'deep':{'unchanged':'yes','x':1}}),
+                       ([{'id':'first','body':'keep'},{'id':'second','body':'keep','state':0}], [{'id':'second','body':'keep','state':1},{'id':'third','body':'new'}])]:
+   delta=changes(before,after)
+   self.assertEqual(apply_changes(before,delta),after)
+   self.assertNotIn('keep',json.dumps(delta));self.assertNotIn('unchanged',json.dumps(delta))
+ def test_event_delta_retains_exact_prefix_and_omits_unchanged_small_fields(self):
+  from context_transport import EVENT_CONTEXT_CURRENT
+  from context_protocol import model_json
+  from decision_history import apply_changes
+  from readonly_journal import ReadonlyJournal
+  before={'authority':{'owner':True,'same':'keep'},'policy':'stable','currentGuidance':'same-guidance','meaning':'platform event data'}
+  after={**before,'authority':{'owner':False,'same':'keep'}}
+  packet=lambda value:{'role':'user','content':EVENT_CONTEXT_CURRENT+'\n'+model_json(value)}
+  native=[{'role':'system','content':'platform'},{'role':'user','content':'hello'}]
+  journal=ReadonlyJournal();first=journal.prepare(native+[packet(before)],'one',now=1,strict=True,compact_policy=True)
+  self.assertTrue(journal.commit(first))
+  next_native=native+[{'role':'assistant','content':'reply'},{'role':'user','content':'next'}]
+  second=journal.prepare(next_native+[packet(after)],'one',now=2,strict=True,compact_policy=True)
+  self.assertEqual(second.wire[:len(first.wire)],first.wire)
+  update=second.wire[-1]['content'];self.assertNotIn('keep',update);self.assertNotIn('stable',update)
+  self.assertEqual(apply_changes(before,json.loads(update.split('\n',1)[1])['eventChanges']),after)
+  self.assertTrue(journal.commit(second))
+  same=journal.prepare(next_native+[packet(after)],'one',now=3,strict=True,compact_policy=True)
+  self.assertEqual(same.wire,second.wire)
 
 
 async def lambda_chat(**kwargs):return NS(completion_text=json.dumps({'summary':'真实经历已整理。'}))

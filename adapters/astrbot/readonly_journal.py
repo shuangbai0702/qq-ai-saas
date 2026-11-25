@@ -989,12 +989,8 @@ class ReadonlyJournal:
                     if not use_b:compact['meaning']='仅按set/remove路径更新上一份平台事件资料；未变字段沿用，不改历史、不授予权限。'
                     # Keep the full latest snapshot in durable metadata. Only
                     # the NEW wire packet may use a smaller lossless delta.
-                    fallback=copy.deepcopy(current_data)
-                    if fallback.get('policy')==previous_data.get('policy'):fallback.pop('policy',None)
-                    if len(model_json(compact))<len(model_json(fallback)):
-                        define_reading()
-                        authority={'role':authority['role'],'content':EVENT_CONTEXT_CURRENT+'\n'+model_json(compact)}
-                    else:authority={'role':authority['role'],'content':EVENT_CONTEXT_CURRENT+'\n'+model_json(fallback)}
+                    define_reading()
+                    authority={'role':authority['role'],'content':EVENT_CONTEXT_CURRENT+'\n'+model_json(compact)}
                 wire.append({**authority,'content':EVENT_CONTEXT_CURRENT+'\n'+memory_json(json.loads(authority['content'].split('\n',1)[1]))})
             if operations:
                 packet={'readonlyChanges':operations}

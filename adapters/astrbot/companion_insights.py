@@ -115,6 +115,7 @@ def apply(db,memory,scope,cfg,payload,data,before,now=None,audit=None):
         value=data.get(name,[])
         return value if isinstance(value,list) else []
     targeted={(x['kind'],json.dumps(x['target'],sort_keys=True)) for x in data.get('memory_operations',[]) if isinstance(x,dict) and x.get('kind') in ('interest','motive','expression') and x.get('op') in ('create','replace','delete') and isinstance(x.get('target'),dict)} if isinstance(data.get('memory_operations',[]),list) else set()
+    expression_edits={(target.get('scope'),target.get('expression')) for kind,raw in targeted if kind=='expression' for target in [json.loads(raw)]}
     saved=0
     if cfg.get('memory',True) and cfg.get('memoryAutoCapture'):
         from hosted_memory import apply_summary_corrections
@@ -151,7 +152,7 @@ def apply(db,memory,scope,cfg,payload,data,before,now=None,audit=None):
         db.execute('UPDATE dialogue_feedback SET state=? WHERE scope=? AND event=?',(item['result'],scope,target))
         db.execute("INSERT INTO companion_signals VALUES(?,?,'dialogue_feedback',?,?) ON CONFLICT(scope,event,kind) DO UPDATE SET quote=excluded.quote,at=excluded.at",(scope,target,json.dumps(feedback,ensure_ascii=False),now))
         from social import apply_summary_feedback
-        apply_summary_feedback(db,scope,sources[target].get('bot',''),item['result'],reaction,now)
+        apply_summary_feedback(db,scope,sources[target].get('bot',''),item['result'],reaction,now,edited=expression_edits)
     db.execute('DELETE FROM companion_signals WHERE at<? OR rowid NOT IN (SELECT rowid FROM companion_signals ORDER BY at DESC LIMIT 1000)',(now-30*86400,))
     companion_state.prune_resolved_topics(db,scope,now)
     return saved
