@@ -15,7 +15,7 @@ from runtime_memory import MIB, activity, owned_tree, reclaim
 
 IDLE_SECONDS = float(os.environ.get('FISHBOT_MEMORY_IDLE_SECONDS', '18'))
 RECLAIM_SECONDS = float(os.environ.get('FISHBOT_MEMORY_RECLAIM_SECONDS', '40'))
-ROLE_MIB = {'napcat': 48, 'llbot': 192, 'shared-ai': 72, 'dedicated-ai': 24, 'control-api': 128, 'agent': 128, 'postgres': 128, 'mock': int(os.environ.get('FISHBOT_MEMORY_IDLE_MIB', '128'))}
+ROLE_MIB = {'napcat': 48, 'llbot': 64, 'shared-ai': 72, 'dedicated-ai': 24, 'control-api': 128, 'agent': 128, 'postgres': 128, 'mock': int(os.environ.get('FISHBOT_MEMORY_IDLE_MIB', '128'))}
 
 
 def atomic(file, value):
