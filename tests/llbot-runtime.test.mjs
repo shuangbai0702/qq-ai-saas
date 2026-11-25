@@ -156,6 +156,9 @@ test('runtime HTTP auth, profile/native proof, worker-only restart and PMHQ fail
  await writeFile(path.join(f.m.root,'llbot/qq/profile-proof.json'),JSON.stringify({botId:'a',generation:2,pid:501,profile:path.join(f.m.root,'llbot/qq/profile'),network:true,route:'direct'}));
  run.relay.uin='90000';run.relay.upstream={close(){}};await run.sample();assert.equal((await health()).login.state,'online');
  children[1].child.emit('exit',1);at+=3001;await run.sample();assert.equal(children.length,3);assert.equal(children[0].child.listenerCount('exit'),1);assert.equal((await health()).metrics.restartRequested,false);
+ online=false;const beforeDisconnect=children.length;await run.sample();at+=16000;await run.sample();
+ assert.equal((await health()).login.state,'failed','a stale login QR cannot turn a transient established outage into manual reauthentication');
+ assert.equal(children.length,beforeDisconnect,'account recovery must not repeatedly recycle the OneBot-only worker');
  reachable=false;at+=60001;await run.sample();assert.equal((await health()).metrics.restartRequested,true,'hung PMHQ requests normal controlled recovery');
  children[0].child.emit('exit',1);await run.sample();assert.equal((await health()).metrics.restartRequested,true);
 });
@@ -240,4 +243,15 @@ test('late credentials after the operation deadline cannot start a Qzone publish
  installActions(map,{ntUserApi:{getPSkey:async()=>new Map([['qzone.qq.com','secret']])},ntWebApi:{getCookies:()=>gate.promise,genBkn:()=>55}},{uin:'90000',online:true},{expectedUin:'90000'},{fetcher:async()=>{writes++;return new Response('{}')}});
  const flight=map.get('send_qzone_msg').websocketHandle({content:'fixture'},1);controller.abort();gate.resolve({skey:'secret'});
  const r=await flight;assert.equal(writes,0);assert.equal(r.data.receipt.status,'rejected');assert.equal(r.data.stage,'prepare');
+});
+
+
+test('LLBot explicit QR never quick-logins while resume passes the pinned account to both owned components',async t=>{
+ for(const resume of [false,true]){
+  const f=await fixture();await writeFile(f.file,JSON.stringify({...f.m,resume}));const children=[];
+  const spawnChild=(exe,args)=>{const child=new EventEmitter();Object.assign(child,{pid:700+children.length,kill(){child.emit('exit',0)}});children.push({exe,args});return child};
+  const run=await startRuntime(f.file,{spawnChild});
+  try{assert.equal(children.length,2);for(const c of children)assert.equal(c.args.includes('--qq=90000'),resume,'the QQ login intent must be identical in PMHQ and LLBot')}
+  finally{await run.close()}
+ }
 });

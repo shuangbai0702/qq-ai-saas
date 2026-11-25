@@ -1,4 +1,20 @@
-import type {Health} from '../../../packages/contracts/index.js';
+import {hasManagedQQLogin,type Health} from '../../../packages/contracts/index.js';
+
+// QR/verification is an explicit request for user participation, not a reason
+// to keep replacing the process. A transient probe failure is not that proof.
+export function requiresQQLogin(protocol:Health){
+ return protocol.loginRequired===true||['qr_ready','waiting_scan','waiting_confirm','verification_required','expired','canceled'].includes(protocol.loginState||'');
+}
+
+export function canResumeQQ(kind:string,expectedUin:string,onlineSince:unknown,protocol:Health){
+ return hasManagedQQLogin(kind)&&/^\d{5,20}$/.test(expectedUin)&&typeof onlineSince==='number'&&Number.isFinite(onlineSince)&&onlineSince>0&&!protocol.online&&!requiresQQLogin(protocol);
+}
+
+export function qqReconnectDue(since:number|undefined,created:number|undefined,now:number){
+ // Native reconnect gets 15s; a replacement process gets its normal 120s
+ // startup window even when the account's outage started much earlier.
+ return typeof since==='number'&&Number.isFinite(since)&&typeof created==='number'&&Number.isFinite(created)&&now-since>=15000&&now-created*1000>=120000;
+}
 
 export interface OfflineObservation {since:number;lastObservedAt:number;observations:number;reason:string;graceMs:number;evictedAt?:number;windows?:Record<string,number>;detail?:string}
 export const offlineGrace = (value:string|undefined, fallback:number) => Math.max(30,Math.min(fallback,Number(value)||fallback))*1000;

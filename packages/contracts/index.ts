@@ -19,7 +19,7 @@ export interface ProtocolContext {botId:string;tenantId:string;root:string;gener
 export interface AiProbeContext {botId:string;generation:number;revision:number;aiPort:number;token:string}
 export interface AiRuntimeContext extends ProtocolContext {revision:number;systemChangePermitId?:string;characterCardsEdit?:{target:string;permitId:string;origins:string[]};personaEdit?:{target:string;origins:string[]};toolsEdit?:{target:string;permitId:string};config:BotConfig;apiKey:string;runtimeMode?:'dedicated'|'shared';groupId?:string}
 export function toProtocolContext(ctx:ProtocolContext,loginIntent?:ProtocolContext['loginIntent']):ProtocolContext{return{botId:ctx.botId,tenantId:ctx.tenantId,root:ctx.root,generation:ctx.generation,aiPort:ctx.aiPort,protocolPort:ctx.protocolPort,token:ctx.token,expectedUin:ctx.expectedUin,...(loginIntent!==undefined?{loginIntent}:ctx.loginIntent!==undefined?{loginIntent:ctx.loginIntent}:{})}}
-export interface Health {alive:boolean;ready:boolean;online?:boolean;pid?:number;rssBytes?:number;metrics?:Record<string,unknown>;detail?:string;mode?:string;memoryPolicy?:unknown;loginState?:LoginState}
+export interface Health {alive:boolean;ready:boolean;online?:boolean;pid?:number;rssBytes?:number;metrics?:Record<string,unknown>;detail?:string;mode?:string;memoryPolicy?:unknown;loginState?:LoginState;loginRequired?:boolean}
 export interface LoginSnapshot {state:LoginState;qr?:string;uin?:string;message?:string;restartRequested?:boolean}
 export interface ProtocolAdapter {
   provision(ctx:ProtocolContext):Promise<void>;beginLogin(ctx:ProtocolContext):Promise<void>;

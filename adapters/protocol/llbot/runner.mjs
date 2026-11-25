@@ -75,7 +75,7 @@ export async function startRuntime(file,{spawnChild=spawn,clock=()=>Date.now(),f
   if(closing)return;
   relay.disconnectUpstream();const currentEpoch=++epoch;
   workerMemory=undefined;lastMemory=clock();workerStarted=clock();
-  const child=spawnChild(process.execPath,['--expose-gc','--max-old-space-size=640','--import',pathToFileURL(path.join(directory,'worker-preload.mjs')).href,path.join(work,'llbot.js'),'--',`--pmhq-port=${m.pmhqPort}`,...(m.expectedUin?['--qq='+m.expectedUin]:[])],{cwd:work,env:{...env,FISHBOT_LLBOT_MANIFEST:path.resolve(file)},windowsHide:true,stdio:['ignore','pipe','pipe','ipc']});worker=child;forwardOutput(child);
+  const child=spawnChild(process.execPath,['--expose-gc','--max-old-space-size=640','--import',pathToFileURL(path.join(directory,'worker-preload.mjs')).href,path.join(work,'llbot.js'),'--',`--pmhq-port=${m.pmhqPort}`,...(m.resume&&m.expectedUin?['--qq='+m.expectedUin]:[])],{cwd:work,env:{...env,FISHBOT_LLBOT_MANIFEST:path.resolve(file)},windowsHide:true,stdio:['ignore','pipe','pipe','ipc']});worker=child;forwardOutput(child);
   child.on('error',()=>{if(epoch===currentEpoch)detail='LLBot子进程启动失败'});
   child.on('message',value=>{if(epoch===currentEpoch&&value?.type==='llbot-memory'&&value.pid===child.pid&&[value.rss,value.heapUsed].every(Number.isFinite)){workerMemory=value;lastMemory=clock()}});
   child.on('exit',()=>{if(epoch===currentEpoch&&!closing){worker=undefined;relay.disconnectUpstream();workerRestartAt=clock()+3000;detail='LLBot子进程退出，QQ会话保留，等待局部恢复'}});
@@ -127,7 +127,7 @@ export async function startRuntime(file,{spawnChild=spawn,clock=()=>Date.now(),f
     if(resourceStatus.decision==='restart-llbot')recycleWorker('LLBot持续内存压力，局部恢复，不重启QQ');
    }
    await nativeHealth().catch(()=>{nativeOnline=false});
-   if(wasOnline&&!nativeOnline){offlineAt||=now;qqDisconnected=now-offlineAt>=15000;if(qqDisconnected){relay.disconnectUpstream();recycleWorker('QQ原生会话离线，重新核实登录')}}else{offlineAt=0;qqDisconnected=false}
+   if(wasOnline&&!nativeOnline){offlineAt||=now;qqDisconnected=now-offlineAt>=15000;if(qqDisconnected)relay.disconnectUpstream()}else{offlineAt=0;qqDisconnected=false}
    const response=await fetcher(`http://127.0.0.1:${m.webuiPort}/api/login-info`,{headers:{'X-Webui-Token':hash(m.management.token)},signal:AbortSignal.timeout(3000)});const state=await response.json();
    if(closing)return;
    if(!response.ok||!state.success)throw Error('LLBot login probe unavailable');
@@ -135,6 +135,10 @@ export async function startRuntime(file,{spawnChild=spawn,clock=()=>Date.now(),f
     const uin=String(state.data.uin||'');const proof=await profileProof();
     if(proof.botId!==m.botId||proof.profile!==path.join(home,'profile')||!Number.isInteger(proof.pid)||!relay.online||relay.uin!==uin||m.expectedUin&&uin!==m.expectedUin)throw Error('LLBot profile/identity proof missing');
     login={state:'online',uin};wasOnline=true;detail='';
+   }else if(wasOnline&&!nativeOnline){
+    // An established account's disconnect belongs to Agent account recovery;
+    // replacing only OneBot cannot restore QQ or prove a fresh login QR.
+    login={state:'failed',message:'QQ会话离线，等待自动恢复'};
    }else{
     const q=await fetcher(`http://127.0.0.1:${m.webuiPort}/api/login-qrcode`,{headers:{'X-Webui-Token':hash(m.management.token)},signal:AbortSignal.timeout(3000)});const qr=await q.json();
     const data=qr.success&&qr.data;

@@ -11,7 +11,7 @@ test('native QR recovery publishes once per process, honors lifecycle ownership,
  const registration=await app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(db),email:'qr-recovery@example.test',name:'测试',password:'qr-recovery-123'}});
  const cookies={fish_session:registration.cookies[0].value};
  const created=await app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'二维码恢复',protocol:'mock'}});assert.equal(created.statusCode,201,created.body);const id=created.json().id;
- await db.query("UPDATE bots SET desired_state='running',generation=7 WHERE id=$1",[id]);
+ await db.query("UPDATE bots SET protocol='napcat',desired_state='running',generation=7 WHERE id=$1",[id]);
  const [bot]=await db.query('SELECT * FROM bots WHERE id=$1',[id]);const ctx=await agent.context(bot);
  let record:any={pid:123,created:456};let snapshot:any={state:'waiting_scan',qr:'https://example.test/recovery-qr'};
  agent.host.record=async()=>record;agent.host.inspect=async()=>record?{pid:record.pid,valid:true}:null;

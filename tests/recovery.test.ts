@@ -102,3 +102,48 @@ test('native recovery is durable per PID, replaces protocol only, and rejects st
  record={pid:123,created:456};requested=true;online=true;await agent.execute(command);assert.deepEqual(calls,['stop','start'],'reconnected protocol survives a queued request');
  online=false;await db.query("UPDATE bots SET generation=8 WHERE id=$1",[id]);await agent.execute(command);assert.deepEqual(calls,['stop','start'],'user lifecycle wins');
 });
+
+
+test('established NapCat/LLBot disconnects recover without eviction, preserve peers/AI, and honor user login/stop',async t=>{
+ const {app,db,agent}=await createApp({root:await mkdtemp(path.join(os.tmpdir(),'fish-qq-resume-')),agent:false});t.after(()=>app.close());
+ const auth=await app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(db,4),email:'qq-resume@example.test',name:'恢复',password:'qq-resume-test-123'}});
+ const cookies={fish_session:auth.cookies[0].value};agent.host.beginInspection=async()=>{};agent.host.endInspection=()=>{};
+ const states=new Map<string,any>(),calls:string[]=[];
+ agent.host.record=async id=>states.get(id)?.record;
+ agent.host.inspect=async id=>states.get(id)?.record;
+ agent.host.stop=async(id,kind,_intent,expected)=>{const state=states.get(id);assert.equal(kind,'protocol');assert.deepEqual(expected,state.record);calls.push('stop:'+id);state.record=null};
+ agent.ai.probe=agent.shared.probe=async()=>({alive:true,ready:true});
+ agent.ai.stop=async()=>{throw Error('recovery must preserve dedicated AI')};agent.ai.start=async()=>{throw Error('recovery must preserve dedicated AI')};
+ agent.shared.stop=async()=>{}; // Existing health policy releases an offline member's slot.
+ for(const kind of ['napcat','llbot']){
+  agent.protocols[kind]={...agent.protocols[kind],getHealth:async (ctx:any)=>{const state=states.get(ctx.botId);return{alive:!!state.record,ready:true,online:state.online,pid:state.record?.pid,loginState:state.login,metrics:state.requested?{restartRequested:true}:{}}},getLoginState:async (ctx:any)=>({state:states.get(ctx.botId).login}),queryIdentity:async()=> '90123456',beginLogin:async (ctx:any)=>{assert.equal(ctx.loginIntent,'resume');calls.push('start:'+ctx.botId);states.get(ctx.botId).record={pid:900+calls.length,created:Date.now()/1000}},stop:async (id:string)=>{calls.push('user-stop:'+id);states.get(id).record=null}} as any;
+  for(const mode of ['dedicated','shared']){
+   const response=await app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:kind+' '+mode,protocol:'mock',runtimeMode:mode}});assert.equal(response.statusCode,201,response.body);const id=response.json().id;
+   const now=Date.now();await db.query("UPDATE bots SET protocol=$2,desired_state='running',generation=7,expected_uin='90123456',health=$3 WHERE id=$1",[id,kind,JSON.stringify({onlineSince:now-60000})]);
+   const state:any={record:{pid:100+states.size,created:200+states.size},online:false,login:'failed',requested:false};states.set(id,state);
+   // A real online history is retained; a short disconnect uses native reconnect first.
+   await agent.health();assert.equal((await db.query('SELECT * FROM commands WHERE bot_id=$1',[id])).length,0);
+   const age=async()=>{await db.query("UPDATE bots SET health=jsonb_set(health,'{offline}',$2::jsonb) WHERE id=$1",[id,JSON.stringify({since:Date.now()-360000,lastObservedAt:Date.now(),observations:3,reason:'account-offline',graceMs:300000})]);const retry=agent.recovery.get(id);if(retry)retry.next=0};
+   await age();await agent.health();let [command]=await db.query("SELECT * FROM commands WHERE bot_id=$1 AND kind='restart'",[id]);assert.ok(command);assert.match(command.idempotency_key,/^recover-protocol-/);
+   assert.equal((await db.query("SELECT * FROM commands WHERE bot_id=$1 AND kind='evict-offline'",[id])).length,0,'transient outage must survive the old five-minute deadline');
+   await agent.health();assert.equal((await db.query('SELECT * FROM commands WHERE bot_id=$1',[id])).length,1,'pending claim is unique');
+   // Online evidence after enqueue wins, but cannot poison a later disconnect of the same PID.
+   state.online=true;state.login='online';const firstCalls=calls.length;await agent.execute(command);assert.equal(calls.length,firstCalls);assert.equal((await db.query('SELECT status FROM commands WHERE id=$1',[command.id]))[0].status,'superseded');
+   state.online=false;state.login='failed';await db.query("UPDATE commands SET finished_at=now()-interval '20 seconds' WHERE id=$1",[command.id]);await age();await agent.health();assert.equal((await db.query('SELECT status FROM commands WHERE id=$1',[command.id]))[0].status,'pending');
+   await agent.execute(command);assert.deepEqual(calls.slice(firstCalls),['stop:'+id,'start:'+id]);
+   const after=calls.length;await agent.execute(command);assert.equal(calls.length,after,'late replay cannot replace a new protocol PID');
+   // A replacement gets startup time despite the retained old outage deadline.
+   await age();await agent.health();assert.equal((await db.query("SELECT * FROM commands WHERE bot_id=$1 AND status='pending'",[id])).length,0,'a young protocol cannot be restarted while its saved login is starting');
+   state.record.created=Date.now()/1000-121;
+   // A newly published login requirement cancels an already queued recovery.
+   await age();await agent.health();[command]=await db.query("SELECT * FROM commands WHERE bot_id=$1 AND status='pending'",[id]);assert.ok(command);
+   state.login='verification_required';await agent.execute(command);assert.equal(calls.length,after,'credential/verification evidence wins before restart');
+   await agent.health();assert.equal((await db.query('SELECT health FROM bots WHERE id=$1',[id]))[0].health.protocol.loginRequired,true);
+   state.login='starting';state.record=null;state.requested=true;await age();await agent.health();assert.equal((await db.query("SELECT * FROM commands WHERE bot_id=$1 AND kind='restart' AND status='pending'",[id])).length,0,'later unavailability cannot erase the recorded credential requirement');
+   // User stop is authoritative even if an old native recovery asks to resume.
+   const stop=await app.inject({method:'POST',url:`/v1/bots/${id}/actions`,cookies,payload:{action:'stop',idempotencyKey:randomUUID()}});assert.equal(stop.statusCode,200,stop.body);
+   state.record={pid:100+states.size,created:200+states.size};state.login='failed';state.requested=false;await agent.execute(command);assert.equal(calls.length,after);await agent.health();assert.equal(agent.recovery.has(id),false);
+   assert.equal((await db.query('SELECT desired_state FROM bots WHERE id=$1',[id]))[0].desired_state,'stopped');
+  }
+ }
+});

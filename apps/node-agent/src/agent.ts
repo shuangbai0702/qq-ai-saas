@@ -6,7 +6,7 @@ import {FavoriteMaintenance} from './favorite-maintenance.js';
 import {DshHost} from './dsh-host.js';
 import {BotConfigSchema} from '../../../packages/contracts/index.js';
 import {acquireLease} from '../../../packages/database/lease.js';
-import {observeOffline,evictionDue,offlineGrace} from './offline-policy.js';
+import {observeOffline,evictionDue,offlineGrace,canResumeQQ,requiresQQLogin,qqReconnectDue} from './offline-policy.js';
 import path from 'node:path';import {mkdir,appendFile,readFile,writeFile,rm,stat,readdir,rename} from 'node:fs/promises';import {randomUUID,randomInt,createHash} from 'node:crypto';
 import type {Sql} from '../../../packages/database/index.js';import {decrypt,redact} from '../../../packages/shared/security.js';import {terminalLogin,toProtocolContext,type AiProbeContext,type AiRuntimeContext,type ProtocolContext,type ProtocolAdapter} from '../../../packages/contracts/index.js';
 
@@ -207,7 +207,11 @@ export class NodeAgent {
  try{const [bot]=await this.db.query('SELECT * FROM bots WHERE id=$1',[command.bot_id]);if(!bot||bot.deleted_at||bot.generation!==command.generation){await this.db.query("UPDATE commands SET status='superseded',finished_at=now() WHERE id=$1",[command.id]);return}
    pctx=await this.protocolContext(bot);const probeCtx:AiProbeContext={botId:pctx.botId,generation:pctx.generation,revision:bot.revision,aiPort:pctx.aiPort,token:pctx.token};const protocol=this.protocols[bot.protocol],ai=this.aiFor(bot);await mkdir(pctx.root,{recursive:true});
    await this.log(bot,`lifecycle command=${command.id} kind=${command.kind} key=${command.idempotency_key} generation=${command.generation} mode=${bot.runtime_mode} group=${bot.group_id||'dedicated'}`);
-   if(command.idempotency_key.startsWith('recover-')&&(await ai.probe(probeCtx)).ready&&(await protocol.getHealth(pctx)).ready){await this.db.query("UPDATE commands SET status='superseded',finished_at=now() WHERE id=$1",[command.id]);return;}
+   if(command.idempotency_key.startsWith('recover-')){
+    const health=await protocol.getHealth(pctx);
+    if((await ai.probe(probeCtx)).ready&&health.ready&&(!hasManagedQQLogin(bot.protocol)||health.online)){await this.db.query("UPDATE commands SET status='superseded',finished_at=now() WHERE id=$1",[command.id]);return;}
+    if(hasManagedQQLogin(bot.protocol)&&!health.online&&(requiresQQLogin(health)||bot.health?.protocol?.loginRequired))throw Object.assign(new Error('QQ需要用户重新登录，自动恢复已停止'),{superseded:true});
+   }
    if(!command.idempotency_key.startsWith('recover-'))this.recovery.delete(bot.id);
    if(command.kind==='switch-protocol'){
      const target=/^switch-protocol-(napcat|llbot):/.exec(command.idempotency_key)?.[1];
@@ -266,11 +270,12 @@ export class NodeAgent {
    })}
    else if(command.kind==='restart'&&command.idempotency_key.startsWith('recover-protocol-')){
      await this.db.transaction(async tx=>{
-       const [owner]=await tx.query('SELECT generation,revision,desired_state,deleted_at FROM bots WHERE id=$1 FOR UPDATE',[bot.id]);
+       const [owner]=await tx.query('SELECT generation,revision,desired_state,deleted_at,protocol,health FROM bots WHERE id=$1 FOR UPDATE',[bot.id]);
        const record=await this.host.record(bot.id,'protocol');
        if(!owner||owner.deleted_at||owner.desired_state!=='running'||owner.generation!==pctx!.generation||owner.revision!==bot.revision||!record||command.idempotency_key!==`recover-protocol-${pctx!.generation}-${record.pid}-${record.created}`)throw Object.assign(new Error('协议恢复已被新操作或进程替代'),{superseded:true});
        const health=await protocol.getHealth(pctx!);
-       if(health.online||health.metrics?.restartRequested!==true||health.pid!==record.pid)throw Object.assign(new Error('协议已恢复或请求已失效'),{superseded:true});
+       const resume=canResumeQQ(owner.protocol,pctx!.expectedUin,owner.health?.onlineSince,{...health,loginRequired:health.loginRequired||owner.health?.protocol?.loginRequired})&&qqReconnectDue(owner.health?.offline?.since,record.created,Date.now());
+       if(health.online||requiresQQLogin(health)||owner.health?.protocol?.loginRequired||(!resume&&health.metrics?.restartRequested!==true)||health.pid!==record.pid)throw Object.assign(new Error('协议已恢复或请求已失效'),{superseded:true});
        // Holding the existing Bot lifecycle lock prevents a user stop/login
        // from interleaving replacement. ProcessHost rechecks PID birth.
        await this.host.stop(bot.id,'protocol','native-login-service-recovery',{pid:record.pid,created:record.created});
@@ -386,8 +391,13 @@ export class NodeAgent {
  async healthSnapshot(){await this.reconcileSharedMembers();if(this.closed)return;await this.host.beginInspection();try{const selected=await this.db.query("SELECT b.* FROM bots b WHERE b.deleted_at IS NULL AND (b.desired_state='running' OR (b.desired_state='offline' AND b.observed_state!='offline') OR b.health->'ai'->>'alive'='true' OR b.health->'protocol'->>'alive'='true' OR EXISTS (SELECT 1 FROM login_sessions s WHERE s.bot_id=b.id AND s.state NOT IN ('online','expired','canceled','failed'))) ORDER BY b.created_at,b.id");const running=new Set(selected.filter(b=>b.desired_state==='running').map(b=>b.id));for(const id of this.recovery.keys())if(!running.has(id))this.recovery.delete(id);for(const bot of selected){if(this.closed)break;if(this.operations.has(bot.id))continue;this.healthMembers.add(bot.id);try{
        if(bot.desired_state==='offline'){await this.db.query("UPDATE commands SET status='pending',error=NULL WHERE bot_id=$1 AND generation=$2 AND kind='evict-offline' AND status='failed' AND finished_at<now()-interval '30 seconds'",[bot.id,bot.generation]);continue}
        const pctx=await this.protocolContext(bot),probeCtx:AiProbeContext={botId:pctx.botId,generation:pctx.generation,revision:bot.revision,aiPort:pctx.aiPort,token:pctx.token};const protocol=await this.protocols[bot.protocol].getHealth(pctx);
-       if(protocol.online){try{const uin=await this.protocols[bot.protocol].queryIdentity(pctx);const [identityOwner]=await this.db.query('SELECT generation,deleted_at FROM bots WHERE id=$1',[bot.id]);if(!identityOwner||identityOwner.deleted_at||identityOwner.generation!==bot.generation)continue;if(!uin||!/^\d{5,20}$/.test(uin)||(pctx.expectedUin&&pctx.expectedUin!==uin))throw Object.assign(new Error('恢复会话的QQ身份不匹配'),{identityConflict:true});await this.db.transaction(async tx=>{const [owner]=await tx.query('SELECT generation,deleted_at,desired_state,expected_uin FROM bots WHERE id=$1 FOR UPDATE',[bot.id]);if(!owner||owner.deleted_at||owner.desired_state==='deleting'||owner.generation!==bot.generation)return;const [binding]=await tx.query('SELECT qq_uin FROM qq_bindings WHERE bot_id=$1',[bot.id]);const pinned=binding?.qq_uin||owner.expected_uin;if(pinned&&pinned!==uin)throw Object.assign(new Error('QQ身份不一致，换号需删除机器人后重新创建'),{identityConflict:true});await tx.query("INSERT INTO qq_bindings(bot_id,qq_uin,binding_kind) VALUES($1,$2,$3) ON CONFLICT(bot_id) DO UPDATE SET qq_uin=$2,binding_kind=$3",[bot.id,uin,bot.protocol==='mock'?'mock':'real'])})}catch(e){if(!(e as any).identityConflict&&(e as any).code!=='23505')throw e;const [identityOwner]=await this.db.query('SELECT generation,deleted_at FROM bots WHERE id=$1',[bot.id]);if(!identityOwner||identityOwner.deleted_at||identityOwner.generation!==bot.generation)continue;await this.protocols[bot.protocol].stop(bot.id);protocol.online=false;protocol.alive=false;protocol.ready=false;protocol.detail='QQ身份冲突，已停止协议进程';await this.log(bot,protocol.detail)}}
-       if(hasManagedQQLogin(bot.protocol))await this.recoverLoginSession(pctx,protocol);
+       if(protocol.online){try{const uin=await this.protocols[bot.protocol].queryIdentity(pctx);const [identityOwner]=await this.db.query('SELECT generation,deleted_at FROM bots WHERE id=$1',[bot.id]);if(!identityOwner||identityOwner.deleted_at||identityOwner.generation!==bot.generation)continue;if(!uin||!/^\d{5,20}$/.test(uin)||(pctx.expectedUin&&pctx.expectedUin!==uin))throw Object.assign(new Error('恢复会话的QQ身份不匹配'),{identityConflict:true});await this.db.transaction(async tx=>{const [owner]=await tx.query('SELECT generation,deleted_at,desired_state,expected_uin FROM bots WHERE id=$1 FOR UPDATE',[bot.id]);if(!owner||owner.deleted_at||owner.desired_state==='deleting'||owner.generation!==bot.generation)return;const [binding]=await tx.query('SELECT qq_uin FROM qq_bindings WHERE bot_id=$1',[bot.id]);const pinned=binding?.qq_uin||owner.expected_uin;if(pinned&&pinned!==uin)throw Object.assign(new Error('QQ身份不一致，换号需删除机器人后重新创建'),{identityConflict:true});await tx.query("INSERT INTO qq_bindings(bot_id,qq_uin,binding_kind) VALUES($1,$2,$3) ON CONFLICT(bot_id) DO UPDATE SET qq_uin=$2,binding_kind=$3",[bot.id,uin,bot.protocol==='mock'?'mock':'real'])})}catch(e){if(!(e as any).identityConflict&&(e as any).code!=='23505')throw e;const [identityOwner]=await this.db.query('SELECT generation,deleted_at FROM bots WHERE id=$1',[bot.id]);if(!identityOwner||identityOwner.deleted_at||identityOwner.generation!==bot.generation)continue;await this.protocols[bot.protocol].stop(bot.id);protocol.online=false;protocol.alive=false;protocol.ready=false;protocol.detail='QQ身份冲突，已停止协议进程';protocol.loginState='verification_required';await this.log(bot,protocol.detail)}}
+       if(hasManagedQQLogin(bot.protocol)){
+        // A failed probe cannot erase a confirmed need for user login. Only
+        // a verified online identity or a new user lifecycle clears it.
+        protocol.loginRequired=!protocol.online&&(requiresQQLogin(protocol)||bot.health?.protocol?.loginRequired===true);
+        await this.recoverLoginSession(pctx,protocol);
+       }
        const aiNeeded=bot.runtime_mode!=='shared'||!!protocol.online;
        if(bot.runtime_mode==='shared'&&(bot.desired_state!=='running'||!aiNeeded)){if(this.sharedOperation)continue;this.sharedOperation=true;try{await this.shared.stop(bot.id)}finally{this.sharedOperation=false}}
        const ai=aiNeeded?await this.aiFor(bot).probe(probeCtx):{alive:false,ready:false,detail:'QQ离线，未占用共享SDK成员位'};
@@ -396,7 +406,9 @@ export class NodeAgent {
        const onlineSince=bot.health?.onlineSince||(protocol.online?Date.now():undefined);
        const offline=(bot.desired_state==='running'||ai.alive||protocol.alive)?observeOffline(bot.health?.offline,protocol,Date.now(),this.offlineGrace,{ai:bot.desired_state==='running'&&aiNeeded?ai:undefined,onlineSince,requestedAt:bot.health?.runtimeRequestedAt}):undefined;
        const health={ai,protocol,offline,onlineSince,runtimeRequestedAt:bot.health?.runtimeRequestedAt,mode:bot.protocol==='mock'?'mock':'real',sampledAt:new Date().toISOString()};const observed=bot.desired_state==='stopped'?'stopped':!aiNeeded?(protocol.alive?'degraded':'starting'):ai.ready?(protocol.online?'online':'degraded'):ai.alive?'starting':'failed';await this.db.query('UPDATE bots SET health=$2,observed_state=$3,applied_revision=CASE WHEN $4 THEN $5 ELSE applied_revision END WHERE id=$1 AND generation=$6 AND revision=$5 AND desired_state=$7',[bot.id,JSON.stringify(health),observed,ai.ready,probeCtx.revision,probeCtx.generation,bot.desired_state]);await this.db.query('UPDATE instances SET heartbeat_at=now(),health=$2,generation=$3 WHERE bot_id=$1 AND EXISTS(SELECT 1 FROM bots WHERE id=$1 AND generation=$3 AND revision=$4)',[bot.id,JSON.stringify(health),probeCtx.generation,probeCtx.revision]);
-       if(evictionDue(offline,Date.now())&&!(login&&new Date(login.expires_at).getTime()>Date.now())){
+       const automaticQQ=bot.desired_state==='running'&&canResumeQQ(bot.protocol,pctx.expectedUin,onlineSince,protocol);
+       const reconnectDue=automaticQQ&&protocol.alive&&qqReconnectDue(offline?.since,(await this.host.record(bot.id,'protocol'))?.created,Date.now());
+       if(!automaticQQ&&evictionDue(offline,Date.now())&&!(login&&new Date(login.expires_at).getTime()>Date.now())){
          await this.db.transaction(async tx=>{
            const [owner]=await tx.query('SELECT * FROM bots WHERE id=$1 FOR UPDATE',[bot.id]);
            if(!owner||owner.deleted_at||owner.generation!==bot.generation||owner.revision!==bot.revision||owner.desired_state!==bot.desired_state)return;
@@ -415,8 +427,9 @@ export class NodeAgent {
         if(ai.ready)retry.unreadySince=undefined;else retry.unreadySince??=now;
         const readinessExpired=ai.alive&&!ai.ready&&now-(retry.unreadySince??now)>=120000;
         const decision=async(value:string)=>{if(retry.decision!==value){retry.decision=value;await this.log(bot,`recovery decision=${value} attempts=${retry.attempts} next=${retry.next} aiAlive=${ai.alive} protocolAlive=${protocol.alive}`)}};
-        if((!aiNeeded||ai.ready)&&protocol.ready){if(!retry.healthySince)retry.healthySince=now;if(now-retry.healthySince>60000){retry.attempts=0;retry.next=0}retry.decision=undefined}
-        else if(aiNeeded&&!ai.alive||!protocol.alive||aiNeeded&&readinessExpired||protocol.metrics?.restartRequested===true){
+        if(protocol.loginRequired)await decision('user-login-required');
+        else if((!aiNeeded||ai.ready)&&protocol.ready&&(!hasManagedQQLogin(bot.protocol)||protocol.online)){if(!retry.healthySince)retry.healthySince=now;if(now-retry.healthySince>60000){retry.attempts=0;retry.next=0}retry.decision=undefined}
+        else if(aiNeeded&&!ai.alive||!protocol.alive||aiNeeded&&readinessExpired||protocol.metrics?.restartRequested===true||reconnectDue){
          retry.healthySince=0;
          if(login||pending)await decision(login?'login-pending':'command-pending');
          else if(now<retry.next)await decision(retry.attempts>=3?'slow-backoff':'backoff');
@@ -424,8 +437,8 @@ export class NodeAgent {
          else{
           try{
            const id=randomUUID();let recoveryKey=`recover-${pctx.generation}-${readinessExpired?'readiness-':''}${id}`;
-           if(protocol.metrics?.restartRequested===true){const record=await this.host.record(bot.id,'protocol');if(!record||record.pid!==protocol.pid)continue;recoveryKey=`recover-protocol-${pctx.generation}-${record.pid}-${record.created}`}
-           const inserted=await this.db.query("INSERT INTO commands(id,bot_id,kind,generation,idempotency_key) SELECT $4,id,'restart',generation,$2 FROM bots WHERE id=$1 AND generation=$3 AND desired_state='running' AND deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM commands WHERE bot_id=$1 AND status IN ('pending','processing')) ON CONFLICT(bot_id,idempotency_key) DO UPDATE SET status='pending',error=NULL,finished_at=NULL WHERE commands.status='failed' AND commands.idempotency_key LIKE 'recover-protocol-%' AND commands.finished_at<now()-interval '10 seconds' RETURNING id",[bot.id,recoveryKey,pctx.generation,id]);
+           if(protocol.metrics?.restartRequested===true||protocol.alive&&reconnectDue){const record=await this.host.record(bot.id,'protocol');if(!record||record.pid!==protocol.pid)continue;recoveryKey=`recover-protocol-${pctx.generation}-${record.pid}-${record.created}`}
+           const inserted=await this.db.query("INSERT INTO commands(id,bot_id,kind,generation,idempotency_key) SELECT $4,id,'restart',generation,$2 FROM bots WHERE id=$1 AND generation=$3 AND desired_state='running' AND deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM commands WHERE bot_id=$1 AND status IN ('pending','processing')) ON CONFLICT(bot_id,idempotency_key) DO UPDATE SET status='pending',error=NULL,finished_at=NULL WHERE commands.status IN ('failed','superseded') AND commands.idempotency_key LIKE 'recover-protocol-%' AND commands.finished_at<now()-interval '10 seconds' RETURNING id",[bot.id,recoveryKey,pctx.generation,id]);
            if(inserted.length){retry.attempts++;retry.unreadySince=now;retry.recent.push(now);retry.next=now+(retry.attempts>=3?600000:5000*2**retry.attempts)+randomInt(0,1001);retry.decision=undefined;await this.log(bot,`recovery queued command=${inserted[0].id} attempt=${retry.attempts} next=${retry.next}`)}
            else await decision('superseded-or-pending');
           }catch(error){retry.next=now+10000;await decision('insert-failed');throw error}
