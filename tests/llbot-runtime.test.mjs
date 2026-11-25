@@ -15,11 +15,23 @@ import {resourceDecision} from '../adapters/protocol/llbot/resource-policy.mjs';
 import {installActions,qzoneForm,qzoneReceipt} from '../adapters/protocol/llbot/actions.mjs';
 import {prepareRuntime,startRuntime,validateManifest} from '../adapters/protocol/llbot/runner.mjs';
 import {patchRuntime} from '../adapters/protocol/llbot/patch-runtime.mjs';
+import {privateQqShell} from '../adapters/protocol/llbot/qq-assets.mjs';
 
 const hash=x=>createHash('sha256').update(x).digest('hex');
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return{promise,resolve}};
 async function listen(server){await new Promise(r=>server.listen(0,'127.0.0.1',r));return server.address().port}
 const deadline=promise=>Promise.race([promise,new Promise((_,reject)=>{const timer=setTimeout(()=>reject(Error('local wire deadline')),4000);timer.unref()})]);
+function shellFixture(){const bytes=Buffer.alloc(160);bytes.write('MZ');bytes.writeUInt32LE(64,60);bytes.write('PE\0\0',64);bytes.writeUInt16LE(0x8664,68);Buffer.from('4889ce488b114c8b41084929d0488b4918e801020304','hex').copy(bytes,96);return bytes}
+
+test('private QQ shell changes only the unique x64 verification call and never mutates shared bytes',()=>{
+ const original=shellFixture(),before=Buffer.from(original),patched=privateQqShell(original);
+ assert.deepEqual(original,before);assert.deepEqual(patched.subarray(113,118),Buffer.from([0xb8,1,0,0,0]));
+ assert.deepEqual(patched.subarray(0,113),original.subarray(0,113));assert.deepEqual(patched.subarray(118),original.subarray(118));
+ assert.throws(()=>privateQqShell(Buffer.alloc(10)),/Unsupported/);
+ const duplicate=Buffer.concat([original,original]);assert.throws(()=>privateQqShell(duplicate),/not unique/);
+ assert.throws(()=>privateQqShell(patched),/not unique/);
+ const arm=Buffer.from(original);arm.writeUInt16LE(0xaa64,68);assert.throws(()=>privateQqShell(arm),/Unsupported/);
+});
 
 async function fixture(){
  const root=await mkdtemp(path.join(os.tmpdir(),'fishbot-llbot-')),runtime=path.join(root,'runtime');
@@ -28,6 +40,7 @@ async function fixture(){
  await writeFile(path.join(runtime,'bin/pmhq/pmhq_loader.js'),'// inert fixture');
  const qq=path.join(root,'qq-assets'),app=path.join(qq,'versions/9.9.37-54395/resources/app');await mkdir(path.join(app,'assets'),{recursive:true});
  await writeFile(path.join(qq,'QQ.exe'),'inert native fixture');await writeFile(path.join(qq,'versions/config.json'),JSON.stringify({curVersion:'9.9.37-54395'}));await writeFile(path.join(app,'package.json'),JSON.stringify({main:'./application.asar/app_launcher/index.js'}));await writeFile(path.join(app,'application.asar'),'inert QQ archive');
+ await writeFile(path.join(qq,'versions/9.9.37-54395/QQNT.dll'),shellFixture());
  await writeFile(path.join(runtime,'fishbot-upstream.json'),JSON.stringify({version:'8.3.2-test',platform:process.platform,sha256:{'bin/llbot/llbot.js':hash('// inert fixture')}}));
  const socketServer=createServer(),port=await listen(socketServer);await new Promise(r=>socketServer.close(r));
  const bot=path.join(root,'bot');await mkdir(bot);
@@ -48,6 +61,9 @@ test('managed runtime validates private ports, version, hashes and per-Bot data 
  assert.equal(JSON.parse(await readFile(path.join(path.dirname(f.m.qqPath),app,'package.json'),'utf8')).main,'./application.asar/app_launcher/index.js','shared QQ metadata stays immutable');
  assert.equal(JSON.parse(await readFile(path.join(path.dirname(a.qqPath),app,'package.json'),'utf8')).main,'./fishbot-entry.cjs');
  assert.ok((await readFile(path.join(path.dirname(a.qqPath),app,'fishbot-entry.cjs'),'utf8')).includes(JSON.stringify(a.bootstrap)));assert.equal((await prepareRuntime(f.file)).qqPath,a.qqPath,'same Bot reuses only its own launcher');
+ const sourceDll=path.join(path.dirname(f.m.qqPath),'versions/9.9.37-54395/QQNT.dll'),privateDll=path.join(path.dirname(a.qqPath),'versions/9.9.37-54395/QQNT.dll');
+ assert.deepEqual(await readFile(sourceDll),shellFixture());assert.deepEqual(await readFile(privateDll),privateQqShell(shellFixture()));
+ await writeFile(privateDll,'unexpected native change');await assert.rejects(prepareRuntime(f.file),/shell ownership/);
  await writeFile(path.join(f.runtime,'bin/llbot/llbot.js'),'changed');await assert.rejects(prepareRuntime(f.file),/integrity/);
 });
 

@@ -38,6 +38,15 @@ assets are linked, while version and Electron main metadata are private. That
 main executes the Bot's profile/network bootstrap before QQ's original entry.
 The shared QQ installation is not edited. Profile proof must match PMHQ's real
 QQ PID before admission. Child output is piped through ProcessHost logging.
+Windows QQNT also verifies its main metadata before running Electron. The
+private projection therefore gets its own QQNT.dll with only the unique x64
+entry-verification call adjusted (the LiteLoaderQQNT/QQNTFileVerifyPatch
+signature). Unsupported/ambiguous shells fail before launch. The original
+signed DLL remains unchanged; reuse verifies the private DLL against the
+expected original or transformed bytes and replaces files atomically, never
+writing through a shared hard link. The controlled native probe reached the
+private entry, produced the profile/network proof and obtained a login QR.
+This does not certify a completed QQ login or business actions.
 
 ## Ownership and transport
 
