@@ -23,11 +23,17 @@ export class BilibiliExecutor {
  constructor(public db:Sql,public root:string,private key:Buffer,public web=new BiliWeb()) {this.repo=new BilibiliTools(db);this.accounts=new BiliAccounts(db,key,web)}
  // Called by the existing Agent tick. The network task is detached from that
  // tick, bounded, and joined on shutdown. No per-bot tasks or timers.
- tick(){if(this.stopped||this.busy||Date.now()<this.nextRun)return;this.nextRun=Date.now()+3000;this.controller=new AbortController();const signal=this.controller.signal;void this.flight.run(()=>this.run(signal).catch(e=>{console.error('B站工具执行器失败',e instanceof BiliError?e.code:'executor_error')}).finally(()=>{this.controller=undefined}))}
+ tick(){if(this.stopped||this.busy||Date.now()<this.nextRun)return;this.nextRun=Date.now()+3000;this.controller=new AbortController();const signal=this.controller.signal;void this.flight.run(()=>this.run(signal).catch(e=>{if(!signal.aborted)this.failure('run',e)}).finally(()=>{this.controller=undefined}))}
+ private failure(stage:string,error:unknown,botId?:string){
+  const candidate=error instanceof BiliError?error.code:(error as any)?.code;
+  const code=typeof candidate==='string'&&/^[a-zA-Z0-9_]{1,80}$/.test(candidate)?candidate:'executor_error';
+  const type=error instanceof Error&&/^[a-zA-Z0-9_]{1,80}$/.test(error.name)?error.name:'unknown';
+  console.error('B站工具执行器失败',JSON.stringify({at:new Date().toISOString(),stage,botId,code,type}));
+ }
  async stop(){this.stopped=true;this.controller?.abort();this.mediaController?.abort();await this.busy;await this.mediaBusy}
  async recover(){await this.accounts.recover();await recoverMedia(this.root,this.db)}
  async run(signal:AbortSignal){
-  if(Date.now()-this.lastBridge>3000){this.lastBridge=Date.now();await this.publishBridges()}
+  if(Date.now()-this.lastBridge>3000){this.lastBridge=Date.now();await this.publishBridges(signal)}
   if(this.stopped||signal.aborted)return;
   const job=await this.repo.claim(this.owner,!!this.mediaBusy||!this.mediaReady);
   if(job){
@@ -45,24 +51,33 @@ export class BilibiliExecutor {
   if(this.stopped||signal.aborted)return;
   if(Date.now()-this.lastAccount>3000){this.lastAccount=Date.now();await this.accounts.tick(signal)}
  }
- async publishBridges(){
+ async publishBridges(signal?:AbortSignal){
+  if(this.stopped||signal?.aborted)return;
   if(Date.now()-this.mediaCheckAt>60000){this.mediaStatus=await mediaReadiness(this.root);this.mediaCheckAt=Date.now()}
   this.mediaReady=this.mediaStatus.ready;await writeFile(path.join(this.root,'media-status.json'),JSON.stringify({at:Date.now(),checkedAt:this.mediaCheckAt,...this.mediaStatus}),{mode:0o600});
   const [cooldown]=await this.db.query("SELECT until_at FROM tool_service_cooldowns WHERE service='bilibili' AND until_at>now()");
   const bots=await this.db.query("SELECT b.id,b.tenant_id,b.generation,b.revision,b.desired_state,b.health,i.token,s.revision AS settings_revision,s.config,(s.model_secret IS NOT NULL) AS has_model_key,a.uid,a.state AS account_state,a.refresh_state FROM bots b JOIN instances i ON i.bot_id=b.id LEFT JOIN bilibili_settings s ON s.bot_id=b.id AND s.tenant_id=b.tenant_id LEFT JOIN bilibili_accounts a ON a.bot_id=b.id AND a.tenant_id=b.tenant_id WHERE b.deleted_at IS NULL AND (s.bot_id IS NOT NULL OR b.desired_state='running')");
   for(const b of bots){
-   b.config??={enabled:false,scopes:[],allowAutonomous:false};
-   const available=runtimeStatus(b).online&&runtimeStatus(b).aiReady;
-   const pending=available?await this.repo.pending(b):[];
-   if(available)await this.repo.reconcileBudgets(b);
-   for(const job of pending.filter(j=>j.authority==='autonomous'&&j.operation==='analyze'&&j.completion_state==='pending'&&j.generation===b.generation&&j.config_revision===b.revision&&j.settings_revision===b.settings_revision)){
-    await this.db.query("INSERT INTO autonomy_wakes(bot_id,tenant_id,dedupe_key,epoch,due_at,reason) SELECT bot_id,tenant_id,$3,epoch,now(),'tool-completed' FROM autonomy_settings WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$4 AND config->>'mode'='active' ON CONFLICT(bot_id,dedupe_key) DO NOTHING",[b.id,b.tenant_id,'bilibili:'+job.id,job.mode_epoch]);
-   }
-   const root=path.join(this.root,'bots',b.id,'ai');await mkdir(root,{recursive:true});
-   const value=JSON.stringify({version:1,botId:b.id,generation:b.generation,revision:b.revision,settingsRevision:b.settings_revision,allowAutonomous:b.config.allowAutonomous,hasCompletions:pending.some(j=>j.authority==='foreground'&&['pending','claimed'].includes(j.completion_state)),cooldownUntil:cooldown?.until_at??null,url:process.env.FISHBOT_TOOL_API_URL||'http://127.0.0.1:8787',token:bridgeToken(this.key,b.id,b.generation,b.revision),operations:this.catalog(b)});
-   const file=path.join(root,'bilibili-bridge.json');
-   // Only changed snapshots are replaced; idle tick does not churn files.
-   if(this.snapshots.get(b.id)===value)continue;await atomicJson(file,JSON.parse(value));this.snapshots.set(b.id,value);
+   if(this.stopped||signal?.aborted)return;
+   let stage='pending';
+   try{
+    b.config??={enabled:false,scopes:[],allowAutonomous:false};
+    const available=runtimeStatus(b).online&&runtimeStatus(b).aiReady;
+    const pending=available?await this.repo.pending(b):[];
+    stage='budget';if(available)await this.repo.reconcileBudgets(b);
+    if(this.stopped||signal?.aborted)return;
+    stage='completion_wake';
+    for(const job of pending.filter(j=>j.authority==='autonomous'&&j.operation==='analyze'&&j.completion_state==='pending'&&j.generation===b.generation&&j.config_revision===b.revision&&j.settings_revision===b.settings_revision)){
+     await this.db.query("INSERT INTO autonomy_wakes(bot_id,tenant_id,dedupe_key,epoch,due_at,reason) SELECT bot_id,tenant_id,$3,epoch,now(),'tool-completed' FROM autonomy_settings WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$4 AND config->>'mode'='active' ON CONFLICT(bot_id,dedupe_key) DO NOTHING",[b.id,b.tenant_id,'bilibili:'+job.id,job.mode_epoch]);
+    }
+    if(this.stopped||signal?.aborted)return;
+    stage='bridge';const root=path.join(this.root,'bots',b.id,'ai');await mkdir(root,{recursive:true});
+    if(this.stopped||signal?.aborted)return;
+    const value=JSON.stringify({version:1,botId:b.id,generation:b.generation,revision:b.revision,settingsRevision:b.settings_revision,allowAutonomous:b.config.allowAutonomous,hasCompletions:pending.some(j=>j.authority==='foreground'&&['pending','claimed'].includes(j.completion_state)),cooldownUntil:cooldown?.until_at??null,url:process.env.FISHBOT_TOOL_API_URL||'http://127.0.0.1:8787',token:bridgeToken(this.key,b.id,b.generation,b.revision),operations:this.catalog(b)});
+    const file=path.join(root,'bilibili-bridge.json');
+    // Only changed snapshots are replaced; idle tick does not churn files.
+    if(this.snapshots.get(b.id)===value)continue;await atomicJson(file,JSON.parse(value));this.snapshots.set(b.id,value);
+   }catch(error){if(this.stopped||signal?.aborted)return;this.failure(stage,error,b.id)}
   }
  }
  private mediaCheckAt=0;private mediaStatus:Awaited<ReturnType<typeof mediaReadiness>>={ready:false,code:'unchecked',reason:'媒体依赖尚未核实',asrConfigured:false};

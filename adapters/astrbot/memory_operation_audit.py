@@ -88,6 +88,9 @@ class Audit:
             for name,total in reviewed['eligible'].items():
                 offered=reviewed['offered'][name]
                 self.counts[name]['input_coverage']={'eligible':total,'offered':offered,'omitted':total-offered,'boundary':'deterministic_review_pages','pages':reviewed['pages'],'completed':reviewed['completed']}
+            for category,key in (('facts','fact_operations'),('relations','relation_operations'),('products','memory_operations')):
+                rejected=reviewed.get('rejections',{}).get(key)
+                if rejected:self.counts[category]['review_rejections']=dict(rejected)
         visibility=prompt.get('previous_commitments_visibility',{})
         if visibility:
             self.counts['core_note']['commitment_input_coverage']={k:visibility[k] for k in ('total','shown','omitted') if k in visibility}

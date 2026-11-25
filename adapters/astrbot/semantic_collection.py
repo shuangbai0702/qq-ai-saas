@@ -7,7 +7,7 @@ import copy,hashlib,json,math,re
 from context_protocol import model_json,source
 from semantic_batch import event_key,origin,discard_failed_service_inputs,retired_members
 from summary_material import snapshots,valid_material,remember,material_storage_view
-from input_reconciliation import ambient_retirement_candidates,unresolved_retirement_inputs
+from input_reconciliation import ambient_retirement_candidates,unresolved_retirement_inputs,blocked_compression_inputs
 from activation_rounds import material_subject
 
 # Disposable observations can outlive their old pending row. They are still
@@ -171,10 +171,17 @@ def unavailable_stamp(db,discarded,scope='bot_shared'):
         for logical,event in sorted({pair,(scope,item['event'])}):
             for table in ('memory_pending','memory_rounds','memory_round_material','memory_message_sources','pipeline_scope_work','pipeline_work_inputs',*(p[0] for p in OBSERVATION_POOLS)):
                 if table in tables:values.append([table,logical,event,list(db.execute('SELECT * FROM '+table+' WHERE scope=? AND event=?',(logical,event)))])
-    for table in ('fishbot_readonly_journals','memory_checkpoint_archives','fishbot_operator_session_archives'):
-        if table in tables:
-            rows=db.execute('SELECT scope,sha FROM '+table+' ORDER BY rowid') if scope=='bot_shared' else db.execute('SELECT scope,sha FROM '+table+' WHERE scope=? ORDER BY rowid',(model_json(scope),))
-            values.append([table,list(rows)])
+    # Only the selected physical blocks are dependencies. Appending an unrelated
+    # event or replacing an unrelated base region cannot change these originals.
+    selected={origin(scope,item['event']) for item in discarded}
+    blocks=set()
+    for messages,_ in _journals(db,tables):
+        for index,message in enumerate(messages):
+            o=source(message)
+            if not o or (o['scope'],str(o['event_id'])) not in selected:continue
+            end=next((j for j in range(index+1,len(messages)) if messages[j].get('role')=='user'),len(messages))
+            blocks.add(model_json(messages[index:end]))
+    values.append(['journal_blocks',sorted(blocks)])
     return hashlib.sha256(model_json(values).encode()).hexdigest()
 
 
@@ -221,7 +228,7 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False,source_events
         if table in tables:scopes.update(r[0] for r in db.execute('SELECT DISTINCT scope FROM '+table) if _channel(r[0]))
     if source_events is None:
         for scope in sorted(scopes):discard_failed_service_inputs(db,scope)
-    candidates={};materials={};anchors={};provided={};snippets={};raw_observations={};completed_anchors=set()
+    candidates={};materials={};anchors={};provided={};snippets={};raw_observations={};completed_anchors=set();blocked={}
     def register(pair,person=None,at=None):
         if not pair or not eligible(pair):return
         if person is not None and str(person).strip():person=material_subject(db,'bot_shared',model_json(list(pair)),person)
@@ -263,6 +270,29 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False,source_events
                 snippets.setdefault(pair,set()).add(row[text_column])
             if table=='dialogue_feedback' and row.get('reply'):
                 anchors.setdefault(pair,set()).add(row['reply'])
+    # Old blocked rows can be the last surviving original. Offer them once at
+    # this legal cut, without inventing a business round or replaying the Work.
+    if discard_unavailable and source_events is None:
+        from context_protocol import event_message,protocol_input_scope
+        from credential_redaction import redact
+        for channel,event,person,raw,at,digest,status in blocked_compression_inputs(db,tables):
+            pair=identity(channel,event)
+            if not pair or not _time(at) or at>cutoff or not eligible(pair):continue
+            register(pair,person,at)
+            try:
+                value=json.loads(raw)
+                canonical=json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':'))
+                if (not isinstance(value,dict) or protocol_input_scope(value)!=channel
+                    or str(value.get('message_id',''))!=str(event) or str(value.get('user_id',''))!=str(person)
+                    or not digest or hashlib.sha256(canonical.encode()).hexdigest()!=digest):continue
+            except (TypeError,ValueError):continue
+            # Keep the protocol content typed as data; unavailable URLs are not
+            # downloaded or presented as decoded images. Unknown receipt stays
+            # unknown and cannot become a publishing/retry instruction.
+            content={key:value[key] for key in ('message','notice_type','request_type','sub_type') if key in value}
+            if not content:continue
+            blocked[pair]=event_message({'scope':channel,'event_id':str(event),'sender_id':str(person),'at':at},
+                redact(model_json({'protocol_input':content,'input_status':status})))
     def capture(item,logical,upper_bound=None):
         if source_events is not None and isinstance(item,dict) and 'event' in item:
             selected=identity(logical,item['event'])
@@ -346,6 +376,9 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False,source_events
                 end=next((j for j in range(index+1,len(messages)) if messages[j].get('role')=='user'),len(messages))
                 block=copy.deepcopy(messages[index:end])
                 if block not in raw_observations.setdefault(pair,[]):raw_observations[pair].append(block)
+    for pair,message in blocked.items():
+        if pair not in raw_observations and not any(m.get('complete') is True for m in materials.get(pair,[])):
+            raw_observations[pair]=[[message]]
     wanted=[]
     for pair,item in candidates.items():
         if not item['times'] and not item['bounds']:raise ValueError('semantic_collection_time_missing')

@@ -43,7 +43,7 @@ class Validation(unittest.IsolatedAsyncioTestCase):
    def reject(*args):raise ValueError(reason)
    with self.assertRaisesRegex(ValueError,reason):await summary_model_output(NS(text_chat_stream=stream),{},lambda:True,{},800,on_decode=reject)
    self.assertEqual(len(calls),1)
- async def test_page_structure_retries_but_identity_rejection_does_not(self):
+ async def test_optional_page_entry_does_not_retry_or_bypass_page_ownership(self):
   from memory_review import validate_page
   page={'fact_versions':[],'relation_versions':[],'products':{},'scope':'bot_shared'}
   calls=[]
@@ -51,8 +51,7 @@ class Validation(unittest.IsolatedAsyncioTestCase):
    calls.append(kw)
    yield response('{"fact_operations":[12]}' if len(calls)==1 else '{"fact_operations":[]}')
   result=await summary_model_output(NS(text_chat_stream=stream),{},lambda:True,{},None,on_decode=lambda data,diagnostics:validate_page(data,page))
-  self.assertEqual(len(calls),2);self.assertEqual(result[1],{'fact_operations':[]})
-  self.assertIn('$.fact_operations[0]',calls[1]['system_prompt'])
+  self.assertEqual(len(calls),1);self.assertEqual(result[1],{'fact_operations':[]})
  async def test_failed_dispatch_does_not_count_or_send_a_model_request(self):
   from summary_response import SummaryPersistenceError
   calls=[];metrics={}

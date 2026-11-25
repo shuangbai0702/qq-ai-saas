@@ -63,6 +63,41 @@ class Reliability(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(st.compression_boundary);self.assertFalse(st.compression_active)
         st.active=0
 
+    async def test_cancel_during_internal_receipt_lookup_settles_original_owner(self):
+        from autonomous_runtime import AutonomousRuntime
+        st=self.st;effects=[{'id':'confirmed-operation','status':'confirmed'},{'id':'unknown-operation','status':'unknown'}]
+        for unloaded in (False,True):
+            with self.subTest(unloaded=unloaded):
+                settings={'expectedUin':'12345678','config':{'proactive':True}}
+                runtime=AutonomousRuntime.__new__(AutonomousRuntime)
+                runtime.settings={'member':settings};runtime.store=lambda *_:st
+                runtime.valid=lambda *_:True;runtime.provider=lambda *_:object()
+                runtime.running={};runtime.policies={};runtime.metrics={}
+                runtime.prepare_context=lambda *_:[];runtime.task_tools=lambda *_:None
+                extras={};event=NS(set_extra=lambda k,v:extras.__setitem__(k,v),get_extra=lambda k,d=None:extras.get(k,d))
+                runtime.make_event=lambda *_:event
+                bound=[];finished=[];work=NS(stage=lambda *_:None)
+                def bind(*_):bound.append(True);return work
+                pipeline=NS(handoff_current=lambda *_:True,bind_internal=bind,
+                    internal_result=lambda *_:{'effects':copy.deepcopy(effects),'result':None} if bound else None,
+                    finish_internal=lambda _,feedback,*args:finished.append(copy.deepcopy(feedback)),finish=lambda *_:None)
+                async def invoke(*args,**kwargs):
+                    return {'status':'completed','reason':'complete','text':'finished','usage':{},'evidence':[]}
+                runtime.invoke=invoke
+                reporting=asyncio.Event()
+                async def lookup(*_):reporting.set();await asyncio.Event().wait()
+                with patch.object(st,'pipeline',pipeline),patch('activity_context.scope_for',return_value=fixture.SCOPE),patch('pipeline_tools.dsh_busy',return_value=False),patch('external_action_budget.effects',side_effect=lookup):
+                    action={'kind':'research','objective':'check receipts','autonomousMoment':True}
+                    task=asyncio.create_task(runtime.execute('member',{'work':{'id':'original-action'},'action':action}))
+                    await asyncio.wait_for(reporting.wait(),2)
+                    if unloaded:runtime.settings={'member':{'replacement':True}}
+                    task.cancel('compression_drain_deadline')
+                    feedback=await asyncio.wait_for(task,2)
+                self.assertEqual(feedback['status'],'partial');self.assertEqual(feedback['effects'],effects)
+                self.assertEqual(feedback['stopReason'],'member_unloaded' if unloaded else 'task_canceled')
+                self.assertEqual(finished,[feedback]);self.assertEqual(st.execution_tasks,set())
+                if unloaded:self.assertEqual(runtime.metrics,{})
+
     async def test_later_sdk_notice_waits_outside_draining_ingress(self):
         # Execute the real installed wrapper with its closure dependencies;
         # no QQ transport, model or replacement admission implementation.

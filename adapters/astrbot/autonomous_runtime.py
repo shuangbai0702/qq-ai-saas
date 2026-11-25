@@ -456,8 +456,17 @@ class AutonomousRuntime:
         return event
 
     async def execute(self,id,data):
-        identity=data['work'];action=data['action'];s=self.settings[id];st=self.store(id,s)
+        s=self.settings[id];st=self.store(id,s)
         await st.wait_compression()
+        # Track from admission through receipt settlement, rather than only
+        # invoke()'s model lease. Queue waits themselves must not hold the cut.
+        task=asyncio.current_task();st.execution_tasks.add(task)
+        try:return await self._execute_admitted(id,data,s,st)
+        finally:
+            st.execution_tasks.discard(task);st.slot_changed.set()
+
+    async def _execute_admitted(self,id,data,s,st):
+        identity=data['work'];action=data['action']
         if self.settings.get(id) is not s or not self.valid(id,identity):raise PreflightRejected('stale_internal_work')
         moment=action.get('autonomousMoment') is True
         from pipeline_tools import dsh_busy
@@ -530,18 +539,22 @@ class AutonomousRuntime:
         except Exception as error:
             from native_internal import WorkBudgetExceeded,WorkStopped
             failure=str(error) if isinstance(error,(WorkBudgetExceeded,WorkStopped)) else type(error).__name__
+        import external_action_budget
+        try:effects=await external_action_budget.effects(s,identity,st.pipeline.internal_result(identity['id'])['effects'])
+        except asyncio.CancelledError:
+            # The local effect owner already persisted dispatch/receipt. A
+            # canceled report lookup cannot erase that truth or strand finish.
+            effects=st.pipeline.internal_result(identity['id'])['effects'];failure='task_canceled'
+        # The report await may itself outlive a member replacement. Recheck
+        # after it, before publishing to member metrics or cognitive state.
         if self.settings.get(id) is not s:
             # drain() keeps this original store alive until the task returns.
             # Only settle its immutable action; never write a replacement
             # member's memory, metrics or relationship state.
-            import external_action_budget
-            effects=await external_action_budget.effects(s,identity,st.pipeline.internal_result(identity['id'])['effects'])
             status='partial' if any(e['status']=='confirmed' for e in effects) else 'unknown' if effects else 'canceled'
             feedback={'status':status,'summary':'成员已卸载；原动作回执已保留，未派发部分已撤销。','stopReason':'member_unloaded','effects':effects,'evidence':result['evidence'],'unfinished':['核对原任务剩余部分；不得重复已经确认的操作。'] if effects else [action['objective']],'usage':result['usage'],'contextScope':scope,'toolResults':result.get('toolResults',[]),'checkpoints':result.get('checkpoints',[])}
             st.pipeline.finish_internal(work,feedback)
             return feedback
-        import external_action_budget
-        effects=await external_action_budget.effects(s,identity,st.pipeline.internal_result(identity['id'])['effects'])
         status='canceled' if failure=='task_canceled' else 'blocked' if failure else result['status']
         if any(e['status']=='unknown' for e in effects):status='partial' if any(e['status']=='confirmed' for e in effects) else 'unknown'
         elif (failure or result['status']!='completed') and any(e['status']=='confirmed' for e in effects):status='partial'

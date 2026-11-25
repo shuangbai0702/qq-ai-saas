@@ -166,10 +166,9 @@ def owned_record(file,root,images,*,nested=False):
 async def collect_protocol_originals(event,live,db=None,*,shared=False):
     """Ask this event's real OneBot for its raw image IDs, without DB awaits.
 
-    NapCat get_image inherits GetFile and returns FileApi.downloadMedia's
-    actual filePath. Its dataPath is this runner's isolated qq/profile. Only
-    the account's nt_data/Pic and NapCat/temp subtrees are eligible; neither
-    nt_db/login state nor global runtimes/sticker assets are image caches.
+    Both managed OneBot implementations return QQNT cache paths. Only the
+    isolated account's image subtrees are eligible; neither nt_db/login state
+    nor global runtimes/sticker assets are image caches.
     """
     lease=event.get_extra('_hosted_lease');work=event.get_extra('_hosted_pipeline')
     if not isinstance(lease,dict) or not lease.get('root') or not work:return
@@ -181,9 +180,7 @@ async def collect_protocol_originals(event,live,db=None,*,shared=False):
     if not re.fullmatch(r'\d{5,20}',account) or str(raw.get('self_id',''))!=account:return
     bot_root=Path(lease['root']).absolute()
     if bot_root.resolve()!=bot_root:raise ValueError('protocol_bot_root_changed')
-    profile=bot_root/'qq'/'profile'
-    account_data=profile/account/'nt_qq'/'nt_data'
-    roots=[account_data/'Pic',account_data/'Emoji'/'emoji-recv',profile/'NapCat'/'temp']
+    profiles=(bot_root/'qq'/'profile',bot_root/'llbot'/'qq'/'profile')
     originals=list(event.get_extra('_hosted_media_originals') or []);issues=[];seen=set()
     from image_codec import POLICY,_limited
     from PIL import Image
@@ -206,8 +203,11 @@ async def collect_protocol_originals(event,live,db=None,*,shared=False):
             # Linux QQ uses a hashed account directory directly under this
             # runner's isolated profile. Derive only the returned path's exact
             # layout; do not discover or authorize other profile subtrees.
-            candidates=list(roots)
-            if path.is_relative_to(profile):
+            candidates=[]
+            for profile in profiles:
+                account_data=profile/account/'nt_qq'/'nt_data'
+                candidates.extend((account_data/'Pic',account_data/'Emoji'/'emoji-recv',profile/'NapCat'/'temp'))
+                if not path.is_relative_to(profile):continue
                 parts=path.relative_to(profile).parts
                 if len(parts)>3 and re.fullmatch(r'nt_qq_[0-9a-f]{32}',parts[0]) and parts[1:3]==('nt_data','Pic'):
                     candidates.append(profile/parts[0]/'nt_data'/'Pic')
@@ -374,8 +374,20 @@ def drain(db):
     """
     if db.in_transaction:raise ValueError('media_drain_requires_committed_batch')
     initialize(db);db.commit()
+    tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    historical=0
+    if {'memory_semantic_batches','memory_semantic_purges'}<=tables:
+        # A capture mismatch cannot be retried after lawful retirement/purge.
+        # Keep its opaque diagnostic, separately from live failures. This is
+        # not a file-deletion receipt: owned pending/errors remain independent.
+        historical=db.execute("""SELECT count(*) FROM semantic_media_protocol_issues i
+          JOIN semantic_media_retired_events e ON e.event=i.event
+          JOIN memory_semantic_batches b ON b.checkpoint_id=e.checkpoint_id
+          JOIN memory_semantic_purges p ON p.checkpoint_id=b.checkpoint_id
+          WHERE b.state='retired' AND i.reason='protocol_image_not_in_captured_material'""").fetchone()[0]
     result={'deleted':0,'pending':0,'errors':0,'protected':0,
-            'protocol_unresolved':db.execute('SELECT count(*) FROM semantic_media_protocol_issues').fetchone()[0],
+            'protocol_unresolved':db.execute('SELECT count(*) FROM semantic_media_protocol_issues').fetchone()[0]-historical,
+            'protocol_retired_diagnostics':historical,
             'retired_untracked_records':0}
     # Capture-time hash misses are immutable observations, not retry jobs.
     # Once lawful retirement and raw-row purge both commit, discard this stale

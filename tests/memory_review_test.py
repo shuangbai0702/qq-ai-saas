@@ -32,9 +32,26 @@ class Review(unittest.IsolatedAsyncioTestCase):
   state=semantic_snapshot(self.db,fixture.SCOPE,['12345678'],self.cfg);split=pages(state,1800)
   field=split[-1]['fact_versions'][0]
   op={'op':'delete','scope':fixture.SCOPE,**field,'expected_version':field['version']}
-  with self.assertRaisesRegex(ValueError,'not_offered'):validate_page({'fact_operations':[op]},split[0])
+  attempted={'fact_operations':[op]};rejected={};validate_page(attempted,split[0],rejected)
+  self.assertEqual(attempted['fact_operations'],[]);self.assertEqual(rejected['fact_operations'],{'operation_not_offered':1})
   one={'fact_operations':[op]};self.assertEqual(len(combine([one,one])['fact_operations']),1)
-  with self.assertRaisesRegex(ValueError,'conflicting'):combine([one,{'fact_operations':[{**op,'op':'replace','value':'different'}]}])
+  self.assertEqual(combine([one,{'fact_operations':[{**op,'op':'replace','value':'different'}]}])['fact_operations'],[])
+
+ async def test_bad_optional_page_edits_are_skipped_and_valid_edits_still_commit(self):
+  fixture.SemanticSummary.record(self)
+  original=self.chat
+  async def mixed(**kw):
+   response=await original(**kw);value=json.loads(response.completion_text)
+   if 'fact_operations' in value:value['fact_operations']+=[12,{'op':'delete','scope':'private:99999999','subject':'12345678','name':'事实0','expected_version':'forged'}]
+   else:value['fact_operations']=[{'op':'delete','subject':'12345678','name':'事实0'}]
+   return NS(completion_text=json.dumps(value,ensure_ascii=False))
+  self.chat=mixed;await self.run_review()
+  self.assertTrue(all(r[1]=='已经修正' for r in fact_rows(self.db,fixture.SCOPE,'12345678')))
+  self.assertEqual(self.db.execute('SELECT round_count FROM memory_reconstruction_checkpoints').fetchone(),(30,))
+  counts=json.loads(self.db.execute("SELECT counts FROM memory_operation_audits WHERE state='committed'").fetchone()[0])
+  self.assertGreater(counts['facts']['review_rejections']['operation_not_offered'],0)
+  self.assertEqual(counts['facts']['review_rejections']['final_repeated_operation'],1)
+  self.assertEqual(self.metrics.get('summaryOutputRetries',0),0)
  async def chat(self,**kw):
   prompt=expand(json.loads(kw['prompt']));state=prompt['existing_memory'];self.calls.append(prompt)
   if 'facts' in state:

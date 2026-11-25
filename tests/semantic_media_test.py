@@ -320,6 +320,14 @@ class ProtocolOwnership(unittest.IsolatedAsyncioTestCase):
         await self.bind();self.event.bot.get_image.assert_awaited_once_with(file='inbound-image-id')
         self.assertEqual(self.release()['deleted'],1);self.assertFalse(self.file.exists())
 
+    async def test_llbot_account_image_uses_same_owned_retirement_path(self):
+        self.file=self.root/'llbot/qq/profile/123456/nt_qq/nt_data/Pic/original.png'
+        self.file.parent.mkdir(parents=True);self.file.write_bytes(self.bytes)
+        self.event.bot.get_image.return_value={'file':str(self.file)}
+        await self.bind()
+        self.assertEqual(self.db.execute('SELECT count(*) FROM semantic_media_owned').fetchone()[0],1)
+        self.assertEqual(self.release()['deleted'],1);self.assertFalse(self.file.exists())
+
     async def test_reported_transfer_size_does_not_reject_verified_local_original(self):
         self.event.bot.get_image.return_value={'file':str(self.file),'file_size':'376865'}
         await self.bind()
@@ -370,7 +378,7 @@ class ProtocolOwnership(unittest.IsolatedAsyncioTestCase):
         await self.bind();self.assertEqual(self.release(2)['deleted'],1)
 
     async def test_other_account_profile_and_login_database_are_rejected(self):
-        for tail in ('qq/profile/654321/nt_qq/nt_data/Pic/image.png','qq/profile/123456/nt_qq/nt_db/identity.db','qq-favorites/uploads/image.png'):
+        for tail in ('qq/profile/654321/nt_qq/nt_data/Pic/image.png','qq/profile/123456/nt_qq/nt_db/identity.db','llbot/qq/profile/654321/nt_qq/nt_data/Pic/image.png','llbot/qq/profile/123456/nt_qq/nt_db/identity.db','qq-favorites/uploads/image.png'):
             file=self.root/tail;file.parent.mkdir(parents=True,exist_ok=True);file.write_bytes(self.bytes)
             self.event.bot.get_image.return_value={'file':str(file)};self.extras['_hosted_media_protocol_checked']=False
             await self.bind();self.assertEqual(self.db.execute('SELECT count(*) FROM semantic_media_owned').fetchone()[0],0)
@@ -390,6 +398,16 @@ class ProtocolOwnership(unittest.IsolatedAsyncioTestCase):
         self.materials[0]['images']=['data:image/png;base64,another-image']
         await self.bind();self.assertEqual(self.db.execute('SELECT count(*) FROM semantic_media_owned').fetchone()[0],0)
         self.assertEqual(self.release()['protocol_unresolved'],1);self.assertTrue(self.file.exists())
+
+    async def test_retired_capture_diagnostic_is_distinct_from_live_cleanup_failure(self):
+        self.materials[0]['images']=['data:image/png;base64,another-image']
+        await self.bind();self.assertEqual(self.release()['protocol_unresolved'],1)
+        with self.db:
+            self.db.execute('INSERT INTO memory_semantic_purges(checkpoint_id,completed) VALUES(1,0)')
+        result=media.drain(self.db)
+        self.assertEqual((result['protocol_unresolved'],result['protocol_retired_diagnostics']),(0,1))
+        self.assertEqual(self.db.execute('SELECT count(*) FROM semantic_media_protocol_issues').fetchone()[0],1)
+        self.assertTrue(self.file.exists(),'classification does not grant file ownership or prove deletion')
 
     async def test_stale_get_image_response_does_not_publish_or_delete(self):
         entered=asyncio.Event();finish=asyncio.Event();current=True

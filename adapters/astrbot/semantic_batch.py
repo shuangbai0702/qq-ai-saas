@@ -359,7 +359,9 @@ def _purge_members(db,scope,members):
             for logical,key in identities:
                 if (logical,key) in ambient:
                     db.execute("UPDATE pipeline_work_inputs SET status='settled_retired_observation' WHERE scope=? AND event=? AND status='deferred'",(logical,key))
-            db.executemany("UPDATE pipeline_work_inputs SET payload=NULL WHERE scope=? AND event=? AND status<>'owned'",identities)
+            db.executemany("""UPDATE pipeline_work_inputs SET payload=NULL,
+              status=CASE WHEN status='blocked_recovery' THEN 'settled_retired_observation' ELSE status END
+              WHERE scope=? AND event=? AND status<>'owned'""",identities)
             if 'voice' in {r[1] for r in db.execute('PRAGMA table_info(pipeline_work_inputs)')}:
                 db.executemany("UPDATE pipeline_work_inputs SET voice=NULL WHERE scope=? AND event=? AND payload IS NULL",identities)
         for table,(column,indexed) in semantic_sources.items():

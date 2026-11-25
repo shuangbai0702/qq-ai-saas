@@ -3,6 +3,22 @@ import json
 import time
 
 
+def blocked_compression_inputs(db,tables):
+    """Unowned failed inputs are checkpoint evidence, never retry permission.
+
+    The original input and effect ledgers remain authoritative. In particular,
+    retiring a raw payload does not settle an unknown external operation.
+    """
+    if not {'pipeline_work_inputs','pipeline_scope_work'}<=tables:return []
+    columns={r[1] for r in db.execute('PRAGMA table_info(pipeline_work_inputs)')}
+    if not {'subject','observed_at','created','payload_sha'}<=columns:return []
+    return db.execute("""SELECT i.scope,i.event,i.subject,i.payload,
+      coalesce(i.observed_at,i.created),i.payload_sha,i.status FROM pipeline_work_inputs i
+      WHERE i.status LIKE 'blocked_%' AND i.payload IS NOT NULL
+      AND NOT EXISTS(SELECT 1 FROM pipeline_scope_work w WHERE w.scope=i.scope)
+      ORDER BY coalesce(i.observed_at,i.created),i.scope,i.event""").fetchall()
+
+
 def ambient_retirement_candidates(db,tables,*,recovery=False):
     """Group observations with no live inbox or outstanding response owner."""
     required={'pipeline_work_inputs','pipeline_scope_work','pipeline_events','pipeline_action_effects'}

@@ -16,6 +16,8 @@ def keys(kind):return ('scope','expression') if kind=='expression' else ('scope'
 
 SYSTEM='''existing_memory.products列出既有兴趣、动机与表达条目。可选memory_operations数组只输出有变化的指定条目，每项{"kind":"interest|motive|expression","op":"create|replace|delete","target":{条目主键},"expected_version":"逐字复制version，create为null","value":{创建或替换后的完整认知值，delete省略}}。未指定条目保持，不支持追加或自动拼接。target主键：interest为scope/topic；motive为scope/subject/topic；expression为scope/expression。interest的value为{"weight":0到8}，表示当前投入，0为不再主动关注；根据经历判断保持、增强、降温或删除，不按天机械扣分，也不因暂未提及、一次沉默而放弃。用户长期喜好属于事实；自身复述、摘要重复不算新强化依据。motive的value为{"status":"open|contacted|resolved|abandoned","due":Unix秒,"expires":Unix秒}，due必须小于等于expires，expires不得超过current_time.unix_seconds后7天；新条目只能是模型自己的model_plan，不是已接受的用户约定或平台任务。已有动机结合作者/接受状态与当下情境判断：目的已达成则resolved，不再有意义则abandoned，不把“过会儿”拖成数天追问，不无故续期；不借此取消真实任务。expression替换value为{"situation":"完整适用语境，最多120字符","weight":0到5}；只留有特点且可迁移的表达，普通词、一次性事件和不合适的说法可降权或删除；学习新短语继续用learning及真实样本证据，不能凭空create。Persona正文、管理员禁用的表达及身份/权限不允许修改。source为persona的旧派生兴趣是冗余副本，只允许按精确target和version删除，不得创建或改写；删除副本不改变Persona。此处只修订认知，不改真实工具、发送或用户约定账本。'''
 
+SYSTEM+=' 每批先审旧项再考虑新增：不要因旧条目存在就照单保留。兴趣已失去价值可降温（降低weight）或删除；表达中的普通词、残句、无迁移价值条目应删除，不把“仍有记录”当作保留依据。确无变化才省略操作，不为凑变化调整有效内容。'
+
 from memory_policy import version,safe
 def read(db,kind,target):return owner(kind).read_product(db,kind,target)
 

@@ -35,6 +35,14 @@ class CollectionTests(unittest.TestCase):
         self.db.execute('INSERT INTO memory_checkpoint_archives VALUES(?,?,?,?)',(key,2,payload,hashlib.sha256(payload.encode()).hexdigest()))
         return payload
     def collect(self,payload=None):return semantic_collection.collect(self.db,'bot_shared',100,payload or [])
+    def test_missing_original_stamp_tracks_its_physical_block_not_unrelated_journal_appends(self):
+        message=self.old(material=False)
+        missing=semantic_collection.collect(self.db,'bot_shared',100,[],discard_unavailable=True).discarded
+        initial=semantic_collection.unavailable_stamp(self.db,missing)
+        self.archive([self.message('unrelated',60)])
+        self.assertEqual(semantic_collection.unavailable_stamp(self.db,missing),initial)
+        self.archive([message])
+        self.assertNotEqual(semantic_collection.unavailable_stamp(self.db,missing),initial)
     def test_owner_staging_keeps_unsubmitted_inputs_outside_the_batch(self):
         from journal_cutover import collect_owner_history
         from readonly_journal import ReadonlyJournal
@@ -370,16 +378,35 @@ class SharedSummaryIntegration(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):await task
         self.assertFalse(st.compression_active);self.assertIsNone(st.model_writer.owner)
 
-    async def test_existing_native_queue_drains_before_compression(self):
+    async def test_existing_native_queue_waits_after_due_compression_without_losing_input(self):
         import asyncio
         st=self.store;entered=asyncio.Event()
-        self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,status) VALUES('private:12345678','queued','queued')");self.db.commit()
+        self.db.execute("INSERT INTO pipeline_work_inputs(scope,event,status,payload) VALUES('private:12345678','queued','queued','reliable queued input')");self.db.commit()
         async def compress():
             async with st.compression_admission():entered.set()
         task=asyncio.create_task(compress());await asyncio.sleep(0)
-        self.assertFalse(entered.is_set())
-        self.db.execute("UPDATE pipeline_work_inputs SET status='settled' WHERE event='queued'");self.db.commit();st.slot_changed.set()
         await task;self.assertTrue(entered.is_set())
+        self.assertEqual(self.db.execute("SELECT status,payload FROM pipeline_work_inputs WHERE event='queued'").fetchone(),('queued','reliable queued input'))
+
+    async def test_autonomous_receipt_settlement_remains_owned_after_model_release(self):
+        import asyncio
+        from autonomous_runtime import AutonomousRuntime
+        st=self.store;runtime=AutonomousRuntime.__new__(AutonomousRuntime)
+        runtime.settings={'bot':{}};runtime.store=lambda *_:st
+        finishing=asyncio.Event();release=asyncio.Event();compressed=asyncio.Event()
+        async def settle(*_):
+            finishing.set();await release.wait()
+            await st.wait_compression() # nested boundary of the already admitted Work
+            return {'status':'completed'}
+        runtime._execute_admitted=settle
+        owner=asyncio.create_task(runtime.execute('bot',{'work':{},'action':{}}))
+        await finishing.wait();self.assertEqual(st.active,0);self.assertIsNone(st.model_writer.owner)
+        async def compress():
+            async with st.compression_admission():compressed.set()
+        compression=asyncio.create_task(compress());await asyncio.sleep(0)
+        self.assertFalse(compressed.is_set())
+        release.set();await asyncio.wait_for(asyncio.gather(owner,compression),2)
+        self.assertTrue(compressed.is_set());self.assertEqual(st.execution_tasks,set())
 
     async def test_manual_request_queues_after_existing_native_reflection(self):
         import asyncio

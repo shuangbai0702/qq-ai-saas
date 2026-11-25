@@ -25,21 +25,30 @@ class MandatoryCheckpoint(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.calls),1)
         self.assertEqual(self.checkpoint()[1:],(30,'available',None))
 
-    async def test_missing_provider_records_failure_and_recovers_same_due_batch(self):
+    async def test_missing_provider_records_loss_without_blocking_or_replaying_due_batch(self):
         import json
         self.record(30);self.bind(NS())
         before=self.db.execute('SELECT * FROM memory_rounds ORDER BY id').fetchall()
         self.assertTrue(self.r.retry());await self.r.task
-        self.assertIsNone(self.checkpoint());self.assertEqual(self.calls,[])
+        checkpoint=self.checkpoint()
+        self.assertEqual(checkpoint[1:],(30,'available',None));self.assertEqual(self.calls,[])
+        # A product is not a Journal replacement: raw rows stay protected until
+        # the real retirement owner commits the replacement.
         self.assertEqual(self.db.execute('SELECT * FROM memory_rounds ORDER BY id').fetchall(),before)
-        issue=json.loads(self.db.execute("SELECT detail FROM memory_checkpoint_issues WHERE kind='failure_summary'").fetchone()[0])
+        status,detail=self.db.execute("SELECT status,detail FROM memory_checkpoint_issues WHERE kind='failure_summary'").fetchone()
+        self.assertEqual(status,'resolved');issue=json.loads(detail)
         self.assertEqual(issue['reason'],'semantic_summary_provider_unavailable')
-        self.assertEqual(issue['automatic_recovery'],'persisted_backoff')
+        audit=json.loads(self.db.execute("SELECT counts FROM memory_operation_audits WHERE state='committed' AND reason='degraded_checkpoint'").fetchone()[0])
+        self.assertEqual(audit['degradation']['cause'],'semantic_summary_provider_unavailable')
+        self.assertEqual(audit['degradation']['rounds'],30)
+        self.assertFalse(audit['degradation']['external_operations_replayed'])
+        self.assertIsNotNone(self.db.execute("SELECT 1 FROM memory_checkpoint_issues WHERE kind='compression_degradation' AND status='open'").fetchone())
         self.assertFalse(self.r.retry())
         self.bind(summary_provider(self.chat))
-        self.db.execute('UPDATE memory_reflection_retry SET next_at=0');self.db.commit()
-        self.assertTrue(self.r.retry());await self.r.task
-        self.assertEqual(self.checkpoint()[1:],(30,'available',None));self.assertEqual(len(self.calls),1)
+        self.assertFalse(self.r.retry())
+        self.assertEqual(self.checkpoint(),checkpoint);self.assertEqual(self.calls,[])
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1)
+        self.assertEqual(self.db.execute('SELECT * FROM memory_rounds ORDER BY id').fetchall(),before)
 
 import semantic_provider_wire_test as wire
 

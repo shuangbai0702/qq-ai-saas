@@ -1,6 +1,5 @@
 """Deterministic compression-only pages, never a store or runtime context."""
 import copy,json
-from summary_response import SummaryValidationError
 
 PAGE_CHARS=24000
 
@@ -41,37 +40,53 @@ def coverage(state):
             'products':sum(len(rows) for rows in state.get('products',{}).values())}
 
 
-def combine(results):
-    """Identical creates can recur on different pages; conflicts never guess."""
+def reject(rejections,key,reason):
+    if rejections is not None:
+        counts=rejections.setdefault(key,{})
+        counts[reason]=counts.get(reason,0)+1
+
+
+def combine(results,rejections=None):
+    """Reject conflicting optional edits locally; never guess a winning value."""
     merged={key:[] for key in ('fact_operations','relation_operations','memory_operations')};seen={}
+    conflicts=set()
     for data in results:
         for key in merged:
             operations=data.get(key,[])
-            if not isinstance(operations,list):raise ValueError('semantic_review_invalid_operations')
+            if not isinstance(operations,list):reject(rejections,key,'invalid_container');continue
             for op in operations:
-                if not isinstance(op,dict):raise ValueError('semantic_review_invalid_operation')
-                identity=(key,json.dumps(op.get('target'),sort_keys=True)) if key=='memory_operations' else (key,op.get('subject'),op.get('name') if key=='fact_operations' else '')
+                if not isinstance(op,dict):reject(rejections,key,'invalid_operation');continue
+                identity=(key,json.dumps(op.get('target') if key=='memory_operations' else [op.get('subject'),op.get('name') if key=='fact_operations' else ''],sort_keys=True))
+                if identity in conflicts:reject(rejections,key,'conflicting_operations');continue
                 if identity in seen:
-                    if seen[identity]!=op:raise ValueError('semantic_review_conflicting_operations')
+                    if seen[identity]!=op:
+                        merged[key].remove(seen[identity]);conflicts.add(identity)
+                        reject(rejections,key,'conflicting_operations')
                     continue
                 seen[identity]=op;merged[key].append(op)
     return merged
 
 
-def validate_page(data,page):
-    """Page admission is narrower than the later transaction's full snapshot."""
+def validate_page(data,page,rejections=None):
+    """Narrow page authority without letting an optional bad edit veto the cut."""
     for key,versions in (('fact_operations',page['fact_versions']),('relation_operations',page['relation_versions'])):
         rows=data.get(key,[])
-        if not isinstance(rows,list):raise SummaryValidationError('expected_array','$.'+key)
-        for position,op in enumerate(rows):
-            if not isinstance(op,dict):raise SummaryValidationError('expected_object',f'$.{key}[{position}]')
-            if op.get('op') not in ('replace','delete') or op.get('scope')!=page['scope']:raise ValueError('semantic_review_operation_not_offered')
+        valid=[]
+        if not isinstance(rows,list):reject(rejections,key,'invalid_container');rows=[]
+        for op in rows:
+            if not isinstance(op,dict):reject(rejections,key,'invalid_operation');continue
+            if op.get('op') not in ('replace','delete') or op.get('scope')!=page['scope']:reject(rejections,key,'operation_not_offered');continue
             match=next((v for v in versions if v['subject']==op.get('subject') and (key!='fact_operations' or v['name']==op.get('name'))),None)
-            if not match or op.get('expected_version')!=match['version']:raise ValueError('semantic_review_operation_not_offered')
+            if not match or op.get('expected_version')!=match['version']:reject(rejections,key,'operation_not_offered');continue
+            valid.append(op)
+        if key in data:data[key]=valid
     rows=data.get('memory_operations',[])
-    if not isinstance(rows,list):raise SummaryValidationError('expected_array','$.memory_operations')
-    for position,op in enumerate(rows):
-        if not isinstance(op,dict):raise SummaryValidationError('expected_object',f'$.memory_operations[{position}]')
-        if op.get('op') not in ('replace','delete'):raise ValueError('semantic_review_operation_not_offered')
+    valid=[]
+    if not isinstance(rows,list):reject(rejections,'memory_operations','invalid_container');rows=[]
+    for op in rows:
+        if not isinstance(op,dict):reject(rejections,'memory_operations','invalid_operation');continue
+        if op.get('op') not in ('replace','delete') or not isinstance(op.get('kind'),str):reject(rejections,'memory_operations','operation_not_offered');continue
         match=next((r for r in page['products'].get(op.get('kind'),[]) if r['target']==op.get('target')),None)
-        if not match or op.get('expected_version')!=match['version']:raise ValueError('semantic_review_operation_not_offered')
+        if not match or op.get('expected_version')!=match['version']:reject(rejections,'memory_operations','operation_not_offered');continue
+        valid.append(op)
+    if 'memory_operations' in data:data['memory_operations']=valid

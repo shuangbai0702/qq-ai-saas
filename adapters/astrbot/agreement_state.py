@@ -48,7 +48,7 @@ def user_records(db,scope='',subject='',page=0):
     return [dict(zip(('id','revision','topic','detail','status','due','participants','source_scope','updated','handoff_id'),row)) for row in rows]
 
 
-REVIEW_SYSTEM='''existing_memory.agreements是约定原账本。审视重复、旧提议、失去意义或被新约定取代的事项，按当前价值最多保留5个有效槽；未终结不代表永久占槽，优先保留关键有效承诺，不凭一次沉默放弃。长期偏好归入事实，不重复登记。可选agreement_operations:[{"id":"原ID","expected_revision":原revision,"op":"replace|retire","reason":"必要理由","detail":"replace的完整正文"}]。replace仅修订同一主题正文、合并同义内容，不新增条款或冒充同意；retire仅退出认知槽，不宣称已履约或现实承诺已取消。handoff_id非空的任务约定只能经原任务入口处理；不要重放原话或改权限。'''
+REVIEW_SYSTEM='''existing_memory.agreements是约定原账本。每次审阅旧项，合并重复、退休失去意义或已被替代的事项；有效槽最多5个，超额时必须按重要性选择保留项，并逐项retire其余旧槽，不能省略整个整理字段。未终结不代表永久占槽；优先保留关键有效承诺，不凭一次沉默放弃。长期偏好归入事实，不重复登记。agreement_operations:[{"id":"原ID","expected_revision":原revision,"op":"replace|retire","reason":"必要理由","detail":"replace的完整正文"}]；确无变化才省略。replace仅修订同一主题正文、合并同义内容，不新增条款或冒充同意；retire仅退出认知槽，不宣称已履约或现实承诺已取消。handoff_id非空的任务约定只能经原任务入口处理；不要重放原话或改权限。'''
 
 
 def review_view(db):

@@ -773,8 +773,8 @@ class Reflection:
         status='resolved' if resolved else 'open';now=time.time()
         self.db.execute('''INSERT INTO memory_checkpoint_issues VALUES(?,?,?,?,?,?,?)
           ON CONFLICT(scope,checkpoint_id,kind) DO UPDATE SET status=excluded.status,
-          detail=excluded.detail,updated=excluded.updated
-          WHERE status<>excluded.status OR detail<>excluded.detail''',
+          detail=CASE WHEN excluded.status='resolved' AND excluded.detail='{}' THEN memory_checkpoint_issues.detail ELSE excluded.detail END,updated=excluded.updated
+          WHERE status<>excluded.status OR ((excluded.status<>'resolved' OR excluded.detail<>'{}') AND detail<>excluded.detail)''',
           (scope,identifier,kind,status,raw,now,now))
 
     def record_capacity_wait(self,scope,capacity):
@@ -1027,7 +1027,7 @@ class Reflection:
         if len(review_pages)<=1:return request,digest,None,None
         review_family=digest;parts=[]
         offered={key:0 for key in coverage(before['memory_state'])}
-        review_coverage={'eligible':coverage(before['memory_state']),'offered':offered,'pages':len(review_pages),'completed':0}
+        review_coverage={'eligible':coverage(before['memory_state']),'offered':offered,'pages':len(review_pages),'completed':0,'rejections':{}}
         prompt['memory_review_coverage']=review_coverage
         starting()
         for number,page in enumerate(review_pages):
@@ -1036,14 +1036,14 @@ class Reflection:
             review_request={**request,'prompt':memory_json(material),'system_prompt':sem_system+' '+product_system+' '+summary_product_limits()+' 本请求只检查本页既有认知与真实材料，输出JSON的fact_operations、relation_operations、memory_operations；不输出summary、core_note或其他产品。没有变化则输出空数组。只能replace/delete本页展示的旧ID/version；新认知留给最后的主整理请求，本页不得create。'}
             page_digest=summary_request_digest(review_request,provider,epoch,'memory_review',{'family':review_family,'page':number})
             page_slot=SummaryResponseSlot(self.db,scope,attempts,epoch,page_digest,review_family,str(number))
-            page_result=await summary_model_output(provider,review_request,live,metrics,None,on_decode=lambda data,diagnostics:validate_page(data,page),on_attempt=page_slot.dispatch,on_response=page_slot.save,recovered=page_slot.recover(),on_validation_error=page_slot.record_validation)
+            page_result=await summary_model_output(provider,review_request,live,metrics,None,on_decode=lambda data,diagnostics:validate_page(data,page,review_coverage['rejections']),on_attempt=page_slot.dispatch,on_response=page_slot.save,recovered=page_slot.recover(),on_validation_error=page_slot.record_validation)
             if page_result is None:return None,digest,None,review_family
             parts.append(page_result[1])
             for key,count in coverage(page).items():offered[key]+=count
             review_coverage['completed']+=1
             get_audit().input_coverage(prompt)
             metrics['memoryReviewCoverage']=json.loads(model_json(review_coverage))
-        reviewed=combine(parts)
+        reviewed=combine(parts,review_coverage['rejections'])
         prompt['existing_memory']={key:before['memory_state'][key] for key in ('scope','subjects','writable','agreements')}
         prompt['reviewed_memory_changes']={key:[{k:v for k,v in op.items() if k not in ('expected_version','expected','scope')} for op in operations] for key,operations in reviewed.items() if operations}
         request={**request,'prompt':memory_json(prompt),'system_prompt':system+' 全部旧认知已经通过独立分页完成比较；reviewed_memory_changes是本批待提交修订，不是已执行回执。请在summary/Core中保留必要变化。本请求的fact_operations、relation_operations、memory_operations只允许create真正的新条目，旧条目修订已完成，不再replace/delete。其他摘要、证据、约定、学习照常。'}
@@ -1092,6 +1092,12 @@ class Reflection:
         progress_now=self.db.execute('SELECT summary_watermark,insight_watermark FROM memory_reflection_progress WHERE scope=?',(scope,)).fetchone() or (0,0)
         live_rows=self.db.execute('SELECT id,subject,event,question,answer,at FROM memory_rounds WHERE scope=? AND id>? AND id<=? ORDER BY id',(scope,summary_from,rows[-1][0])).fetchall()
         if progress_now[0]!=summary_from or live_rows!=rows:raise RuntimeError('summary_checkpoint_stale')
+        # Check captured dependencies before this transaction legitimately
+        # retires/updates their derived products. BEGIN IMMEDIATE owns the
+        # remaining synchronous commit; our own writes are not a stale read.
+        if discarded:
+            from semantic_collection import unavailable_stamp
+            if unavailable_stamp(self.db,discarded,scope=scope)!=discard_stamp:raise RuntimeError('semantic_discard_material_changed')
         core_products=[(p['id'],p['text'],'[]',0,p['scope'],p['level']) for p in previous_products]
         degraded=bool(ctx.get('degraded'))
         if not degraded:metrics['coreNoteUpdates']=metrics.get('coreNoteUpdates',0)+self.update_core_note(data,core_before,payload,core_products,scope,audit=operation_audit,author_witnesses=author_payload)
@@ -1155,9 +1161,6 @@ class Reflection:
         self.db.execute('UPDATE memory_reconstruction_checkpoints SET conversation_continuity=? WHERE id=?',(continuity,checkpoint_id))
         if _manual is not None and (_manual['allow_partial'] or _manual['legacy_due']):
             self.db.execute('INSERT INTO memory_checkpoint_admin_overrides VALUES(?,?,?,?)',(checkpoint_id,_manual['administrator'],_manual['request_id'],time.time()))
-        if discarded:
-            from semantic_collection import unavailable_stamp
-            if unavailable_stamp(self.db,discarded,scope=scope)!=discard_stamp:raise RuntimeError('semantic_discard_material_changed')
         media_release=commit_batch(self.db,scope,checkpoint_id,materials,rows[-1][5],discarded=discarded,administrator=_manual.get('administrator') if _manual else None,request_id=_manual.get('request_id') if _manual else None)
         if discarded:
             recovery_counts={kind:sum(item['missing']==kind for item in discarded) for kind in ('full_original','incomplete_original','conflicting_originals')}
@@ -1335,9 +1338,16 @@ class Reflection:
                     def decoded(data,diagnostics):
                         nonlocal operation_audit
                         if reviewed is not None:
+                            from memory_review import reject
                             for key in reviewed:
                                 proposed=data.get(key,[])
-                                if not isinstance(proposed,list) or any(not isinstance(op,dict) or op.get('op')!='create' for op in proposed):raise ValueError('semantic_review_final_repeated_operations')
+                                rejections=prompt['memory_review_coverage']['rejections']
+                                if not isinstance(proposed,list):reject(rejections,key,'invalid_container');proposed=[]
+                                valid=[]
+                                for op in proposed:
+                                    if not isinstance(op,dict) or op.get('op')!='create':reject(rejections,key,'final_repeated_operation');continue
+                                    valid.append(op)
+                                if key in data:data[key]=valid
                         operation_audit=Audit(merge_scope or scope,epoch,job,data,{str(r['sender_id']) for r in author_payload},through_round_id=rows[-1][0] if rows else None,**diagnostics)
                         operation_audit.input_coverage(prompt)
                         if self._active_summary:self._active_summary['operation_audit']=operation_audit
@@ -1359,7 +1369,7 @@ class Reflection:
                         response,data,text=result
                         if reviewed is not None:
                             from memory_review import combine
-                            data={**data,**combine([reviewed,data])}
+                            data={**data,**combine([reviewed,data],prompt['memory_review_coverage']['rejections'])}
                             operation_audit=Audit(merge_scope or scope,epoch,job,data,{str(r['sender_id']) for r in author_payload},through_round_id=rows[-1][0] if rows else None,decode_status='json_object')
                             operation_audit.input_coverage(prompt)
                             if self._active_summary:self._active_summary['operation_audit']=operation_audit
@@ -1435,7 +1445,10 @@ class Reflection:
                     import traceback
                     frames=traceback.extract_tb(error.__traceback__)
                     frame=frames[-1] if frames else None
-                    reason=str(error) if str(error).startswith(('semantic_','summary_output_capacity_')) else type(error).__name__
+                    # Preserve our content-free codes, including stale summary
+                    # dependencies. Collapsing those to RuntimeError incorrectly
+                    # sent a concurrent edit down the lossy fallback path.
+                    reason=str(error) if re.fullmatch(r'(?:semantic_|summary_|big_merge_)[a-z0-9_]+',str(error)) else type(error).__name__
                     self.checkpoint_issue(merge_scope or scope,0,'failure_'+job,{'type':type(error).__name__,'reason':reason,'through_round_id':rows[-1][0] if rows else None,'automatic_recovery':'persisted_backoff',
                         'raise_site':{'module':Path(frame.filename).name,'line':frame.lineno,'symbol':frame.name} if frame else None});self.db.commit()
                     stale_snapshot=reason in ('semantic_cognition_snapshot_changed','semantic_product_snapshot_changed','semantic_agreement_snapshot_changed','semantic_core_note_snapshot_changed','semantic_batch_material_changed','semantic_discard_material_changed','summary_checkpoint_stale','big_merge_sources_changed','summary_prior_products_changed')

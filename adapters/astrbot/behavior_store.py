@@ -95,11 +95,17 @@ class BehaviorStore:
 
     def conversation_pending(self):
         if self.active or self.ingress or self.batches or self.waiting or any(s['users'] for s in self.scope_turns.values()):return True
+        # Model completion releases the Writer before its owning Work has
+        # necessarily settled receipts. Compression needs that whole boundary.
+        if any(not task.done() and task is not asyncio.current_task() for task in self.execution_tasks):return True
         # Accepted native inputs belong to the existing durable ingress queue.
         return self.db.execute("SELECT 1 FROM pipeline_work_inputs WHERE status='queued' AND (? IS NULL OR rowid<=?) LIMIT 1",(self.compression_boundary,self.compression_boundary)).fetchone() is not None
 
     def before_compression(self,event):
         if self.compression_boundary is None:return True
+        # This task already crossed admission. A nested model/tool boundary
+        # must finish its original Work, not wait for its own drain fence.
+        if self.execution_tasks and asyncio.current_task() in self.execution_tasks:return True
         if event is None:return False
         if event.get_extra('_hosted_scope_owner') or event.get_extra('_hosted_scope_continuation'):return True
         scope=bot_pipeline.delivery_scope(event)
