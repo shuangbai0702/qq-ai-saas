@@ -25,11 +25,15 @@ export async function localAuth(server,{manifest:m,spawnChild,getProcess,onFailu
   const pmhq=getProcess();if(!pmhq?.pid)throw Error('Owned PMHQ unavailable');
   if(!helper){
    // A child birth time is obtained in the same owner process, never by name.
-   const probe=spawnChild(m.python,['-c','import psutil,sys;print(psutil.Process(int(sys.argv[1])).create_time())',String(pmhq.pid)],{windowsHide:true,stdio:['ignore','pipe','ignore']});
+   const probe=spawnChild(m.python,['-c','import json,psutil,sys;print(json.dumps({"created":psutil.Process(int(sys.argv[1])).create_time(),"python":sys._base_executable,"paths":sys.path}))',String(pmhq.pid)],{windowsHide:true,stdio:['ignore','pipe','ignore']});
    let output='';probe.stdout.on('data',b=>{output+=b});
    const exited=once(probe,'exit');const timer=setTimeout(()=>probe.kill(),5000);
-   try{const [code]=await exited;if(code!==0||closing||!Number.isFinite(Number(output)))throw Error('PMHQ birth proof unavailable')}finally{clearTimeout(timer)}
-   helper=spawnChild(m.python,['-B',path.join(path.dirname(fileURLToPath(import.meta.url)),'local-auth.py'),JSON.stringify({pid:pmhq.pid,created:Number(output),parent:process.pid,executable:path.join(m.runtimeDir,'bin/pmhq/pmhq.exe'),assets})],{windowsHide:true,stdio:['pipe','pipe','ignore']});
+   let proof;
+   try{const [code]=await exited;proof=JSON.parse(output);if(code!==0||closing||!Number.isFinite(proof.created)||typeof proof.python!=='string'||!path.isAbsolute(proof.python)||!Array.isArray(proof.paths)||proof.paths.some(p=>typeof p!=='string'))throw Error('PMHQ birth proof unavailable')}finally{clearTimeout(timer)}
+   // Preserve the venv's modules without its resident redirector process/job.
+   // This is the same base-interpreter handoff used by protocol_process.py.
+   const bootstrap=`import runpy,sys;sys.path[:]=${JSON.stringify(proof.paths)};sys.argv=sys.argv[1:];runpy.run_path(sys.argv[0],run_name='__main__')`;
+   helper=spawnChild(proof.python,['-B','-c',bootstrap,path.join(path.dirname(fileURLToPath(import.meta.url)),'local-auth.py'),JSON.stringify({pid:pmhq.pid,created:proof.created,parent:process.pid,executable:path.join(m.runtimeDir,'bin/pmhq/pmhq.exe'),assets})],{windowsHide:true,stdio:['pipe','pipe','ignore']});
    helper.on('error',fail);helper.on('exit',()=>{for(const entry of queue.splice(0))entry.reject(Error('Local bridge exited'));fail()});
    helper.stdin.on('error',fail);
    helper.stdout.on('data',raw=>{buffer+=raw.toString();if(buffer.length>16384){fail();return}for(;;){const end=buffer.indexOf('\n');if(end<0)break;const line=buffer.slice(0,end);buffer=buffer.slice(end+1);const entry=queue.shift();if(!entry)continue;try{JSON.parse(line).ok===true?entry.resolve():entry.reject(Error('Local bridge not ready'))}catch{entry.reject(Error('Invalid local bridge response'))}}});

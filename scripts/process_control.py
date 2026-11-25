@@ -60,13 +60,25 @@ def inspect(pid,root,created=None):
     try:
         p=owned_process(pid,root,created)
         if p is None:return {'valid':False}
-        children=p.children(recursive=True);rss=0;count=0;instances=[]
-        for child in [p,*children]:
-            try:rss+=child.memory_info().rss;count+=1;instances.append({'pid':child.pid,'created':child.create_time()})
+        from runtime_memory import owned_tree
+        born=p.create_time()
+        try:tree=owned_tree(dict(pid=p.pid,root=str(root),created=born))
+        except (psutil.Error,OSError,ValueError):
+            # Native proof is not available during early QR login. The protocol
+            # owner is still alive: do not turn partial memory coverage into a
+            # dead-process signal and accidentally start a second instance.
+            if owned_process(pid,root,born) is None:return {'valid':False}
+            return {'valid':True,'pid':pid,'created':born,'rssBytes':None,'processCount':None,'processInstances':[{'pid':pid,'created':born}],'memoryCoverage':'native-ownership-unavailable'}
+        rss=0;count=0;instances=[]
+        for child,born in tree:
+            try:
+                if abs(psutil.Process(child.pid).create_time()-born)>=.01:raise ValueError('lifetime-mismatch')
+                rss+=child.memory_info().rss;count+=1;instances.append({'pid':child.pid,'created':born})
             except psutil.NoSuchProcess:pass
-        return {'valid':True,'pid':pid,'rssBytes':rss,'processCount':count,'created':p.create_time(),'processInstances':instances,'loopActivity':loop_activity(root,[p,*children])}
+        return {'valid':True,'pid':pid,'rssBytes':rss,'processCount':count,'created':p.create_time(),'processInstances':instances,'loopActivity':loop_activity(root,[item for item,_ in tree])}
     except psutil.NoSuchProcess:return {'valid':False}
     except psutil.AccessDenied:return {'valid':False,'inspectionError':'access_denied'}
+    except (ValueError,OSError):return {'valid':False,'inspectionError':'ownership_unavailable'}
 
 def stop_tree(process):
     try: children=process.children(recursive=True)

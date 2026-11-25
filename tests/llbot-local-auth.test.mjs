@@ -13,13 +13,13 @@ test('local PMHQ bridge rejects other destinations and tokens, accepts lowercase
  const server=http.createServer();await new Promise(r=>server.listen(0,'127.0.0.1',r));
  const children=[],m={runtimeDir,python:'owned-python',management:{port:server.address().port,token:'a'.repeat(64)}};
  const spawnChild=(exe,args,options)=>{
-  assert.equal(exe,m.python);assert.equal(options.windowsHide,true);
+  assert.equal(exe,args[0]==='-c'?m.python:path.resolve('base-python.exe'));assert.equal(options.windowsHide,true);
   const child=new EventEmitter();child.stdout=new EventEmitter();child.stdin=new EventEmitter();child.kill=()=>child.emit('exit',0);
   child.stdin.end=()=>{child.ended=true;child.emit('exit',0)};
   child.stdin.write=line=>{assert.deepEqual(JSON.parse(line),{op:'patch'});queueMicrotask(()=>child.stdout.emit('data',Buffer.from('{"ok":true}\n')))};
   children.push(child);
-  if(args[0]==='-c'){assert.equal(args.at(-1),'900');queueMicrotask(()=>{child.stdout.emit('data','123');child.emit('exit',0)})}
-  else{const proof=JSON.parse(args.at(-1));assert.equal(proof.pid,900);assert.equal(proof.parent,process.pid);assert.equal(proof.created,123);assert.ok(proof.executable.startsWith(runtimeDir));}
+  if(args[0]==='-c'){assert.equal(args.at(-1),'900');queueMicrotask(()=>{child.stdout.emit('data',JSON.stringify({created:123,python:path.resolve('base-python.exe'),paths:[path.resolve('venv/site-packages')]}));child.emit('exit',0)})}
+  else{assert.deepEqual(args.slice(0,2),['-B','-c']);assert.ok(args[2].includes('venv'));const proof=JSON.parse(args.at(-1));assert.equal(proof.pid,900);assert.equal(proof.parent,process.pid);assert.equal(proof.created,123);assert.ok(proof.executable.startsWith(runtimeDir));}
   return child;
  };
  let failures=0;const auth=await localAuth(server,{manifest:m,spawnChild,getProcess:()=>({pid:900}),onFailure:()=>failures++});

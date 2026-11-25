@@ -118,7 +118,7 @@ def step(row, role, tree, state, now, native=reclaim):
     stamp, busy = activity(Path(row['root']), now) if role in ('shared-ai', 'dedicated-ai') else (0, False)
     if busy or now-stamp < IDLE_SECONDS:
         previous['busy'] = now
-    result = dict(pid=row['pid'], created=row['created'], role=role, target=target(role), current=rss, strategy='windows-idle-working-set-tree')
+    result = dict(pid=row['pid'], created=row['created'], role=role, target=target(role), current=rss, processCount=len(tree), strategy='windows-idle-working-set-tree')
     if now-previous['busy'] < IDLE_SECONDS:
         result['decision'] = 'active'
     elif now < previous['next']:

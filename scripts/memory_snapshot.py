@@ -193,6 +193,8 @@ def collect(request):
                 for process, born in tree:
                     add(process, born, owner, kind)
             except FileNotFoundError:
+                if file.exists():
+                    error(owner, kind, 'native-ownership-unavailable')
                 continue
             except (psutil.Error, OSError, ValueError, TypeError, KeyError) as exc:
                 error(owner, kind, reason(exc))

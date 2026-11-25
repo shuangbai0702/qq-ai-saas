@@ -1,6 +1,7 @@
 import importlib.util,json,subprocess,sys,tempfile,time,unittest
 from pathlib import Path
 import psutil
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
 spec=importlib.util.spec_from_file_location('process_control',Path(__file__).resolve().parents[1]/'scripts/process_control.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 class ProcessInstances(unittest.TestCase):
  def test_real_descendants_and_wrong_parent_birth(self):

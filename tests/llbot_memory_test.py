@@ -1,8 +1,9 @@
-import importlib.util,unittest,tempfile,json
+import importlib.util,unittest,tempfile,json,sys
 from pathlib import Path
 from types import SimpleNamespace as NS
 from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT/'scripts'))
 spec=importlib.util.spec_from_file_location('runtime_memory',ROOT/'scripts/runtime_memory.py')
 memory=importlib.util.module_from_spec(spec);spec.loader.exec_module(memory)
 class LLBotMemoryTest(unittest.TestCase):

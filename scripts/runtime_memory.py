@@ -8,6 +8,7 @@ import re
 import sys
 import time
 import psutil
+from llbot_processes import native_qq
 
 MIB = 1048576
 
@@ -23,20 +24,33 @@ def owned(row):
 
 
 def owned_tree(row):
-    """Track descendants through parentage and pin each process lifetime."""
+    """Track descendants plus proven LLBot QQNT; pin every process lifetime."""
     root = owned(row)
     result = [(root, root.create_time())]
+    native = native_qq(row, root) if sys.platform == 'win32' else None
+    if native:
+        result.append(native)
+    seen = {process.pid for process, _ in result}
     pending = [(child, child.create_time()) for child in root.children()]
+    if native:
+        pending.extend((child, child.create_time()) for child in native[0].children())
     while pending:
         process, created = pending.pop()
         try:
             if not process.is_running() or abs(process.create_time()-created) >= .01:
                 continue
+            if process.pid in seen:
+                continue
+            seen.add(process.pid)
             result.append((process, created))
             pending.extend((child, child.create_time()) for child in process.children())
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
     owned(row)
+    if native:
+        current = native_qq(row, root)
+        if current is None or (current[0].pid, current[1]) != (native[0].pid, native[1]):
+            raise ValueError('llbot-native-lifetime-mismatch')
     return result
 
 
