@@ -1,7 +1,16 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {dshToken,dshParentMatches,awaitBilibiliReceipt,DSH_MAIN_REPLY_REMINDER} from '../apps/node-agent/src/dsh-host.js';
+import {dshToken,dshParentMatches,awaitBilibiliReceipt,delegatedCapabilityEnabled,DSH_MAIN_REPLY_REMINDER} from '../apps/node-agent/src/dsh-host.js';
 const bot={id:'bot',tenant_id:'tenant',generation:1,revision:2};
 const parent={bot_id:'bot',tenant_id:'tenant',generation:1,config_revision:2,authority:'foreground',work_id:'work',origin_scope:'group:12345',origin_event:'event',sender_id:'12345'};
+
+test('DSH private/group history shares the original history switch; QQ space follows its own feature',()=>{
+ assert(delegatedCapabilityEnabled({},'chat_history'));
+ assert(!delegatedCapabilityEnabled({delegatedCapabilities:{groupHistory:false}},'chat_history'));
+ assert(!delegatedCapabilityEnabled({},'qq_space'));
+ assert(delegatedCapabilityEnabled({behavior:{qzone:true}},'qq_space'));
+ assert(!delegatedCapabilityEnabled({behavior:{qzone:false}},'qq_space'));
+ assert(!delegatedCapabilityEnabled({},'ungranted'));
+});
 
 test('model proxy checks Work after the request body await before dispatch',async()=>{
  const {DshHost}=await import('../apps/node-agent/src/dsh-host.js');

@@ -11,6 +11,8 @@ def features(settings,event,db,scope,current,*,identity=None,evidence=None,memor
     cfg=settings['config']
     effect_current=effect_current or current
     result=qq_actions.tools(event,cfg,db,effect_current,settings)
+    if identity is None or event.get_extra('_hosted_main_activation'):
+        result=[tool for tool in result if tool.name not in ('hosted_qq_publish','hosted_qq_view')]
     result+=group_actions.tools(event,cfg,db,current,on_sent or (lambda *args:None),social=social,review=review,effect_current=effect_current,pipeline=pipeline)
     result+=quote_reply.tools(event,cfg,db,settings,effect_current)+qq_favorite_tools.tools(event,cfg,db,settings['root'],effect_current)
     if identity is None:
@@ -24,7 +26,7 @@ def features(settings,event,db,scope,current,*,identity=None,evidence=None,memor
         from dsh_group_tools import main_context_tool
         result=[main_context_tool(main_favorite_tool(t)) for t in result if t.name!='hosted_recall_experience']
         if not event.get_extra('_hosted_tool_completion') and (identity is None or event.get_extra('_hosted_main_activation')):
-            result+=dsh_tools.tools(settings,event,current,db,delegate,social=social)
+            result+=dsh_tools.tools(settings,event,current,db,delegate,social=social,effect_current=effect_current)
         result+=image_tools(settings,event,db,current,identity)
     else:
         result+=bili_tools(settings,event,current,evidence,identity,db=db)

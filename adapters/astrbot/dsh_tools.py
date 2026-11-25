@@ -55,7 +55,7 @@ async def budget_scope(control):
                 except Exception:control.failure='model_budget_settlement_unknown'
 
 
-def tools(settings,event,current,db,bridge,social=None):
+def tools(settings,event,current,db,bridge,social=None,*,effect_current=None):
     from astrbot.core.agent.tool import FunctionTool
     vision_enabled='image_analysis' in bridge.get('capabilities',[])
     web_enabled=(settings.get('config',{}).get('delegatedCapabilities') or {}).get('webSearch',True)
@@ -108,7 +108,7 @@ def tools(settings,event,current,db,bridge,social=None):
                 if images is None:return '没有可用于这次分析的原图。原图可能已清理、不可读取，或超出可分析的格式或大小。'
                 positions=positions or list(range(1,len(images)+1))
             from dsh_group_tools import GroupReadBridge
-            import dsh_read_tools
+            import dsh_read_tools,dsh_qq_tools
             group=GroupReadBridge(settings,event,current,db,context,record)
             def catalog():
                 rows=[]
@@ -116,7 +116,7 @@ def tools(settings,event,current,db,bridge,social=None):
                     definition={**definition,'output':{'schema':{}}}
                     rows.append({'id':definition['name'],'capability':'group_history','effect':'read','available':True,
                         'version':hashlib.sha256(json.dumps(definition,sort_keys=True).encode()).hexdigest(),'definition':definition})
-                return rows+dsh_read_tools.catalog(settings,event,current,db,context,social)
+                return rows+dsh_read_tools.catalog(settings,event,current,db,context,social)+dsh_qq_tools.catalog(settings,event,current,db,context,effect_current=effect_current)
             payload={'protocol':2,'parent':record,'delegationId':call_id,'input':{'goal':goal,'background':background,'constraints':constraints}}
             if continue_task is not None:payload['continueDelegationId']=continue_task
             if image is not None:payload['imageAnalysis']=True
@@ -157,10 +157,13 @@ def tools(settings,event,current,db,bridge,social=None):
                             elif frame['operation']=='discover':value=catalog()
                             elif frame['operation']=='vision_images' and image is not None:
                                 value={'eventId':event_id,'positions':positions,'images':images}
+                            elif frame['operation']=='history_content':
+                                value=await dsh_qq_tools.materialize(settings,event,current,db,context,frame.get('reference'))
                             elif frame['operation']=='execute':
                                 item=next((row for row in catalog() if row['id']==frame.get('tool')),None)
                                 if item is None:raise ValueError('dsh_tool_unavailable')
                                 if item['capability']=='group_history':value=await group.execute(item['id'],frame.get('args',{}))
+                                elif item['capability'] in ('chat_history','qq_space'):value=await dsh_qq_tools.execute(settings,event,current,db,context,item['id'],frame.get('args',{}),effect_current=effect_current)
                                 else:value=await dsh_read_tools.execute(settings,event,current,db,context,item['id'],frame.get('args',{}),social)
                             else:raise ValueError('dsh_callback_invalid')
                             ack.update(ok=True,value=value)
@@ -180,7 +183,7 @@ def tools(settings,event,current,db,bridge,social=None):
             assert_current()
             if final is None:raise ValueError('dsh_final_missing')
             return final
-    description='将'+('联网搜索、网页查阅、' if web_enabled else '')+'当前授权群的历史深度查证、真实执行结果核对、收藏与素材语义盘点、B站查询及获授权操作、多片段媒体分析完整委托给DSH。只提供目标、必要背景和约束，不指定工具或执行步骤；只接收最终文字，不查询进度。'
+    description='将'+('联网搜索、网页查阅、' if web_enabled else '')+'授权私聊及群聊历史查证、查图选图、QQ空间查看及获授权发布、真实执行结果核对、收藏与素材语义盘点、B站及多片段媒体任务完整委托给DSH。只交代目标、必要背景和约束，DSH自行查历史、看图和操作；只接收最终文字，不传历史全文或查询进度。'
     description+='同一Work的任务追问可用continue_task引用此前dsh_delegate调用ID，复用原对话；省略则创建独立任务。'
     properties={
         'continue_task':{'type':'string','minLength':1,'maxLength':256},

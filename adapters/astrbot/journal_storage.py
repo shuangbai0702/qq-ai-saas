@@ -334,11 +334,14 @@ def read_snapshot_payload(db,scope,version,payload,sha,*,integrity='journal_snap
     return value
 
 
-def read_snapshot(db,scope):
+def read_snapshot(db,scope,*,ready=False):
     """Read a committed snapshot without creating tables or rewriting data."""
-    row=db.execute('SELECT version,payload,sha FROM fishbot_readonly_journals WHERE scope=?',(scope,)).fetchone()
+    if ready:
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fishbot_readonly_journals'").fetchone():return None
+    row=db.execute('SELECT version,payload,sha,state FROM fishbot_readonly_journals WHERE scope=?',(scope,)).fetchone()
+    if ready and row and row[3]!='ready':raise ValueError('journal_snapshot_not_ready')
     if not row or row[1] is None:return None
-    version,payload,sha=row
+    version,payload,sha=row[:3]
     value=read_snapshot_payload(db,scope,version,payload,sha)
     if not isinstance(value,dict) or value.get('scope')!=scope or not isinstance(value.get('base'),list):raise ValueError('journal_snapshot_invalid')
     if any(not isinstance(m,dict) or not isinstance(m.get('role'),str) for m in value['base']):raise ValueError('journal_snapshot_invalid')

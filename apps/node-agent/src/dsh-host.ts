@@ -45,6 +45,8 @@ import {installedDsh,createKernel,delegateLocal,delegateVision,sessionIdentity} 
 // @ts-ignore
 import {nativeModel} from '../../../packages/dsh/native-model.mjs';
 // @ts-ignore
+import {prepareHistoryModel} from '../../../packages/dsh/history-content.mjs';
+// @ts-ignore
 import {mcpSource} from '../../../packages/dsh/mcp-source.mjs';
 
 export function dshToken(key:Buffer,bot:any){return createHmac('sha256',key).update(JSON.stringify(['dsh',bot.tenant_id,bot.id,bot.generation,bot.revision])).digest('hex')}
@@ -91,8 +93,8 @@ export async function reserveDshModel(options:any,callback:(operation:string,dat
 }
 /** Capability switches narrow authorization; they never grant a tool or Scope. */
 export function delegatedCapabilityEnabled(config:any,capability:string){
- const field=({web_search:'webSearch',group_history:'groupHistory',execution_review:'executionReview',favorite_audit:'favoriteAudit'} as Record<string,string>)[capability];
- return capability==='bilibili'||!!field&&config.delegatedCapabilities?.[field]!==false;
+ const field=({web_search:'webSearch',group_history:'groupHistory',chat_history:'groupHistory',execution_review:'executionReview',favorite_audit:'favoriteAudit'} as Record<string,string>)[capability];
+ return capability==='qq_space'?config.behavior?.qzone===true:capability==='bilibili'||!!field&&config.delegatedCapabilities?.[field]!==false;
 }
 export const DSH_MAIN_REPLY_REMINDER='注意：回复用户应该注意自己的情绪，语气，说话习惯；要像人一样保持独立意识，独立判断；不能机械得完成任务；';
 
@@ -141,7 +143,7 @@ export class DshHost{
     continue;
    }
    activeIds.add(bot.id);
-   const capabilities=['group_history','execution_review','favorite_audit'].filter(c=>delegatedCapabilityEnabled(ctx.config,c));
+   const capabilities=['group_history','chat_history','qq_space','execution_review','favorite_audit'].filter(c=>delegatedCapabilityEnabled(ctx.config,c));
    capabilities.push('image_analysis');
    const value={version:2,mode:'production',capabilities,botId:bot.id,tenantId:bot.tenant_id,generation:bot.generation,revision:bot.revision,authorityHash:createHmac('sha256',this.agent.key).update(JSON.stringify([fixedRequestConfig(ctx.config),ctx.apiKey])).digest('hex'),url:`http://127.0.0.1:${this.port}/delegate`,token:dshToken(this.agent.key,bot)};
    const serialized=JSON.stringify(value);if(this.snapshots.get(bot.id)===serialized)continue;
@@ -213,13 +215,13 @@ export class DshHost{
    };
    await assertCurrent();
    res.writeHead(200,{'Content-Type':'application/x-ndjson','Cache-Control':'no-store'});
-   const callback=async(operation:string,data:any={},receipt=false)=>{
+   const callback=async(operation:string,data:any={},receipt=false,timeoutMs=30000)=>{
     if(!receipt)await assertCurrent();
     signal.throwIfAborted();
     const id=randomUUID();
     return new Promise<any>((resolve,reject)=>{
      const cancel=()=>finish(null,Error('delegation_callback_canceled'));
-     const timer=setTimeout(cancel,30000);
+     const timer=setTimeout(cancel,timeoutMs);
      const finish=(value:any,error?:Error)=>{clearTimeout(timer);signal.removeEventListener('abort',cancel);this.callbacks.delete(id);error?reject(error):resolve(value)};
      this.callbacks.set(id,{task:task!,token:provided.toString().slice(7),operation,resolve:v=>finish(v),reject:e=>finish(null,e)});
      signal.addEventListener('abort',cancel,{once:true});
@@ -227,9 +229,11 @@ export class DshHost{
     });
    };
    const local={
-    discover:async()=>{if(completedMedia)return [];const rows=await callback('discover');if(!Array.isArray(rows))throw Error('invalid_local_catalog');return rows.filter((row:any)=>['group_history','execution_review','favorite_audit'].includes(row.capability)&&row.effect==='read')},
+    discover:async()=>{if(completedMedia)return [];const rows=await callback('discover');if(!Array.isArray(rows))throw Error('invalid_local_catalog');return rows.filter((row:any)=>['group_history','chat_history','execution_review','favorite_audit'].includes(row.capability)&&row.effect==='read'||row.capability==='qq_space'&&['read','write'].includes(row.effect))},
     validateArguments:async(item:any,args:any)=>{const {validateJsonSchemaValue}=await kernel.native.load('dsh-tools');if(validateJsonSchemaValue(item.definition.parameters,args).length)throw Error('tool_arguments_invalid')},
-    execute:async(item:any,args:any)=>callback('execute',{tool:item.id,args}),
+    // Original QQ preparation (bounded) + 65s terminal protocol wait. A
+    // shorter callback would lose a valid receipt and invite an unsafe retry.
+    execute:async(item:any,args:any)=>callback('execute',{tool:item.id,args},false,item.capability==='qq_space'&&item.effect==='write'?100000:30000),
    };
    const repo=this.agent.bilibili.repo;
    const settings=await repo.settings(bot.tenant_id,bot.id);
@@ -258,10 +262,11 @@ export class DshHost{
     let resume=false;
     if(!vision){try{await readFile(storage);resume=true}catch(error:any){if(error.code!=='ENOENT')throw error}}
     const host={identity:bound,assertCurrent,
-     authorize:async(item:any)=>delegatedCapabilityEnabled(ctx.config,item.capability)&&(item.effect==='read'||item.capability==='bilibili'&&(parent.authority==='autonomous'||parent.sender_id===ctx.config.behavior.ownerUin)),
+     authorize:async(item:any)=>delegatedCapabilityEnabled(ctx.config,item.capability)&&(item.effect==='read'||['bilibili','qq_space'].includes(item.capability)&&(parent.authority==='autonomous'||parent.sender_id===ctx.config.behavior.ownerUin)),
      discover:async()=>[...(delegatedCapabilityEnabled(ctx.config,'web_search')&&this.search?await this.search.discover().catch(()=>[]):[]),...await bili.discover(),...await local.discover()].filter(item=>delegatedCapabilityEnabled(ctx.config,item.capability)),
      validateArguments:(item:any,args:any)=>source(item).validateArguments(item,args),
      execute:async(item:any,args:any,exec:any)=>{await assertCurrent();if(parent.authority==='autonomous'){await callback('tool_budget');await assertCurrent();}return source(item).execute(item,args,exec)},
+     prepareModel:(options:any)=>prepareHistoryModel(options,{resolve:(reference:any)=>callback('history_content',{reference}),registerImages:adapter.registerImages,assertCurrent}),
      // Foreground follows the original foreground Work policy (no autonomous cycle).
      // Autonomous calls borrow the current RunControl and original cycle budget.
      reserveModel:async(options:any)=>{await assertCurrent();if(parent.authority==='autonomous')return reserveDshModel(options,callback);return{settle:async(v:any)=>{console.info('dsh model',JSON.stringify({botId:bot.id,workId:parent.work_id,state:v.state,usage:v.usage}))}}},

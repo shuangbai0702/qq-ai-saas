@@ -6,8 +6,8 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from types import SimpleNamespace as NS
-from unittest.mock import AsyncMock
+from types import SimpleNamespace as NS,ModuleType
+from unittest.mock import AsyncMock,patch
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/'references/astrbot'),str(ROOT/'adapters/astrbot')]
@@ -20,7 +20,7 @@ import bilibili_tools
 import inner_tools
 
 # Capture the task-start HEAD for reproducibility after this change is committed.
-BASE_COMMIT='93adae8be73039537685dc39ecd0833a65f6a405'
+BASE_COMMIT='6e7438f098fd583c326c7f21e403340e8a669d02'
 
 
 class MainCatalog(unittest.IsolatedAsyncioTestCase):
@@ -64,7 +64,13 @@ class MainCatalog(unittest.IsolatedAsyncioTestCase):
         baseline_source=subprocess.check_output(['git','show',BASE_COMMIT+':adapters/astrbot/inner_tools.py'],cwd=ROOT,encoding='utf8')
         baseline_namespace={'__name__':'dsh_catalog_task_start_baseline'}
         exec(compile(baseline_source,'git:'+BASE_COMMIT+':inner_tools.py','exec'),baseline_namespace)
-        baseline={tool.name:tool for tool in baseline_namespace['features'](self.settings,self.event,self.store.db,self.scope,lambda:True,evidence=[])}
+        originals={}
+        for name in ('qq_actions','dsh_tools'):
+            module=ModuleType(name)
+            text=subprocess.check_output(['git','show',BASE_COMMIT+':adapters/astrbot/'+name+'.py'],cwd=ROOT,encoding='utf8')
+            exec(compile(text,'git:'+BASE_COMMIT+':'+name+'.py','exec'),module.__dict__);originals[name]=module
+        with patch.dict(sys.modules,originals):
+            baseline={tool.name:tool for tool in baseline_namespace['features'](self.settings,self.event,self.store.db,self.scope,lambda:True,evidence=[])}
         self.assertNotIn('hosted_recall_experience',after)
         self.assertEqual(after['hosted_qq_favorites'].parameters['properties']['operation']['enum'],['prepare','save'])
         self.assertEqual(sum(name=='dsh_delegate' for name in after),1)
@@ -74,13 +80,14 @@ class MainCatalog(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([name for name in after if name.startswith('bilibili_')],[])
         self.assertEqual(set(after)-set(before),{'dsh_delegate'})
         self.assertEqual(set(before)-set(after),{name for name in before if name.startswith('bilibili_')}|{'hosted_recall_experience'})
-        self.assertEqual(set(baseline)-set(after),{'hosted_recall_experience','bilibili_analyze'})
+        self.assertEqual(set(baseline)-set(after),{'hosted_qq_publish','hosted_qq_view'})
+        self.assertNotIn('hosted_qq_publish',before);self.assertNotIn('hosted_qq_view',before)
         self.assertEqual(set(after)-set(baseline),set())
         new_group=json.loads(await after['hosted_qq_group_context'].call(self.context,group_id='55555'))
         self.assertEqual(new_group['data']['members'],{self.person:'Owner'})
         self.assertEqual(set(new_group['data']),{'group_id','source','members'})
         self.assertNotIn('fixture deep message',json.dumps(new_group))
-        changed={'hosted_qq_group_context','hosted_qq_favorites'}
+        changed={'dsh_delegate'}
         unchanged=(set(baseline)&set(after))-changed
         self.assertTrue(unchanged)
         for name in unchanged:
@@ -109,6 +116,7 @@ class MainCatalog(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(favorite.parameters['properties']['operation']['enum'],['prepare','save'])
         self.assertNotIn('bilibili_search',names)
         self.assertNotIn('bilibili_analyze',names)
+        self.assertNotIn('hosted_qq_publish',names);self.assertNotIn('hosted_qq_view',names)
         self.extras.pop('_hosted_main_activation')
         worker=inner_tools.features(self.settings,self.event,self.store.db,self.scope,lambda:True,identity=identity)
         self.assertNotIn('dsh_delegate',{tool.name for tool in worker})

@@ -258,7 +258,7 @@ def tools(event,cfg,db,current,settings=None):
     if not permitted:return []
     from astrbot.core.agent.tool import FunctionTool
     descriptions={'nickname':'修改当前机器人QQ昵称','signature':'修改当前机器人QQ签名','avatar':'用主人当前附带或引用的QQ图片换头像，不接受URL参数','status':'设置QQ状态，可选在线、离开、隐身、忙碌、Q我吧、请勿打扰','publish':'真正发布文字或附原图到当前机器人自己的QQ空间。仅当当前主人要求实际发布时调用；结合本轮真实作者文字与对话理解意图，不要求固定措辞。询问是否具备能力、讨论空间、只写草稿、引用别人的话、假设或否定发布均不调用；意图不清楚先简短询问。主人允许自行选文案时可按人格写，但不能擅自自动发布。不在聊天中假装已发布，以本工具返回为准','view':'读取当前机器人自己的最近5条空间说说，仅在主人希望查看时调用，不读取其他人的空间'}
-    descriptions['publish']+='。image_sources可选：current用当前/引用图，无图用当前作者15分钟内最近唯一图；或已有qm_句柄。省略则纯文字；附图失败不降级。平台授权的自主空间任务按当前任务授权执行；工具可见不授予其他发言者主人权限'
+    descriptions['publish']+='。带图时先查历史并查看候选图，再用明确选中的qh_来源填写image_sources，按数组顺序发布原图；不接受当前图或近期图等自动选择规则。省略则纯文字；要求带图而未找到来源时停止，附图失败不降级。平台授权的自主空间任务按当前任务授权执行；工具可见不授予其他发言者主人权限'
     class QQTool(FunctionTool):
         @property
         def hosted_effect(self):return self.name!='hosted_qq_view'
@@ -285,4 +285,4 @@ def tools(event,cfg,db,current,settings=None):
                 return json.dumps(project(result,write=False),ensure_ascii=False)
             return json.dumps(project({'receipt':{'status':status},'data':{'message':result},'evidence':[{'type':'qq_action_attempt','event':event_id,'operation':action,'state':row[0] if row else 'not_dispatched'}]},write=True),ensure_ascii=False)
     descriptions['avatar']='更换当前机器人QQ头像：默认使用主人当前附带或引用的QQ图片；或先用hosted_bilibili_image准备B站公开图片，再传其真实image_handle。内部任务由QQ资料管理开关授权，不需要虚构主人命令。不能传URL、路径或任意base64；准备图片不等于换头像，必须以本工具实际回执为准'
-    return [QQTool(name='hosted_qq_'+action,description=descriptions[action]+'。content必须为普通文本或Unicode表情，不得包含QQ_FACE、MEME、IMAGE或NO_REPLY内部标记。成功与否以工具返回为准。',parameters={'type':'object','properties':{'image_handle':{'type':'string','pattern':'^bi_[a-f0-9]{24}$'}} if action=='avatar' else {} if action=='view' else {'content':{'type':'string','maxLength':limits},**({'image_sources':{'type':'array','maxItems':9,'uniqueItems':True,'items':{'type':'string','pattern':'^(current|qm_[a-f0-9]{20})$'}}} if action=='publish' else {})},'required':[] if action in ('view','avatar') else ['content'],'additionalProperties':False}) for action in sorted(permitted) for limits in [CONTENT_LIMITS.get(action,120)]]
+    return [QQTool(name='hosted_qq_'+action,description=descriptions[action]+'。content必须为普通文本或Unicode表情，不得包含QQ_FACE、MEME、IMAGE或NO_REPLY内部标记。成功与否以工具返回为准。',parameters={'type':'object','properties':{'image_handle':{'type':'string','pattern':'^bi_[a-f0-9]{24}$'}} if action=='avatar' else {} if action=='view' else {'content':{'type':'string','maxLength':limits},**({'image_sources':{'type':'array','minItems':1,'maxItems':9,'uniqueItems':True,'items':{'type':'string','pattern':'^qh_[a-f0-9]{24}$'}}} if action=='publish' else {})},'required':[] if action in ('view','avatar') else ['content'],'additionalProperties':False}) for action in sorted(permitted) for limits in [CONTENT_LIMITS.get(action,120)]]
