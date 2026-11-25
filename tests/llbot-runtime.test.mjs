@@ -209,3 +209,35 @@ test('Qzone image wire uses verified Bot files, exact richval and fixed credenti
  const action=map.get('send_qzone_msg'),result=await action.websocketHandle({content:'local image fixture',images:[file],ugc_right:64},'image-echo');assert.equal(result.retcode,0,result.message);assert.equal(result.data.tid,'image-tid');assert.equal(requests,2);
  assert.equal((await action.websocketHandle({content:'invalid',images:{}},1)).retcode,1200);assert.equal(requests,2,'invalid input never submits');
 });
+
+test('Qzone accepts real ret-only upload receipts including type zero; upload failure never publishes',async()=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'llbot-qzone-ret-')),file=path.join(root,'picture.gif');await writeFile(file,Buffer.from('GIF89a-fixture'));
+ const ctx={ntUserApi:{getPSkey:async()=>new Map([['qzone.qq.com','secret-pskey']])},ntWebApi:{getCookies:async()=>({skey:'secret-skey'}),genBkn:()=>55}};
+ for(const upload of [{ret:0,type:22},{ret:0,type:0},{code:0,type:1},{ret:-1,type:22},{ret:0,code:-1,type:22},{ret:0,type:null}]){
+  const map=new Map();let publishes=0;
+  installActions(map,ctx,{uin:'90000',online:true},{root,expectedUin:'90000'},{fetcher:async(url,options)=>{
+   if(new URL(url).hostname==='up.qzone.qq.com')return new Response('<script>frameElement.callback('+JSON.stringify({...upload,data:{albumid:'album',lloc:'location',type:upload.type,width:20,height:10}})+');</script>');
+   publishes++;assert.equal(options.body.get('richval'),`,album,location,location,${upload.type},10,20,,10,20`);return new Response(JSON.stringify({code:0,tid:'receipt'}));
+  }});
+  const r=await map.get('send_qzone_msg').websocketHandle({content:'fixture',images:[file]},1),ok=upload.ret!==-1&&upload.code!==-1&&upload.type!==null;
+  assert.equal(r.retcode,ok?0:1200);assert.equal(publishes,ok?1:0);
+  if(!ok){assert.equal(r.data.receipt.status,'rejected');assert.equal(r.data.stage,'upload');assert.doesNotMatch(JSON.stringify(r),/secret-/)}
+ }
+});
+
+test('Qzone distinguishes explicit publish rejection from an unknown submitted request',async()=>{
+ const ctx={ntUserApi:{getPSkey:async()=>new Map([['qzone.qq.com','secret-pskey']])},ntWebApi:{getCookies:async()=>({skey:'secret-skey'}),genBkn:()=>55}};
+ for(const result of [{code:-1,tid:'not-valid'},{code:0},'network']){
+  const map=new Map();installActions(map,ctx,{uin:'90000',online:true},{expectedUin:'90000'},{fetcher:async()=>{if(result==='network')throw Error('secret-cookie');return new Response(JSON.stringify(result))}});
+  const r=await map.get('send_qzone_msg').websocketHandle({content:'fixture'},1);
+  assert.equal(r.retcode,1200);assert.equal(r.data.stage,'publish');assert.equal(r.data.receipt.status,result.code===-1?'rejected':'unknown');assert.doesNotMatch(JSON.stringify(r),/secret-/);
+ }
+});
+
+test('late credentials after the operation deadline cannot start a Qzone publish',async t=>{
+ const controller=new AbortController(),timeout=AbortSignal.timeout.bind(AbortSignal);t.mock.method(AbortSignal,'timeout',ms=>ms===45000?controller.signal:timeout(ms));
+ const gate=deferred(),map=new Map();let writes=0;
+ installActions(map,{ntUserApi:{getPSkey:async()=>new Map([['qzone.qq.com','secret']])},ntWebApi:{getCookies:()=>gate.promise,genBkn:()=>55}},{uin:'90000',online:true},{expectedUin:'90000'},{fetcher:async()=>{writes++;return new Response('{}')}});
+ const flight=map.get('send_qzone_msg').websocketHandle({content:'fixture'},1);controller.abort();gate.resolve({skey:'secret'});
+ const r=await flight;assert.equal(writes,0);assert.equal(r.data.receipt.status,'rejected');assert.equal(r.data.stage,'prepare');
+});

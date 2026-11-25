@@ -16,7 +16,8 @@ export function qzoneForm(uin,content,visibility=4,targets=[]){
  return data;
 }
 export function qzoneReceipt(value){
- if(!value||typeof value!=='object'||['code','subcode'].some(key=>value[key]!=null&&value[key]!==0))throw Error('QQ空间拒绝发表');
+ if(!value||typeof value!=='object')throw Error('QQ空间未返回有效发表回执，结果未知');
+ if(['code','subcode'].some(key=>value[key]!=null&&value[key]!==0))throw Object.assign(Error('QQ空间拒绝发表'),{qzoneRejected:true});
  const tid=value.t1_tid||value.tid;
  if(typeof tid!=='string'||!tid||tid.length>200)throw Error('QQ空间未返回有效发表回执，结果未知');
  return{tid};
@@ -72,6 +73,10 @@ export function installActions(actionMap,ctx,selfInfo,manifest,{fetcher=fetch,do
   if(res.errorCode!==0)throw Error('QQ rejected signature');return null;
  };
  const publish=async params=>{
+  // The whole operation has one deadline. A late native credential/read result
+  // cannot start another upload or publish after the caller has stopped waiting.
+  const budget=AbortSignal.timeout(45000);let stage='prepare';
+  try{
   const uin=own(),form=qzoneForm(uin,params.content,params.ugc_right??4,params.target_uins??[]);
   if(params.images!==undefined&&(!Array.isArray(params.images)||params.images.length>9))throw Error('Invalid qzone images');
   const cookies=await ctx.ntWebApi.getCookies('qzone.qq.com');same(uin);
@@ -79,27 +84,37 @@ export function installActions(actionMap,ctx,selfInfo,manifest,{fetcher=fetch,do
   if(!cookies.skey||!pskey)throw Error('QQ空间登录凭据尚未就绪');
   const cookie=`p_uin=o${uin}; p_skey=${pskey}; skey=${cookies.skey}; uin=o${uin}`;
   const gtk=ctx.ntWebApi.genBkn(cookies.skey);
+  budget.throwIfAborted();
   if(params.images?.length){
+   stage='upload';
    const rich=[];
    for(const input of params.images){
     const {bytes}=await imageFile(input);
     const data=new URLSearchParams({filename:'filename',uin,skey:cookies.skey,zzpaneluin:uin,p_uin:uin,p_skey:pskey,g_tk:String(gtk),base64:'1',picfile:bytes.toString('base64'),output_type:'jsonhtml',jsonhtml_callback:'callback',output_charset:'utf-8',albumtype:'7',exttype:'0',charset:'utf-8',upload_hd:'1',hd_width:'2048',hd_height:'10000',hd_quality:'96',uploadtype:'1',refer:'shuoshuo',backUrls:`http://upbak.photo.qzone.qq.com/cgi-bin/upload/cgi_upload_image,http://119.147.64.75/cgi-bin/upload/cgi_upload_image&url=https://up.qzone.qq.com/cgi-bin/upload/cgi_upload_image?g_tk=${gtk}`,qzreferrer:`https://user.qzone.qq.com/${uin}/main`});
-    same(uin);
-    const response=await fetcher(`https://up.qzone.qq.com/cgi-bin/upload/cgi_upload_image?g_tk=${gtk}`,{method:'POST',redirect:'error',headers:{Cookie:cookie,'Content-Type':'application/x-www-form-urlencoded'},body:data,signal:AbortSignal.timeout(20000)});
+    same(uin);budget.throwIfAborted();
+    const response=await fetcher(`https://up.qzone.qq.com/cgi-bin/upload/cgi_upload_image?g_tk=${gtk}`,{method:'POST',redirect:'error',headers:{Cookie:cookie,'Content-Type':'application/x-www-form-urlencoded'},body:data,signal:AbortSignal.any([budget,AbortSignal.timeout(20000)])});
     const raw=(await responseBytes(response,1048576)).toString('utf8');same(uin);
     const begin=raw.indexOf('{'),end=raw.lastIndexOf('}');const result=JSON.parse(raw.slice(begin,end+1));
     const image=result.data;
-    if(result.code!==0||!image?.albumid||!image?.lloc||!image?.type||!image?.height||!image?.width)throw Error('QQ空间图片未返回完整回执');
+    // QQ's jsonhtml upload endpoint returns {ret:0,data:...}; some deployments
+    // return code instead. Neither a missing code nor image type 0 is failure.
+    if(['code','ret'].some(key=>result[key]!=null&&result[key]!==0)||
+       ![image?.albumid,image?.lloc].every(v=>typeof v==='string'&&v&&!/[,\t\r\n]/.test(v))||
+       !Number.isInteger(image?.type)||image.type<0||![image?.height,image?.width].every(v=>Number.isInteger(v)&&v>0))throw Error('QQ空间图片未返回完整回执');
     rich.push(`,${image.albumid},${image.lloc},${image.lloc},${image.type},${image.height},${image.width},,${image.height},${image.width}`);
    }
    form.set('richtype','1');form.set('richval',rich.join('\t'));
   }
-  same(uin);
-  const response=await fetcher(`https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_publish_v6?g_tk=${gtk}`,{method:'POST',redirect:'error',headers:{Cookie:cookie,'Content-Type':'application/x-www-form-urlencoded'},body:form,signal:AbortSignal.timeout(20000)});
+  same(uin);budget.throwIfAborted();stage='publish';
+  const response=await fetcher(`https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_publish_v6?g_tk=${gtk}`,{method:'POST',redirect:'error',headers:{Cookie:cookie,'Content-Type':'application/x-www-form-urlencoded'},body:form,signal:AbortSignal.any([budget,AbortSignal.timeout(20000)])});
   const bytes=await responseBytes(response,1048576);same(uin);return qzoneReceipt(JSON.parse(bytes.toString('utf8')));
+  }catch(error){
+   const status=stage==='publish'&&!error.qzoneRejected?'unknown':'rejected';
+   throw Object.assign(Error(stage==='publish'?(status==='rejected'?'QQ空间明确拒绝发表':'QQ空间发表回执未知，请先核对，不要重复提交'):stage==='upload'?'QQ空间图片上传未完成，尚未提交说说':'QQ空间发布准备失败，尚未提交说说'),{qzone:{receipt:{status},code:'qzone_'+stage+'_failed',stage}});
+  }
  };
  for(const [name,handler] of Object.entries({set_self_longnick:signature,fetch_custom_face_detail:details,add_custom_face:upload,send_qzone_msg:publish})){
-  const action={actionName:name,async websocketHandle(params,echo){try{return{status:'ok',retcode:0,data:await handler(params??{}),echo}}catch(error){const reason=String(error?.message||'');const safe=/^(Invalid |Image must belong|QQ identity changed|QQ rejected |Favorite bytes could not be verified|QQ空间)/.test(reason)&&reason.length<160?reason+'；':'';return{status:'failed',retcode:1200,data:null,message:safe+'QQ操作失败或回执未确认，请查询状态；不要自动重复提交',echo}}},async handle(params){return this.websocketHandle(params,undefined)}};
+  const action={actionName:name,async websocketHandle(params,echo){try{return{status:'ok',retcode:0,data:await handler(params??{}),echo}}catch(error){if(name==='send_qzone_msg'&&error.qzone)return{status:'failed',retcode:1200,data:error.qzone,message:error.message,echo};const reason=String(error?.message||'');const safe=/^(Invalid |Image must belong|QQ identity changed|QQ rejected |Favorite bytes could not be verified|QQ空间)/.test(reason)&&reason.length<160?reason+'；':'';return{status:'failed',retcode:1200,data:null,message:safe+'QQ操作失败或回执未确认，请查询状态；不要自动重复提交',echo}}},async handle(params){return this.websocketHandle(params,undefined)}};
   for(const suffix of ['','_async','_rate_limited'])actionMap.set(name+suffix,action);
  }
 }

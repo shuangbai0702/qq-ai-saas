@@ -136,6 +136,20 @@ class QzoneOwnerMedia(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(json.loads(await f.tool.call(f.context,content='再次',image_sources=['current']))['receipt']['status'],'unknown')
    self.assertTrue(all(not Path(p).exists() for p in paths));self.assertEqual(len(paths),1)
 
+ async def test_protocol_failure_receipts_distinguish_not_published_and_unknown(self):
+  from aiocqhttp.exceptions import ActionFailed
+  for stage,status in [('prepare','rejected'),('upload','rejected'),('publish','rejected'),('publish','unknown')]:
+   f=self.fixture('llbot')
+   f.event.bot.send_qzone_msg=AsyncMock(side_effect=ActionFailed({'retcode':1200,'data':{'stage':stage,'code':'qzone_'+stage+'_failed','receipt':{'status':status}},'message':'secret-cookie'}))
+   with patch.object(qq_publish_media,'download',AsyncMock(return_value=f.raw)),patch.object(qq_actions.asyncio,'wait_for',wraps=asyncio.wait_for) as wait:
+    result=json.loads(await f.tool.call(f.context,content='fixture',image_sources=['current']))
+   self.assertEqual(result['receipt']['status'],status)
+   self.assertEqual(f.db.execute('SELECT status FROM qq_action_attempts').fetchone()[0],'not_sent' if status=='rejected' else 'attempted')
+   self.assertIn(qq_actions.QQ_PUBLISH_TIMEOUT_SECONDS,[c.args[1] for c in wait.call_args_list if len(c.args)>1])
+   self.assertNotIn('secret-cookie',json.dumps(result));self.assertEqual(list(Path(f.settings['root']).iterdir()),[])
+   await f.tool.call(f.context,content='不能重发')
+   self.assertEqual(f.event.bot.send_qzone_msg.await_count,1)
+
  async def test_sdk_http_wire_exposes_one_attachment_parameter_and_consumes_real_tool_receipt(self):
   import os,httpx
   f=self.fixture();requests=[]

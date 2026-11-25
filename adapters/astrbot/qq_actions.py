@@ -57,6 +57,9 @@ def intents(text):
 QQ_ACTION_WINDOW_SECONDS=86400
 QQ_ACTION_WINDOW_LIMIT=20
 OWNER_SIGNATURE_LIMIT=10
+# LLBot's operation budget is 45s and its relay deadline is 60s. Wait for the
+# protocol's terminal receipt rather than deleting attachment files after 15s.
+QQ_PUBLISH_TIMEOUT_SECONDS=65
 
 def limit_context(db,cfg):
     initialize(db)
@@ -175,8 +178,8 @@ async def execute(event,cfg,db,action,value,current,settings=None,image_handle='
                     for index,raw in enumerate(images):
                         file=Path(directory)/(str(index)+'.image');file.write_bytes(raw);paths.append(str(file))
                     params['images']=paths
-                    await asyncio.wait_for(getattr(event.bot,method)(**params),15)
-            else:await asyncio.wait_for(getattr(event.bot,method)(**params),15)
+                    await asyncio.wait_for(getattr(event.bot,method)(**params),QQ_PUBLISH_TIMEOUT_SECONDS)
+            else:await asyncio.wait_for(getattr(event.bot,method)(**params),QQ_PUBLISH_TIMEOUT_SECONDS if action=='publish' else 15)
             confirmed=True
             result='QQ协议已确认该操作回执。'
         db.execute('UPDATE qq_action_attempts SET status=? WHERE event=? AND action=?',('confirmed',event_id,action));db.commit()
@@ -187,8 +190,16 @@ async def execute(event,cfg,db,action,value,current,settings=None,image_handle='
     except QzoneUnavailable as error:
         db.execute("UPDATE qq_action_attempts SET status='not_sent' WHERE event=? AND action=?",(event_id,action));db.commit()
         return rejected('qq_view_unavailable',str(error))
-    except Exception:
+    except Exception as error:
         if confirmed:return json.dumps({'execution':'completed','receipt':{'status':'confirmed'},'state_committed':False,'data':{'message':'QQ已确认，但本地状态提交失败；不得重新发送。'}},ensure_ascii=False)
+        from aiocqhttp.exceptions import ActionFailed
+        if action=='publish' and isinstance(error,ActionFailed):
+            data=error.result.get('data')
+            if isinstance(data,dict) and data.get('stage') in ('prepare','upload','publish') and data.get('code')=='qzone_'+data['stage']+'_failed':
+                receipt=data.get('receipt');status=receipt.get('status') if isinstance(receipt,dict) else None
+                if status=='rejected':
+                    db.execute("UPDATE qq_action_attempts SET status='not_sent' WHERE event=? AND action=?",(event_id,action));db.commit()
+                    return rejected(data['code'],{'prepare':'空间发布准备失败，尚未提交说说。','upload':'空间图片上传失败，尚未提交说说；没有降级成纯文字。','publish':'QQ空间明确拒绝发表，未获成功回执。'}[data['stage']])
         return 'QQ接口未确认成功；可能不支持、超时或需重新登录。不会自动重试，请先检查QQ实际结果。'
 
 
