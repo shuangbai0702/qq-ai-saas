@@ -17,7 +17,7 @@ function fixture(){
    if(path==='/prepare-stop'){fenced=true;events.push('fence');return{pid:worker.pid,quiescing:true}}
    if(path==='/cancel-stop'){fenced=false;events.push('reopen');return{quiescing:false}}
    assert.fail(path);
-  },start:async()=>{worker={pid:next++,created:next};online=true;fenced=false;events.push('start:'+worker.pid)}}};
+  },start:async()=>{if(!online)group.generation++;worker={pid:next++,created:next};online=true;fenced=false;events.push('start:'+worker.pid)}}};
  const prior={tick:agent.tick,autonomyTick:autonomy.tick,bili:agent.bilibili,favorites:agent.favorites};
  const options={release:'a'.repeat(40),timeoutMs:100,heartbeat:async()=>{},apply:async()=>events.push('apply'),rollback:async()=>events.push('rollback'),verify:async()=>{events.push('verify');return{release:'a'.repeat(40),runtimeApplied:true,journalDigestsUnchanged:true}}};
  return{agent,options,events,group,bot,protocol,prior,get fenced(){return fenced},restored(){assert.equal(agent.tick,prior.tick);assert.equal(autonomy.tick,prior.autonomyTick);assert.equal(agent.bilibili,prior.bili);assert.equal(agent.favorites,prior.favorites);assert.equal(agent.bilibili.stopped,false);assert.equal(agent.favorites.closed,false);assert.equal(agent[Symbol.for('fishbot.worker-update')],undefined)}};
@@ -26,6 +26,7 @@ function fixture(){
 test('release verifies real member revision and preserves QQ, scheduler and external tasks',async()=>{
  const f=fixture(),result=await updateSharedWorkers(f.agent,f.options);
  assert.equal(result.qqPreserved,1);assert.equal(result.proof.runtimeApplied,true);assert.equal(result.proof.journalDigestsUnchanged,true);
+ assert.equal(f.group.generation,3,'Real shared start advances the stopped group generation');
  assert.deepEqual(f.events,['fence','apply','stop:20','start:21','verify']);f.restored();
 });
 
@@ -90,4 +91,31 @@ test('rollback failure preserves its real cause and never starts against unknown
   assert.ok(error instanceof AggregateError);assert.deepEqual(error.errors.map(e=>e.message),['partial install','rollback disk error']);return true;
  });
  assert.equal(f.events.some(x=>x.startsWith('start:')),false);f.restored();
+});
+
+test('transient readiness transport failure retries without reinstalling or stopping QQ',async()=>{
+ const f=fixture(),request=f.agent.shared.request;let refusals=0;
+ f.agent.shared.request=async(g,p)=>{
+  if(p==='/health'&&f.events.some(x=>x.startsWith('start:'))&&refusals++===0)throw new TypeError('fetch failed',{cause:Object.assign(new Error(),{code:'ECONNREFUSED'})});
+  return request(g,p);
+ };
+ await updateSharedWorkers(f.agent,{...f.options,timeoutMs:1000});
+ assert.ok(refusals>1);assert.equal(f.events.filter(x=>x==='apply').length,1);assert.equal(f.events.includes('rollback'),false);f.restored();
+});
+
+test('readiness authentication failure is visible instead of retried as a startup delay',async()=>{
+ const f=fixture(),request=f.agent.shared.request;
+ f.agent.shared.request=async(g,p)=>{if(p==='/health'&&f.events.includes('start:21'))throw Error('HTTP 401');return request(g,p)};
+ await assert.rejects(updateSharedWorkers(f.agent,f.options),error=>{
+  assert.ok(error instanceof AggregateError);assert.equal(error.errors[0].message,'HTTP 401');return true;
+ });assert.ok(f.events.includes('rollback'));assert.equal(f.events.includes('stop:21'),false);f.restored();
+});
+
+test('stop boundary proof runs before the new Worker and phase progress is observable',async()=>{
+ const f=fixture(),progress=[];
+ await updateSharedWorkers(f.agent,{...f.options,onProgress:p=>progress.push(p.phase),afterStop:async()=>{
+  assert.ok(f.events.includes('stop:20'));assert.equal(f.events.includes('start:21'),false);f.events.push('journal-checked');
+ }});
+ assert.ok(f.events.indexOf('journal-checked')<f.events.indexOf('start:21'));
+ assert.deepEqual(progress,['draining','installing','reloading','verifying','applied']);f.restored();
 });

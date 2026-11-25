@@ -7,11 +7,16 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {prepareAiStop} from './prepare-ai-stop.mjs';
 
 const marker=Symbol.for('fishbot.worker-update');
+function transientReadiness(error){
+ for(let value=error,depth=0;value&&depth<5;value=value.cause,depth++)
+  if(['ECONNREFUSED','ECONNRESET','EPIPE','ETIMEDOUT','UND_ERR_CONNECT_TIMEOUT','UND_ERR_SOCKET'].includes(value.code)||value.name==='TimeoutError')return true;
+ return /HTTP (408|429|50[0234])\b/.test(String(error?.message));
+}
 
-export async function updateSharedWorkers(agent,{release,heartbeat,apply,rollback,verify,signal,timeoutMs=120000}){
+export async function updateSharedWorkers(agent,{release,heartbeat,apply,rollback,verify,signal,timeoutMs=120000,onProgress=()=>{},afterStop=async()=>{}}){
  assert.match(release,/^[a-f0-9]{40,64}$/);
  assert.ok(Number.isFinite(timeoutMs)&&timeoutMs>0&&timeoutMs<=120000);
- for(const fn of [heartbeat,apply,rollback,verify])assert.equal(typeof fn,'function');
+ for(const fn of [heartbeat,apply,rollback,verify,onProgress,afterStop])assert.equal(typeof fn,'function');
  assert.ok(!agent.closed,'Agent is closing');
  assert.ok(!agent[marker],'Another Worker update owns this Agent');
  for(const key of Object.getOwnPropertySymbols(agent))
@@ -24,17 +29,19 @@ export async function updateSharedWorkers(agent,{release,heartbeat,apply,rollbac
  const bili=agent.bilibili,favorites=agent.favorites;
  const biliStopped=bili.stopped,favoritesClosed=favorites.closed;
  const protocols=new Map(),groups=new Map(),affected=new Set();
- let attempted=false,pulse,lastPulse=Promise.resolve(),pulseError,failure;
+ let attempted=false,pulse,pulsing=false,lastPulse=Promise.resolve(),pulseError,failure;
+ const report=(phase,detail={})=>{owner.phase=phase;onProgress({release,phase,...detail})};
  const check=()=>{
   assert.equal(agent[marker],owner,'Worker update ownership changed');
   assert.ok(!agent.closed,'Agent is closing');signal?.throwIfAborted();
   if(pulseError)throw pulseError;
  };
  const wait=async(predicate,label)=>{
-  const deadline=Date.now()+timeoutMs;
+  const deadline=Date.now()+timeoutMs;let lastReport=0;
   for(;;){check();const done=await predicate();check();
    if(Date.now()>=deadline)throw Error('Worker update timed out: '+label);
    if(done)return;
+   if(Date.now()-lastReport>=5000){lastReport=Date.now();report(owner.phase,{waitingFor:label,deadline})}
    await delay(Math.min(50,Math.max(1,deadline-Date.now())),undefined,{signal});
   }
  };
@@ -53,25 +60,40 @@ export async function updateSharedWorkers(agent,{release,heartbeat,apply,rollbac
  const members=async(group)=>agent.db.query("SELECT * FROM bots WHERE group_id=$1 AND desired_state='running' AND deleted_at IS NULL ORDER BY id",[group.id]);
  const ready=async(group)=>{
   const current=await currentGroup(group),bots=await members(current);
-  const health=await agent.shared.request(current,'/health');
+  let health;
+  try{health=await agent.shared.request(current,'/health')}
+  catch(error){if(transientReadiness(error))return false;throw error}
   if(health.ready!==true||health.quiescing||Object.keys(health.memberErrors||{}).length)return false;
   assert.equal(health.generation,current.generation,'Worker generation changed');
   for(const bot of bots){const member=health.members?.[bot.id];
    if(member?.generation!==bot.generation||member?.revision!==bot.revision)return false;
   }
+  groups.get(current.id).health=health;
   return true;
  };
- const start=async(group)=>{
-  const current=await currentGroup(group);
-  for(const bot of await members(current)){await sameProtocols();await agent.shared.start(await agent.context(bot))}
+ const start=async(entry)=>{
+  let current=await currentGroup(entry.group),first=true;
+  for(const bot of await members(current)){
+   await sameProtocols();let failure;
+   try{await agent.shared.start(await agent.context(bot))}catch(error){failure=error}
+   const [now]=await agent.db.query('SELECT * FROM runtime_groups WHERE id=$1',[current.id]);
+   // The original start owner advances a stopped group once. Track that
+   // authorized transition even if its response was lost; later members must
+   // attach to the same generation. Other transitions remain fatal.
+   assert.ok(now&&now.desired_state==='running'&&(now.generation===current.generation||first&&now.generation===current.generation+1),'Worker generation changed');
+   entry.group={...now};current=entry.group;first=false;
+   if(failure)throw failure;
+  }
  };
  const restore=(target,name,descriptor)=>{if(descriptor)Object.defineProperty(target,name,descriptor);else delete target[name]};
  try{
   // Pause admission, not existing external operations. Keep autonomous Work
   // heartbeats renewing while it naturally settles; never cancel user Work.
   agent.tick=async()=>{};autonomy.tick=async()=>{};bili.stopped=true;favorites.closed=true;
+  report('draining');
   pulse=setInterval(()=>{
-   lastPulse=lastPulse.then(()=>heartbeat({maintenance:release})).catch(error=>{pulseError=error});
+   if(pulsing)return;pulsing=true;
+   lastPulse=Promise.resolve().then(()=>heartbeat({maintenance:release})).catch(error=>{pulseError=error}).finally(()=>{pulsing=false});
   },500);pulse.unref();
   await wait(()=>agent.controlIdle()&&!autonomy.busy&&!autonomy.active&&!autonomy.heartbeatTask,'Agent control and autonomous Work');
   const running=await agent.db.query("SELECT * FROM bots WHERE desired_state='running' AND deleted_at IS NULL ORDER BY id");check();
@@ -90,7 +112,7 @@ export async function updateSharedWorkers(agent,{release,heartbeat,apply,rollbac
     catch(error){if(/HTTP 409/.test(String(error)))return false;throw error}
    },'Worker idle boundary');
   }
-  await sameProtocols();check();owner.phase='installing';attempted=true;
+  await sameProtocols();check();report('installing');attempted=true;
   await apply();check();
   for(const [id,entry]of groups){
    await sameProtocols();check();const current=await currentGroup(entry.group);
@@ -98,18 +120,20 @@ export async function updateSharedWorkers(agent,{release,heartbeat,apply,rollbac
    const health=await agent.shared.request(current,'/health');check();
    assert.ok(health.quiescing===true&&health.activity?.idle===true,'Worker lost its stop boundary');
    // Record before stopping: a lost stop response still requires recovery.
-   affected.add(id);owner.phase='reloading';
+   affected.add(id);report('reloading',{groupId:id});
    await agent.host.stop(id,'ai','worker-update',{pid:entry.expected.pid,created:entry.expected.created});
-   await start(current);await wait(()=>ready(current),'new Worker readiness');
+   await afterStop({group:current,previous:entry.expected});check();
+   await start(entry);await wait(()=>ready(entry.group),'new Worker readiness');
   }
-  check();await sameProtocols();owner.phase='verifying';
-  const proof=await verify();check();
+  check();await sameProtocols();report('verifying');
+  const proof=await verify({groups:[...groups.values()].map(({group,health})=>({group,health}))});check();
   assert.ok(proof?.release===release&&proof.runtimeApplied===true&&proof.journalDigestsUnchanged===true,'Missing runtime and Journal verification');
-  for(const {group}of groups.values())assert.ok(await ready(group),'Worker no longer ready');
-  await sameProtocols();check();owner.phase='applied';
+  for(const {group}of groups.values())await wait(()=>ready(group),'final Worker readiness');
+  await sameProtocols();check();report('applied');
   return{release,pid:process.pid,qqPreserved:protocols.size,workers:groups.size,proof};
  }catch(error){
   owner.phase='recovering';const errors=[error];failure=error;
+  try{report('recovering',{errorType:error?.name||'Error'})}catch(error){errors.push(error)}
   // Roll code back before restoring Workers. Never repeat apply on timeout.
   let restored=true;
   if(attempted)try{await rollback()}catch(failure){errors.push(failure);restored=false}
@@ -123,9 +147,9 @@ export async function updateSharedWorkers(agent,{release,heartbeat,apply,rollbac
      try{await agent.host.stop(id,'ai','worker-update-rollback',{pid:record.pid,created:record.created})}
      catch(failure){await lease.cancel();throw failure}
     }
-    await start(current);
+    await start(entry);
     const deadline=Date.now()+timeoutMs;
-    while(!await ready(current)){
+    while(!await ready(entry.group)){
      if(agent.closed||Date.now()>=deadline)throw Error('Rollback Worker did not become ready');
      await delay(50);
     }

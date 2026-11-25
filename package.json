@@ -22,6 +22,7 @@
     "db:migrate:postgres": "tsx scripts/migrate-pglite-postgres.ts",
     "start:production": "node --max-old-space-size=128 scripts/production-start.mjs",
     "check:production": "node scripts/production-check.mjs",
+    "deploy:runtime": "node scripts/runtime-release.mjs",
     "setup:napcat": "python scripts/napcat-setup.py",
     "benchmark:shared": "node --max-old-space-size=128 --import tsx experiments/round2-shared/run.ts",
     "db:prepare-template": "tsx scripts/prepare-db-template.ts",
