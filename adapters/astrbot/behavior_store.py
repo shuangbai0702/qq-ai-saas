@@ -89,6 +89,7 @@ class BehaviorStore:
         self.local_db_workers=set()
         self.semantic_worker=None
         self.voice_inflight={}
+        self.execution_tasks=set()
         self.closing=False
         self.storage_closed=False
 
@@ -111,17 +112,34 @@ class BehaviorStore:
             if self.compression_active or not self.before_compression(event):await self.slot_changed.wait()
 
     @asynccontextmanager
-    async def compression_admission(self):
+    async def compression_admission(self,deadline=None):
         # Finish in-flight Works, not the queued inbox prefix. Draining an
         # already queued burst used to let thirty rounds grow to forty-plus.
         # Queued inputs stay durable and resume after this checkpoint.
         self.compression_boundary=0
         acquired=False
-        try:
-            while self.conversation_pending():
+        from memory_policy import COMPRESSION_DRAIN_SECONDS,COMPRESSION_CANCEL_SECONDS
+        stop_at=time.monotonic()+max(0,min(COMPRESSION_DRAIN_SECONDS,deadline-time.time() if deadline is not None else COMPRESSION_DRAIN_SECONDS))
+        async def idle():
+            while self.conversation_pending() or self.model_writer.owner not in (None,asyncio.current_task()):
                 self.slot_changed.clear()
-                if not self.conversation_pending():break
-                await self.slot_changed.wait()
+                if not self.conversation_pending() and self.model_writer.owner is None:break
+                # Writer release need not stamp the message counters.
+                try:await asyncio.wait_for(self.slot_changed.wait(),1)
+                except TimeoutError:pass
+        try:
+            try:
+                async with asyncio.timeout(max(0,stop_at-time.monotonic())):await idle()
+            except TimeoutError:
+                owners={task for task in self.execution_tasks if not task.done()}
+                writer=self.model_writer.owner
+                if writer is not None and writer is not asyncio.current_task() and not writer.done():owners.add(writer)
+                scope='bot_shared' if self.shared_context else 'self'
+                with self.db:self.reflection.checkpoint_issue(scope,0,'compression_drain_deadline',{'canceledOwners':len(owners),'externalEffectsReplayed':False})
+                # The original execution finally owns Work settlement and lock
+                # release. Cancellation is never evidence of an unsent action.
+                for task in owners:task.cancel('compression_drain_deadline')
+                async with asyncio.timeout(COMPRESSION_CANCEL_SECONDS):await idle()
             self.compression_active=True
             await self.model_writer.acquire()
             acquired=True

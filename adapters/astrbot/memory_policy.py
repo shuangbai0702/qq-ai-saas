@@ -5,6 +5,9 @@ from pathlib import Path
 
 _memory_defaults=json.loads((Path(__file__).resolve().parents[2]/'packages/contracts/memory-defaults.json').read_text(encoding='utf-8'))
 DEFAULT_SUMMARY_ROUNDS=_memory_defaults['summaryRounds']
+COMPRESSION_DEADLINE_SECONDS=600
+COMPRESSION_DRAIN_SECONDS=180
+COMPRESSION_CANCEL_SECONDS=30
 CONTINUITY_MAX_CHARS=500
 FACT_NAME_CHARS=40
 FACT_VALUE_CHARS=200

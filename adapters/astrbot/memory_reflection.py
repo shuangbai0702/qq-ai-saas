@@ -295,6 +295,8 @@ class Reflection:
         END;''')
         db.execute('CREATE TABLE IF NOT EXISTS memory_reflection_retry(scope TEXT PRIMARY KEY,attempts INTEGER,next_at REAL,result TEXT)')
         if 'result' not in {r[1] for r in db.execute('PRAGMA table_info(memory_reflection_retry)')}:db.execute('ALTER TABLE memory_reflection_retry ADD COLUMN result TEXT')
+        if 'deadline' not in {r[1] for r in db.execute('PRAGMA table_info(memory_reflection_retry)')}:db.execute('ALTER TABLE memory_reflection_retry ADD COLUMN deadline REAL')
+        db.execute('UPDATE memory_reflection_retry SET next_at=min(next_at,?)',(time.time()+60,))
         db.execute('''CREATE TABLE IF NOT EXISTS memory_checkpoint_issues(
           scope TEXT,checkpoint_id INTEGER,kind TEXT,status TEXT,detail TEXT,
           first_seen REAL,updated REAL,PRIMARY KEY(scope,checkpoint_id,kind))''')
@@ -871,11 +873,11 @@ class Reflection:
     def _select_due_job(self,now,summary_rounds,_manual):
         scope=None;job=None;rows=[];big_rows=[];summary_from=None;merge_scope=None
         retry=self.db.execute("SELECT next_at FROM memory_reflection_retry WHERE scope='self'").fetchone()
-        if (_manual is None or not _manual['legacy_due']) and (not retry or retry[0]<=now or retry[0]>now+60 or _manual is not None):
+        if (_manual is None or not _manual['legacy_due']) and (not retry or retry[0]<=now or _manual is not None):
             big_rows,merge_scope=self.merge_group(_manual['scope'] if _manual is not None else 'bot_shared' if getattr(self,'shared_context',False) else None)
             if big_rows:scope='self';job='big'
         if not scope:
-            candidates=self.db.execute("SELECT r.scope FROM memory_rounds r LEFT JOIN memory_reflection_retry q ON r.scope=q.scope WHERE (coalesce(q.next_at,0)<=? OR q.next_at>?) AND (?=0 OR r.scope='bot_shared') GROUP BY r.scope ORDER BY min(r.id)",(now,now+60,int(bool(getattr(self,'shared_context',False))))).fetchall()
+            candidates=self.db.execute("SELECT r.scope FROM memory_rounds r LEFT JOIN memory_reflection_retry q ON r.scope=q.scope WHERE coalesce(q.next_at,0)<=? AND (?=0 OR r.scope='bot_shared') GROUP BY r.scope ORDER BY min(r.id)",(now,int(bool(getattr(self,'shared_context',False))))).fetchall()
             if _manual is not None:candidates=[(_manual['scope'],)]
             for (candidate,) in candidates:
                 if _manual is not None and (candidate!=_manual['scope'] or _manual['summary_done']):continue
@@ -1245,11 +1247,24 @@ class Reflection:
         insight_enabled=self.memory is not None and cfg.get('naturalConversation',True)
         now=time.time()
         scope,job,rows,big_rows,summary_from,merge_scope=self._select_due_job(now,summary_rounds,_manual)
+        deadline=None
+        if scope:
+            from memory_policy import COMPRESSION_DEADLINE_SECONDS
+            self.db.execute('''INSERT INTO memory_reflection_retry(scope,attempts,next_at,deadline) VALUES(?,0,0,?)
+              ON CONFLICT(scope) DO UPDATE SET deadline=coalesce(deadline,excluded.deadline)''',(scope,now+COMPRESSION_DEADLINE_SECONDS))
+            deadline=self.db.execute('SELECT deadline FROM memory_reflection_retry WHERE scope=?',(scope,)).fetchone()[0]
+            self.db.commit()
         if not _inline and callable(admission) and (scope or recovery):
             async def admitted():
-                async with admission():
-                    continuation=self.retry(_inline=True,_manual=_manual)
-                    return await continuation if continuation else {'ok':False,'reason':'no_eligible_material'}
+                try:
+                    async with admission(deadline=deadline):
+                        continuation=self.retry(_inline=True,_manual=_manual)
+                        return await continuation if continuation else {'ok':False,'reason':'no_eligible_material'}
+                except TimeoutError:
+                    with self.db:
+                        self.checkpoint_issue(scope or 'self',0,'compression_owner_not_released',{'phase':'drain','externalEffectsReplayed':False})
+                        self.db.execute('UPDATE memory_reflection_retry SET next_at=? WHERE scope=?',(time.time()+60,scope))
+                    return {'ok':False,'reason':'compression_owner_not_released'}
             self.task=asyncio.create_task(admitted())
             return True
         if not scope:
@@ -1267,6 +1282,7 @@ class Reflection:
                 operation_audit=None;audit_committed=False;ctx=None
                 try:
                     if self.closed or not is_current() or self.epoch()!=epoch:return {'ok':False,'reason':'stale_configuration'}
+                    if deadline is not None and time.time()>=deadline:raise RuntimeError('semantic_summary_deadline_exceeded')
                     if not callable(getattr(provider,'text_chat_stream',None)):
                         raise RuntimeError('semantic_summary_provider_unavailable')
                     ctx=self._build_big_merge_request(big_rows) if job=='big' else self._build_summary_request(scope,rows,cfg,insight_enabled)
@@ -1318,7 +1334,7 @@ class Reflection:
                     from summary_response import SummaryResponseSlot,summary_request_digest,summary_model_output
                     digest=summary_request_digest(request,provider,epoch,job,{'scope':merge_scope or scope,'throughRound':rows[-1][0] if rows else None,'sourceDependency':merge_dependency if job=='big' else ctx['previous_dependency'],'materialsSha':hashlib.sha256(model_json(ctx['materials']).encode()).hexdigest(),'discardStamp':ctx['discard_stamp'],'learningEpoch':ctx['learning_epoch']})
                     from summary_fallback import NORMAL_TIMEOUT_SECONDS
-                    async with asyncio.timeout(NORMAL_TIMEOUT_SECONDS):
+                    async with asyncio.timeout(min(NORMAL_TIMEOUT_SECONDS,max(0,deadline-time.time()))):
                         reviewed=None;review_family=None
                         if before is not None:
                             request,digest,reviewed,review_family=await self._run_memory_review_pages(provider,request,prompt,system,ctx['sem_system'],PRODUCT_MEMORY_SYSTEM,before,scope,attempts,epoch,job,digest,live,metrics,starting,lambda:operation_audit)
@@ -1427,7 +1443,13 @@ class Reflection:
                         operation_audit.persist(self.db,'discarded','stale_configuration',details=False)
                         self.db.commit()
                     if not self.closed and (not is_current() or self.epoch()!=epoch):
-                        self.db.execute('DELETE FROM memory_reflection_retry WHERE scope=? AND attempts=?',(scope,attempts));self.db.commit()
+                        if self.epoch()!=epoch:
+                            self.db.execute('DELETE FROM memory_reflection_retry WHERE scope=? AND attempts=?',(scope,attempts))
+                        else:
+                            # A config replacement revokes this response, not
+                            # the due batch's persisted completion deadline.
+                            self.db.execute('UPDATE memory_reflection_retry SET result=NULL,next_at=0 WHERE scope=? AND attempts=?',(scope,attempts))
+                        self.db.commit()
                     self._active_summary=None
                     event_var.reset(token)
         if _inline:return run()

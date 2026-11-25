@@ -1,5 +1,6 @@
 """Finite admission and local checkpoint recovery; no paid model or QQ calls."""
 import asyncio,contextvars,copy,sys,unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace as NS
 sys.path[:0]=[str(Path(__file__).resolve().parent)]
@@ -10,6 +11,27 @@ from semantic_runtime import finish_semantic_batches
 class Reliability(unittest.IsolatedAsyncioTestCase):
     setUp=fixture.RuntimeTests.setUp
     tearDown=fixture.RuntimeTests.tearDown
+
+    async def test_drain_deadline_cancels_original_owner_without_replaying_unknown_effect(self):
+        st=self.st;entered=asyncio.Event();canceled=[]
+        st.db.execute("INSERT INTO pipeline_action_effects VALUES('prior-work',1,'send_private_msg','12345678','unknown','original unknown receipt',1)");st.db.commit()
+        before=st.db.execute('SELECT * FROM pipeline_action_effects').fetchall()
+        async def foreground():
+            st.execution_tasks.add(asyncio.current_task());st.active+=1
+            await st.model_writer.acquire();entered.set()
+            try:await asyncio.Event().wait()
+            except asyncio.CancelledError:canceled.append(True);raise
+            finally:
+                st.model_writer.release();st.active-=1;st.execution_tasks.discard(asyncio.current_task());st.slot_changed.set()
+        task=asyncio.create_task(foreground());await entered.wait()
+        with patch('memory_policy.COMPRESSION_DRAIN_SECONDS',.02):
+            async with st.compression_admission():
+                self.assertTrue(st.compression_active)
+                self.assertIs(st.model_writer.owner,asyncio.current_task())
+        await asyncio.gather(task,return_exceptions=True)
+        self.assertEqual(canceled,[True]);self.assertEqual(st.db.execute('SELECT * FROM pipeline_action_effects').fetchall(),before)
+        self.assertIsNone(st.model_writer.owner)
+        self.assertIsNotNone(st.db.execute("SELECT 1 FROM memory_checkpoint_issues WHERE kind='compression_drain_deadline'").fetchone())
 
     async def test_finite_ingress_prefix_drains_while_later_inputs_wait(self):
         st=self.st;db=st.db;st.active=1

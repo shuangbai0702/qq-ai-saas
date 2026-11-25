@@ -1458,6 +1458,7 @@ def install_runtime(core,settings):
                 await admitted.wait_compression(event)
                 if not same_owner(setting(event),lease) or not current(event):return
                 admitted.ingress+=1;ingress_owned=True;care.stamp(admitted.root)
+                admitted.execution_tasks.add(asyncio.current_task())
             passes=0
             while True:
                 passes+=1
@@ -1511,6 +1512,7 @@ def install_runtime(core,settings):
             bot_pipeline.stop(event,(event.get_extra('_hosted_send_failure') or {}).get('reason',type(error).__name__),'error');raise
         finally:
             if ingress_owned:
+                admitted.execution_tasks.discard(asyncio.current_task())
                 admitted.ingress-=1
                 if stores.get(event.get_platform_id()) is admitted:care.stamp(admitted.root)
             try:
@@ -1673,7 +1675,11 @@ def install_runtime(core,settings):
     from model_cache import loaded_build
     runtime['build']=loaded_build()
     runtime['prepare_raw_ingress']=prepare_raw_ingress
-    runtime['refresh_base']=lambda id:store(id,settings[id])
+    def refresh_base(id):
+        st=store(id,settings[id])
+        care.stamp(st.root)
+        return st
+    runtime['refresh_base']=refresh_base
     def validate_cards(id,replacement):
         from web_cognition import validate_cards as validate_projection
         st=store(id,settings[id])

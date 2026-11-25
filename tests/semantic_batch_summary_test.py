@@ -33,6 +33,16 @@ class SemanticSummary(unittest.IsolatedAsyncioTestCase):
   if not self.r.retry():return False
   await self.r.task;return True
  def checkpoint(self):return self.db.execute('SELECT id,round_count,state,pending_events FROM memory_reconstruction_checkpoints ORDER BY id DESC LIMIT 1').fetchone()
+ async def test_expired_deadline_survives_restart_and_skips_new_model_attempt(self):
+  import time
+  self.record();deadline=time.time()-1
+  self.db.execute('INSERT INTO memory_reflection_retry(scope,attempts,next_at,deadline) VALUES(?,4,0,?)',(SCOPE,deadline));self.db.commit()
+  path=Path(self.tmp.name)/'behavior.sqlite';self.store.close();self.store=BehaviorStore(path);self.r=self.store.reflection;self.db=self.store.db;self.r.shared_context=False
+  self.assertEqual(self.db.execute('SELECT deadline FROM memory_reflection_retry WHERE scope=?',(SCOPE,)).fetchone()[0],deadline)
+  await self.run_summary()
+  self.assertEqual(self.calls,[]);self.assertEqual(self.checkpoint()[1],30)
+  audit=self.db.execute("SELECT counts FROM memory_operation_audits WHERE reason='degraded_checkpoint'").fetchone()
+  self.assertEqual(json.loads(audit[0])['degradation']['cause'],'semantic_summary_deadline_exceeded')
  async def test_29_does_not_trigger_30_submits_whole_batch_without_coverage(self):
   self.record(29);self.assertFalse(await self.run_summary());self.r.binding=None
   m=summary_material.snapshots([message('29'),{'role':'assistant','content':'完整真实回复'}],SCOPE)
@@ -84,6 +94,9 @@ class SemanticSummary(unittest.IsolatedAsyncioTestCase):
   self.assertEqual(counts['facts']['input_coverage'],{'eligible':39,'offered':39,'omitted':0,'boundary':'current_snapshot_authority'})
  async def test_stale_configuration_never_commits_even_a_degraded_product(self):
   self.record(30,image=True);self.mode='stale';await self.run_summary()
+  deadline=self.db.execute('SELECT deadline FROM memory_reflection_retry WHERE scope=?',(SCOPE,)).fetchone()[0]
+  self.assertGreater(deadline,0)
+  self.assertEqual(self.db.execute('SELECT next_at FROM memory_reflection_retry WHERE scope=?',(SCOPE,)).fetchone()[0],0)
   self.assertIsNone(self.checkpoint());self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],30)
  async def assert_degraded(self,mode):
   self.record(30,image=True);self.mode=mode;await self.run_summary()

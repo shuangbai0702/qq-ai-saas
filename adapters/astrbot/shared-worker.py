@@ -186,6 +186,7 @@ async def main():
             prepare=lambda raw:behavior['prepare_raw_ingress'](id,raw))
         core.event_bus.stopped_platforms.discard(id)
         errors.pop(id,None)
+        behavior['refresh_base'](id)
     @web.middleware
     async def auth(request,handler):
         worker_common.verify_bearer(request,manifest['token'])

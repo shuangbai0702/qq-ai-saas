@@ -24,6 +24,7 @@ async def main():
     from behavior import install_runtime
     settings={'qq':{'root':str(root.parent),'tenantId':manifest.get('tenantId'),'botId':manifest.get('botId',root.parent.name),'config':manifest.get('config',{}),'generation':manifest['generation'],'revision':manifest['revision'],'systemChangePermitId':manifest.get('systemChangePermitId'),'personaEdit':manifest.get('personaEdit'),'characterCardsEdit':manifest.get('characterCardsEdit'),'expectedUin':manifest.get('expectedUin',''),'_base_owner':object()}}
     behavior=install_runtime(core,settings)
+    behavior['refresh_base']('qq')
     # Upstream allowlist gates private sessions too. Restrict only group input at
     # the OneBot adapter boundary so private chat remains independently usable.
     from native_ingress import admitted,bind as bind_ingress
