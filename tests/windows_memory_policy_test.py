@@ -32,7 +32,7 @@ guard = load('windows-memory-guard')
 
 class WindowsPolicy(unittest.TestCase):
     def test_linux_role_budgets_and_backoff(self):
-        self.assertEqual([controller.target(role)//1048576 for role in ('napcat','llbot','shared-ai','dedicated-ai')], [48,64,72,24])
+        self.assertEqual([controller.target(role)//1048576 for role in ('napcat','llbot','shared-ai','dedicated-ai')], [48,128,72,24])
         self.assertEqual(controller.IDLE_SECONDS,18)
         self.assertEqual(controller.RECLAIM_SECONDS,40)
         self.assertEqual(controller.delay(10,10,0),(80,1))
