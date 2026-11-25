@@ -1,3 +1,4 @@
+import {nativeCall} from '../../../packages/shared/qq-onebot.js';
 import {SingleFlight} from '../../../packages/shared/single-flight.js';
 /** Bounded maintenance on the existing Agent tick, no per-bot timer/Agent.
  * Semantics (D8): QQ raw text (modifyWord/desc/ocrWord) is stored as rawText
@@ -9,7 +10,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import type {Sql} from '../../../packages/database/index.js';
 import {runtimeStatus} from '../../../packages/shared/runtime-status.js';
 import {createFavoriteCaptioner,favoriteAnnotationDue,applyFavoriteAnnotation,promoteFavoriteDescription,favoriteSelectionText} from '../../../packages/shared/qq-favorite-semantics.js';
-import {downloadFavorite,nativeCall,normalize} from '../../../packages/shared/qq-favorite-media.js';
+import {downloadFavorite,normalize} from '../../../packages/shared/qq-favorite-media.js';
 import {favoriteDirectory,readFavoriteIndex,writeFavoriteIndex,withFavoriteIndex} from '../../../packages/shared/qq-favorite-index.js';
 const MAX_QUEUE_TICKS=2,MAX_ACTIVE_BOTS=3;
 async function contentHash(file:string){const bytes=await readFile(file);return createHash('sha256').update(bytes).digest('hex')}

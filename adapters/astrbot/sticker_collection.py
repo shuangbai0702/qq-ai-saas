@@ -3,6 +3,7 @@ Only protocol-tagged images from opted-in groups; no phone favourites access.
 """
 from model_cache import auxiliary_scope,adopted,discarded
 import asyncio,base64,hashlib,io,json,time,warnings
+from contextlib import contextmanager
 from urllib.parse import urlsplit
 _download_slots=asyncio.Semaphore(2)
 
@@ -18,7 +19,9 @@ def initialize(db):
     ''')
 
 
-def png_thumbnail(raw,max_bytes=1048576,max_pixels=1048576):
+@contextmanager
+def decoded_image(raw,max_bytes=1048576,max_pixels=1048576):
+    """Common QQ image format/dimension boundary; caller chooses its output."""
     if len(raw)>max_bytes:raise ValueError('media_too_large')
     # Lazy import: unused Bots do not load an image decoder for this feature.
     from PIL import Image
@@ -26,8 +29,14 @@ def png_thumbnail(raw,max_bytes=1048576,max_pixels=1048576):
         warnings.simplefilter('error',Image.DecompressionBombWarning)
         with Image.open(io.BytesIO(raw)) as source:
             if source.format not in ('PNG','JPEG','GIF','WEBP') or source.width*source.height>max_pixels:raise ValueError('unsupported_image_dimensions_or_format')
-            source.seek(0);source.thumbnail((512,512));image=source.convert('RGBA')
-            out=io.BytesIO();image.save(out,format='PNG',optimize=True);data=out.getvalue()
+            source.seek(0)
+            yield source
+
+
+def png_thumbnail(raw,max_bytes=1048576,max_pixels=1048576):
+    with decoded_image(raw,max_bytes,max_pixels) as source:
+        source.thumbnail((512,512));image=source.convert('RGBA')
+        out=io.BytesIO();image.save(out,format='PNG',optimize=True);data=out.getvalue()
     if len(data)>262144:raise ValueError('thumbnail too large')
     return data
 

@@ -1,3 +1,4 @@
+import {QQ_ONEBOT_CAPABILITIES} from '../../../packages/contracts/index.js';
 import {createHash,randomBytes} from 'node:crypto';import path from 'node:path';import {readFile,writeFile,mkdir,access} from 'node:fs/promises';
 import {atomicJson} from '../../../packages/shared/fs-atomic.js';
 import type {ProtocolAdapter,ProtocolContext,LoginSnapshot,Health,ProcessHostLike} from '../../../packages/contracts/index.js';
@@ -68,7 +69,7 @@ export class NapCatAdapter implements ProtocolAdapter{
  }
  async cancelLogin(ctx:ProtocolContext){const s=await this.settings(ctx);if(!s.launcher)throw new Error('外部NapCat实例不受进程管理；无法保证撤销二维码，请管理员配置launcher');await this.stop(ctx.botId)}
  async queryIdentity(ctx:ProtocolContext){const s=await this.getLoginState(ctx);return s.state==='online'?s.uin||null:null}
- getCapabilities(){return ['qr','text','image','record','onebot-reverse-ws','private-management-api']}
+ getCapabilities(){return['qr','private-management-api',...QQ_ONEBOT_CAPABILITIES]}
  async getHealth(ctx:ProtocolContext):Promise<Health>{
   const p=await this.host.inspect(ctx.botId,'protocol');
   try{

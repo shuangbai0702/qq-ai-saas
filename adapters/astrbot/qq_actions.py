@@ -5,7 +5,8 @@ No scheduled publishing, arbitrary URLs, filesystem arguments or cookie exposure
 """
 from tool_outcome import rejected
 CONTENT_LIMITS={'nickname':36,'signature':120,'publish':500,'status':12}
-import asyncio,json,re,time
+import asyncio,json,re,time,tempfile
+from pathlib import Path
 from http.cookies import SimpleCookie
 from urllib.parse import urlsplit
 from datetime import datetime,timezone,timedelta
@@ -97,7 +98,7 @@ def allowed(event,cfg):
     return {x for x in requested if b.get('qzone') and x in ('publish','view')}|{x for x in requested if b.get('qqProfile') and x not in ('publish','view')}
 
 
-async def execute(event,cfg,db,action,value,current,settings=None,image_handle=''):
+async def execute(event,cfg,db,action,value,current,settings=None,image_handle='',image_sources=None):
     if not current() or action not in allowed(event,cfg):return '拒绝：仅主人明确要求且功能已开启时执行。'
     if action not in ('view','avatar') and (not isinstance(value,str) or not value.strip()):return '未执行：缺少内容。'
     if action in ('nickname','signature','publish'):
@@ -114,6 +115,18 @@ async def execute(event,cfg,db,action,value,current,settings=None,image_handle='
     except Exception:return '未执行：当前QQ身份核实失败，请确认真实在线后重试。'
     if not current() or str(identity.get('user_id'))!=str(event.get_self_id()):return '未执行：QQ账号已变化。'
     if attempt(db,event,action):return '该消息已尝试此操作；不会重复执行。'
+    images=[]
+    if action=='publish' and image_sources is not None:
+        from qq_publish_media import originals
+        try:images=await originals(event,db,settings,image_sources,current)
+        except asyncio.CancelledError:raise
+        except Exception as error:
+            detail=str(error) if isinstance(error,ValueError) else '图片读取失败。'
+            return '未执行：附图准备失败；'+detail+'没有降级发布纯文字。'
+        # Preparation awaits network/decoder work. Recheck the operation fence
+        # before reserving; a concurrent call may already have dispatched it.
+        if not current():return '未执行：机器人配置已变化。'
+        if attempt(db,event,action):return '该消息已尝试此操作；不会重复执行。'
     if db.execute('SELECT count(*) FROM qq_action_attempts WHERE at>?',(time.time()-QQ_ACTION_WINDOW_SECONDS,)).fetchone()[0]>=QQ_ACTION_WINDOW_LIMIT:return '未执行：今日QQ操作次数已达20次。'
     if action=='signature':
         mode=signature_mode(event,cfg)
@@ -154,7 +167,16 @@ async def execute(event,cfg,db,action,value,current,settings=None,image_handle='
             return '未执行：机器人配置已变化。'
         if action=='view':result=await own_feed(event,current)
         else:
-            await asyncio.wait_for(getattr(event.bot,method)(**params),15)
+            if images:
+                # Both backends consume the same OneBot images field. Keep
+                # paths out of model output and files out of persistent memory.
+                with tempfile.TemporaryDirectory(prefix='.qzone-publish-',dir=settings['root']) as directory:
+                    paths=[]
+                    for index,raw in enumerate(images):
+                        file=Path(directory)/(str(index)+'.image');file.write_bytes(raw);paths.append(str(file))
+                    params['images']=paths
+                    await asyncio.wait_for(getattr(event.bot,method)(**params),15)
+            else:await asyncio.wait_for(getattr(event.bot,method)(**params),15)
             confirmed=True
             result='QQ协议已确认该操作回执。'
         db.execute('UPDATE qq_action_attempts SET status=? WHERE event=? AND action=?',('confirmed',event_id,action));db.commit()
@@ -224,8 +246,8 @@ def tools(event,cfg,db,current,settings=None):
     permitted=({'nickname','signature','avatar','status'} if b.get('qqProfile') else set())|({'publish','view'} if b.get('qzone') else set())
     if not permitted:return []
     from astrbot.core.agent.tool import FunctionTool
-    descriptions={'nickname':'修改当前机器人QQ昵称','signature':'修改当前机器人QQ签名','avatar':'用主人当前附带或引用的QQ图片换头像，不接受URL参数','status':'设置QQ状态，可选在线、离开、隐身、忙碌、Q我吧、请勿打扰','publish':'真正发布文字到当前机器人自己的QQ空间。仅当当前主人要求实际发布时调用；结合本轮真实作者文字与对话理解意图，不要求固定措辞。询问是否具备能力、讨论空间、只写草稿、引用别人的话、假设或否定发布均不调用；意图不清楚先简短询问。主人允许自行选文案时可按人格写，但不能擅自自动发布。不在聊天中假装已发布，以本工具返回为准','view':'读取当前机器人自己的最近5条空间说说，仅在主人希望查看时调用，不读取其他人的空间'}
-    descriptions['publish']+='。平台授权的自主空间任务按当前任务授权执行；工具可见不授予其他发言者主人权限'
+    descriptions={'nickname':'修改当前机器人QQ昵称','signature':'修改当前机器人QQ签名','avatar':'用主人当前附带或引用的QQ图片换头像，不接受URL参数','status':'设置QQ状态，可选在线、离开、隐身、忙碌、Q我吧、请勿打扰','publish':'真正发布文字或附原图到当前机器人自己的QQ空间。仅当当前主人要求实际发布时调用；结合本轮真实作者文字与对话理解意图，不要求固定措辞。询问是否具备能力、讨论空间、只写草稿、引用别人的话、假设或否定发布均不调用；意图不清楚先简短询问。主人允许自行选文案时可按人格写，但不能擅自自动发布。不在聊天中假装已发布，以本工具返回为准','view':'读取当前机器人自己的最近5条空间说说，仅在主人希望查看时调用，不读取其他人的空间'}
+    descriptions['publish']+='。image_sources可选：current用当前/引用图，无图用当前作者15分钟内最近唯一图；或已有qm_句柄。省略则纯文字；附图失败不降级。平台授权的自主空间任务按当前任务授权执行；工具可见不授予其他发言者主人权限'
     class QQTool(FunctionTool):
         @property
         def hosted_effect(self):return self.name!='hosted_qq_view'
@@ -236,8 +258,9 @@ def tools(event,cfg,db,current,settings=None):
             if context.context.event is not event:return rejected('tool_preflight_rejected','拒绝：工具不属于此事件。')
             action=self.name.removeprefix('hosted_qq_')
             if not current() or action not in allowed(event,cfg):return rejected('tool_preflight_rejected','拒绝：当前真实作者、请求或功能没有执行授权。')
-            if set(kwargs)-({'image_handle'} if action=='avatar' else {'content'}):return rejected('tool_preflight_rejected','拒绝：不支持其他参数。')
-            result=await execute(event,cfg,db,action,kwargs.get('content',''),current,settings,kwargs.get('image_handle',''))
+            if set(kwargs)-({'image_handle'} if action=='avatar' else {'content','image_sources'} if action=='publish' else {'content'}):return rejected('tool_preflight_rejected','拒绝：不支持其他参数。')
+            if action=='publish' and 'image_sources' in kwargs and not isinstance(kwargs['image_sources'],list):return rejected('tool_preflight_rejected','拒绝：image_sources必须为图片来源数组。')
+            result=await execute(event,cfg,db,action,kwargs.get('content',''),current,settings,kwargs.get('image_handle',''),kwargs.get('image_sources'))
             import json
             from tool_outcome import project
             event_id=str(getattr(event.message_obj,'message_id',''))
@@ -251,4 +274,4 @@ def tools(event,cfg,db,current,settings=None):
                 return json.dumps(project(result,write=False),ensure_ascii=False)
             return json.dumps(project({'receipt':{'status':status},'data':{'message':result},'evidence':[{'type':'qq_action_attempt','event':event_id,'operation':action,'state':row[0] if row else 'not_dispatched'}]},write=True),ensure_ascii=False)
     descriptions['avatar']='更换当前机器人QQ头像：默认使用主人当前附带或引用的QQ图片；或先用hosted_bilibili_image准备B站公开图片，再传其真实image_handle。内部任务由QQ资料管理开关授权，不需要虚构主人命令。不能传URL、路径或任意base64；准备图片不等于换头像，必须以本工具实际回执为准'
-    return [QQTool(name='hosted_qq_'+action,description=descriptions[action]+'。content必须为普通文本或Unicode表情，不得包含QQ_FACE、MEME、IMAGE或NO_REPLY内部标记。成功与否以工具返回为准。',parameters={'type':'object','properties':{'image_handle':{'type':'string','pattern':'^bi_[a-f0-9]{24}$'}} if action=='avatar' else {} if action=='view' else {'content':{'type':'string','maxLength':limits}},'required':[] if action in ('view','avatar') else ['content'],'additionalProperties':False}) for action in sorted(permitted) for limits in [CONTENT_LIMITS.get(action,120)]]
+    return [QQTool(name='hosted_qq_'+action,description=descriptions[action]+'。content必须为普通文本或Unicode表情，不得包含QQ_FACE、MEME、IMAGE或NO_REPLY内部标记。成功与否以工具返回为准。',parameters={'type':'object','properties':{'image_handle':{'type':'string','pattern':'^bi_[a-f0-9]{24}$'}} if action=='avatar' else {} if action=='view' else {'content':{'type':'string','maxLength':limits},**({'image_sources':{'type':'array','maxItems':9,'uniqueItems':True,'items':{'type':'string','pattern':'^(current|qm_[a-f0-9]{20})$'}}} if action=='publish' else {})},'required':[] if action in ('view','avatar') else ['content'],'additionalProperties':False}) for action in sorted(permitted) for limits in [CONTENT_LIMITS.get(action,120)]]

@@ -1,3 +1,4 @@
+import {QQ_ONEBOT_CAPABILITIES} from '../../../packages/contracts/index.js';
 import path from 'node:path';
 import {mkdir,readFile,access} from 'node:fs/promises';
 import {randomBytes} from 'node:crypto';
@@ -82,6 +83,6 @@ export class LLBotAdapter implements ProtocolAdapter {
    return{alive:true,ready:data.ready===true,online:login?.state==='online',loginState:login?.state,pid:process.pid,rssBytes:process.rssBytes,memoryPolicy:data.resources,metrics:{...data.metrics,egress,components:data.components,restartRequested:data.metrics?.restartRequested===true||egress?.pending===true&&data.metrics?.qqDisconnected===true},mode:'real',detail:data.detail};
   }catch(error){return{alive:true,ready:false,online:false,pid:process.pid,rssBytes:process.rssBytes,mode:'real',detail:(error as Error).message}}
  }
- getCapabilities(){return['qr','cancel','text','image','record','onebot-reverse-ws','private-management-api','qq-profile','qq-favorites','qzone']}
+ getCapabilities(){return['qr','cancel','private-management-api',...QQ_ONEBOT_CAPABILITIES]}
  async stop(botId:string){await this.host.stop(botId,'protocol')}
 }

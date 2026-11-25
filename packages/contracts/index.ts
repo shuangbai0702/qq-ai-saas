@@ -11,6 +11,7 @@ export const LoginStates = ['created','starting','qr_ready','waiting_scan','wait
 export type LoginState = typeof LoginStates[number];
 export const terminalLogin = new Set<LoginState>(['online','expired','canceled','failed']);
 export const ProtocolSchema=z.enum(['mock','napcat','llbot','euler']);
+export const QQ_ONEBOT_CAPABILITIES=['text','image','record','onebot-reverse-ws','qq-profile','qq-favorites','qzone'] as const;
 export const supportsQQFavorites=(protocol:string)=>protocol==='napcat'||protocol==='llbot';
 export const hasManagedQQLogin=(protocol:string)=>protocol==='napcat'||protocol==='llbot';
 export type ProtocolKind=z.infer<typeof ProtocolSchema>;

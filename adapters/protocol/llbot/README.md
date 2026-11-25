@@ -50,6 +50,16 @@ This does not certify a completed QQ login or business actions.
 
 ## Ownership and transport
 
+QQ business features use the same AstrBot OneBot paths as NapCat: message/media
+delivery, mentions/quotes, group/member queries, profile actions, favorites and
+Qzone. Web/Agent native calls share `packages/shared/qq-onebot.ts`; only endpoint
+and token selection differ. Do not add LLBot-specific copies of those features.
+`qq_actions.py` publishes text with optional original QQ attachments for both
+backends. Attachment preparation reuses scoped quote sources and bounded image
+validation, stages files under the Bot root for one dispatch, and cleans them on
+success/failure/cancellation. Limits are 9 images, 8 MiB/16 megapixels per image,
+24 MiB total; preparation failure never silently publishes text alone.
+
 `index.ts` owns per-Bot settings/manifest and delegates start/stop/inspection to
 ProcessHost. `runner.mjs` owns the management HTTP/WS relay, PMHQ and the LLBot
 child. Each Bot has private QQ/user-data/config paths and its existing four-port

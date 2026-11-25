@@ -1,3 +1,4 @@
+import {nativeCall} from '../../../packages/shared/qq-onebot.js';
 import {supportsQQFavorites} from '../../../packages/contracts/index.js';
 import {atomicJson as atomic} from '../../../packages/shared/fs-atomic.js';
 import {favoriteDirectory,withFavoriteIndex,readFavoriteIndex,writeFavoriteIndex} from '../../../packages/shared/qq-favorite-index.js';
@@ -9,7 +10,7 @@ type Index={account:string;enabled:boolean;syncedAt?:string;items:Item[];failed?
 const invalid=(message:string,statusCode=400)=>Object.assign(new Error(message),{statusCode});
 const hash=(raw:string)=>createHash('sha256').update(raw).digest('hex');
 const safeFile=(file:string)=>/^qqf_[a-f0-9]{16}\.(gif|png)$/.test(file);
-import {downloadFavorite,nativeCall,normalize} from '../../../packages/shared/qq-favorite-media.js';
+import {downloadFavorite,normalize} from '../../../packages/shared/qq-favorite-media.js';
 type Dependencies={call?:typeof nativeCall;download?:typeof downloadFavorite;normalize?:typeof normalize;caption?:(bot:Bot,file:string,signal:AbortSignal)=>Promise<FavoriteAnnotation>};
 export function registerQQFavorites(app:FastifyInstance,root:string,owned:(req:any,id:string)=>Promise<Bot>,deps:Dependencies={}){
  const tasks=new Map<string,{controller:AbortController;promise:Promise<void>}>();let closing=false;
