@@ -82,7 +82,7 @@ class LearningLifecycleTests(SummaryLearningFixture,unittest.IsolatedAsyncioTest
         self.start();await self.finish()
         batches=json.loads(self.calls[0]['prompt'])['style_learning']
         self.assertEqual([row['scope'] for row in batches],['group:12345'])
-        self.assertEqual(len(batches[0]['samples']),24)
+        self.assertEqual(len(batches[0]['samples']),20) # 30 inputs, every third is private.
         self.assertEqual(self.patterns(),[('group:12345','有节目效果')])
 
     async def test_disabled_before_request_keeps_summary_and_omits_style_data(self):
@@ -92,7 +92,7 @@ class LearningLifecycleTests(SummaryLearningFixture,unittest.IsolatedAsyncioTest
         self.assertEqual(self.patterns(),[]);self.assertEqual(self.social_attempts(),0)
         self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1)
 
-    async def test_database_failure_at_style_fence_rolls_back_summary_and_learning(self):
+    async def test_database_failure_at_style_fence_rolls_back_learning_then_audits_lossy_summary(self):
         self.record();entered=asyncio.Event();release=asyncio.Event()
         async def model(**kw):entered.set();await release.wait();return self.result(kw)
         self.start(model);await entered.wait()
@@ -103,7 +103,8 @@ class LearningLifecycleTests(SummaryLearningFixture,unittest.IsolatedAsyncioTest
         finally:self.db.set_authorizer(None)
         self.assertEqual(self.metrics['summaryFailures'],1)
         self.assertEqual(self.patterns(),[]);self.assertEqual(self.sample_count(),30)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],0)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1)
+        self.assertEqual(self.db.execute("SELECT state,reason FROM memory_operation_audits WHERE reason='degraded_checkpoint'").fetchone(),('committed','degraded_checkpoint'))
 
 
 if __name__=='__main__':unittest.main()

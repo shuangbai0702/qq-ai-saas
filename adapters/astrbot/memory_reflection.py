@@ -1255,9 +1255,12 @@ class Reflection:
             deadline=self.db.execute('SELECT deadline FROM memory_reflection_retry WHERE scope=?',(scope,)).fetchone()[0]
             self.db.commit()
         if not _inline and callable(admission) and (scope or recovery):
+            admission_epoch=self.epoch()
             async def admitted():
                 try:
                     async with admission(deadline=deadline):
+                        if self.closed or not is_current() or self.epoch()!=admission_epoch:
+                            return {'ok':False,'reason':'stale_configuration'}
                         continuation=self.retry(_inline=True,_manual=_manual)
                         return await continuation if continuation else {'ok':False,'reason':'no_eligible_material'}
                 except TimeoutError:
