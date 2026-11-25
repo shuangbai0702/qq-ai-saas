@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-import {checkRuntimeRelease,applyRuntimeRelease} from '../scripts/runtime-release.mjs';
+import {checkRuntimeRelease,applyRuntimeRelease,releaseFiles} from '../scripts/runtime-release.mjs';
 
 const sha=value=>createHash('sha256').update(value).digest('hex');
 async function fixture(t){
@@ -67,4 +67,17 @@ test('having the new disk commit does not fabricate runtime application success'
  await assert.rejects(applyRuntimeRelease({},f.profile,f.stage),{code:'ENOENT'});
  await f.write(path.join(f.stage,'result.json'),{ok:false});
  await assert.rejects(applyRuntimeRelease({},f.profile,f.stage),/runtime verification/);
+});
+
+test('the host installer owns code mutation, rollback is exact and preserves third-party changes',async t=>{
+ const f=await fixture(t),files=releaseFiles(await checkRuntimeRelease(f.profile,f.stage),f.stage);
+ await files.install();
+ assert.equal(JSON.parse(await fs.readFile(path.join(f.root,'dist-server/build.json'))).gitCommit,f.next.gitCommit);
+ await f.write(path.join(f.root,'adapters/astrbot/memory_review.py'),'another release');
+ await assert.rejects(files.rollback(),/Concurrent file change/);
+ assert.equal(await fs.readFile(path.join(f.root,'adapters/astrbot/memory_review.py'),'utf8'),'another release');
+ await f.write(path.join(f.root,'adapters/astrbot/memory_review.py'),'new review');
+ await files.rollback();await files.rollback();
+ assert.equal(JSON.parse(await fs.readFile(path.join(f.root,'dist-server/build.json'))).gitCommit,f.current.gitCommit);
+ await assert.rejects(fs.access(path.join(f.root,'adapters/astrbot/memory_review.py')),{code:'ENOENT'});
 });

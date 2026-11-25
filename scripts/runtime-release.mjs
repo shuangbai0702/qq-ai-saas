@@ -36,6 +36,46 @@ function receipt(dir,name,value){
  writeFileSync(temp,JSON.stringify(value,null,2));renameSync(temp,file);
 }
 
+// The deployment account owns code writes. The live Agent only borrows this
+// exact staged operation while it owns the Worker fence; it needs no source ACL.
+export function releaseFiles({root,spec,expected},dir){
+ const backup=path.join(dir,'before-code'),installed=[];
+ return{
+  async install(){
+   for(const [name,digest]of Object.entries(expected))assert.equal(await fingerprint(target(root,name)),digest,'Activation CAS changed: '+name);
+   await fs.mkdir(backup);
+   for(const [name,digest]of Object.entries(expected))if(digest!==null)await atomic(target(backup,name),await fs.readFile(target(root,name)));
+   for(const [name,digest]of Object.entries(expected))assert.equal(await fingerprint(target(root,name)),digest,'Activation CAS changed: '+name);
+   for(const name of [...Object.keys(spec.files).filter(n=>n!=='dist-server/build.json'),'dist-server/build.json']){
+    installed.push(name);await atomic(target(root,name),await fs.readFile(target(path.join(dir,'staged'),name)));
+   }
+   for(const name of spec.retired||[]){installed.push(name);await fs.unlink(target(root,name))}
+   await verifyProduction(root);await verifyFiles(root,spec.verifyFiles);
+  },
+  async rollback(){
+   for(const name of [...installed].reverse()){
+    const file=target(root,name),current=await fingerprint(file);
+    if(current===expected[name])continue;
+    assert.ok(current===spec.files[name]||current===null,'Concurrent file change during rollback: '+name);
+    if(expected[name]===null)await fs.rm(file,{force:true});
+    else await atomic(file,await fs.readFile(target(backup,name)));
+   }
+   await verifyProduction(root);
+  }
+ };
+}
+
+async function requestFiles(dir,release,operation){
+ const id=randomUUID(),deadline=Date.now()+60000;
+ receipt(dir,'file-request',{id,release,operation,ownerPid:process.pid,deadline});
+ for(;;){
+  const result=await json(path.join(dir,'file-result.json')).catch(error=>{if(error.code==='ENOENT')return null;throw error});
+  if(result?.id===id){if(!result.ok)throw Error('Release '+operation+' failed: '+result.error);return}
+  assert.ok(Date.now()<deadline,'Release '+operation+' receipt timed out; inspect host task before retrying');
+  await new Promise(resolve=>setTimeout(resolve,50));
+ }
+}
+
 export async function checkRuntimeRelease(profile,dir){
  const root=path.resolve(profile.sourceRoot),spec=await json(path.join(dir,'release.json'));
  assert.match(spec.commit,/^[a-f0-9]{40}$/);assert.ok(spec.files&&spec.verifyFiles);
@@ -88,7 +128,7 @@ print(json.dumps(result))`;
 export async function applyRuntimeRelease(agent,profile,dir){
  dir=path.resolve(dir);const checked=await checkRuntimeRelease(profile,dir),{root,spec,expected}=checked;
  if(checked.alreadyApplied){const old=await json(path.join(dir,'result.json'));assert.equal(old.ok,true,'Installed files require runtime verification');assert.equal(old.commit,spec.commit);return old}
- const start=Date.now(),backup=path.join(dir,'before-code'),installed=[];
+ const start=Date.now();
  const progress=value=>receipt(dir,'progress',{commit:spec.commit,ownerPid:process.pid,startedAt:start,updatedAt:Date.now(),...value});
  let bots,ids;
  const oldPrototype=Object.getPrototypeOf(agent.bilibili);let patchedPrototype,before,throughStop={};
@@ -104,14 +144,7 @@ export async function applyRuntimeRelease(agent,profile,dir){
     bots=await agent.db.query("SELECT id,group_id FROM bots WHERE desired_state='running' AND deleted_at IS NULL ORDER BY id");
     ids=bots.map(b=>b.id);assert.ok(ids.length,'No running members to update');
     before=await journals(profile,ids);receipt(dir,'journals-before',before);
-    await fs.mkdir(backup); // Existing backups belong to an earlier attempt.
-    for(const [name,digest]of Object.entries(expected))if(digest!==null)await atomic(target(backup,name),await fs.readFile(target(root,name)));
-    for(const [name,digest]of Object.entries(expected))assert.equal(await fingerprint(target(root,name)),digest,'Activation CAS changed: '+name);
-    for(const name of [...Object.keys(spec.files).filter(n=>n!=='dist-server/build.json'),'dist-server/build.json']){
-     // Record before dispatch: a failed rename may already have installed it.
-     installed.push(name);await atomic(target(root,name),await fs.readFile(target(path.join(dir,'staged'),name)));
-    }
-    for(const name of spec.retired||[]){installed.push(name);await fs.unlink(target(root,name))}
+    await requestFiles(dir,spec.commit,'install');
     await verifyProduction(root);await verifyFiles(root,spec.verifyFiles);assert.deepEqual(await journals(profile,ids),before,'Disk installation changed Journal');
     if(spec.files['dist-server/apps/node-agent/src/bilibili/executor.js']){
      // Reviewed method-only change: retain the original queues, credentials,
@@ -127,12 +160,7 @@ export async function applyRuntimeRelease(agent,profile,dir){
    },
    rollback:async()=>{
     Object.setPrototypeOf(agent.bilibili,oldPrototype);
-    for(const name of [...installed].reverse()){
-     const file=target(root,name),current=await fingerprint(file);
-     assert.ok(current===spec.files[name]||current===expected[name]||current===null,'Concurrent file change during rollback: '+name);
-     if(expected[name]===null)await fs.rm(file,{force:true});
-     else await atomic(file,await fs.readFile(target(backup,name)));
-    }
+    await requestFiles(dir,spec.commit,'rollback');
     await verifyProduction(root);
    },
    verify:async({groups})=>{
@@ -164,6 +192,26 @@ export async function applyRuntimeRelease(agent,profile,dir){
 
 async function operator(profile,dir){
  const record=await json(path.join(profile.stateRoot,'services/agent.process.json'));
+ const checked=await checkRuntimeRelease(profile,dir),files=releaseFiles(checked,dir),handled=new Set();
+ let fileTask=Promise.resolve(),fileBusy=false;
+ const serveFiles=async()=>{
+  if(fileBusy)return;fileBusy=true;
+  try{
+   const request=await json(path.join(dir,'file-request.json')).catch(error=>{if(error.code==='ENOENT')return null;throw error});
+   if(!request||handled.has(request.id))return;
+   handled.add(request.id);let error;
+   try{
+    const progress=await json(path.join(dir,'progress.json'));
+    assert.equal(request.release,checked.spec.commit);assert.equal(request.ownerPid,record.pid);
+    assert.equal(progress.ownerPid,record.pid);assert.equal(progress.commit,checked.spec.commit);
+    assert.ok(request.operation==='install'&&progress.phase==='installing'||request.operation==='rollback'&&progress.phase==='recovering');
+    assert.ok(Date.now()<request.deadline,'Installer request expired');
+    await files[request.operation]();
+   }catch(failure){error=failure}
+   receipt(dir,'file-result',{id:request.id,ok:!error,error:error?String(error.message):undefined});
+  }finally{fileBusy=false}
+ };
+ const installer=setInterval(()=>{if(!fileBusy)fileTask=serveFiles().catch(error=>{receipt(dir,'installer-error',{error:String(error.message)})})},50);
  const WebSocket=createRequire(path.join(profile.sourceRoot,'package.json'))('ws');
  let socket,sequence=0;const pending=new Map();
  const call=(method,params,timeoutMs=10000)=>new Promise((resolve,reject)=>{
@@ -195,6 +243,7 @@ async function operator(profile,dir){
   const module=pathToFileURL(path.join(dir,'staged/scripts/runtime-release.mjs')).href;
   return await evaluate(`(async()=>{try{const a=globalThis[Symbol.for('fishbot.runtime-release.capture')];return await (await import(${JSON.stringify(module)})).applyRuntimeRelease(a,${JSON.stringify({sourceRoot:profile.sourceRoot,stateRoot:profile.stateRoot,dataRoot:profile.dataRoot,python:profile.python})},${JSON.stringify(dir)})}finally{delete globalThis[Symbol.for('fishbot.runtime-release.capture')]}})()`,true,600000);
  }finally{
+  clearInterval(installer);await fileTask;
   if(socket?.readyState===WebSocket.OPEN){try{await evaluate("setTimeout(()=>process.getBuiltinModule('inspector').close(),200).unref();true",true,2000)}catch{}}
   socket?.terminate();
   for(const p of pending.values())p.reject(Error('Operator closed'));pending.clear();
