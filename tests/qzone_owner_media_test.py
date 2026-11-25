@@ -19,7 +19,8 @@ class QzoneOwnerMedia(unittest.IsolatedAsyncioTestCase):
   async def login():return {'user_id':99999}
   async def publish(**kw):
    calls.append({**kw,'bytes':[Path(file).read_bytes() for file in kw.get('images',[])]});return {'tid':'fixture'}
-  event=NS(get_group_id=lambda:'',get_sender_id=lambda:'12345',get_self_id=lambda:'99999',get_extra=lambda k,d=None:extras.get(k,d),set_extra=lambda k,v:extras.update({k:v}),get_message_str=lambda:'发布空间',get_messages=lambda:[Image(file='fixture.png',url='https://qpic.cn/fixture')],message_obj=NS(message_id='100'),bot=NS(get_login_info=login,send_qzone_msg=publish))
+  components=[Image(file='fixture.png',url='https://qpic.cn/fixture')]
+  event=NS(get_group_id=lambda:'',get_sender_id=lambda:'12345',get_self_id=lambda:'99999',get_extra=lambda k,d=None:extras.get(k,d),set_extra=lambda k,v:extras.update({k:v}),get_message_str=lambda:'发布空间',get_messages=lambda:components,message_obj=NS(message_id='100',raw_message={'message':[{'type':'image','data':{'url':'https://qpic.cn/fixture','file':'fixture.png'}}]}),bot=NS(get_login_info=login,send_qzone_msg=publish))
   settings={'root':folder.name,'botId':'test','generation':1,'revision':1,'protocol':protocol}
   cfg={'behavior':{'ownerUin':'12345','qzone':True}}
   tool=next(t for t in qq_actions.tools(event,cfg,db,lambda:live[0],settings) if t.name=='hosted_qq_publish')
@@ -39,14 +40,18 @@ class QzoneOwnerMedia(unittest.IsolatedAsyncioTestCase):
 
  async def test_quote_and_scoped_followup_sources_reuse_real_message_verification(self):
   f=self.fixture();image=f.event.get_messages()[0]
-  f.event.get_messages=lambda:[Reply(id='99',chain=[image])]
-  with patch.object(qq_publish_media,'download',AsyncMock(return_value=f.raw)):
+  image.url=image.file='/SDK/model-copy.png'
+  f.event.get_messages=lambda:[Reply(id='99',sender_id='12345',chain=[image])]
+  f.event.message_obj.raw_message={'message':[{'type':'reply','data':{'id':'99'}}]}
+  f.event.bot.get_msg=AsyncMock(return_value={'message_id':99,'sender':{'user_id':12345},'message':[{'type':'image','data':{'url':'https://qpic.cn/fixture'}}]})
+  with patch.object(qq_publish_media,'download',AsyncMock(return_value=f.raw)) as download:
    await f.tool.call(f.context,content='引用原图',image_sources=['current'])
+   download.assert_awaited_once_with('https://qpic.cn/fixture',max_bytes=qq_publish_media.MAX_IMAGE_BYTES)
   self.assertEqual(f.calls[0]['bytes'],[f.raw])
-  f.event.message_obj=NS(message_id='101',raw_message={'message':[{'type':'image','data':{'url':image.url}}]})
+  f.event.message_obj=NS(message_id='101',raw_message={'message':[{'type':'image','data':{'url':'https://qpic.cn/fixture'}}]})
   quote_reply.observe(f.db,f.event,f.settings,'private:12345');f.event.get_messages=lambda:[]
-  async def get_msg(**kw):return {'message_id':101,'sender':{'user_id':12345},'message':[{'type':'image','data':{'url':image.url}}]}
-  f.event.bot.get_msg=get_msg;f.event.message_obj.message_id='102'
+  async def get_msg(**kw):return {'message_id':101,'sender':{'user_id':12345},'message':[{'type':'image','data':{'url':'https://qpic.cn/fixture'}}]}
+  f.event.bot.get_msg=get_msg;f.event.message_obj.message_id='102';f.event.message_obj.raw_message={'message':[]}
   with patch.object(qq_publish_media,'download',AsyncMock(return_value=f.raw)):
    result=json.loads(await f.tool.call(f.context,content='刚才原图',image_sources=['current']))
   self.assertEqual(result['receipt']['status'],'confirmed');self.assertEqual(len(f.calls),2)
@@ -94,6 +99,7 @@ class QzoneOwnerMedia(unittest.IsolatedAsyncioTestCase):
   from PIL import Image as PILImage
   f=self.fixture();out=io.BytesIO();PILImage.new('RGB',(2,3),'blue').save(out,'PNG');second=out.getvalue()
   f.event.get_messages=lambda:[Image(file='a',url='https://qpic.cn/a'),Image(file='b',url='https://qpic.cn/b')]
+  f.event.message_obj.raw_message={'message':[{'type':'image','data':{'url':'https://qpic.cn/'+s}}for s in ('a','b')]}
   release=asyncio.Event()
   async def download(url,**kw):
    if url.endswith('/a'):await release.wait();return f.raw
@@ -101,6 +107,7 @@ class QzoneOwnerMedia(unittest.IsolatedAsyncioTestCase):
   with patch.object(qq_publish_media,'download',download):await f.tool.call(f.context,content='两图',image_sources=['current'])
   self.assertEqual(f.calls[0]['bytes'],[f.raw,second])
   f=self.fixture();f.event.get_messages=lambda:[Image(file='a',url='https://qpic.cn/a'),Image(file='b',url='https://qpic.cn/b')]
+  f.event.message_obj.raw_message={'message':[{'type':'image','data':{'url':'https://qpic.cn/'+s}}for s in ('a','b')]}
   entered=asyncio.Event();drained=asyncio.Event()
   async def failing(url,**kw):
    if url.endswith('/a'):
@@ -134,6 +141,14 @@ class QzoneOwnerMedia(unittest.IsolatedAsyncioTestCase):
   f=self.fixture();requests=[]
   import runtime_bootstrap
   with patch.dict(os.environ,{'ASTRBOT_ROOT':f.settings['root']}):runtime_bootstrap.initialize_runtime_bootstrap()
+  # Exercise the real SDK stage that rewrites both component URL and file.
+  # Its reduced/temporary recognition copy must never become a publish source.
+  from astrbot.core.pipeline.preprocess_stage.stage import PreProcessStage
+  local=Path(f.settings['root'])/'recognition.png';local.write_bytes(f.raw)
+  f.event.track_temporary_local_file=lambda path:None;f.event.untrack_temporary_local_file=lambda path:None
+  with patch.object(Image,'convert_to_file_path',AsyncMock(return_value=str(local))):
+   await PreProcessStage()._normalize_image_component(f.event,f.event.get_messages()[0])
+  self.assertEqual(f.event.get_messages()[0].url,str(local))
   from astrbot.core.provider.sources.openai_source import ProviderOpenAIOfficial
   from astrbot.core.provider.entities import ProviderRequest
   from astrbot.core.agent.tool import ToolSet
@@ -157,8 +172,9 @@ class QzoneOwnerMedia(unittest.IsolatedAsyncioTestCase):
   try:
    runner=ToolLoopAgentRunner()
    await runner.reset(provider=provider,request=ProviderRequest(prompt='附这张图发说说',system_prompt='fixture system',func_tool=ToolSet(tools=[f.tool])),run_context=ContextWrapper(context=f.context.context),tool_executor=Executor(),agent_hooks=BaseAgentRunHooks(),request_max_retries=1)
-   with patch.object(qq_publish_media,'download',AsyncMock(return_value=f.raw)):
+   with patch.object(qq_publish_media,'download',AsyncMock(return_value=f.raw)) as download:
     async for _ in runner.step_until_done(max_step=3):pass
+    download.assert_awaited_once_with('https://qpic.cn/fixture',max_bytes=qq_publish_media.MAX_IMAGE_BYTES)
    self.assertTrue(runner.done());self.assertEqual(len(requests),2);self.assertEqual(len(f.calls),1)
    self.assertEqual(len(requests[0]['tools']),1)
    self.assertIn('image_sources',requests[0]['tools'][0]['function']['parameters']['properties'])
@@ -168,6 +184,22 @@ class QzoneOwnerMedia(unittest.IsolatedAsyncioTestCase):
    self.assertEqual(json.loads(receipt['content'])['receipt']['status'],'confirmed')
    self.assertNotIn(f.settings['root'],json.dumps(requests));self.assertNotIn('base64',json.dumps(requests))
   finally:await provider.client.close()
+
+ async def test_reply_identity_is_rechecked_and_local_components_are_not_authority(self):
+  for changed in ('message_id','sender','group_id'):
+   f=self.fixture();f.event.message_obj.raw_message={'message':[{'type':'reply','data':{'id':'99'}}]}
+   f.event.get_messages=lambda:[Reply(id='99',sender_id='12345',chain=[Image(file='/private/model-copy.png')])]
+   response={'message_id':99,'sender':{'user_id':12345},'message':[{'type':'image','data':{'url':'https://qpic.cn/fixture'}}]}
+   response[changed]={'user_id':67890} if changed=='sender' else '98765'
+   f.event.bot.get_msg=AsyncMock(return_value=response)
+   with patch.object(qq_publish_media,'download',AsyncMock()) as download:
+    result=json.loads(await f.tool.call(f.context,content='引用图',image_sources=['current']))
+    self.assertEqual(result['receipt']['status'],'rejected');download.assert_not_awaited()
+   self.assertEqual(f.calls,[])
+  f=self.fixture();f.event.message_obj.raw_message={'message':[]}
+  with patch.object(qq_publish_media,'download',AsyncMock()) as download:
+   result=json.loads(await f.tool.call(f.context,content='没有真实来源',image_sources=['current']))
+   self.assertEqual(result['receipt']['status'],'rejected');download.assert_not_awaited()
 
  async def test_image_followup_keeps_capability_and_receipt_fences(self):
   db=sqlite3.connect(':memory:');self.addCleanup(db.close)
