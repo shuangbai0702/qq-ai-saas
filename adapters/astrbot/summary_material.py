@@ -597,11 +597,10 @@ def claim_view(claim):
     return view
 
 
-def settle_commitments(db,scope,claims,previous):
-    """Retire only an offered agreement or open topic with a later,
-    same-speaker source. The existing summary model identifies the relation;
-    code checks ownership and evidence identity. No new classifier, table or
-    permanent state."""
+def settle_commitments(db,scope,claims,previous,*,retired=()):
+    """Settle offered claims from a later same-speaker source, or the exact
+    agreement owner's retirement projection. The model owns meaning; code
+    checks source identity and the offered revision. No new state store."""
     offered={claim['id']:claim for claim in previous}
     def origin_scope(claim):
         scopes=set()
@@ -632,7 +631,7 @@ def settle_commitments(db,scope,claims,previous):
             elif old.get('visibility')!=scope or claim.get('visibility')!=scope:continue
             if not isinstance(old.get('occurredAt'),(int,float)) or not isinstance(claim.get('occurredAt'),(int,float)) or claim['occurredAt']<=old['occurredAt']:continue
             changes[identifier]=claim['id']
-    if not changes:return
+    if not changes and not retired:return
     import core_note as core_note_store
     sources=[
         ('summary',db.execute('SELECT id,claims FROM memory_summaries WHERE claims IS NOT NULL').fetchall()),
@@ -645,14 +644,16 @@ def settle_commitments(db,scope,claims,previous):
             if not isinstance(stored,list):continue
             changed=False
             for old in stored:
-                if not isinstance(old,dict) or old.get('id') not in changes:continue
+                if not isinstance(old,dict) or old.get('id') not in changes and old.get('id') not in retired:continue
                 # Concurrent revisions cannot be overwritten by a model that
                 # saw the old version. Parent chains may differ after a merge.
-                expected=offered[old['id']]
-                if claim_view(old)!=claim_view(expected):continue
+                expected=offered.get(old['id'])
+                if expected is None or claim_view(old)!=claim_view(expected):continue
                 import time
                 revision=old.get('revision',0)
-                old.update(status='superseded',protected=False,supersededBy=changes[old['id']],updatedAt=max(time.time(),claim_order(old)[0]+.000001),revision=(revision if type(revision) is int and revision>=0 else 0)+1);changed=True
+                old.update(status='expired' if old['id'] in retired else 'superseded',protected=False,updatedAt=max(time.time(),claim_order(old)[0]+.000001),revision=(revision if type(revision) is int and revision>=0 else 0)+1)
+                if old['id'] in changes:old['supersededBy']=changes[old['id']]
+                changed=True
             if changed:
                 if kind=='core':core_note_store.write_claims(db,identifier,stored)
                 else:db.execute('UPDATE memory_summaries SET claims=? WHERE id=?',(json.dumps(stored,ensure_ascii=False,separators=(',',':')),identifier))

@@ -1,5 +1,5 @@
 """Bounded complete old-cognition review and existing retry-slot recovery."""
-import contextvars,copy,json,sys,unittest
+import asyncio,contextvars,copy,json,sys,unittest
 from pathlib import Path
 from types import SimpleNamespace as NS
 from unittest.mock import patch
@@ -38,7 +38,9 @@ class Review(unittest.IsolatedAsyncioTestCase):
  async def chat(self,**kw):
   prompt=expand(json.loads(kw['prompt']));state=prompt['existing_memory'];self.calls.append(prompt)
   if 'facts' in state:
-   if self.failure and len(self.offered)==1:raise RuntimeError('second page unavailable')
+   # A stopped process can resume paid pages; a provider failure now runs the
+   # authorized bounded lossy checkpoint rather than holding history forever.
+   if self.failure and len(self.offered)==1:raise asyncio.CancelledError('process interrupted on second page')
    self.offered.append([r['name'] for r in state['facts']])
    output={'fact_operations':[{'op':'replace','scope':fixture.SCOPE,'subject':'12345678','name':v['name'],'expected_version':v['version'],'value':'已经修正'} for v in state['fact_versions']]}
   else:output={'summary':'旧认知已依本批材料核对修订，未确认内容没有推断。'}
@@ -47,9 +49,10 @@ class Review(unittest.IsolatedAsyncioTestCase):
   self.r.binding=(self.cfg,summary_provider(self.chat),lambda:True,self.metrics,contextvars.ContextVar('review',default=None))
   with patch('memory_review.pages',side_effect=lambda state:pages(state,1800)):
    self.assertTrue(self.r.retry());await self.r.task
- async def test_all_pages_commit_once_and_failed_page_recovers_without_recalling_finished_page(self):
+ async def test_all_pages_commit_once_and_interrupted_page_recovers_without_recalling_finished_page(self):
   fixture.SemanticSummary.record(self)
-  self.failure=True;await self.run_review()
+  self.failure=True
+  with self.assertRaises(asyncio.CancelledError):await self.run_review()
   self.assertEqual(len(self.offered),1,(self.metrics,self.db.execute('SELECT kind,detail FROM memory_checkpoint_issues').fetchall()))
   self.assertTrue(all(r[1].startswith('既有内容') for r in fact_rows(self.db,fixture.SCOPE,'12345678')))
   saved=json.loads(self.db.execute('SELECT result FROM memory_reflection_retry').fetchone()[0]);self.assertIn('0',saved['parts'])

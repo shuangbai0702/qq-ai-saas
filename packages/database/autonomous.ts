@@ -12,6 +12,12 @@ const daySql="to_char(now() AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD')";
 // A missing timestamp or a far-future report is not evidence of an online QQ.
 const onlineSql=runtimeOnlineSql();
 export class AutonomyConflict extends Error {}
+/** No chat, tool bodies or model prose: those belong to the main Journal. */
+export function observationMetadata(value:any){
+ const result=value.result&&typeof value.result==='object'?value.result:{};
+ return{at:value.at,eventId:String(value.eventId||'').slice(0,100),scope:String(value.scope||'').slice(0,100),senderId:String(value.senderId||'').slice(0,20),owner:value.owner===true,directed:value.directed===true,phase:value.phase==='foreground_result'?'foreground_result':'incoming',
+  ...(value.result&&typeof value.result==='object'?{result:Object.fromEntries(['status','confirmedMessages','protocolAttempts','protocolConfirmed'].filter(key=>Object.hasOwn(result,key)).map(key=>[key,result[key]]))}:{})};
+}
 export class AutonomyRepository {
  constructor(public db:Sql,private call?:RuntimeCall){}
  /** Complete current responsibility, with original intent and result evidence intact. */
@@ -178,7 +184,7 @@ export class AutonomyRepository {
   await this.db.transaction(async tx=>{
    // This one bounded observation is lifecycle progress, not a second history
    // store. Source identity comes from the authenticated member, never an LLM.
-   const observation={at,eventId:String(event.eventId||'').slice(0,100),scope:String(event.scope||'').slice(0,100),senderId:String(event.senderId||'').slice(0,20),owner:event.owner===true,directed:event.directed===true,text:String(event.text||'').slice(0,1000),phase:event.phase||'incoming',result:event.result||null};
+   const observation=observationMetadata({...event,at});
    await tx.query("UPDATE autonomy_settings SET last_event_at=$4,observation=$5::jsonb||jsonb_build_object('latestFeedback',observation->'latestFeedback') WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND (last_event_at IS NULL OR last_event_at<$4)",[bot.bot_id,bot.tenant_id,bot.epoch,new Date(at),JSON.stringify(observation)]);
   });
  }
@@ -205,7 +211,7 @@ export class AutonomyRepository {
   if(!Number.isFinite(at)||at<=0||at>Date.now()+60000||value?.phase!=='foreground_result'||!value.result||typeof value.result!=='object')return;
   // One bounded result slot, independent of ambient-event coalescing. It is
   // execution state, not another chat history or model-generated memory.
-  const feedback={at,eventId:String(value.eventId||'').slice(0,100),scope:String(value.scope||'').slice(0,100),senderId:String(value.senderId||'').slice(0,20),owner:value.owner===true,directed:value.directed===true,text:String(value.text||'').slice(0,1000),phase:'foreground_result',result:value.result};
+  const feedback=observationMetadata(value);
   await this.db.query("UPDATE autonomy_settings SET observation=jsonb_set(observation,'{latestFeedback}',$4::jsonb,true) WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3 AND COALESCE((observation->'latestFeedback'->>'at')::double precision,0)<$5",[bot.bot_id,bot.tenant_id,bot.epoch,JSON.stringify(feedback),at]);
  }
  async applied(tenantId:string,botId:string,epoch:number){await this.db.query('UPDATE autonomy_settings SET runtime_epoch=$3 WHERE bot_id=$1 AND tenant_id=$2 AND epoch=$3',[botId,tenantId,epoch])}

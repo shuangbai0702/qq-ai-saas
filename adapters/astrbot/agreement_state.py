@@ -48,12 +48,101 @@ def user_records(db,scope='',subject='',page=0):
     return [dict(zip(('id','revision','topic','detail','status','due','participants','source_scope','updated','handoff_id'),row)) for row in rows]
 
 
+REVIEW_SYSTEM='''existing_memory.agreements是约定原账本。审视重复、旧提议、失去意义或被新约定取代的事项，按当前价值最多保留5个有效槽；未终结不代表永久占槽，优先保留关键有效承诺，不凭一次沉默放弃。长期偏好归入事实，不重复登记。可选agreement_operations:[{"id":"原ID","expected_revision":原revision,"op":"replace|retire","reason":"必要理由","detail":"replace的完整正文"}]。replace仅修订同一主题正文、合并同义内容，不新增条款或冒充同意；retire仅退出认知槽，不宣称已履约或现实承诺已取消。handoff_id非空的任务约定只能经原任务入口处理；不要重放原话或改权限。'''
+
+
 def review_view(db):
     # Open slots are bounded at write time. Recent terminal state is necessary
     # to stop a historical claim from resurrecting a canceled agreement.
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_agreements'").fetchone():return []
-    fields=('id','revision','topic','detail','status','due','source_scope')
-    return [dict(zip(fields,row)) for row in db.execute("SELECT "+','.join(fields)+" FROM memory_agreements WHERE status IN ('proposed','accepted','uncertain') OR updated>=? ORDER BY id",(time.time()-AGREEMENT_TTL,))]
+    fields=('id','revision','topic','detail','status','due','source_scope','speaker','participants','audiences','updated','handoff_id')
+    result=[]
+    for row in db.execute("SELECT "+','.join(fields)+" FROM memory_agreements WHERE status IN ('proposed','accepted','uncertain') OR updated>=? ORDER BY id",(time.time()-AGREEMENT_TTL,)):
+        item=dict(zip(fields,row))
+        for key in ('participants','audiences'):item[key]=json.loads(item[key])
+        result.append(item)
+    return result
+
+
+def apply_review(db,data,offered,now,audit=None):
+    """Compression-only semantic maintenance, inside its existing transaction.
+
+    Retiring a cognitive slot is not execution, consent, or cancellation of a
+    bound task. No identity, audiences, due time or real receipt is editable.
+    """
+    operations=data.get('agreement_operations',[])
+    if not isinstance(operations,list):return 0
+    prior={row['id']:row for row in offered};seen=set();saved=0
+    for position,item in enumerate(operations):
+        def reject(reason):
+            if audit:audit.mark('agreements',position,'rejected',reason)
+        if not isinstance(item,dict) or item.get('op') not in ('replace','retire'):
+            reject('invalid_operation');continue
+        identifier=item.get('id');before=prior.get(identifier) if isinstance(identifier,str) else None
+        if not before or identifier in seen or type(item.get('expected_revision')) is not int or item['expected_revision']!=before['revision']:
+            reject('target_not_offered_or_stale_revision');continue
+        seen.add(identifier)
+        row=db.execute('SELECT revision,status,handoff_id,evidence,topic,detail FROM memory_agreements WHERE id=?',(identifier,)).fetchone()
+        if not row or row[0]!=before['revision']:raise ValueError('semantic_agreement_snapshot_changed')
+        if row[1] not in OPEN_STATUSES:reject('agreement_closed');continue
+        if row[2]:reject('agreement_task_owned');continue
+        reason=item.get('reason')
+        allowed={'id','expected_revision','op','reason'}|({'detail'} if item['op']=='replace' else set())
+        if set(item)!=allowed or not isinstance(reason,str) or not 1<=len(reason.strip())<=240:
+            reject('invalid_value');continue
+        topic,detail=row[4:6];status=row[1]
+        if item['op']=='replace':
+            detail=item.get('detail')
+            if not isinstance(detail,str) or not detail.strip() or len(detail)>MAX_DETAIL:
+                reject('invalid_value');continue
+            if (topic,detail)==row[4:6]:reject('unchanged');continue
+        else:status='expired'
+        evidence=json.loads(row[3] or '[]')
+        evidence=(evidence+[{'kind':'semantic_'+item['op'],'reason':reason.strip(),'at':now,'revision':row[0]+1}])[-8:]
+        changed=db.execute('UPDATE memory_agreements SET topic=?,detail=?,status=?,revision=revision+1,updated=?,evidence=? WHERE id=? AND revision=?',
+                           (topic,detail,status,now,json.dumps(evidence,ensure_ascii=False),identifier,row[0]))
+        if changed.rowcount!=1:raise ValueError('semantic_agreement_snapshot_changed')
+        saved+=1
+        if audit:audit.mark('agreements',position,'accepted','applied',True)
+    remaining=db.execute("SELECT count(*) FROM memory_agreements WHERE status IN ('proposed','accepted','uncertain')").fetchone()[0]
+    if audit and remaining>MAX_OPEN:audit.product('agreement_capacity','rejected','open_agreement_capacity_exceeded')
+    return saved
+
+
+def retired_claims(db,claims):
+    """Exact source/topic projection; a retired slot cannot stay protected.
+
+    No semantic matching here: distinct scopes/events with the same wording
+    remain distinct. The model already chose which real agreement to retire.
+    """
+    sources=set();shared_semantic=set()
+    for topic,channel,event,speaker in db.execute("SELECT topic,source_scope,source_event,speaker FROM memory_agreements WHERE status='expired' AND handoff_id IS NULL"):
+        author=('bot','') if speaker=='bot' else ('human',speaker)
+        if channel=='bot_shared' and str(event).startswith('semantic:'):
+            # Shared retirement hashes the full [scope,event] identity. Its
+            # normalized claim retains that same hash and actual scope.
+            shared_semantic.add((topic,event,author));continue
+        originals=[str(event)]
+        if channel=='bot_shared':
+            try:
+                channel,native=json.loads(event);originals.append(str(native))
+            except (ValueError,TypeError):continue
+        for original in originals:
+            sources.add((topic,channel,original,author))
+            sources.add((topic,channel,'semantic:'+hashlib.sha256(original.encode()).hexdigest(),author))
+    result=set()
+    for claim in claims:
+        if claim.get('kind')!='agreement':continue
+        author=(claim.get('speaker',{}).get('role'),claim.get('speaker',{}).get('id',''))
+        for ref in claim.get('sourceRefs',[]):
+            channel=ref.get('scope');event=str(ref.get('event',''))
+            if channel=='bot_shared':
+                try:channel,_=json.loads(event)
+                except (ValueError,TypeError):continue
+                event='semantic:'+hashlib.sha256(event.encode()).hexdigest()
+            if (claim.get('about'),channel,event,author) in sources or claim.get('visibility')=='bot_shared' and (claim.get('about'),event,author) in shared_semantic:
+                result.add(claim['id']);break
+    return result
 
 
 

@@ -49,7 +49,7 @@ class Audit:
         self.decode_status=decode_status
         self.through_round_id=through_round_id
         self.counts={};self.details={};people=set(map(str,subjects))
-        for category,key in (('facts','fact_operations'),('relations','relation_operations'),('core_note','core_note'),('products','memory_operations')):
+        for category,key in (('facts','fact_operations'),('relations','relation_operations'),('core_note','core_note'),('products','memory_operations'),('agreements','agreement_operations')):
             raw=data.get(key)
             items=([raw] if category=='core_note' else raw) if key in data else []
             valid=isinstance(items,list)
@@ -58,6 +58,7 @@ class Audit:
             for position,item in enumerate(rows):
                 person=item.get('subject') if isinstance(item,dict) else None
                 name=item.get('name') if isinstance(item,dict) else None
+                if category=='agreements' and isinstance(item,dict):name=item.get('id')
                 if category=='products' and isinstance(item,dict) and isinstance(item.get('target'),dict):
                     name=json.dumps(item['target'],sort_keys=True,separators=(',',':'))
                     person=item['target'].get('subject')
@@ -78,7 +79,8 @@ class Audit:
         state=prompt.get('existing_memory',{})
         groups={'facts':state.get('facts',[]),'relations':state.get('relations',[]),
                 'core_note':[prompt['core_note']] if prompt.get('core_note',{}).get('text') else [],
-                'products':[row for rows in state.get('products',{}).values() for row in rows]}
+                'products':[row for rows in state.get('products',{}).values() for row in rows],
+                'agreements':state.get('agreements',[])}
         for name,rows in groups.items():
             if name in self.counts:self.counts[name]['input_coverage']={'eligible':len(rows),'offered':len(rows),'omitted':0,'boundary':'current_snapshot_authority'}
         reviewed=prompt.get('memory_review_coverage')

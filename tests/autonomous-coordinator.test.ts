@@ -26,6 +26,33 @@ async function fixture(count=1){
  await db.query("INSERT INTO bot_config_revisions(bot_id,revision,config) SELECT id,revision,'{}' FROM bots ON CONFLICT DO NOTHING");
  return db;
 }
+
+test('observation metadata preserves version fences without persisting dialogue and migration removes old copies',async()=>{
+ const db=await fixture(2);
+ try{
+  const {AutonomyRepository}=await import('../packages/database/autonomous.js');
+  const {readFile}=await import('node:fs/promises');
+  const repo=new AutonomyRepository(db);await repo.configure('tenant','bot-0',1,{mode:'active',rollout:'live'});
+  const [settings]=await db.query("SELECT * FROM autonomy_settings WHERE bot_id='bot-0'");
+  const bot={bot_id:'bot-0',tenant_id:'tenant',epoch:settings.epoch};
+  const at=Date.now()-1000;
+  const feedback={at,phase:'foreground_result',eventId:'event-one',scope:'private:12345678',senderId:'12345678',owner:false,directed:false,text:'RAW USER',result:{status:'partial',protocolAttempts:2,protocolConfirmed:1,response:'RAW BOT',toolResults:[{body:'RAW TOOL'}]}};
+  await repo.event(bot,at,feedback,0);await repo.latestFeedback(bot,feedback);
+  const [saved]=await db.query("SELECT observation,last_event_at FROM autonomy_settings WHERE bot_id='bot-0'");
+  assert.equal(saved.observation.at,at);assert.equal(saved.observation.latestFeedback.at,at);
+  assert.deepEqual(saved.observation.latestFeedback.result,{status:'partial',protocolAttempts:2,protocolConfirmed:1});
+  assert.ok(!JSON.stringify(saved.observation).includes('RAW'));
+  await repo.latestFeedback(bot,{...feedback,at:at-1});
+  assert.deepEqual((await db.query("SELECT observation FROM autonomy_settings WHERE bot_id='bot-0'"))[0].observation,saved.observation,'late feedback cannot overwrite the latest version');
+  await db.query("UPDATE autonomy_settings SET observation=$1 WHERE bot_id='bot-0'",[JSON.stringify({...feedback,latestFeedback:feedback})]);
+  const before=await db.query('SELECT id,revision,status,source FROM autonomy_goals ORDER BY id');
+  const migration=await readFile(new URL('../packages/database/migrations/023_autonomy_observation_metadata.sql',import.meta.url),'utf8');
+  for(const statement of migration.split(';').filter(s=>s.trim()))await db.query(statement);
+  const [cleaned]=await db.query("SELECT observation,last_event_at FROM autonomy_settings WHERE bot_id='bot-0'");
+  assert.deepEqual(cleaned,saved,'migration preserves exactly the live metadata and its acknowledgement');
+  assert.deepEqual(await db.query('SELECT id,revision,status,source FROM autonomy_goals ORDER BY id'),before);
+ }finally{await db.close()}
+});
 const usage={modelCalls:1,toolCalls:0,tokens:400};
 
 async function savedWork(db:any,id:string,pending:boolean){

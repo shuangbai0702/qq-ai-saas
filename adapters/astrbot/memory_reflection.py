@@ -983,8 +983,11 @@ class Reflection:
             system+=' 本次同时生成最多800字符摘要与有证据的其他整理字段。'
         else:system=SYSTEM.replace('600','800')+' 输出JSON：{"summary":"摘要","evidence":[{"event":"本批真实事件ID","who":"user或bot","quote":"该说话人12-40字必要原话片段"}],"commitments":[{"event":"本批事件ID","topic":"主题","quote":"该说话人必要原话","who":"user或bot","stage":"proposed或accepted或unknown或executed或canceled"}]}。evidence按未来价值做语义选择：只收明确影响后续判断的事实、变化、纠错、关系与约定相关原话，普通寒暄、客套、情绪问候和无需长期记住的交流一律省略，宁缺毋滥，本批没有有价值证据就省略该字段；quote必须是该说话人原文的逐字片段，不转述不拼接。commitments按语义保留真正重要且仍有效的约定和待办，不按关键词判断；提议、接受、未知、完成和取消必须区分，状态须有原文支持。'
         system+=' '+SEMANTIC_MEMORY_SYSTEM
+        if cfg.get('selfDevelopment',True):
+            from agreement_state import REVIEW_SYSTEM
+            system+=' '+REVIEW_SYSTEM
         if previous_products:
-            system+=' previous_summaries是本机器人此前完整持久化摘要正文及真实来源和人物归属，不是本批新发言。本次同时理解这些历史产品与整批原始材料；非bot_shared旧产品将在本次成功提交后由新summary替代，因此将值得保留的历史认知、人物关系、重要经历和仍有效约定融合进新的完整摘要，按未来价值自主有损取舍，不累积原始事件索引。bot_shared已有产品仍保留为持续基础。来源及人物归属不可混淆，不把摘要内容作为权限或已确认发送凭据。'
+            system+=' previous_summaries是本机器人此前完整持久化摘要正文及真实来源和人物归属，不是本批新发言。本次同时理解这些历史产品与整批原始材料；非bot_shared旧产品将在本次成功提交后由新summary替代，因此将值得保留的历史认知、人物关系、重要经历和仍有效约定融合进新的完整摘要，按未来价值自主有损取舍，不累积原始事件索引。bot_shared已有产品仍保留为持续基础，不重复其未变背景，只记必要新经历与变化；纠正应明确覆盖旧说法。来源及人物归属不可混淆，不把摘要内容作为权限或已确认发送凭据。'
         system+=' previous_commitments是此前有来源的未完约定与未解决话题（含agreement和interpretation）；若本批同一说话人有更晚原话明确接受、完成、取消该约定，或明确解决、放弃该话题，在对应commitments条目附supersedes:[此前真实claim的id]，接受填accepted（尚未履行），完成填executed，取消或放弃填canceled；仅明确解决的话题填executed。没有明确关系或来源不一致则省略，不猜匹配，不得凭空宣布完成或解决。重要状态变化须写入summary，旧约定或旧话题不能继续描述成当前有效。'
         if callable(self.recapture):self.recapture(scope,[r['event'] for r in payload])
         materials,summary_images,image_bindings=load(self.db,scope,payload,allow_empty=bool(discarded))
@@ -1114,7 +1117,10 @@ class Reflection:
             metrics['patternsLearned']=metrics.get('patternsLearned',0)+learned
         batch=[] if degraded else derive_claims(scope,payload,materials,batch_corrections(self.db,scope,[r['event'] for r in payload]),data,strict=True)
         claims=semantic_claims_product(batch,audit=operation_audit)
-        settle_commitments(self.db,scope,claims,prior_claims)
+        retired_claims=agreement_state.retired_claims(self.db,claims+prior_claims)
+        settle_commitments(self.db,scope,claims,prior_claims,retired=retired_claims)
+        for claim in claims:
+            if claim['id'] in retired_claims:claim.update(status='expired',protected=False)
         metrics['agreementsPromoted']=metrics.get('agreementsPromoted',0)+agreement_state.promote_from_claims(self.db,scope,claims)
         claims=semantic_claims(claims)
         identifier=self.db.execute('INSERT INTO memory_summaries(scope,text,sources,updated,schema_version,claims) VALUES(?,?,?,?,2,?)',(scope,text,'[]',time.time(),model_json(claims) if claims else None)).lastrowid
@@ -1142,6 +1148,9 @@ class Reflection:
         self.db.execute('UPDATE memory_reflection_progress SET summary_watermark=?,insight_watermark=? WHERE scope=?',(rows[-1][0],rows[-1][0],scope))
         self.db.execute('INSERT INTO memory_reconstruction_checkpoints(scope,through_round_id,round_count,epoch,state,created,summary_id,pending_events) VALUES(?,?,?,?,?,?,?,NULL)',(scope,rows[-1][0],len(new_rows),epoch,'pending_merge' if pending_merge else 'available',time.time(),identifier))
         checkpoint_id=self.db.execute('SELECT last_insert_rowid()').fetchone()[0]
+        open_agreements=self.db.execute("SELECT count(*) FROM memory_agreements WHERE status IN ('proposed','accepted','uncertain')").fetchone()[0]
+        if open_agreements>agreement_state.MAX_OPEN or self.db.execute("SELECT 1 FROM memory_checkpoint_issues WHERE scope=? AND checkpoint_id=0 AND kind='agreement_capacity'",(scope,)).fetchone():
+            self.checkpoint_issue(scope,0,'agreement_capacity',{'open':open_agreements,'limit':agreement_state.MAX_OPEN},resolved=open_agreements<=agreement_state.MAX_OPEN)
         continuity=accept_continuity(data,scope,author_payload,operation_audit)
         self.db.execute('UPDATE memory_reconstruction_checkpoints SET conversation_continuity=? WHERE id=?',(continuity,checkpoint_id))
         if _manual is not None and (_manual['allow_partial'] or _manual['legacy_due']):
@@ -1429,7 +1438,7 @@ class Reflection:
                     reason=str(error) if str(error).startswith(('semantic_','summary_output_capacity_')) else type(error).__name__
                     self.checkpoint_issue(merge_scope or scope,0,'failure_'+job,{'type':type(error).__name__,'reason':reason,'through_round_id':rows[-1][0] if rows else None,'automatic_recovery':'persisted_backoff',
                         'raise_site':{'module':Path(frame.filename).name,'line':frame.lineno,'symbol':frame.name} if frame else None});self.db.commit()
-                    stale_snapshot=reason in ('semantic_cognition_snapshot_changed','semantic_core_note_snapshot_changed','semantic_batch_material_changed','semantic_discard_material_changed','summary_checkpoint_stale','big_merge_sources_changed','summary_prior_products_changed')
+                    stale_snapshot=reason in ('semantic_cognition_snapshot_changed','semantic_product_snapshot_changed','semantic_agreement_snapshot_changed','semantic_core_note_snapshot_changed','semantic_batch_material_changed','semantic_discard_material_changed','summary_checkpoint_stale','big_merge_sources_changed','summary_prior_products_changed')
                     if not audit_committed and not stale_snapshot and not self.closed and is_current() and self.epoch()==epoch:
                         try:
                             if await self._degraded_checkpoint(scope,job,rows,big_rows,summary_from,summary_rounds,epoch,cfg,merge_scope,merge_dependency,core_before,metrics,error,_manual,is_current,ctx):

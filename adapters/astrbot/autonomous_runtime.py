@@ -15,6 +15,18 @@ ZERO_USAGE={'tokens':0,'modelCalls':0,'toolCalls':0}
 class PreflightRejected(ValueError):pass
 
 
+def observation_metadata(value):
+    """Scheduler progress only. Dialogue/tools already belong to the Journal.
+
+    Keep the timestamp fence through compaction and restart, without a raw
+    feedback copy that can restore a retired conversation.
+    """
+    result={key:value[key] for key in ('at','eventId','scope','senderId','owner','directed','phase') if key in value}
+    if isinstance(value.get('result'),dict):
+        result['result']={key:value['result'][key] for key in ('status','confirmedMessages','protocolAttempts','protocolConfirmed') if key in value['result']}
+    return result
+
+
 def evidence_limits(evidence):
     # The backend labels what the actual tool can establish. A model's
     # successful task summary cannot upgrade a source into verified knowledge.
@@ -51,10 +63,10 @@ class AutonomousRuntime:
         observed=value.get('observedThrough',0)
         if type(observed) not in (int,float) or not 0<=observed<=wall+60000:raise ValueError('invalid_observation_ack')
         if old and value['epoch']==old['epoch']:observed=max(observed,old.get('observedThrough',0))
-        self.policies[id]={**value,'observedThrough':observed,'lease':s,'_permit_deadline':time.monotonic()+(value['until']-wall)/1000}
+        self.policies[id]={**{key:item for key,item in value.items() if key!='latestFeedback'},'observedThrough':observed,'lease':s,'_permit_deadline':time.monotonic()+(value['until']-wall)/1000}
         feedback=value.get('latestFeedback')
         if isinstance(feedback,dict) and feedback.get('phase')=='foreground_result' and isinstance(feedback.get('result'),dict) and type(feedback.get('at')) in (int,float) and 0<feedback['at']<=wall+60000 and feedback['at']>self.feedbacks.get(id,{}).get('at',0):
-            self.feedbacks[id]=json.loads(json.dumps(feedback))
+            self.feedbacks[id]=observation_metadata(feedback)
         if old and (value['epoch']!=old['epoch'] or value.get('cycleId')!=old.get('cycleId')):self.cancel(id)
         observation=self.events.get(id)
         if observation and observation.get('phase')=='foreground_result' and observation['at']<=observed:
@@ -130,7 +142,7 @@ class AutonomousRuntime:
         # Ambient traffic follows the outer wake policy. The passive group's
         # inspection interval cannot delay or cancel autonomous work.
         sender=str(event.get_sender_id());owner=str((self.settings[id]['config'].get('behavior') or {}).get('ownerUin') or '')
-        observation={'at':max(time.time()*1000,self.events.get(id,{}).get('at',0)+1),'scope':scope,'directed':bool(directed),'senderId':sender,'owner':bool(owner and sender==owner),'eventId':str(getattr(getattr(event,'message_obj',None),'message_id','')),'text':event.get_message_str()[:1000] if callable(getattr(event,'get_message_str',None)) else ''}
+        observation={'at':max(time.time()*1000,self.events.get(id,{}).get('at',0)+1),'scope':scope,'directed':bool(directed),'senderId':sender,'owner':bool(owner and sender==owner),'eventId':str(getattr(getattr(event,'message_obj',None),'message_id',''))}
         previous=self.events.get(id)
         # Hold directed input through its actual foreground result and durable
         # PG acknowledgement; ambient traffic owns just one coalesced slot.
@@ -158,7 +170,7 @@ class AutonomousRuntime:
         # may advance its feedback fence. Directed input retains its priority.
         executed=work.attempted>0 or any(step.get('stage')=='model_tools' for step in getattr(work,'trace',())) or bool(event.get_extra('_hosted_tool_results') or handoff)
         if not observation['directed'] and not executed:return
-        observation.update(at=max(time.time()*1000,observation['at']+1),phase='foreground_result',result={'status':work.status,'confirmedMessages':work.confirmed_messages,'protocolAttempts':work.attempted,'protocolConfirmed':work.confirmed,'messageIds':list(event.get_extra('_hosted_protocol_receipts',[]))[:4],'evidence':list(event.get_extra('_hosted_research_evidence',[]))[:8],'toolResults':list(event.get_extra('_hosted_tool_results',[]))[-8:],'response':event.get_extra('_hosted_final_text','')[:600],'reason':work.reason,'taskHandoff':{k:handoff.get(k) for k in ('requestId','state','receipt')} if handoff else None})
+        observation.update(at=max(time.time()*1000,observation['at']+1),phase='foreground_result',result={'status':work.status,'confirmedMessages':work.confirmed_messages,'protocolAttempts':work.attempted,'protocolConfirmed':work.confirmed})
         observation['at']=max(observation['at'],self.feedbacks.get(id,{}).get('at',0)+1)
         self.feedbacks[id]=json.loads(json.dumps(observation))
 

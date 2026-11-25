@@ -134,13 +134,14 @@ class SocialTests(unittest.TestCase):
   self.assertEqual([x['id'] for x in context['meme_candidates']],[identifier]);self.assertIsNotNone(self.s.select_image('[MEME:'+identifier+']','group:1',cfg,1000,candidates=context['meme_candidates'])[1])
 
 class LifecycleTests(SummaryLearningFixture,unittest.IsolatedAsyncioTestCase):
- async def test_failed_model_preserves_learning_batch_across_reopen(self):
+ async def test_interrupted_model_preserves_learning_batch_across_reopen(self):
   from behavior import BehaviorStore
   self.record()
   original=self.sample_state();self.assertEqual(len(original),30)
-  async def fail(**kwargs):raise ConnectionError('summary model unavailable')
-  self.start(fail);await self.finish()
-  self.assertEqual(self.metrics['summaryFailures'],1);self.assertEqual(self.social_attempts(),0)
+  async def interrupted(**kwargs):raise asyncio.CancelledError('process stopped')
+  self.start(interrupted)
+  with self.assertRaises(asyncio.CancelledError):await self.finish()
+  self.assertEqual(self.social_attempts(),0)
   self.assertEqual(self.sample_state(),original);self.assertEqual(self.patterns(),[])
   self.store.close();self.store=BehaviorStore(self.path);self.db=self.store.db;self.ref=self.store.reflection
   self.assertEqual(self.sample_state(),original)
