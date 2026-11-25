@@ -2,7 +2,7 @@ import {useEffect,useId,useRef,useState} from 'react';
 import {createPortal} from 'react-dom';
 import {api} from './api';
 import {useLifetime} from './hooks';
-import {tokenCount,type Balance} from './referrals';
+import {tokenCount,type Balance} from './platform-balance';
 import {platformDisclaimer} from '../../../packages/shared/promotion';
 
 export type Activity={id:string;title:string;tokens:number;startsAt:string;endsAt:string;validDays:number;serverTime:string;claimOpen:boolean;enabled:boolean;balance:Balance};

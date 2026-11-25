@@ -1,10 +1,11 @@
+import {usePaperDecoration} from './paper/deferred';
 import React,{useEffect,useState,useRef} from 'react';
 import {Fish,ArrowUpRight,Shield,Loader2} from 'lucide-react';
 import {api} from './api';
 import {Field} from './ui';
 import {useLifetime} from './hooks';
-import {referralFromLocation} from './referrals';
-export function Auth({done}:{done:()=>void}){const [referral,setReferral]=useState(referralFromLocation);
+import {referralFromLocation} from './referral-link';
+export function Auth({done}:{done:()=>void}){usePaperDecoration();const [referral,setReferral]=useState(referralFromLocation);
  const [register,setRegister]=useState(!!referral),[busy,setBusy]=useState(false),[error,setError]=useState('');const owner=useLifetime(),pending=useRef(false);
  useEffect(()=>{
   const navigate=()=>{

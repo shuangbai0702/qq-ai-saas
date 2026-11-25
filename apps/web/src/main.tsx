@@ -40,7 +40,5 @@ async function start(){
  }
  applySpectrumTheme(document.body);
  createRoot(document.getElementById('root')!).render(<ScreenBoundary><App/></ScreenBoundary>);
- // Touch uses the same painter with a lightweight renderer; reduced motion is handled by its clock.
- setTimeout(()=>{void import('./paper/start').then(({startPaper})=>startPaper()).catch(()=>{/* Business UI stays available. */})},2000);
 }
 void start();

@@ -2,7 +2,7 @@ import {platformDisclaimer} from '../../../packages/shared/promotion';
 import {useEffect,useLayoutEffect,useMemo,useRef,useState} from 'react';import {KeyRound,RefreshCw,Loader2} from 'lucide-react';import type {BotConfig} from '../../../packages/contracts/index';import {api} from './api';
 import {defaultReasoningEffort,reasoningEfforts} from '../../../packages/shared/model-catalog-options';
 import {normalizeModelBaseUrl} from '../../../packages/shared/model-url';
-import {tokenCount,usePlatformBalance} from './referrals';
+import {tokenCount,usePlatformBalance} from './platform-balance';
 function clearSelection(config:BotConfig):BotConfig{return {...config,model:'',auxiliaryModel:undefined,delegationModel:undefined,summaryModel:undefined,favoriteModel:undefined,reasoningEffort:undefined}}
 export function ModelFields({cfg,setCfg,apiKey,setKey,hasKey=false,botId}:{cfg:BotConfig;setCfg:(c:BotConfig)=>void;apiKey:string;setKey:(s:string)=>void;hasKey?:boolean;botId?:string}){
  const {data:balance,error:balanceError}=usePlatformBalance();

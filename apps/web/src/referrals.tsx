@@ -2,18 +2,8 @@ import {useState} from 'react';
 import {api} from './api';
 import {useLifetime,useLiveResource} from './hooks';
 
-export type Balance={enabled:boolean;available:number;granted:number;spent:number;reserved:number;expired?:number;campaign?:{id:string|null;claimedAt:string|null;expiresAt:string|null;granted:number;spent:number;reserved:number;available:number}};
+import {usePlatformBalance,tokenCount,type Balance} from './platform-balance';
 type ReferralDetails=Balance&{canInvite:boolean;remainingUses:number;invited:number;inviterTokens:number;inviteeTokens:number};
-
-export function usePlatformBalance(){return useLiveResource<Balance>('/platform-model/balance',15000)}
-export const tokenCount=(n:number)=>n.toLocaleString('zh-CN');
-export function referralFromLocation(){
- const [route,query]=location.hash.split('?',2);
- const referralCode=route.match(/^#\/invite\/([A-Za-z0-9_-]{24})$/)?.[1];
- if(!referralCode)return;
- const inviteCode=new URLSearchParams(query).get('activation')?.trim();
- return {referralCode,inviteCode:inviteCode&&inviteCode.length<=100?inviteCode:undefined};
-}
 
 export function Referrals(){
  const {data,error,refresh}=useLiveResource<ReferralDetails>('/referrals',10000);

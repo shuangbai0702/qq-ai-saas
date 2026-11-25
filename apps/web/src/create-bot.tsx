@@ -1,11 +1,7 @@
-import {AdminNav} from './admin-nav';
-import {AdminOperations} from './admin-operations';
-import {AdminAutonomous} from './admin-autonomous';
 import {useEffect,useState,useRef,type FormEvent} from 'react';
-import {AdminMemory} from './admin-memory';
-import {Fish,ArrowUpRight,Check,ChevronRight,CheckCircle2,Shield,ArrowLeft,Loader2} from 'lucide-react';
+import {Fish,Check,ChevronRight,CheckCircle2,ArrowLeft} from 'lucide-react';
 import {defaultConfig,personas,type BotConfig} from '../../../packages/contracts/index';
-import {api} from './api';import {ModelFields} from './model-fields';import {Field,Status,go,BotAvatar} from './ui';import {useLiveResource,useLifetime} from './hooks';
+import {api} from './api';import {ModelFields} from './model-fields';import {Field,go,BotAvatar} from './ui';import {useLiveResource,useLifetime} from './hooks';
 export function Create({onDirtyChange}:{onDirtyChange:(dirty:boolean,guardWithinPage?:boolean)=>void}){
  const [step,setStep]=useState(0),[name,setName]=useState('我的大肥鱼'),[customName,setCustomName]=useState(false);
  const [cfg,setCfg]=useState<BotConfig>(defaultConfig),[key,setKey]=useState(''),[protocol,setProtocol]=useState('napcat');
@@ -56,6 +52,3 @@ export function Create({onDirtyChange}:{onDirtyChange:(dirty:boolean,guardWithin
 }
 
 
-export function Logs({id}:{id:string}){const {data,error,refresh}=useLiveResource('/bots/'+id+'/logs',3000);const lines:string[]=data?.lines||[];return <section className="panel"><div className="list-toolbar"><div><h2>运行日志</h2><span className="muted">每 3 秒刷新 · 最近 160 行 · 凭据脱敏</span></div><button className="secondary" onClick={()=>void refresh()}>立即刷新</button></div>{error&&<div className="alert" role="alert">日志加载失败：{error}</div>}<pre className="logs">{!data?'正在读取运行日志…':lines.length?lines.join('\n'):'暂无运行日志。启动机器人后，这里会显示真实进程输出。'}</pre></section>}
-export function Admin({onError,section='operations'}:{onError:(s:string)=>void;section?:string}){const memory=section==='memory',autonomous=section==='autonomous';return <><div className="page-title"><div><span className="eyebrow">平台管理</span><h1>{memory?'内存与 QQ 监控':autonomous?'自主任务与执行回执':'平台运营与监控'}</h1><p>{memory?'按实际进程查看 RAM、Swap 和 QQ 运行状态。':autonomous?'分别查看QQ连接、自主脑状态与真实执行结果。':'按账号处理部署名额、连接排障和操作记录。'}</p></div></div><AdminNav active={memory?'memory':autonomous?'autonomous':'operations'}/>{memory?<><AdminMemory/><AdminRuntimeDetails/></>:autonomous?<AdminAutonomous/>:<AdminOperations/>}</>}
-function AdminRuntimeDetails(){const {data:d,error}=useLiveResource('/admin/overview',30000);return <>{error&&<p role="alert">{error}</p>}{d&&<details className="panel"><summary>实例原始状态与错误</summary><h2>运行实例</h2><div className="table-wrap"><table><thead><tr><th>名称</th><th>协议</th><th>状态</th><th>AI PID</th><th>协议 PID</th><th>异常</th></tr></thead><tbody>{d.bots.map((b:any)=><tr key={b.id}><td>{b.name}</td><td>{b.protocol}</td><td><Status value={b.observed_state} mock={b.protocol==='mock'}/></td><td>{b.health?.ai?.pid||'—'}</td><td>{b.health?.protocol?.pid||'—'}</td><td>{b.last_error||'—'}</td></tr>)}</tbody></table></div></details>}</>}
