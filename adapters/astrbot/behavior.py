@@ -1674,6 +1674,11 @@ def install_runtime(core,settings):
     runtime['build']=loaded_build()
     runtime['prepare_raw_ingress']=prepare_raw_ingress
     runtime['refresh_base']=lambda id:store(id,settings[id])
+    def validate_cards(id,replacement):
+        from web_cognition import validate_cards as validate_projection
+        st=store(id,settings[id])
+        validate_projection(st.db,replacement,journals=st.model_journals.values())
+    runtime['validate_cards']=validate_cards
     print('FISHBOT_RUNTIME_BUILD '+model_json(runtime['build']),flush=True)
     core._hosted_runtime_binding={'settings':settings,'runtime':runtime,'closed':False}
     return runtime

@@ -214,13 +214,19 @@ async def main():
                 if stamp<prev:raise web.HTTPConflict()
                 if stamp==prev:
                     if body['behaviorConfig']!=current['behaviorConfig']:raise web.HTTPConflict(reason='Revision content mismatch')
-                    return web.json_response({'generation':stamp[0],'revision':stamp[1],'unchanged':True})
+                    # A previous acknowledgement is not proof that a restored
+                    # Journal accepts this region. Card retries use the same
+                    # validation path and return the exact target again.
+                    if not body.get('characterCardsEdit'):
+                        return web.json_response({'generation':stamp[0],'revision':stamp[1],'unchanged':True})
             elif id in tombstones and stamp<tombstones[id]:raise web.HTTPConflict()
             if not current and len(members)>=manifest['capacity']:raise web.HTTPConflict(reason='Group capacity reached')
             from character_cards import member_shape as cards_member_shape,apply_user_cards
             if current and body.get('characterCardsEdit') and current['generation']==body['generation'] and current.get('_cardsShape')==cards_member_shape(body):
                 try:replacement=apply_user_cards(behavior_settings[id],{**body,'config':body['behaviorConfig']})
                 except (ValueError,TypeError,KeyError):raise web.HTTPConflict(reason='Character card region update rejected')
+                try:behavior['validate_cards'](id,replacement)
+                except (ValueError,RuntimeError):raise web.HTTPConflict(reason='Character card Journal projection rejected') from None
                 behavior_settings[id]=replacement
                 from web_base import member_shape
                 from tool_config import member_shape as tool_member_shape

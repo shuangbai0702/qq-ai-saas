@@ -115,3 +115,28 @@ def project(snapshot,change):
     current=project_expressions(project_relations(project_user_edits(current,change.get('facts',[])),change.get('relations',[])),change.get('expressions',[]))
     from character_cards import project as project_cards
     return project_cards(current,change.get('character_cards'))
+
+
+def validate_cards(db,setting,*,journals=()):
+    """Prove the next request's card projection before acknowledging a save.
+
+    This reads the existing Journal authority; it never creates a Journal,
+    commits a business turn, or changes an in-flight request's snapshot.
+    """
+    from journal_storage import read_snapshot
+    from types import SimpleNamespace
+    from character_cards import project as project_cards
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fishbot_readonly_journals'").fetchone():return
+    config=setting['config']
+    change={'cards':config.get('characterCards',[]),'proof':setting['characterCardsEdit'],
+            'persona':config.get('systemPrompt',''),'persona_proof':setting.get('personaEdit')}
+    checked=set()
+    # The live owner retains the committed base while a candidate is in flight.
+    # Checking only ready rows would silently skip precisely that overlap.
+    for journal in journals:
+        if journal.scope_key is not None and journal.last is not None:
+            project_cards(journal.last,change);checked.add(journal.scope_key)
+    for scope, in db.execute("SELECT scope FROM fishbot_readonly_journals WHERE state!='retired' AND payload IS NOT NULL").fetchall():
+        if scope in checked:continue
+        snapshot=read_snapshot(db,scope,ready=True)
+        if snapshot:project_cards(SimpleNamespace(**snapshot),change)

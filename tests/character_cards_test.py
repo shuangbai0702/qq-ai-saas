@@ -57,14 +57,39 @@ class CardsTest(unittest.TestCase):
   platform={'role':'system','content':'[FishBot 平台基础规则]\nPLATFORM'}
   tail=[{'role':'user','content':'exact history'}]
   snapshot=SimpleNamespace(base=[platform,*tail],wire=[platform,*tail],state={})
-  change={'cards':[card()],'persona':'PERSONA','proof':{'permitId':'7','target':identity([card()]),'origins':[sha([])]}}
-  with self.assertRaises(ContextPrefixViolation):project(snapshot,change)
+  change={'cards':[card()],'persona':'PERSONA','proof':{'permitId':'7','target':identity([card()]),'origins':[sha([]),sha(messages([card()]))]}}
+  untouched=copy.deepcopy(snapshot)
+  cards_only=project(snapshot,change)
+  self.assertEqual(cards_only.wire,[platform,*messages([card()]),*tail])
+  self.assertEqual(cards_only.base,[platform,*messages([card()]),*tail])
+  self.assertEqual(snapshot.__dict__,untouched.__dict__)
+  self.assertIs(project(cards_only,change),cards_only)
+  self.assertFalse(any(m.get('content','').startswith('[FishBot 网页 Persona 参考') for m in cards_only.wire))
   change['persona_proof']={'target':persona_sha('PERSONA'),'origins':[persona_sha('PERSONA')]}
   change['proof']['origins'].append(sha(messages([card()])))
   projected=project(snapshot,change)
   self.assertEqual(projected.wire,[platform,*messages([card()]),persona_reference('PERSONA'),*tail])
   self.assertIs(project(projected,change),projected)
   with self.assertRaises(ContextPrefixViolation):layout([{'role':'system','content':'unknown platform'},*tail],[card()],persona='PERSONA',persona_proof=change['persona_proof'])
+
+ def test_card_preflight_is_readonly_and_rejects_unproved_origins(self):
+  import sqlite3
+  from readonly_journal import ReadonlyJournal,ContextPrefixViolation
+  from context_protocol import READONLY_CURRENT
+  from web_cognition import validate_cards
+  with sqlite3.connect(':memory:') as db:
+   journal=ReadonlyJournal(db,'bot_shared')
+   base=[{'role':'system','content':'[FishBot 平台基础规则]\nPLATFORM'}, {'role':'user','content':'exact history'}]
+   first=journal.prepare(base+[{'role':'user','content':READONLY_CURRENT+'\n{}'}],1);self.assertTrue(journal.commit(first))
+   old=db.execute('SELECT payload FROM fishbot_readonly_journals').fetchone()[0];changes=db.total_changes
+   setting={'config':{'characterCards':[card()],'systemPrompt':'PERSONA'},'characterCardsEdit':{'permitId':'7','target':identity([card()]),'origins':[sha([])]}}
+   validate_cards(db,setting)
+   self.assertEqual(db.total_changes,changes);self.assertEqual(journal.last.wire,first.wire)
+   self.assertEqual(db.execute('SELECT payload FROM fishbot_readonly_journals').fetchone()[0],old)
+   setting['characterCardsEdit']['origins']=[sha(messages([card('foreign')]))]
+   with self.assertRaises(ContextPrefixViolation):validate_cards(db,setting)
+   with self.assertRaises(ContextPrefixViolation):validate_cards(db,setting,journals=[journal])
+   self.assertEqual(db.total_changes,changes)
 
  def test_sdk_card_update_commits_locally_and_still_requires_system_permit(self):
   import sqlite3

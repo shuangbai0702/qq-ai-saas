@@ -41,6 +41,13 @@ def layout(wire,cards,*,expected_note=None,origins=None,require_note=False,perso
     old_cards=[m for m in head if is_card(m)]
     if origins is not None and sha(old_cards) not in origins:raise ContextPrefixViolation('character_cards_origin_mismatch')
     personas=[m for m in head if is_persona_reference(m)]
+    # Some committed checkpoints contain only the fixed platform region.
+    # A card edit owns cards, not a missing Persona: preserve that absence
+    # until Persona's own authorized edit or the next lawful checkpoint.
+    fixed=[m for m in head if not (is_card(m) or is_note(m))]
+    missing_persona=bool(not personas and len(fixed)==1 and fixed[0] is head[0]
+        and fixed[0].get('role')=='system' and isinstance(fixed[0].get('content'),str)
+        and fixed[0]['content'].startswith('[FishBot 平台基础规则]\n'))
     if not personas and isinstance(persona,str) and persona:
         # An authenticated card edit can reach a Journal predating the separate
         # Persona region. Prove the entire SDK insertion against config origins;
@@ -62,13 +69,13 @@ def layout(wire,cards,*,expected_note=None,origins=None,require_note=False,perso
             from web_base import persona_view
             repaired=persona_view(head,head,persona_proof,persona)
             matches=[m for m in repaired if is_persona_reference(m)]
-        if len(matches)!=1:raise ContextPrefixViolation('character_cards_legacy_persona_unproved')
+        if len(matches)!=1 and not (not matches and missing_persona and not persona_proof):raise ContextPrefixViolation('character_cards_legacy_persona_unproved')
         personas=matches
     notes=[m for m in head if is_note(m)]
     if require_note and not notes:raise ContextPrefixViolation('character_cards_note_missing')
     # The SDK's residual preamble shares Persona's reference encoding. Preserve
     # those distinct, already-owned slots instead of treating them as duplicates.
-    if len(notes)>1 or not personas:raise ContextPrefixViolation('character_cards_base_ambiguous')
+    if len(notes)>1 or not (personas or missing_persona):raise ContextPrefixViolation('character_cards_base_ambiguous')
     if notes and expected_note is not None and json.loads(notes[0]['content'].split('\n',1)[1]).get('core_note')!=expected_note:
         raise ContextPrefixViolation('character_cards_note_mismatch')
     platform=[m for m in head if not (is_card(m) or is_note(m) or m in personas)]

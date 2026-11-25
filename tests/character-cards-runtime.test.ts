@@ -1,5 +1,15 @@
 import test from 'node:test';import assert from 'node:assert/strict';import http from 'node:http';import path from 'node:path';import {mkdtemp,mkdir,writeFile,readFile} from 'node:fs/promises';
 import {AstrBotAdapter} from '../adapters/astrbot/index.js';import {defaultConfig,type AiRuntimeContext} from '../packages/contracts/index.js';
+import {SharedAstrBotAdapter} from '../adapters/astrbot/shared.js';
+test('shared card acknowledgement requires the exact target before advancing applied state',async()=>{
+ const root=await mkdtemp(path.resolve('.local/cards-ack-'));await mkdir(path.join(root,'ai/data'),{recursive:true});await writeFile(path.join(root,'ai/data/cmd_config.json'),JSON.stringify({provider:[],platform:[{id:'qq'}]}));
+ let updates=0,persists=0;const db={query:async()=>{updates++;return[{bot_id:'fixture'}]}} as any;
+ const shared=new SharedAstrBotAdapter(db,{inspect:async()=>({pid:1})} as any,{persistApplied:async()=>{persists++;return true}} as any,'unused','unused');
+ shared.group=async()=>({id:'group'});let ack:any={generation:1,revision:2,unchanged:true};shared.request=async()=>ack;
+ const ctx:AiRuntimeContext={botId:'fixture',tenantId:'tenant',root,generation:1,revision:2,aiPort:1,protocolPort:2,token:'synthetic',apiKey:'',expectedUin:'91000001',config:defaultConfig,characterCardsEdit:{permitId:'2',target:'expected',origins:[]}};
+ await assert.rejects(shared.applyCards(ctx),/acknowledgement mismatch/);ack.target='foreign';await assert.rejects(shared.applyCards(ctx),/acknowledgement mismatch/);assert.equal(updates,0);assert.equal(persists,0);
+ ack.target='expected';assert.equal(await shared.applyCards(ctx),true);assert.equal(updates,1);assert.equal(persists,1);
+});
 test('concurrent runtime replies cannot regress persisted configuration or cross generations',async()=>{
  const root=await mkdtemp(path.resolve('.local/cards-order-'));await mkdir(path.join(root,'ai'));const file=path.join(root,'ai/runtime.json');await writeFile(file,JSON.stringify({generation:1,revision:1,config:defaultConfig}));
  let arrived!:()=>void,release!:()=>void;const arrival=new Promise<void>(r=>arrived=r),barrier=new Promise<void>(r=>release=r);const seen:number[]=[];let live=1;

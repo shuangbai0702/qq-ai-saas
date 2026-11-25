@@ -3,9 +3,24 @@
 The original lives only in pipeline_work_inputs. Recovery uses the original
 converter directly; it already owns that same durable input.
 """
-from types import SimpleNamespace
+from types import SimpleNamespace, MethodType
 import inspect
 import time
+
+
+def bind_api_connection(bot):
+    """A departing SDK socket may remove only its own API registration."""
+    from quart import websocket
+
+    def remove_owned(connection):
+        socket = websocket._get_current_object()
+        self_id = websocket.headers['X-Self-ID']
+        # Reconnect can install the replacement before the old finally runs.
+        # Keep the SDK's single routing map, without a parallel connection pool.
+        if connection._wsr_api_clients.get(self_id) is socket:
+            del connection._wsr_api_clients[self_id]
+
+    bot._remove_wsr_api_client = MethodType(remove_owned, bot)
 
 
 def admitted(raw, config):
@@ -43,6 +58,9 @@ class RawInput:
 
 def bind(platform, acquire, allowed=lambda raw: True, quiescing=lambda: False, prepare=None):
     """Bind once per platform; no task pool, raw cache or second queue."""
+    from aiocqhttp import CQHttp
+    bot = getattr(platform, 'bot', None)
+    if isinstance(bot, CQHttp):bind_api_connection(bot)
     original = platform.convert_message
     async def retained(raw):
         derived = await prepare(raw) if prepare else raw

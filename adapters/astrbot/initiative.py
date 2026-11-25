@@ -258,14 +258,22 @@ async def resume_scope_input(core,id,lease,store,settings):
 def start(core,settings,store,metrics):
     async def sweep():
         from aiocqhttp import Event
+        from aiocqhttp.exceptions import ApiNotAvailable,NetworkError
         from astrbot.core.platform.astrbot_message import AstrBotMessage,MessageMember,Group
         from astrbot.core.platform.message_type import MessageType
         from astrbot.core.message.components import Plain
+        protocol_retry={}
         while True:
             await asyncio.sleep(5)
             if getattr(getattr(core,'_hosted_stop_fence',None),'quiescing',False):continue
+            for removed in set(protocol_retry)-set(settings):protocol_retry.pop(removed,None)
             for id,s in list(settings.items()):
                 reservation=None;send_reservation_owned=False;contact_reservation_owned=False;commit_started=False;handoff_event=None;item=None;st=None;platform=None
+                protocol_action=None
+                retry=protocol_retry.get(id)
+                if retry and retry['lease'] is not s:
+                    protocol_retry.pop(id,None);retry=None
+                if retry and time.monotonic()<retry['until']:continue
                 try:
                     brain=getattr(core,'_hosted_autonomous',None)
                     from bilibili_tools import resume_completion
@@ -293,13 +301,17 @@ def start(core,settings,store,metrics):
                         platform=next((p for p in core.platform_manager.get_insts() if p.meta().id==id),None)
                         if not platform:continue
                         raw=Event.from_payload(json.loads(pending['payload']))
+                        if s.get('expectedUin') and str(raw.self_id)!=str(s['expectedUin']):raise ValueError('initiative_account_mismatch')
+                        protocol_action='get_status'
                         online=await asyncio.wait_for(platform.bot.get_status(self_id=str(raw.self_id)),3)
                         if not online.get('online') or not live() or st.active:continue
                         convert_retained=getattr(platform,'convert_retained_message',None) or platform.convert_message
+                        protocol_action='convert_retained_message'
                         msg=await asyncio.wait_for(convert_retained(raw),5)
                         if not msg or not live() or st.active or not st.presence.claim(pending,cfg,provider,live,time.time()):continue
                         event=platform.create_event(msg);event.set_extra('_hosted_deferred_group',pending);event.set_extra('_hosted_scheduled_generation',s['generation'])
                         platform.commit_event(event)
+                        protocol_retry.pop(id,None)
                         m=metrics.setdefault(id,{});m['groupDeferredChecksQueued']=m.get('groupDeferredChecksQueued',0)+1
                         continue
                     items=candidates(st.db,cfg,time.time())
@@ -311,11 +323,14 @@ def start(core,settings,store,metrics):
                     platform=next((p for p in core.platform_manager.get_insts() if p.meta().id==id),None)
                     if not platform or id in core.event_bus.stopped_platforms:continue
                     item=items[0]
+                    if s.get('expectedUin') and str(item['self_id'])!=str(s['expectedUin']):raise ValueError('initiative_account_mismatch')
+                    protocol_action='get_status'
                     online=await asyncio.wait_for(platform.bot.get_status(self_id=item['self_id']),3)
                     if not online.get('online') or settings.get(id) is not s or id in core.event_bus.stopped_platforms:continue
                     if item.get('contact_subject'):
                         st.db.execute('INSERT OR REPLACE INTO companion_membership_checks VALUES(?,?,?)',(item['scope'],item['contact_subject'],time.time()));st.db.execute('DELETE FROM companion_membership_checks WHERE checked<?',(time.time()-86400,));st.db.commit()
-                        member=await asyncio.wait_for(platform.bot.get_group_member_info(group_id=int(item['scope'][6:]),user_id=int(item['contact_subject']),no_cache=True),3)
+                        protocol_action='get_group_member_info'
+                        member=await asyncio.wait_for(platform.bot.get_group_member_info(self_id=str(item['self_id']),group_id=int(item['scope'][6:]),user_id=int(item['contact_subject']),no_cache=True),3)
                         if str(member.get('user_id'))!=item['contact_subject'] or settings.get(id) is not s:continue
                     now=time.time()
                     if quiet(cfg,now):continue
@@ -335,6 +350,7 @@ def start(core,settings,store,metrics):
                     if item.get('owner_contact'):handoff_event.set_extra('_hosted_owner_contact',item)
                     commit_started=True
                     commit_reserved_event(platform,handoff_event,st.db,item,reservation,contact_reservation_owned)
+                    protocol_retry.pop(id,None)
                     send_reservation_owned=False;contact_reservation_owned=False;m=metrics.setdefault(id,{})
                     if item.get('contact_subject'):m['autonomousGroupAttempts']=m.get('autonomousGroupAttempts',0)+1
                     m['proactiveAttempts']=m.get('proactiveAttempts',0)+1
@@ -348,6 +364,12 @@ def start(core,settings,store,metrics):
                                 m=metrics.setdefault(id,{});m['proactiveReservationReleaseErrors']=m.get('proactiveReservationReleaseErrors',0)+1
                         send_reservation_owned=False;contact_reservation_owned=False
                     if isinstance(error,asyncio.CancelledError):raise
+                    if settings.get(id) is not s:continue
+                    if protocol_action and isinstance(error,(ApiNotAvailable,NetworkError,TimeoutError)) and settings.get(id) is s:
+                        failures=min(5,(retry['failures'] if retry else 0)+1)
+                        delay=min(300,15*2**failures)
+                        protocol_retry[id]={'lease':s,'failures':failures,'until':time.monotonic()+delay}
+                        metrics.setdefault(id,{})['proactiveProtocolFailure']={'at':time.time(),'action':protocol_action,'reason':type(error).__name__,'retryAt':time.time()+delay}
                     from model_cache import record_execution_error
                     record_execution_error(s,error,phase='initiative_sweep')
                     # No content/errors from other tenants enter shared logs.

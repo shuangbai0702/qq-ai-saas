@@ -85,6 +85,8 @@ async def main():
             if body.get('apiKey')!=os.getenv('FISHBOT_MODEL_KEY',''):raise web.HTTPConflict()
             try:replacement=apply_user_cards(settings['qq'],body)
             except (ValueError,TypeError,KeyError):raise web.HTTPConflict()
+            try:behavior['validate_cards']('qq',replacement)
+            except (ValueError,RuntimeError):raise web.HTTPConflict(reason='Character card Journal projection rejected') from None
             settings['qq']=replacement
             manifest.update(config=copy.deepcopy(replacement['config']),revision=replacement['revision'],characterCardsEdit=copy.deepcopy(replacement['characterCardsEdit']),systemChangePermitId=replacement.get('systemChangePermitId'))
             behavior['refresh_base']('qq')

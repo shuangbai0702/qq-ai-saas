@@ -8,10 +8,11 @@ import {createApp} from '../apps/control-api/src/app.js';
 import {issueTestInvite} from './helpers/invitations.js';
 import {permitModelFixture} from './helpers/model-fixture.js';
 import {defaultConfig} from '../packages/contracts/index.js';
+import {characterCardLimits} from '../packages/contracts/character-cards.js';
 import {MockProtocolAdapter} from '../adapters/mock/index.js';
 
-for(const region of ['persona','core_note','tools','facts','relations','expressions','cards','cards_note','cards_legacy'] as const)for(const mode of ['shared','dedicated'] as const)test(`real ${mode} Worker applies only ${region} during an in-flight SDK request`, {timeout:150000},async()=>{
- const cardsRegion=region==='cards'||region==='cards_note'||region==='cards_legacy';
+for(const region of ['persona','core_note','tools','facts','relations','expressions','cards','cards_note','cards_legacy','cards_missing_persona'] as const)for(const mode of ['shared','dedicated'] as const)test(`real ${mode} Worker applies only ${region} during an in-flight SDK request`, {timeout:150000},async()=>{
+ const cardsRegion=region==='cards'||region==='cards_note'||region==='cards_legacy'||region==='cards_missing_persona';
  const cognition=region==='core_note'||region==='facts'||region==='relations'||region==='expressions';
  const seen:any[]=[];let unblock=()=>{};let hold=false,exercisedTool=false;
  const server=http.createServer(async(req,res)=>{
@@ -26,8 +27,14 @@ for(const region of ['persona','core_note','tools','facts','relations','expressi
  const wait=async(fn:()=>Promise<boolean>,label:string,timeout=60000)=>{const deadline=Date.now()+timeout;while(Date.now()<deadline){if(await fn())return;await new Promise(r=>setTimeout(r,100));}throw Error(label+' timed out; evidence root: '+root);};
  try{
   const registration=await x.app.inject({method:'POST',url:'/v1/auth/register',payload:{inviteCode:await issueTestInvite(x.db,2),email:'runtime-base@example.test',name:'test',password:'runtime-base-123'}});assert.equal(registration.statusCode,200,registration.body);const cookies={fish_session:registration.cookies[0].value};
-  const config={...defaultConfig,platformModel:false,baseUrl:`http://127.0.0.1:${port}/v1`,model:'base-fixture',characterCards:cardsRegion&&region!=='cards_legacy'?[{id:'one',name:'示例',kind:'speech' as const,content:'OLD_CARD_ONLY',enabled:true}]:[],systemPrompt:region==='persona'?'OLD_PERSONA_ONLY':'STATIC_PERSONA',toolPrompts:{dsh:'OLD_TOOL_PROMPT_ONLY'},proactive:false,behavior:{...defaultConfig.behavior,memory:cognition||region==='cards_note'||region==='cards_legacy',memorySummary:false,burstDebounceMs:0,typingSimulation:false,sendIntervalMs:0,groupParticipationEnabled:false}};
+  const config={...defaultConfig,platformModel:false,baseUrl:`http://127.0.0.1:${port}/v1`,model:'base-fixture',characterCards:cardsRegion&&region!=='cards_legacy'&&region!=='cards_missing_persona'?[{id:'one',name:'示例',kind:'speech' as const,content:'OLD_CARD_ONLY',enabled:true}]:[],systemPrompt:region==='persona'?'OLD_PERSONA_ONLY':'STATIC_PERSONA',toolPrompts:{dsh:'OLD_TOOL_PROMPT_ONLY'},proactive:false,behavior:{...defaultConfig.behavior,memory:cognition||region==='cards_note'||region==='cards_legacy',memorySummary:false,burstDebounceMs:0,typingSimulation:false,sendIntervalMs:0,groupParticipationEnabled:false}};
   const created=await x.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'runtime base',protocol:'mock',runtimeMode:mode,expectedUin:'91000001',config,apiKey:'synthetic-runtime-base-key'}});assert.equal(created.statusCode,201,created.body);const id=created.json().id;fixtureBotId=id;
+  if(region==='cards_missing_persona'){
+   const python=path.resolve(process.env.ASTRBOT_PYTHON||'references/astrbot/.venv/Scripts/python.exe');
+   // A controlled fixture of the already-committed platform-only checkpoint.
+   // Seed before the Worker starts; the production update never edits history.
+   execFileSync(python,['-X','utf8','-c',`import sqlite3,sys;sys.path.insert(0,sys.argv[2]);from readonly_journal import ReadonlyJournal;from context_protocol import READONLY_CURRENT;from context_transport import foreground_system,request_context_view;from system_contract import SystemContract;from behavior_store import BehaviorStore;store=BehaviorStore(sys.argv[1],runtime_config={});db=store.db;journal=ReadonlyJournal(db,'bot_shared');system,history=request_context_view('',[{'role':'user','content':'EXACT_OLD_HISTORY'}],None,'','','{}',platform_system=foreground_system({}));candidate=journal.prepare([{'role':'system','content':system},*history,{'role':'user','content':READONLY_CURRENT+'\\n{}'}],1,strict=False,retirement=store.reflection.reconstruction_stamp('bot_shared'));assert candidate is not None;assert journal.commit(candidate);guard=SystemContract(db);assert guard.settle(guard.reserve(candidate.wire,None,'fixture',1,scope='bot_shared'),True,2);db.close()`,path.join(root,'bots',id,'behavior.sqlite'),path.resolve('adapters/astrbot')],{windowsHide:true});
+  }
   if(region==='core_note'||region==='cards_note'||region==='cards_legacy'){
    const python=path.resolve(process.env.ASTRBOT_PYTHON||'references/astrbot/.venv/Scripts/python.exe');
    execFileSync(python,['-X','utf8','-c',`import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); db.execute("CREATE TABLE IF NOT EXISTS memory_core_notes(slot INTEGER PRIMARY KEY,text TEXT,scopes TEXT,people TEXT,sources TEXT,updated REAL)"); db.execute("INSERT INTO memory_core_notes VALUES(1,'OLD_CORE_NOTE_ONLY','[\\\"private:12345678\\\"]','[\\\"12345678\\\"]','[]',1)"); db.commit(); db.close()`,path.join(root,'bots',id,'behavior.sqlite')],{windowsHide:true});
@@ -57,7 +64,7 @@ for(const region of ['persona','core_note','tools','facts','relations','expressi
 
   const beforeRequests=seen.length;hold=true;
   await wait(async()=>{try{await mock.call(ctx,'/message',{text:'FIRST_REQUEST',sender:'12345678',messageId:1001});return true;}catch{return false;}},'native OneBot connection');
-  await wait(async()=>seen.length>beforeRequests,'first SDK HTTP request');const first=structuredClone(seen.at(-1));if(cardsRegion)assert.equal(JSON.stringify(first).includes('OLD_CARD_ONLY'),region!=='cards_legacy');else if(region!=='tools')assert.ok(JSON.stringify(first).includes(region==='persona'?'OLD_PERSONA_ONLY':'OLD_CORE_NOTE_ONLY'));else assert.ok(!JSON.stringify(first).includes('OLD_TOOL_PROMPT_ONLY'));
+  await wait(async()=>seen.length>beforeRequests,'first SDK HTTP request');const first=structuredClone(seen.at(-1));if(cardsRegion)assert.equal(JSON.stringify(first).includes('OLD_CARD_ONLY'),region!=='cards_legacy'&&region!=='cards_missing_persona');else if(region!=='tools')assert.ok(JSON.stringify(first).includes(region==='persona'?'OLD_PERSONA_ONLY':'OLD_CORE_NOTE_ONLY'));else assert.ok(!JSON.stringify(first).includes('OLD_TOOL_PROMPT_ONLY'));
   const detail=(await x.app.inject({url:`/v1/bots/${id}`,cookies})).json();
   if(cognition)await x.db.query("UPDATE bots SET applied_revision=revision,observed_state='running' WHERE id=$1",[id]);
   const coreResponse=cognition?await x.app.inject({url:`/v1/bots/${id}/behavior-data`,cookies}):null;
@@ -69,6 +76,7 @@ for(const region of ['persona','core_note','tools','facts','relations','expressi
   else if(region==='core_note')assert.equal(saved.json().updatedRegion,'core_note');
   else assert.equal(saved.json().ok,true);
   const after=await x.agent.host.inspect(group.id,'ai');assert.equal(after?.pid,before?.pid);
+  if(cardsRegion)assert.equal(await x.agent.aiFor({runtime_mode:mode}).applyCards(ctx),true,'same revision retry revalidates the exact card target');
   unblock();
   await wait(async()=>((await mock.call(ctx,'/messages')) as any[]).some(row=>row.action==='send_private_msg'),'in-flight reply survives edit');
   assert.deepEqual(seen[beforeRequests],first,'in-flight Wire stays unchanged');
@@ -79,7 +87,7 @@ for(const region of ['persona','core_note','tools','facts','relations','expressi
   const python=path.resolve(process.env.ASTRBOT_PYTHON||'references/astrbot/.venv/Scripts/python.exe');
   await wait(async()=>{const statuses:string[]=JSON.parse(execFileSync(python,['-c',`import sqlite3,json,sys; d=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True); print(json.dumps([r[0] for r in d.execute('SELECT status FROM pipeline_work_inputs')]))`,path.join(root,'bots',id,'behavior.sqlite')],{windowsHide:true,encoding:'utf8'}));return statuses.length===2&&statuses.every(status=>status.startsWith('settled'));},'both inputs settle after user edit');
   const next=seen.find(body=>JSON.stringify(body).includes('SECOND_REQUEST'));
-  if(cardsRegion){assert.equal(next.messages.filter((m:any)=>m.role==='system'&&m.content.includes('NEW_CARD_ONLY')).length,1);assert.ok(!JSON.stringify(next).includes('OLD_CARD_ONLY'));const cardIndex=next.messages.findIndex((m:any)=>m.content?.includes?.('NEW_CARD_ONLY'));const personaIndex=next.messages.findIndex((m:any)=>m.content?.includes?.('STATIC_PERSONA'));assert.ok(cardIndex<personaIndex);if(region==='cards_note'||region==='cards_legacy'){const noteIndex=next.messages.findIndex((m:any)=>m.content?.includes?.('OLD_CORE_NOTE_ONLY'));assert.ok(noteIndex>0&&noteIndex<cardIndex);}}else if(region!=='tools'){assert.ok(JSON.stringify(next).includes(region==='persona'?'NEW_PERSONA_ONLY':'NEW_CORE_NOTE_ONLY'));assert.ok(!JSON.stringify(next).includes(region==='persona'?'OLD_PERSONA_ONLY':'OLD_CORE_NOTE_ONLY'));}else{assert.ok(!JSON.stringify(next).includes('NEW_TOOL_PROMPT_ONLY'));assert.equal(ctx.config.toolPrompts.dsh,'NEW_TOOL_PROMPT_ONLY');}
+  if(cardsRegion){assert.equal(next.messages.filter((m:any)=>m.role==='system'&&m.content.includes('NEW_CARD_ONLY')).length,1);assert.ok(!JSON.stringify(next).includes('OLD_CARD_ONLY'));const cardIndex=next.messages.findIndex((m:any)=>m.content?.includes?.('NEW_CARD_ONLY'));const personaIndex=next.messages.findIndex((m:any)=>m.content?.includes?.('STATIC_PERSONA'));if(region==='cards_missing_persona'){assert.equal(personaIndex,-1,'a card edit cannot manufacture Persona');assert.ok(JSON.stringify(next).includes('EXACT_OLD_HISTORY'));}else assert.ok(cardIndex<personaIndex);if(region==='cards_note'||region==='cards_legacy'){const noteIndex=next.messages.findIndex((m:any)=>m.content?.includes?.('OLD_CORE_NOTE_ONLY'));assert.ok(noteIndex>0&&noteIndex<cardIndex);}}else if(region!=='tools'){assert.ok(JSON.stringify(next).includes(region==='persona'?'NEW_PERSONA_ONLY':'NEW_CORE_NOTE_ONLY'));assert.ok(!JSON.stringify(next).includes(region==='persona'?'OLD_PERSONA_ONLY':'OLD_CORE_NOTE_ONLY'));}else{assert.ok(!JSON.stringify(next).includes('NEW_TOOL_PROMPT_ONLY'));assert.equal(ctx.config.toolPrompts.dsh,'NEW_TOOL_PROMPT_ONLY');}
   const newMarker=cardsRegion?'NEW_CARD_ONLY':region==='persona'?'NEW_PERSONA_ONLY':region==='tools'?'NEW_TOOL_PROMPT_ONLY':'NEW_CORE_NOTE_ONLY';
   assert.equal(JSON.stringify(next).split(newMarker).length-1,region==='tools'?0:1,'edited base information has one Wire owner');
   assert.ok(!JSON.stringify(next).includes('\"user_edit\":'),'program-only edit provenance never enters the model');
@@ -101,7 +109,7 @@ for(const region of ['persona','core_note','tools','facts','relations','expressi
    const dynamic=first.messages.filter((m:any)=>!owned(m));assert.deepEqual(next.messages.filter((m:any)=>!owned(m)).slice(0,dynamic.length),dynamic);
    let previous=next,sequence=0;
    const original={id:'one',name:'示例',kind:'speech',content:'NEW_CARD_ONLY',enabled:true};
-    const five=Array.from({length:5},(_,i)=>({...original,id:String(i),content:('CARD_CONTENT_'+i+'\u0001'.repeat(4000)).slice(0,4000)}));
+    const five=Array.from({length:5},(_,i)=>({...original,id:String(i),content:('CARD_CONTENT_'+i+'\u0001'.repeat(characterCardLimits.maxContentLength)).slice(0,characterCardLimits.maxContentLength)}));
    const variants=[five,[...five].reverse(),five.filter((_,i)=>i!==2),five.map(c=>({...c,enabled:false})),[],[original]];
    for(const variant of variants){
     await wait(async()=>{const statuses:string[]=JSON.parse(execFileSync(python,['-c',`import sqlite3,json,sys; d=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True); print(json.dumps([r[0] for r in d.execute('SELECT status FROM pipeline_work_inputs')]))`,path.join(root,'bots',id,'behavior.sqlite')],{windowsHide:true,encoding:'utf8'}));return statuses.every(s=>s.startsWith('settled'));},'work settled before next edit');
