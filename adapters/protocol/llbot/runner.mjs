@@ -76,9 +76,20 @@ export async function startRuntime(file,{spawnChild=spawn,clock=()=>Date.now(),f
   relay.disconnectUpstream();const currentEpoch=++epoch;
   workerMemory=undefined;lastMemory=clock();workerStarted=clock();
   const child=spawnChild(process.execPath,['--expose-gc','--max-old-space-size=640','--import',pathToFileURL(path.join(directory,'worker-preload.mjs')).href,path.join(work,'llbot.js'),'--',`--pmhq-port=${m.pmhqPort}`,...(m.resume&&m.expectedUin?['--qq='+m.expectedUin]:[])],{cwd:work,env:{...env,FISHBOT_LLBOT_MANIFEST:path.resolve(file)},windowsHide:true,stdio:['ignore','pipe','pipe','ipc']});worker=child;forwardOutput(child);
-  child.on('error',()=>{if(epoch===currentEpoch)detail='LLBot子进程启动失败'});
-  child.on('message',value=>{if(epoch===currentEpoch&&value?.type==='llbot-memory'&&value.pid===child.pid&&[value.rss,value.heapUsed].every(Number.isFinite)){workerMemory=value;lastMemory=clock()}});
-  child.on('exit',()=>{if(epoch===currentEpoch&&!closing){worker=undefined;relay.disconnectUpstream();workerRestartAt=clock()+3000;detail='LLBot子进程退出，QQ会话保留，等待局部恢复'}});
+  const ended=reason=>{
+   if(epoch!==currentEpoch||worker!==child||closing)return;
+   worker=undefined;workerMemory=undefined;relay.disconnectUpstream();workerRestartAt=clock()+3000;detail=reason;
+  };
+  child.on('error',()=>{
+   if(epoch!==currentEpoch||worker!==child||closing)return;
+   detail='LLBot子进程启动或通信失败';
+   // A failed spawn emits error/close without exit and has no PID. A running
+   // child's IPC error does not prove death; retain its owner until exit/close.
+   if(!child.pid)ended('LLBot子进程启动失败，QQ会话保留，等待局部恢复');
+  });
+  child.on('message',value=>{if(epoch===currentEpoch&&worker===child&&!closing&&value?.type==='llbot-memory'&&value.pid===child.pid&&[value.rss,value.heapUsed].every(Number.isFinite)){workerMemory=value;lastMemory=clock()}});
+  child.once('exit',()=>ended('LLBot子进程退出，QQ会话保留，等待局部恢复'));
+  child.once('close',()=>ended('LLBot子进程已关闭，QQ会话保留，等待局部恢复'));
  }
  function recycleWorker(reason){
   if(!worker||relay.active||closing)return false;

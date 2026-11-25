@@ -13,6 +13,7 @@ export class LLBotRelay {
   socket.on('close',()=>{if(this.upstream===socket)this.disconnectUpstream()});
   socket.on('message',raw=>{
    if(this.upstream!==socket||this.closed)return;let data;try{data=JSON.parse(raw.toString())}catch{return}
+   if(!data||typeof data!=='object'||Array.isArray(data))return;
    if(data.post_type!=='meta_event')this.lastActivity=Date.now();
    if(Object.hasOwn(data,'echo')){
     const pending=this.pending.get(data.echo);if(!pending||pending.upstream!==socket)return;
@@ -38,6 +39,7 @@ export class LLBotRelay {
   socket.on('open',()=>{if(this.downstream!==socket||this.closed){socket.close();return}for(const event of this.initialEvents||[])socket.send(JSON.stringify(event));this.initialEvents=undefined});
   socket.on('message',raw=>{
    if(this.downstream!==socket||this.closed)return;let data;try{data=JSON.parse(raw.toString())}catch{return}
+   if(!data||typeof data!=='object'||Array.isArray(data))return;
    if(typeof data.action!=='string')return;
    void this.dispatch(data.action,data.params??{},data.action==='fetch_custom_face_detail'?600000:60000).then(result=>{
     if(this.downstream===socket&&socket.readyState===this.Socket.OPEN)socket.send(JSON.stringify({...result,echo:data.echo}));

@@ -91,3 +91,31 @@ test('the host installer owns code mutation, rollback is exact and preserves thi
  assert.equal(JSON.parse(await fs.readFile(path.join(f.root,'dist-server/build.json'))).gitCommit,f.current.gitCommit);
  await assert.rejects(fs.access(path.join(f.root,'adapters/astrbot/memory_review.py')),{code:'ENOENT'});
 });
+
+test('a protocol runner change cannot be published as an AI-only runtime application',async t=>{
+ const f=await fixture(t),name='adapters/protocol/llbot/runner.mjs';
+ f.current.runtimeScripts={[name]:sha('old runner')};f.next.runtimeScripts={[name]:sha('new runner')};
+ await f.write(path.join(f.root,name),'old runner');await f.write(path.join(f.root,'dist-server/build.json'),f.current);
+ f.spec.oldManifestSha256=sha(JSON.stringify(f.current));await f.add(name,'new runner');await f.add('dist-server/build.json',f.next);await f.save();
+ await assert.rejects(checkRuntimeRelease(f.profile,f.stage),/different component release/);
+ // Keeping the old manifest hash must not bypass the component boundary.
+ f.next.runtimeScripts={[name]:sha('old runner')};
+ await f.add('dist-server/build.json',f.next);await f.save();
+ await assert.rejects(checkRuntimeRelease(f.profile,f.stage),/release inventory/);
+});
+
+test('a staged file changed after preflight is rejected before any production mutation',async t=>{
+ const f=await fixture(t),name='adapters/astrbot/memory_review.py',files=releaseFiles(await checkRuntimeRelease(f.profile,f.stage),f.stage);
+ await f.write(path.join(f.stage,'staged',name),'tampered after plan');
+ await assert.rejects(files.install(),/Staged hash mismatch/);
+ await assert.rejects(fs.access(path.join(f.root,name)),{code:'ENOENT'});
+ assert.equal(JSON.parse(await fs.readFile(path.join(f.root,'dist-server/build.json'))).gitCommit,f.current.gitCommit);
+});
+
+test('a corrupt rollback backup cannot overwrite production or report restored code',async t=>{
+ const f=await fixture(t),files=releaseFiles(await checkRuntimeRelease(f.profile,f.stage),f.stage);
+ await files.install();
+ await f.write(path.join(f.stage,'before-code/dist-server/build.json'),{...f.current,corrupt:true});
+ await assert.rejects(files.rollback(),/Rollback backup changed/);
+ assert.equal(JSON.parse(await fs.readFile(path.join(f.root,'dist-server/build.json'))).gitCommit,f.next.gitCommit);
+});

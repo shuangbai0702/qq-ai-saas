@@ -44,12 +44,19 @@ export function releaseFiles({root,spec,expected},dir){
  const backup=path.join(dir,'before-code'),installed=[];
  return{
   async install(){
+   // Snapshot only this small release delta. Verification and installation use
+   // the same bytes; a staged file cannot change across an awaited code write.
+   const staged=new Map();
+   for(const [name,digest]of Object.entries(spec.files)){
+    const raw=await fs.readFile(target(path.join(dir,'staged'),name));
+    assert.equal(hash(raw),digest,'Staged hash mismatch: '+name);staged.set(name,raw);
+   }
    for(const [name,digest]of Object.entries(expected))assert.equal(await fingerprint(target(root,name)),digest,'Activation CAS changed: '+name);
    await fs.mkdir(backup);
    for(const [name,digest]of Object.entries(expected))if(digest!==null)await atomic(target(backup,name),await fs.readFile(target(root,name)));
    for(const [name,digest]of Object.entries(expected))assert.equal(await fingerprint(target(root,name)),digest,'Activation CAS changed: '+name);
    for(const name of [...Object.keys(spec.files).filter(n=>n!=='dist-server/build.json'),'dist-server/build.json']){
-    installed.push(name);await atomic(target(root,name),await fs.readFile(target(path.join(dir,'staged'),name)));
+    installed.push(name);await atomic(target(root,name),staged.get(name));
    }
    for(const name of spec.retired||[]){installed.push(name);await fs.unlink(target(root,name))}
    await verifyProduction(root);await verifyFiles(root,spec.verifyFiles);
@@ -60,7 +67,10 @@ export function releaseFiles({root,spec,expected},dir){
     if(current===expected[name])continue;
     assert.ok(current===spec.files[name]||current===null,'Concurrent file change during rollback: '+name);
     if(expected[name]===null)await fs.rm(file,{force:true});
-    else await atomic(file,await fs.readFile(target(backup,name)));
+    else{
+     const raw=await fs.readFile(target(backup,name));assert.equal(hash(raw),expected[name],'Rollback backup changed: '+name);
+     await atomic(file,raw);
+    }
    }
    await verifyProduction(root);
   }
@@ -101,6 +111,15 @@ export async function checkRuntimeRelease(profile,dir){
   for(const name of new Set([...Object.keys(current[field]||{}),...Object.keys(next[field]||{})]))
    assert.ok(current[field]?.[name]===next[field]?.[name]||allowed.has(name),'Requires a different component release: '+name);
  }
+ const deployScripts=new Set(['scripts/runtime-release.mjs','scripts/worker-update.mjs','scripts/prepare-ai-stop.mjs','scripts/verify-production.mjs']);
+ for(const name of new Set([...Object.keys(current.runtimeScripts||{}),...Object.keys(next.runtimeScripts||{})]))
+  assert.ok(current.runtimeScripts?.[name]===next.runtimeScripts?.[name]||deployScripts.has(name),'Requires a different component release: '+name);
+ const entries=manifest=>Object.assign({},...['sourceHashes','pythonSources','runtimeScripts','contracts','migrations','artifactHashes'].map(field=>manifest[field]));
+ const previous=entries(current),inventory=entries(next);
+ for(const [name,digest]of Object.entries(spec.files))if(Object.hasOwn(previous,name)||Object.hasOwn(inventory,name))
+  assert.equal(inventory[name],digest,'Inconsistent release inventory: '+name);
+ for(const name of spec.retired||[])
+  assert.ok(!Object.hasOwn(inventory,name)&&!Object.hasOwn(spec.verifyFiles,name),'Retired file remains in release inventory: '+name);
  // Reusing dependencies is justified by semantic lock equality, not package name.
  if(spec.files['package-lock.json'])assert.deepEqual(await json(path.join(root,'package-lock.json')),await json(path.join(dir,'staged/package-lock.json')),'Dependency installation required');
  if(spec.files['package.json']){

@@ -141,6 +141,35 @@ test('LLBot memory policy protects active work, reclaims only JS, resets for rep
  assert.equal(resourceDecision(state,{...sample,pid:2,rssBytes:1,heapUsed:1}).decision,'healthy');assert.equal(state.highSince,undefined);
 });
 
+test('malformed JSON frames cannot crash the relay or dispatch an action',async t=>{
+ class Socket extends EventEmitter{static OPEN=1;readyState=1;send(raw){this.sent.push(JSON.parse(raw))}sent=[];close(){this.readyState=3}}
+ const up=new Socket(),relay=new LLBotRelay({expectedUin:'90000',url:'ws://127.0.0.1/unused',token:'fixture',Socket});t.after(()=>relay.close());
+ up.send=raw=>{const request=JSON.parse(raw);queueMicrotask(()=>up.emit('message',JSON.stringify({status:'ok',retcode:0,data:{user_id:90000},echo:request.echo})))};
+ relay.attach(up,'90000');await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(relay.online,true);const downstream=relay.downstream;
+ for(const raw of ['null','[]','false','123','"string"','{']){
+  assert.doesNotThrow(()=>up.emit('message',raw));assert.doesNotThrow(()=>downstream.emit('message',raw));
+ }
+ assert.equal(relay.pending.size,0);assert.equal(relay.online,true);
+});
+
+test('worker spawn failure without exit recovers only that child and ignores its late events',async t=>{
+ const f=await fixture(),children=[];let at=Date.now();
+ const spawnChild=()=>{const child=new EventEmitter();Object.assign(child,{pid:700+children.length,connected:true,kill(){child.emit('exit',0)},send(){}});children.push(child);return child};
+ const fetcher=async()=>new Response(JSON.stringify({success:true,data:{online:false}}));
+ const run=await startRuntime(f.file,{spawnChild,clock:()=>at,fetcher});t.after(()=>run.close());
+ const health=()=>fetch(`http://127.0.0.1:${f.m.management.port}/api/health`,{headers:{Authorization:'Bearer '+f.m.management.token}}).then(r=>r.json());
+ delete children[1].pid;children[1].emit('error',Object.assign(Error('spawn failed'),{code:'EACCES'}));
+ assert.equal((await health()).components.llbot.alive,false);
+ at+=3001;await run.sample();assert.equal(children.length,3);const replacement=children[2];
+ children[1].emit('exit',1);children[1].emit('message',{type:'llbot-memory',pid:children[1].pid,rss:100,heapUsed:100});
+ assert.equal((await health()).components.llbot.pid,replacement.pid);
+ assert.equal((await health()).resources.worker,null,'a dead child cannot publish stale memory');
+ assert.equal(children[0].listenerCount('exit'),1,'PMHQ and QQ are retained');
+ replacement.emit('error',Object.assign(Error('IPC closed'),{code:'ERR_IPC_CHANNEL_CLOSED'}));
+ assert.equal((await health()).components.llbot.pid,replacement.pid,'IPC failure alone cannot release a live child owner');
+});
+
 test('runtime HTTP auth, profile/native proof, worker-only restart and PMHQ failure are isolated without executing QQ',async t=>{
  const f=await fixture(),children=[];let at=Date.now(),online=true,reachable=true;
  const spawnChild=(exe,args,options)=>{const child=new EventEmitter();Object.assign(child,{pid:500+children.length,connected:true,kill(){child.emit('exit',0)},send(){}});children.push({child,exe,args,options});return child};
