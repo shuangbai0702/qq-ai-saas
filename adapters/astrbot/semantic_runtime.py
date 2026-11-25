@@ -108,7 +108,15 @@ def finish_semantic_batches(st,cfg,scope):
             if not permit or permit.get('id')!=checkpoint or not permit.get('semanticBatch'):
                 if permit:st.reflection.settle_context_reconstruction(permit,False)
                 _issue(st,scope,checkpoint,'checkpoint_not_reservable');result['pending']+=1;continue
-            if not journal.retire_semantic_batch(permit,st.reflection,state,retirement=st.reflection.reconstruction_stamp(scope)):
+            from readonly_journal import ContextCapacityExceeded
+            try:
+                replaced=journal.retire_semantic_batch(permit,st.reflection,state,retirement=st.reflection.reconstruction_stamp(scope))
+            except ContextCapacityExceeded as capacity_error:
+                from summary_fallback import reconstruction
+                smaller=reconstruction(state)
+                replaced=journal.retire_semantic_batch(permit,st.reflection,smaller,retirement=st.reflection.reconstruction_stamp(scope))
+                with st.db:st.reflection.checkpoint_issue(scope,checkpoint,'compression_degradation',{'mode':'bounded_cognitive_projection','cause':'reconstruction_capacity_exceeded','originalCapacity':capacity_error.capacity,'persistentProductsDeleted':False,'externalOperationsReplayed':False})
+            if not replaced:
                 st.reflection.settle_context_reconstruction(permit,False)
                 _issue(st,scope,checkpoint,'journal_replace_refused');result['pending']+=1;continue
             with st.db:semantic_batch.purge(st.db,checkpoint)

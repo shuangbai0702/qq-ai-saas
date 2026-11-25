@@ -16,6 +16,20 @@ ALIASES={'生日':('生日','生辰','出生日期'), '称呼':('名字','称呼
 from memory_scope import initialize_controls
 from memory_scope import person_filter,fact_rows,fact_item,shared_person,blocked_facts,record_correction,release_value,value_hash
 
+def retire_legacy_results(db,cutoff):
+    """Remove obsolete research-task copies, never current person cognition.
+
+    These origins are excluded by every fact reader and have no writer in the
+    current architecture. Their audit/rollback copies are not a memory product.
+    The caller owns a committed semantic retirement transaction.
+    """
+    rows=db.execute("SELECT f.scope,f.subject,f.name FROM facts f JOIN fact_metadata m ON m.scope=f.scope AND m.subject=f.subject AND m.name=f.name WHERE f.scope='self' AND f.subject='0' AND m.origin='autonomous_result' AND f.updated<=?",(cutoff,)).fetchall()
+    for key in rows:
+        db.execute('DELETE FROM fact_metadata WHERE scope=? AND subject=? AND name=?',key)
+        db.execute('DELETE FROM facts WHERE scope=? AND subject=? AND name=?',key)
+    return len(rows)
+
+
 def initialize_metadata(db):
     db.execute('CREATE TABLE IF NOT EXISTS fact_metadata(scope TEXT,subject TEXT,name TEXT,kind TEXT,origin TEXT,importance REAL,last_recalled REAL DEFAULT 0,recalls INTEGER DEFAULT 0,PRIMARY KEY(scope,subject,name))')
 

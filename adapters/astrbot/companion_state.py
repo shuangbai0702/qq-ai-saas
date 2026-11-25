@@ -33,6 +33,32 @@ def bootstrap_members(db):
 def enabled(cfg):return (cfg.get('behavior') or {}).get('selfDevelopment',True)
 
 
+def retire_persona_seeds(db,cutoff):
+    """Persona owns these settings; a learned-interest duplicate has no owner."""
+    return db.execute("DELETE FROM companion_interests WHERE scope='*' AND source='persona' AND updated<=?",(cutoff,)).rowcount
+
+
+def retire_sources(db,identities):
+    """Keep derived preference/intent, without a retired raw event locator."""
+    from context_protocol import scoped_event_hash,model_json
+    retired={(scope,str(event)):'semantic:'+scoped_event_hash(scope,str(event)) for scope,event in identities}
+    for scope,topic,evidence in db.execute('SELECT scope,topic,evidence FROM companion_interests').fetchall():
+        replacement=retired.get((scope,evidence))
+        if replacement:db.execute('UPDATE companion_interests SET evidence=? WHERE scope=? AND topic=?',(replacement,scope,topic))
+    for scope,subject,topic,evidence in db.execute('SELECT scope,subject,topic,evidence FROM companion_motives').fetchall():
+        value,event=motive_evidence(evidence);changed=False
+        for key in ('event','acceptanceEvent'):
+            replacement=retired.get((scope,str(value.get(key,''))))
+            if replacement:value[key]=replacement;changed=True
+        if changed:db.execute('UPDATE companion_motives SET evidence=? WHERE scope=? AND subject=? AND topic=?',(model_json(value),scope,subject,topic))
+
+
+def retire_expired_topics(db,cutoff):
+    # Motives are conversation topics, never the independent agreement/Work
+    # ledger. Expired open topics must not remain an ever-growing pseudo-task.
+    return db.execute('DELETE FROM companion_motives WHERE expires<=?',(cutoff,)).rowcount
+
+
 def motive_record(event,author='unknown',acceptance='none',acceptance_event=''):
     """Author/acceptance accounting inside the existing evidence column (D6.4).
 
@@ -64,6 +90,7 @@ def note_interest(db,scope,topic,now,evidence,source):
     if row and {'persona':3,'bot_expression':2,'conversation_heat':1}.get(row[4],0)>{'persona':3,'bot_expression':2,'conversation_heat':1}.get(source,0):evidence,source=row[3],row[4]
     db.execute('INSERT OR REPLACE INTO companion_interests VALUES(?,?,?,?,?,?,?)',(scope,topic,weight,(row[1] if row else 0)+1,now,evidence[:120],source))
     db.execute('DELETE FROM companion_interests WHERE rowid NOT IN (SELECT rowid FROM companion_interests ORDER BY updated DESC LIMIT 512)')
+    return True
 
 
 def reflect_interest(db,topic,operation,reason,action,evidence,now):
@@ -227,20 +254,20 @@ def _summary_target_current(db,kind,target,before):
     return (version(current) if current else None)==(offered["version"] if offered else None)
 
 
-def apply_summary_evidence(db,scope,data,evidence,before,targeted,now):
+def apply_summary_evidence(db,scope,data,evidence,before,targeted,now,audit=None):
     """Own evidenced preferences/topics; explicit product operations win."""
     def items(name):
         value=data.get(name,[])
         return value if isinstance(value,list) else []
-    saved=0
+    saved=0;changes={'interests':0,'motives':0}
     for item in items('interests'):
         if isinstance(item,dict) and ('interest',json.dumps({'scope':scope,'topic':item.get('topic')},sort_keys=True)) in targeted:continue
         source=evidence(item,'bot');topic=item.get('topic') if isinstance(item,dict) else None
         if source and isinstance(topic,str) and 2<=len(topic)<=50 and topic in item['quote'] and not re.search(r'复述|照着说|重复这句|引用|扮演|假装|翻译',source.get('user','')) and not db.execute("SELECT 1 FROM companion_signals WHERE scope=? AND event=? AND kind=?",(scope,source['event'],'interest:'+topic)).fetchone():
             target={'scope':scope,'topic':topic}
             if not _summary_target_current(db,'interest',target,before):continue
-            note_interest(db,scope,topic,now,source['event'],'bot_expression')
-            db.execute('INSERT OR IGNORE INTO companion_signals VALUES(?,?,?,?,?)',(scope,source['event'],'interest:'+topic,item['quote'][:200],now));saved+=1
+            if note_interest(db,scope,topic,now,source['event'],'bot_expression'):
+                db.execute('INSERT OR IGNORE INTO companion_signals VALUES(?,?,?,?,?)',(scope,source['event'],'interest:'+topic,item['quote'][:200],now));saved+=1;changes['interests']+=1
     for item in items('motives'):
         if isinstance(item,dict):
             source=evidence(item,'bot') or evidence(item,'user')
@@ -257,10 +284,17 @@ def apply_summary_evidence(db,scope,data,evidence,before,targeted,now):
             bot_evidence=evidence(item,'bot')
             origin=bot_evidence or source
             author='bot_proposal' if bot_evidence else 'human_request'
-            db.execute('INSERT OR IGNORE INTO companion_motives VALUES(?,?,?,?,?,?,?)',(scope,person,topic,now+1800,now+7*86400,'open',
-                motive_record(origin['event'],author)))
+            changed=db.execute('INSERT OR IGNORE INTO companion_motives VALUES(?,?,?,?,?,?,?)',(scope,person,topic,now+1800,now+7*86400,'open',
+                motive_record(origin['event'],author))).rowcount
+            changes['motives']+=changed;saved+=changed
         elif status in ('resolved','abandoned'):
-            db.execute("UPDATE companion_motives SET status=? WHERE scope=? AND subject=? AND topic=? AND status IN ('open','contacted')",(status,scope,person,topic))
+            changed=db.execute("UPDATE companion_motives SET status=? WHERE scope=? AND subject=? AND topic=? AND status IN ('open','contacted')",(status,scope,person,topic)).rowcount
+            changes['motives']+=changed;saved+=changed
+    if audit:
+        for category,changed in changes.items():
+            if category not in data:continue
+            audit.product(category,'accepted' if changed else 'rejected','applied' if changed else 'evidence_rejected_or_no_change',changed=bool(changed))
+            audit.counts[category].update(proposed=len(items(category)),accepted=changed,rejected=max(0,len(items(category))-changed))
     return saved
 
 

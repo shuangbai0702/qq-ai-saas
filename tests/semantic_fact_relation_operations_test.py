@@ -313,7 +313,7 @@ class SemanticReflectionOperations(unittest.IsolatedAsyncioTestCase):
                         self.assertIn('性格表现、表达习惯',kw['system_prompt'])
                         self.assertIn('不是每次只追加',kw['system_prompt'])
                     if close:store.reflection.close();await asyncio.sleep(0)
-                    if provider_failure:raise RuntimeError('test provider unavailable')
+                    if provider_failure:raise OSError('test transport unavailable')
                     if malformed:return NS(completion_text='{"summary": broken JSON')
                     if edit:
                         from data_admin import run
@@ -335,6 +335,16 @@ class SemanticReflectionOperations(unittest.IsolatedAsyncioTestCase):
                     else:await reflection.task
                 self.assertEqual(len(calls),2 if malformed or provider_failure else 1)
                 audit_row=db.execute('SELECT checkpoint_id,summary_id,state,counts FROM memory_operation_audits').fetchone()
+                if malformed or provider_failure:
+                    self.assertEqual(audit_row[2],'rolled_back')
+                    degraded=db.execute("SELECT counts FROM memory_operation_audits WHERE reason='degraded_checkpoint' AND state='committed'").fetchone()
+                    self.assertEqual(json.loads(degraded[0])['degradation']['rounds'],30)
+                    self.assertEqual(fact_rows(db,SCOPE,PERSON)[0][1],'红茶')
+                    self.assertEqual(db.execute('SELECT count(*) FROM relations WHERE scope=?',(SCOPE,)).fetchone()[0],0)
+                    self.assertEqual(db.execute('SELECT state FROM memory_semantic_batches').fetchone()[0],'retired')
+                    self.assertEqual(db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],0)
+                    self.assertEqual(sum(r['retired'] for r in callbacks),1)
+                    return
                 if fail or forget or malformed or provider_failure or close or edit:
                     self.assertIsNone(audit_row[0]);self.assertIsNone(audit_row[1])
                     self.assertEqual(audit_row[2],'discarded' if forget else 'rolled_back')

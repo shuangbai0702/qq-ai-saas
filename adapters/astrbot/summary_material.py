@@ -219,7 +219,8 @@ def remember(db,scope,materials):
             # An observed silent/background message needs retirement evidence
             # too; storing its material does NOT mint a completed round.
             row=db.execute('SELECT subject FROM memory_pending WHERE scope=? AND event=?',(scope,item.get('event'))).fetchone()
-        if not row or row[0]!=item.get('subject'):continue
+        from activation_rounds import material_subject
+        if not row or material_subject(db,scope,item['event'],row[0])!=item.get('subject'):continue
         previous=db.execute('SELECT material FROM memory_round_material WHERE scope=? AND event=?',(scope,item['event'])).fetchone()
         if previous:
             try:prior=json.loads(previous[0])

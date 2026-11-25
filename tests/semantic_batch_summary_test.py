@@ -82,13 +82,34 @@ class SemanticSummary(unittest.IsolatedAsyncioTestCase):
   self.assertEqual({r['name'] for r in state['facts']},{'字段'+str(i) for i in range(39)})
   counts=json.loads(self.db.execute('SELECT counts FROM memory_operation_audits').fetchone()[0])
   self.assertEqual(counts['facts']['input_coverage'],{'eligible':39,'offered':39,'omitted':0,'boundary':'current_snapshot_authority'})
- async def test_failed_truncated_and_stale_do_not_commit_or_delete(self):
-  for mode in ('failed','truncated','stale','oversized'):
-   with self.subTest(mode=mode):
-    self.r.binding=None
-    if not self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0]:self.record(30,image=True)
-    self.mode=mode;self.live=True;self.db.execute('DELETE FROM memory_reflection_retry');self.db.commit();await self.run_summary()
-    self.assertIsNone(self.checkpoint());self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],30);self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],30)
+ async def test_stale_configuration_never_commits_even_a_degraded_product(self):
+  self.record(30,image=True);self.mode='stale';await self.run_summary()
+  self.assertIsNone(self.checkpoint());self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],30)
+ async def assert_degraded(self,mode):
+  self.record(30,image=True);self.mode=mode;await self.run_summary()
+  self.assertEqual(self.checkpoint()[1:],(30,'available',None))
+  self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],30,'No retirement before Journal replacement')
+  self.assertEqual(self.db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0],30)
+  audit=self.db.execute("SELECT counts FROM memory_operation_audits WHERE reason='degraded_checkpoint' AND state='committed'").fetchone()
+  loss=json.loads(audit[0])['degradation'];self.assertEqual(loss['rounds'],30);self.assertGreater(loss['images_not_interpreted'],0)
+  self.assertIsNotNone(self.db.execute("SELECT 1 FROM memory_checkpoint_issues WHERE kind='compression_degradation' AND status='open'").fetchone())
+  self.assertFalse(self.db.execute('SELECT 1 FROM memory_reflection_retry').fetchone())
+ async def test_failed_provider_commits_honest_lossy_checkpoint(self):await self.assert_degraded('failed')
+ async def test_truncated_output_commits_honest_lossy_checkpoint(self):await self.assert_degraded('truncated')
+ async def test_oversized_output_commits_honest_lossy_checkpoint(self):await self.assert_degraded('oversized')
+ async def test_total_request_deadline_falls_back_and_releases_writer(self):
+  from unittest.mock import patch
+  entered=asyncio.Event();released=asyncio.Event()
+  async def hung(**kw):
+   entered.set()
+   try:await asyncio.Event().wait()
+   finally:released.set()
+  self.record();self.chat=hung
+  with patch('summary_fallback.NORMAL_TIMEOUT_SECONDS',.05):await asyncio.wait_for(self.run_summary(),2)
+  self.assertTrue(entered.is_set());self.assertTrue(released.is_set())
+  self.assertEqual(self.checkpoint()[1],30)
+  self.assertEqual(self.metrics['summaryDegradedCheckpoints'],1)
+  self.assertIsNone(self.store.model_writer.owner);self.assertFalse(self.store.compression_active)
  async def test_unrecoverable_material_is_declared_and_does_not_block_legal_summary(self):
   self.record();self.db.execute("DELETE FROM memory_round_material WHERE event='4'");self.db.commit();await self.run_summary()
   self.assertEqual(self.checkpoint()[1:],(30,'available',None));self.assertEqual(len(self.calls),1)

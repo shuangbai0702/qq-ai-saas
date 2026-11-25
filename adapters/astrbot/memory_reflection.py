@@ -871,11 +871,11 @@ class Reflection:
     def _select_due_job(self,now,summary_rounds,_manual):
         scope=None;job=None;rows=[];big_rows=[];summary_from=None;merge_scope=None
         retry=self.db.execute("SELECT next_at FROM memory_reflection_retry WHERE scope='self'").fetchone()
-        if (_manual is None or not _manual['legacy_due']) and (not retry or retry[0]<=now or _manual is not None):
+        if (_manual is None or not _manual['legacy_due']) and (not retry or retry[0]<=now or retry[0]>now+60 or _manual is not None):
             big_rows,merge_scope=self.merge_group(_manual['scope'] if _manual is not None else 'bot_shared' if getattr(self,'shared_context',False) else None)
             if big_rows:scope='self';job='big'
         if not scope:
-            candidates=self.db.execute("SELECT r.scope FROM memory_rounds r LEFT JOIN memory_reflection_retry q ON r.scope=q.scope WHERE coalesce(q.next_at,0)<=? AND (?=0 OR r.scope='bot_shared') GROUP BY r.scope ORDER BY min(r.id)",(now,int(bool(getattr(self,'shared_context',False))))).fetchall()
+            candidates=self.db.execute("SELECT r.scope FROM memory_rounds r LEFT JOIN memory_reflection_retry q ON r.scope=q.scope WHERE (coalesce(q.next_at,0)<=? OR q.next_at>?) AND (?=0 OR r.scope='bot_shared') GROUP BY r.scope ORDER BY min(r.id)",(now,now+60,int(bool(getattr(self,'shared_context',False))))).fetchall()
             if _manual is not None:candidates=[(_manual['scope'],)]
             for (candidate,) in candidates:
                 if _manual is not None and (candidate!=_manual['scope'] or _manual['summary_done']):continue
@@ -926,7 +926,11 @@ class Reflection:
         for person,event,question,answer,at in pending:
             merged.setdefault(event,{'sender_id':person,'event':event,'user':question,'bot':answer,'at':at,'source':message_provenance.get(self.db,scope,event)})
         payload=sorted(merged.values(),key=lambda r:r['at'])
-        input_authors=summary_author_witnesses(scope,payload)
+        # Service Works address a recipient, but their input is spoken by the
+        # bot. Classify with the trusted Work owner before human attribution.
+        from activation_rounds import split_material,metadata as activation_metadata
+        input_dialogue,_=split_material(self.db,scope,payload)
+        input_authors=summary_author_witnesses(scope,input_dialogue)
         previous_products=[];previous_dependency=None;legacy_product_ids=[];discarded=[];discard_stamp=None
         if scope!='bot_shared':
             from semantic_collection import collect_local,unavailable_stamp
@@ -1084,12 +1088,13 @@ class Reflection:
         live_rows=self.db.execute('SELECT id,subject,event,question,answer,at FROM memory_rounds WHERE scope=? AND id>? AND id<=? ORDER BY id',(scope,summary_from,rows[-1][0])).fetchall()
         if progress_now[0]!=summary_from or live_rows!=rows:raise RuntimeError('summary_checkpoint_stale')
         core_products=[(p['id'],p['text'],'[]',0,p['scope'],p['level']) for p in previous_products]
-        metrics['coreNoteUpdates']=metrics.get('coreNoteUpdates',0)+self.update_core_note(data,core_before,payload,core_products,scope,audit=operation_audit,author_witnesses=author_payload)
+        degraded=bool(ctx.get('degraded'))
+        if not degraded:metrics['coreNoteUpdates']=metrics.get('coreNoteUpdates',0)+self.update_core_note(data,core_before,payload,core_products,scope,audit=operation_audit,author_witnesses=author_payload)
         self.db.execute('INSERT OR IGNORE INTO memory_reflection_progress(scope) VALUES(?)',(scope,))
-        metrics['semanticMemoryUpdates']=metrics.get('semanticMemoryUpdates',0)+apply_semantic_memory(self.db,self.memory,scope,cfg,author_payload,data,before,audit=operation_audit)
-        if insight_enabled:
+        if not degraded:metrics['semanticMemoryUpdates']=metrics.get('semanticMemoryUpdates',0)+apply_semantic_memory(self.db,self.memory,scope,cfg,author_payload,data,before,audit=operation_audit)
+        if insight_enabled and not degraded:
             retried={r[2] for r in rows if r[0]<=summary_from}
-            metrics['insightsSaved']=metrics.get('insightsSaved',0)+apply(self.db,self.memory,scope,cfg,[r for r in payload if r['event'] not in retried],data,before)
+            metrics['insightsSaved']=metrics.get('insightsSaved',0)+apply(self.db,self.memory,scope,cfg,[r for r in payload if r['event'] not in retried],data,before,audit=operation_audit)
         verify(self.db,scope,materials)
         if learning_batches:
             from social import accept_summary_learning
@@ -1105,7 +1110,7 @@ class Reflection:
             else:
                 if 'learning' in data:operation_audit.product('learning','accepted','applied',changed=bool(learned))
             metrics['patternsLearned']=metrics.get('patternsLearned',0)+learned
-        batch=derive_claims(scope,payload,materials,batch_corrections(self.db,scope,[r['event'] for r in payload]),data,strict=True)
+        batch=[] if degraded else derive_claims(scope,payload,materials,batch_corrections(self.db,scope,[r['event'] for r in payload]),data,strict=True)
         claims=semantic_claims_product(batch,audit=operation_audit)
         settle_commitments(self.db,scope,claims,prior_claims)
         metrics['agreementsPromoted']=metrics.get('agreementsPromoted',0)+agreement_state.promote_from_claims(self.db,scope,claims)
@@ -1150,6 +1155,48 @@ class Reflection:
         metrics['semanticMediaUntracked']=media_release.get('untracked',0)
         metrics['summariesSaved']=metrics.get('summariesSaved',0)+1
         return identifier,checkpoint_id,pending_merge
+
+    async def _degraded_checkpoint(self,scope,job,rows,big_rows,summary_from,summary_rounds,epoch,cfg,merge_scope,merge_dependency,core_before,metrics,error,_manual,is_current,prepared=None):
+        """A failed semantic request cannot veto the due thirty-round cut."""
+        from summary_fallback import context,product
+        from memory_operation_audit import Audit
+        data=product(big_rows if job=='big' else rows,big=job=='big')
+        audit=Audit(merge_scope or scope,epoch,job,data,decode_status='degraded_local',through_round_id=rows[-1][0] if rows else None)
+        detail={'mode':'lossy_local','cause_type':type(error).__name__,
+                'cause':str(error)[:160] if str(error).startswith(('semantic_','summary_')) else type(error).__name__,
+                'rounds':len(rows),'source_summaries':len(big_rows),
+                'loss':'partial_prior_summary_detail' if job=='big' else 'new_semantic_learning_and_visual_detail',
+                'external_operations_replayed':False}
+        audit.counts['degradation']=detail
+        ctx=({**prepared,'payload':[],'author_payload':[],'before':None,
+              'learning_batches':[],'prior_claims':[],'previous_products':[],
+              'legacy_product_ids':[],'degraded':True} if prepared else context(self.db,scope,rows)) if job!='big' else None
+        detail['material_members']=len(ctx['materials'])+len(ctx['discarded']) if ctx else 0
+        detail['images_not_interpreted']=len({image for item in [*ctx['materials'].values(),*ctx['discarded']] for image in item.get('images',[])}) if ctx else 0
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            if self.closed or not is_current() or self.epoch()!=epoch:return False
+            if self.core_note()!=core_before:raise RuntimeError('semantic_core_note_snapshot_changed')
+            if job=='big':
+                identifier=self._commit_big_merge(big_rows,merge_scope,merge_dependency,data,core_before,[],data['summary'],audit,[],metrics)
+                checkpoint_id=None;pending_merge=False
+            else:
+                identifier,checkpoint_id,pending_merge=self._commit_summary_batch(scope,rows,summary_from,summary_rounds,epoch,cfg,False,ctx,data,core_before,data['summary'],audit,metrics,_manual)
+            audit.persist(self.db,'committed','degraded_checkpoint',checkpoint_id=checkpoint_id,summary_id=identifier)
+            self.checkpoint_issue(merge_scope or scope,checkpoint_id or 0,'compression_degradation',detail)
+            self.checkpoint_issue(merge_scope or scope,0,'failure_'+job,{},resolved=True)
+            self.db.execute('DELETE FROM memory_reflection_retry WHERE scope=?',(scope,))
+        metrics['summaryDegradedCheckpoints']=metrics.get('summaryDegradedCheckpoints',0)+1
+        if callable(self.checkpoint_callback):
+            outcome=self.checkpoint_callback(merge_scope or scope)
+            if inspect.isawaitable(outcome):await outcome
+        if not self.closed and is_current() and self.epoch()==epoch:
+            # Pending merges are part of the same cut, under the same writer.
+            if pending_merge:
+                continuation=self.retry(_inline=True)
+                if continuation:await continuation
+            else:asyncio.get_running_loop().call_soon(self.retry)
+        return True
 
     def retry(self,_inline=False,_manual=None,_retirement_done=False):
         if not self.binding:return False
@@ -1210,14 +1257,14 @@ class Reflection:
         metrics['memoryHealth']={scope:self.health_snapshot(scope,summary_rounds)}
         attempt_row=self.db.execute('SELECT attempts FROM memory_reflection_retry WHERE scope=?',(scope,)).fetchone()
         attempts=(attempt_row[0] if attempt_row else 0)+1
-        self.db.execute('INSERT INTO memory_reflection_retry(scope,attempts,next_at) VALUES(?,?,?) ON CONFLICT(scope) DO UPDATE SET attempts=excluded.attempts,next_at=excluded.next_at',(scope,attempts,now+min(1800,60*2**min(5,attempts-1))));self.db.commit()
+        self.db.execute('INSERT INTO memory_reflection_retry(scope,attempts,next_at) VALUES(?,?,?) ON CONFLICT(scope) DO UPDATE SET attempts=excluded.attempts,next_at=excluded.next_at',(scope,attempts,now+60));self.db.commit()
         epoch=self.epoch();core_before=self.core_note()
         merge_dependency=self.context_dependency([r[0] for r in big_rows],merge_scope) if job=='big' else None
         async def run():
             self._active_summary={'scope':merge_scope or scope,'job':job,'through_round_id':rows[-1][0] if rows else None}
             with auxiliary_scope(provider,'big_merge' if job=='big' else 'small_summary',scope=merge_scope if job=='big' else scope):
                 token=event_var.set(None)
-                operation_audit=None;audit_committed=False
+                operation_audit=None;audit_committed=False;ctx=None
                 try:
                     if self.closed or not is_current() or self.epoch()!=epoch:return {'ok':False,'reason':'stale_configuration'}
                     if not callable(getattr(provider,'text_chat_stream',None)):
@@ -1270,22 +1317,24 @@ class Reflection:
                     request=dict(prompt=memory_json(prompt),system_prompt=system,contexts=[],func_tool=None,request_max_retries=0,**({'image_urls':ctx['summary_images']} if ctx['summary_images'] else {}))
                     from summary_response import SummaryResponseSlot,summary_request_digest,summary_model_output
                     digest=summary_request_digest(request,provider,epoch,job,{'scope':merge_scope or scope,'throughRound':rows[-1][0] if rows else None,'sourceDependency':merge_dependency if job=='big' else ctx['previous_dependency'],'materialsSha':hashlib.sha256(model_json(ctx['materials']).encode()).hexdigest(),'discardStamp':ctx['discard_stamp'],'learningEpoch':ctx['learning_epoch']})
-                    reviewed=None;review_family=None
-                    if before is not None:
-                        request,digest,reviewed,review_family=await self._run_memory_review_pages(provider,request,prompt,system,ctx['sem_system'],PRODUCT_MEMORY_SYSTEM,before,scope,attempts,epoch,job,digest,live,metrics,starting,lambda:operation_audit)
-                        if request is None:return {'ok':False,'reason':'stale_configuration'}
-                    slot=SummaryResponseSlot(self.db,scope,attempts,epoch,digest,review_family,'final' if review_family else None)
-                    def request_starting():
-                        slot.dispatch();starting()
-                    result=await summary_model_output(provider,request,live,metrics,1500 if job=='big' else 800,decoded,request_starting,slot.save,slot.recover(),slot.record_validation)
-                    if result is None:return {'ok':False,'reason':'stale_configuration'}
-                    response,data,text=result
-                    if reviewed is not None:
-                        from memory_review import combine
-                        data={**data,**combine([reviewed,data])}
-                        operation_audit=Audit(merge_scope or scope,epoch,job,data,{str(r['sender_id']) for r in author_payload},through_round_id=rows[-1][0] if rows else None,decode_status='json_object')
-                        operation_audit.input_coverage(prompt)
-                        if self._active_summary:self._active_summary['operation_audit']=operation_audit
+                    from summary_fallback import NORMAL_TIMEOUT_SECONDS
+                    async with asyncio.timeout(NORMAL_TIMEOUT_SECONDS):
+                        reviewed=None;review_family=None
+                        if before is not None:
+                            request,digest,reviewed,review_family=await self._run_memory_review_pages(provider,request,prompt,system,ctx['sem_system'],PRODUCT_MEMORY_SYSTEM,before,scope,attempts,epoch,job,digest,live,metrics,starting,lambda:operation_audit)
+                            if request is None:return {'ok':False,'reason':'stale_configuration'}
+                        slot=SummaryResponseSlot(self.db,scope,attempts,epoch,digest,review_family,'final' if review_family else None)
+                        def request_starting():
+                            slot.dispatch();starting()
+                        result=await summary_model_output(provider,request,live,metrics,1500 if job=='big' else 800,decoded,request_starting,slot.save,slot.recover(),slot.record_validation)
+                        if result is None:return {'ok':False,'reason':'stale_configuration'}
+                        response,data,text=result
+                        if reviewed is not None:
+                            from memory_review import combine
+                            data={**data,**combine([reviewed,data])}
+                            operation_audit=Audit(merge_scope or scope,epoch,job,data,{str(r['sender_id']) for r in author_payload},through_round_id=rows[-1][0] if rows else None,decode_status='json_object')
+                            operation_audit.input_coverage(prompt)
+                            if self._active_summary:self._active_summary['operation_audit']=operation_audit
                     available_before={r[0] for r in self.db.execute("SELECT id FROM memory_reconstruction_checkpoints WHERE state='available'")}
                     checkpoint_id=None;pending_merge=False
                     with self.db:
@@ -1361,6 +1410,17 @@ class Reflection:
                     reason=str(error) if str(error).startswith(('semantic_','summary_output_capacity_')) else type(error).__name__
                     self.checkpoint_issue(merge_scope or scope,0,'failure_'+job,{'type':type(error).__name__,'reason':reason,'through_round_id':rows[-1][0] if rows else None,'automatic_recovery':'persisted_backoff',
                         'raise_site':{'module':Path(frame.filename).name,'line':frame.lineno,'symbol':frame.name} if frame else None});self.db.commit()
+                    stale_snapshot=reason in ('semantic_cognition_snapshot_changed','semantic_core_note_snapshot_changed','semantic_batch_material_changed','semantic_discard_material_changed','summary_checkpoint_stale','big_merge_sources_changed','summary_prior_products_changed')
+                    if not audit_committed and not stale_snapshot and not self.closed and is_current() and self.epoch()==epoch:
+                        try:
+                            if await self._degraded_checkpoint(scope,job,rows,big_rows,summary_from,summary_rounds,epoch,cfg,merge_scope,merge_dependency,core_before,metrics,error,_manual,is_current,ctx):
+                                return {'ok':True,'reason':'degraded_checkpoint','lossy':True}
+                        except asyncio.CancelledError:raise
+                        except Exception as fallback_error:
+                            # Storage/ownership changes require a fresh legal
+                            # transaction; never turn a failed commit into success.
+                            self.checkpoint_issue(merge_scope or scope,0,'compression_degradation_failed',{'type':type(fallback_error).__name__,'reason':str(fallback_error)[:160] if str(fallback_error).startswith(('semantic_','summary_')) else type(fallback_error).__name__})
+                            self.db.execute('UPDATE memory_reflection_retry SET next_at=? WHERE scope=?',(time.time()+60,scope));self.db.commit()
                     if _manual is not None:return {'ok':False,'reason':reason}
                 finally:
                     if operation_audit and not audit_committed and not self.closed and not self.db.execute('SELECT 1 FROM memory_operation_audits WHERE id=?',(operation_audit.id,)).fetchone():

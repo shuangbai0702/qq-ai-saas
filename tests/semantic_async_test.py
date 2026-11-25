@@ -109,7 +109,7 @@ class AsyncRetirement(unittest.IsolatedAsyncioTestCase):
                 finally:release.set()
                 self.assertEqual((await task)['retired'],1)
         self.assertIs(self.st.model_journals[fixture.SCOPE],old)
-        self.assertTrue(self.st._storage_closed)
+        self.assertTrue(self.st.storage_closed)
         with self.assertRaises(sqlite3.ProgrammingError):self.st.db.execute('SELECT 1')
 
     async def test_failed_worker_purge_rolls_back_journal_permit_and_retries(self):

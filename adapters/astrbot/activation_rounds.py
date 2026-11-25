@@ -14,6 +14,24 @@ def metadata(db, scope, event):
 _SERVICE_SOURCES = ('autonomous', 'owner_contact', 'scheduled_contact')
 
 
+def material_subject(db,scope,event,subject):
+    """Service round.subject is the recipient; capture.subject is the speaker.
+
+    Normalize only that proven bookkeeping distinction. A third principal is
+    still a conflict, and ordinary dialogue retains its exact author checks.
+    """
+    data=metadata(db,scope,event)
+    if not data or data.get('round_kind')!='service_dialogue':return str(subject)
+    owner=db.execute("SELECT subject FROM pipeline_events WHERE scope=? AND event=? AND source IN ('autonomous','owner_contact','scheduled_contact')",(data.get('source_scope'),data.get('owner_work'))).fetchall()
+    import message_provenance
+    incoming=message_provenance.get(db,scope,event) or {}
+    speaker=str(incoming.get('sender_id',''))
+    if len(owner)!=1 or not speaker or incoming.get('source_scope',data.get('source_scope'))!=data.get('source_scope'):
+        raise ValueError('semantic_service_speaker_unproven')
+    if str(subject) not in (str(owner[0][0]),speaker):raise ValueError('semantic_collection_sender_conflict')
+    return speaker
+
+
 def annotate_service(db, scope, event, work, *, source_scope):
     owner=db.execute("SELECT scope FROM pipeline_events WHERE scope=? AND event=? AND source IN ('autonomous','owner_contact','scheduled_contact')",(source_scope,work)).fetchone()
     if not owner or owner[0]!=source_scope:raise ValueError('service_dialogue_owner_missing')
@@ -66,6 +84,10 @@ def split_material(db, scope, rows):
     for row in rows:
         data = metadata(db, scope, row['event'])
         if data:
+            sources=('autonomous',) if data.get('round_kind')=='autonomous_activation' else _SERVICE_SOURCES
+            owner=db.execute("SELECT scope FROM pipeline_events WHERE scope=? AND event=? AND source IN ("+','.join('?' for _ in sources)+")",(data.get('source_scope'),data.get('owner_work'),*sources)).fetchone()
+            if data.get('round_kind') not in ('autonomous_activation','service_dialogue') or not owner:
+                raise ValueError('semantic_activation_owner_missing')
             # Keep the actual evidence, but never call a service a human author.
             activities.append({'event': row['event'], 'kind': data['round_kind'],
                                'source_scope': data['source_scope'], 'material': row,

@@ -10,6 +10,12 @@ def initialize(db):
     db.execute('CREATE TABLE IF NOT EXISTS companion_mood(scope TEXT PRIMARY KEY,valence REAL,energy REAL,updated REAL,event TEXT)')
 
 
+def retire_sources(db,identities):
+    from context_protocol import scoped_event_hash
+    for scope,event in db.execute('SELECT scope,event FROM companion_mood').fetchall():
+        if (scope,str(event)) in identities:db.execute('UPDATE companion_mood SET event=? WHERE scope=?',('semantic:'+scoped_event_hash(scope,str(event)),scope))
+
+
 def mood_context(db,scope,now):
     row=db.execute('SELECT valence,energy,updated FROM companion_mood WHERE scope=?',(scope,)).fetchone()
     decay=2**(-max(0,now-row[2])/7200) if row else 0

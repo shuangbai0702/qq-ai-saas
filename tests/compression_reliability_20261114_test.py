@@ -88,7 +88,7 @@ class Reliability(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(db.execute('SELECT state FROM memory_reconstruction_checkpoints').fetchone()[0],'reserved')
         self.assertEqual(self.st.model_journals[fixture.SCOPE].last.wire,before)
 
-    async def test_oversized_reconstruction_preserves_history_and_records_capacity(self):
+    async def test_oversized_cognitive_projection_cannot_block_committed_retirement(self):
         from unittest.mock import patch
         import json
         before=copy.deepcopy(self.st.model_journals[fixture.SCOPE].last.wire)
@@ -96,14 +96,33 @@ class Reliability(unittest.IsolatedAsyncioTestCase):
         candidate={'memory_foundation':{'relations':[{'impression':'x'*(MAX_RETAINED_TEXT_CHARS+1)}]}}
         with patch('semantic_runtime._fresh_state',return_value=candidate):
             result=finish_semantic_batches(self.st,{},fixture.SCOPE)
-        self.assertEqual(result['pending'],1)
-        self.assertEqual(self.st.model_journals[fixture.SCOPE].last.wire,before)
-        self.assertEqual(self.st.db.execute('SELECT state FROM memory_reconstruction_checkpoints').fetchone()[0],'available')
-        self.assertEqual(self.st.db.execute('SELECT state FROM memory_semantic_batches').fetchone()[0],'committed')
-        detail=json.loads(self.st.db.execute("SELECT detail FROM memory_checkpoint_issues WHERE kind='semantic_retirement'").fetchone()[0])
-        self.assertEqual(detail['result'],'reconstruction_capacity_exceeded')
-        self.assertGreater(detail['capacity']['wireChars'],0)
-        self.assertEqual(finish_semantic_batches(self.st,{},fixture.SCOPE)['retired'],1)
+        self.assertEqual(result['pending'],0);self.assertEqual(result['retired'],1)
+        self.assertNotEqual(self.st.model_journals[fixture.SCOPE].last.wire,before)
+        self.assertEqual(self.st.db.execute('SELECT state FROM memory_reconstruction_checkpoints').fetchone()[0],'consumed')
+        self.assertEqual(self.st.db.execute('SELECT state FROM memory_semantic_batches').fetchone()[0],'retired')
+        detail=json.loads(self.st.db.execute("SELECT detail FROM memory_checkpoint_issues WHERE kind='compression_degradation'").fetchone()[0])
+        self.assertEqual(detail['cause'],'reconstruction_capacity_exceeded');self.assertFalse(detail['persistentProductsDeleted'])
+        self.assertGreater(detail['originalCapacity']['wireChars'],0)
+        self.assertEqual(finish_semantic_batches(self.st,{},fixture.SCOPE)['retired'],0)
+
+    async def test_queued_burst_waits_for_checkpoint_without_draining_more_rounds(self):
+        st=self.st;db=st.db
+        db.executemany("INSERT INTO pipeline_work_inputs(scope,event,status) VALUES('private:12345678',?,'queued')",[(str(i),) for i in range(50)]);db.commit()
+        async with st.compression_admission():
+            self.assertTrue(st.compression_active);self.assertFalse(st.conversation_pending())
+            self.assertEqual(db.execute("SELECT count(*) FROM pipeline_work_inputs WHERE status='queued'").fetchone()[0],50)
+        self.assertIsNone(st.model_writer.owner)
+
+    async def test_cancel_while_acquiring_writer_does_not_release_another_task(self):
+        st=self.st;await st.model_writer.acquire();owner=st.model_writer.owner
+        async def compress():
+            async with st.compression_admission():self.fail('Writer belongs to test task')
+        task=asyncio.create_task(compress());await asyncio.sleep(0)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):await task
+        self.assertIs(st.model_writer.owner,owner)
+        self.assertFalse(st.compression_active);self.assertIsNone(st.compression_boundary)
+        st.model_writer.release()
 
     async def test_capacity_before_30_is_visible_without_fabricating_rounds(self):
         r=self.st.reflection;db=self.st.db

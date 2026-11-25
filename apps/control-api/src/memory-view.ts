@@ -1,6 +1,6 @@
 // Only allowlisted operational metadata leaves the database. Never return health
 // objects, process arguments, environment, model configuration or tokens.
-export const categoryNames:Record<string,string>={api:'平台 API',postgres:'PostgreSQL',agent:'Agent',protocol:'NapCat / QQ',shared:'共享 AstrBot',dedicated:'独立 AstrBot',other:'其他 / 未归属'};
+export const categoryNames:Record<string,string>={api:'平台 API',postgres:'PostgreSQL',agent:'Agent',protocol:'QQ 协议 / NapCat / LLBot',shared:'共享 AstrBot',dedicated:'独立 AstrBot',other:'其他 / 未归属'};
 const numeric=(v:any)=>typeof v==='number'&&Number.isFinite(v)&&v>=0;
 export function aggregate(rows:any[],complete=true){
  const unique=[...new Map(rows.map(p=>[`${p.container||'local'}:${p.pid}:${p.created}`,p])).values()];

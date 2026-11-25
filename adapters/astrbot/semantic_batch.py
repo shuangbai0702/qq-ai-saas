@@ -8,7 +8,7 @@ from context_protocol import model_json,scoped_event_hash as event_key
 from journal_storage import retired_members
 from memory_policy import DEFAULT_SUMMARY_ROUNDS,origin
 
-PURGE_VERSION=3
+PURGE_VERSION=4
 
 
 def initialize(db):
@@ -214,10 +214,19 @@ def purge(db,checkpoint_id,*,preview=False):
 
 
 def _purge(db,checkpoint_id,*,preview=False):
-    row=db.execute("SELECT scope,members FROM memory_semantic_batches WHERE checkpoint_id=? AND state='retired'",(checkpoint_id,)).fetchone()
+    row=db.execute("SELECT scope,members,cutoff FROM memory_semantic_batches WHERE checkpoint_id=? AND state='retired'",(checkpoint_id,)).fetchone()
     if not row:return False
     scope,members=row[0],set(json.loads(row[1]))
     _purge_members(db,scope,members)
+    if scope=='bot_shared':
+        import hosted_memory,companion_state
+        tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        counts={'researchTaskCopies':hosted_memory.retire_legacy_results(db,row[2]) if {'facts','fact_metadata'}<=tables else 0,
+                'personaInterestCopies':companion_state.retire_persona_seeds(db,row[2]) if 'companion_interests' in tables else 0,
+                'expiredTopics':companion_state.retire_expired_topics(db,row[2]) if 'companion_motives' in tables else 0}
+        if any(counts.values()):
+            # Content-free evidence shares the existing checkpoint receipt.
+            db.execute("INSERT INTO memory_checkpoint_issues VALUES(?,?,?,'resolved',?,?,?) ON CONFLICT(scope,checkpoint_id,kind) DO UPDATE SET detail=excluded.detail,updated=excluded.updated",(scope,checkpoint_id,'legacy_cognitive_copy_cleanup',model_json(counts),time.time(),time.time()))
     import journal_storage
     journal_storage.retire_archived_members(db,checkpoint_id,verify_active=not preview)
     return True
@@ -279,6 +288,16 @@ def _purge_members(db,scope,members):
           ON p.scope=c.scope AND p.subject=c.subject AND p.at=c.last_user
           WHERE c.last_user_event IS NULL AND
           (SELECT count(*) FROM memory_pending m WHERE m.scope=c.scope AND m.subject=c.subject AND m.at=c.last_user)=1'''))
+    identities={identity for event in events for identity in ((scope,event),origin(scope,event))}
+    if {'social_samples','social_patterns','expression_reinforcement'}<=tables:
+        import social
+        social.retire_sources(db,identities)
+    if {'companion_interests','companion_motives'}<=tables:
+        import companion_state
+        companion_state.retire_sources(db,identities)
+    if 'companion_mood' in tables:
+        import emotion_state
+        emotion_state.retire_sources(db,identities)
     semantic_sources={}
     for table,channel_column,event_column in (('facts','scope','event'),('memory_agreements','source_scope','source_event')):
         if table in tables and events:

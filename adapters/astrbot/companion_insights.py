@@ -95,7 +95,7 @@ def apply_semantic_memory(db,memory,scope,cfg,payload,data,before,now=None,audit
     return saved+apply_products(db,scope,cfg,data,before,now,audit,source_scopes=source_scopes)
 
 
-def apply(db,memory,scope,cfg,payload,data,before,now=None):
+def apply(db,memory,scope,cfg,payload,data,before,now=None,audit=None):
     now=time.time() if now is None else now
     sources={str(x['event']):x for x in payload}
     def evidence(item,role):
@@ -118,10 +118,12 @@ def apply(db,memory,scope,cfg,payload,data,before,now=None):
             db.execute('INSERT OR IGNORE INTO companion_signals VALUES(?,?,?,?,?)',(scope,source['event'],'correction_unverified',json.dumps(item,ensure_ascii=False),now))
         saved+=apply_summary_corrections(db,memory,scope,items('corrections'),evidence,before,now,unverified)
     if not cfg.get('selfDevelopment',True):return saved
-    saved+=companion_state.apply_summary_evidence(db,scope,data,evidence,before,targeted,now)
+    saved+=companion_state.apply_summary_evidence(db,scope,data,evidence,before,targeted,now,audit=audit)
     item=data.get('emotion');source=evidence(item,'user')
-    if emotion_state.apply_summary(db,scope,item,source,before['emotion'],now):
+    emotion_changed=emotion_state.apply_summary(db,scope,item,source,before['emotion'],now)
+    if emotion_changed:
         db.execute('INSERT OR IGNORE INTO companion_signals VALUES(?,?,?,?,?)',(scope,source['event'],'emotion',item['quote'][:200],now));saved+=1
+    if audit and 'emotion' in data:audit.product('emotion','accepted' if emotion_changed else 'rejected','applied' if emotion_changed else 'evidence_rejected_or_stale_state',changed=emotion_changed)
     positions={str(x['event']):i for i,x in enumerate(payload)}
     # A batch may describe several reactions to one answer; the newest valid
     # source wins before the snapshot fence rejects subsequent replacements.

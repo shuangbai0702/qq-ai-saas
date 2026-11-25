@@ -8,6 +8,7 @@ from context_protocol import model_json,source
 from semantic_batch import event_key,origin,discard_failed_service_inputs,retired_members
 from summary_material import snapshots,valid_material,remember,material_storage_view
 from input_reconciliation import ambient_retirement_candidates,unresolved_retirement_inputs
+from activation_rounds import material_subject
 
 # Disposable observations can outlive their old pending row. They are still
 # real batch input, rather than a second memory authority or a new round.
@@ -223,6 +224,7 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False,source_events
     candidates={};materials={};anchors={};provided={};snippets={};raw_observations={};completed_anchors=set()
     def register(pair,person=None,at=None):
         if not pair or not eligible(pair):return
+        if person is not None and str(person).strip():person=material_subject(db,'bot_shared',model_json(list(pair)),person)
         scopes.add(pair[0])
         item=candidates.setdefault(pair,{'people':set(),'times':set(),'bounds':set()})
         # Legacy/service feedback may have no author (subject=''). That is
@@ -232,7 +234,9 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False,source_events
     for row in payload:
         pair=identity('bot_shared',row['event'])
         register(pair,row['sender_id'],row['at'])
-        if pair:provided[pair]=copy.deepcopy(row)
+        if pair:
+            provided[pair]=copy.deepcopy(row)
+            provided[pair]['sender_id']=material_subject(db,'bot_shared',row['event'],row['sender_id'])
     for table in ('memory_rounds','memory_pending'):
         if table not in tables:continue
         for scope,person,event,question,answer,at in db.execute('SELECT scope,subject,event,question,answer,at FROM '+table):
@@ -305,7 +309,7 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False,source_events
             if not pair or pair not in candidates or not eligible(pair):continue
             value=json.loads(raw)
             if (value.get('source_scope'),str(value.get('event_id')))!=(pair[0],pair[1]):raise ValueError('semantic_collection_binding_conflict')
-            if str(value.get('sender_id')) not in candidates[pair]['people']:raise ValueError('semantic_collection_binding_conflict')
+            if material_subject(db,'bot_shared',model_json(list(pair)),value.get('sender_id')) not in candidates[pair]['people']:raise ValueError('semantic_collection_binding_conflict')
             key=model_json(list(pair))
             old=db.execute("SELECT data FROM memory_message_sources WHERE scope='bot_shared' AND event=? AND direction='model'",(key,)).fetchone()
             if old and json.loads(old[0])!=value:raise ValueError('semantic_collection_binding_conflict')
@@ -404,7 +408,7 @@ def _collect(db,cutoff,payload,recapture,discard_unavailable=False,source_events
         db.execute('INSERT OR IGNORE INTO memory_pending(scope,subject,event,question,answer,at) VALUES(?,?,?,?,?,?)',
                    ('bot_shared',item['subject'],key,item['text'],item.get('reply',''),at))
         previous=db.execute('SELECT subject FROM memory_pending WHERE scope=? AND event=?',('bot_shared',key)).fetchone()
-        if previous[0]!=item['subject']:raise ValueError('semantic_collection_sender_conflict')
+        if material_subject(db,'bot_shared',key,previous[0])!=item['subject']:raise ValueError('semantic_collection_sender_conflict')
         remember(db,'bot_shared',[item])
         saved=db.execute('SELECT material FROM memory_round_material WHERE scope=? AND event=?',('bot_shared',key)).fetchone()
         if not saved or not valid_material(json.loads(saved[0]),'bot_shared') or not json.loads(saved[0]).get('complete'):raise ValueError('semantic_collection_material_store_failed')

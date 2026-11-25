@@ -173,15 +173,31 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.requests[0][field],self.requests[1][field])
         self.assertEqual(metrics['summaryNonstreamFallbacks'],1)
 
-    async def test_complete_json_without_terminal_reason_never_commits(self):
+    async def test_complete_json_without_terminal_reason_uses_audited_local_checkpoint(self):
         self.populate()
-        before=self.store.db.execute('SELECT * FROM memory_rounds ORDER BY id').fetchall()
         self.mode=None
         await self.summarize()
         self.assertEqual(len(self.requests),2)
-        self.assertEqual(self.store.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],0)
-        self.assertEqual(self.store.db.execute('SELECT * FROM memory_rounds ORDER BY id').fetchall(),before)
-        self.assertEqual(self.callbacks,[])
+        self.assert_lossy_checkpoint()
+
+    def assert_lossy_checkpoint(self):
+        db = self.store.db
+        self.assertEqual(sum(result['retired'] for _, result in self.callbacks), 1)
+        self.assertEqual(db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0], 0)
+        self.assertEqual(db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0], 0)
+        self.assertEqual(db.execute('SELECT count(*) FROM fishbot_readonly_journal_blobs').fetchone()[0], 0)
+        self.assertEqual(db.execute('SELECT state FROM memory_semantic_batches').fetchone()[0], 'retired')
+        summary = db.execute('SELECT text FROM memory_summaries').fetchone()[0]
+        self.assertNotEqual(summary, SUMMARY)  # Invalid provider output stays rejected.
+        self.assertIn('有损', summary)
+        audit = db.execute("SELECT counts FROM memory_operation_audits WHERE reason='degraded_checkpoint'").fetchone()
+        self.assertEqual(json.loads(audit[0])['degradation']['rounds'], 30)
+        self.assertIn(self.system, self.journal.last.wire)
+        self.assertIn(self.new, self.journal.last.wire)
+        wire = json.dumps(self.journal.last.wire, ensure_ascii=False)
+        for original in self.originals + self.events + [self.image]:
+            self.assertNotIn(original, wire)
+        self.assert_failed_controls_discarded()
 
     async def asyncTearDown(self):
         await self.provider.client.close()
@@ -378,30 +394,12 @@ class SemanticProviderWire(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(p.get('type') == 'image_url' for m in final
                              if isinstance(m.get('content'), list) for p in m['content']))
 
-    async def test_actual_truncated_http_response_keeps_batch_and_journal_retryable(self):
+    async def test_actual_truncated_http_response_degrades_without_accepting_partial_summary(self):
         self.populate()
-        before = copy.deepcopy(self.journal.last.wire)
-        db = self.store.db
-        material_before = db.execute('SELECT * FROM memory_round_material ORDER BY event').fetchall()
-        rounds_before = db.execute('SELECT * FROM memory_rounds ORDER BY event').fetchall()
-        blobs_before = db.execute('SELECT * FROM fishbot_readonly_journal_blobs').fetchall()
-        pending_before = db.execute("SELECT * FROM memory_pending WHERE answer<>'' ORDER BY event").fetchall()
         self.mode = 'length'
         await self.summarize()
         self.assert_complete_summary_http(attempts=2)
-        # The error checkpoint may commit cleanup of proven internal residue;
-        # genuine conversation material must remain byte-for-byte retryable.
-        self.assert_failed_controls_discarded()
-        self.assertEqual(self.callbacks, [])
-        self.assertEqual(self.journal.last.wire, before)
-        self.assertEqual(db.execute('SELECT count(*) FROM memory_reconstruction_checkpoints').fetchone()[0], 0)
-        self.assertEqual(db.execute('SELECT count(*) FROM memory_semantic_batches').fetchone()[0], 0)
-        self.assertEqual(db.execute('SELECT * FROM memory_round_material ORDER BY event').fetchall(), material_before)
-        self.assertEqual(db.execute('SELECT * FROM memory_rounds ORDER BY event').fetchall(), rounds_before)
-        self.assertEqual(db.execute('SELECT * FROM fishbot_readonly_journal_blobs').fetchall(), blobs_before)
-        self.assertEqual(db.execute('SELECT * FROM memory_pending ORDER BY event').fetchall(), pending_before)
-        self.assertEqual(db.execute('SELECT count(*) FROM memory_round_material').fetchone()[0], 30)
-        self.assertEqual(db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0], 30)
+        self.assert_lossy_checkpoint()
         self.assertEqual(self.metrics['summaryFailures'], 1)
 
 

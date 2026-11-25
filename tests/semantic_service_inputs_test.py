@@ -116,5 +116,35 @@ class ServiceInputs(unittest.TestCase):
         self.db.commit();self.assertEqual(discard_failed_service_inputs(self.db,'bot_shared'),1)
         self.assertEqual(self.db.execute('SELECT scope,event,question FROM memory_pending').fetchall(),[('private:87654321','other','real QQ text')])
 
+    def test_successful_service_recipient_is_never_a_human_author(self):
+        from activation_rounds import annotate_service
+        from summary_material import snapshots,remember
+        from memory_reflection import summary_author_witnesses
+        bot='87654321'
+        question=SOURCE+model_json({'scope':self.scope,'sender_id':bot,'event_id':self.event,'kind':'platform_service_not_user','at':1})+'\n平台联系任务'
+        self.db.execute("UPDATE pipeline_events SET status='sent',attempted=1,confirmed=1")
+        self.db.execute('DELETE FROM memory_message_sources')
+        self.db.execute('DELETE FROM memory_pending')
+        self.db.execute("INSERT INTO memory_message_sources VALUES('bot_shared',?,'incoming',?)",(self.shared,model_json({'sender_id':bot,'source_scope':self.scope})))
+        annotate_service(self.db,'bot_shared',self.shared,self.event,source_scope=self.scope)
+        materials=snapshots([{'role':'user','content':question},{'role':'assistant','content':'真实发送的联系'}],'bot_shared')
+        self.db.execute('INSERT INTO memory_rounds(scope,subject,event,question,answer,at) VALUES(?,?,?,?,?,?)',('bot_shared',self.subject,self.shared,question,'真实发送的联系',1))
+        remember(self.db,'bot_shared',materials)
+        for i in range(29):
+            event=model_json([self.scope,'human-'+str(i)])
+            text=SOURCE+model_json({'scope':self.scope,'sender_id':self.subject,'event_id':'human-'+str(i),'at':i+2})+'\n真实人类发言'
+            self.db.execute('INSERT INTO memory_rounds(scope,subject,event,question,answer,at) VALUES(?,?,?,?,?,?)',('bot_shared',self.subject,event,text,'真实回答',i+2))
+            remember(self.db,'bot_shared',snapshots([{'role':'user','content':text},{'role':'assistant','content':'真实回答'}],'bot_shared'))
+        self.db.commit()
+        rows=self.db.execute('SELECT id,subject,event,question,answer,at FROM memory_rounds ORDER BY id').fetchall()
+        ctx=self.store.reflection._build_summary_request('bot_shared',rows,{'memory':True,'selfDevelopment':True},True)
+        self.assertEqual(len(ctx['prompt']['turns']),29)
+        self.assertEqual(len(ctx['prompt']['autonomous_activations']),1)
+        self.assertEqual(len(ctx['materials']),30)
+        self.assertNotIn(self.shared,{r['event'] for r in ctx['author_payload']})
+        self.assertEqual(ctx['prompt']['autonomous_activations'][0]['material']['sender_id'],bot)
+        with self.assertRaisesRegex(ValueError,'semantic_summary_author_conflict'):
+            summary_author_witnesses('bot_shared',[{'event':self.shared,'sender_id':self.subject,'source':{'sender_id':bot}}])
+
 
 if __name__=='__main__':unittest.main()

@@ -24,16 +24,18 @@ class Recovery(unittest.IsolatedAsyncioTestCase):
   self.assertEqual(self.metrics['summaryValidationErrors'][0]['code'],'response_text_missing')
   self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1)
   self.assertEqual(self.db.execute('SELECT count(*) FROM memory_reflection_retry').fetchone()[0],0)
- async def test_repeated_null_output_keeps_rounds_and_cannot_retire(self):
+ async def test_repeated_null_output_degrades_at_checkpoint_without_early_delete(self):
   self.record();original=self.chat
   async def chat(**kw):
    response=await original(**kw);response.completion_text=None;return response
   self.chat=chat
   await self.run_summary()
-  self.assertEqual(len(self.calls),2);self.assertIsNone(self.checkpoint())
+  self.assertEqual(len(self.calls),2);self.assertEqual(self.checkpoint()[1],30)
   self.assertEqual(self.db.execute('SELECT count(*) FROM memory_rounds').fetchone()[0],30)
-  self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],0)
-  self.assertEqual(self.db.execute('SELECT count(*) FROM memory_reflection_retry').fetchone()[0],1)
+  self.assertEqual(self.db.execute('SELECT count(*) FROM memory_summaries').fetchone()[0],1)
+  self.assertEqual(self.db.execute('SELECT count(*) FROM memory_reflection_retry').fetchone()[0],0)
+  loss=self.db.execute("SELECT counts FROM memory_operation_audits WHERE reason='degraded_checkpoint'").fetchone()
+  self.assertEqual(json.loads(loss[0])['degradation']['rounds'],30)
  def test_response_digest_binds_sources_model_and_epoch_not_clock(self):
   provider=NS(provider_config={'model':'test','temperature':0})
   first={'prompt':json.dumps({'current_time':1,'turns':['real']}),'system_prompt':'stable'}

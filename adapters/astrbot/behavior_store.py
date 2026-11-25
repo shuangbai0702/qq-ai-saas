@@ -103,7 +103,7 @@ class BehaviorStore:
         if event.get_extra('_hosted_scope_owner') or event.get_extra('_hosted_scope_continuation'):return True
         scope=bot_pipeline.delivery_scope(event)
         identifier=str(getattr(event.message_obj,'message_id',''))
-        return self.db.execute('SELECT 1 FROM pipeline_work_inputs WHERE scope=? AND event=? AND rowid<=?',(scope,identifier,self.compression_boundary)).fetchone() is not None
+        return self.db.execute("SELECT 1 FROM pipeline_work_inputs WHERE scope=? AND event=? AND status='owned'",(scope,identifier)).fetchone() is not None
 
     async def wait_compression(self,event=None):
         while self.compression_active or not self.before_compression(event):
@@ -112,9 +112,11 @@ class BehaviorStore:
 
     @asynccontextmanager
     async def compression_admission(self):
-        # Freeze admission, not history. New inputs stay in the SAME durable
-        # inbox; only the finite already accepted prefix drains before writer.
-        self.compression_boundary=self.db.execute('SELECT coalesce(max(rowid),0) FROM pipeline_work_inputs').fetchone()[0]
+        # Finish in-flight Works, not the queued inbox prefix. Draining an
+        # already queued burst used to let thirty rounds grow to forty-plus.
+        # Queued inputs stay durable and resume after this checkpoint.
+        self.compression_boundary=0
+        acquired=False
         try:
             while self.conversation_pending():
                 self.slot_changed.clear()
@@ -122,9 +124,10 @@ class BehaviorStore:
                 await self.slot_changed.wait()
             self.compression_active=True
             await self.model_writer.acquire()
+            acquired=True
             yield
         finally:
-            self.model_writer.release()
+            if acquired:self.model_writer.release()
             self.compression_active=False;self.compression_boundary=None;self.slot_changed.set()
 
     async def acquire_scope(self,scope,valid,timeout=120):

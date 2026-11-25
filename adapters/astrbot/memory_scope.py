@@ -136,9 +136,8 @@ def fact_rows(db,scope,subject,limit=200):
     # Value-level correction blocks drop the rejected values for this person
     # (including under a model-renamed field); a name whose value was blocked
     # keeps its replacement visible.
-    # Autonomous research task records keep their rows in storage for audit
-    # and rollback, but they are tool task outcomes — never persona facts —
-    # so every recall pool excludes them by their trusted origin.
+    # Legacy research-task copies are excluded until the next lawful semantic
+    # retirement removes them; they must never enter person cognition.
     rows=db.execute('''SELECT f.name,f.value,f.event,f.version,f.updated,coalesce(m.kind,'stable') AS kind,
         coalesce(m.importance,.8) AS importance,coalesce(m.origin,'explicit') AS origin,
         coalesce(m.last_recalled,0) AS last_recalled,coalesce(m.recalls,0) AS recalls,f.scope AS source_scope

@@ -19,6 +19,21 @@ from sticker_collection import StickerCollector
 from meme_packs import catalog as pack_catalog
 from qq_favorites import catalog as favorite_catalog
 
+def retire_sources(db,identities):
+    """Learned expressions survive; raw sample locators do not."""
+    from context_protocol import scoped_event_hash
+    identities=set(identities)
+    live={str(identifier) for identifier,scope,event in db.execute('SELECT id,scope,event FROM social_samples') if (scope,str(event)) not in identities}
+    for scope,expression,raw in db.execute('SELECT scope,expression,sources FROM social_patterns').fetchall():
+        try:values=json.loads(raw)
+        except (ValueError,TypeError):values=[]
+        kept=[value for value in values if str(value) in live] if isinstance(values,list) else []
+        encoded=json.dumps(kept,separators=(',',':'))
+        if encoded!=raw:db.execute('UPDATE social_patterns SET sources=? WHERE scope=? AND expression=?',(encoded,scope,expression))
+    for scope,expression,kind,event in db.execute('SELECT scope,expression,kind,event FROM expression_reinforcement').fetchall():
+        if (scope,str(event)) in identities:db.execute('UPDATE expression_reinforcement SET event=? WHERE scope=? AND expression=? AND kind=?',('semantic:'+scoped_event_hash(scope,str(event)),scope,expression,kind))
+
+
 def initialize_controls(db):
     db.executescript("""CREATE TABLE IF NOT EXISTS social_pattern_blocks(scope TEXT,expression TEXT,PRIMARY KEY(scope,expression));
     CREATE TABLE IF NOT EXISTS social_control(id INTEGER PRIMARY KEY CHECK(id=1),epoch INTEGER NOT NULL);
