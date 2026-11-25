@@ -8,7 +8,6 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import {writeFileSync,renameSync} from 'node:fs';
 import {createHash,randomUUID} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
@@ -24,17 +23,20 @@ async function verifyFiles(root,files){
  for(const [name,digest]of Object.entries(files))assert.equal(await fingerprint(target(root,name)),digest,'Release verification mismatch: '+name);
 }
 function target(root,name){
- assert.ok(typeof name==='string'&&name&&!name.includes('\\')&&!name.includes('\0')&&!name.split('/').some(p=>['..','.local','node_modules'].includes(p)),'Invalid release path');
+ assert.ok(typeof name==='string'&&name&&!name.includes('\\')&&!name.includes('\0')&&!name.split('/').includes('..')&&!['.local','node_modules'].includes(name.split('/')[0]),'Invalid release path: '+name);
  const file=path.resolve(root,name);assert.ok(file.startsWith(path.resolve(root)+path.sep),'Release path escapes its root');return file;
 }
 async function atomic(file,raw){
  await fs.mkdir(path.dirname(file),{recursive:true});const temp=file+'.release-'+randomUUID()+'.tmp';
- try{await fs.writeFile(temp,raw);await fs.rename(temp,file)}finally{await fs.rm(temp,{force:true})}
+ try{
+  await fs.writeFile(temp,raw);const deadline=Date.now()+2000;
+  for(;;){
+   try{await fs.rename(temp,file);break}
+   catch(error){if(process.platform!=='win32'||!['EPERM','EACCES','EBUSY'].includes(error.code)||Date.now()>=deadline)throw error;await new Promise(resolve=>setTimeout(resolve,25))}
+  }
+ }finally{await fs.rm(temp,{force:true})}
 }
-function receipt(dir,name,value){
- const file=path.join(dir,name+'.json'),temp=file+'.tmp';
- writeFileSync(temp,JSON.stringify(value,null,2));renameSync(temp,file);
-}
+const receipt=(dir,name,value)=>atomic(path.join(dir,name+'.json'),JSON.stringify(value,null,2));
 
 // The deployment account owns code writes. The live Agent only borrows this
 // exact staged operation while it owns the Worker fence; it needs no source ACL.
@@ -67,7 +69,7 @@ export function releaseFiles({root,spec,expected},dir){
 
 async function requestFiles(dir,release,operation){
  const id=randomUUID(),deadline=Date.now()+60000;
- receipt(dir,'file-request',{id,release,operation,ownerPid:process.pid,deadline});
+ await receipt(dir,'file-request',{id,release,operation,ownerPid:process.pid,deadline});
  for(;;){
   const result=await json(path.join(dir,'file-result.json')).catch(error=>{if(error.code==='ENOENT')return null;throw error});
   if(result?.id===id){if(!result.ok)throw Error('Release '+operation+' failed: '+result.error);return}
@@ -79,6 +81,7 @@ async function requestFiles(dir,release,operation){
 export async function checkRuntimeRelease(profile,dir){
  const root=path.resolve(profile.sourceRoot),spec=await json(path.join(dir,'release.json'));
  assert.match(spec.commit,/^[a-f0-9]{40}$/);assert.ok(spec.files&&spec.verifyFiles);
+ for(const name of Object.keys(spec.verifyFiles))target(root,name);
  const expected=await json(path.join(dir,'expected-before.json'));
  const current=await json(path.join(root,'dist-server/build.json'));
  if(current.gitCommit===spec.commit){await verifyProduction(root);return{root,spec,expected,alreadyApplied:true}}
@@ -143,7 +146,7 @@ export async function applyRuntimeRelease(agent,profile,dir){
     await checkRuntimeRelease(profile,dir);
     bots=await agent.db.query("SELECT id,group_id FROM bots WHERE desired_state='running' AND deleted_at IS NULL ORDER BY id");
     ids=bots.map(b=>b.id);assert.ok(ids.length,'No running members to update');
-    before=await journals(profile,ids);receipt(dir,'journals-before',before);
+    before=await journals(profile,ids);await receipt(dir,'journals-before',before);
     await requestFiles(dir,spec.commit,'install');
     await verifyProduction(root);await verifyFiles(root,spec.verifyFiles);assert.deepEqual(await journals(profile,ids),before,'Disk installation changed Journal');
     if(spec.files['dist-server/apps/node-agent/src/bilibili/executor.js']){
@@ -156,7 +159,7 @@ export async function applyRuntimeRelease(agent,profile,dir){
    afterStop:async({group})=>{
     const members=bots.filter(b=>b.group_id===group.id).map(b=>b.id),stopped=await journals(profile,members);
     for(const id of members)assert.deepEqual(stopped[id],before[id],'AI stop changed committed Journal');
-    Object.assign(throughStop,stopped);receipt(dir,'journals-through-stop',throughStop);
+    Object.assign(throughStop,stopped);await receipt(dir,'journals-through-stop',throughStop);
    },
    rollback:async()=>{
     Object.setPrototypeOf(agent.bilibili,oldPrototype);
@@ -184,9 +187,9 @@ export async function applyRuntimeRelease(agent,profile,dir){
     return{release:spec.commit,runtimeApplied:true,journalDigestsUnchanged:true,journalProofBoundary:'through-original-worker-stop',groups:loaded,bilibiliMethodsUpdated:!!patchedPrototype,verifiedFiles:Object.keys(spec.verifyFiles).length};
    }
   });
-  const receiptValue={ok:true,commit:spec.commit,finishedAt:Date.now(),...result};receipt(dir,'result',receiptValue);return receiptValue;
+  const receiptValue={ok:true,commit:spec.commit,finishedAt:Date.now(),...result};await receipt(dir,'result',receiptValue);return receiptValue;
  }catch(error){
-  receipt(dir,'result',{ok:false,commit:spec.commit,finishedAt:Date.now(),errorType:error.name,error:String(error.message),causes:error.errors?.map(e=>({type:e.name,error:String(e.message)}))});throw error;
+  await receipt(dir,'result',{ok:false,commit:spec.commit,finishedAt:Date.now(),errorType:error.name,error:String(error.message),causes:error.errors?.map(e=>({type:e.name,error:String(e.message)}))});throw error;
  }finally{await heartbeat.stop()}
 }
 
@@ -204,14 +207,14 @@ async function operator(profile,dir){
     const progress=await json(path.join(dir,'progress.json'));
     assert.equal(request.release,checked.spec.commit);assert.equal(request.ownerPid,record.pid);
     assert.equal(progress.ownerPid,record.pid);assert.equal(progress.commit,checked.spec.commit);
-    assert.ok(request.operation==='install'&&progress.phase==='installing'||request.operation==='rollback'&&progress.phase==='recovering');
+    assert.ok(request.operation==='install'&&progress.phase==='installing'||request.operation==='rollback'&&['installing','recovering'].includes(progress.phase));
     assert.ok(Date.now()<request.deadline,'Installer request expired');
     await files[request.operation]();
    }catch(failure){error=failure}
-   receipt(dir,'file-result',{id:request.id,ok:!error,error:error?String(error.message):undefined});
+   await receipt(dir,'file-result',{id:request.id,ok:!error,error:error?String(error.message):undefined,errorType:error?.name});
   }finally{fileBusy=false}
  };
- const installer=setInterval(()=>{if(!fileBusy)fileTask=serveFiles().catch(error=>{receipt(dir,'installer-error',{error:String(error.message)})})},50);
+ const installer=setInterval(()=>{if(!fileBusy)fileTask=serveFiles().catch(error=>receipt(dir,'installer-error',{error:String(error.message)}))},50);
  const WebSocket=createRequire(path.join(profile.sourceRoot,'package.json'))('ws');
  let socket,sequence=0;const pending=new Map();
  const call=(method,params,timeoutMs=10000)=>new Promise((resolve,reject)=>{

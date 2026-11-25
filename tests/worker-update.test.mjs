@@ -119,3 +119,11 @@ test('stop boundary proof runs before the new Worker and phase progress is obser
  assert.ok(f.events.indexOf('journal-checked')<f.events.indexOf('start:21'));
  assert.deepEqual(progress,['draining','installing','reloading','verifying','applied']);f.restored();
 });
+
+test('asynchronous progress commits before installation and retains its original error',async()=>{
+ const f=fixture();
+ await assert.rejects(updateSharedWorkers(f.agent,{...f.options,onProgress:async p=>{
+  if(p.phase==='installing'){await Promise.resolve();throw Error('progress write failed')}
+ }}),/progress write failed/);
+ assert.equal(f.events.includes('apply'),false);assert.equal(f.events.includes('rollback'),false);assert.equal(f.fenced,false);f.restored();
+});

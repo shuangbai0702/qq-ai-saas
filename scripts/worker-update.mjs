@@ -30,7 +30,7 @@ export async function updateSharedWorkers(agent,{release,heartbeat,apply,rollbac
  const biliStopped=bili.stopped,favoritesClosed=favorites.closed;
  const protocols=new Map(),groups=new Map(),affected=new Set();
  let attempted=false,pulse,pulsing=false,lastPulse=Promise.resolve(),pulseError,failure;
- const report=(phase,detail={})=>{owner.phase=phase;onProgress({release,phase,...detail})};
+ const report=async(phase,detail={})=>{owner.phase=phase;await onProgress({release,phase,...detail})};
  const check=()=>{
   assert.equal(agent[marker],owner,'Worker update ownership changed');
   assert.ok(!agent.closed,'Agent is closing');signal?.throwIfAborted();
@@ -41,7 +41,7 @@ export async function updateSharedWorkers(agent,{release,heartbeat,apply,rollbac
   for(;;){check();const done=await predicate();check();
    if(Date.now()>=deadline)throw Error('Worker update timed out: '+label);
    if(done)return;
-   if(Date.now()-lastReport>=5000){lastReport=Date.now();report(owner.phase,{waitingFor:label,deadline})}
+   if(Date.now()-lastReport>=5000){lastReport=Date.now();await report(owner.phase,{waitingFor:label,deadline})}
    await delay(Math.min(50,Math.max(1,deadline-Date.now())),undefined,{signal});
   }
  };
@@ -90,7 +90,7 @@ export async function updateSharedWorkers(agent,{release,heartbeat,apply,rollbac
   // Pause admission, not existing external operations. Keep autonomous Work
   // heartbeats renewing while it naturally settles; never cancel user Work.
   agent.tick=async()=>{};autonomy.tick=async()=>{};bili.stopped=true;favorites.closed=true;
-  report('draining');
+  await report('draining');
   pulse=setInterval(()=>{
    if(pulsing)return;pulsing=true;
    lastPulse=Promise.resolve().then(()=>heartbeat({maintenance:release})).catch(error=>{pulseError=error}).finally(()=>{pulsing=false});
@@ -112,7 +112,7 @@ export async function updateSharedWorkers(agent,{release,heartbeat,apply,rollbac
     catch(error){if(/HTTP 409/.test(String(error)))return false;throw error}
    },'Worker idle boundary');
   }
-  await sameProtocols();check();report('installing');attempted=true;
+  await sameProtocols();check();await report('installing');attempted=true;
   await apply();check();
   for(const [id,entry]of groups){
    await sameProtocols();check();const current=await currentGroup(entry.group);
@@ -120,20 +120,20 @@ export async function updateSharedWorkers(agent,{release,heartbeat,apply,rollbac
    const health=await agent.shared.request(current,'/health');check();
    assert.ok(health.quiescing===true&&health.activity?.idle===true,'Worker lost its stop boundary');
    // Record before stopping: a lost stop response still requires recovery.
-   affected.add(id);report('reloading',{groupId:id});
+   affected.add(id);await report('reloading',{groupId:id});
    await agent.host.stop(id,'ai','worker-update',{pid:entry.expected.pid,created:entry.expected.created});
    await afterStop({group:current,previous:entry.expected});check();
    await start(entry);await wait(()=>ready(entry.group),'new Worker readiness');
   }
-  check();await sameProtocols();report('verifying');
+  check();await sameProtocols();await report('verifying');
   const proof=await verify({groups:[...groups.values()].map(({group,health})=>({group,health}))});check();
   assert.ok(proof?.release===release&&proof.runtimeApplied===true&&proof.journalDigestsUnchanged===true,'Missing runtime and Journal verification');
   for(const {group}of groups.values())await wait(()=>ready(group),'final Worker readiness');
-  await sameProtocols();check();report('applied');
+  await sameProtocols();check();await report('applied');
   return{release,pid:process.pid,qqPreserved:protocols.size,workers:groups.size,proof};
  }catch(error){
   owner.phase='recovering';const errors=[error];failure=error;
-  try{report('recovering',{errorType:error?.name||'Error'})}catch(error){errors.push(error)}
+  try{await report('recovering',{errorType:error?.name||'Error'})}catch(error){errors.push(error)}
   // Roll code back before restoring Workers. Never repeat apply on timeout.
   let restored=true;
   if(attempted)try{await rollback()}catch(failure){errors.push(failure);restored=false}

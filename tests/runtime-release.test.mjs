@@ -69,6 +69,16 @@ test('having the new disk commit does not fabricate runtime application success'
  await assert.rejects(applyRuntimeRelease({},f.profile,f.stage),/runtime verification/);
 });
 
+test('all verification paths are checked before installation, including inherited build entries',async t=>{
+ const f=await fixture(t),name='dist-server/.local/old-export/scripts/migrate-pglite-postgres.js',raw='old compiled migration';
+ await f.write(path.join(f.root,name),raw);f.current.artifactHashes[name]=sha(raw);
+ await f.write(path.join(f.root,'dist-server/build.json'),f.current);f.spec.oldManifestSha256=sha(JSON.stringify(f.current));
+ f.spec.verifyFiles[name]=sha(raw);await f.add('dist-server/build.json',f.next);await f.save();
+ assert.equal((await checkRuntimeRelease(f.profile,f.stage)).alreadyApplied,false);
+ f.spec.verifyFiles['.local/private.json']='c'.repeat(64);await f.save();
+ await assert.rejects(checkRuntimeRelease(f.profile,f.stage),/Invalid release path/);
+});
+
 test('the host installer owns code mutation, rollback is exact and preserves third-party changes',async t=>{
  const f=await fixture(t),files=releaseFiles(await checkRuntimeRelease(f.profile,f.stage),f.stage);
  await files.install();
