@@ -4,7 +4,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-import {checkRuntimeRelease,applyRuntimeRelease,releaseFiles} from '../scripts/runtime-release.mjs';
+import lockfile from 'proper-lockfile';
+import {checkRuntimeRelease,applyRuntimeRelease,releaseFiles,operateRuntimeRelease} from '../scripts/runtime-release.mjs';
 
 const sha=value=>createHash('sha256').update(value).digest('hex');
 async function fixture(t){
@@ -62,11 +63,13 @@ test('missing file CAS, incomplete inventory and escaped paths fail before insta
 });
 
 test('having the new disk commit does not fabricate runtime application success',async t=>{
- const f=await fixture(t);await f.write(path.join(f.root,'dist-server/build.json'),f.next);
+ const f=await fixture(t);await releaseFiles(await checkRuntimeRelease(f.profile,f.stage),f.stage).install();
  assert.equal((await checkRuntimeRelease(f.profile,f.stage)).alreadyApplied,true);
  await assert.rejects(applyRuntimeRelease({},f.profile,f.stage),{code:'ENOENT'});
  await f.write(path.join(f.stage,'result.json'),{ok:false});
  await assert.rejects(applyRuntimeRelease({},f.profile,f.stage),/runtime verification/);
+ await f.write(path.join(f.root,'adapters/astrbot/memory_review.py'),'drift after install');
+ await assert.rejects(checkRuntimeRelease(f.profile,f.stage),/Release verification mismatch/);
 });
 
 test('all verification paths are checked before installation, including inherited build entries',async t=>{
@@ -86,6 +89,7 @@ test('the host installer owns code mutation, rollback is exact and preserves thi
  await f.write(path.join(f.root,'adapters/astrbot/memory_review.py'),'another release');
  await assert.rejects(files.rollback(),/Concurrent file change/);
  assert.equal(await fs.readFile(path.join(f.root,'adapters/astrbot/memory_review.py'),'utf8'),'another release');
+ assert.equal(JSON.parse(await fs.readFile(path.join(f.root,'dist-server/build.json'))).gitCommit,f.next.gitCommit,'rollback preflight cannot publish the old manifest before all files are restorable');
  await f.write(path.join(f.root,'adapters/astrbot/memory_review.py'),'new review');
  await files.rollback();await files.rollback();
  assert.equal(JSON.parse(await fs.readFile(path.join(f.root,'dist-server/build.json'))).gitCommit,f.current.gitCommit);
@@ -118,4 +122,28 @@ test('a corrupt rollback backup cannot overwrite production or report restored c
  await f.write(path.join(f.stage,'before-code/dist-server/build.json'),{...f.current,corrupt:true});
  await assert.rejects(files.rollback(),/Rollback backup changed/);
  assert.equal(JSON.parse(await fs.readFile(path.join(f.root,'dist-server/build.json'))).gitCommit,f.next.gitCommit);
+});
+
+test('all manifest inputs and unchanged verification entries are checked before any write',async t=>{
+ const f=await fixture(t),name='adapters/astrbot/unchanged.py';
+ await f.write(path.join(f.root,name),'actual unchanged');f.spec.verifyFiles[name]=sha('different bytes');await f.save();
+ await assert.rejects(checkRuntimeRelease(f.profile,f.stage),/verification mismatch/i);
+ f.spec.verifyFiles[name]=sha('actual unchanged');f.next.pythonSources={[name]:sha('actual unchanged')};
+ await f.add('dist-server/build.json',f.next);delete f.spec.verifyFiles[name];await f.save();
+ await assert.rejects(checkRuntimeRelease(f.profile,f.stage),/release inventory/);
+});
+
+test('a concurrent host operator is rejected before reading runtime ownership and releases its lock on failure',async t=>{
+ const f=await fixture(t);await fs.symlink(path.resolve('node_modules'),path.join(f.root,'node_modules'),'junction');
+ const release=await lockfile.lock(f.stage,{retries:0});
+ try{await assert.rejects(operateRuntimeRelease(f.profile,f.stage),{code:'ELOCKED'})}finally{await release()}
+ await assert.rejects(operateRuntimeRelease({...f.profile,stateRoot:f.stage},f.stage),{code:'ENOENT'});
+ assert.equal(await lockfile.check(f.stage),false);
+});
+
+test('an expired host request cannot start installing files after the runtime stopped waiting',async t=>{
+ const f=await fixture(t),files=releaseFiles(await checkRuntimeRelease(f.profile,f.stage),f.stage);
+ await assert.rejects(files.install({deadline:Date.now()-1}),/deadline/);
+ assert.equal(JSON.parse(await fs.readFile(path.join(f.root,'dist-server/build.json'))).gitCommit,f.current.gitCommit);
+ await assert.rejects(fs.access(path.join(f.root,'adapters/astrbot/memory_review.py')),{code:'ENOENT'});
 });

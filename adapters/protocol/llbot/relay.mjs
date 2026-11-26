@@ -1,14 +1,27 @@
 import {randomUUID} from 'node:crypto';
 import {WebSocket} from 'ws';
 
+const MAX_EVENTS=16,MAX_EVENT_BYTES=16*1024*1024;
+
 /** OneBot transport only. Pending requests belong to their exact source socket. */
 export class LLBotRelay {
- constructor({expectedUin='',url,token,Socket=WebSocket,onIdentity=()=>{}}){Object.assign(this,{expectedUin,url,token,Socket,onIdentity});this.pending=new Map();this.closed=false;this.lastActivity=Date.now()}
+ constructor({expectedUin='',url,token,Socket=WebSocket,onIdentity=()=>{}}){Object.assign(this,{expectedUin,url,token,Socket,onIdentity});this.pending=new Map();this.closed=false;this.lastActivity=Date.now();this.initialBytes=0;this.sendFailures=0;this.overflowEvents=0}
  get online(){return !!this.upstream&&!!this.uin}
  get active(){return this.pending.size}
+ get transport(){return{queuedEvents:this.initialEvents?.length||0,queuedBytes:this.initialBytes,sendFailures:this.sendFailures,overflowEvents:this.overflowEvents}}
+ queueEvent(data){
+  const size=Buffer.byteLength(JSON.stringify(data));this.initialEvents??=[];
+  if(this.initialEvents.length>=MAX_EVENTS||this.initialBytes+size>MAX_EVENT_BYTES){this.overflowEvents++;this.upstream?.close(1013,'Unsent transport backlog limit');return}
+  this.initialEvents.push(data);this.initialBytes+=size;
+ }
+ sendToAI(socket,data){
+  if(this.downstream!==socket||this.closed||socket.readyState!==this.Socket.OPEN)return false;
+  const failed=()=>{if(this.downstream===socket&&!this.closed){this.sendFailures++;socket.close()}};
+  try{socket.send(JSON.stringify(data),error=>{if(error)failed()});return true}catch{failed();return false}
+ }
  attach(socket,claimedUin){
   if(this.closed||!/^\d{5,20}$/.test(claimedUin)||this.expectedUin&&this.expectedUin!==claimedUin){socket.close(1008);return}
-  this.disconnectUpstream();this.upstream=socket;this.uin='';const events=[];
+  this.disconnectUpstream();this.upstream=socket;this.uin='';
   socket.on('error',()=>{});
   socket.on('close',()=>{if(this.upstream===socket)this.disconnectUpstream()});
   socket.on('message',raw=>{
@@ -19,31 +32,38 @@ export class LLBotRelay {
     const pending=this.pending.get(data.echo);if(!pending||pending.upstream!==socket)return;
     this.pending.delete(data.echo);clearTimeout(pending.timer);pending.resolve(data);return;
    }
-   if(!this.uin){if(events.length<16)events.push(data);else socket.close(1008);return}
-   if(String(data.self_id||'')!==this.uin)return;
-   if(this.downstream?.readyState===this.Socket.OPEN)this.downstream.send(JSON.stringify(data));
+   if(String(data.self_id||'')!==(this.uin||claimedUin))return;
+   if(this.uin&&this.downstream?.readyState===this.Socket.OPEN)this.sendToAI(this.downstream,data);
+   else this.queueEvent(data);
   });
   void this.call('get_login_info',{},4000,true).then(async result=>{
    if(this.upstream!==socket||this.closed)return;
    const uin=String(result.user_id||'');if(uin!==claimedUin||this.expectedUin&&uin!==this.expectedUin)throw Error('QQ identity mismatch');
    await this.onIdentity(uin);if(this.upstream!==socket||this.closed)return;
    this.uin=uin;this.expectedUin=uin;this.connectAI();
-   // Only the initial bounded transport events, never fetched/replayed history.
-   this.initialEvents=events.filter(event=>String(event.self_id||'')===uin);
   }).catch(()=>{if(this.upstream===socket)socket.close(1008)});
  }
  connectAI(){
   clearTimeout(this.reconnect);if(this.closed||!this.online||this.downstream)return;
   const socket=new this.Socket(this.url,{maxPayload:16*1024*1024,handshakeTimeout:4000,perMessageDeflate:false,headers:{Authorization:'Bearer '+this.token,'X-Self-ID':this.uin,'X-Client-Role':'Universal'}});this.downstream=socket;
   socket.on('error',()=>{});
-  socket.on('open',()=>{if(this.downstream!==socket||this.closed){socket.close();return}for(const event of this.initialEvents||[])socket.send(JSON.stringify(event));this.initialEvents=undefined});
+  socket.on('open',()=>{
+   if(this.downstream!==socket||this.closed){socket.close();return}
+   // Only unsent bounded transport events, never fetched/replayed history.
+   while(this.initialEvents?.length){
+    if(this.downstream!==socket||this.closed||socket.readyState!==this.Socket.OPEN)return;
+    const event=this.initialEvents.shift();this.initialBytes-=Buffer.byteLength(JSON.stringify(event));
+    if(!this.sendToAI(socket,event))return;
+   }
+   this.initialEvents=undefined;this.initialBytes=0;
+  });
   socket.on('message',raw=>{
    if(this.downstream!==socket||this.closed)return;let data;try{data=JSON.parse(raw.toString())}catch{return}
    if(!data||typeof data!=='object'||Array.isArray(data))return;
    if(typeof data.action!=='string')return;
    void this.dispatch(data.action,data.params??{},data.action==='fetch_custom_face_detail'?600000:60000).then(result=>{
-    if(this.downstream===socket&&socket.readyState===this.Socket.OPEN)socket.send(JSON.stringify({...result,echo:data.echo}));
-   }).catch(()=>{if(this.downstream===socket&&socket.readyState===this.Socket.OPEN)socket.send(JSON.stringify({status:'failed',retcode:1504,data:null,echo:data.echo,message:'QQ操作回执未确认；不要自动重发'}))});
+    this.sendToAI(socket,{...result,echo:data.echo});
+   }).catch(()=>{this.sendToAI(socket,{status:'failed',retcode:1504,data:null,echo:data.echo,message:'QQ操作回执未确认；不要自动重发'})});
   });
   socket.on('close',()=>{if(this.downstream!==socket)return;this.downstream=undefined;if(!this.closed&&this.online)this.reconnect=setTimeout(()=>this.connectAI(),2000)});
  }
@@ -62,7 +82,7 @@ export class LLBotRelay {
  disconnectUpstream(){
   const socket=this.upstream;this.upstream=undefined;this.uin='';
   for(const entry of this.pending.values()){clearTimeout(entry.timer);entry.reject(Error('QQ connection changed; outcome unknown'))}this.pending.clear();
-  this.initialEvents=undefined;clearTimeout(this.reconnect);const ai=this.downstream;this.downstream=undefined;ai?.close();socket?.close();
+  this.initialEvents=undefined;this.initialBytes=0;clearTimeout(this.reconnect);const ai=this.downstream;this.downstream=undefined;ai?.close();socket?.close();
  }
  close(){this.closed=true;clearTimeout(this.reconnect);this.disconnectUpstream()}
 }

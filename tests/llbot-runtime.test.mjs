@@ -153,6 +153,26 @@ test('malformed JSON frames cannot crash the relay or dispatch an action',async 
  assert.equal(relay.pending.size,0);assert.equal(relay.online,true);
 });
 
+test('relay keeps bounded unsent events through AI connection setup and never replays a failed send',async t=>{
+ class Socket extends EventEmitter{static OPEN=1;readyState=0;sent=[];send(raw){this.sent.push(JSON.parse(raw))}close(){this.readyState=3;this.emit('close')}}
+ const relay=new LLBotRelay({expectedUin:'90000',url:'ws://127.0.0.1/unused',token:'fixture',Socket}),up=new Socket();up.readyState=1;t.after(()=>relay.close());
+ up.send=raw=>{const request=JSON.parse(raw);queueMicrotask(()=>up.emit('message',JSON.stringify({status:'ok',retcode:0,data:{user_id:90000},echo:request.echo})))};
+ relay.attach(up,'90000');up.emit('message',JSON.stringify({post_type:'message',self_id:90000,message_id:1}));
+ await new Promise(resolve=>setImmediate(resolve));const down=relay.downstream;
+ up.emit('message',JSON.stringify({post_type:'message',self_id:90000,message_id:2}));
+ down.readyState=1;down.emit('open');assert.deepEqual(down.sent.map(x=>x.message_id),[1,2]);
+ down.send=()=>{throw Error('socket closed during send')};
+ assert.doesNotThrow(()=>up.emit('message',JSON.stringify({post_type:'message',self_id:90000,message_id:3})));
+ relay.connectAI();const replacement=relay.downstream;replacement.readyState=1;replacement.emit('open');assert.deepEqual(replacement.sent,[],'an uncertain send must not be replayed');
+ assert.equal(relay.transport.sendFailures,1);replacement.close();relay.connectAI();
+ const failedFlush=relay.downstream;for(const id of [4,5])up.emit('message',JSON.stringify({post_type:'message',self_id:90000,message_id:id}));
+ failedFlush.send=(_raw,callback)=>callback(Error('flush write failed'));failedFlush.readyState=1;failedFlush.emit('open');
+ assert.equal(relay.transport.queuedEvents,1,'an unsent event stays queued when the preceding send closes its socket');
+ relay.connectAI();const resumed=relay.downstream;resumed.readyState=1;resumed.emit('open');assert.deepEqual(resumed.sent.map(x=>x.message_id),[5]);assert.equal(relay.transport.sendFailures,2);
+ resumed.close();relay.connectAI();for(let id=6;id<23;id++)up.emit('message',JSON.stringify({post_type:'message',self_id:90000,message_id:id}));
+ assert.equal(relay.transport.overflowEvents,1);assert.equal(relay.transport.queuedEvents,0,'overflow closes only the current transport and releases its buffer');
+});
+
 test('worker spawn failure without exit recovers only that child and ignores its late events',async t=>{
  const f=await fixture(),children=[];let at=Date.now();
  const spawnChild=()=>{const child=new EventEmitter();Object.assign(child,{pid:700+children.length,connected:true,kill(){child.emit('exit',0)},send(){}});children.push(child);return child};
@@ -168,6 +188,51 @@ test('worker spawn failure without exit recovers only that child and ignores its
  assert.equal(children[0].listenerCount('exit'),1,'PMHQ and QQ are retained');
  replacement.emit('error',Object.assign(Error('IPC closed'),{code:'ERR_IPC_CHANNEL_CLOSED'}));
  assert.equal((await health()).components.llbot.pid,replacement.pid,'IPC failure alone cannot release a live child owner');
+});
+
+test('runtime readiness and in-flight login probes belong to the current child; close is joinable',async t=>{
+ const f=await fixture(),children=[],entered=deferred(),gate=deferred();let at=Date.now(),block=false;
+ const spawnChild=()=>{const child=new EventEmitter();Object.assign(child,{pid:800+children.length,connected:true,kill(){child.emit('exit',0)},send(){}});children.push(child);return child};
+ const fetcher=async url=>{
+  if(String(url).endsWith('/health'))return Response.json({uin:'90000',uid:'native',qq_pid:801});
+  if(block){entered.resolve();await gate.promise}
+  return Response.json({success:true,data:{online:true,uin:'90000'}});
+ };
+ const run=await startRuntime(f.file,{spawnChild,clock:()=>at,fetcher});t.after(()=>run.close());
+ const health=()=>fetch(`http://127.0.0.1:${f.m.management.port}/api/health`,{headers:{Authorization:'Bearer '+f.m.management.token}}).then(r=>r.json());
+ await writeFile(path.join(f.m.root,'llbot/qq/profile-proof.json'),JSON.stringify({botId:'a',generation:2,pid:801,profile:path.join(f.m.root,'llbot/qq/profile'),network:true,route:'direct'}));
+ const attach=()=>{run.relay.uin='90000';run.relay.upstream={close(){}}};
+ attach();await run.sample();assert.equal((await health()).ready,true);
+ block=true;const pending=run.sample();await entered.promise;
+ children[1].emit('exit',1);attach();gate.resolve();await pending;
+ assert.notEqual((await health()).login.state,'online','a probe from the exited child cannot restore login');
+ block=false;at+=3001;await run.sample();
+ assert.equal((await health()).ready,false,'a new child is not ready before its own verified connection');
+ assert.notEqual((await health()).login.state,'online');
+ const closing=run.close();assert.equal(run.close(),closing);await closing;
+ const count=children.length;at+=3600001;await run.sample();assert.equal(children.length,count,'closed runtime cannot restart children');
+});
+
+test('unbound native identity must match OneBot and PMHQ exit cannot restart only the JS child',async t=>{
+ const f=await fixture(),children=[];f.m.expectedUin='';await writeFile(f.file,JSON.stringify(f.m));
+ const spawnChild=()=>{const child=new EventEmitter();Object.assign(child,{pid:900+children.length,kill(){child.emit('exit',0)}});children.push(child);return child};
+ const fetcher=async()=>Response.json({uin:'80000',uid:'other-native',qq_pid:901});
+ const run=await startRuntime(f.file,{spawnChild,fetcher});t.after(()=>run.close());
+ await writeFile(path.join(f.m.root,'llbot/qq/profile-proof.json'),JSON.stringify({botId:'a',generation:2,pid:901,profile:path.join(f.m.root,'llbot/qq/profile'),network:true,route:'direct'}));
+ await assert.rejects(run.relay.onIdentity('90000'),/identity/i);
+ children[0].emit('exit',1);children[1].emit('exit',1);await run.sample();assert.equal(children.length,2);
+});
+
+test('runtime shares one sampling flight and closes pending HTTP probes and unfinished bodies',async t=>{
+ const f=await fixture(),entered=deferred();let probes=0,aborted=0;
+ const spawnChild=()=>Object.assign(new EventEmitter(),{pid:950,kill(){this.emit('exit',0)}});
+ const fetcher=async(_url,{signal})=>{probes++;entered.resolve();return new Promise((_,reject)=>signal.addEventListener('abort',()=>{aborted++;reject(signal.reason)},{once:true}))};
+ const run=await startRuntime(f.file,{spawnChild,fetcher});t.after(()=>run.close());
+ const pending=run.sample();assert.equal(run.sample(),pending);await entered.promise;assert.equal(probes,1);
+ const accepted=once(run.server,'request');
+ const req=(await import('node:http')).request({host:'127.0.0.1',port:f.m.management.port,path:'/actions/send_private_msg',method:'POST',headers:{Authorization:'Bearer '+f.m.management.token,'Content-Length':100}});
+ req.on('error',()=>{});req.write('{');await accepted;
+ await deadline(run.close());await pending;req.destroy();assert.equal(aborted,1);
 });
 
 test('runtime HTTP auth, profile/native proof, worker-only restart and PMHQ failure are isolated without executing QQ',async t=>{

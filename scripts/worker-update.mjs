@@ -31,18 +31,18 @@ export async function updateSharedWorkers(agent,{release,heartbeat,apply,rollbac
  const protocols=new Map(),groups=new Map(),affected=new Set();
  let attempted=false,pulse,pulsing=false,lastPulse=Promise.resolve(),pulseError,failure;
  const report=async(phase,detail={})=>{owner.phase=phase;await onProgress({release,phase,...detail})};
- const check=()=>{
+ const check=(recovering=false)=>{
   assert.equal(agent[marker],owner,'Worker update ownership changed');
-  assert.ok(!agent.closed,'Agent is closing');signal?.throwIfAborted();
-  if(pulseError)throw pulseError;
+  assert.ok(!agent.closed,'Agent is closing');if(!recovering)signal?.throwIfAborted();
+  if(pulseError&&!recovering)throw pulseError;
  };
- const wait=async(predicate,label)=>{
+ const wait=async(predicate,label,recovering=false)=>{
   const deadline=Date.now()+timeoutMs;let lastReport=0;
-  for(;;){check();const done=await predicate();check();
+  for(;;){check(recovering);const done=await predicate();check(recovering);
    if(Date.now()>=deadline)throw Error('Worker update timed out: '+label);
    if(done)return;
    if(Date.now()-lastReport>=5000){lastReport=Date.now();await report(owner.phase,{waitingFor:label,deadline})}
-   await delay(Math.min(50,Math.max(1,deadline-Date.now())),undefined,{signal});
+   await delay(Math.min(50,Math.max(1,deadline-Date.now())),undefined,{signal:recovering?undefined:signal});
   }
  };
  const sameProtocols=async()=>{
@@ -134,32 +134,37 @@ export async function updateSharedWorkers(agent,{release,heartbeat,apply,rollbac
  }catch(error){
   owner.phase='recovering';const errors=[error];failure=error;
   try{await report('recovering',{errorType:error?.name||'Error'})}catch(error){errors.push(error)}
-  // Roll code back before restoring Workers. Never repeat apply on timeout.
+  // A replacement may already execute the rejected release. Settle/fence and
+  // stop its exact owner before changing disk code, not after rollback.
   let restored=true;
-  if(attempted)try{await rollback()}catch(failure){errors.push(failure);restored=false}
+  if(attempted){
+   for(const id of affected){const entry=groups.get(id);let record;
+    try{
+     await wait(async()=>{
+      const current=await currentGroup(entry.group);record=await agent.host.record(id,'ai');
+      if(!record||!await agent.host.inspect(id,'ai')){record=undefined;return true}
+      let health;try{health=await agent.shared.request(current,'/health')}catch(error){if(transientReadiness(error))return false;throw error}
+      if(health.activity?.idle!==true)return false;
+      try{entry.recoveryLease=await prepareAiStop(agent,current,record);return true}
+      catch(error){if(/HTTP 409/.test(String(error)))return false;throw error}
+     },'rollback Worker idle boundary',true);
+     if(record)try{await agent.host.stop(id,'ai','worker-update-rollback',{pid:record.pid,created:record.created})}
+     catch(error){if(await agent.host.inspect(id,'ai'))throw error}
+    }catch(failure){errors.push(failure);restored=false}
+   }
+   if(restored)try{await rollback()}catch(failure){errors.push(failure);restored=false}
+  }
   for(const [id,entry]of groups)try{
    if(affected.has(id)&&restored&&!agent.closed){
-    // A replacement may already run the rejected code. Fence its actual
-    // owner before stopping, then start against the restored release.
-    const current=await currentGroup(entry.group),record=await agent.host.record(id,'ai');
-    if(record&&await agent.host.inspect(id,'ai')){
-     const lease=await prepareAiStop(agent,current,record);
-     try{await agent.host.stop(id,'ai','worker-update-rollback',{pid:record.pid,created:record.created})}
-     catch(failure){await lease.cancel();throw failure}
-    }
     await start(entry);
-    const deadline=Date.now()+timeoutMs;
-    while(!await ready(entry.group)){
-     if(agent.closed||Date.now()>=deadline)throw Error('Rollback Worker did not become ready');
-     await delay(50);
-    }
+    await wait(()=>ready(entry.group),'rollback Worker readiness',true);
    }
   }catch(failure){errors.push(failure)}
   if(errors.length>1){failure=new AggregateError(errors,'Worker update failed; recovery requires inspection');throw failure}
   throw error;
  }finally{
   const errors=[];
-  for(const entry of groups.values())try{await entry.lease?.cancel()}catch(error){errors.push(error)}
+  for(const entry of groups.values())for(const lease of [entry.lease,entry.recoveryLease])try{await lease?.cancel()}catch(error){errors.push(error)}
   clearInterval(pulse);await lastPulse;
   // Restore descriptors even when cancellation/verification failed. Old
   // model calls and external tasks keep their original owner and receipts.

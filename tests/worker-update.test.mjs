@@ -63,8 +63,10 @@ test('partial installation failure rolls files back and releases its acquired fe
 });
 
 test('failed final verification fences the rejected replacement before rollback recovery',async()=>{
- const f=fixture();await assert.rejects(updateSharedWorkers(f.agent,{...f.options,verify:async()=>{throw Error('loaded source mismatch')}}),/loaded source mismatch/);
- assert.deepEqual(f.events,['fence','apply','stop:20','start:21','rollback','fence','stop:21','start:22']);f.restored();
+ const f=fixture(),controller=new AbortController();await assert.rejects(updateSharedWorkers(f.agent,{...f.options,signal:controller.signal,verify:async()=>{controller.abort();throw Error('loaded source mismatch')},rollback:async()=>{
+  assert.ok(f.events.includes('stop:21'),'rejected live code must settle and stop before any disk rollback');f.events.push('rollback');
+ }}),/loaded source mismatch/);
+ assert.deepEqual(f.events,['fence','apply','stop:20','start:21','fence','stop:21','rollback','start:22']);f.restored();
 });
 
 test('generation change is rejected and never restarts a different owner',async()=>{
@@ -108,7 +110,23 @@ test('readiness authentication failure is visible instead of retried as a startu
  f.agent.shared.request=async(g,p)=>{if(p==='/health'&&f.events.includes('start:21'))throw Error('HTTP 401');return request(g,p)};
  await assert.rejects(updateSharedWorkers(f.agent,f.options),error=>{
   assert.ok(error instanceof AggregateError);assert.equal(error.errors[0].message,'HTTP 401');return true;
- });assert.ok(f.events.includes('rollback'));assert.equal(f.events.includes('stop:21'),false);f.restored();
+ });assert.equal(f.events.includes('rollback'),false,'cannot change disk code under an unverified live replacement');assert.equal(f.events.includes('stop:21'),false);f.restored();
+});
+
+test('rollback waits for a busy replacement and cannot restart against code whose rollback failed',async()=>{
+ const f=fixture(),request=f.agent.shared.request;let busy=true,checks=0;
+ f.agent.shared.request=async(g,p)=>{const health=await request(g,p);if(p==='/health'&&f.events.includes('verify')&&busy){health.activity.idle=false;if(++checks===2)busy=false}return health};
+ await assert.rejects(updateSharedWorkers(f.agent,{...f.options,timeoutMs:1000,verify:async()=>{f.events.push('verify');throw Error('bad loaded code')},rollback:async()=>{
+  assert.ok(checks>=2);assert.ok(f.events.includes('stop:21'));throw Error('rollback failed');
+ }}),error=>{assert.deepEqual(error.errors.map(x=>x.message),['bad loaded code','rollback failed']);return true});
+ assert.equal(f.events.includes('start:22'),false);f.restored();
+});
+
+test('a lost rollback stop response uses actual process absence to finish restoring the original code',async()=>{
+ const f=fixture(),stop=f.agent.host.stop;let calls=0;
+ f.agent.host.stop=async(...args)=>{await stop(...args);if(++calls===2)throw Error('rollback stop receipt lost')};
+ await assert.rejects(updateSharedWorkers(f.agent,{...f.options,verify:async()=>{throw Error('loaded source mismatch')}}),/loaded source mismatch/);
+ assert.deepEqual(f.events,['fence','apply','stop:20','start:21','fence','stop:21','rollback','start:22']);f.restored();
 });
 
 test('stop boundary proof runs before the new Worker and phase progress is observable',async()=>{

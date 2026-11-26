@@ -36,3 +36,15 @@ test('local PMHQ bridge rejects other destinations and tokens, accepts lowercase
  const wire=Buffer.concat(chunks).toString();assert.match(wire,/HTTP\/1.1 200/);assert.match(wire,/"code":0/);assert.equal(failures,0);assert.equal(children.length,2);
  auth.close();assert.equal(children[1].ended,true);
 });
+
+test('closing the local bridge terminates its unfinished birth-proof child without creating another helper',async t=>{
+ const runtimeDir=path.resolve('references/llbot-8.3.2');
+ try{await access(path.join(runtimeDir,'bin/pmhq/auth-local/leaf.pem'))}catch{t.skip('reviewed local auth assets not installed');return}
+ const server=http.createServer();await new Promise(r=>server.listen(0,'127.0.0.1',r));
+ let probe,entered;const started=new Promise(resolve=>entered=resolve);
+ const spawnChild=()=>{assert.equal(probe,undefined,'no patch helper can start after close');probe=Object.assign(new EventEmitter(),{stdout:new EventEmitter(),killed:false,kill(){this.killed=true;this.emit('exit',1)}});queueMicrotask(()=>entered());return probe};
+ const token='b'.repeat(64),auth=await localAuth(server,{manifest:{runtimeDir,python:'owned-python',management:{token,port:server.address().port}},spawnChild,getProcess:()=>({pid:900}),onFailure(){}});
+ t.after(async()=>{auth.close();probe?.kill();await new Promise(r=>server.close(r))});
+ const req=http.request({host:'127.0.0.1',port:server.address().port,method:'CONNECT',path:'api-auth.luckylillia.com:443',headers:{'Proxy-Authorization':'Basic '+Buffer.from(token+':local').toString('base64')}});req.on('error',()=>{});req.end();
+ await started;auth.close();assert.equal(probe.killed,true);await new Promise(resolve=>setImmediate(resolve));req.destroy();
+});

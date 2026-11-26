@@ -32,11 +32,26 @@ export class ProcessHost implements ProcessHostLike {
   private helper(args:string[],input?:string,script='process_control.py',timeout=15000){const extra:NodeJS.ProcessEnv={PYTHONIOENCODING:'utf-8'};if(script==='protocol_process.py'&&process.env.EXTERNAL_AGENT==='true')extra.EXTERNAL_AGENT='true';return new Promise<string>((resolve,reject)=>{const child=execFile(this.python,['-B',path.resolve('scripts',script),...args],{windowsHide:true,timeout,maxBuffer:1024*1024,env:safeSubprocessEnv(extra)},(error,stdout)=>error?reject(new Error('进程管理检查或操作失败，请管理员检查服务运行身份及服务日志。')):resolve(stdout));if(input){child.stdin?.on('error',reject);child.stdin?.end(input)}})}
   // One short-lived interpreter for an entire health sweep, not one per probe.
   // The cache never spans a command, start/stop, or another health sweep.
-  async beginInspection(){const records=[];for(const id of await readdir(path.join(this.root,'bots')).catch(()=>[])){for(const kind of ['ai','protocol']){const rec=await this.record(id,kind);if(rec)records.push({id,kind,pid:rec.pid,created:rec.created,root:path.join(this.root,'bots',id)})}}const values=JSON.parse(await this.helper(['batch'],JSON.stringify(records)));await this.maintainMemory(records);this.inspection=new Map(values.map((v:any)=>[`${v.id}:${v.kind}`,v.inspectionError?v:v.valid?{...v,memoryPolicy:this.memoryStatus.get(`${v.id}:${v.kind}`)}:null]))}
+  async beginInspection(){
+    const records=[],unavailable=new Map<string,any>();
+    for(const id of await readdir(path.join(this.root,'bots')).catch((error:NodeJS.ErrnoException)=>{if(error.code==='ENOENT')return [];throw error})){
+      for(const kind of ['ai','protocol']){
+        try{const rec=await this.record(id,kind);if(rec)records.push({id,kind,pid:rec.pid,created:rec.created,root:path.join(this.root,'bots',id)})}
+        catch{unavailable.set(`${id}:${kind}`,{inspectionError:'record_unavailable'})}
+      }
+    }
+    const values=JSON.parse(await this.helper(['batch'],JSON.stringify(records)));await this.maintainMemory(records);
+    this.inspection=new Map([...values.map((v:any)=>[`${v.id}:${v.kind}`,v.inspectionError?v:v.valid?{...v,memoryPolicy:this.memoryStatus.get(`${v.id}:${v.kind}`)}:null] as [string,any]),...unavailable]);
+  }
   endInspection(){this.inspection=undefined}
   file(id:string,kind:string){return path.join(this.root,'bots',id,`${kind}.process.json`)}
-  async record(id:string,kind:string){try{return JSON.parse(await readFile(this.file(id,kind),'utf8'))}catch{return null}}
-  async inspect(id:string,kind:string){let v;if(this.inspection)v=this.inspection.get(`${id}:${kind}`);else{const rec=await this.record(id,kind);if(!rec)return null;v=JSON.parse(await this.helper(['inspect',String(rec.pid),path.join(this.root,'bots',id),String(rec.created??'unknown')]))}if(v?.inspectionError)throw new Error('无法核实进程归属：服务运行身份无权读取该进程。请管理员通过原 Agent 恢复，未启动或停止进程。');return v?.valid?{...v,memoryPolicy:this.memoryStatus.get(`${id}:${kind}`)}:null}
+  async record(id:string,kind:string){
+    let raw:string;try{raw=await readFile(this.file(id,kind),'utf8')}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return null;throw error}
+    let record:any;try{record=JSON.parse(raw)}catch{throw new Error('进程记录无法解析，请检查本实例运行状态。')}
+    if(!record||typeof record!=='object'||Array.isArray(record)||!Number.isSafeInteger(record.pid)||record.pid<=0||record.created!==undefined&&(typeof record.created!=='number'||!Number.isFinite(record.created)))throw new Error('进程记录无效，请检查本实例运行状态。');
+    return record;
+  }
+  async inspect(id:string,kind:string){let v;if(this.inspection?.has(`${id}:${kind}`))v=this.inspection.get(`${id}:${kind}`);else{const rec=await this.record(id,kind);if(!rec)return null;v=JSON.parse(await this.helper(['inspect',String(rec.pid),path.join(this.root,'bots',id),String(rec.created??'unknown')]))}if(v?.inspectionError==='record_unavailable')throw new Error('进程记录无法核实，请检查本实例运行状态；未启动或停止进程。');if(v?.inspectionError)throw new Error('无法核实进程归属：服务运行身份无权读取该进程。请管理员通过原 Agent 恢复，未启动或停止进程。');return v?.valid?{...v,memoryPolicy:this.memoryStatus.get(`${id}:${kind}`)}:null}
   async start(id:string,kind:string,executable:string,args:string[],cwd:string,env:NodeJS.ProcessEnv,keys:string[]=[]){
     this.inspection?.delete(`${id}:${kind}`);
     if(await this.inspect(id,kind))return;

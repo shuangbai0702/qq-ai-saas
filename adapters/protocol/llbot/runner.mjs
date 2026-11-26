@@ -53,18 +53,20 @@ const authorized=(request,token)=>{const received=Buffer.from(request.headers.au
 async function jsonBody(request){const chunks=[];let size=0;for await(const chunk of request){size+=chunk.length;if(size>1048576)throw Error('Request too large');chunks.push(chunk)}return JSON.parse(Buffer.concat(chunks).toString('utf8')||'{}')}
 export async function startRuntime(file,{spawnChild=spawn,clock=()=>Date.now(),fetcher=fetch}={}){
  const {manifest:m,work,home,qqPath}=await prepareRuntime(file);
- let timer,auth;let closing=false,worker,pmhq,epoch=0,workerMemory,lastMemory=0,workerStarted=0,workerRestartAt=0,workerRestarts=[],pmhqExited=false,detail='LLBot正在启动',qqResources={},qqDisconnected=false,wasOnline=false,nativeOnline=false,offlineAt=0;
- let lastNativeHealth=clock(),nativeSeen=false,qqPid;
+ let timer,auth,sampleTask,closeTask;let closing=false,worker,pmhq,epoch=0,workerMemory,lastMemory=0,workerStarted=0,workerRestartAt=0,workerRestarts=[],pmhqExited=false,detail='LLBot正在启动',qqResources={},qqDisconnected=false,wasOnline=false,nativeOnline=false,offlineAt=0;
+ let lastNativeHealth=clock(),nativeSeen=false;
+ const lifetime=new AbortController(),requestSignal=ms=>AbortSignal.any([lifetime.signal,AbortSignal.timeout(ms)]);
  const policy={};let resourceStatus={decision:'starting'};let login={state:'starting'};
- const relay=new LLBotRelay({expectedUin:m.expectedUin,url:m.reverseWs.url,token:m.reverseWs.token,onIdentity:async uin=>{await nativeHealth();await profileProof();if(!closing)detail=''}});
- async function profileProof(){const proof=JSON.parse(await readFile(path.join(home,'profile-proof.json'),'utf8'));if(proof.botId!==m.botId||proof.generation!==m.generation||proof.profile!==path.join(home,'profile')||!Number.isInteger(proof.pid)||proof.pid!==qqPid||proof.network!==true||proof.route!==m.egress.route)throw Error('Private QQ profile proof unavailable');return proof}
+ const relay=new LLBotRelay({expectedUin:m.expectedUin,url:m.reverseWs.url,token:m.reverseWs.token,onIdentity:async uin=>{
+  const native=await nativeHealth();
+  if(closing||String(native.uin)!==uin||!native.uid||m.expectedUin&&uin!==m.expectedUin)throw Error('Native QQ identity mismatch');
+  await profileProof(native.qq_pid);lifetime.signal.throwIfAborted();
+ }});
+ async function profileProof(pid){const proof=JSON.parse(await readFile(path.join(home,'profile-proof.json'),'utf8'));if(proof.botId!==m.botId||proof.generation!==m.generation||proof.profile!==path.join(home,'profile')||!Number.isInteger(proof.pid)||proof.pid!==pid||proof.network!==true||proof.route!==m.egress.route)throw Error('Private QQ profile proof unavailable');return proof}
  async function nativeHealth(){
-  const response=await fetcher(`http://127.0.0.1:${m.pmhqPort}/health`,{signal:AbortSignal.timeout(3000)});
-  if(!response.ok)throw Error('PMHQ health unavailable');const value=await response.json();lastNativeHealth=clock();nativeSeen=true;
-  nativeOnline=!!value.uin&&!!value.uid&&(!m.expectedUin||String(value.uin)===m.expectedUin);
-  qqPid=Number.isInteger(value.qq_pid)?value.qq_pid:undefined;
-  qqResources={rssBytes:Number.isFinite(value.memory?.qq_using)?value.memory.qq_using:undefined,cpuPercent:value.cpu?.total>0?Math.max(0,Math.min(100,value.cpu.qq_using/value.cpu.total*100)):undefined};
-  if(!nativeOnline)throw Error('Native QQ not online');
+  const response=await fetcher(`http://127.0.0.1:${m.pmhqPort}/health`,{signal:requestSignal(3000)});
+  if(!response.ok)throw Error('PMHQ health unavailable');const value=await response.json();
+  if(!value||typeof value!=='object'||Array.isArray(value))throw Error('Invalid PMHQ health');
   return value;
  }
  const env={...process.env,HOME:home,USERPROFILE:home,APPDATA:path.join(home,'AppData','Roaming'),LOCALAPPDATA:path.join(home,'AppData','Local')};
@@ -72,13 +74,14 @@ export async function startRuntime(file,{spawnChild=spawn,clock=()=>Date.now(),f
  // handles point at NUL. Pipe each owned child's output through that capture.
  function forwardOutput(child){child.stdout?.on('data',chunk=>process.stdout.write(chunk));child.stderr?.on('data',chunk=>process.stderr.write(chunk))}
  function launchWorker(){
-  if(closing)return;
+  if(closing||pmhqExited)return;
   relay.disconnectUpstream();const currentEpoch=++epoch;
+  login={state:'starting'};resourceStatus={decision:'starting'};for(const key of Object.keys(policy))delete policy[key];
   workerMemory=undefined;lastMemory=clock();workerStarted=clock();
   const child=spawnChild(process.execPath,['--expose-gc','--max-old-space-size=640','--import',pathToFileURL(path.join(directory,'worker-preload.mjs')).href,path.join(work,'llbot.js'),'--',`--pmhq-port=${m.pmhqPort}`,...(m.resume&&m.expectedUin?['--qq='+m.expectedUin]:[])],{cwd:work,env:{...env,FISHBOT_LLBOT_MANIFEST:path.resolve(file)},windowsHide:true,stdio:['ignore','pipe','pipe','ipc']});worker=child;forwardOutput(child);
   const ended=reason=>{
    if(epoch!==currentEpoch||worker!==child||closing)return;
-   worker=undefined;workerMemory=undefined;relay.disconnectUpstream();workerRestartAt=clock()+3000;detail=reason;
+   worker=undefined;workerMemory=undefined;login={state:'starting'};relay.disconnectUpstream();workerRestartAt=clock()+3000;detail=reason;
   };
   child.on('error',()=>{
    if(epoch!==currentEpoch||worker!==child||closing)return;
@@ -98,12 +101,15 @@ export async function startRuntime(file,{spawnChild=spawn,clock=()=>Date.now(),f
  }
  const server=http.createServer(async(request,response)=>{
   response.setHeader('Content-Type','application/json');response.setHeader('Cache-Control','no-store');
-  const send=(status,value)=>{response.writeHead(status);response.end(JSON.stringify(value))};
+  const send=(status,value)=>{if(!response.destroyed&&!response.writableEnded){response.writeHead(status);response.end(JSON.stringify(value))}};
   if(!authorized(request,m.management.token))return send(401,{error:'Unauthorized'});
   try{
-   if(request.method==='GET'&&request.url==='/api/health')return send(200,{botId:m.botId,generation:m.generation,ready:!pmhqExited&&!!worker&&login.state==='online',login,detail,resources:{strategy:'llbot-owned-components',...resourceStatus,worker:workerMemory?{pid:workerMemory.pid,rssBytes:workerMemory.rss,heapUsed:workerMemory.heapUsed}:null,workerRestarts:workerRestarts.length},components:{pmhq:{pid:pmhq?.pid,alive:!pmhqExited},llbot:{pid:worker?.pid,alive:!!worker},qqnt:{profileIsolated:login.state==='online',nativeOnline,...qqResources}},metrics:{restartRequested:pmhqExited||clock()-lastNativeHealth>(nativeSeen?60000:180000),qqDisconnected}});
+   if(request.method==='GET'&&request.url==='/api/health'){
+    const ready=!closing&&!pmhqExited&&!!worker&&relay.online&&nativeOnline&&login.state==='online';
+    return send(200,{botId:m.botId,generation:m.generation,ready,login:login.state==='online'&&!ready?{state:'starting'}:login,detail,resources:{strategy:'llbot-owned-components',...resourceStatus,worker:workerMemory?{pid:workerMemory.pid,rssBytes:workerMemory.rss,heapUsed:workerMemory.heapUsed}:null,workerRestarts:workerRestarts.length},components:{pmhq:{pid:pmhq?.pid,alive:!pmhqExited},llbot:{pid:worker?.pid,alive:!!worker},qqnt:{profileIsolated:login.state==='online',nativeOnline,...qqResources}},metrics:{restartRequested:pmhqExited||clock()-lastNativeHealth>(nativeSeen?60000:180000),qqDisconnected,transport:relay.transport}});
+   }
    if(request.method==='GET'&&request.url==='/api/login-qrcode'){
-    const upstream=await fetcher(`http://127.0.0.1:${m.webuiPort}/api/login-qrcode`,{headers:{'X-Webui-Token':hash(m.management.token)},signal:AbortSignal.timeout(4000)});const data=await upstream.json();
+    const upstream=await fetcher(`http://127.0.0.1:${m.webuiPort}/api/login-qrcode`,{headers:{'X-Webui-Token':hash(m.management.token)},signal:requestSignal(4000)});const data=await upstream.json();
     if(!upstream.ok||!data.success)throw Error('QR unavailable');return send(200,{botId:m.botId,...data});
    }
    if(request.method==='POST'&&request.url?.startsWith('/actions/')){
@@ -124,26 +130,33 @@ export async function startRuntime(file,{spawnChild=spawn,clock=()=>Date.now(),f
   if(m.authMode==='local')auth=await localAuth(server,{manifest:m,spawnChild,getProcess:()=>pmhq,onFailure:()=>{pmhqExited=true;detail='LLBot私有本地启动组件失败，等待受控恢复'}});
   const pmhqEnv=auth?{...env,HTTPS_PROXY:auth.proxy,HTTP_PROXY:auth.proxy,ALL_PROXY:auth.proxy,https_proxy:auth.proxy,http_proxy:auth.proxy,all_proxy:auth.proxy,NO_PROXY:'127.0.0.1,localhost',no_proxy:'127.0.0.1,localhost'}:env;
   pmhq=spawnChild(path.join(m.runtimeDir,'bin/pmhq',process.platform==='win32'?'pmhq.exe':'pmhq'),['--mode=inline',`--config=${path.join(home,'pmhq_config.json')}`,'--host=127.0.0.1',`--port=${m.pmhqPort}`,`--auth-token=${m.authToken}`,`--qq-path=${qqPath}`,`--work-dir=${home}`,`--qq-args=--multi-instance --user-data-dir="${path.join(home,'profile')}"`,...(m.resume&&m.expectedUin?[`--qq=${m.expectedUin}`]:[]),'--exit-with-qq-delay=15'],{cwd:home,env:pmhqEnv,windowsHide:true,stdio:['ignore','pipe','pipe']});forwardOutput(pmhq);
-  pmhq.on('error',()=>{pmhqExited=true;detail='PMHQ启动失败'});pmhq.on('exit',()=>{pmhqExited=true;detail='PMHQ已退出，等待平台受控恢复'});launchWorker();
+  const nativeEnded=()=>{if(closing)return;pmhqExited=true;nativeOnline=false;login={state:'failed',message:'PMHQ已退出，等待平台受控恢复'};relay.disconnectUpstream();detail=login.message};
+  pmhq.on('error',()=>{if(!pmhq.pid)nativeEnded()});pmhq.once('exit',nativeEnded);pmhq.once('close',nativeEnded);launchWorker();
  }catch{await close();throw Error('LLBot component launch failed')}
- let sampling=false;
- timer=setInterval(()=>{if(!sampling&&!closing){sampling=true;void sample().finally(()=>{sampling=false})}},5000);timer.unref();
- async function sample(){
+ timer=setInterval(()=>{void sample()},5000);timer.unref();
+ function sample(){if(closing)return Promise.resolve();return sampleTask??=sampleOnce().finally(()=>{sampleTask=undefined})}
+ async function sampleOnce(){
+  let current=()=>!closing;
   try{
+   if(pmhqExited)return;
    const now=clock();workerRestarts=workerRestarts.filter(at=>at>now-3600000);
    if(!worker&&now>=workerRestartAt&&workerRestarts.length<3){workerRestarts.push(now);launchWorker()}
    if(worker&&now-lastMemory>60000&&now-workerStarted>60000)recycleWorker('LLBot无心跳，局部恢复，不重启QQ');
    if(workerMemory){resourceStatus=resourceDecision(policy,{at:now,pid:workerMemory.pid,rssBytes:workerMemory.rss,heapUsed:workerMemory.heapUsed,active:relay.active,lastActivity:relay.lastActivity,available:os.freemem(),total:os.totalmem()});
-    if(resourceStatus.decision==='reclaim-js'&&worker?.connected)worker.send({type:'reclaim-js'});
+    if(resourceStatus.decision==='reclaim-js'&&worker?.connected){const child=worker;try{child.send({type:'reclaim-js'},error=>{if(error&&!closing&&worker===child)detail='LLBot内存回收通信失败，等待健康检查'})}catch{detail='LLBot内存回收通信失败，等待健康检查'}}
     if(resourceStatus.decision==='restart-llbot')recycleWorker('LLBot持续内存压力，局部恢复，不重启QQ');
    }
-   await nativeHealth().catch(()=>{nativeOnline=false});
+   const observedEpoch=epoch,observedWorker=worker;current=()=>!closing&&!pmhqExited&&epoch===observedEpoch&&worker===observedWorker;
+   const native=await nativeHealth().catch(()=>null);if(!current())return;
+   nativeOnline=!!native?.uin&&!!native.uid&&(!m.expectedUin||String(native.uin)===m.expectedUin);
+   if(native){lastNativeHealth=clock();nativeSeen=true;qqResources={rssBytes:Number.isFinite(native.memory?.qq_using)?native.memory.qq_using:undefined,cpuPercent:native.cpu?.total>0?Math.max(0,Math.min(100,native.cpu.qq_using/native.cpu.total*100)):undefined}}
    if(wasOnline&&!nativeOnline){offlineAt||=now;qqDisconnected=now-offlineAt>=15000;if(qqDisconnected)relay.disconnectUpstream()}else{offlineAt=0;qqDisconnected=false}
-   const response=await fetcher(`http://127.0.0.1:${m.webuiPort}/api/login-info`,{headers:{'X-Webui-Token':hash(m.management.token)},signal:AbortSignal.timeout(3000)});const state=await response.json();
-   if(closing)return;
+   const response=await fetcher(`http://127.0.0.1:${m.webuiPort}/api/login-info`,{headers:{'X-Webui-Token':hash(m.management.token)},signal:requestSignal(3000)});const state=await response.json();
+   if(!current())return;
    if(!response.ok||!state.success)throw Error('LLBot login probe unavailable');
    if(state.data.online&&nativeOnline){
-    const uin=String(state.data.uin||'');const proof=await profileProof();
+    const uin=String(state.data.uin||'');const proof=await profileProof(native.qq_pid);if(!current())return;
+    if(String(native.uin)!==uin)throw Error('Native QQ identity mismatch');
     if(proof.botId!==m.botId||proof.profile!==path.join(home,'profile')||!Number.isInteger(proof.pid)||!relay.online||relay.uin!==uin||m.expectedUin&&uin!==m.expectedUin)throw Error('LLBot profile/identity proof missing');
     login={state:'online',uin};wasOnline=true;detail='';
    }else if(wasOnline&&!nativeOnline){
@@ -151,13 +164,21 @@ export async function startRuntime(file,{spawnChild=spawn,clock=()=>Date.now(),f
     // replacing only OneBot cannot restore QQ or prove a fresh login QR.
     login={state:'failed',message:'QQ会话离线，等待自动恢复'};
    }else{
-    const q=await fetcher(`http://127.0.0.1:${m.webuiPort}/api/login-qrcode`,{headers:{'X-Webui-Token':hash(m.management.token)},signal:AbortSignal.timeout(3000)});const qr=await q.json();
+    const q=await fetcher(`http://127.0.0.1:${m.webuiPort}/api/login-qrcode`,{headers:{'X-Webui-Token':hash(m.management.token)},signal:requestSignal(3000)});const qr=await q.json();if(!current())return;
     const data=qr.success&&qr.data;
     login=data?.qrcodeUrl?{state:'waiting_scan',qr:data.qrcodeUrl}:{state:'starting'};
    }
-  }catch{login=qqDisconnected?{state:'failed',message:'QQ已掉线'}:{state:'starting'};detail||='LLBot正在等待可验证的QQ登录、私有目录和协议连接'}
+  }catch{if(current()){login=qqDisconnected?{state:'failed',message:'QQ已掉线'}:{state:'starting'};detail||='LLBot正在等待可验证的QQ登录、私有目录和协议连接'}}
  }
- async function close(){if(closing)return;closing=true;clearInterval(timer);relay.close();for(const client of ws.clients)client.terminate();ws.close();auth?.close();worker?.kill();pmhq?.kill();await new Promise(resolve=>server.close(resolve))}
+ function close(){
+  if(closeTask)return closeTask;closing=true;lifetime.abort();clearInterval(timer);
+  return closeTask=(async()=>{
+   relay.close();for(const client of ws.clients)client.terminate();ws.close();auth?.close();
+   const errors=[];for(const child of [worker,pmhq])try{child?.kill()}catch(error){errors.push(error)}
+   await new Promise(resolve=>{server.close(resolve);server.closeAllConnections()});
+   if(errors.length)throw new AggregateError(errors,'LLBot owned component cleanup failed');
+  })();
+ }
  return{server,relay,close,sample};
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))startRuntime(process.argv[2]).then(runtime=>{for(const signal of ['SIGTERM','SIGINT'])process.once(signal,()=>{void runtime.close().finally(()=>process.exit(0))})}).catch(error=>{console.error('LLBot managed startup failed:',error?.stack||String(error));process.exit(1)});

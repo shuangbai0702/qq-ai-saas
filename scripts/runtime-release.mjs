@@ -37,40 +37,53 @@ async function atomic(file,raw){
  }finally{await fs.rm(temp,{force:true})}
 }
 const receipt=(dir,name,value)=>atomic(path.join(dir,name+'.json'),JSON.stringify(value,null,2));
+const beforeDeadline=deadline=>assert.ok(deadline===undefined||Date.now()<deadline,'Release file operation deadline exceeded');
 
 // The deployment account owns code writes. The live Agent only borrows this
 // exact staged operation while it owns the Worker fence; it needs no source ACL.
 export function releaseFiles({root,spec,expected},dir){
  const backup=path.join(dir,'before-code'),installed=[];
  return{
-  async install(){
+  async install({deadline}={}){
+   beforeDeadline(deadline);
    // Snapshot only this small release delta. Verification and installation use
    // the same bytes; a staged file cannot change across an awaited code write.
    const staged=new Map();
    for(const [name,digest]of Object.entries(spec.files)){
     const raw=await fs.readFile(target(path.join(dir,'staged'),name));
+    beforeDeadline(deadline);
     assert.equal(hash(raw),digest,'Staged hash mismatch: '+name);staged.set(name,raw);
    }
    for(const [name,digest]of Object.entries(expected))assert.equal(await fingerprint(target(root,name)),digest,'Activation CAS changed: '+name);
+   beforeDeadline(deadline);
    await fs.mkdir(backup);
-   for(const [name,digest]of Object.entries(expected))if(digest!==null)await atomic(target(backup,name),await fs.readFile(target(root,name)));
+   for(const [name,digest]of Object.entries(expected))if(digest!==null){beforeDeadline(deadline);await atomic(target(backup,name),await fs.readFile(target(root,name)))}
    for(const [name,digest]of Object.entries(expected))assert.equal(await fingerprint(target(root,name)),digest,'Activation CAS changed: '+name);
    for(const name of [...Object.keys(spec.files).filter(n=>n!=='dist-server/build.json'),'dist-server/build.json']){
+    beforeDeadline(deadline);
     installed.push(name);await atomic(target(root,name),staged.get(name));
    }
-   for(const name of spec.retired||[]){installed.push(name);await fs.unlink(target(root,name))}
+   for(const name of spec.retired||[]){beforeDeadline(deadline);installed.push(name);await fs.unlink(target(root,name))}
    await verifyProduction(root);await verifyFiles(root,spec.verifyFiles);
   },
-  async rollback(){
-   for(const name of [...installed].reverse()){
+  async rollback({deadline}={}){
+   beforeDeadline(deadline);
+   const restore=new Map();
+   for(const name of installed){
+    beforeDeadline(deadline);
     const file=target(root,name),current=await fingerprint(file);
     if(current===expected[name])continue;
     assert.ok(current===spec.files[name]||current===null,'Concurrent file change during rollback: '+name);
-    if(expected[name]===null)await fs.rm(file,{force:true});
+    if(expected[name]===null)restore.set(name,null);
     else{
      const raw=await fs.readFile(target(backup,name));assert.equal(hash(raw),expected[name],'Rollback backup changed: '+name);
-     await atomic(file,raw);
+     restore.set(name,raw);
     }
+   }
+   // Prove every target/backup first, and publish the restored manifest last.
+   for(const name of [...restore.keys()].filter(n=>n!=='dist-server/build.json').reverse().concat(restore.has('dist-server/build.json')?['dist-server/build.json']:[])){
+    beforeDeadline(deadline);
+    const raw=restore.get(name);if(raw===null)await fs.rm(target(root,name),{force:true});else await atomic(target(root,name),raw);
    }
    await verifyProduction(root);
   }
@@ -94,7 +107,7 @@ export async function checkRuntimeRelease(profile,dir){
  for(const name of Object.keys(spec.verifyFiles))target(root,name);
  const expected=await json(path.join(dir,'expected-before.json'));
  const current=await json(path.join(root,'dist-server/build.json'));
- if(current.gitCommit===spec.commit){await verifyProduction(root);return{root,spec,expected,alreadyApplied:true}}
+ if(current.gitCommit===spec.commit){await verifyProduction(root);await verifyFiles(root,spec.verifyFiles);return{root,spec,expected,alreadyApplied:true}}
  assert.equal(await fingerprint(path.join(root,'dist-server/build.json')),spec.oldManifestSha256,'Concurrent release manifest change');
  await verifyProduction(root);
  for(const [name,digest]of Object.entries(expected))assert.equal(await fingerprint(target(root,name)),digest,'Concurrent source change: '+name);
@@ -116,10 +129,14 @@ export async function checkRuntimeRelease(profile,dir){
   assert.ok(current.runtimeScripts?.[name]===next.runtimeScripts?.[name]||deployScripts.has(name),'Requires a different component release: '+name);
  const entries=manifest=>Object.assign({},...['sourceHashes','pythonSources','runtimeScripts','contracts','migrations','artifactHashes'].map(field=>manifest[field]));
  const previous=entries(current),inventory=entries(next);
+ for(const [name,digest]of Object.entries(inventory)){
+  target(root,name);assert.equal(spec.verifyFiles[name],digest,'Incomplete release inventory: '+name);
+ }
  for(const [name,digest]of Object.entries(spec.files))if(Object.hasOwn(previous,name)||Object.hasOwn(inventory,name))
   assert.equal(inventory[name],digest,'Inconsistent release inventory: '+name);
  for(const name of spec.retired||[])
   assert.ok(!Object.hasOwn(inventory,name)&&!Object.hasOwn(spec.verifyFiles,name),'Retired file remains in release inventory: '+name);
+ await verifyFiles(root,Object.fromEntries(Object.entries(spec.verifyFiles).filter(([name])=>!Object.hasOwn(spec.files,name))));
  // Reusing dependencies is justified by semantic lock equality, not package name.
  if(spec.files['package-lock.json'])assert.deepEqual(await json(path.join(root,'package-lock.json')),await json(path.join(dir,'staged/package-lock.json')),'Dependency installation required');
  if(spec.files['package.json']){
@@ -212,7 +229,10 @@ export async function applyRuntimeRelease(agent,profile,dir){
  }finally{await heartbeat.stop()}
 }
 
-async function operator(profile,dir){
+export async function operateRuntimeRelease(profile,dir){
+ const require=createRequire(path.join(profile.sourceRoot,'package.json'));
+ const unlock=await require('proper-lockfile').lock(dir,{retries:0});
+ try{
  const record=await json(path.join(profile.stateRoot,'services/agent.process.json'));
  const checked=await checkRuntimeRelease(profile,dir),files=releaseFiles(checked,dir),handled=new Set();
  let fileTask=Promise.resolve(),fileBusy=false;
@@ -228,13 +248,13 @@ async function operator(profile,dir){
     assert.equal(progress.ownerPid,record.pid);assert.equal(progress.commit,checked.spec.commit);
     assert.ok(request.operation==='install'&&progress.phase==='installing'||request.operation==='rollback'&&['installing','recovering'].includes(progress.phase));
     assert.ok(Date.now()<request.deadline,'Installer request expired');
-    await files[request.operation]();
+    await files[request.operation]({deadline:request.deadline});
    }catch(failure){error=failure}
    await receipt(dir,'file-result',{id:request.id,ok:!error,error:error?String(error.message):undefined,errorType:error?.name});
   }finally{fileBusy=false}
  };
+ const WebSocket=require('ws');
  const installer=setInterval(()=>{if(!fileBusy)fileTask=serveFiles().catch(error=>receipt(dir,'installer-error',{error:String(error.message)}))},50);
- const WebSocket=createRequire(path.join(profile.sourceRoot,'package.json'))('ws');
  let socket,sequence=0;const pending=new Map();
  const call=(method,params,timeoutMs=10000)=>new Promise((resolve,reject)=>{
   const id=++sequence,timer=setTimeout(()=>{pending.delete(id);reject(Error('Operator transport timed out; query the durable release receipt before retrying'))},timeoutMs);
@@ -270,6 +290,7 @@ async function operator(profile,dir){
   socket?.terminate();
   for(const p of pending.values())p.reject(Error('Operator closed'));pending.clear();
  }
+ }finally{await unlock()}
 }
 
 if(process.argv[1]&&path.resolve(process.argv[1])===path.resolve(import.meta.filename)){
@@ -280,6 +301,6 @@ if(process.argv[1]&&path.resolve(process.argv[1])===path.resolve(import.meta.fil
  else{
   const profile=await json(profileFile),checked=await checkRuntimeRelease(profile,dir);
   if(mode==='plan')console.log(JSON.stringify({commit:checked.spec.commit,alreadyApplied:checked.alreadyApplied,files:Object.keys(checked.spec.files).length}));
-  else{const result=checked.alreadyApplied?await json(path.join(dir,'result.json')):await operator(profile,dir);assert.equal(result.ok,true);assert.equal(result.commit,checked.spec.commit);console.log(JSON.stringify(result))}
+  else{const result=checked.alreadyApplied?await json(path.join(dir,'result.json')):await operateRuntimeRelease(profile,dir);assert.equal(result.ok,true);assert.equal(result.commit,checked.spec.commit);console.log(JSON.stringify(result))}
  }
 }

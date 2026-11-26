@@ -36,3 +36,30 @@ test('immediate process exit is observed before asynchronous PID inspection',{ti
  assert.equal(host.children.size,0);const log=await readFile(path.join(cwd,'runtime.log'),'utf8');assert.match(log,/process exited \(7\)/);assert.ok(!log.includes('synthetic-current-key'));assert.match(log,/REDACTED/);
  assert.match(log,/process exited \(7\) at=.* pid=\d+ signal=none intent=unexpected-or-external/);
 });
+
+test('unreadable or malformed process records are not absence and cannot launch a duplicate',async()=>{
+ const root=await mkdtemp(path.resolve('.local/record-ownership-')),cwd=path.join(root,'bots','owned');await mkdir(cwd,{recursive:true});
+ const host=new ProcessHost(root,path.resolve('references/astrbot/.venv/'+(process.platform==='win32'?'Scripts/python.exe':'bin/python'))),file=host.file('owned','ai');
+ await mkdir(file);await assert.rejects(host.record('owned','ai'));
+ await import('node:fs/promises').then(fs=>fs.rmdir(file));
+ for(const value of ['{','null','[]','{"pid":"123"}']){
+  await writeFile(file,value);await assert.rejects(host.record('owned','ai'));
+  await assert.rejects(host.start('owned','ai',process.execPath,['--eval','process.exit(0)'],cwd,process.env));
+  assert.equal(host.children.size,0);assert.equal(await readFile(file,'utf8'),value);
+ }
+});
+
+test('a damaged record is isolated from peers and invalidated snapshots require fresh proof',async()=>{
+ const root=await mkdtemp(path.resolve('.local/record-sweep-'));for(const id of ['damaged','healthy'])await mkdir(path.join(root,'bots',id),{recursive:true});
+ const host:any=new ProcessHost(root,'unused');await writeFile(host.file('damaged','ai'),'{');await writeFile(host.file('healthy','ai'),JSON.stringify({pid:123,created:1}));
+ const inspected:string[]=[];host.helper=async(args:string[],input?:string)=>{
+  if(args[0]==='batch'){const records=JSON.parse(input!);assert.deepEqual(records.map((v:any)=>v.id),['healthy']);return JSON.stringify(records.map((v:any)=>({...v,valid:true})))}
+  assert.equal(args[0],'inspect');inspected.push(args[1]);return JSON.stringify({pid:123,created:1,valid:true});
+ };host.maintainMemory=async(records:any[])=>{assert.deepEqual(records.map(v=>v.id),['healthy'])};
+ await host.withInspection(async()=>{
+  await host.beginInspection();await assert.rejects(host.inspect('damaged','ai'),/进程记录无法核实/);
+  assert.equal((await host.inspect('healthy','ai')).pid,123);assert.deepEqual(inspected,[]);
+  await host.start('healthy','ai','unused',[],'.',{});assert.deepEqual(inspected,['123'],'a cleared cache entry must recheck the actual owner');assert.equal(host.children.size,0);
+  await assert.rejects(host.start('damaged','ai','unused',[],'.',{}),/进程记录无法解析/);assert.equal(await readFile(host.file('damaged','ai'),'utf8'),'{');
+ });
+});

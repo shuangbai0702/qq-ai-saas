@@ -38,7 +38,7 @@ export async function prepareAiStop(agent,group,expected,{allowLegacy=false}={})
   if(!await sameOwner())throw Error('AI stop process identity changed');
   return {legacy:false,cancel};
  }catch(error){
-  try{await cancel()}catch{throw new AggregateError([error], 'AI stop failed and admission could not be reopened; operator recovery required')}
+  try{await cancel()}catch(failure){throw new AggregateError([error,failure], 'AI stop failed and admission could not be reopened; operator recovery required')}
   throw error;
  }
 }

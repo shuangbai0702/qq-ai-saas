@@ -25,6 +25,14 @@ test('lost prepare response reopens admission before returning failure',async()=
  await assert.rejects(prepareAiStop(f.agent,f.group,f.expected),/connection lost/);
  assert.equal(f.fenced,false);
 });
+
+test('failed prepare and failed cancellation both retain their real cause',async()=>{
+ const f=fixture(),request=f.agent.shared.request;
+ f.agent.shared.request=async(g,p)=>{if(p==='/prepare-stop')throw Error('prepare receipt lost');if(p==='/cancel-stop')throw Error('cancel unavailable');return request(g,p)};
+ await assert.rejects(prepareAiStop(f.agent,f.group,f.expected),error=>{
+  assert.ok(error instanceof AggregateError);assert.deepEqual(error.errors.map(x=>x.message),['prepare receipt lost','cancel unavailable']);return true;
+ });
+});
 test('replacement process never receives cancellation for an old owner',async()=>{
  const f=fixture(),lease=await prepareAiStop(f.agent,f.group,f.expected);f.replace();
  await lease.cancel();assert.equal(f.calls.includes('/cancel-stop'),false);
