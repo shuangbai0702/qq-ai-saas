@@ -13,6 +13,8 @@ import urllib.request
 
 import psutil
 
+LOG_MAX_BYTES=2*1024*1024
+LOG_ARCHIVES=24
 
 def atomic(file, value):
     file.parent.mkdir(parents=True, exist_ok=True)
@@ -154,9 +156,17 @@ class Service:
                         continue
                     line=raw.decode('utf-8',errors='replace')
                     for secret in sorted(set(secrets),key=len,reverse=True):line=line.replace(secret,'[REDACTED]')
-                    if file.exists() and file.stat().st_size > 2*1024*1024:
-                        file.replace(file.with_suffix('.previous.log'))
-                    with file.open('a',encoding='utf-8') as output:output.write(line)
+                    try:
+                        if file.exists() and file.stat().st_size > LOG_MAX_BYTES:
+                            for index in range(LOG_ARCHIVES,1,-1):
+                                previous=file.with_suffix('.previous.log' if index==2 else f'.previous.{index-2}.log')
+                                if previous.exists():previous.replace(file.with_suffix(f'.previous.{index-1}.log'))
+                            file.replace(file.with_suffix('.previous.log'))
+                        with file.open('a',encoding='utf-8') as output:output.write(line)
+                    except OSError:
+                        # A full disk or a transient reader lock must not stop
+                        # draining stdout and eventually block the service.
+                        continue
         except (OSError,ValueError):
             pass
 

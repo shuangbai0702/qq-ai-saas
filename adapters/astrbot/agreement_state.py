@@ -48,7 +48,37 @@ def user_records(db,scope='',subject='',page=0):
     return [dict(zip(('id','revision','topic','detail','status','due','participants','source_scope','updated','handoff_id'),row)) for row in rows]
 
 
-REVIEW_SYSTEM='''existing_memory.agreements是约定原账本。每次审阅旧项，合并重复、退休失去意义或已被替代的事项；有效槽最多5个，超额时必须按重要性选择保留项，并逐项retire其余旧槽，不能省略整个整理字段。未终结不代表永久占槽；优先保留关键有效承诺，不凭一次沉默放弃。长期偏好归入事实，不重复登记。agreement_operations:[{"id":"原ID","expected_revision":原revision,"op":"replace|retire","reason":"必要理由","detail":"replace的完整正文"}]；确无变化才省略。replace仅修订同一主题正文、合并同义内容，不新增条款或冒充同意；retire仅退出认知槽，不宣称已履约或现实承诺已取消。handoff_id非空的任务约定只能经原任务入口处理；不要重放原话或改权限。'''
+REVIEW_SYSTEM='''existing_memory.agreements是约定原账本。每次审阅旧项，合并重复、退休失去意义或已被替代的事项；有效槽最多5个，超额时必须按重要性选择保留项，并逐项retire其余旧槽，不能省略整个整理字段。未终结不代表永久占槽；优先保留关键有效承诺，不凭一次沉默放弃。长期偏好归入事实，不重复登记。agreement_operations:[{"id":"原ID","expected_revision":原revision,"op":"replace|retire","reason":"必要理由","detail":"replace的完整正文"}]；确无变化才省略。replace仅修订同一主题正文、合并同义内容，不新增条款或冒充同意；retire仅退出认知槽，不宣称已履约或现实承诺已取消。handoff_id非空时仅task_status已终结的旧槽可retire，不改任务；已闭合项仅作证据，不再操作。不要重放原话或改权限。'''
+
+
+def task_terminal_status(handoff_id,task_revision,evidence):
+    if not handoff_id or type(task_revision) is not int:return None
+    for item in reversed(json.loads(evidence or '[]')):
+        if item.get('kind')=='task_terminal' and item.get('handoffId')==handoff_id and item.get('taskRevision')==task_revision and item.get('status') in ('completed','abandoned','canceled'):
+            return item['status']
+    return None
+
+
+def sync_task_terminals(db,states):
+    """Authenticated control evidence, not fulfillment or a second task ledger.
+
+    Repeated permits do not change the row. Only the next lawful semantic
+    review may decide whether the now-terminal task's cognitive slot retires.
+    """
+    if not isinstance(states,list):raise ValueError('invalid_agreement_task_states')
+    updates=[]
+    for state in states[:128]:
+        if not isinstance(state,dict) or state.get('status') not in ('completed','abandoned','canceled') or not isinstance(state.get('id'),str) or not isinstance(state.get('handoffId'),str):continue
+        if any(type(state.get(key)) is not int or state[key]<1 for key in ('taskRevision','goalRevision')):continue
+        row=db.execute("SELECT revision,evidence FROM memory_agreements WHERE id=? AND handoff_id=? AND task_revision=? AND status IN ('proposed','accepted','uncertain')",(state['id'],state['handoffId'],state['taskRevision'])).fetchone()
+        if not row:continue
+        evidence=json.loads(row[1] or '[]')
+        if any(item.get('kind')=='task_terminal' and item.get('handoffId')==state['handoffId'] and item.get('taskRevision')==state['taskRevision'] and item.get('goalRevision',0)>=state['goalRevision'] for item in evidence):continue
+        proof={'kind':'task_terminal',**{key:state[key] for key in ('handoffId','taskRevision','goalRevision','status')},'at':time.time()}
+        evidence=[item for item in evidence if not (item.get('kind')=='task_terminal' and item.get('handoffId')==state['handoffId'])]
+        updates.append((json.dumps((evidence+[proof])[-8:],ensure_ascii=False),state['id'],row[0],row[1]))
+    if updates:
+        with db:db.executemany('UPDATE memory_agreements SET evidence=? WHERE id=? AND revision=? AND evidence=?',updates)
 
 
 def review_view(db):
@@ -57,8 +87,10 @@ def review_view(db):
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_agreements'").fetchone():return []
     fields=('id','revision','topic','detail','status','due','source_scope','speaker','participants','audiences','updated','handoff_id')
     result=[]
-    for row in db.execute("SELECT "+','.join(fields)+" FROM memory_agreements WHERE status IN ('proposed','accepted','uncertain') OR updated>=? ORDER BY id",(time.time()-AGREEMENT_TTL,)):
+    for row in db.execute("SELECT "+','.join(fields)+",task_revision,evidence FROM memory_agreements WHERE status IN ('proposed','accepted','uncertain') OR updated>=? ORDER BY id",(time.time()-AGREEMENT_TTL,)):
         item=dict(zip(fields,row))
+        terminal=task_terminal_status(item['handoff_id'],row[-2],row[-1])
+        if terminal:item['task_status']=terminal
         for key in ('participants','audiences'):item[key]=json.loads(item[key])
         result.append(item)
     return result
@@ -82,10 +114,10 @@ def apply_review(db,data,offered,now,audit=None):
         if not before or identifier in seen or type(item.get('expected_revision')) is not int or item['expected_revision']!=before['revision']:
             reject('target_not_offered_or_stale_revision');continue
         seen.add(identifier)
-        row=db.execute('SELECT revision,status,handoff_id,evidence,topic,detail FROM memory_agreements WHERE id=?',(identifier,)).fetchone()
+        row=db.execute('SELECT revision,status,handoff_id,evidence,topic,detail,task_revision FROM memory_agreements WHERE id=?',(identifier,)).fetchone()
         if not row or row[0]!=before['revision']:raise ValueError('semantic_agreement_snapshot_changed')
         if row[1] not in OPEN_STATUSES:reject('agreement_closed');continue
-        if row[2]:reject('agreement_task_owned');continue
+        if row[2] and (item['op']!='retire' or not task_terminal_status(row[2],row[6],row[3])):reject('agreement_task_owned');continue
         reason=item.get('reason')
         allowed={'id','expected_revision','op','reason'}|({'detail'} if item['op']=='replace' else set())
         if set(item)!=allowed or not isinstance(reason,str) or not 1<=len(reason.strip())<=240:
@@ -116,7 +148,8 @@ def retired_claims(db,claims):
     remain distinct. The model already chose which real agreement to retire.
     """
     sources=set();shared_semantic=set()
-    for topic,channel,event,speaker in db.execute("SELECT topic,source_scope,source_event,speaker FROM memory_agreements WHERE status='expired' AND handoff_id IS NULL"):
+    for topic,channel,event,speaker,handoff,task_revision,evidence in db.execute("SELECT topic,source_scope,source_event,speaker,handoff_id,task_revision,evidence FROM memory_agreements WHERE status='expired'"):
+        if handoff and not task_terminal_status(handoff,task_revision,evidence):continue
         author=('bot','') if speaker=='bot' else ('human',speaker)
         if channel=='bot_shared' and str(event).startswith('semantic:'):
             # Shared retirement hashes the full [scope,event] identity. Its
@@ -406,8 +439,14 @@ def bind_handoff(db,agreement_id,revision,handoff_id):
 
 def task_states(db):
     """Version fences for the existing PG goals; no chat bodies or scheduler."""
-    return [{'id':r[0],'revision':r[1],'status':r[2],'handoffId':r[3],'taskRevision':r[4]}
-            for r in db.execute('SELECT id,revision,status,handoff_id,task_revision FROM memory_agreements WHERE handoff_id IS NOT NULL')]
+    result=[]
+    for row in db.execute("SELECT id,revision,status,handoff_id,task_revision,evidence FROM memory_agreements WHERE handoff_id IS NOT NULL ORDER BY (status IN ('proposed','accepted','uncertain')) DESC,updated DESC,id LIMIT 128"):
+        state=dict(zip(('id','revision','status','handoffId','taskRevision'),row))
+        for item in reversed(json.loads(row[-1] or '[]')):
+            if item.get('kind')=='task_terminal' and item.get('handoffId')==row[3] and item.get('taskRevision')==row[4]:
+                state.update(taskStatus=item['status'],goalRevision=item['goalRevision']);break
+        result.append(state)
+    return result
 
 
 def settle_task(db,handoff_id,result):

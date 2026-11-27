@@ -64,6 +64,9 @@ export class NapCatAdapter implements ProtocolAdapter{
   // Only a terminal phase (or legacy response without progress) is a failure.
   const progressing=['generating_qrcode','waiting_qrcode','qrcode_scanned','initializing','reconnecting'].includes(s.loginPhase);
   if(s.loginPhase==='offline'||(s.isOffline&&!progressing))return{state:'failed',message:'QQ已掉线'};
+  // Native status may retain the previous QR URL through reconnect/generation.
+  // Neither phase proves a new human login requirement.
+  if(s.loginPhase==='reconnecting'||s.loginPhase==='generating_qrcode')return{state:'starting'};
   const state=s.qrLoginAccepted||s.loginPhase==='initializing'||s.isLogin?'authenticating':s.loginPhase==='qrcode_scanned'?'waiting_confirm':s.qrcodeurl?'waiting_scan':'starting';
   return{state,qr:s.qrcodeurl||undefined}
  }

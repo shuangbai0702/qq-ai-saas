@@ -72,7 +72,8 @@ export class AutonomyCoordinator {
  private async freshSnapshot(bot:any){
   const snapshot=await this.call(bot,'snapshot',{},3000);
   await this.repo.reconcileCancellations(bot,Array.isArray(snapshot.canceledHandoffs)?snapshot.canceledHandoffs:[]);
-  await this.repo.reconcileAgreements(bot,Array.isArray(snapshot.agreementStates)?snapshot.agreementStates:[]);
+  const terminalTasks=await this.repo.reconcileAgreements(bot,Array.isArray(snapshot.agreementStates)?snapshot.agreementStates:[]);
+  if(terminalTasks.length)await this.call(bot,'agreement_tasks',{epoch:bot.epoch,states:terminalTasks},2000);
   for(const request of (Array.isArray(snapshot.pendingHandoffs)?snapshot.pendingHandoffs:[]).slice(0,16)){
    const receipt=await this.repo.acceptHandoff(bot,request);
    await this.call(bot,'handoff_ack',{epoch:bot.epoch,id:request.id,receipt},2000);
@@ -249,7 +250,7 @@ export class AutonomyCoordinator {
        executeStarted=true;feedback=await this.call(c,'execute',{work,action:{...action,activationTrigger:trigger.reason,autonomousMoment:true,outerDecision:{at:new Date().toISOString(),reason:'autonomous_moment',cycleId:c.cycleId}}},Math.max(1000,deadline-Date.now()+2000))}
       catch(error){
        const fault=classifyFault(error);
-       faultContext={class:fault.faultClass,reason:fault.reason,phase:'activity_execute',configRevision:c.revision,epoch:c.epoch,generation:c.generation,at:Date.now()};
+       faultContext={class:fault.faultClass,reason:fault.reason,phase:'activity_execute',operation:(error as any)?.runtimeOperation,configRevision:c.revision,epoch:c.epoch,generation:c.generation,at:Date.now()};
        if(!executeStarted)feedback=notStarted(action.objective);
        else{
        await this.call(c,'cancel',{},2000).catch(()=>{});
@@ -265,7 +266,7 @@ export class AutonomyCoordinator {
       // The returned model usage is authoritative even if receipt enrichment fails.
       this.charge(usage,action.id,'execute',feedback);
       try{feedback=await this.repo.withExternalEffects(c,action.id,feedback)}
-      catch(error){feedback={...feedback,status:'unknown',stopReason:'effect_reconciliation_pending'};faultContext??={...classifyFault(error),phase:'effect_reconciliation',at:Date.now()}}
+      catch(error){feedback={...feedback,status:'unknown',stopReason:'effect_reconciliation_pending'};faultContext??={...classifyFault(error),phase:'effect_reconciliation',operation:(error as any)?.runtimeOperation,at:Date.now()}}
       usage.externalActions=await externalCount(this.db,c.cycleId);await this.repo.feedback(c,action.id,feedback);
       reason=faultContext?.reason||(feedback.status==='completed'?'activity_completed':feedback.status==='canceled'?'activity_canceled':'activity_'+feedback.status);
       sleep=feedback.stopReason==='not_started'||feedback.continuationAccepted===false?30:Number.isSafeInteger(feedback.restSeconds)?Math.max(300,Math.min(config.maxSleepSeconds,feedback.restSeconds)):config.activityIntervalMinutes*60;
@@ -281,7 +282,7 @@ export class AutonomyCoordinator {
    reason=fault.reason;
    // A failed request is an explicit error backoff, never a model rest choice.
    sleep=30;
-   faultContext={class:fault.faultClass,configRevision:c.revision,epoch:c.epoch,generation:c.generation,at:Date.now()};
+   faultContext={class:fault.faultClass,operation:(error as any)?.runtimeOperation,configRevision:c.revision,epoch:c.epoch,generation:c.generation,at:Date.now()};
   }finally{
    // Unfinished due goals retain their task wake. Timed activity owns exactly
    // one separate wake, never a backlog or a fast retry/model polling loop.

@@ -81,7 +81,14 @@ class BehaviorTests(unittest.TestCase):
  def test_private_and_mention(self):self.assertTrue(self.s.eligible({'trigger':'mention'},'p','',False,'你好',now=100));self.assertTrue(self.s.eligible({'trigger':'mention'},'g','123',True,'你好',now=100))
  def test_whitelist(self):self.assertFalse(self.s.eligible({'trigger':'all','groups':['456']},'g','123',True,'你好',now=100))
  def test_cooldown(self):
-  c={'trigger':'all','behavior':{'cooldownSeconds':10}};self.assertTrue(self.s.eligible(c,'g','123',True,'a',now=100));self.assertFalse(self.s.eligible(c,'g','123',True,'b',now=101));self.assertTrue(self.s.eligible(c,'g','123',True,'c',now=111))
+  c={'trigger':'all','behavior':{'cooldownSeconds':10}}
+  self.assertTrue(self.s.eligible(c,'g','123',True,'a',now=100))
+  self.assertTrue(self.s.eligible(c,'g','123',True,'b',now=101,continuation=True))
+  self.assertEqual(self.s.last['g'],100,'continuation does not reserve a second admission')
+  self.assertFalse(self.s.eligible(c,'g','123',False,'b',now=101,continuation=True))
+  self.assertFalse(self.s.eligible({**c,'groups':['456']},'g','123',True,'b',now=101,continuation=True))
+  self.assertFalse(self.s.eligible(c,'g','123',True,'b',now=101))
+  self.assertTrue(self.s.eligible(c,'g','123',True,'c',now=111))
  def test_legacy_random_never_bypasses_semantic_entry(self):
   # Legacy probability cannot wake a cold group at either hour.
   c={'trigger':'mention','behavior':{'randomReplyProbability':0.2}};self.assertFalse(self.s.eligible(c,'g','123',False,'a',now=16*3600));self.assertFalse(self.s.eligible(c,'g','123',False,'a',now=24*3600))

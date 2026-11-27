@@ -205,6 +205,15 @@ export class AutonomyRepository {
    if(state.status==='fulfilled')continue;
    await this.db.query("UPDATE autonomy_goals SET status='abandoned',revision=revision+1,updated_at=now() WHERE id=$1 AND bot_id=$2 AND tenant_id=$3 AND status IN ('active','paused_mode') AND source->'agreement'->>'id'=$4 AND source->>'handoffId'=$1",[state.handoffId,bot.bot_id,bot.tenant_id,state.id]);
   }
+  // Query only this member's open bound slots, never a growing Goal history.
+  // These are terminal evidence for later semantic review, not fulfillment.
+  const open=states.slice(0,128).filter(state=>['proposed','accepted','uncertain'].includes(state?.status)&&typeof state.handoffId==='string'&&typeof state.id==='string'&&Number.isSafeInteger(state.taskRevision)&&state.taskRevision>0);
+  if(!open.length)return [];
+  const rows=await this.db.query("SELECT id,status,revision,source->'agreement' AS agreement FROM autonomy_goals WHERE bot_id=$1 AND tenant_id=$2 AND id=ANY($3::text[]) AND status IN ('completed','abandoned','canceled') AND source->>'handoffId'=id",[bot.bot_id,bot.tenant_id,open.map(state=>state.handoffId)]);
+  return rows.flatMap(row=>{
+   const state=open.find(state=>state.handoffId===row.id&&state.id===row.agreement?.id&&state.taskRevision===row.agreement?.revision);
+   return state&&!(state.taskStatus===row.status&&state.goalRevision>=row.revision)?[{id:state.id,handoffId:row.id,taskRevision:state.taskRevision,goalRevision:row.revision,status:row.status}]:[];
+  });
  }
  async latestFeedback(bot:any,value:any){
   const at=Number(value?.at||0);

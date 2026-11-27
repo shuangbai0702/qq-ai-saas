@@ -23,7 +23,14 @@ export function runtimeClient(db:Sql):RuntimeCall{
   }
   const headers:Record<string,string>={Authorization:'Bearer '+token,'Content-Type':'application/json','X-Member-Generation':String(bot.generation),'X-Member-Revision':String(current.revision)};
   if(groupGeneration!==undefined)headers['X-Group-Generation']=String(groupGeneration);
-  const response=await runtimeIpc(port,route,{method:'POST',headers,body,timeoutMs});
-  if(!response.ok)throw new Error('autonomous_ipc_'+response.status);return response.json();
+  try{
+   const response=await runtimeIpc(port,route,{method:'POST',headers,body,timeoutMs});
+   if(!response.ok)throw new Error('autonomous_ipc_'+response.status);return await response.json();
+  }catch(error){
+   // Preserve the original classification, but identify the failed control
+   // operation without retaining request bodies, credentials or destinations.
+   if(error instanceof Error)Object.assign(error,{runtimeOperation:operation});
+   throw error;
+  }
  };
 }

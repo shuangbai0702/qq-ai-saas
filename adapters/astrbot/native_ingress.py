@@ -6,6 +6,7 @@ converter directly; it already owns that same durable input.
 from types import SimpleNamespace, MethodType
 import inspect
 import time
+from context_protocol import sdk_ignored_message
 
 
 def bind_api_connection(bot):
@@ -25,7 +26,7 @@ def bind_api_connection(bot):
 
 def admitted(raw, config):
     """One trusted QQ boundary for messages and notices, before conversion."""
-    if not isinstance(raw, dict): return False
+    if not isinstance(raw, dict) or sdk_ignored_message(raw): return False
     if raw.get('post_type') == 'notice' and raw.get('notice_type') == 'group_msg_emoji_like': return False
     group = str(raw.get('group_id') or '')
     if not group: return True

@@ -38,7 +38,7 @@ def is_transport_notification(raw):
         raw.get('notice_type')=='notify' and raw.get('sub_type') in ('input_status','poke'))
 
 
-from context_protocol import protocol_input_scope
+from context_protocol import protocol_input_scope,sdk_ignored_message
 
 
 def raw_mentions_self(raw,self_id):
@@ -529,7 +529,7 @@ class BotPipeline:
         pipeline_tools.initialize(db)
         db.commit()
         db.execute('CREATE TABLE IF NOT EXISTS pipeline_handoffs(id TEXT PRIMARY KEY,epoch INTEGER NOT NULL,data TEXT NOT NULL,state TEXT NOT NULL,receipt TEXT,at REAL NOT NULL)');db.commit()
-        self.retire_transport_notifications()
+        self.retire_ignored_inputs()
         from input_reconciliation import recover_retired_observations
         recover_retired_observations(db)
         self.resume_deferred_mentions()
@@ -605,7 +605,7 @@ class BotPipeline:
               OR e.status='blocked' AND e.reason='waiting_input_blocked'
                 AND e.exit_reason='admission_blocked'))""",(scope,scope,*RECOVERABLE_ADMISSION_REASONS)).rowcount
 
-    def retire_transport_notifications(self):
+    def retire_ignored_inputs(self):
         # Repair old queue bookkeeping only when no live scope owns it and
         # no execution was ever registered. Never reclassify unknown effects,
         # actual chat, or already-committed model/Journal representations.
@@ -618,8 +618,9 @@ class BotPipeline:
             for scope,event,payload in rows:
                 try:raw=json.loads(payload)
                 except (TypeError,ValueError):continue
-                if not is_transport_notification(raw):continue
-                self.db.execute("UPDATE pipeline_work_inputs SET status='settled_notification',payload=NULL,owner=NULL WHERE scope=? AND event=?",(scope,event))
+                ignored=sdk_ignored_message(raw)
+                if not ignored and not is_transport_notification(raw):continue
+                self.db.execute("UPDATE pipeline_work_inputs SET status=?,payload=NULL,owner=NULL WHERE scope=? AND event=?",('settled_ignored' if ignored else 'settled_notification',scope,event))
                 if has_issues:self.db.execute("UPDATE memory_checkpoint_issues SET status='resolved',updated=? WHERE kind=? AND status='open'",(time.time(),'input_recovery:'+scope+':'+event))
 
     def persist_input(self,event,lease):
@@ -631,7 +632,7 @@ class BotPipeline:
         scope=delivery_scope(event);message=event.message_obj
         identifier=str(getattr(message,'message_id','') or '')
         raw=getattr(message,'raw_message',None);observed=getattr(message,'timestamp',None)
-        if is_transport_notification(raw):return False
+        if is_transport_notification(raw) or sdk_ignored_message(raw):return False
         identity={k:lease.get(k) for k in ('tenantId','botId','generation','revision')}
         if not identifier or not isinstance(raw,dict) or not isinstance(observed,(int,float)) or not math.isfinite(observed) or observed<=0 or any(v is None for v in identity.values()):return False
         if raw.get('post_type','message')=='message' and str(raw.get('message_id',''))!=identifier:return False

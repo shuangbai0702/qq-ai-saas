@@ -26,6 +26,10 @@ test('NapCat startup remains alive without API readiness; no premature QR or onl
   (adapter as any).request=async()=>({isLogin:false,isOffline:true,coreReady:false,loginPhase:phase,qrcodeurl:''});assert.equal((await adapter.getLoginState(ctx)).state,'starting','offline core during '+phase+' is not terminal');
  }
  (adapter as any).request=async()=>({isOffline:true,loginPhase:'waiting_qrcode',qrcodeurl:'real-qr-content'});assert.equal((await adapter.getLoginState(ctx)).state,'waiting_scan');
+ for(const loginPhase of ['reconnecting','generating_qrcode']){
+  (adapter as any).request=async()=>({isLogin:false,isOffline:true,loginPhase,qrcodeurl:'old-qr-content'});
+  assert.deepEqual(await adapter.getLoginState(ctx),{state:'starting'},'a stale QR is not a new login requirement during '+loginPhase);
+ }
  (adapter as any).request=async()=>({isOffline:true,loginPhase:'qrcode_scanned'});assert.equal((await adapter.getLoginState(ctx)).state,'waiting_confirm');
  (adapter as any).request=async()=>({isOffline:true,loginPhase:'initializing'});assert.equal((await adapter.getLoginState(ctx)).state,'authenticating');
  (adapter as any).request=async()=>({isOffline:true,loginPhase:'offline'});assert.equal((await adapter.getLoginState(ctx)).state,'failed');

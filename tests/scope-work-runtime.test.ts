@@ -28,7 +28,7 @@ function sourced(body:any){
  });
 }
 
-test('real SDK keeps one active Work per Scope, absorbs bursts and hands off only unseen inputs after four main passes',{timeout:180000},async()=>{
+async function checkScopeWork(cooldown=false){
  const main:any[]=[],reviews:any[]=[],gates=new Map<string,()=>void>(),errors:unknown[]=[];
  const model=http.createServer(async(req,res)=>{
   try{
@@ -43,7 +43,7 @@ test('real SDK keeps one active Work per Scope, absorbs bursts and hands off onl
      ?{action:'keep',reason:'draft_valid_but_new_question_unhandled',responded_events:[]}
      :payload.context.scope==='private:12345002'
      ?{action:'replace',text:'已收到补充，接下来一起回答。',reason:'fixture_needs_current_questions',responded_events:[]}
-     :payload.context.scope==='group:778190'&&payload.review.latest_messages.every((x:any)=>main.filter(m=>m.scope===payload.context.scope).at(-1)?.inputs.some((i:any)=>i.event_id===x.event))
+     :payload.context.scope==='group:778190'&&payload.changes.messages.filter((x:any)=>x.source_scope===payload.context.scope&&x.role==='member').every((x:any)=>main.filter(m=>m.scope===payload.context.scope).at(-1)?.inputs.some((i:any)=>i.event_id===x.source_event))
      ?{action:'keep',reason:'current_main_covers_group_inputs',responded_events:[]}
      :{action:'drop',reason:'fixture_needs_current_questions',responded_events:[]});
    }else{
@@ -72,7 +72,7 @@ test('real SDK keeps one active Work per Scope, absorbs bursts and hands off onl
   const config={...defaultConfig,baseUrl:`http://127.0.0.1:${(model.address()as any).port}/v1`,model:'scope-work-fixture',groups:['778190'],proactive:false,
    behavior:{...defaultConfig.behavior!,ownerUin:'12345678',ownerContactEnabled:false,groupParticipationEnabled:false,groupParticipationGroups:['778190'],naturalConversation:true,
     followupSeconds:0,followupReplyProbability:0,typingSimulation:false,typoEnabled:false,splitMessages:false,burstDebounceMs:0,
-    styleLearning:false,memorySummary:false,memeEnabled:false,fatigueEnabled:false}};
+    styleLearning:false,memorySummary:false,memeEnabled:false,fatigueEnabled:false,cooldownSeconds:cooldown?3600:0}};
   const created=await current.app.inject({method:'POST',url:'/v1/bots',cookies,payload:{name:'Scope单Work验收',protocol:'mock',runtimeMode:'shared',expectedUin:'90008874',apiKey:'scope-work-secret-key',config}});
   assert.equal(created.statusCode,201,created.body);const id=created.json().id;
   // Shared process and unified Journal are distinct. Authorize an empty,
@@ -106,7 +106,7 @@ test('real SDK keeps one active Work per Scope, absorbs bursts and hands off onl
   // All arrivals while main #1 is held belong to the same original Work.
   // The checker sees at most its bounded window; main #2 must still receive
   // every independent question, including the events outside that window.
-  for(const [caseIndex,count]of [2,10,100].entries()){
+  for(const [caseIndex,count]of (cooldown?[2]:[2,10,100]).entries()){
    const scope='private:'+String(12345001+caseIndex),base=85000+caseIndex*200;
    const labels=Array.from({length:count},(_,i)=>`SCOPE_CASE_P${count}_${i}`);
    await send(scope,base,labels[0]);await held(scope,1);
@@ -129,6 +129,11 @@ test('real SDK keeps one active Work per Scope, absorbs bursts and hands off onl
    assert.equal(sentText(sent.at(-1)),'完整回答：'+Array.from({length:count},(_,i)=>String(i)).join('，'),'final response retains every independent question index');
   }
 
+  if(cooldown){
+   const scope='private:12345001';await send(scope,85999,'SCOPE_CASE_NEW_REPLY');
+   await until(async()=>(await state(`SELECT reason FROM pipeline_events WHERE scope='${scope}' AND event='85999'`))[0]?.[0]==='reply_admission_rejected','a different Work still respects cooldown');
+   assert.equal(mainFor(scope).length,2,'only the already-admitted Work could continue');
+  }else{
   // Three group members are one Scope, whereas another person's private
   // conversation keeps a separate owner even though the Journal is shared.
   const group='group:778190',privateScope='private:12345004',base=86000;
@@ -150,6 +155,9 @@ test('real SDK keeps one active Work per Scope, absorbs bursts and hands off onl
   assert.deepEqual(await state(`SELECT status,seen,count(*) FROM pipeline_work_inputs WHERE scope='${group}' GROUP BY status,seen`),[['settled',1,3]],'all group inputs settle after the actual answer');
   assert.equal(mainFor(group).length,2);assert.equal(mainFor(privateScope).length,1);
   assert.equal(reviewFor(group).length,1,'only the joined group inputs require review; another private Scope must not trigger an additional check');assert.equal(reviewFor(privateScope).length,0,'other Scope arrivals cannot trigger private review');
+  const groupReview=reviewFor(group)[0];
+  assert.deepEqual(groupReview.payload.changes.messages.filter((x:any)=>x.source_scope===group&&typeof x.cursor==='number').map((x:any)=>x.source_event),[String(base+1),String(base+2)],'the current review preserves exactly the new attributed inputs after event projection');
+  assert.ok(groupReview.body.messages.some((x:any)=>x.role==='system'&&textOf(x).includes('本Scope带cursor的是本次新输入')),'wire instructions identify the actual projected input fields');
   assert.ok(mainFor(group)[1].inputs.some((x:any)=>x.sender_id==='87654321'&&x.event_id===String(base+1)));
   assert.ok(mainFor(group)[1].inputs.some((x:any)=>x.sender_id==='22345678'&&x.event_id===String(base+2)));
   const groupSent=(await messages()).filter(x=>String(x.params.group_id)===group.slice(6));
@@ -181,7 +189,7 @@ test('real SDK keeps one active Work per Scope, absorbs bursts and hands off onl
   release(handoffScope,5);await finished(handoffScope,handoff+1);
   assert.equal(mainFor(handoffScope).length,5);assert.equal(reviewFor(handoffScope).length,4);
   assert.deepEqual(await state(`SELECT status,seen,count(*) FROM pipeline_work_inputs WHERE scope='${handoffScope}' AND event<>'${handoff}' GROUP BY status,seen`),[['settled',1,4]]);
-
+  }
 
   // Compare the full serialized old message objects. Facts, metadata,
   // media/tool forms, roles and ordering are protected, not just human text.
@@ -191,11 +199,14 @@ test('real SDK keeps one active Work per Scope, absorbs bursts and hands off onl
    const priorInScope=main.slice(0,index).find((request:any)=>request.scope===main[index].scope);
    if(priorInScope)assert.deepEqual(main[index].body.tools,priorInScope.body.tools,'same-Scope continuation tool catalog stable');
   }
-  assert.equal(main.length,14,'main requests are bounded independently of burst size');
-  assert.equal(reviews.length,8,'only unseen same-Scope revisions reach the auxiliary model; unrelated private memory does not interrupt a draft');
+  assert.equal(main.length,cooldown?2:14,'main requests are bounded independently of burst size');
+  assert.equal(reviews.length,cooldown?1:8,'only unseen same-Scope revisions reach the auxiliary model; unrelated private memory does not interrupt a draft');
   assert.deepEqual(errors,[],'HTTP fixtures completed without hidden failures');
  }finally{
   for(const release of gates.values())release();
   await current.app.close();await new Promise<void>(r=>model.close(()=>r()));
  }
-});
+}
+
+test('real SDK keeps one active Work per Scope, absorbs bursts and hands off only unseen inputs after four main passes',{timeout:180000},()=>checkScopeWork());
+test('real SDK continues an admitted Work during reply cooldown while a new Work is still refused',{timeout:90000},()=>checkScopeWork(true));

@@ -70,6 +70,29 @@ async function handoffGoal(db:any,goalId:string,bot='bot-0',opts:{scope?:string;
    JSON.stringify({eventId:'handoff-event',scope:opts.scope||'private:12345678',senderId:'12345678',owner:opts.owner===true,handoffId:goalId,notBefore})]);
 }
 
+test('existing reconciliation sends only changed tenant-bound terminal proof without changing tasks',async()=>{
+ const db=await fixture(2),proofs:any[]=[];
+ const states=['ended-task','active-task'].map(handoffId=>({id:'local-agreement',handoffId,revision:2,taskRevision:2,status:'accepted'}));
+ const coordinator=new AutonomyCoordinator(db,async(_bot,operation,body:any)=>{
+  if(operation==='agreement_tasks')proofs.push(body.states);
+  return operation==='snapshot'?{foregroundBusy:true,agreementStates:states}:{};
+ });
+ try{
+  await coordinator.repo.configure('tenant','bot-0',1,{mode:'active'});
+  await handoffGoal(db,'ended-task');await handoffGoal(db,'other-bot-task','bot-1');await handoffGoal(db,'active-task');
+  for(const id of ['ended-task','other-bot-task','active-task'])await db.query("UPDATE autonomy_goals SET source=source||$2::jsonb WHERE id=$1",[id,JSON.stringify({agreement:{id:'local-agreement',revision:2}})]);
+  await db.query("UPDATE autonomy_goals SET status='abandoned',revision=4 WHERE id IN ('ended-task','other-bot-task')");
+  const tasks=await db.query('SELECT * FROM autonomy_goals ORDER BY id');
+  const expected=[{id:'local-agreement',handoffId:'ended-task',taskRevision:2,goalRevision:4,status:'abandoned'}];
+  assert.deepEqual(await coordinator.repo.reconcileAgreements({bot_id:'bot-0',tenant_id:'tenant'},states),expected);
+  assert.deepEqual(await coordinator.repo.reconcileAgreements({bot_id:'bot-0',tenant_id:'foreign-tenant'},states),[]);
+  assert.deepEqual(await coordinator.repo.reconcileAgreements({bot_id:'bot-0',tenant_id:'tenant'},[{...states[0],taskStatus:'abandoned',goalRevision:4}]),[],'an acknowledged terminal proof is not resent');
+  await coordinator.tick();await coordinator.active?.task;
+  assert.ok(proofs.length);assert.ok(proofs.every(proof=>JSON.stringify(proof)===JSON.stringify(expected)));
+  assert.deepEqual(await db.query('SELECT * FROM autonomy_goals ORDER BY id'),tasks,'proof delivery cannot edit Goal state, version, source or receipt');
+ }finally{await coordinator.stop();await db.close()}
+});
+
 test('a due handoff wakes the main AI without prescribing a Goal or send target',async()=>{
  const db=await fixture();let executions=0,thinkCalls=0;
  const goalId='b1786cd0-91c4-40ec-8e42-75d80ae70a9d';
@@ -556,13 +579,14 @@ test('a failed request uses an error backoff rather than a silent idle interval,
  const db=await fixture();const goalId='cdc9a1bd-2a4b-4a35-9f7b-1c2d3e4f5a6c';let cycles=0;
  const coordinator=new AutonomyCoordinator(db,async(_bot,op)=>{
   if(op==='policy')return{};
-  if(op==='snapshot'){cycles++;if(cycles>1)throw new Error('test provider request failed');return{}}
+  if(op==='snapshot'){cycles++;if(cycles>1)throw Object.assign(new Error('test provider request failed'),{runtimeOperation:op});return{}}
   throw Error(op);
  });try{
   await coordinator.repo.configure('tenant','bot-0',1,{mode:'active',minSleepSeconds:7200});
   await handoffGoal(db,goalId);await coordinator.repo.wake('tenant','bot-0',2,'handoff-due',0,goalId);
   await coordinator.tick();await coordinator.active?.task;
   const view=await coordinator.repo.view('tenant','bot-0');assert.equal(view.cycles[0].reason,'runtime_or_decision_failed');assert.equal(view.settings.state,'backoff');
+  assert.equal(view.cycles[0].fault.operation,'snapshot','the original fault ledger identifies the IPC stage without a request-body copy');
   const delay=new Date(view.settings.next_wake_at).getTime()-Date.now();assert.ok(delay>16000&&delay<=31000,'due handoff work is retried after the error backoff');
  }finally{await coordinator.stop();await db.close()}
 });

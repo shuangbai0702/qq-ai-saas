@@ -43,7 +43,7 @@ existing_memory.writable关闭某类时不输出该类操作。关系以本机�
 
 
 
-SEMANTIC_MEMORY_SYSTEM+=' 能力失败只保留对应时间、条件与结果，不写成“不能/禁止”式长期通则；材料没有新经历或认知变化时，摘要简述本批实际情况，不复述已有未变人物背景来凑摘要。'
+SEMANTIC_MEMORY_SYSTEM+=' 能力失败只保留对应时间、条件与结果，不写成“不能/禁止”式长期通则；材料没有新经历或认知变化时，摘要简述本批实际情况，不复述已有未变人物背景来凑摘要。空闲唤醒和NO_REPLY次数不当作经历反复保留，仍保留真实的新认识或状态变化。'
 
 
 def semantic_snapshot(db,scope,subjects,cfg=None):

@@ -3,6 +3,20 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import {runtimeIpc} from '../packages/shared/runtime-ipc.js';
 import {AstrBotAdapter} from '../adapters/astrbot/index.js';
+import {runtimeClient} from '../packages/shared/runtime-client.js';
+
+test('autonomous IPC errors retain their operation and original HTTP or timeout classification',async t=>{
+ const requests:string[]=[];
+ const server=http.createServer(async(req,res)=>{for await(const _ of req){}requests.push(req.url!);if(req.url!.endsWith('/policy'))res.writeHead(503).end()});
+ await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
+ t.after(async()=>{server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()))});
+ const port=(server.address() as import('node:net').AddressInfo).port;
+ const client=runtimeClient({query:async(sql:string)=>sql.includes('FROM bots')?[{runtime_mode:'standalone',generation:1,revision:2}]:[{ai_port:port-1,token:'fixture-token'}]} as any);
+ const bot={bot_id:'fixture',tenant_id:'tenant',generation:1,revision:2};
+ await assert.rejects(()=>client(bot,'policy',{},1000),(error:any)=>error.message==='autonomous_ipc_503'&&error.runtimeOperation==='policy');
+ await assert.rejects(()=>client(bot,'snapshot',{},200),(error:any)=>error.name==='TimeoutError'&&error.runtimeOperation==='snapshot');
+ assert.deepEqual(requests,['/autonomous/policy','/autonomous/snapshot']);
+});
 
 test('runtime IPC never forwards configuration bodies or trusts health across redirects',async t=>{
  let forwarded=0;

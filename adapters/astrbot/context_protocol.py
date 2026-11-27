@@ -26,6 +26,11 @@ READONLY_FIELDS=frozenset(('origin','conversation_environment','state','recent_m
 RECOVERABLE_ADMISSION_REASONS=('group_waiting','group_presence_busy_deferred','autonomous_owner_observing','group_model_silent_or_stale','auth_backoff')
 
 
+def sdk_ignored_message(raw):
+    """The pinned OneBot SDK deliberately ignores QQ Manager chat messages."""
+    return isinstance(raw,dict) and raw.get('post_type','message')=='message' and str(raw.get('user_id',''))=='2854196310'
+
+
 class ContextPrefixViolation(RuntimeError):pass
 class ContextRecoveryUnavailable(RuntimeError):pass
 class SystemContractViolation(RuntimeError):

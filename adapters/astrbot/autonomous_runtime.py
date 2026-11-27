@@ -72,7 +72,9 @@ class AutonomousRuntime:
         if observation and observation.get('phase')=='foreground_result' and observation['at']<=observed:
             pending=self.pending_ambient.pop(id,None)
             if pending and pending['at']>observed:self.events[id]=pending
-        pending=bool(self.store(id,s).db.execute("SELECT 1 FROM pipeline_handoffs WHERE epoch=? AND state='pending' LIMIT 1",(value['epoch'],)).fetchone()) if cfg['mode']=='active' else False
+        st=self.store(id,s)
+        compressing=bool(getattr(st,'compression_active',False) or getattr(st,'compression_boundary',None) is not None)
+        pending=bool(st.db.execute("SELECT 1 FROM pipeline_handoffs WHERE epoch=? AND state='pending' LIMIT 1",(value['epoch'],)).fetchone()) if cfg['mode']=='active' and not compressing else False
         return {'epoch':value['epoch'],'mode':cfg['mode'],'rollout':cfg['rollout'],'pendingHandoffs':pending}
 
     def permit_current(self,p):
@@ -270,6 +272,10 @@ class AutonomousRuntime:
     def snapshot(self,id):
         """Scheduler metadata only; main cognition stays in the main Journal."""
         s=self.settings[id];st=self.store(id,s)
+        if getattr(st,'compression_active',False) or getattr(st,'compression_boundary',None) is not None:
+            # Control IPC must answer within its normal short deadline. It
+            # neither reads a product being retired nor starts model work.
+            return {'foregroundBusy':True,'compressionBusy':True,'feedbackVersion':self.feedbacks.get(id,{}).get('at',0)}
         import agreement_state
         from pipeline_tools import dsh_busy
         return {'pendingHandoffs':st.pipeline.pending_handoffs(self.policies[id]['epoch']),
@@ -606,10 +612,18 @@ class AutonomousRuntime:
             return pipeline_tools.handle(st.pipeline,{**s,'revision':revision},data['operation'],data.get('data',{}))
         if operation!='cancel' and id in self.settings:
             lease=self.settings[id];st=self.store(id,lease)
-            await st.wait_compression()
+            if operation not in ('policy','snapshot','agreement_tasks'):await st.wait_compression()
             if self.settings.get(id) is not lease or getattr(st,'closing',False):raise ValueError('stale_internal_work')
         if operation=='policy':return self.install(id,data)
         if operation=='snapshot':return self.snapshot(id)
+        if operation=='agreement_tasks':
+            p=self.policies.get(id)
+            if not p or p['lease'] is not self.settings.get(id) or data.get('epoch')!=p['epoch'] or not self.permit_current(p):raise ValueError('stale_agreement_tasks')
+            st=self.store(id,self.settings[id])
+            if getattr(st,'compression_active',False) or getattr(st,'compression_boundary',None) is not None:return {'applied':False,'reason':'compression_busy'}
+            import agreement_state
+            agreement_state.sync_task_terminals(st.db,data['states'])
+            return {'applied':True}
         if operation=='handoff_ack':
             p=self.policies.get(id)
             if not p or p['lease'] is not self.settings.get(id) or data.get('epoch')!=p['epoch'] or not self.permit_current(p):raise ValueError('stale_handoff_ack')

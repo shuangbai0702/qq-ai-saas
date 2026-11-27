@@ -52,6 +52,17 @@ class Policy(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(admitted({**RAW,'group_id':'12345'},CFG))
         self.assertTrue(admitted({'post_type':'message','group_id':'12345','message':[{'type':'image','data':{}}]},CFG))
 
+    async def test_sdk_ignored_sender_never_acquires_durable_message_input(self):
+        for group in ('','12345'):
+            calls=[]
+            async def original(raw):calls.append('convert');return NS()
+            platform=NS(convert_message=original)
+            bind(platform,lambda raw:calls.append('retain'),lambda raw:admitted(raw,CFG))
+            raw={'post_type':'message','user_id':2854196310,'self_id':99999,'message_id':123,'group_id':group}
+            self.assertIsNone(await platform.convert_message(raw))
+            self.assertEqual(calls,[])
+            self.assertTrue(admitted({**raw,'post_type':'notice'},CFG),'SDK ignores this sender only on the chat path')
+
     async def test_private_and_group_program_poke_default_has_cooldown_and_no_ai(self):
         for group in ('','12345'):
             calls=[];ev=event({**RAW,**({'group_id':group} if group else {})})

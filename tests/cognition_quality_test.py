@@ -50,6 +50,30 @@ class Quality(unittest.TestCase):
   with self.assertRaisesRegex(ValueError,'semantic_agreement_snapshot_changed'):
    self.apply({'agreement_operations':[self.retire(r) for r in before['memory_state']['agreements']]},before)
   self.assertEqual(self.db.execute("SELECT status,revision FROM memory_agreements WHERE id='0'").fetchone(),('accepted',1))
+ def test_terminal_task_proof_allows_only_model_chosen_retirement_and_settles_claims(self):
+  self.seed()
+  self.db.execute("UPDATE memory_agreements SET handoff_id='bound-task',task_revision=1 WHERE id='0'");self.db.commit()
+  proof={'id':'0','handoffId':'bound-task','taskRevision':1,'goalRevision':4,'status':'abandoned'}
+  agreements.sync_task_terminals(self.db,[proof])
+  before=agreements.review_view(self.db);self.assertEqual(before[0]['task_status'],'abandoned')
+  self.assertEqual(self.db.execute("SELECT status,revision FROM memory_agreements WHERE id='0'").fetchone(),('accepted',1),'sync supplies evidence without deciding the agreement')
+  changes=self.db.total_changes;agreements.sync_task_terminals(self.db,[proof,{**proof,'goalRevision':3,'status':'completed'}])
+  self.assertEqual(self.db.total_changes,changes,'unchanged or late proof cannot write again')
+  self.db.execute("UPDATE memory_agreements SET detail='uncommitted owner edit' WHERE id='0'")
+  agreements.sync_task_terminals(self.db,[proof]);self.assertTrue(self.db.in_transaction,'a no-op sync cannot commit another owner write');self.db.rollback()
+  self.apply({'agreement_operations':[self.retire(before[0])]})
+  self.assertEqual(self.db.execute("SELECT status,revision FROM memory_agreements WHERE id='0'").fetchone(),('expired',2))
+  claim={'id':'terminal-claim','kind':'agreement','about':'群聊边界0','sourceRefs':[{'scope':SCOPE,'event':'old0'}],'speaker':{'role':'human','id':'12345678'}}
+  self.assertEqual(agreements.retired_claims(self.db,[claim]),{'terminal-claim'})
+  self.assertEqual(self.db.execute("SELECT count(*) FROM memory_agreements WHERE status='fulfilled'").fetchone()[0],0)
+ def test_unproven_task_foreign_binding_and_active_status_cannot_release_slot(self):
+  self.seed();self.db.execute("UPDATE memory_agreements SET handoff_id='bound-task',task_revision=1 WHERE id='0'");self.db.commit()
+  proof={'id':'0','handoffId':'bound-task','taskRevision':1,'goalRevision':4,'status':'abandoned'}
+  agreements.sync_task_terminals(self.db,[{**proof,'id':'foreign'},{**proof,'handoffId':'foreign'},{**proof,'taskRevision':2},{**proof,'status':'active'}])
+  row=agreements.review_view(self.db)[0];self.assertNotIn('task_status',row)
+  audit=self.apply({'agreement_operations':[self.retire(row)]})
+  self.assertEqual(audit.counts['agreements']['rejected'],1)
+  self.assertEqual(self.db.execute("SELECT status,evidence FROM memory_agreements WHERE id='0'").fetchone(),('accepted','[]'))
  def test_agreement_replacement_cannot_rename_identity_or_change_real_terms(self):
   self.seed();before=snapshot(self.db,SCOPE,{'12345678'},CFG)
   operation={'id':'0','expected_revision':1,'op':'replace','reason':'合并同义表述','detail':'群内回复仍需主人私聊授权'}
@@ -188,14 +212,19 @@ class QualityProviderWire(unittest.IsolatedAsyncioTestCase):
   f=fixture.SemanticProviderWire('test_summary_http_then_checkpoint_retires_originals_before_next_http')
   await f.asyncSetUp()
   try:
-   f.db=f.store.db;Quality.seed(f,6);f.populate();requests=[]
+   f.db=f.store.db;Quality.seed(f,6)
+   f.db.execute("UPDATE memory_agreements SET status='accepted',handoff_id='old-terminal-task',task_revision=1 WHERE id='5'");f.db.commit()
+   agreements.sync_task_terminals(f.db,[{'id':'5','handoffId':'old-terminal-task','taskRevision':1,'goalRevision':3,'status':'abandoned'}])
+   f.populate();requests=[]
    async def handler(request):
     body=json.loads(request.content);requests.append(body)
     if len(requests)==1:
      texts=[m['content'] if isinstance(m.get('content'),str) else '\n'.join(p.get('text','') for p in m.get('content',[]) if p.get('type')=='text') for m in body['messages']]
      prompt=next(expand(json.loads(text)) for text in texts if text.startswith('{') and 'existing_memory' in text)
      self.assertIn('agreement_operations','\n'.join(texts));self.assertIn('不按天机械扣分','\n'.join(texts))
+     self.assertIn('空闲唤醒和NO_REPLY次数不当作经历反复保留','\n'.join(texts))
      row=next(r for r in prompt['existing_memory']['agreements'] if r['id']=='5')
+     self.assertEqual(row['task_status'],'abandoned')
      self.assertEqual(row['participants'],['12345678','bot']);self.assertEqual(row['audiences'],[SCOPE])
      output={'summary':fixture.SUMMARY,'agreement_operations':[{'id':row['id'],'expected_revision':row['revision'],'op':'retire','reason':'同义提议合并，原承诺保留'}]}
     else:output={'summary':'下一轮回复'}
@@ -216,6 +245,7 @@ class QualityProviderWire(unittest.IsolatedAsyncioTestCase):
    await f.provider.text_chat(contexts=f.journal.last.wire,prompt=None,func_tool=None)
    wire=json.dumps(requests[1]['messages'],ensure_ascii=False)
    self.assertIn(fixture.SUMMARY,wire);self.assertNotIn('agreement_operations',wire)
+   for metadata in ('task_terminal','goalRevision','task_status'):self.assertNotIn(metadata,wire,'control evidence never becomes a mainline status replay')
    for original in f.originals+f.events+[f.image]:self.assertNotIn(original,wire)
    self.assertIn(f.system,requests[1]['messages']);self.assertIn(f.new,requests[1]['messages'])
   finally:await f.asyncTearDown()

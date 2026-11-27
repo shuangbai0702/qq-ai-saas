@@ -876,7 +876,9 @@ def install_runtime(core,settings):
                 stamps=metrics.setdefault(id,{});key=reason+'Suppressed';stamps[key]=stamps.get(key,0)+1;bot_pipeline.stop(event,'group_'+reason,'silent');return
         if group and not internal and not mentioned and not command and (cfg.get('behavior') or {}).get('followupReplyProbability',1)<=0 and (continuing or contextual):
             bot_pipeline.stop(event,'followup_disabled','silent');return
-        if not internal and not st.eligible(cfg,scope,group,mentioned or continuing or contextual or bool(semantic),event.get_message_str()):
+        # A continuation keeps this Work's first admission. New arrivals do
+        # not turn its later main pass into a second cooldown reservation.
+        if not internal and not st.eligible(cfg,scope,group,mentioned or continuing or contextual or bool(semantic),event.get_message_str(),continuation=continuation):
             bot_pipeline.stop(event,'reply_admission_rejected','silent');return
         if st.active>=2:
             if not await st.wait_capacity(lambda:delivery_current(event)):

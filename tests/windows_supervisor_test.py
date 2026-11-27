@@ -1,5 +1,6 @@
 """Isolated Job ownership, crash cleanup, authority and restart primitives."""
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,32 @@ supervisor=importlib.util.module_from_spec(spec);spec.loader.exec_module(supervi
 
 
 class Authority(unittest.TestCase):
+    def test_log_rotation_keeps_bounded_history_and_redacts_every_segment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);service=supervisor.Service('control-api',[],root,{'API_KEY':'private-log-secret'},root,root)
+            lines=[f'event-{index:02d} private-log-secret\n' for index in range(9)]
+            service.process=SimpleNamespace(stdout=io.BytesIO(''.join(lines).encode()))
+            with patch.object(supervisor,'LOG_MAX_BYTES',1),patch.object(supervisor,'LOG_ARCHIVES',3):service.capture()
+            logs=list((root/'logs').glob('control-api*.log'))
+            self.assertEqual(len(logs),4)
+            self.assertIn('event-08',(root/'logs/control-api.log').read_text())
+            self.assertIn('event-07',(root/'logs/control-api.previous.log').read_text())
+            self.assertIn('event-05',(root/'logs/control-api.previous.2.log').read_text())
+            self.assertTrue(all('private-log-secret' not in file.read_text() for file in logs))
+
+    def test_log_write_failure_does_not_stop_draining_service_stdout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);service=supervisor.Service('agent',[],root,{},root,root)
+            service.process=SimpleNamespace(stdout=io.BytesIO(b'first\nsecond\n'))
+            original=Path.open;failed=False
+            def write(file,*args,**kwargs):
+                nonlocal failed
+                if file.name=='agent.log' and not failed:failed=True;raise PermissionError('fixture reader lock')
+                return original(file,*args,**kwargs)
+            with patch.object(Path,'open',write):service.capture()
+            self.assertTrue(failed)
+            self.assertEqual((root/'logs/agent.log').read_text(),'second\n')
+
     def test_current_control_api_health_contract_allows_agent_startup(self):
         import http.server
         import threading

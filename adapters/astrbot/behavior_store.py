@@ -198,12 +198,13 @@ class BehaviorStore:
         facts=self.memory.recall(scope,subject,text,now) if memory_enabled and project_facts else []
         return {'memory_status':status,'facts':facts,'emotion':emotion,'relationship':'熟悉' if affinity>=5 else '初识','affinity':affinity}
 
-    def eligible(self,cfg,scope,group,mentioned,text,now=None):
+    def eligible(self,cfg,scope,group,mentioned,text,now=None,*,continuation=False):
         now=time.time() if now is None else now;b=cfg.get('behavior') or {}
         if group and cfg.get('groups') and group not in cfg['groups']:return False
-        if now-self.last.get(scope,-1e12)<b.get('cooldownSeconds',0):return False
+        if not continuation and now-self.last.get(scope,-1e12)<b.get('cooldownSeconds',0):return False
         if group and not mentioned and not text.startswith('/'):return False
-        self.last[scope]=now;return True
+        if not continuation:self.last[scope]=now
+        return True
 
     def close(self):
         if self.closing:return

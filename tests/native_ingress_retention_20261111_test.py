@@ -95,6 +95,21 @@ class Ingress(unittest.IsolatedAsyncioTestCase):
         # the existing retry_at still prevents immediate same-process racing.
         bot_pipeline.BotPipeline(self.db)
         self.assertEqual(self.db.execute('SELECT status FROM pipeline_work_inputs').fetchone()[0],'pending')
+
+    async def test_old_sdk_ignored_inputs_settle_without_touching_chat_or_execution_evidence(self):
+        import json
+        manager={**self.raw,'post_type':'message','user_id':2854196310}
+        scope='private:2854196310'
+        for event,raw,status in [('ignored',manager,'blocked_recovery'),('chat',self.raw,'pending'),('unknown',manager,'blocked_unknown'),('executed',manager,'pending')]:
+            self.db.execute('INSERT INTO pipeline_work_inputs(scope,event,payload,status,created) VALUES(?,?,?,?,?)',(scope,event,json.dumps(raw),status,time.time()))
+        self.db.execute("INSERT INTO pipeline_events(scope,event,subject,status,attempted) VALUES(?, 'executed','2854196310','unknown',1)",(scope,))
+        self.db.commit();bot_pipeline.BotPipeline(self.db)
+        rows={event:(status,payload) for event,status,payload in self.db.execute('SELECT event,status,payload FROM pipeline_work_inputs')}
+        self.assertEqual(rows['ignored'],('settled_ignored',None))
+        for event in ('chat','executed','unknown'):
+            self.assertIsNotNone(rows[event][1])
+        self.assertEqual(rows['unknown'][0],'blocked_unknown')
+        self.assertEqual(rows['executed'][0],'pending')
     async def test_retained_second_input_can_join_existing_scope_owner(self):
         self.db.execute('INSERT INTO pipeline_scope_work VALUES(?,?,?,?,?)',('private:12345','100','12345',self.pipeline.runtime,123))
         await self.gate(self.message)
