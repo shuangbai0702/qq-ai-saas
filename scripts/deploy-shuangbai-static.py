@@ -33,7 +33,7 @@ def main():
     for file in sorted(Path(args.dist).rglob('*')):
         if not file.is_file():continue
         name='/'+file.relative_to(args.dist).as_posix()
-        if not (name in ('/index.html','/boot.js') or name.startswith(('/assets/','/illustrations/','/paper/','/voices/'))):raise ValueError('Unexpected public asset: '+name)
+        if not (name in ('/index.html','/boot.js','/favicon.ico') or name.startswith(('/assets/','/brand/','/illustrations/','/paper/','/voices/'))):raise ValueError('Unexpected public asset: '+name)
         raw=file.read_bytes();encoded=base64.b64encode(raw);digest=hashlib.sha256(encoded+file.suffix[1:].encode()).hexdigest()[:32]
         manifest[name]={'hash':digest,'size':len(raw)};files[digest]=(file,encoded)
     (state/'manifest.json').write_text(json.dumps(manifest,indent=2))
