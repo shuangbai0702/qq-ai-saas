@@ -38,7 +38,7 @@ import {httpError,mockProtocolAllowed,requireAdmin} from './http-guards.js';
 declare module 'fastify'{interface FastifyRequest{user?:{id:string;email:string;name:string;is_admin:boolean;tenant_id:string}}}
 const modelKeyInput=z.string().trim().max(4096).regex(/^[^\s\x00-\x1f\x7f]*$/,'Key 不能包含空格或控制字符').optional();
 const provisionJournal=promisify(execFile);
-export async function createApp(options:{root?:string;databaseUrl?:string;agent?:boolean;externalAgent?:boolean;logger?:boolean;platformModelTransport?:Parameters<typeof registerPlatformModel>[4]}={}){
+export async function createApp(options:{root?:string;databaseUrl?:string;agent?:boolean;externalAgent?:boolean;logger?:import('fastify').FastifyServerOptions['logger'];platformModelTransport?:Parameters<typeof registerPlatformModel>[4]}={}){
  const root=path.resolve(options.root||process.env.DATA_ROOT||'.local');await mkdir(root,{recursive:true});
  const databaseUrl=options.databaseUrl??await configuredDatabaseUrl();const db=await openDatabase(root,databaseUrl);let key:Buffer;try{key=await loadKey(root,{createIfMissing:!(await hasEncryptedSecrets(db))})}catch(error){await db.close();throw error}
  const externalAgent=options.externalAgent??false;
@@ -104,7 +104,10 @@ export async function createApp(options:{root?:string;databaseUrl?:string;agent?
  async function requirePlatformCredit(config:z.infer<typeof BotConfigSchema>,tenantId:string,tx:Sql,alreadyPlatform=false){
   if(config.platformModel&&(!await platformModels.available(tx)||(!alreadyPlatform&&!(await creditBalance(tx,tenantId)).available)))fail('当前工作区暂无平台模型额度，请前往活动专区领取或查看邀请奖励',403);
  }
- app.get('/v1/health',async()=>{await db.query('SELECT 1');return{ok:true,publicOrigin:process.env.APP_ORIGIN||''}});
+ // Frequent successful probes must not evict useful operational history.
+ app.get('/v1/health',{logLevel:'warn',onResponse:async(req,reply)=>{
+  if(reply.statusCode>=400||reply.elapsedTime>=2000)req.log.warn({route:'/v1/health',statusCode:reply.statusCode,responseTime:reply.elapsedTime},'Health probe degraded');
+ }},async()=>{await db.query('SELECT 1');return{ok:true,publicOrigin:process.env.APP_ORIGIN||''}});
  app.post('/v1/auth/register',{config:{rateLimit:{max:10,timeWindow:'1 minute'}}},async(req,reply)=>{
    const value=z.object({email:z.email().max(254),password:z.string().min(8).max(128),name:z.string().min(1).max(60),inviteCode:z.string({error:'请输入激活码'}).trim().min(1,'请输入激活码').max(100),referralCode:referralInput}).parse(req.body);const id=randomUUID(),tenant=randomUUID();const hash=await hashPassword(value.password);if(value.referralCode&&!await platformModels.available())fail('邀请活动暂不可用',503);
    const lookup=value.referralCode?'id':'code_hash';

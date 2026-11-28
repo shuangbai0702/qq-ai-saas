@@ -322,17 +322,13 @@ def settle_inputs(db,journal):
                 if scope.startswith('group:') and row and isinstance(row[0],(int,float)):
                     boundaries[scope]=max(boundaries.get(scope,0),row[0])
             for scope,boundary in boundaries.items():
-                rows=db.execute("""SELECT i.event FROM pipeline_work_inputs i
+                from message_provenance import model_output_protection_sql
+                rows=db.execute(f"""SELECT i.event FROM pipeline_work_inputs i
                   JOIN pipeline_scope_work w ON w.scope=i.scope AND w.event=i.owner
                   WHERE i.scope=? AND i.created<=? AND i.status='owned' AND i.seen=0
                   AND i.addressed_self=0 AND i.event<>w.event
                   AND NOT EXISTS(SELECT 1 FROM pipeline_action_effects f WHERE f.action=i.event)
-                  AND NOT EXISTS(SELECT 1 FROM memory_message_sources m WHERE m.direction='model'
-                    AND CASE WHEN json_valid(m.data) THEN json_extract(m.data,'$.source_scope')=i.scope
-                      AND json_extract(m.data,'$.event_id')=i.event
-                      AND (coalesce(json_array_length(m.data,'$.outputs'),0)>0
-                        OR coalesce(json_extract(m.data,'$.settlement.attempted'),0)>0)
-                    ELSE 1 END)""",(scope,boundary)).fetchall()
+                  AND NOT {model_output_protection_sql('i.scope','i.event')}""",(scope,boundary)).fetchall()
                 for event, in rows:
                     if (scope,event) not in known:
                         db.execute("UPDATE pipeline_work_inputs SET status='settled_window',payload=NULL WHERE scope=? AND event=? AND status='owned' AND seen=0",(scope,event))

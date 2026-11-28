@@ -152,6 +152,52 @@ class WaitingReconciliation(unittest.TestCase):
         changes=self.db.total_changes
         self.assertEqual(waiting_reconciliation_plan(self.db)['actions'],[])
         self.assertEqual(self.db.total_changes,changes)
+
+    def test_large_waiting_plan_does_not_rescan_model_metadata_for_each_event(self):
+        from message_provenance import initialize
+        initialize(self.db)
+        self.db.executemany("INSERT INTO pipeline_events(scope,subject,event,at,stage,status,reason,attempted,confirmed) VALUES('group:12345','person',?,1,'admission','waiting','group_waiting',0,0)",[(str(n),)for n in range(1156)])
+        self.db.executemany("INSERT INTO pipeline_work_inputs(scope,event,status) VALUES('group:12345',?,'settled')",[(str(n),)for n in range(1156)])
+        self.db.executemany("INSERT INTO memory_message_sources VALUES('bot_shared',?,'model',?)",[(str(n),json.dumps({'source_scope':'group:23456','event_id':str(n),'outputs':[],**({'settlement':{'attempted':0,'confirmed':0}}if n%2 else {})}))for n in range(2320)])
+        ticks=0
+        def budget():
+            nonlocal ticks
+            ticks+=1
+            return ticks>1000 # One million SQLite VM steps, not a timing guess.
+        self.db.set_progress_handler(budget,1000)
+        try:plan=waiting_reconciliation_plan(self.db)
+        finally:self.db.set_progress_handler(None,0)
+        self.assertEqual(len(plan['actions']),1156)
+        self.assertEqual(plan['protected'],{})
+
+    def test_set_guard_preserves_unsettled_and_unknown_evidence_semantics(self):
+        from message_provenance import initialize,model_output_protection_sql
+        initialize(self.db)
+        self.waiting('unsettled');self.waiting('attempted');self.waiting('confirmed');self.waiting('output');self.waiting('admitted');self.waiting('absent')
+        for event,extra in [('unsettled',{}),('attempted',{'settlement':{'attempted':1,'confirmed':0}}),('confirmed',{'settlement':{'attempted':0,'confirmed':1}}),('output',{'outputs':[{'digest':'owned'}],'settlement':{'attempted':0,'confirmed':0}}),('admitted',{'settlement':{'attempted':0,'confirmed':0}})]:
+            self.db.execute("INSERT INTO memory_message_sources VALUES('bot_shared',?,'model',?)",(event,json.dumps({'source_scope':'group:12345','event_id':event,**extra})))
+        # Missing identity is not evidence about an unrelated event; NULL must
+        # not poison NOT IN. Malformed metadata retains conservative protection.
+        self.db.execute("INSERT INTO memory_message_sources VALUES('bot_shared','no-identity','model','{}')")
+        for unsettled,expected in [(True,{'unsettled'}),(False,{'attempted','confirmed','output'})]:
+            guard=model_output_protection_sql('scope','event',unsettled=unsettled)
+            self.assertEqual({r[0]for r in self.db.execute('SELECT event FROM pipeline_events WHERE '+guard)},expected)
+            self.db.execute("INSERT INTO memory_message_sources VALUES('bot_shared','corrupt','model','not-json')")
+            self.assertEqual(self.db.execute('SELECT count(*) FROM pipeline_events WHERE '+guard).fetchone()[0],6)
+            self.db.execute("UPDATE memory_message_sources SET data=NULL WHERE event='corrupt'")
+            self.assertEqual(self.db.execute('SELECT count(*) FROM pipeline_events WHERE '+guard).fetchone()[0],6)
+            self.db.execute("DELETE FROM memory_message_sources WHERE event='corrupt'")
+
+    def test_live_inbox_does_not_read_unneeded_journal_media(self):
+        from readonly_journal import ReadonlyJournal
+        from unittest.mock import patch
+        ReadonlyJournal(self.db,'bot_shared')
+        self.db.execute("INSERT INTO fishbot_readonly_journals VALUES(?,1,'ready','{}',?,0)",(json.dumps('bot_shared'),'0'*64))
+        self.waiting()
+        self.db.execute("INSERT INTO autonomy_group_inbox VALUES('group:12345','old','{}',1,0)")
+        with patch('journal_storage.read_snapshot_payload',side_effect=AssertionError('unneeded media read')):
+            plan=waiting_reconciliation_plan(self.db)
+        self.assertEqual(plan,{'actions':[],'protected':{'current_inbox':1}})
     def test_valid_old_inbox_is_not_deleted_by_age(self):
         cfg={'behavior':{'groupParticipationEnabled':True,'groupParticipationGroups':['12345']}}
         old=time.time()-3*86400

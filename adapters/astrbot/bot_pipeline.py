@@ -439,31 +439,38 @@ def waiting_reconciliation_plan(db,only_scope=None):
     """
     tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if 'pipeline_events' not in tables:return {'actions':[],'protected':{}}
-    rows=db.execute("SELECT scope,subject,event,reason,stage,attempted,confirmed,updated_at FROM pipeline_events WHERE status='waiting' AND (? IS NULL OR scope=?)",(only_scope,only_scope)).fetchall()
+    from message_provenance import model_output_protection_sql
+    model_guard=model_output_protection_sql('e.scope','e.event',unsettled=True) if 'memory_message_sources' in tables else '0'
+    rows=db.execute(f"SELECT scope,subject,event,reason,stage,attempted,confirmed,updated_at,{model_guard} FROM pipeline_events e WHERE status='waiting' AND (? IS NULL OR scope=?)",(only_scope,only_scope)).fetchall()
     if not rows:return {'actions':[],'protected':{}}
-    referenced=set();journal_readable=True
-    if 'fishbot_readonly_journals' in tables:
-        try:
-            import journal_storage
-            from context_protocol import source
-            for scope,version,payload,sha in db.execute("SELECT scope,version,payload,sha FROM fishbot_readonly_journals WHERE payload IS NOT NULL AND state='ready'"):
-                value=journal_storage.read_snapshot_payload(db,scope,version,payload,sha,scope_error='journal_snapshot_invalid')
-                for message in value.get('base',[])+value.get('wire',[]):
-                    origin=source(message)
-                    if origin:referenced.add((origin['scope'],str(origin['event_id'])))
-        except (ValueError,TypeError,KeyError,sqlite3.Error):journal_readable=False
+    referenced=None;journal_readable=True
     actions=[];protected={}
     def keep(reason):protected[reason]=protected.get(reason,0)+1
-    for scope,subject,event,reason,stage,attempted,confirmed,updated in rows:
+    for scope,subject,event,reason,stage,attempted,confirmed,updated,model_protected in rows:
         if stage!='admission' or reason not in RECOVERABLE_ADMISSION_REASONS or attempted or confirmed:
             keep('execution_or_unknown');continue
         if db.execute('SELECT 1 FROM pipeline_scope_work WHERE scope=?',(scope,)).fetchone():keep('live_scope_owner');continue
         if 'autonomy_group_inbox' in tables and db.execute('SELECT 1 FROM autonomy_group_inbox WHERE scope=? AND event=?',(scope,event)).fetchone():keep('current_inbox');continue
-        if 'memory_message_sources' in tables and db.execute("SELECT 1 FROM memory_message_sources WHERE direction='model' AND CASE WHEN json_valid(data) THEN json_extract(data,'$.source_scope')=? AND json_extract(data,'$.event_id')=? AND json_extract(data,'$.settlement') IS NULL ELSE 1 END",(scope,event)).fetchone():keep('unsettled_model_output');continue
-        inputs=db.execute('SELECT status FROM pipeline_work_inputs WHERE scope=? AND (event=? OR owner=?)',(scope,event,event)).fetchall()
+        if model_protected:keep('unsettled_model_output');continue
+        inputs=db.execute('SELECT status FROM pipeline_work_inputs WHERE scope=? AND event=? UNION SELECT status FROM pipeline_work_inputs WHERE scope=? AND owner=?',(scope,event,scope,event)).fetchall()
         blocked=inputs and any(r[0] in ('blocked_recovery','blocked_unknown') for r in inputs)
         if inputs and any(not str(r[0]).startswith('settled') and r[0] not in ('blocked_recovery','blocked_unknown') for r in inputs):keep('unfinished_input');continue
-        if not inputs and (not journal_readable or (scope,event) in referenced):keep('journal_or_unreadable');continue
+        if not inputs:
+            # Only an otherwise ownerless input needs Journal evidence. Do
+            # not decode media for every healthy live inbox / settled input.
+            if referenced is None:
+                referenced=set()
+                if 'fishbot_readonly_journals' in tables:
+                    try:
+                        import journal_storage
+                        from context_protocol import source
+                        for channel,version,payload,sha in db.execute("SELECT scope,version,payload,sha FROM fishbot_readonly_journals WHERE payload IS NOT NULL AND state='ready'"):
+                            value=journal_storage.read_snapshot_payload(db,channel,version,payload,sha,scope_error='journal_snapshot_invalid')
+                            for message in value.get('base',[])+value.get('wire',[]):
+                                origin=source(message)
+                                if origin:referenced.add((origin['scope'],str(origin['event_id'])))
+                    except (ValueError,TypeError,KeyError,sqlite3.Error):journal_readable=False
+            if not journal_readable or (scope,event) in referenced:keep('journal_or_unreadable');continue
         actions.append({'scope':scope,'subject':subject,'event':event,'expectedReason':reason,'expectedUpdated':updated,
                         'status':'blocked' if blocked or not inputs else 'superseded',
                         'reason':'waiting_input_blocked' if blocked else 'waiting_inputs_settled' if inputs else 'waiting_responsibility_missing'})
@@ -482,6 +489,7 @@ class BotPipeline:
         columns={r[1] for r in db.execute('PRAGMA table_info(pipeline_work_inputs)')}
         for name,kind in (('observed_at','REAL'),('retry_count','INTEGER DEFAULT 0'),('retry_at','REAL DEFAULT 0'),('payload_sha','TEXT'),('identity','TEXT'),('addressed_self','INTEGER'),('voice','TEXT')):
             if name not in columns:db.execute('ALTER TABLE pipeline_work_inputs ADD COLUMN '+name+' '+kind)
+        db.execute('CREATE INDEX IF NOT EXISTS pipeline_inputs_by_owner ON pipeline_work_inputs(scope,owner)')
         for scope,owner,pid in db.execute('SELECT scope,runtime,pid FROM pipeline_scope_work').fetchall():
             # os.kill(pid, 0) terminates processes on Windows. A read-only
             # status probe preserves live owners on both supported platforms.
@@ -587,7 +595,8 @@ class BotPipeline:
         # observe() binds input_digest before admission, and finish() creates
         # settlement-only metadata even without a model call. Neither proves
         # execution. Actual owned outputs or effect receipts do prohibit repair.
-        model_guard="AND NOT EXISTS(SELECT 1 FROM memory_message_sources m WHERE m.direction='model' AND CASE WHEN json_valid(m.data) THEN json_extract(m.data,'$.source_scope')=i.scope AND json_extract(m.data,'$.event_id')=i.event AND (coalesce(json_array_length(m.data,'$.outputs'),0)>0 OR coalesce(json_extract(m.data,'$.settlement.attempted'),0)>0 OR coalesce(json_extract(m.data,'$.settlement.confirmed'),0)>0) ELSE 1 END)" if 'memory_message_sources' in tables else ''
+        from message_provenance import model_output_protection_sql
+        model_guard='AND NOT '+model_output_protection_sql('i.scope','i.event') if 'memory_message_sources' in tables else ''
         # owner also records an exited Work's custody. Only scope_work is a
         # live execution lease; an unseen child must not be held forever by
         # the audit identity of a later Work that never adopted its input.
@@ -1082,9 +1091,12 @@ class BotPipeline:
             work.ledger_owner=bool(self.db.execute("INSERT OR IGNORE INTO pipeline_events(scope,subject,event,at,source,stage,status,reason,updated_at,execution_started) VALUES(?,?,?,?,?,'ingress','received','',?,?)",(scope,subject,work.event_id,now,source,now,0 if recoverable else None)).rowcount) or work.ledger_owner
             # Retain exact recovery evidence while its model input lacks final
             # provenance; a blanket 24h/2048 prune caused irreparable Holds.
-            protected="NOT EXISTS (SELECT 1 FROM memory_message_sources m WHERE m.direction='model' AND json_extract(m.data,'$.source_scope')=pipeline_events.scope AND json_extract(m.data,'$.event_id')=pipeline_events.event AND json_extract(m.data,'$.settlement') IS NULL)" if self.db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_message_sources'").fetchone() else '1'
+            from message_provenance import model_output_protection_sql
+            protected='NOT '+model_output_protection_sql('pipeline_events.scope','pipeline_events.event',unsettled=True) if self.db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_message_sources'").fetchone() else '1'
             if 'memory_message_sources' in {r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}:
-                protected+=" AND NOT EXISTS(SELECT 1 FROM memory_message_sources m WHERE m.direction='activation' AND CASE WHEN json_valid(m.data) THEN json_extract(m.data,'$.owner_work')=pipeline_events.event ELSE 1 END)"
+                protected+=""" AND NOT EXISTS(SELECT 1 FROM memory_message_sources WHERE direction='activation' AND coalesce(json_valid(data),0)=0)
+                  AND pipeline_events.event NOT IN (SELECT json_extract(data,'$.owner_work') FROM memory_message_sources
+                    WHERE direction='activation' AND CASE WHEN json_valid(data) THEN json_extract(data,'$.owner_work') IS NOT NULL ELSE 0 END)"""
             # Blocked inputs retain their own duplicate guard. Missing-input
             # activations have only this content-free key: pruning it would
             # silently turn an unresolved old delivery into a new execution.

@@ -35,6 +35,8 @@ def loaded_build():
     rows={}
     for name,function in (('context_transport','request_context_view'),('model_egress','GuardedTransport.handle_async_request'),('model_cache','begin_attempt'),
                           ('qq_actions','execute'),('tool_outcome','project'),('bot_pipeline','operation_source'),
+                          ('bot_pipeline','waiting_reconciliation_plan'),('bot_pipeline','BotPipeline.reconcile_admission_inputs'),
+                          ('bot_pipeline','BotPipeline.bind'),('message_provenance','model_output_protection_sql'),
                           ('decision_history','changes'),('behavior','install_runtime'),
                           ('provider_wire_hooks','install_provider_hooks'),('behavior_store','BehaviorStore.__init__'),
                             ('autonomous_runtime','AutonomousRuntime.snapshot'),('readonly_journal','ReadonlyJournal.prepare'),
@@ -47,7 +49,7 @@ def loaded_build():
                             ('memory_reflection','Reflection._build_summary_request'),('memory_reflection','Reflection._run_memory_review_pages'),
                             ('memory_reflection','Reflection._commit_big_merge'),('memory_reflection','Reflection._commit_summary_batch'),
                             ('summary_material','register_nonround_images'),('shared_context','compose'),
-                            ('shared_context','Writer.acquire'),('readonly_journal','ReadonlyJournal.append_completion'),
+                            ('shared_context','Writer.acquire'),('shared_context','settle_inputs'),('readonly_journal','ReadonlyJournal.append_completion'),
                             ('activity_context','tail_service'),
                             ('activation_rounds','record'),('model_request_budget','bind')):
         module=sys.modules.get(name);target=module

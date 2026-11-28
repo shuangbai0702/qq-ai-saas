@@ -8,6 +8,28 @@ import json,re
 import hashlib
 
 
+def model_output_protection_sql(scope,event,*,unsettled=False):
+    """SQL evidence predicate; arguments are caller-owned SQL identifiers.
+
+    Materialize identities once per statement. A correlated JSON scan here
+    blocks the shared event loop for every queued activation. Invalid model
+    metadata still protects all candidates, exactly as in the original guard.
+    """
+    evidence="json_extract(data,'$.settlement') IS NULL" if unsettled else """(
+      coalesce(json_array_length(data,'$.outputs'),0)>0
+      OR coalesce(json_extract(data,'$.settlement.attempted'),0)>0
+      OR coalesce(json_extract(data,'$.settlement.confirmed'),0)>0)"""
+    return f"""(EXISTS(SELECT 1 FROM memory_message_sources
+      WHERE direction='model' AND coalesce(json_valid(data),0)=0)
+      OR json_array({scope},{event}) IN (
+        SELECT json_array(CAST(json_extract(data,'$.source_scope') AS TEXT),CAST(json_extract(data,'$.event_id') AS TEXT))
+        FROM memory_message_sources WHERE direction='model'
+        AND CASE WHEN json_valid(data) THEN
+          json_extract(data,'$.source_scope') IS NOT NULL
+          AND json_extract(data,'$.event_id') IS NOT NULL AND {evidence}
+        ELSE 0 END))"""
+
+
 def bind_model_input(db,logical,scope,event,subject,message):
     """Bind the protocol input before SDK enrichment; no user text copied."""
     from context_protocol import model_json
