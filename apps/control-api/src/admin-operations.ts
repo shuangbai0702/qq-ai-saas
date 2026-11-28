@@ -10,7 +10,7 @@ export function registerAdminOperations(app:FastifyInstance,db:Sql){
  const items=await db.query(`SELECT t.id,t.name,t.bot_limit,t.created_at,(SELECT count(*)::int FROM bots b WHERE b.tenant_id=t.id AND b.deleted_at IS NULL) AS used,COALESCE((SELECT json_agg(json_build_object('id',u.id,'name',u.name,'email',u.email,'admin',u.is_admin) ORDER BY u.email) FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.tenant_id=t.id),'[]'::json) AS members FROM tenants t ${where} ORDER BY t.created_at DESC,t.id LIMIT $2 OFFSET $3`,args);
  return{items,total:count.total,page,pageSize};
  });
- app.put<{Params:{id:string}}>('/v1/admin/workspaces/:id/quota',async req=>{requireAdmin(req);const id=z.uuid().parse(req.params.id);const v=z.object({limit:z.number().int().min(1).max(20),expectedLimit:z.number().int().min(1).max(20),reason:z.string().trim().min(2).max(200)}).strict().parse(req.body);
+ app.put<{Params:{id:string}}>('/v1/admin/workspaces/:id/quota',async req=>{requireAdmin(req);const id=z.uuid().parse(req.params.id);const v=z.object({limit:z.number().int().min(1).max(999),expectedLimit:z.number().int().min(1).max(999),reason:z.string().trim().min(2).max(200)}).strict().parse(req.body);
  return db.transaction(async tx=>{const [t]=await tx.query('SELECT bot_limit FROM tenants WHERE id=$1 FOR UPDATE',[id]);if(!t)fail('工作区不存在',404);if(t.bot_limit!==v.expectedLimit)fail('名额已被其他操作修改，请刷新后重试',409);
  const [usage]=await tx.query('SELECT count(*)::int AS used FROM bots WHERE tenant_id=$1 AND deleted_at IS NULL',[id]);if(v.limit<usage.used)fail('名额不能小于现有机器人数量（含删除中）',409);
  if(t.bot_limit===v.limit)return{changed:false,limit:v.limit,used:usage.used};
